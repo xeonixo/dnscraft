@@ -6,6 +6,12 @@
 
 mod error;
 mod name;
+mod rdata;
+mod record;
+mod rtype;
 
 pub use error::ProtoError;
 pub use name::{CompressionMap, Labels, Name};
+pub use rdata::{RData, SvcbData};
+pub use record::Record;
+pub use rtype::{Class, RecordType};

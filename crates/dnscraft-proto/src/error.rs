@@ -58,6 +58,30 @@ pub enum ProtoError {
     /// More than 128 compression pointers were followed in one name.
     #[error("too many compression pointer jumps")]
     TooManyPointers,
+    /// RDATA does not occupy exactly the number of octets given by RDLENGTH.
+    #[error("rdata of type {rtype} does not match its RDLENGTH of {rdlength}")]
+    RdataLengthMismatch {
+        /// Numeric record type.
+        rtype: u16,
+        /// The RDLENGTH announced in the record header.
+        rdlength: usize,
+    },
+    /// RDATA (or a value being encoded) violates the rules of its type.
+    #[error("invalid rdata for type {rtype}: {reason}")]
+    InvalidRdata {
+        /// Numeric record type.
+        rtype: u16,
+        /// Short static description of the violated rule.
+        reason: &'static str,
+    },
+    /// SVCB/HTTPS parameter keys are not in strictly increasing order.
+    #[error("svcb parameter key {key} follows {previous}; keys must strictly increase")]
+    SvcbKeyOrder {
+        /// The previous key.
+        previous: u16,
+        /// The offending key.
+        key: u16,
+    },
 }
 
 impl ProtoError {
@@ -74,6 +98,9 @@ impl ProtoError {
             Self::PointerLoop { .. } => "proto.pointer_loop",
             Self::ForwardPointer { .. } => "proto.forward_pointer",
             Self::TooManyPointers => "proto.too_many_pointers",
+            Self::RdataLengthMismatch { .. } => "proto.rdata_length_mismatch",
+            Self::InvalidRdata { .. } => "proto.invalid_rdata",
+            Self::SvcbKeyOrder { .. } => "proto.svcb_key_order",
         }
     }
 }

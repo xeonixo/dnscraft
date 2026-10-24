@@ -108,12 +108,12 @@ PTR, MX, TXT, SRV, CAA, SVCB/HTTPS (needed later for DDR), OPT placeholder, and 
 as opaque bytes (RFC 3597). Names inside RDATA follow compression rules per RFC 3597 §4.
 
 **Acceptance criteria:**
-- [ ] Decode/encode for every listed type; RDLENGTH mismatch is an error, not a panic
-- [ ] Compression only used for names in NS/CNAME/SOA/PTR/MX (and decoded wherever legal)
-- [ ] Oracle round-trips against hickory for every type
+- [x] Decode/encode for every listed type; RDLENGTH mismatch is an error, not a panic
+- [x] Compression only used for names in NS/CNAME/SOA/PTR/MX (and decoded wherever legal)
+- [x] Oracle round-trips against hickory for every type
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-proto -- rdata`
+- [x] `cargo test -p dnscraft-proto -- rdata`
 
 **Dependencies:** W1
 

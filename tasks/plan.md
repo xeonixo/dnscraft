@@ -69,7 +69,7 @@ workspace (1) ── testkit hierarchy (3)
 
 ### Phase 1b: Wire format (`dnscraft-proto`)
 - [x] Task W1: Domain names and compression
-- [ ] Task W2: Core RDATA types
+- [x] Task W2: Core RDATA types
 - [ ] Task W3: Messages and EDNS
 - [ ] Task W4: DNSSEC record types and canonical form
 - [ ] Task W5: Fuzzing and oracle round-trips
