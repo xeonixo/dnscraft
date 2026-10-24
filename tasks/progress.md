@@ -8,17 +8,20 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
 ## Current state
 
-- Phase: 4 (cache) — Tasks 11–13 done. Checkpoint D open (criterion 4 bench → Task 16; human review).
+- Phase: 5 (edges) — Checkpoint D passed; next Task 14 (forward zones). Task 15 already done.
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
 - Real-internet resolution works (example.com 4 queries / ~90 ms incl. priming; www.microsoft.com 13 with minimisation).
 - Checkpoint B passed (owner approved 2026-10-24).
 - Checkpoint C passed (owner approved 2026-10-24): testkit DNSSEC green; live example.com Secure + dnssec-failed.org SERVFAIL match delv/kdig.
+- Checkpoint D passed (owner approved 2026-10-24): criteria 4–6 (cache hit p50 ≪ 1 ms informal; no traffic on 2nd query; stale; dedup×50).
 - Phase 3 DNSSEC tasks 8–10 done. Dev Do53 server deferred by owner.
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Checkpoint D passed: criterion 4 (2nd query zero traffic + release cache-hit p50≈542 ns / p99≈625 ns over 200 samples; formal `criterion` bench still Task 16), 5 (stale within window), 6 (50 concurrent → one chain). Workspace DoD green. Owner approved.
 
 - 2026-10-24 — Task 13 done (Grok + lead review): serve-stale on Unreachable only; window via `serve_stale` (default 1d, ZERO disables); EDE 3 + AnswerSource::Stale + TTL 0 + AD clear; stale not stored. Beyond window → Err(Unreachable). 3 integration + 3 unit tests. DoD green. Left unrelated SPEC.md (bug-report row) unstaged.
 

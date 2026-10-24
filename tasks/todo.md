@@ -417,8 +417,8 @@ configured window (default 1 day) with EDE "Stale Answer" and `AnswerSource::Sta
 **Estimated scope:** S
 
 ## Checkpoint D: Cache
-- [ ] Success criteria 4, 5, 6 met
-- [ ] Review with human
+- [x] Success criteria 4, 5, 6 met
+- [x] Review with human (owner approved 2026-10-24)
 
 ## Phase 5: Edges and completion
 
