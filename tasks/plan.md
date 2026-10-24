@@ -13,6 +13,12 @@ so the plan also bootstraps the Cargo workspace.
 
 ## Architecture Decisions
 
+- **ADR-0001 (proposed): Option C.** Own iteration, transport, cache, dedup, serve-stale, prefetch,
+  forward zones, EDE on top of `hickory-proto`; reuse hickory's DNSSEC primitives instead of writing crypto.
+  `hickory-recursor` is abandoned as a crate; its successor (feature `recursor` in `hickory-resolver` 0.26.3)
+  is experimental and lacks most spec requirements. All tasks 4–16 are "implement"; Task 9 starts with a
+  1-day time box deciding between hickory's `DnssecDnsHandle` and a thin own validator.
+  Hickory crates are pinned exactly (`=0.26.3`) because `main` (0.27-alpha) already changes the API.
 - **Spike before design freeze.** Task 2 evaluates `hickory-recursor` against in-house
   recursion on `hickory-proto` and records ADR-0001. Note: `hickory-recursor` is at 0.25.2
   (last release 2025-06) while `hickory-proto` is at 0.26.3, so the spike must also check
@@ -52,7 +58,7 @@ workspace skeleton (1)
 
 ### Phase 1: Foundation
 - [x] Task 1: Workspace skeleton and toolchain
-- [ ] Task 2: Spike `hickory-recursor` vs. in-house, write ADR-0001
+- [x] Task 2: Spike `hickory-recursor` vs. in-house, write ADR-0001
 - [x] Task 3: Testkit fake hierarchy
 
 ### Checkpoint A: Foundation + decision
@@ -103,7 +109,8 @@ Task 2; Task 15 alongside Phase 3/4; Task 8 (testkit) alongside Tasks 5–7.
 |---|---|---|
 | `tokio` | runtime, sockets, timers | |
 | `hickory-proto` (feature `dnssec-ring`) | wire format, DNSSEC primitives | |
-| `hickory-recursor` | candidate engine | only if ADR-0001 selects it |
+| ~~`hickory-recursor`~~ | not used (ADR-0001) | |
+| `hickory-net` | transports / `DnsHandle` (optional) | only if Task 6 finds it accepts explicit `SocketAddr` |
 | `hickory-server` | authoritative servers in **testkit only** (dev-dependency) | |
 | `thiserror`, `tracing`, `serde`, `toml` | errors, logging, config | |
 | `rand` | query ids, source ports | |
@@ -117,7 +124,9 @@ cache suffices; avoids `moka`'s footprint.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| `hickory-recursor` immature/lagging (DNSSEC gaps, no serve-stale) | High | Spike first (Task 2); fallback is in-house recursion on `hickory-proto`, which roughly doubles Phase 2–3 effort |
+| ~~`hickory-recursor` immature~~ — confirmed; resolved by ADR-0001 (Option C) | — | — |
+| In-house recursion roughly doubles Phase 2 effort | Med | Accepted; testkit already in place; tasks stay S/M |
+| hickory `DnssecDnsHandle` unusable over our iterator (clock, open bugs #4073/#4063/#4047/#4027) | Med | 1-day time box in Task 9; fallback thin own validator → Tasks 9–10 grow to L and get split |
 | DNSSEC validation is subtle (NSEC3 opt-out, wildcards, algorithm support) | High | Dedicated testkit zones per case (Task 8); cross-check against `unbound`/`delv` manually at Checkpoint C |
 | Testkit signing with controllable time is hard | Med | Sign at test time with injectable clock; avoid static fixtures with expiring signatures |
 | Fake hierarchy needs multiple loopback IPs/ports per nameserver | Med | Root hints and glue carry `ip:port`; resolver accepts a port override in test config |

@@ -1,0 +1,12 @@
+[package]
+name = "spike-hickory-recursor"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Throwaway spike (Task 2 / ADR-0001): deliberately NOT part of the root workspace.
+[workspace]
+
+[dependencies]
+hickory-resolver = { version = "=0.26.3", default-features = false, features = ["recursor", "tokio", "dnssec-ring"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

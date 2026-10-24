@@ -11,3 +11,4 @@
 !.env.example
 secrets/
 deploy/*.local.toml
+/spikes/**/target/

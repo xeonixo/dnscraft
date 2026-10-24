@@ -35,12 +35,12 @@ Resolve real domains with `hickory-recursor` and check every spec requirement ag
 check whether hickory 0.26 relocated recursion. Record the decision.
 
 **Acceptance criteria:**
-- [ ] Checklist answered with evidence: DNSSEC (NSEC, NSEC3, AD, EDE, CD), QNAME minimisation, serve-stale, prefetch hooks, cache size control/flush, forward zones, injectable root hints/ports, ECS behaviour, maintenance status
-- [ ] `docs/adr/0001-recursion-engine.md` states decision, alternatives, consequences
-- [ ] Plan tasks 4–16 annotated with "wrap" vs. "implement" based on the decision
+- [x] Checklist answered with evidence: DNSSEC (NSEC, NSEC3, AD, EDE, CD), QNAME minimisation, serve-stale, prefetch hooks, cache size control/flush, forward zones, injectable root hints/ports, ECS behaviour, maintenance status
+- [x] `docs/adr/0001-recursion-engine.md` states decision, alternatives, consequences
+- [x] Plan tasks 4–16 annotated with "wrap" vs. "implement" based on the decision
 
 **Verification:**
-- [ ] Manual: spike resolves `example.com A` (Secure) and `dnssec-failed.org A` (SERVFAIL) from the internet
+- [x] Manual: spike resolves `example.com A` (Secure) and `dnssec-failed.org A` (SERVFAIL) from the internet
 - [ ] Human reviews ADR at Checkpoint A
 
 **Dependencies:** Task 1
@@ -179,7 +179,7 @@ NSEC and NSEC3 (incl. opt-out) denial zones; expose the fake root's trust anchor
 
 ## Task 9: Chain-of-trust validation
 
-**Description:** Validate DS → DNSKEY → RRSIG from the trust anchor down; set `DnssecStatus`,
+**Description:** Starts with a 1-day time box (ADR-0001): use hickory's `DnssecDnsHandle` over our own iterator if it works with an injectable clock and none of the open hickory bugs bite; otherwise write a thin validator over `hickory-proto` primitives and split this task into 9a (DNSKEY/DS chain) and 9b (RRSIG + status mapping). Validate DS → DNSKEY → RRSIG from the trust anchor down; set `DnssecStatus`,
 AD bit, `SERVFAIL` + EDE for bogus; honour CD bit; built-in IANA root anchors (KSK-2017, KSK-2024).
 
 **Acceptance criteria:**
