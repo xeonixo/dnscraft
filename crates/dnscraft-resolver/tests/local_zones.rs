@@ -292,8 +292,13 @@ async fn forward_zone_disables_local_answer_for_its_subtree() {
         assert!(!ans.message.header.aa);
         assert_ne!(ans.dnssec, DnssecStatus::Insecure);
     }
+    // The root saw the minimised `arpa.` (NXDOMAIN there: no such TLD in the
+    // fake hierarchy), then the full name through the relaxed fallback.
     assert_eq!(
         root_queries(&h),
-        vec![("1.0.0.10.in-addr.arpa.".to_owned(), RecordType::PTR)]
+        vec![
+            ("arpa.".to_owned(), RecordType::A),
+            ("1.0.0.10.in-addr.arpa.".to_owned(), RecordType::PTR)
+        ]
     );
 }

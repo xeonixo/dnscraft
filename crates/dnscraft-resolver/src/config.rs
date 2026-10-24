@@ -26,6 +26,9 @@ pub struct ResolverConfig {
     pub max_nested_depth: u8,
     /// Maximum number of CNAME/DNAME links followed for one question.
     pub max_cname_chain: u8,
+    /// QNAME minimisation (RFC 9156): send each server only the labels it
+    /// needs. Default on; when off the full QNAME/QTYPE goes to every server.
+    pub qname_minimisation: bool,
     /// Time source.
     pub clock: Arc<dyn Clock>,
     /// Test hook: when a nameserver host name is in this map, its address is
@@ -54,6 +57,7 @@ impl Default for ResolverConfig {
             max_queries_per_resolve: 64,
             max_nested_depth: 4,
             max_cname_chain: 16,
+            qname_minimisation: true,
             clock: Arc::new(SystemClock),
             nameserver_addr_overrides: HashMap::new(),
             ipv6_cooldown: Duration::from_secs(60),

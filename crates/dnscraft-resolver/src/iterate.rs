@@ -374,6 +374,7 @@ fn resolve_once<'a>(
             tracing::debug!(qname = %name, qtype = %qtype, zone = %zone, hop, "asking zone");
             let mut verdict = None;
             let mut glueless_tried = 0usize;
+            let mut mini = Minimiser::new(ctx.config.qname_minimisation, &zone, name);
             while let Some(candidate) = candidates.pop_front() {
                 let server = match candidate {
                     Candidate::Addr(addr) => addr,
@@ -396,16 +397,13 @@ fn resolve_once<'a>(
                         continue;
                     }
                 };
-                let Some(resp) = ctx.query_server(server, name, qtype).await? else {
-                    continue;
-                };
-                match classify(ctx.config, &resp, &zone, name) {
-                    Verdict::Lame => {
-                        tracing::debug!(%server, zone = %zone, "lame or unusable response");
-                    }
-                    v => {
-                        verdict = Some((v, resp));
+                match ask_server(ctx, server, &zone, name, qtype, &mut mini).await? {
+                    Some(found) => {
+                        verdict = Some(found);
                         break;
+                    }
+                    None => {
+                        tracing::debug!(%server, zone = %zone, "lame or unusable response");
                     }
                 }
             }
@@ -445,6 +443,127 @@ fn order_candidates(stats: &ServerStats, next: Vec<Candidate>) -> VecDeque<Candi
         .collect();
     out.extend(hosts);
     out
+}
+
+/// QNAME minimisation state for one zone cut (RFC 9156).
+///
+/// Names sent to a zone's servers are `name` truncated to `len` labels,
+/// growing from one label below the zone to the full name. The first
+/// `MINIMISE_ONE_LAB` steps add one label each; afterwards several labels are
+/// added per step so that at most `MAX_MINIMISE_COUNT` queries (the final
+/// full-name query included) are sent per zone.
+struct Minimiser {
+    /// Labels of the name to send next (`full` when minimisation is over).
+    len: usize,
+    full: usize,
+    /// Minimised queries answered so far (progress, shared by all servers of the cut).
+    steps: usize,
+}
+
+/// RFC 9156 section 2.3: maximum number of queries per zone, final one included.
+const MAX_MINIMISE_COUNT: usize = 10;
+/// RFC 9156 section 2.3: number of single-label steps before taking bigger ones.
+const MINIMISE_ONE_LAB: usize = 4;
+
+impl Minimiser {
+    fn new(enabled: bool, zone: &Name, name: &Name) -> Self {
+        let full = name.label_count();
+        let len = if enabled {
+            (zone.label_count() + 1).min(full)
+        } else {
+            full
+        };
+        Self {
+            len,
+            full,
+            steps: 0,
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.len >= self.full
+    }
+
+    /// The name to send now: `name` cut down to `len` labels.
+    fn current(&self, name: &Name) -> Name {
+        let mut n = name.clone();
+        for _ in self.len..self.full {
+            match n.parent() {
+                Some(p) => n = p,
+                None => break,
+            }
+        }
+        n
+    }
+
+    /// Moves on after the minimised name got a non-referral answer.
+    fn advance(&mut self) {
+        self.steps += 1;
+        if self.steps < MINIMISE_ONE_LAB {
+            self.len += 1;
+        } else {
+            // Queries left including the final full one.
+            let left = MAX_MINIMISE_COUNT.saturating_sub(self.steps).max(1);
+            let remaining = self.full - self.len;
+            self.len += remaining.div_ceil(left).max(1);
+        }
+        self.len = self.len.min(self.full);
+    }
+}
+
+/// Asks one server for the next (possibly minimised) name of the zone.
+///
+/// Returns `Ok(None)` when the server is lame for this question. A minimised
+/// query that gets anything but a referral or a plain NODATA (a name that
+/// exists, or an empty non-terminal) is repeated once with the full QNAME and
+/// QTYPE at the same server: this covers NXDOMAIN (RFC 9156 section 2.3,
+/// "relaxed" handling of servers that wrongly return NXDOMAIN for empty
+/// non-terminals), REFUSED/SERVFAIL/FORMERR, no answer, and CNAME/DNAME at the
+/// minimised name (an alias node: the full name must be asked to follow it).
+async fn ask_server(
+    ctx: &Context<'_>,
+    server: SocketAddr,
+    zone: &Name,
+    name: &Name,
+    qtype: RecordType,
+    mini: &mut Minimiser,
+) -> Result<Option<(Verdict, Message)>, ResolveError> {
+    while !mini.is_full() {
+        let qname = mini.current(name);
+        // RFC 9156 section 2.1: QTYPE A for minimised queries.
+        let resp = ctx.query_server(server, &qname, RecordType::A).await?;
+        let reason = match &resp {
+            None => "no response",
+            Some(resp) => match classify(ctx.config, resp, zone, &qname) {
+                v @ Verdict::Referral { .. } => {
+                    return Ok(Some((v, resp.clone())));
+                }
+                Verdict::Final if resp.rcode() == Rcode::NXDOMAIN => "NXDOMAIN",
+                Verdict::Final
+                    if resp
+                        .answers
+                        .iter()
+                        .any(|r| matches!(r.rtype, RecordType::CNAME | RecordType::DNAME)) =>
+                {
+                    "alias"
+                }
+                Verdict::Final => {
+                    mini.advance();
+                    continue;
+                }
+                Verdict::Lame => "lame or error response",
+            },
+        };
+        tracing::debug!(%server, qname = %qname, reason, "minimised query failed, asking full name");
+        break;
+    }
+    let Some(resp) = ctx.query_server(server, name, qtype).await? else {
+        return Ok(None);
+    };
+    Ok(match classify(ctx.config, &resp, zone, name) {
+        Verdict::Lame => None,
+        v => Some((v, resp)),
+    })
 }
 
 fn classify(config: &ResolverConfig, resp: &Message, zone: &Name, qname: &Name) -> Verdict {

@@ -64,8 +64,11 @@ async fn resolves_a_through_hierarchy() {
     );
 
     let want = ("www.example.test.".to_owned(), RecordType::A);
-    assert_eq!(names(&h, "."), vec![want.clone()]);
-    assert_eq!(names(&h, "test."), vec![want.clone()]);
+    assert_eq!(names(&h, "."), vec![("test.".to_owned(), RecordType::A)]);
+    assert_eq!(
+        names(&h, "test."),
+        vec![("example.test.".to_owned(), RecordType::A)]
+    );
     assert_eq!(names(&h, "example.test."), vec![want]);
     let q = &h.server("test.").unwrap().queries()[0];
     assert!(q.edns_present && q.dnssec_ok && q.edns_options.is_empty());
@@ -683,4 +686,229 @@ async fn glueless_ns_per_cut_is_capped_and_cycles_fail_fast() {
     assert_eq!(err.code(), "resolver.unreachable");
     let used = r.stats().outgoing_queries - before;
     assert!(used <= 20, "used {used} outgoing queries");
+}
+
+// ---- Task 7: QNAME minimisation (RFC 9156) ----
+
+fn q(name: &str, t: RecordType) -> (String, RecordType) {
+    (name.to_owned(), t)
+}
+
+#[tokio::test]
+async fn qname_minimisation_limits_what_each_server_sees() {
+    let h = Hierarchy::start().await.unwrap();
+    let r = Resolver::new(config_for(&h)).await.unwrap();
+    h.server(".").unwrap().clear_queries();
+    let ans = r
+        .resolve(
+            &query("www.example.test.", RecordType::A),
+            RequestFlags::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ans.message.answers.len(), 1);
+    assert_eq!(names(&h, "."), vec![q("test.", RecordType::A)]);
+    assert_eq!(names(&h, "test."), vec![q("example.test.", RecordType::A)]);
+    assert_eq!(
+        names(&h, "example.test."),
+        vec![q("www.example.test.", RecordType::A)]
+    );
+}
+
+#[tokio::test]
+async fn qname_empty_non_terminal_continues_with_next_label() {
+    let specs = specs_with_example(vec![HRecord::from_rdata(
+        HName::from_ascii("a.b.c.example.test.").unwrap(),
+        300,
+        HRData::A(hickory_proto::rr::rdata::A(Ipv4Addr::new(192, 0, 2, 9))),
+    )]);
+    let h = Hierarchy::start_with(specs).await.unwrap();
+    let r = Resolver::new(config_for(&h)).await.unwrap();
+    let ans = r
+        .resolve(
+            &query("a.b.c.example.test.", RecordType::A),
+            RequestFlags::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rdatas(&ans), vec![RData::A(Ipv4Addr::new(192, 0, 2, 9))]);
+    assert_eq!(
+        names(&h, "example.test."),
+        vec![
+            q("c.example.test.", RecordType::A),
+            q("b.c.example.test.", RecordType::A),
+            q("a.b.c.example.test.", RecordType::A),
+        ]
+    );
+}
+
+/// A server for `zone` answering NXDOMAIN to everything except `full`
+/// (asked for A), which gets `ip`. Logs every question it receives.
+async fn spawn_ent_nxdomain_server(
+    zone: &str,
+    full: &str,
+    ip: Ipv4Addr,
+) -> (
+    std::net::SocketAddr,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = socket.local_addr().unwrap();
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log2 = log.clone();
+    let (zone, full) = (n(zone), n(full));
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 1500];
+        loop {
+            let Ok((len, peer)) = socket.recv_from(&mut buf).await else {
+                return;
+            };
+            let Ok(req) = Message::decode(&buf[..len]) else {
+                continue;
+            };
+            let qn = req.questions[0].name.clone();
+            log2.lock().unwrap().push(qn.to_string());
+            let mut resp = Message::response_to(&req);
+            resp.header.aa = true;
+            if qn == full {
+                resp.answers.push(Record {
+                    name: qn,
+                    rtype: RecordType::A,
+                    class: Class::IN,
+                    ttl: 300,
+                    rdata: RData::A(ip),
+                });
+            } else {
+                resp.header.rcode_low = Rcode::NXDOMAIN.0 as u8;
+                resp.authorities.push(Record {
+                    name: zone.clone(),
+                    rtype: RecordType::SOA,
+                    class: Class::IN,
+                    ttl: 60,
+                    rdata: RData::SOA {
+                        mname: zone.clone(),
+                        rname: zone.clone(),
+                        serial: 1,
+                        refresh: 1,
+                        retry: 1,
+                        expire: 1,
+                        minimum: 60,
+                    },
+                });
+            }
+            if let Ok(bytes) = resp.encode() {
+                let _ = socket.send_to(&bytes, peer).await;
+            }
+        }
+    });
+    (addr, log)
+}
+
+#[tokio::test]
+async fn qname_nxdomain_for_minimised_name_falls_back_to_full_qname() {
+    let mut specs = default_servers().unwrap();
+    for spec in &mut specs {
+        if origin(spec) == "test." {
+            spec.zone = spec
+                .zone
+                .clone()
+                .with_ns("broken.test.", "ns.broken.test.")
+                .unwrap()
+                .with_a("ns.broken.test.", LO)
+                .unwrap();
+        }
+    }
+    let h = Hierarchy::start_with(specs).await.unwrap();
+    let (addr, log) = spawn_ent_nxdomain_server(
+        "broken.test.",
+        "a.b.c.broken.test.",
+        Ipv4Addr::new(192, 0, 2, 33),
+    )
+    .await;
+    let mut config = config_for(&h);
+    config
+        .nameserver_addr_overrides
+        .insert(n("ns.broken.test."), addr);
+    let r = Resolver::new(config).await.unwrap();
+    let ans = r
+        .resolve(
+            &query("a.b.c.broken.test.", RecordType::A),
+            RequestFlags::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ans.message.rcode(), Rcode::NOERROR);
+    assert_eq!(rdatas(&ans), vec![RData::A(Ipv4Addr::new(192, 0, 2, 33))]);
+    // Minimised name first (NXDOMAIN), then the full name once.
+    assert_eq!(
+        *log.lock().unwrap(),
+        vec!["c.broken.test.".to_owned(), "a.b.c.broken.test.".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn qname_long_name_stays_within_minimise_count() {
+    let deep = "l11.l10.l9.l8.l7.l6.l5.l4.l3.l2.l1.l0.example.test.";
+    let specs = specs_with_example(vec![HRecord::from_rdata(
+        HName::from_ascii(deep).unwrap(),
+        300,
+        HRData::A(hickory_proto::rr::rdata::A(Ipv4Addr::new(192, 0, 2, 10))),
+    )]);
+    let h = Hierarchy::start_with(specs).await.unwrap();
+    let r = Resolver::new(config_for(&h)).await.unwrap();
+    let ans = r
+        .resolve(&query(deep, RecordType::A), RequestFlags::default())
+        .await
+        .unwrap();
+    assert_eq!(rdatas(&ans), vec![RData::A(Ipv4Addr::new(192, 0, 2, 10))]);
+    let log = names(&h, "example.test.");
+    assert!(log.len() <= 10, "{} queries: {log:?}", log.len());
+    assert!(log.len() > 4, "multi-label steps expected: {log:?}");
+    assert_eq!(log.last().unwrap(), &q(deep, RecordType::A));
+    // The first four steps add one label each.
+    assert_eq!(log[0].0, "l0.example.test.");
+    assert_eq!(log[3].0, "l3.l2.l1.l0.example.test.");
+}
+
+#[tokio::test]
+async fn qname_minimisation_can_be_disabled() {
+    let h = Hierarchy::start().await.unwrap();
+    let mut config = config_for(&h);
+    config.qname_minimisation = false;
+    let r = Resolver::new(config).await.unwrap();
+    h.server(".").unwrap().clear_queries();
+    r.resolve(
+        &query("www.example.test.", RecordType::A),
+        RequestFlags::default(),
+    )
+    .await
+    .unwrap();
+    let want = q("www.example.test.", RecordType::A);
+    assert_eq!(names(&h, "."), vec![want.clone()]);
+    assert_eq!(names(&h, "test."), vec![want.clone()]);
+    assert_eq!(names(&h, "example.test."), vec![want]);
+}
+
+#[tokio::test]
+async fn qname_cname_at_minimised_name_sends_full_name() {
+    // `alias.example.test.` is a CNAME: a minimised query for it returns the
+    // alias, so the full name below it is asked of the same server.
+    let specs = specs_with_example(vec![cname("alias.example.test.", "www.example.test.")]);
+    let h = Hierarchy::start_with(specs).await.unwrap();
+    let r = Resolver::new(config_for(&h)).await.unwrap();
+    let ans = r
+        .resolve(
+            &query("x.alias.example.test.", RecordType::A),
+            RequestFlags::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ans.message.rcode(), Rcode::NXDOMAIN);
+    assert_eq!(
+        names(&h, "example.test."),
+        vec![
+            q("alias.example.test.", RecordType::A),
+            q("x.alias.example.test.", RecordType::A),
+        ]
+    );
 }

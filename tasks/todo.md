@@ -254,11 +254,11 @@ smoothed-RTT server selection, randomized ids/ports, response matching, IPv4/IPv
 **Description:** RFC 9156 minimisation with fallback for broken servers.
 
 **Acceptance criteria:**
-- [ ] Testkit query logs show the root only sees `test.` and `test.` only sees `example.test.`
-- [ ] A server answering NXDOMAIN wrongly for empty non-terminals triggers fallback to full QNAME
+- [x] Testkit query logs show the root only sees `test.` and `test.` only sees `example.test.`
+- [x] A server answering NXDOMAIN wrongly for empty non-terminals triggers fallback to full QNAME
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-resolver --test recursion -- qname`
+- [x] `cargo test -p dnscraft-resolver --test recursion -- qname`
 
 **Dependencies:** Task 4
 

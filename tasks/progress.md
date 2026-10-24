@@ -13,10 +13,12 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
 - Real-internet resolution works (example.com 4 queries / ~90 ms incl. priming; www.microsoft.com 11).
-- Next: Task 7 (QNAME minimisation), then Task 9b; optional dev Do53 server after 9b (awaiting owner OK)
+- Next: small fix (no full-QNAME retry on plain timeout), then Checkpoint B review, then Task 9b; optional dev Do53 server after 9b (awaiting owner OK)
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Task 7 done (Sonnet, reviewed): RFC 9156 minimisation with A qtype, relaxed fallback on NXDOMAIN/errors/alias nodes, MAX_MINIMISE_COUNT 10 / ONE_LAB 4, config switch. Live: example.com 4 queries, microsoft 13 (+2), _dmarc.google.com TXT 4. Follow-up: plain timeout currently retries full name at the same dead server (double timeout).
 
 - 2026-10-24 — Bug fix (Sonnet, reviewed): glue was discarded unless inside the delegated child → gtld-servers.net glue dropped → circular glueless chase via nstld.com. Fixed with lazy glueless resolution, per-resolve NS host map, cycle skip, cap 4 glueless per cut. Review found the fix accepted ANY glue (poisoning risk) → restricted to responder bailiwick (RFC 2181 §5.4.1) by Haiku agent with unit tests. 225 tests green.
 

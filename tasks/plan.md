@@ -83,7 +83,7 @@ workspace (1) ── testkit hierarchy (3)
 - [x] Task 4: Iterative resolution happy path
 - [x] Task 5: CNAME chains, NXDOMAIN, NODATA, limits
 - [x] Task 6: Transport robustness
-- [ ] Task 7: QNAME minimisation
+- [x] Task 7: QNAME minimisation
 
 ### Checkpoint B: Recursion
 - [ ] Success criterion 1 met; manual `example.com A` resolves from the internet
