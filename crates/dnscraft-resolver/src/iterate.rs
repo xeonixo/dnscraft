@@ -10,6 +10,7 @@ use std::sync::{Mutex, PoisonError};
 use dnscraft_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
 
 use crate::config::ResolverConfig;
+use crate::dnssec::nta;
 use crate::dnssec::status::{Status, Trust};
 use crate::dnssec::walk;
 use crate::error::ResolveError;
@@ -381,7 +382,14 @@ fn resolve_once<'a>(
     validate: bool,
 ) -> BoxFuture<'a, Result<Outcome, ResolveError>> {
     Box::pin(async move {
-        let mut trust = if validate { Trust::Anchor } else { Trust::Off };
+        let mut trust = if !validate {
+            Trust::Off
+        } else if nta::covers(&ctx.config.negative_trust_anchors, name) {
+            // RFC 7646: nothing below a negative trust anchor is validated.
+            Trust::Insecure
+        } else {
+            Trust::Anchor
+        };
         let mut chain = chain;
         chain.push((name.clone(), qtype));
         let mut zone = Name::root();
@@ -434,7 +442,9 @@ fn resolve_once<'a>(
                 None => return Err(ResolveError::Unreachable { zone }),
                 Some((Verdict::Final, message, server)) => {
                     let trust = walk::settle(ctx, &zone, trust, server, &candidates).await?;
-                    let status = walk::assess_final(ctx, &zone, &trust, &message, server).await?;
+                    let status =
+                        walk::assess_final(ctx, &zone, &trust, &message, name, qtype, server)
+                            .await?;
                     return Ok(Outcome {
                         message,
                         zone,

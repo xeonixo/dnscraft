@@ -341,12 +341,12 @@ honour the CD bit per query, find insecure delegations (no DS) correctly.
 configurable negative trust anchors.
 
 **Acceptance criteria:**
-- [ ] Signed NXDOMAIN/NODATA validate as `Secure` for NSEC and NSEC3 zones
-- [ ] Forged denial (missing/incorrect NSEC) → `Bogus`
-- [ ] A domain listed as negative trust anchor resolves `Insecure` despite bogus signatures
+- [x] Signed NXDOMAIN/NODATA validate as `Secure` for NSEC and NSEC3 zones
+- [x] Forged denial (missing/incorrect NSEC) → `Bogus`
+- [x] A domain listed as negative trust anchor resolves `Insecure` despite bogus signatures
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-resolver --test dnssec -- denial nta`
+- [x] `cargo test -p dnscraft-resolver --test dnssec -- denial nta`
 
 **Dependencies:** Task 9b
 

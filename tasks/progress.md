@@ -8,16 +8,18 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
 ## Current state
 
-- Phase: 3 (DNSSEC) — 8, 9a, 9b done; 10 open
+- Phase: 3 (DNSSEC) — 8, 9a, 9b, 10 done; Checkpoint C open
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
 - Real-internet resolution works (example.com 4 queries / ~90 ms incl. priming; www.microsoft.com 13 with minimisation).
 - Checkpoint B passed (owner approved 2026-10-24).
-- In progress: Task 10 (authenticated denial, NTAs; Sonnet agent). Dev Do53 server deferred by owner (continue the plan first).
+- Next: Checkpoint C (success criteria 2–3, delv cross-check) or Task 11 (cache). Dev Do53 server deferred by owner.
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Task 10 done (Sonnet + lead review fix): NSEC/NSEC3 denial (NXDOMAIN, NODATA, wildcards, opt-out, closest encloser), NTAs via config. Review found NSEC wildcard answers omitted closest-encloser consistency → fixed + unit/forge regression. 17 denial/nta integration tests; workspace green.
 
 - 2026-10-24 — Task 9b done (Sonnet, 2 review rounds): trust state per zone cut, AD only for Secure, Bogus → SERVFAIL + EDE (text = code), CD → unvalidated/Indeterminate, DO=false strips DNSSEC records, signed no-DS proof required for Insecure. Review round 1 found false Bogus on hidden zone cuts (bbc.co.uk, www.nic.uk, www.cloudflare.com) → DS walk (signer below zone, label probe max 8, intermediate zones). Live results match delv. 253 tests green. TODO(Task 10): negative/wildcard stay Indeterminate; NSEC3 closest-encloser check.
 

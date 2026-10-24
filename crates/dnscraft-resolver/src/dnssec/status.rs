@@ -8,14 +8,11 @@
 
 use std::time::SystemTime;
 
-use dnscraft_proto::dnssec::{MAX_ITERATIONS_DEFAULT, base32hex_decode, nsec3_hash};
-use dnscraft_proto::{Name, RData, Record, RecordType};
+use dnscraft_proto::{Name, Record, RecordType};
 
+use super::denial::{Denial, InsecureWhy, prove_no_ds};
 use super::{ChainFailure, DsStatus, ValidatedKeys, VerifyFailure, ds_status, validate_rrset};
 use crate::types::DnssecStatus;
-
-/// NSEC3 opt-out flag (RFC 5155 section 3.1.2).
-const NSEC3_OPT_OUT: u8 = 0x01;
 
 /// Why an answer is bogus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +25,10 @@ pub(crate) enum BogusReason {
     DnskeyUnavailable,
     /// A referral without DS came with no valid proof that there is none.
     NoDsProof,
+    /// A negative answer or wildcard expansion came without NSEC/NSEC3 proof.
+    NoDenialProof,
+    /// The NSEC/NSEC3 records do not prove what they must.
+    BadDenialProof,
 }
 
 impl BogusReason {
@@ -38,6 +39,8 @@ impl BogusReason {
             Self::Verify(v) => v.code(),
             Self::DnskeyUnavailable => "dnssec.dnskey_unavailable",
             Self::NoDsProof => "dnssec.no_ds_proof",
+            Self::NoDenialProof => "dnssec.no_denial_proof",
+            Self::BadDenialProof => "dnssec.bad_denial_proof",
         }
     }
 
@@ -49,7 +52,9 @@ impl BogusReason {
             // 9 DNSKEY Missing
             Self::DnskeyUnavailable => 9,
             // 12 NSEC Missing
-            Self::NoDsProof => 12,
+            Self::NoDsProof | Self::NoDenialProof => 12,
+            // 6 DNSSEC Bogus
+            Self::BadDenialProof => 6,
         }
     }
 }
@@ -83,6 +88,9 @@ impl Trust {
 pub(crate) enum Status {
     Secure,
     Insecure,
+    /// Insecure because the NSEC3 iteration count exceeds the limit
+    /// (carries EDE 27).
+    InsecureNsec3Iterations,
     Indeterminate,
     Bogus(BogusReason),
 }
@@ -94,7 +102,7 @@ impl Status {
             match s {
                 Status::Secure => 0,
                 Status::Indeterminate => 1,
-                Status::Insecure => 2,
+                Status::Insecure | Status::InsecureNsec3Iterations => 2,
                 Status::Bogus(_) => 3,
             }
         }
@@ -105,11 +113,29 @@ impl Status {
         }
     }
 
+    /// The status for a proof that is only insecure.
+    pub fn from_insecure(why: InsecureWhy) -> Self {
+        match why {
+            InsecureWhy::Nsec3Iterations => Self::InsecureNsec3Iterations,
+            InsecureWhy::OptOut | InsecureWhy::Nsec3Algorithm => Self::Insecure,
+        }
+    }
+
+    /// The Extended DNS Error (INFO-CODE, EXTRA-TEXT) that goes with the status.
+    pub fn ede(&self) -> Option<(u16, &'static str)> {
+        match self {
+            Self::Bogus(r) => Some((r.ede_code(), r.code())),
+            // 27 Unsupported NSEC3 Iterations Value
+            Self::InsecureNsec3Iterations => Some((27, "dnssec.nsec3_iterations")),
+            _ => None,
+        }
+    }
+
     /// The public status.
     pub fn public(&self) -> DnssecStatus {
         match self {
             Self::Secure => DnssecStatus::Secure,
-            Self::Insecure => DnssecStatus::Insecure,
+            Self::Insecure | Self::InsecureNsec3Iterations => DnssecStatus::Insecure,
             Self::Indeterminate => DnssecStatus::Indeterminate,
             Self::Bogus(_) => DnssecStatus::Bogus,
         }
@@ -151,10 +177,9 @@ pub(crate) fn child_trust(
 /// Checks the NSEC/NSEC3 records of a referral for a signed proof that `cut`
 /// has no DS record (RFC 4035 section 5.2, RFC 5155 section 8.9).
 ///
-/// TODO(Task 10): the full denial logic (closest encloser, opt-out span
-/// rules) belongs to the authenticated denial module; this interim check
-/// accepts a validated matching NSEC/NSEC3 whose bitmap has NS but neither DS
-/// nor SOA, or a validated opt-out NSEC3 covering the hash of `cut`.
+/// Only records that validate against `parent` count; the logic is in
+/// [`prove_no_ds`]. An opt-out span or an unsupported NSEC3 parameter set
+/// yields `Ok` as well: the child is then insecure, not bogus.
 pub(crate) fn check_no_ds(
     cut: &Name,
     authorities: &[Record],
@@ -162,48 +187,15 @@ pub(crate) fn check_no_ds(
     now: SystemTime,
 ) -> Result<(), BogusReason> {
     let mut failure: Option<VerifyFailure> = None;
-    for r in authorities {
-        let proves = match &r.rdata {
-            RData::NSEC { types, .. } if r.name == *cut => no_ds_bitmap(types),
-            RData::NSEC3 {
-                hash_algorithm,
-                flags,
-                iterations,
-                salt,
-                next_hashed_owner,
-                types,
-            } if parent.zone().zone_of(&r.name) => {
-                let Ok(hash) = nsec3_hash(
-                    *hash_algorithm,
-                    cut,
-                    salt,
-                    *iterations,
-                    MAX_ITERATIONS_DEFAULT,
-                ) else {
-                    continue;
-                };
-                let Some(owner_hash) = nsec3_owner_hash(&r.name) else {
-                    continue;
-                };
-                if owner_hash == hash {
-                    no_ds_bitmap(types)
-                } else {
-                    // TODO(Task 10): verify covering/opt-out proof (closest encloser).
-                    flags & NSEC3_OPT_OUT != 0 && covers(&owner_hash, next_hashed_owner, &hash)
-                }
-            }
-            _ => false,
-        };
-        if !proves {
-            continue;
-        }
-        let rrset: Vec<Record> = authorities
-            .iter()
-            .filter(|x| x.rtype == r.rtype && x.name == r.name && x.class == r.class)
-            .cloned()
-            .collect();
-        match validate_rrset(&rrset, authorities, parent, now) {
-            Ok(_) => return Ok(()),
+    let mut valid: Vec<Record> = Vec::new();
+    for set in rrsets(authorities, parent.zone(), |r| {
+        matches!(r.rtype, RecordType::NSEC | RecordType::NSEC3)
+    }) {
+        let owned: Vec<Record> = set.into_iter().cloned().collect();
+        match validate_rrset(&owned, authorities, parent, now) {
+            // An expanded NSEC/NSEC3 is a replay, not a proof.
+            Ok(v) if v.wildcard.is_none() => valid.extend(owned),
+            Ok(_) => {}
             Err(e) => {
                 failure = Some(failure.map_or(e, |f| {
                     if e.specificity() > f.specificity() {
@@ -215,28 +207,9 @@ pub(crate) fn check_no_ds(
             }
         }
     }
-    Err(failure.map_or(BogusReason::NoDsProof, BogusReason::Verify))
-}
-
-fn no_ds_bitmap(types: &dnscraft_proto::TypeBitmap) -> bool {
-    types.contains(RecordType::NS)
-        && !types.contains(RecordType::DS)
-        && !types.contains(RecordType::SOA)
-}
-
-/// The hash in the first label of an NSEC3 owner name.
-fn nsec3_owner_hash(owner: &Name) -> Option<Vec<u8>> {
-    let label = owner.labels().next()?;
-    base32hex_decode(std::str::from_utf8(label).ok()?).ok()
-}
-
-/// Whether `hash` lies strictly between `owner` and `next` (the last NSEC3
-/// of the chain wraps around).
-fn covers(owner: &[u8], next: &[u8], hash: &[u8]) -> bool {
-    if owner < next {
-        owner < hash && hash < next
-    } else {
-        hash > owner || hash < next
+    match prove_no_ds(parent.zone(), cut, &valid) {
+        Denial::Secure | Denial::Insecure(_) => Ok(()),
+        Denial::Bogus(_) => Err(failure.map_or(BogusReason::NoDsProof, BogusReason::Verify)),
     }
 }
 

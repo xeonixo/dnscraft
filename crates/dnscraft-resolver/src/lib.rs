@@ -115,20 +115,19 @@ impl Resolver {
         // Never pass on an AD bit set by a server; only our own validation counts.
         message.header.ad = false;
         message.edns = None;
-        let mut ede = None;
+        let ede = status.ede().map(|(code, text)| ExtendedError {
+            code,
+            text: Some(text.to_owned()),
+        });
         match status {
             Status::Secure => message.header.ad = true,
-            Status::Bogus(reason) => {
+            Status::Bogus(_) => {
                 message.answers.clear();
                 message.authorities.clear();
                 message.additionals.clear();
                 message.set_rcode(Rcode::SERVFAIL)?;
-                ede = Some(ExtendedError {
-                    code: reason.ede_code(),
-                    text: Some(reason.code().to_owned()),
-                });
             }
-            Status::Insecure | Status::Indeterminate => {}
+            Status::Insecure | Status::InsecureNsec3Iterations | Status::Indeterminate => {}
         }
         if !flags.dnssec_ok {
             strip_dnssec_records(&mut message, query.qtype);

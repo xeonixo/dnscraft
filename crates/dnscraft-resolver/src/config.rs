@@ -33,6 +33,10 @@ pub struct ResolverConfig {
     /// DNSSEC trust anchors. An empty set switches validation off: every
     /// answer is then `Indeterminate`.
     pub trust_anchors: TrustAnchors,
+    /// Negative trust anchors (RFC 7646): names at or below one of these
+    /// domains are resolved without DNSSEC validation (status `Insecure`,
+    /// no AD bit, no SERVFAIL for bogus data). Default empty.
+    pub negative_trust_anchors: Vec<Name>,
     /// Time source.
     pub clock: Arc<dyn Clock>,
     /// Test hook: when a nameserver host name is in this map, its address is
@@ -63,6 +67,7 @@ impl Default for ResolverConfig {
             max_cname_chain: 16,
             qname_minimisation: true,
             trust_anchors: TrustAnchors::iana_root(),
+            negative_trust_anchors: Vec::new(),
             clock: Arc::new(SystemClock),
             nameserver_addr_overrides: HashMap::new(),
             ipv6_cooldown: Duration::from_secs(60),

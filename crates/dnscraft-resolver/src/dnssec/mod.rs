@@ -21,6 +21,8 @@
 
 mod anchors;
 mod chain;
+pub(crate) mod denial;
+pub(crate) mod nta;
 pub(crate) mod status;
 mod verify;
 pub(crate) mod walk;

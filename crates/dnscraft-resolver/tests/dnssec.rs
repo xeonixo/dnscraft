@@ -839,27 +839,593 @@ async fn status_expired_signatures_after_time_travel_are_bogus() {
     assert_eq!(ans.ede.unwrap().code, 7);
 }
 
+// ---------------------------------------------------------------------------
+// Authenticated denial (Task 10)
+// ---------------------------------------------------------------------------
+
+async fn ask_type(
+    r: &Resolver,
+    qname: &str,
+    qtype: RecordType,
+    flags: RequestFlags,
+) -> dnscraft_resolver::Answer {
+    let q = Query {
+        name: name(qname),
+        qtype,
+        qclass: Class::IN,
+    };
+    r.resolve(&q, flags).await.unwrap()
+}
+
+fn count_type(ans: &dnscraft_resolver::Answer, t: RecordType) -> usize {
+    ans.message.answers.iter().filter(|r| r.rtype == t).count()
+}
+
+fn assert_secure(ans: &dnscraft_resolver::Answer, rcode: dnscraft_proto::Rcode) {
+    assert_eq!(ans.dnssec, DnssecStatus::Secure, "ede {:?}", ans.ede);
+    assert!(ans.message.header.ad);
+    assert_eq!(ans.message.rcode(), rcode);
+    assert!(ans.ede.is_none());
+}
+
+/// The set of denial answers every signed zone `zone` (NSEC or NSEC3) must
+/// get right.
+async fn denial_suite(variant: ChildVariant) {
+    use dnscraft_proto::Rcode;
+    let zone = variant.zone_name();
+    let h = Hierarchy::start_signed(&[variant]).await.unwrap();
+    let r = status_resolver(&h).await;
+    // NXDOMAIN.
+    let ans = ask_type(&r, &format!("nope.{zone}"), RecordType::A, DO).await;
+    assert_secure(&ans, Rcode::NXDOMAIN);
+    assert!(ans.message.answers.is_empty());
+    // NODATA at an existing name.
+    let ans = ask_type(&r, &format!("www.{zone}"), RecordType::AAAA, DO).await;
+    assert_secure(&ans, Rcode::NOERROR);
+    assert!(ans.message.answers.is_empty());
+    // NODATA for a type below the apex (apex has SOA/NS/NSEC...).
+    let ans = ask_type(&r, zone, RecordType::MX, DO).await;
+    assert_secure(&ans, Rcode::NOERROR);
+    // Wildcard expansion.
+    let ans = ask_type(&r, &format!("x.wild.{zone}"), RecordType::A, DO).await;
+    assert_secure(&ans, Rcode::NOERROR);
+    assert_eq!(count_type(&ans, RecordType::A), 1);
+    // Wildcard NODATA.
+    let ans = ask_type(&r, &format!("x.wild.{zone}"), RecordType::AAAA, DO).await;
+    assert_secure(&ans, Rcode::NOERROR);
+    assert!(ans.message.answers.is_empty());
+    // Deeper NXDOMAIN (closest encloser is not the apex).
+    let ans = ask_type(&r, &format!("a.b.www.{zone}"), RecordType::A, DO).await;
+    assert_secure(&ans, Rcode::NXDOMAIN);
+    // The signed zone's own NXDOMAIN did not break positive answers.
+    let ans = ask_type(&r, &format!("www.{zone}"), RecordType::A, DO).await;
+    assert_secure(&ans, Rcode::NOERROR);
+}
+
 #[tokio::test]
-async fn status_wildcard_and_negative_answers_are_not_secure_yet() {
-    // TODO(Task 10): these become Secure once denial proofs are checked.
-    let h = Hierarchy::start_signed(&[ChildVariant::Secure])
+async fn denial_nsec_zone_is_secure() {
+    denial_suite(ChildVariant::Secure).await;
+}
+
+#[tokio::test]
+async fn denial_nsec3_zone_is_secure() {
+    denial_suite(ChildVariant::Nsec3).await;
+}
+
+#[tokio::test]
+async fn denial_nsec3_empty_non_terminal_nodata_is_secure() {
+    let h = Hierarchy::start_signed(&[ChildVariant::Nsec3])
         .await
         .unwrap();
     let r = status_resolver(&h).await;
-    let wild = status_ask(&r, "x.wild.secure.test.", DO).await;
-    assert_eq!(wild.dnssec, DnssecStatus::Indeterminate);
-    assert!(!wild.message.header.ad);
-    assert_eq!(
-        wild.message
-            .answers
-            .iter()
-            .filter(|r| r.rtype == RecordType::A)
-            .count(),
-        1
+    let ans = ask_type(&r, "wild.nsec3.test.", RecordType::A, DO).await;
+    assert_secure(&ans, dnscraft_proto::Rcode::NOERROR);
+}
+
+#[tokio::test]
+async fn denial_nsec3_optout_nxdomain_needs_the_wildcard_proof_for_secure() {
+    let h = Hierarchy::start_signed(&[ChildVariant::Nsec3OptOut])
+        .await
+        .unwrap();
+    let r = status_resolver(&h).await;
+    // The complete closest-encloser proof validates even with the opt-out
+    // flag (like delv for .de and .com).
+    let ans = ask_type(&r, "nope.nsec3-optout.test.", RecordType::A, DO).await;
+    assert_secure(&ans, dnscraft_proto::Rcode::NXDOMAIN);
+    // Names that exist keep their secure answers and denials.
+    let ans = ask_type(&r, "www.nsec3-optout.test.", RecordType::A, DO).await;
+    assert_secure(&ans, dnscraft_proto::Rcode::NOERROR);
+    let ans = ask_type(&r, "www.nsec3-optout.test.", RecordType::AAAA, DO).await;
+    assert_secure(&ans, dnscraft_proto::Rcode::NOERROR);
+
+    // Dropping any record of the proof must never leave it Secure (the
+    // Insecure outcome without the wildcard proof is a unit test).
+    let upstream = h.server("nsec3-optout.test.").unwrap().addr();
+    let genuine = raw_query(upstream, "nope.nsec3-optout.test.", RecordType::A).await;
+    let mut owners: Vec<Name> = genuine
+        .authorities
+        .iter()
+        .filter(|r| r.rtype == RecordType::NSEC3)
+        .map(|r| r.name.clone())
+        .collect();
+    owners.dedup();
+    let mut outcomes = Vec::new();
+    for victim in owners {
+        let proxy = forge_proxy(
+            upstream,
+            Arc::new(move |_, t, m: &mut Message| {
+                if t == RecordType::A {
+                    m.authorities
+                        .retain(|r| !(r.name == victim && is_denial(r)));
+                }
+            }),
+        )
+        .await;
+        let mut config = status_config(&h);
+        config
+            .nameserver_addr_overrides
+            .insert(name("ns1.nsec3-optout.test."), proxy);
+        let r = Resolver::new(config).await.unwrap();
+        let ans = ask_type(&r, "nope.nsec3-optout.test.", RecordType::A, DO).await;
+        assert!(!ans.message.header.ad);
+        outcomes.push(ans.dnssec);
+    }
+    assert!(outcomes.iter().all(|s| *s != DnssecStatus::Secure));
+}
+
+#[tokio::test]
+async fn denial_nsec3_optout_unsigned_delegation_is_insecure() {
+    let h = Hierarchy::start_signed(&[ChildVariant::Nsec3OptOut])
+        .await
+        .unwrap();
+    let r = status_resolver(&h).await;
+    // DS NODATA at the delegation inside the opt-out span (RFC 5155 section 8.6).
+    let ans = ask_type(&r, "unsigned.nsec3-optout.test.", RecordType::DS, DO).await;
+    assert_eq!(ans.dnssec, DnssecStatus::Insecure);
+    assert!(!ans.message.header.ad);
+    assert_eq!(ans.message.rcode(), dnscraft_proto::Rcode::NOERROR);
+}
+
+/// A server that answers every query with `192.0.2.77` (authoritative).
+async fn stub_server() -> SocketAddr {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = socket.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 4096];
+        loop {
+            let Ok((len, from)) = socket.recv_from(&mut buf).await else {
+                return;
+            };
+            let q = Message::decode(&buf[..len]).unwrap();
+            let mut m = Message::response_to(&q);
+            m.header.aa = true;
+            if q.questions[0].qtype == RecordType::A {
+                m.answers.push(Record {
+                    name: q.questions[0].name.clone(),
+                    rtype: RecordType::A,
+                    class: Class::IN,
+                    ttl: 60,
+                    rdata: RData::A("192.0.2.77".parse().unwrap()),
+                });
+            }
+            socket.send_to(&m.encode().unwrap(), from).await.unwrap();
+        }
+    });
+    addr
+}
+
+#[tokio::test]
+async fn denial_nsec3_optout_referral_to_unsigned_child_is_insecure() {
+    let h = Hierarchy::start_signed(&[ChildVariant::Nsec3OptOut])
+        .await
+        .unwrap();
+    let stub = stub_server().await;
+    let mut config = status_config(&h);
+    config
+        .nameserver_addr_overrides
+        .insert(name("ns1.unsigned.nsec3-optout.test."), stub);
+    let r = Resolver::new(config).await.unwrap();
+    let ans = ask_type(&r, "www.unsigned.nsec3-optout.test.", RecordType::A, DO).await;
+    assert_eq!(ans.dnssec, DnssecStatus::Insecure);
+    assert!(!ans.message.header.ad);
+    assert_eq!(count_type(&ans, RecordType::A), 1);
+}
+
+/// Edits a response of the zone server in flight.
+type Mutate = Arc<dyn Fn(&Name, RecordType, &mut Message) + Send + Sync>;
+
+/// A UDP proxy in front of `upstream` that lets `mutate` forge each response.
+async fn forge_proxy(upstream: SocketAddr, mutate: Mutate) -> SocketAddr {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = socket.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 8192];
+        loop {
+            let Ok((len, from)) = socket.recv_from(&mut buf).await else {
+                return;
+            };
+            let q = Message::decode(&buf[..len]).unwrap();
+            let up = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            up.send_to(&buf[..len], upstream).await.unwrap();
+            let mut rbuf = vec![0u8; 8192];
+            let Ok(Ok((rlen, _))) = timeout(Duration::from_secs(2), up.recv_from(&mut rbuf)).await
+            else {
+                continue;
+            };
+            let mut m = Message::decode(&rbuf[..rlen]).unwrap();
+            mutate(&q.questions[0].name, q.questions[0].qtype, &mut m);
+            socket.send_to(&m.encode().unwrap(), from).await.unwrap();
+        }
+    });
+    addr
+}
+
+/// Status of `qname`/`qtype` in the zone of `variant` when its server's
+/// answers pass through `mutate` (built from a closure that gets the zone
+/// server's address, to fetch genuine records from it).
+async fn forged(
+    variant: ChildVariant,
+    qname: &str,
+    qtype: RecordType,
+    mutate: impl FnOnce(SocketAddr) -> Mutate,
+) -> dnscraft_resolver::Answer {
+    let h = Hierarchy::start_signed(&[variant]).await.unwrap();
+    let upstream = h.server(variant.zone_name()).unwrap().addr();
+    let proxy = forge_proxy(upstream, mutate(upstream)).await;
+    let mut config = status_config(&h);
+    config
+        .nameserver_addr_overrides
+        .insert(name(&format!("ns1.{}", variant.zone_name())), proxy);
+    let r = Resolver::new(config).await.unwrap();
+    ask_type(&r, qname, qtype, DO).await
+}
+
+fn is_denial(r: &Record) -> bool {
+    matches!(r.rtype, RecordType::NSEC | RecordType::NSEC3)
+        || matches!(&r.rdata, RData::RRSIG { type_covered, .. }
+            if matches!(*type_covered, RecordType::NSEC | RecordType::NSEC3))
+}
+
+fn assert_bogus(ans: &dnscraft_resolver::Answer, ede: u16) {
+    assert_eq!(ans.dnssec, DnssecStatus::Bogus);
+    assert_eq!(ans.message.rcode(), dnscraft_proto::Rcode::SERVFAIL);
+    assert!(!ans.message.header.ad);
+    assert_eq!(ans.ede.as_ref().unwrap().code, ede, "{:?}", ans.ede);
+}
+
+fn strip_denial() -> impl FnOnce(SocketAddr) -> Mutate {
+    |_| {
+        Arc::new(|_, _, m: &mut Message| {
+            m.authorities.retain(|r| !is_denial(r));
+        })
+    }
+}
+
+#[tokio::test]
+async fn denial_stripped_proof_is_bogus_nsec_missing() {
+    for (variant, zone) in [
+        (ChildVariant::Secure, "secure.test."),
+        (ChildVariant::Nsec3, "nsec3.test."),
+    ] {
+        for qname in [format!("nope.{zone}"), format!("www.{zone}")] {
+            // NXDOMAIN and NODATA (www has no AAAA).
+            let qtype = if qname.starts_with("nope") {
+                RecordType::A
+            } else {
+                RecordType::AAAA
+            };
+            let ans = forged(variant, &qname, qtype, strip_denial()).await;
+            assert_bogus(&ans, 12);
+            assert!(ans.message.answers.is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn denial_wildcard_answer_without_proof_is_bogus() {
+    for (variant, zone) in [
+        (ChildVariant::Secure, "secure.test."),
+        (ChildVariant::Nsec3, "nsec3.test."),
+    ] {
+        let ans = forged(
+            variant,
+            &format!("x.wild.{zone}"),
+            RecordType::A,
+            strip_denial(),
+        )
+        .await;
+        assert_bogus(&ans, 12);
+        assert!(ans.message.answers.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn denial_wildcard_with_wrong_closest_encloser_is_bogus() {
+    // Replay a valid *.wild expansion under a covering NSEC whose implied
+    // closest encloser is the apex (not wild): must not become Secure.
+    let h = Hierarchy::start_signed(&[ChildVariant::Secure])
+        .await
+        .unwrap();
+    let upstream = h.server("secure.test.").unwrap().addr();
+    let donor = raw_query(upstream, "ns1.secure.test.", RecordType::AAAA).await;
+    let proof: Vec<Record> = donor
+        .authorities
+        .iter()
+        .filter(|r| is_denial(r))
+        .cloned()
+        .collect();
+    assert!(
+        proof.iter().any(|r| r.rtype == RecordType::NSEC),
+        "expected an NSEC at ns1: {:?}",
+        proof.iter().map(|r| (&r.name, r.rtype)).collect::<Vec<_>>()
     );
-    let nx = status_ask(&r, "nope.secure.test.", DO).await;
-    assert_eq!(nx.dnssec, DnssecStatus::Indeterminate);
-    assert_eq!(nx.message.rcode(), dnscraft_proto::Rcode::NXDOMAIN);
+    let proxy = forge_proxy(
+        upstream,
+        Arc::new(move |_, t, m: &mut Message| {
+            if t == RecordType::A {
+                m.authorities.retain(|r| !is_denial(r));
+                m.authorities.extend(proof.clone());
+            }
+        }),
+    )
+    .await;
+    let mut config = status_config(&h);
+    config
+        .nameserver_addr_overrides
+        .insert(name("ns1.secure.test."), proxy);
+    let r = Resolver::new(config).await.unwrap();
+    let ans = ask_type(&r, "x.wild.secure.test.", RecordType::A, DO).await;
+    assert_bogus(&ans, 6);
+}
+
+#[tokio::test]
+async fn denial_dropping_any_single_proof_record_is_bogus() {
+    // Every record of an NXDOMAIN proof is needed (closest encloser, next
+    // closer, wildcard): dropping any one of them must not validate.
+    for (variant, zone) in [
+        (ChildVariant::Secure, "secure.test."),
+        (ChildVariant::Nsec3, "nsec3.test."),
+    ] {
+        let qname = format!("nope.{zone}");
+        let h = Hierarchy::start_signed(&[variant]).await.unwrap();
+        let upstream = h.server(zone).unwrap().addr();
+        let genuine = raw_query(upstream, &qname, RecordType::A).await;
+        let mut owners: Vec<Name> = genuine
+            .authorities
+            .iter()
+            .filter(|r| matches!(r.rtype, RecordType::NSEC | RecordType::NSEC3))
+            .map(|r| r.name.clone())
+            .collect();
+        owners.dedup();
+        assert!(!owners.is_empty());
+        for victim in owners {
+            let proxy = forge_proxy(
+                upstream,
+                Arc::new(move |_, t, m: &mut Message| {
+                    if t == RecordType::A {
+                        m.authorities
+                            .retain(|r| !(r.name == victim && is_denial(r)));
+                    }
+                }),
+            )
+            .await;
+            let mut config = status_config(&h);
+            config
+                .nameserver_addr_overrides
+                .insert(name(&format!("ns1.{zone}")), proxy);
+            let r = Resolver::new(config).await.unwrap();
+            let ans = ask_type(&r, &qname, RecordType::A, DO).await;
+            assert_eq!(ans.dnssec, DnssecStatus::Bogus, "{zone}: {:?}", ans.ede);
+        }
+    }
+}
+
+async fn raw_query(server: SocketAddr, qname: &str, qtype: RecordType) -> Message {
+    let mut q = Message::query(9, name(qname), qtype);
+    q.header.rd = false;
+    let mut edns = Edns::new(4096);
+    edns.dnssec_ok = true;
+    q.edns = Some(edns);
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    socket.send_to(&q.encode().unwrap(), server).await.unwrap();
+    let mut buf = vec![0u8; 8192];
+    let (len, _) = timeout(Duration::from_secs(2), socket.recv_from(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    Message::decode(&buf[..len]).unwrap()
+}
+
+#[tokio::test]
+async fn denial_valid_but_irrelevant_proof_is_bogus() {
+    // Swap the proof of `nope` for the (validly signed) records that prove
+    // something about `www`: it does not prove that `nope` is absent.
+    for (variant, zone) in [
+        (ChildVariant::Secure, "secure.test."),
+        (ChildVariant::Nsec3, "nsec3.test."),
+    ] {
+        let h = Hierarchy::start_signed(&[variant]).await.unwrap();
+        let upstream = h.server(zone).unwrap().addr();
+        let other = raw_query(upstream, &format!("www.{zone}"), RecordType::AAAA).await;
+        let other_proof: Vec<Record> = other
+            .authorities
+            .iter()
+            .filter(|r| is_denial(r))
+            .cloned()
+            .collect();
+        assert!(!other_proof.is_empty());
+        let proxy = forge_proxy(
+            upstream,
+            Arc::new(move |_, t, m: &mut Message| {
+                if t == RecordType::A {
+                    m.authorities.retain(|r| !is_denial(r));
+                    m.authorities.extend(other_proof.clone());
+                }
+            }),
+        )
+        .await;
+        let mut config = status_config(&h);
+        config
+            .nameserver_addr_overrides
+            .insert(name(&format!("ns1.{zone}")), proxy);
+        let r = Resolver::new(config).await.unwrap();
+        let ans = ask_type(&r, &format!("nope.{zone}"), RecordType::A, DO).await;
+        assert_bogus(&ans, 6);
+    }
+}
+
+#[tokio::test]
+async fn denial_nxdomain_rewritten_to_noerror_is_bogus() {
+    // An attacker turns the NXDOMAIN into NODATA: the NXDOMAIN proof does not
+    // show that the name exists.
+    for (variant, zone) in [
+        (ChildVariant::Secure, "secure.test."),
+        (ChildVariant::Nsec3, "nsec3.test."),
+    ] {
+        let ans = forged(variant, &format!("nope.{zone}"), RecordType::A, |_| {
+            Arc::new(|_, t, m: &mut Message| {
+                if t == RecordType::A {
+                    m.set_rcode(dnscraft_proto::Rcode::NOERROR).unwrap();
+                }
+            })
+        })
+        .await;
+        assert_bogus(&ans, 6);
+    }
+}
+
+#[tokio::test]
+async fn denial_nodata_rewritten_to_nxdomain_is_bogus() {
+    for (variant, zone) in [
+        (ChildVariant::Secure, "secure.test."),
+        (ChildVariant::Nsec3, "nsec3.test."),
+    ] {
+        let ans = forged(variant, &format!("www.{zone}"), RecordType::AAAA, |_| {
+            Arc::new(|_, t, m: &mut Message| {
+                if t == RecordType::AAAA {
+                    m.set_rcode(dnscraft_proto::Rcode::NXDOMAIN).unwrap();
+                }
+            })
+        })
+        .await;
+        assert_bogus(&ans, 6);
+    }
+}
+
+#[tokio::test]
+async fn denial_positive_answer_turned_into_nodata_is_bogus() {
+    // The A answer of www is removed and the NODATA proof of AAAA is attached.
+    let h = Hierarchy::start_signed(&[ChildVariant::Secure])
+        .await
+        .unwrap();
+    let upstream = h.server("secure.test.").unwrap().addr();
+    let proof = raw_query(upstream, "www.secure.test.", RecordType::AAAA)
+        .await
+        .authorities;
+    let proxy = forge_proxy(
+        upstream,
+        Arc::new(move |_, t, m: &mut Message| {
+            if t == RecordType::A {
+                m.answers.clear();
+                m.authorities = proof.clone();
+            }
+        }),
+    )
+    .await;
+    let mut config = status_config(&h);
+    config
+        .nameserver_addr_overrides
+        .insert(name("ns1.secure.test."), proxy);
+    let r = Resolver::new(config).await.unwrap();
+    let ans = ask_type(&r, "www.secure.test.", RecordType::A, DO).await;
+    // The NSEC at www lists A: the NODATA claim for A is contradicted.
+    assert_bogus(&ans, 6);
+}
+
+// ---------------------------------------------------------------------------
+// Negative trust anchors (Task 10)
+// ---------------------------------------------------------------------------
+
+async fn nta_resolver(h: &Hierarchy, ntas: &[&str]) -> Resolver {
+    let mut config = status_config(h);
+    config.negative_trust_anchors = ntas.iter().map(|n| name(n)).collect();
+    Resolver::new(config).await.unwrap()
+}
+
+#[tokio::test]
+async fn nta_makes_bogus_zone_insecure() {
+    let h = Hierarchy::start_signed(&[
+        ChildVariant::BogusSig,
+        ChildVariant::BogusNoKey,
+        ChildVariant::BogusExpired,
+        ChildVariant::Secure,
+    ])
+    .await
+    .unwrap();
+    // Without the NTA the zones are bogus.
+    let plain = status_resolver(&h).await;
+    let ans = status_ask(&plain, "www.bogus-sig.test.", DO).await;
+    assert_eq!(ans.dnssec, DnssecStatus::Bogus);
+
+    let r = nta_resolver(
+        &h,
+        &[
+            "bogus-sig.test.",
+            "bogus-nokey.test.",
+            "bogus-expired.test.",
+        ],
+    )
+    .await;
+    for qname in [
+        "www.bogus-sig.test.",
+        "www.bogus-nokey.test.",
+        "www.bogus-expired.test.",
+    ] {
+        let ans = status_ask(&r, qname, DO).await;
+        assert_eq!(ans.dnssec, DnssecStatus::Insecure, "{qname}");
+        assert!(!ans.message.header.ad);
+        assert_eq!(ans.message.rcode(), dnscraft_proto::Rcode::NOERROR);
+        assert_eq!(count_type(&ans, RecordType::A), 1, "{qname}");
+        assert!(ans.ede.is_none());
+    }
+    // A denial below the NTA is insecure too.
+    let ans = ask_type(&r, "nope.bogus-sig.test.", RecordType::A, DO).await;
+    assert_eq!(ans.dnssec, DnssecStatus::Insecure);
+    assert_eq!(ans.message.rcode(), dnscraft_proto::Rcode::NXDOMAIN);
+    // The sibling outside the NTA still validates.
+    let ans = status_ask(&r, "www.secure.test.", DO).await;
+    assert_secure(&ans, dnscraft_proto::Rcode::NOERROR);
+    let ans = ask_type(&r, "nope.secure.test.", RecordType::A, DO).await;
+    assert_secure(&ans, dnscraft_proto::Rcode::NXDOMAIN);
+}
+
+#[tokio::test]
+async fn nta_on_parent_covers_children() {
+    let h = Hierarchy::start_signed(&[ChildVariant::BogusSig, ChildVariant::Secure])
+        .await
+        .unwrap();
+    let r = nta_resolver(&h, &["test."]).await;
+    for qname in ["www.bogus-sig.test.", "www.secure.test."] {
+        let ans = status_ask(&r, qname, DO).await;
+        assert_eq!(ans.dnssec, DnssecStatus::Insecure, "{qname}");
+        assert!(!ans.message.header.ad);
+        assert_eq!(count_type(&ans, RecordType::A), 1);
+    }
+}
+
+#[tokio::test]
+async fn nta_does_not_cover_its_parent_or_siblings() {
+    let h = Hierarchy::start_signed(&[ChildVariant::BogusSig, ChildVariant::Secure])
+        .await
+        .unwrap();
+    let r = nta_resolver(&h, &["www.bogus-sig.test."]).await;
+    // BogusSig only corrupts www's A; ns1 stays Secure. The NTA covers only www.
+    let ans = ask_type(&r, "ns1.bogus-sig.test.", RecordType::A, DO).await;
+    assert_eq!(ans.dnssec, DnssecStatus::Secure);
+    let ans = status_ask(&r, "www.bogus-sig.test.", DO).await;
+    assert_eq!(ans.dnssec, DnssecStatus::Insecure);
+    let ans = status_ask(&r, "www.secure.test.", DO).await;
+    assert_secure(&ans, dnscraft_proto::Rcode::NOERROR);
 }
 
 // ---------------------------------------------------------------------------

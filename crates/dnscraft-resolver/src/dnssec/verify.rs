@@ -163,7 +163,10 @@ pub fn wildcard_source(owner: &Name, labels: u8) -> Option<Name> {
     }
     let mut wire = vec![1, b'*'];
     wire.extend_from_slice(base.as_wire());
-    Name::decode(&wire, 0).ok().map(|(n, _)| n)
+    let source = Name::decode(&wire, 0).ok().map(|(n, _)| n)?;
+    // The labels field does not count a leading `*` (RFC 4034 section 3.1.3):
+    // a record owned by the wildcard itself is no expansion.
+    (source != *owner).then_some(source)
 }
 
 /// Verifies `rrsig` over `rrset` with `dnskey` at time `now`.
@@ -389,6 +392,8 @@ mod tests {
             Some(n("*.wild.secure.test."))
         );
         assert_eq!(wildcard_source(&n("www.secure.test."), 3), None);
+        // The wildcard itself (labels excludes the "*"): not an expansion.
+        assert_eq!(wildcard_source(&n("*.wild.secure.test."), 3), None);
         assert_eq!(wildcard_source(&n("a.test."), 0), Some(n("*.")));
     }
 

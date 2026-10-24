@@ -11,6 +11,8 @@ use std::sync::{Arc, PoisonError};
 
 use dnscraft_proto::{Message, Name, RData, Rcode, Record, RecordType};
 
+use super::denial::{Denial, prove_nodata, prove_nxdomain, prove_wildcard_answer};
+
 use super::status::{BogusReason, Status, Trust, check_no_ds, child_trust, rrsets};
 use super::{
     DelegationTrust, DsStatus, KeysOutcome, ValidatedKeys, VerifyFailure, ds_status,
@@ -328,7 +330,12 @@ pub(crate) async fn descend(
 }
 
 enum SetOutcome {
-    Valid { wildcard: bool },
+    Valid {
+        /// The wildcard owner of an expanded RRset.
+        wildcard: Option<Name>,
+        /// The zone that signed the RRset.
+        signer: Name,
+    },
     Insecure,
     Bogus(BogusReason),
 }
@@ -369,20 +376,56 @@ async fn validate_set(
     Ok(
         match validate_rrset(set, sigs, &keys, ctx.config.clock.now()) {
             Ok(v) => SetOutcome::Valid {
-                wildcard: v.wildcard.is_some(),
+                wildcard: v.wildcard,
+                signer: v.signer,
             },
             Err(e) => SetOutcome::Bogus(BogusReason::Verify(e)),
         },
     )
 }
 
+/// The best denial result over the proof records grouped by signer: every
+/// signer zone gets its own proof attempt, since the records of a proof must
+/// all come from the zone whose denial is shown.
+fn prove_by_signer(
+    proofs: &[(Name, Record)],
+    only: Option<&Name>,
+    prove: impl Fn(&Name, &[Record]) -> Denial,
+) -> Denial {
+    let mut signers: Vec<&Name> = Vec::new();
+    for (s, _) in proofs {
+        if only.is_none_or(|o| o == s) && !signers.contains(&s) {
+            signers.push(s);
+        }
+    }
+    let mut result: Option<Denial> = None;
+    for signer in signers {
+        let records: Vec<Record> = proofs
+            .iter()
+            .filter(|(s, _)| s == signer)
+            .map(|(_, r)| r.clone())
+            .collect();
+        let d = prove(signer, &records);
+        result = Some(result.map_or(d, |p| p.better(d)));
+    }
+    result.unwrap_or(Denial::Bogus(BogusReason::NoDenialProof))
+}
+
 /// Validation result of the final response of `zone` (whose trust is `trust`,
-/// already settled), answered by `server`.
+/// already settled) to `qname`/`qtype`, answered by `server`.
+///
+/// Positive RRsets must validate; wildcard expansions need a proof that
+/// `qname` does not exist; an answer without data (NXDOMAIN or NODATA) needs
+/// a complete NSEC/NSEC3 proof. A CNAME chain that leaves the response is
+/// judged link by link: the resolver asks again for the target, and the
+/// denial for it is checked in that response.
 pub(crate) async fn assess_final(
     ctx: &Context<'_>,
     zone: &Name,
     trust: &Trust,
     message: &Message,
+    qname: &Name,
+    qtype: RecordType,
     server: SocketAddr,
 ) -> Result<Status, ResolveError> {
     let zkeys = match trust {
@@ -402,23 +445,26 @@ pub(crate) async fn assess_final(
     let synthesized = |r: &Record| {
         r.rtype == RecordType::CNAME && dnames.iter().any(|d| **d != r.name && d.zone_of(&r.name))
     };
-    let mut positive = false;
-    let mut wildcard = false;
-    let mut insecure = false;
+    let mut status = Status::Secure;
+    let mut proved = false;
+    let mut expansions: Vec<(Name, Name, Name)> = Vec::new();
     for set in rrsets(&message.answers, zone, |r| !synthesized(r)) {
         let owned: Vec<Record> = set.into_iter().cloned().collect();
         match validate_set(ctx, zone, zkeys, &owned, &message.answers, server).await? {
-            SetOutcome::Valid { wildcard: w } => {
-                positive = true;
-                // TODO(Task 10): prove that no closer name exists.
-                wildcard |= w;
+            SetOutcome::Valid { wildcard, signer } => {
+                proved = true;
+                if let (Some(source), Some(first)) = (wildcard, owned.first()) {
+                    expansions.push((first.name.clone(), source, signer));
+                }
             }
-            SetOutcome::Insecure => insecure = true,
+            SetOutcome::Insecure => status = status.combine(Status::Insecure),
             SetOutcome::Bogus(r) => return Ok(Status::Bogus(r)),
         }
     }
-    // SOA/NSEC/NSEC3 of negative answers (and wildcard proofs) must at least
-    // carry valid signatures.
+    // SOA/NSEC/NSEC3 of negative answers (and wildcard proofs) must carry
+    // valid signatures; the NSEC/NSEC3 records that do feed the proofs,
+    // together with their signer.
+    let mut proofs: Vec<(Name, Record)> = Vec::new();
     for set in rrsets(&message.authorities, zone, |r| {
         matches!(
             r.rtype,
@@ -427,18 +473,75 @@ pub(crate) async fn assess_final(
     }) {
         let owned: Vec<Record> = set.into_iter().cloned().collect();
         match validate_set(ctx, zone, zkeys, &owned, &message.authorities, server).await? {
+            // An expanded NSEC/NSEC3 is a replay, not a proof.
+            SetOutcome::Valid {
+                wildcard: None,
+                signer,
+            } => {
+                proofs.extend(
+                    owned
+                        .into_iter()
+                        .filter(|r| r.rtype != RecordType::SOA)
+                        .map(|r| (signer.clone(), r)),
+                );
+            }
             SetOutcome::Valid { .. } => {}
-            SetOutcome::Insecure => insecure = true,
+            SetOutcome::Insecure => status = status.combine(Status::Insecure),
             SetOutcome::Bogus(r) => return Ok(Status::Bogus(r)),
         }
     }
-    // TODO(Task 10): negative answers (NXDOMAIN/NODATA) and wildcard
-    // expansions stay Indeterminate until the denial proof is checked.
-    Ok(if insecure {
-        Status::Insecure
-    } else if positive && !wildcard {
-        Status::Secure
-    } else {
-        Status::Indeterminate
-    })
+    let note = |d: Denial, status: Status| match d {
+        Denial::Secure => Ok(status),
+        Denial::Insecure(why) => Ok(status.combine(Status::from_insecure(why))),
+        Denial::Bogus(r) => Err(r),
+    };
+    for (owner, source, signer) in &expansions {
+        let d = prove_by_signer(&proofs, Some(signer), |z, recs| {
+            prove_wildcard_answer(z, owner, source, recs)
+        });
+        match note(d, status) {
+            Ok(s) => status = s,
+            Err(r) => return Ok(Status::Bogus(r)),
+        }
+    }
+    // Is a denial for `qname` claimed? Not when the response has data for it
+    // or a link (CNAME, or a DNAME above) that the resolver follows.
+    let in_zone = |r: &Record| zone.zone_of(&r.name);
+    let answered = message.answers.iter().filter(|r| in_zone(r)).any(|r| {
+        let direct = r.name == *qname
+            && r.rtype != RecordType::RRSIG
+            && (qtype == RecordType::ANY || r.rtype == qtype || r.rtype == RecordType::CNAME);
+        let dname = r.rtype == RecordType::DNAME && r.name != *qname && r.name.zone_of(qname);
+        direct || dname
+    });
+    if !answered {
+        let claim = match message.rcode() {
+            Rcode::NXDOMAIN => Some(prove_by_signer(&proofs, None, |z, recs| {
+                if z.zone_of(qname) {
+                    prove_nxdomain(z, qname, recs)
+                } else {
+                    Denial::Bogus(BogusReason::BadDenialProof)
+                }
+            })),
+            Rcode::NOERROR => Some(prove_by_signer(&proofs, None, |z, recs| {
+                if z.zone_of(qname) {
+                    prove_nodata(z, qname, qtype, recs)
+                } else {
+                    Denial::Bogus(BogusReason::BadDenialProof)
+                }
+            })),
+            _ => None,
+        };
+        if let Some(d) = claim {
+            proved = true;
+            match note(d, status) {
+                Ok(s) => status = s,
+                Err(r) => return Ok(Status::Bogus(r)),
+            }
+        }
+    }
+    if !proved {
+        status = status.combine(Status::Indeterminate);
+    }
+    Ok(status)
 }
