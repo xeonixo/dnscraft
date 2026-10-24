@@ -82,6 +82,54 @@ pub enum ProtoError {
         /// The offending key.
         key: u16,
     },
+    /// Section counts announce more records than the remaining data can hold.
+    #[error("section counts need at least {needed} octets but only {available} remain")]
+    CountsExceedData {
+        /// Minimum number of octets the announced entries would occupy.
+        needed: usize,
+        /// Octets available after the header.
+        available: usize,
+    },
+    /// More than one OPT pseudo-record in the additional section.
+    #[error("duplicate OPT record")]
+    DuplicateOpt,
+    /// An OPT pseudo-record outside the additional section.
+    #[error("OPT record in the {section} section")]
+    MisplacedOpt {
+        /// Name of the section (`answer` or `authority`).
+        section: &'static str,
+    },
+    /// The owner name of an OPT pseudo-record is not the root.
+    #[error("OPT record owner name is not the root")]
+    OptOwnerNotRoot,
+    /// Octets remain after the last announced record.
+    #[error("{len} trailing octets after the message at offset {offset}")]
+    TrailingData {
+        /// Offset of the first unread octet.
+        offset: usize,
+        /// Number of unread octets.
+        len: usize,
+    },
+    /// An EDNS option or OPT record violates its rules.
+    #[error("invalid EDNS data: {reason}")]
+    InvalidEdns {
+        /// Short static description of the violated rule.
+        reason: &'static str,
+    },
+    /// A message value violates the wire format limits.
+    #[error("invalid message: {reason}")]
+    InvalidMessage {
+        /// Short static description of the violated rule.
+        reason: &'static str,
+    },
+    /// The size limit cannot hold even the header, question and OPT record.
+    #[error("limit of {limit} octets is below the {needed} octet minimum message")]
+    LimitTooSmall {
+        /// Requested limit.
+        limit: usize,
+        /// Size of the header, questions and OPT record.
+        needed: usize,
+    },
 }
 
 impl ProtoError {
@@ -101,6 +149,14 @@ impl ProtoError {
             Self::RdataLengthMismatch { .. } => "proto.rdata_length_mismatch",
             Self::InvalidRdata { .. } => "proto.invalid_rdata",
             Self::SvcbKeyOrder { .. } => "proto.svcb_key_order",
+            Self::CountsExceedData { .. } => "proto.counts_exceed_data",
+            Self::DuplicateOpt => "proto.duplicate_opt",
+            Self::MisplacedOpt { .. } => "proto.misplaced_opt",
+            Self::OptOwnerNotRoot => "proto.opt_owner_not_root",
+            Self::TrailingData { .. } => "proto.trailing_data",
+            Self::InvalidEdns { .. } => "proto.invalid_edns",
+            Self::InvalidMessage { .. } => "proto.invalid_message",
+            Self::LimitTooSmall { .. } => "proto.limit_too_small",
         }
     }
 }

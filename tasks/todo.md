@@ -129,13 +129,13 @@ encoder with name compression and a size limit that truncates cleanly (TC bit, w
 dropped), and a decoder with section count sanity checks.
 
 **Acceptance criteria:**
-- [ ] Every response the testkit sends (hickory-encoded) decodes and re-encodes to an equivalent message
-- [ ] Encoding with a 512/1232-byte limit sets TC and never splits an RRset
-- [ ] Malformed inputs (counts larger than data, trailing garbage, duplicate OPT) yield typed errors
+- [x] Every response the testkit sends (hickory-encoded) decodes and re-encodes to an equivalent message
+- [x] Encoding with a 512/1232-byte limit sets TC and never splits an RRset
+- [x] Malformed inputs (counts larger than data, trailing garbage, duplicate OPT) yield typed errors
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-proto -- message edns`
-- [ ] `cargo test -p dnscraft-testkit` still green with the oracle check enabled
+- [x] `cargo test -p dnscraft-proto -- message edns`
+- [x] `cargo test -p dnscraft-testkit` still green with the oracle check enabled
 
 **Dependencies:** W2, Task 3
 

@@ -93,6 +93,7 @@ version = "0.1.0"
 name = "dnscraft-testkit"
 version = "0.1.0"
 dependencies = [
+ "dnscraft-proto",
  "hickory-proto",
  "thiserror",
  "tokio",

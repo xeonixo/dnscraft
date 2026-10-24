@@ -15,3 +15,6 @@ tokio = { workspace = true }
 hickory-proto = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+dnscraft-proto = { path = "../dnscraft-proto" }

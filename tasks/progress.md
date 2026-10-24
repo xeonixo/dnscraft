@@ -11,10 +11,12 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Phase: 1 (Foundation)
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
-- In progress: Task W3 — Messages and EDNS (Sonnet agent)
+- In progress: Task W4 (DNSSEC records) and Task W5 (fuzzing) in parallel (Sonnet agents)
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Task W3 done (Sonnet agent, reviewed): Header/Rcode, EDNS (ECS, EDE, padding, cookie), Message decode with count sanity check, OPT interception, trailing-data check; encode_with_limit drops whole RRsets (TC only for answer/authority). Testkit now decodes every response with dnscraft-proto (oracle). 71 unit + 7 oracle + 4 testkit-oracle tests.
 
 - 2026-10-24 — Task W2 done (Sonnet agent, reviewed): RecordType/Class, Record, RData for 12 types + Unknown; RDATA parsed against an RDLENGTH-bounded slice; encode returns Result and rolls back on error; 38 new unit + 6 oracle tests. Follow-up: `Record` does not enforce rtype == rdata variant.
 
