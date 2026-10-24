@@ -14,7 +14,7 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
 - Real-internet resolution works (example.com 4 queries / ~90 ms incl. priming; www.microsoft.com 13 with minimisation).
 - Checkpoint B passed (owner approved 2026-10-24).
-- Next: Task 10 (authenticated denial, NTAs). Dev Do53 server deferred by owner (continue the plan first).
+- In progress: Task 10 (authenticated denial, NTAs; Sonnet agent). Dev Do53 server deferred by owner (continue the plan first).
 - Blockers: none
 
 ## Log
