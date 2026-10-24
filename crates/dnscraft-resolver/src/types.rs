@@ -91,16 +91,6 @@ pub enum FlushScope {
     Domain(Name),
 }
 
-/// Resolver counters (extended in Task 16).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct ResolverStats {
-    /// Questions passed to `resolve`.
-    pub resolutions: u64,
-    /// Queries sent to authoritative servers.
-    pub outgoing_queries: u64,
-}
-
 /// Outcome of root priming (RFC 8109).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PrimingStatus {

@@ -23,7 +23,7 @@ DNScraft is built.
 | Cache, prefetch, serve-stale | done |
 | In-flight query coalescing | done |
 | Local private reverse zones (RFC 6303) | done |
-| Forward zones | in progress |
+| Forward zones | done |
 | Persistent cache across restarts | out of scope (by design) |
 
 ## Quick try
@@ -93,7 +93,8 @@ use dnscraft_resolver::FlushScope;
 
 resolver.flush(FlushScope::All);
 resolver.flush(FlushScope::Domain(name)); // name and everything below it
-let _ = resolver.stats(); // resolutions + outgoing queries so far
+let s = resolver.stats();
+// s.cache_hits, s.dnssec_secure, s.resolve_latency_ns, …
 ```
 
 ## Behaviour in short
@@ -114,7 +115,7 @@ unreachable. Memory only — cold start after every process restart.
 
 **Local zones.** RFC 6303 private reverse zones are answered locally so those
 PTRs never hit the public internet. A configured forward zone that covers the
-same name opts out of the local answer (full forwarding lands with Task 14).
+same name opts out of the local answer; a covering forward zone wins.
 
 **Not in this crate.** Filters, split-horizon, ACLs, listeners (Do53/DoT/DoH/DoQ),
 client query logs, or which profile may use which forward zone — that belongs
@@ -144,9 +145,23 @@ this crate still takes a Rust `ResolverConfig` directly.
 ## Errors
 
 Construction failures (`ResolverError`) and resolution failures (`ResolveError`)
-expose a stable `code()` string (e.g. `resolver.unreachable`,
-`resolver.query_budget`) for APIs and i18n. Human-readable text on the error is
-for logs, not for end users.
+expose a stable `code()` string for APIs and i18n. Human-readable text on the
+error is for logs, not for end users.
+
+| Error | Code |
+|-------|------|
+| `ResolverError::NoRootHints` | `resolver.no_root_hints` |
+| `ResolverError::InvalidConfig` | `resolver.invalid_config` |
+| `ResolveError::Unreachable` | `resolver.unreachable` |
+| `ResolveError::QueryBudgetExceeded` | `resolver.query_budget` |
+| `ResolveError::ReferralDepthExceeded` | `resolver.referral_depth` |
+| `ResolveError::CnameLimitExceeded` | `resolver.cname_limit` |
+| `ResolveError::CnameLoop` | `resolver.cname_limit` |
+| `ResolveError::ForwardLoop` | `resolver.forward_loop` |
+| `ResolveError::Encode` | `resolver.encode` |
+
+DNSSEC failures are not `ResolveError`s: they return an `Answer` with
+`dnssec: Bogus`, `SERVFAIL`, and an Extended DNS Error.
 
 ## Design choice
 
@@ -158,8 +173,9 @@ from `ring`. See [ADR-0001](../../docs/adr/0001-recursion-engine.md).
 ```bash
 cargo test -p dnscraft-resolver
 cargo test -p dnscraft-testkit   # signed fake hierarchy used by resolver tests
+cargo bench -p dnscraft-resolver --bench cache
 ```
 
 Integration tests drive a local authoritative hierarchy from `dnscraft-testkit`
 (no internet required). The `query` example is the manual acceptance check
-against the real root.
+against the real root. The cache-hit benchmark targets p50 under 1 ms.

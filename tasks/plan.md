@@ -108,10 +108,11 @@ workspace (1) ── testkit hierarchy (3)
 ### Phase 5: Edges and completion
 - [x] Task 14: Forward zones
 - [x] Task 15: Locally served private reverse zones and ECS stripping
-- [ ] Task 16: Stats, error codes, benchmark, example binary, acceptance
+- [x] Task 16: Stats, error codes, benchmark, example binary, acceptance
 
 ### Checkpoint E: Complete
-- [ ] All 8 success criteria met, coverage ≥ 80 %, ready for review
+- [x] All 8 success criteria met, coverage ≥ 80 % (92.78 %; cache-hit p50 ≈ 214 ns)
+- [ ] Ready for review (`/review`) — owner
 
 ## Parallelization
 

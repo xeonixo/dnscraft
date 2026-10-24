@@ -466,13 +466,13 @@ forward zone covers them; ECS never sent and stripped from incoming queries.
 error, `criterion` benchmark for cache lookup, `examples/query.rs`, coverage run.
 
 **Acceptance criteria:**
-- [ ] Cache-hit p50 < 1 ms in benchmark; all error variants have unique, documented codes
-- [ ] `cargo run -p dnscraft-resolver --example query -- example.com A` prints answer + DNSSEC status
-- [ ] Line coverage ≥ 80 % (`cargo llvm-cov -p dnscraft-resolver`)
+- [x] Cache-hit p50 < 1 ms in benchmark; all error variants have unique, documented codes
+- [x] `cargo run -p dnscraft-resolver --example query -- example.com A` prints answer + DNSSEC status
+- [x] Line coverage ≥ 80 % (`cargo llvm-cov -p dnscraft-resolver`)
 
 **Verification:**
-- [ ] `cargo bench -p dnscraft-resolver`, `cargo llvm-cov -p dnscraft-resolver`
-- [ ] Manual: all 8 success criteria in SPEC-resolver.md ticked
+- [x] `cargo bench -p dnscraft-resolver`, `cargo llvm-cov -p dnscraft-resolver`
+- [x] Manual: all 8 success criteria in SPEC-resolver.md ticked
 
 **Dependencies:** Tasks 4–15
 
@@ -481,5 +481,5 @@ error, `criterion` benchmark for cache lookup, `examples/query.rs`, coverage run
 **Estimated scope:** M
 
 ## Checkpoint E: Complete
-- [ ] All success criteria met, coverage ≥ 80 %
-- [ ] Ready for review (`/review`)
+- [x] All success criteria met, coverage ≥ 80 % (92.78 % lines; cache-hit p50 ≈ 214 ns)
+- [ ] Ready for review (`/review`) — owner

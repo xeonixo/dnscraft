@@ -8,7 +8,7 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
 ## Current state
 
-- Phase: 5 (edges) — Task 16 in progress (stats, error codes, bench, acceptance). Task 14/15 done.
+- Phase: 5 done — Task 16 complete. Checkpoint E: criteria met (coverage 92.78 %); awaiting owner `/review`.
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
@@ -20,6 +20,8 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Task 16 done: `ResolverStats` (cache hits, stale, DNSSEC outcomes, latency sums); error codes documented (CnameLoop/Limit share `resolver.cname_limit` by design); criterion `cache_hit` p50 ≈ 214 ns; example already live-verified (example.com Secure, dnssec-failed.org SERVFAIL/Bogus); llvm-cov 92.78 % lines. Workspace DoD green.
 
 - 2026-10-24 — Task 16 started.
 

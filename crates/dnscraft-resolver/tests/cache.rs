@@ -135,6 +135,7 @@ async fn second_identical_query_hits_the_cache_without_upstream_traffic() {
     );
 
     clear(&h, ZONES);
+    let before = r.stats();
     let second = resolve(
         &r,
         "www.example.test.",
@@ -144,6 +145,19 @@ async fn second_identical_query_hits_the_cache_without_upstream_traffic() {
     .await;
     assert_eq!(second.source, AnswerSource::Cache);
     assert_eq!(second.dnssec, first.dnssec);
+    let after = r.stats();
+    assert_eq!(after.cache_hits, before.cache_hits + 1);
+    assert_eq!(after.resolutions, before.resolutions + 1);
+    assert!(after.cache_hit_latency_ns > before.cache_hit_latency_ns);
+    assert!(after.resolve_latency_ns > before.resolve_latency_ns);
+    match second.dnssec {
+        DnssecStatus::Secure => assert_eq!(after.dnssec_secure, before.dnssec_secure + 1),
+        DnssecStatus::Insecure => assert_eq!(after.dnssec_insecure, before.dnssec_insecure + 1),
+        DnssecStatus::Bogus => assert_eq!(after.dnssec_bogus, before.dnssec_bogus + 1),
+        DnssecStatus::Indeterminate => {
+            assert_eq!(after.dnssec_indeterminate, before.dnssec_indeterminate + 1);
+        }
+    }
     assert_eq!(
         second.message.answers[0].rdata,
         first.message.answers[0].rdata

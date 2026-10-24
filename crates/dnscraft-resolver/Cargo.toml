@@ -22,3 +22,8 @@ tracing = { workspace = true }
 dnscraft-testkit = { path = "../dnscraft-testkit" }
 hickory-proto = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+criterion = { workspace = true }
+
+[[bench]]
+name = "cache"
+harness = false

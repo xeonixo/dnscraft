@@ -1,4 +1,32 @@
 //! Error types with stable, locale-neutral codes.
+//!
+//! Every variant exposes a `code()` string for APIs and i18n. Human-readable
+//! text on the error is for logs, not for end users.
+//!
+//! ## `ResolverError` codes
+//!
+//! | Variant | Code |
+//! |---|---|
+//! | [`ResolverError::NoRootHints`] | `resolver.no_root_hints` |
+//! | [`ResolverError::InvalidConfig`] | `resolver.invalid_config` |
+//!
+//! ## `ResolveError` codes
+//!
+//! | Variant | Code |
+//! |---|---|
+//! | [`ResolveError::Unreachable`] | `resolver.unreachable` |
+//! | [`ResolveError::QueryBudgetExceeded`] | `resolver.query_budget` |
+//! | [`ResolveError::ReferralDepthExceeded`] | `resolver.referral_depth` |
+//! | [`ResolveError::CnameLimitExceeded`] | `resolver.cname_limit` |
+//! | [`ResolveError::CnameLoop`] | `resolver.cname_limit` |
+//! | [`ResolveError::ForwardLoop`] | `resolver.forward_loop` |
+//! | [`ResolveError::Encode`] | `resolver.encode` |
+//!
+//! `CnameLimitExceeded` and `CnameLoop` share `resolver.cname_limit` by design
+//! (Task 5): both are CNAME-chain failures that surface as SERVFAIL to the
+//! client. DNSSEC validation failures are not `ResolveError`s; they are
+//! returned as [`Answer`](crate::Answer) with `DnssecStatus::Bogus`, SERVFAIL,
+//! and an EDE whose text comes from the DNSSEC module's own `code()`.
 
 use dnscraft_proto::{Name, ProtoError};
 
@@ -101,11 +129,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codes_are_stable() {
+    fn every_resolver_error_has_a_documented_code() {
         assert_eq!(ResolverError::NoRootHints.code(), "resolver.no_root_hints");
-        let e = ResolveError::Unreachable { zone: Name::root() };
-        assert_eq!(e.code(), "resolver.unreachable");
-        let looped = ResolveError::ForwardLoop { zone: Name::root() };
-        assert_eq!(looped.code(), "resolver.forward_loop");
+        assert_eq!(
+            ResolverError::InvalidConfig {
+                reason: "query_timeout must be greater than zero"
+            }
+            .code(),
+            "resolver.invalid_config"
+        );
+    }
+
+    #[test]
+    fn every_resolve_error_has_a_documented_code() {
+        let root = Name::root();
+        let cases: &[(&str, ResolveError)] = &[
+            (
+                "resolver.unreachable",
+                ResolveError::Unreachable { zone: root.clone() },
+            ),
+            (
+                "resolver.query_budget",
+                ResolveError::QueryBudgetExceeded {
+                    name: root.clone(),
+                    limit: 64,
+                },
+            ),
+            (
+                "resolver.referral_depth",
+                ResolveError::ReferralDepthExceeded {
+                    name: root.clone(),
+                    limit: 8,
+                },
+            ),
+            (
+                "resolver.cname_limit",
+                ResolveError::CnameLimitExceeded {
+                    name: root.clone(),
+                    limit: 16,
+                },
+            ),
+            (
+                "resolver.cname_limit",
+                ResolveError::CnameLoop { name: root.clone() },
+            ),
+            (
+                "resolver.forward_loop",
+                ResolveError::ForwardLoop { zone: root },
+            ),
+        ];
+        for (code, err) in cases {
+            assert_eq!(err.code(), *code, "{err}");
+        }
+        // Encode wraps a ProtoError; any construction that yields Encode works.
+        let encode = ResolveError::Encode(ProtoError::EmptyLabel);
+        assert_eq!(encode.code(), "resolver.encode");
+    }
+
+    #[test]
+    fn resolve_error_codes_are_unique_except_cname_pair() {
+        let codes = [
+            "resolver.unreachable",
+            "resolver.query_budget",
+            "resolver.referral_depth",
+            "resolver.cname_limit",
+            "resolver.forward_loop",
+            "resolver.encode",
+        ];
+        let mut sorted = codes.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), codes.len());
     }
 }

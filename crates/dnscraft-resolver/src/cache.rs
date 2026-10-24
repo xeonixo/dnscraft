@@ -115,7 +115,8 @@ pub(crate) struct FreshStats {
 
 /// Inclusive TTL clamp, in seconds, applied when an answer is stored.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct TtlClamp {
+#[doc(hidden)]
+pub struct TtlClamp {
     /// Lowest stored TTL. Shorter values are raised to this.
     pub min: u32,
     /// Highest stored TTL. Longer values are lowered to this.
@@ -125,12 +126,14 @@ pub(crate) struct TtlClamp {
 /// In-memory answer cache. Shared by concurrent lookups; the lock is not
 /// held across recursion.
 #[derive(Debug)]
-pub(crate) struct Cache {
+#[doc(hidden)]
+pub struct Cache {
     inner: Mutex<Inner>,
 }
 
 impl Cache {
-    pub(crate) fn new(budget: usize) -> Self {
+    #[doc(hidden)]
+    pub fn new(budget: usize) -> Self {
         Self {
             inner: Mutex::new(Inner {
                 map: HashMap::new(),
@@ -143,7 +146,8 @@ impl Cache {
 
     /// Fresh hit, with record TTLs rewritten to the remaining lifetime.
     /// `None` when the question is absent or expired.
-    pub(crate) fn lookup(&self, query: &Query, now: Instant) -> Option<Answer> {
+    #[doc(hidden)]
+    pub fn lookup(&self, query: &Query, now: Instant) -> Option<Answer> {
         let mut inner = lock(&self.inner);
         let key = Key::from(query);
         let (mut message, dnssec, ede, ttl) = {
@@ -252,7 +256,8 @@ impl Cache {
     /// evicted for being over budget, so the caller can publish that TTL.
     /// `None` means the answer is not cached and its TTLs should be left
     /// alone.
-    pub(crate) fn store(
+    #[doc(hidden)]
+    pub fn store(
         &self,
         query: &Query,
         message: &Message,

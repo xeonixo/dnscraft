@@ -12,6 +12,7 @@
 //! - `transport`: single UDP exchange with response matching (Task 6: TCP, retries,
 //!   server selection).
 //! - `priming`: root priming (RFC 8109).
+//! - `stats`: counters for cache hits, latencies, and DNSSEC outcomes.
 //! - `clock`: injectable time for the cache and DNSSEC (Tasks 9, 11).
 
 mod cache;
@@ -30,12 +31,12 @@ mod prefetch;
 mod priming;
 #[doc(hidden)]
 pub mod server_selection;
+mod stats;
 #[doc(hidden)]
 pub mod transport;
 mod types;
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -44,15 +45,21 @@ use dnssec::status::{BogusReason, Status, rrsets};
 use dnssec::{ChainFailure, DelegationTrust, KeysOutcome, validate_dnskey_rrset, validate_rrset};
 use local_zones::LocalZones;
 use server_selection::ServerStats;
+use stats::Counters;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{ForwardZone, ResolverConfig};
 pub use error::{ResolveError, ResolverError};
 pub use hints::default_root_hints;
+pub use stats::ResolverStats;
 pub use types::{
     Answer, AnswerSource, DnssecStatus, ExtendedError, FlushScope, PrimingStatus, Query,
-    RequestFlags, ResolverStats,
+    RequestFlags,
 };
+
+/// In-memory answer cache, exposed only for the criterion microbench.
+#[doc(hidden)]
+pub use cache::{Cache as __BenchCache, TtlClamp as __BenchTtlClamp};
 
 /// State shared with background prefetch tasks. Those tasks must not borrow
 /// the `Resolver`, which the caller is free to drop while a refresh runs.
@@ -63,8 +70,7 @@ struct Shared {
     cache: cache::Cache,
     roots: Mutex<Vec<SocketAddr>>,
     priming: Mutex<PrimingStatus>,
-    resolutions: AtomicU64,
-    outgoing: AtomicU64,
+    counters: Counters,
     stats: ServerStats,
     inflight: inflight::Inflight,
 }
@@ -89,10 +95,15 @@ impl Resolver {
                 reason: "query_timeout must be greater than zero",
             });
         }
-        let outgoing = AtomicU64::new(0);
+        let counters = Counters::new();
         let stats = ServerStats::new(config.ipv6_cooldown);
         let (roots, status) = {
-            let ctx = iterate::Context::new(&config, &config.root_hints, &outgoing, stats.clone());
+            let ctx = iterate::Context::new(
+                &config,
+                &config.root_hints,
+                counters.outgoing(),
+                stats.clone(),
+            );
             priming::prime(&ctx).await
         };
         let cache = cache::Cache::new(cache::budget_bytes(&config));
@@ -103,8 +114,7 @@ impl Resolver {
                 cache,
                 roots: Mutex::new(roots),
                 priming: Mutex::new(status),
-                resolutions: AtomicU64::new(0),
-                outgoing,
+                counters,
                 stats,
                 inflight: inflight::Inflight::new(),
             }),
@@ -131,10 +141,29 @@ impl Resolver {
         ) {
             return Ok(answer);
         }
-        self.shared.resolutions.fetch_add(1, Ordering::Relaxed);
+        self.shared.counters.begin_resolve();
+        let started = Instant::now();
+        let result = self.resolve_counted(query, flags).await;
+        self.shared.counters.add_resolve_latency(started.elapsed());
+        if let Ok(answer) = &result {
+            self.shared.counters.record_dnssec(answer.dnssec);
+            if answer.source == AnswerSource::Stale {
+                self.shared.counters.record_stale();
+            }
+        }
+        result
+    }
+
+    async fn resolve_counted(
+        &self,
+        query: &Query,
+        flags: RequestFlags,
+    ) -> Result<Answer, ResolveError> {
         let now = self.shared.config.clock.instant();
+        let hit_started = Instant::now();
         if let Some(answer) = self.shared.cache.lookup(query, now) {
             tracing::debug!(qname = %query.name, qtype = %query.qtype, "cache hit");
+            self.shared.counters.record_cache_hit(hit_started.elapsed());
             self.maybe_prefetch(query, flags, now);
             return Ok(present(answer, flags, query.qtype));
         }
@@ -262,12 +291,9 @@ impl Resolver {
         self.shared.cache.bytes_used()
     }
 
-    /// Counters. Extended in Task 16.
+    /// Counters: cache hits, latencies, DNSSEC outcomes, and traffic.
     pub fn stats(&self) -> ResolverStats {
-        ResolverStats {
-            resolutions: self.shared.resolutions.load(Ordering::Relaxed),
-            outgoing_queries: self.shared.outgoing.load(Ordering::Relaxed),
-        }
+        self.shared.counters.snapshot()
     }
 
     /// Outcome of the priming done in [`Resolver::new`].
@@ -295,8 +321,12 @@ impl Shared {
             return self.forward_zone(zone, query, flags).await;
         }
         let roots = lock(&self.roots).clone();
-        let mut ctx =
-            iterate::Context::new(&self.config, &roots, &self.outgoing, self.stats.clone());
+        let mut ctx = iterate::Context::new(
+            &self.config,
+            &roots,
+            self.counters.outgoing(),
+            self.stats.clone(),
+        );
         ctx.validate = !flags.checking_disabled && !self.config.trust_anchors.anchors().is_empty();
         tracing::debug!(
             qname = %query.name,
@@ -344,7 +374,9 @@ impl Shared {
         if targets.is_empty() {
             return Err(ResolveError::Unreachable { zone: zone.clone() });
         }
-        self.outgoing.fetch_add(1, Ordering::Relaxed);
+        self.counters
+            .outgoing()
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let query = transport::build_forward_query(name, qtype);
         match transport::query_servers(targets, &query, self.config.query_timeout, &self.stats)
             .await
