@@ -1,0 +1,13 @@
+/target/
+/web/node_modules/
+/web/build/
+/web/.svelte-kit/
+/web/src/lib/paraglide/
+/bench/lists/
+*.db
+*.db-*
+.env
+.env.*
+!.env.example
+secrets/
+deploy/*.local.toml
