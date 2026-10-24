@@ -549,7 +549,8 @@ async fn synthesizes_cname_from_dname() {
 async fn query_explosion_is_cut_off_by_budget() {
     let mut specs = default_servers().unwrap();
     let mut big = simple_zone("big.test.");
-    // Dozens of glueless name servers that do not exist: each needs nested lookups.
+    // Dozens of glueless name servers that do not exist: each needs nested
+    // lookups (the per-cut cap alone would stop later than this small budget).
     let mut test_zone_ns = Vec::new();
     for i in 0..40 {
         test_zone_ns.push(format!("ns{i}.gone.test."));
@@ -567,7 +568,7 @@ async fn query_explosion_is_cut_off_by_budget() {
     specs.push(ServerSpec::new("ns.big.test.", big).unwrap());
     let h = Hierarchy::start_with(specs).await.unwrap();
     let mut config = config_for(&h);
-    config.max_queries_per_resolve = 20;
+    config.max_queries_per_resolve = 6;
     let r = Resolver::new(config).await.unwrap();
     let before = r.stats().outgoing_queries;
     let start = Instant::now();
@@ -580,5 +581,106 @@ async fn query_explosion_is_cut_off_by_budget() {
         .unwrap_err();
     assert_eq!(err.code(), "resolver.query_budget");
     assert!(start.elapsed() < Duration::from_secs(5));
-    assert!(r.stats().outgoing_queries - before <= 20);
+    assert!(r.stats().outgoing_queries - before <= 6);
+}
+
+// ---- Real-world pattern: sibling glue and circular glueless name servers ----
+
+/// `test.` delegates `zone_apex` to `ns_hosts` (glueless unless the host has
+/// an A record added by the caller) and `nstld.test.` to a glueless circular
+/// pair (`nstld.test.` is served by `n1.loop.test.`, `loop.test.` by
+/// `av1.nstld.test.`): the same shape as `nstld.com.` for the gTLD servers.
+fn circular_specs(
+    zone_apex: &str,
+    ns_hosts: &[&str],
+    good: Option<(&str, Zone)>,
+) -> Vec<ServerSpec> {
+    let mut specs = default_servers().unwrap();
+    for spec in &mut specs {
+        if origin(spec) == "test." {
+            let mut z = spec
+                .zone
+                .clone()
+                .with_ns("nstld.test.", "n1.loop.test.")
+                .unwrap()
+                .with_ns("loop.test.", "av1.nstld.test.")
+                .unwrap();
+            for h in ns_hosts {
+                z = z.with_ns(zone_apex, h).unwrap();
+            }
+            if let Some((host, _)) = &good {
+                z = z
+                    .with_ns(zone_apex, host)
+                    .unwrap()
+                    .with_a(host, LO)
+                    .unwrap();
+            }
+            spec.zone = z;
+        }
+    }
+    if let Some((host, zone)) = good {
+        specs.push(ServerSpec::new(host, zone).unwrap());
+    }
+    specs
+}
+
+#[tokio::test]
+async fn uses_sibling_glue_instead_of_chasing_circular_glueless_ns() {
+    let target = simple_zone("target.test.")
+        .with_ns("target.test.", "ns-good.sib.test.")
+        .unwrap()
+        .with_a("www.target.test.", Ipv4Addr::new(192, 0, 2, 99))
+        .unwrap();
+    let specs = circular_specs(
+        "target.test.",
+        &[
+            "av1.nstld.test.",
+            "av2.nstld.test.",
+            "av3.nstld.test.",
+            "av4.nstld.test.",
+        ],
+        Some(("ns-good.sib.test.", target)),
+    );
+    let h = Hierarchy::start_with(specs).await.unwrap();
+    let r = Resolver::new(config_for(&h)).await.unwrap();
+    let before = r.stats().outgoing_queries;
+    let ans = r
+        .resolve(
+            &query("www.target.test.", RecordType::A),
+            RequestFlags::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        ans.message.answers[0].rdata,
+        RData::A(Ipv4Addr::new(192, 0, 2, 99))
+    );
+    let used = r.stats().outgoing_queries - before;
+    assert!(used <= 4, "used {used} outgoing queries");
+    // The glueless, circular hosts are never looked up.
+    let at_test = names(&h, "test.");
+    assert!(
+        at_test.iter().all(|(n, _)| !n.contains("nstld")),
+        "unexpected lookups: {at_test:?}"
+    );
+}
+
+#[tokio::test]
+async fn glueless_ns_per_cut_is_capped_and_cycles_fail_fast() {
+    let hosts: Vec<String> = (1..=8).map(|i| format!("av{i}.nstld.test.")).collect();
+    let refs: Vec<&str> = hosts.iter().map(String::as_str).collect();
+    let specs = circular_specs("dead.test.", &refs, None);
+    let h = Hierarchy::start_with(specs).await.unwrap();
+    let r = Resolver::new(config_for(&h)).await.unwrap();
+    let before = r.stats().outgoing_queries;
+    let err = r
+        .resolve(
+            &query("www.dead.test.", RecordType::A),
+            RequestFlags::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "resolver.unreachable");
+    let used = r.stats().outgoing_queries - before;
+    assert!(used <= 20, "used {used} outgoing queries");
 }

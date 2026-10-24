@@ -12,10 +12,13 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
-- **Bug found by real-internet test:** every real query fails with `resolver.query_budget` (glueless NS chase, e.g. av3.nstld.com, exhausts 64-query budget). Fix in progress (Sonnet). Then Task 7, Task 9b
+- Real-internet resolution works (example.com 4 queries / ~90 ms incl. priming; www.microsoft.com 11).
+- Next: Task 7 (QNAME minimisation), then Task 9b; optional dev Do53 server after 9b (awaiting owner OK)
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Bug fix (Sonnet, reviewed): glue was discarded unless inside the delegated child → gtld-servers.net glue dropped → circular glueless chase via nstld.com. Fixed with lazy glueless resolution, per-resolve NS host map, cycle skip, cap 4 glueless per cut. Review found the fix accepted ANY glue (poisoning risk) → restricted to responder bailiwick (RFC 2181 §5.4.1) by Haiku agent with unit tests. 225 tests green.
 
 - 2026-10-24 — Task 15 done + wired (Haiku, reviewed): RFC 6303 local zones answered before recursion, forward zones exempt; `examples/query.rs` added (pulled forward from Task 16). First real-internet run: all lookups fail with query budget exhaustion → bug ticket.
 

@@ -1,10 +1,11 @@
 //! Iterative resolution: walk the delegation chain from the root servers.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use dnscraft_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
 
@@ -37,7 +38,14 @@ pub(crate) struct Context<'a> {
     pub stats: ServerStats,
     pub limits: Limits,
     budget: Budget,
+    /// Name server hosts looked up during this resolution: `Some` once
+    /// resolved (empty when the lookup failed), `None` while in progress.
+    /// A host is never resolved twice, and an in-progress entry marks a cycle.
+    ns_hosts: Mutex<HashMap<Name, Option<Vec<SocketAddr>>>>,
 }
+
+/// Maximum number of glueless name server hosts resolved per zone cut.
+const MAX_GLUELESS_PER_CUT: usize = 4;
 
 impl<'a> Context<'a> {
     pub fn new(
@@ -53,6 +61,7 @@ impl<'a> Context<'a> {
             stats,
             limits: Limits::from(config),
             budget: Budget::new(config.max_queries_per_resolve),
+            ns_hosts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -88,17 +97,32 @@ enum Verdict {
 /// Port used when an address does not come from the test override map.
 const DNS_PORT: u16 = 53;
 
-/// Address candidates for the name servers named in `ns_names`, using glue
-/// from `additionals` where it is in bailiwick of `cut`.
+/// Address candidates for the name servers named in `ns_names` of a referral
+/// sent by a server authoritative for `responding_zone`.
+///
+/// Glue from `additionals` is used only when the name server host is in
+/// bailiwick of `responding_zone` (the zone of the server that sent the
+/// referral), not merely of the delegated child. The root zone is in bailiwick
+/// of everything, so root-to-TLD glue for e.g. `a.gtld-servers.net.` is used.
+/// Out-of-bailiwick glue is ignored: a server for `evil.example.` could
+/// otherwise point `ns.bank.com.` at an address of its choosing (RFC 2181
+/// section 5.4.1 credibility; same rule as unbound and BIND). Ignored glue
+/// leaves the name server glueless (`Candidate::Host`), so it is resolved
+/// independently.
+///
+/// Glue is still used when the host is out of bailiwick of the delegated cut
+/// but in bailiwick of the responder (sibling glue such as `ns.sib.test.` for
+/// `target.test.` served by `test.`). Glue is only a hint for reaching the
+/// zone and is never trusted as an answer.
 pub(crate) fn candidates_for(
     config: &ResolverConfig,
-    cut: &Name,
+    responding_zone: &Name,
     ns_names: &[Name],
     additionals: &[Record],
 ) -> Vec<Candidate> {
     let mut out = Vec::new();
     for ns in ns_names {
-        let glue: Vec<IpAddr> = if cut.zone_of(ns) {
+        let glue: Vec<IpAddr> = if responding_zone.zone_of(ns) {
             additionals
                 .iter()
                 .filter(|r| r.name == *ns)
@@ -349,10 +373,21 @@ fn resolve_once<'a>(
         for hop in 0..=max_depth {
             tracing::debug!(qname = %name, qtype = %qtype, zone = %zone, hop, "asking zone");
             let mut verdict = None;
+            let mut glueless_tried = 0usize;
             while let Some(candidate) = candidates.pop_front() {
                 let server = match candidate {
                     Candidate::Addr(addr) => addr,
                     Candidate::Host(host) => {
+                        if glueless_tried >= MAX_GLUELESS_PER_CUT {
+                            tracing::debug!(zone = %zone, host = %host, "glueless name server cap reached");
+                            continue;
+                        }
+                        if zone.zone_of(&host) {
+                            // Resolving the host needs this very zone: a cycle.
+                            tracing::debug!(zone = %zone, host = %host, "skipping dependent name server");
+                            continue;
+                        }
+                        glueless_tried += 1;
                         let resolved = resolve_host(ctx, &host, depth, &chain).await?;
                         let resolved = ctx.stats.order(&resolved);
                         for addr in resolved.into_iter().rev() {
@@ -436,7 +471,7 @@ fn classify(config: &ResolverConfig, resp: &Message, zone: &Name, qname: &Name) 
     match cut {
         Some(cut) => Verdict::Referral {
             cut: cut.clone(),
-            next: candidates_for(config, cut, &ns_names, &resp.additionals),
+            next: candidates_for(config, zone, &ns_names, &resp.additionals),
         },
         None => Verdict::Lame,
     }
@@ -456,6 +491,36 @@ async fn resolve_host(
         tracing::debug!(host = %host, depth, "nested lookup depth reached");
         return Ok(Vec::new());
     }
+    {
+        let mut map = ctx.ns_hosts.lock().unwrap_or_else(PoisonError::into_inner);
+        match map.get(host) {
+            Some(Some(addrs)) => {
+                tracing::debug!(host = %host, "name server host already resolved");
+                return Ok(addrs.clone());
+            }
+            Some(None) => {
+                tracing::debug!(host = %host, "name server host lookup in progress (cycle)");
+                return Ok(Vec::new());
+            }
+            None => {
+                map.insert(host.clone(), None);
+            }
+        }
+    }
+    let result = lookup_host(ctx, host, depth, chain).await?;
+    ctx.ns_hosts
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(host.clone(), Some(result.clone()));
+    Ok(result)
+}
+
+async fn lookup_host(
+    ctx: &Context<'_>,
+    host: &Name,
+    depth: u8,
+    chain: &[(Name, RecordType)],
+) -> Result<Vec<SocketAddr>, ResolveError> {
     let mut ips = Vec::new();
     for qtype in [RecordType::A, RecordType::AAAA] {
         if chain.iter().any(|(n, t)| n == host && *t == qtype) {
@@ -478,6 +543,8 @@ async fn resolve_host(
             }
             Err(e) => {
                 tracing::debug!(host = %host, error = %e, "nested address lookup failed");
+                // The zone is unreachable; asking for AAAA would fail the same way.
+                break;
             }
         }
         if !ips.is_empty() {
@@ -495,4 +562,78 @@ async fn resolve_host(
         .into_iter()
         .map(|ip| SocketAddr::new(ip, DNS_PORT))
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    fn n(text: &str) -> Name {
+        Name::from_ascii(text).unwrap()
+    }
+
+    fn glue(owner: &str, ip: Ipv4Addr) -> Record {
+        Record {
+            name: n(owner),
+            rtype: RecordType::A,
+            class: Class::IN,
+            ttl: 3600,
+            rdata: RData::A(ip),
+        }
+    }
+
+    #[test]
+    fn root_glue_for_tld_servers_is_used() {
+        let cfg = ResolverConfig::default();
+        let ip = Ipv4Addr::new(192, 5, 6, 30);
+        let out = candidates_for(
+            &cfg,
+            &n("."),
+            &[n("a.gtld-servers.net.")],
+            &[glue("a.gtld-servers.net.", ip)],
+        );
+        assert!(matches!(
+            out.as_slice(),
+            [Candidate::Addr(addr)] if *addr == SocketAddr::new(IpAddr::V4(ip), DNS_PORT)
+        ));
+    }
+
+    #[test]
+    fn sibling_glue_in_bailiwick_of_responder_is_used() {
+        let cfg = ResolverConfig::default();
+        let sub_ip = Ipv4Addr::new(10, 0, 0, 1);
+        let out = candidates_for(
+            &cfg,
+            &n("test."),
+            &[n("ns.sub.test."), n("ns.other.example.")],
+            &[
+                glue("ns.sub.test.", sub_ip),
+                glue("ns.other.example.", Ipv4Addr::new(10, 0, 0, 2)),
+            ],
+        );
+        assert!(matches!(
+            out.as_slice(),
+            [Candidate::Addr(addr), Candidate::Host(host)]
+                if *addr == SocketAddr::new(IpAddr::V4(sub_ip), DNS_PORT)
+                    && *host == n("ns.other.example.")
+        ));
+    }
+
+    #[test]
+    fn out_of_bailiwick_glue_is_ignored() {
+        let cfg = ResolverConfig::default();
+        let out = candidates_for(
+            &cfg,
+            &n("example.com."),
+            &[n("ns.bank.com.")],
+            &[glue("ns.bank.com.", Ipv4Addr::new(203, 0, 113, 66))],
+        );
+        assert!(matches!(
+            out.as_slice(),
+            [Candidate::Host(host)] if *host == n("ns.bank.com.")
+        ));
+    }
 }

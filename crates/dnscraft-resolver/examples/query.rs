@@ -4,7 +4,9 @@
 //!
 //! Exit status: 0 on NOERROR or NXDOMAIN, 1 on any other outcome, 2 on bad usage.
 
+use std::fmt::Write as _;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use dnscraft_proto::{Class, Name, Rcode, Record, RecordType};
@@ -61,6 +63,40 @@ fn print_answer(answer: &Answer, elapsed: std::time::Duration) {
     print_records("authority", &msg.authorities);
 }
 
+/// Minimal stderr subscriber, enabled with `DNSCRAFT_TRACE=1` (DEBUG and up).
+struct StderrSubscriber(AtomicU64);
+
+struct Fields(String);
+
+impl tracing::field::Visit for Fields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        let _ = write!(self.0, " {}={:?}", field.name(), value);
+    }
+}
+
+impl tracing::Subscriber for StderrSubscriber {
+    fn enabled(&self, meta: &tracing::Metadata<'_>) -> bool {
+        *meta.level() <= tracing::Level::DEBUG
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(self.0.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut f = Fields(String::new());
+        event.record(&mut f);
+        eprintln!(
+            "{} {}{}",
+            event.metadata().level(),
+            event.metadata().target(),
+            f.0
+        );
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -93,6 +129,9 @@ async fn main() -> ExitCode {
         },
     };
 
+    if std::env::var_os("DNSCRAFT_TRACE").is_some() {
+        let _ = tracing::subscriber::set_global_default(StderrSubscriber(AtomicU64::new(0)));
+    }
     let resolver = match Resolver::new(ResolverConfig::default()).await {
         Ok(r) => r,
         Err(err) => {
@@ -109,6 +148,10 @@ async fn main() -> ExitCode {
     let start = Instant::now();
     let result = resolver.resolve(&query, RequestFlags::default()).await;
     let elapsed = start.elapsed();
+    println!(
+        "outgoing queries (incl. priming): {}",
+        resolver.stats().outgoing_queries
+    );
     match result {
         Ok(answer) => {
             print_answer(&answer, elapsed);
