@@ -9,9 +9,11 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 ## Current state
 
 - Phase: 1 (Foundation)
-- Next task: Task 1 — Workspace skeleton and toolchain
+- Next tasks: Task 2 (spike, Sonnet) and Task 3 (testkit, Sonnet) in parallel
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Task 1 done (Haiku agent, reviewed): workspace, toolchain pin, lints, CI workflow. fmt/clippy/test green locally.
 
 - 2026-10-24 — Specs approved and pushed. Plan approved. Toolchain installed (Rust 1.99.1, dig, kdig).

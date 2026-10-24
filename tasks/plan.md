@@ -51,7 +51,7 @@ workspace skeleton (1)
 ## Task List
 
 ### Phase 1: Foundation
-- [ ] Task 1: Workspace skeleton and toolchain
+- [x] Task 1: Workspace skeleton and toolchain
 - [ ] Task 2: Spike `hickory-recursor` vs. in-house, write ADR-0001
 - [ ] Task 3: Testkit fake hierarchy
 

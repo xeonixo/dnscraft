@@ -1,0 +1,9 @@
+//! Recursive, DNSSEC-validating DNS resolver with cache for DNScraft.
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn crate_builds() {
+        assert_eq!(2 + 2, 4);
+    }
+}

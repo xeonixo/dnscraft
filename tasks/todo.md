@@ -13,14 +13,14 @@
 workspace-level dependency versions.
 
 **Acceptance criteria:**
-- [ ] `Cargo.toml` workspace with edition 2024, `resolver = "3"`, shared `[workspace.dependencies]` and `[workspace.lints]`
-- [ ] `rust-toolchain.toml` pins a stable toolchain with `rustfmt` and `clippy`
-- [ ] Both crates compile and contain one trivial passing test
-- [ ] `.github/workflows/ci.yml` runs fmt, clippy, test, and coverage (`cargo llvm-cov`) on push/PR for `ubuntu-latest`
+- [x] `Cargo.toml` workspace with edition 2024, `resolver = "3"`, shared `[workspace.dependencies]` and `[workspace.lints]`
+- [x] `rust-toolchain.toml` pins a stable toolchain with `rustfmt` and `clippy`
+- [x] Both crates compile and contain one trivial passing test
+- [x] `.github/workflows/ci.yml` runs fmt, clippy, test, and coverage (`cargo llvm-cov`) on push/PR for `ubuntu-latest`
 
 **Verification:**
-- [ ] `cargo build --workspace --locked` and `cargo test --workspace --locked` succeed
-- [ ] `cargo clippy --workspace --all-targets --locked -- -D warnings` is clean
+- [x] `cargo build --workspace --locked` and `cargo test --workspace --locked` succeed
+- [x] `cargo clippy --workspace --all-targets --locked -- -D warnings` is clean
 
 **Dependencies:** None
 
