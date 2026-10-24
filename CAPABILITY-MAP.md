@@ -9,13 +9,13 @@ This file is the index of all modules. Module ids are stable and never renamed.
 |---|---|---|---|
 | `resolver` | Recursive resolution from the root servers, DNSSEC validation, cache | – | [SPEC-resolver.md](SPEC-resolver.md) |
 | `filtering` | AdGuard-compatible filter lists (adblock syntax, hosts), allow/block, rewrites | – | pending |
-| `clients` | Client enrichment: IPv4/IPv6 → device, VLAN via the UniFi API (UniFi OS gateway) | – | pending |
-| `tls` | ACME DNS-01 via Cloudflare, certificate store, hot reload | – | pending |
+| `clients` | Client enrichment: IPv4/IPv6 → device, VLAN via the UniFi API (UniFi OS gateway); manual names for IPs/ranges | – | pending |
+| `tls` | ACME DNS-01 via Cloudflare (wildcard for Client IDs), certificate store, hot reload, DynDNS of the public hostname | – | pending |
 | `policy` | Query → profile by source subnet/IP: filter set, split-horizon answers | resolver, filtering | pending |
 | `listeners` | Do53 UDP/TCP, DoT, DoH (h2/h3), DoQ; multiple NICs/addresses; public listeners for registered Client IDs | policy, tls | pending |
 | `control-api` | REST API, configuration, query log (filterable by device), statistics, OIDC (Authentik) + local break-glass login, locale-neutral error codes | policy, clients | pending |
 | `web-ui` | TypeScript frontend, fully internationalized, embedded into the binary as static assets | control-api | pending |
-| `cluster` | Master/sub-nodes: config sync, keep serving without the master, log/stats aggregation on the master | control-api | pending |
+| `cluster` | Master/sub-nodes: config sync, writes from any node (forwarded to master, offline fallback), keep serving without the master, log/stats aggregation on the master | control-api | pending |
 
 ## Build order
 

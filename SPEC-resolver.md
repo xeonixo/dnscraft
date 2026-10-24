@@ -21,6 +21,7 @@ It knows nothing about filters, clients, or listeners; it takes a `Query` and re
 - Loop and amplification guards: limits on CNAME chains (≤ 16), delegation depth, and
   outgoing queries per incoming question.
 - Identical in-flight queries are coalesced (in-flight dedup).
+- EDNS Client Subnet is never sent; incoming ECS options from clients are stripped.
 
 ### DNSSEC
 - Validation per RFC 4033–4035 including NSEC and NSEC3 (RFC 5155).
@@ -48,6 +49,7 @@ It knows nothing about filters, clients, or listeners; it takes a `Query` and re
 - Prefetch: popular entries are refreshed shortly before expiry.
 - Serve-stale (RFC 8767): expired entries up to 1 day when authoritative servers are unreachable.
 - Flush all or per domain through the module API (used later by `control-api`).
+- In-memory only; the cache is not persisted across restarts (decided: simplicity over warm start).
 
 ### Interface (boundary towards `policy`)
 
@@ -121,8 +123,13 @@ which profile may use which forward zone (decided in `policy`), any user-facing 
 7. A forward zone is resolved via its targets only (no root traffic), fails over when the first target is down, and a forwarding loop ends in `SERVFAIL` instead of hanging; a private-range PTR without forward zone is answered locally and never sent upstream.
 8. Line coverage ≥ 80 %.
 
+## Decisions
+
+- **Implementation spike first:** evaluate `hickory-recursor` (DNSSEC maturity, serve-stale,
+  QNAME minimisation, forward zones) against in-house recursion on top of `hickory-proto`.
+  The result is recorded as an ADR in `docs/adr/` before implementation starts.
+- Cache is not persisted across restarts.
+
 ## Open Questions
 
-1. **Spike in the plan:** `hickory-recursor` (check DNSSEC maturity, serve-stale, QNAME minimisation)
-   vs. in-house recursion on top of `hickory-proto`. Decision recorded as an ADR in `docs/adr/`.
-2. Persist the cache across restarts (faster cold start) — wanted or unnecessary?
+None at the moment.

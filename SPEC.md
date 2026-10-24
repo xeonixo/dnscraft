@@ -31,7 +31,9 @@ Users: the network owner (single admin). Clients on the network are plain DNS co
 - Importing an existing AdGuard Home configuration (migration is a one-off manual task).
 - AdGuard "Safe Browsing" / "Parental Control" (they query an external AdGuard service;
   phishing/scam lists cover the need), DNSCrypt.
-- Per-device profiles: profiles are selected by subnet/IP range only.
+- Per-device profiles: profiles are selected by subnet/IP range (or Client ID) only.
+- Docker API / socket access: containers behind bridge NAT appear as the Docker host anyway;
+  manual names cover the need. May be revisited (via a read-only socket proxy) if `clients` shows real value.
 
 ### Feature scope (beyond the core objective)
 
@@ -49,10 +51,34 @@ Adopted from AdGuard Home and refined; each item belongs to the listed module sp
 | Automatic list updates | filtering | Configurable interval; last update, rule count, and errors per list visible |
 | Config backup/export/import | control-api | One file restores the whole configuration (secrets excluded) |
 | Client ID via DoH/DoT | listeners, policy, web-ui | Device identified by DoT SNI (`<id>.dns.<domain>`) or DoH path (`/dns-query/<id>`); UI generates Apple `.mobileconfig` profiles (iOS/macOS) and Android "Private DNS" hostnames |
-| Forward zones (conditional forwarding) | resolver, policy | Private zones and their reverse zones (e.g. a remote site over site-to-site VPN) are sent to configured DNS servers instead of being resolved recursively; optionally limited to certain profiles |
+| Forward zones (conditional forwarding) | resolver, policy | Private zones and their reverse zones (e.g. a remote site over site-to-site VPN running its own, third-party resolver) are sent to configured DNS servers instead of being resolved recursively; optionally limited to certain profiles |
+| Blocked services (one-click) | filtering, web-ui | Service catalog (name, icon, rules, translated names) from AdGuard's HostlistsRegistry `services.json` + `services_i18n.json`, **downloaded at runtime** like a filter list (GPL-3.0 data, not bundled); toggle per profile |
 | Schedules | policy | Time windows per profile that switch filter sets/blocked services; off by default, low priority |
 | SafeSearch enforcement | policy | Rewrite Google/Bing/YouTube/DuckDuckGo to their safe endpoints per profile; off by default, low priority |
-| Query log retention and anonymization | control-api | Default: everything visible; retention configurable; optional IP truncation |
+| Break-glass login | control-api | Local admin (password + optional TOTP) in addition to Authentik OIDC; reachable from private ranges only |
+| Theming | web-ui | Light / dark / follow system, switchable |
+| Mobile-friendly UI | web-ui | Responsive layout, fully usable on a phone (pause protection, allow a domain from the log) |
+| CNAME uncloaking | filtering | Every name in a CNAME chain is checked against the filters; a blocked target blocks the whole answer |
+| Bypass control | policy | Per profile: answer the Firefox canary `use-application-dns.net` with NXDOMAIN; control iCloud Private Relay via `mask.icloud.com` / `mask-h2.icloud.com` |
+| DDR (RFC 9462) | listeners, tls | Answer `_dns.resolver.arpa` SVCB so iOS/macOS/Windows 11 upgrade to DoH/DoT on the LAN automatically |
+| Test query | policy, web-ui | "What does client X get for name Y, and why?": shows view, profile, matching rule, forward zone, DNSSEC status, final answer; never pollutes the query log |
+| Health checks | control-api | `/healthz` (process alive) and `/readyz` (resolver primed, config loaded, listeners bound) on the internal API; Docker `HEALTHCHECK` in the image |
+| Audit log | control-api, web-ui | Who changed what, when, on which node (OIDC user, local admin, or API token) |
+| API tokens | control-api | Scoped tokens (`admin`/`viewer`) for scripts and the later Home Assistant integration; revocable, shown once |
+| Live log, search, CSV export | control-api, web-ui | Streaming tail of the query log (SSE), search/filter by device, domain, status, profile; CSV export of a filtered view |
+| Filter list effectiveness | filtering, web-ui | Per list: rules loaded, unique contribution after dedup, hits in the last 24 h/30 days, to identify lists worth removing |
+| Temporary allow | filtering, web-ui | Allow a domain for a chosen duration (e.g. 1 h), per profile; expires automatically |
+| Config versions and rollback | control-api, web-ui | Every change creates a version; diff and one-click rollback |
+| Automatic backups | control-api | Daily export to a directory with configurable retention (secrets excluded) |
+| Update notice | control-api, web-ui | Checks GitHub releases (opt-out) and shows an "update available" hint; no self-update |
+| First-run wizard | web-ui | Create local admin, networks/views, filter lists, optional OIDC and UniFi |
+| Statistics dashboard | control-api, web-ui | Queries over time, blocked ratio, top domains, top blocked, top clients, DNSSEC outcomes, cache hit ratio, per node and aggregated |
+| Query log retention and anonymization | control-api | Default: everything visible; retention configurable (default **30 days**); optional IP truncation |
+| Roles | control-api, web-ui | `admin` (everything) and `viewer` (logs, statistics, read-only config), mapped from configurable Authentik groups |
+| Split-horizon views | policy | Per subnet/Client ID: own records (A, AAAA, CNAME, TXT, SRV, MX) **and** own filter set, blocked services, schedules, pause state |
+| Manual client names | clients, web-ui | Names for single IPs or whole ranges (e.g. `172.18.0.0/16` = "Docker on server1", `172.18.0.5` = "paperless"); take precedence over UniFi names. Containers on macvlan are named automatically via UniFi |
+| DynDNS | tls | Keeps the public A/AAAA record of the DoH/DoT hostname at Cloudflare up to date; public IP from a configurable echo service (default: Cloudflare `cdn-cgi/trace`, as Cloudflare is already in use) |
+| Alerts | control-api, web-ui | Certificate expiry, failed list updates, node offline, DynDNS failures: shown in the web UI only (no push/e-mail for now) |
 
 ### Later (not specified now, but the API must not prevent it)
 
@@ -136,6 +162,37 @@ automated tests never download lists.
 - **Real client IPs are mandatory** (split-horizon, per-device log). Supported network modes:
   `macvlan`/`ipvlan` (recommended, multiple VLANs) and `network_mode: host`.
   Bridge networking with NAT is documented as unsuitable for LAN clients.
+
+## Protocol defaults
+
+- EDNS Client Subnet (ECS) is **never sent** to authoritative servers (privacy).
+- `ANY` queries are answered minimally per RFC 8482.
+- Per-profile option to suppress AAAA answers (IPv4-only clients); off by default.
+
+## Configuration model
+
+- The **web UI is the primary way to configure** DNScraft; configuration lives in SQLite.
+- Bootstrap settings only come from environment variables / a small TOML file:
+  listen addresses and ports, data directory, node role, OIDC client settings, secrets (`*_FILE`).
+- Export/import of the complete configuration as one file (secrets excluded) for backup and migration.
+
+## Multi-node
+
+- 3–4 nodes are the expected size; the design must not assume a fixed number. Tested with 3.
+- **One master**, any number of sub-nodes. Every node answers DNS on its own with its last known configuration.
+- **Writes from any node:** the UI works on every node. A sub-node forwards changes to the master;
+  only while the master is unreachable does it store them locally and reconcile later
+  (last write per configuration object wins, based on a hybrid logical clock). Conflicts are listed in the UI.
+- Query logs and statistics are aggregated on the master only (see CAPABILITY-MAP).
+- **Client failover via DHCP:** the UniFi gateway hands out all node addresses as DNS servers;
+  no virtual IP/VRRP.
+- Public DoH/DoT is enabled **per node** (off by default), matching where port forwarding points.
+
+## Platforms and networks
+
+- Container images and binaries for **`linux/amd64` and `linux/arm64`** (multi-arch image).
+- IPv6: clients reach DNScraft via a **ULA** address; views and ACLs therefore use ULA prefixes.
+  Assumption to verify during `policy`: clients pick their ULA source address when querying a ULA server (RFC 6724).
 
 ## Internet exposure
 
@@ -337,5 +394,4 @@ Coverage: ≥ 80 % lines for `resolver`, `filtering`, `policy`; no hard threshol
 
 ## Open Questions
 
-1. Blocked services (one-click): adopt AdGuard's HostlistsRegistry `services.json` (GPL-3.0)? Fetched at runtime like a filter list, or bundled?
-2. Forward zones over a site-to-site VPN: does the remote site run its own DNS server or should it get a DNScraft sub-node?
+None at the moment.
