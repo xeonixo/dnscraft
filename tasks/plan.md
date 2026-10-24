@@ -75,9 +75,9 @@ workspace (1) ── testkit hierarchy (3)
 - [ ] Task W5: Fuzzing and oracle round-trips
 
 ### Checkpoint W: Wire format
-- [ ] Every testkit response decodes with `dnscraft-proto`; round-trips against hickory pass
-- [ ] Fuzz targets run 10 min each without findings; coverage ≥ 80 %
-- [ ] Review with human
+- [x] Every testkit response decodes with `dnscraft-proto`; round-trips against hickory pass
+- [ ] Fuzz targets run 10 min each without findings (running; result reported later) — coverage 96 % ✓
+- [x] Review with human (owner approved 2026-10-24, fuzz result to follow)
 
 ### Phase 2: Recursion
 - [ ] Task 4: Iterative resolution happy path

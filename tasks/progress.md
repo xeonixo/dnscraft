@@ -11,7 +11,8 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Phase: 1 (Foundation)
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
-- In progress: Task W5 — code done (fuzz targets, proptest, CI job); 10-min fuzz runs and coverage measurement running
+- Checkpoint W approved by owner (coverage 96 %); 10-min fuzz runs still running, result to be reported
+- In progress: Task 4 (iterative resolution) and Task 8 (testkit DNSSEC zones) in parallel (Sonnet agents)
 - Blockers: none
 
 ## Log
