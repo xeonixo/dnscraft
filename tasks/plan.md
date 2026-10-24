@@ -72,11 +72,11 @@ workspace (1) ── testkit hierarchy (3)
 - [x] Task W2: Core RDATA types
 - [x] Task W3: Messages and EDNS
 - [x] Task W4: DNSSEC record types and canonical form
-- [ ] Task W5: Fuzzing and oracle round-trips
+- [x] Task W5: Fuzzing and oracle round-trips
 
 ### Checkpoint W: Wire format
 - [x] Every testkit response decodes with `dnscraft-proto`; round-trips against hickory pass
-- [ ] Fuzz targets run 10 min each without findings (running; result reported later) — coverage 96 % ✓
+- [x] Fuzz targets run 10 min each without findings — coverage 96 %
 - [x] Review with human (owner approved 2026-10-24, fuzz result to follow)
 
 ### Phase 2: Recursion

@@ -171,13 +171,13 @@ message decode, decode→encode→decode stability; `proptest` round-trip tests 
 records, and messages; a CI job that runs each fuzz target for 60 s.
 
 **Acceptance criteria:**
-- [ ] Three fuzz targets exist and run 10 min each locally without crashes or timeouts
-- [ ] Property tests: `decode(encode(x)) == x` for generated names/records/messages
-- [ ] CI runs the short fuzz job; `dnscraft-proto` line coverage ≥ 80 %
+- [x] Three fuzz targets exist and run 10 min each locally without crashes or timeouts
+- [x] Property tests: `decode(encode(x)) == x` for generated names/records/messages
+- [x] CI runs the short fuzz job; `dnscraft-proto` line coverage ≥ 80 %
 
 **Verification:**
-- [ ] `cargo +nightly fuzz run <target> -- -max_total_time=600` per target
-- [ ] `cargo llvm-cov -p dnscraft-proto --summary-only`
+- [x] `cargo +nightly fuzz run <target> -- -max_total_time=600` per target
+- [x] `cargo llvm-cov -p dnscraft-proto --summary-only`
 
 **Dependencies:** W3 (extended after W4)
 
@@ -186,9 +186,9 @@ records, and messages; a CI job that runs each fuzz target for 60 s.
 **Estimated scope:** M
 
 ## Checkpoint W: Wire format
-- [ ] All testkit responses decode with `dnscraft-proto`; oracle round-trips green
-- [ ] Fuzzing clean; coverage ≥ 80 %
-- [ ] Review with human
+- [x] All testkit responses decode with `dnscraft-proto`; oracle round-trips green
+- [x] Fuzzing clean; coverage ≥ 80 %
+- [x] Review with human
 
 ## Phase 2: Recursion
 

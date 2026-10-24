@@ -11,11 +11,13 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Phase: 1 (Foundation)
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
-- Checkpoint W approved by owner (coverage 96 %); 10-min fuzz runs still running, result to be reported
+- Checkpoint W complete (coverage 96 %, fuzzing clean)
 - In progress: integrate server selection/TCP fallback into iterate.rs (follow-up of Task 6, Haiku agent); then Task 7 and Task 9b
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — W5 fuzz runs (libFuzzer, 600 s each, aarch64): name_decode 139.2 M execs, message_decode 105.3 M, message_roundtrip 7.1 M — 0 crashes, 0 timeouts. Task 15 code done (Haiku; local_zones.rs, awaiting wiring into lib.rs).
 
 - 2026-10-24 — Tasks 5, 6, 9a done in parallel (Sonnet, reviewed; 203 workspace tests, stable 3x). 5: CNAME/DNAME chains (bailiwick rule, RFC 6604), shared query budget. 6: TC→TCP, strict response matching, SRTT server selection, IPv6 cool-down — not yet wired into iterate.rs (follow-up). 9a: own validator over ring (alg 8/10/13/14/15, RSA ≥1024 legacy), DS matching with SHA-1 suppression, RFC 1982 validity, EDE mapping, wildcard hook; root fixture verifies.
 
