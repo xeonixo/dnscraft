@@ -9,11 +9,14 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 ## Current state
 
 - Phase: 1 (Foundation)
-- Phase 1 done. **Waiting at Checkpoint A:** human reviews ADR-0001 (Option C) and the revised plan
-- Next after approval: Task 4 — Iterative resolution happy path
+- Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
+- **Waiting at Checkpoint A:** owner approves revised plan and new deps (`ring`, `proptest`, `libfuzzer-sys`)
+- Next after approval: Task W1 — Domain names and compression
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Owner chose Option D at Checkpoint A. ADR amended, SPEC/map updated, plan revised: new phase 1b (W1–W5), Task 9 split into 9a/9b.
 
 - 2026-10-24 — Task 2 done (Sonnet agent, reviewed; key claims re-verified on crates.io/GitHub): `hickory-recursor` abandoned, successor experimental and missing serve-stale/forward zones/EDE/NTA/dedup/ports; ADR-0001 proposes Option C. Plan revised accordingly.
 

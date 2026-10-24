@@ -94,7 +94,8 @@ Adopted from AdGuard Home and refined; each item belongs to the listed module sp
 |---|---|
 | Backend language | Rust stable, edition 2024, Cargo workspace |
 | Async runtime | `tokio` |
-| DNS protocol / recursion | `hickory-proto`; recursion/DNSSEC: `hickory-recursor` or in-house, decided by a spike in the `resolver` plan |
+| DNS protocol / recursion | **In-house** (ADR-0001): wire format in `dnscraft-proto`, recursion and DNSSEC validation logic in `dnscraft-resolver` |
+| Cryptography | `ring` (DNSSEC signature verification and digests); never hand-written crypto |
 | HTTP (API, DoH) | `axum` / `hyper` |
 | TLS / QUIC | `rustls`, `quinn` (DoQ, HTTP/3) |
 | ACME | `instant-acme` |
@@ -276,6 +277,7 @@ dnscraft/
 ├── Cargo.toml                 → workspace definition
 ├── crates/
 │   ├── dnscraft/              → binary: startup, config loading, module wiring
+│   ├── dnscraft-proto/        → shared DNS wire format and DNSSEC record types (no I/O)
 │   ├── dnscraft-resolver/     → module resolver
 │   ├── dnscraft-filtering/    → module filtering
 │   ├── dnscraft-clients/      → module clients
@@ -284,7 +286,7 @@ dnscraft/
 │   ├── dnscraft-listeners/    → module listeners
 │   ├── dnscraft-api/          → module control-api
 │   ├── dnscraft-cluster/      → module cluster
-│   └── dnscraft-testkit/      → test helpers: fake DNS hierarchy, DNSSEC test zones
+│   └── dnscraft-testkit/      → test helpers: fake DNS hierarchy, DNSSEC test zones (uses hickory as an independent oracle)
 ├── web/                       → module web-ui (SvelteKit)
 │   └── messages/              → i18n catalogs (en.json, de.json, …)
 ├── deploy/                    → Dockerfile variants, compose examples (macvlan, host), sample config
@@ -354,6 +356,7 @@ API types generated from the `control-api` OpenAPI schema, never hand-maintained
 | Level | Tooling | Scope |
 |---|---|---|
 | Unit | `cargo test` | parsers, filter matching, cache, policy selection |
+| Fuzzing | `cargo-fuzz` (nightly) | every decoder in `dnscraft-proto` that sees untrusted input; short runs in CI, longer runs before releases |
 | Integration | `cargo test` + `dnscraft-testkit` | recursion and DNSSEC against a **local fake hierarchy** (root → TLD → zone), no internet access |
 | Protocol | integration tests | Do53/DoT/DoH/DoQ end-to-end against running listeners with test certificates |
 | External APIs | mock servers | UniFi, Cloudflare, ACME (Pebble), Authentik (mock OIDC); never real endpoints |
@@ -362,7 +365,7 @@ API types generated from the `control-api` OpenAPI schema, never hand-maintained
 | Performance | `criterion` | filter match, cache lookup against the budgets above |
 | Manual | `dig`, `kdig`, `q` | acceptance against the real internet per module |
 
-Coverage: ≥ 80 % lines for `resolver`, `filtering`, `policy`; no hard threshold for other crates.
+Coverage: ≥ 80 % lines for `proto`, `resolver`, `filtering`, `policy`; no hard threshold for other crates.
 
 ## Boundaries
 

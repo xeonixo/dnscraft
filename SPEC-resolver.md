@@ -125,9 +125,8 @@ which profile may use which forward zone (decided in `policy`), any user-facing 
 
 ## Decisions
 
-- **Implementation spike first:** evaluate `hickory-recursor` (DNSSEC maturity, serve-stale,
-  QNAME minimisation, forward zones) against in-house recursion on top of `hickory-proto`.
-  The result is recorded as an ADR in `docs/adr/` before implementation starts.
+- **Engine (ADR-0001, Option D):** recursion and DNSSEC validation logic are written in-house on top of
+  `dnscraft-proto`; cryptographic primitives come from `ring`.
 - Cache is not persisted across restarts.
 
 ## Open Questions

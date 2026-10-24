@@ -1,8 +1,8 @@
 # ADR-0001: Recursion engine for the resolver module
 
-- Status: Proposed
+- Status: Accepted — Option D (amended 2026-10-24, see "Final decision")
 - Date: 2026-10-24
-- Deciders: project lead (review at Checkpoint A)
+- Deciders: project owner, at Checkpoint A
 - Scope: `crates/dnscraft-resolver` ([SPEC-resolver.md](../../SPEC-resolver.md))
 
 ## Context
@@ -103,7 +103,27 @@ the 0.26.3 crates compiled in the spike unless noted.
 | Maintenance status | Crate `hickory-recursor`: dead since 2025-06. Recursor code in hickory-resolver: active (about 300 commits on `main` since 2026-08-01, 79 of them touching recursor or DNSSEC code; two main authors: David Cook 151, Dirkjan Ochtman 76) but labelled experimental, with open correctness bugs (see Option A) and API churn between 0.26 and 0.27-alpha | `git log` of a depth-300 clone; GitHub search API | n/a |
 | License | MIT OR Apache-2.0 (same as this project) | repo `Cargo.toml` `[workspace.package]` | n/a |
 
-## Decision
+## Final decision (supersedes the recommendation below)
+
+At Checkpoint A the owner chose to write as much as reasonable in-house. **Option D** is accepted:
+
+- **In-house:** DNS wire format (names, compression, all needed RDATA types, EDNS, messages) in a
+  new shared crate `dnscraft-proto`, DNSSEC validation logic (canonical form, RRSIG verification
+  orchestration, DS/DNSKEY chain, NSEC/NSEC3 proofs, key tags, NSEC3 hashing), and everything
+  listed under Option C (iteration, transport, cache, dedup, serve-stale, prefetch, forward zones, EDE).
+- **Third-party, by design:** cryptographic primitives via `ring` (RSA/SHA-x, ECDSA P-256/P-384,
+  Ed25519, SHA-1/256/384 digests) — never hand-written crypto; `tokio` runtime; later `rustls`/`quinn`.
+- **hickory** stays only as a dev-dependency of `dnscraft-testkit`, where it serves as an independent
+  oracle: every testkit response is encoded by hickory and decoded by `dnscraft-proto`, so parser
+  bugs on either side surface in tests.
+- The wire parser handles untrusted internet input: strict limits, no panics, and `cargo-fuzz`
+  targets are mandatory.
+
+Consequences: a new "wire format" phase (tasks W1–W5) precedes recursion; Task 9's time box for
+`DnssecDnsHandle` is dropped (own validator over `ring`, split into 9a/9b); Task 10 is implemented
+in-house. No dependency on hickory's API churn (0.27 already changes it) or its open DNSSEC bugs.
+
+## Recommendation of the spike (Option C, not adopted)
 
 Recommend **Option C**: implement iteration, transport, cache, in-flight dedup, serve-stale,
 prefetch, forward zones, local reverse zones, EDE, and result mapping in `dnscraft-resolver`,

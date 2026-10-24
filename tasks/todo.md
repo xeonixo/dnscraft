@@ -70,15 +70,132 @@ matching root hints. Servers can be stopped/started individually and record rece
 **Estimated scope:** M
 
 ## Checkpoint A: Foundation + decision
-- [ ] All tests pass, clippy clean
-- [ ] ADR-0001 reviewed by the human; `tasks/plan.md` and this file revised and re-approved
+- [x] All tests pass, clippy clean
+- [x] ADR-0001 accepted by the owner (Option D)
+- [ ] Revised `tasks/plan.md` and this file approved
+
+## Phase 1b: Wire format (`dnscraft-proto`)
+
+Common rules for W1–W5: new crate `crates/dnscraft-proto`, no I/O, no async, no `unsafe`,
+no panics on any input (no indexing that can panic, no `unwrap`/`expect`), every decode error is
+a typed `ProtoError` variant with a stable `code()`. Dependencies: `thiserror` only (plus `ring` in W4).
+Oracle tests live in `crates/dnscraft-proto/tests/` and use `hickory-proto` as a dev-dependency.
+
+## Task W1: Domain names and compression
+
+**Description:** `Name` type: labels as bytes, case-insensitive equality/hash, canonical
+(lowercase) form, presentation parsing/formatting (`"www.example.com."`, escapes `\.` and `\DDD`),
+wire decode with compression pointers and wire encode with an optional compression table.
+
+**Acceptance criteria:**
+- [ ] Limits enforced: label ≤ 63, name ≤ 255 octets on the wire, pointers only backwards, max 128 pointer jumps, no recursion
+- [ ] `zone_of`, `parent`, label iteration, and RFC 4034 §6.1 canonical ordering implemented
+- [ ] Round-trip against hickory `Name` for a corpus incl. escapes, root, max-length names
+
+**Verification:**
+- [ ] `cargo test -p dnscraft-proto -- name`
+
+**Dependencies:** Task 1
+
+**Files likely touched:** `crates/dnscraft-proto/{Cargo.toml,src/lib.rs,src/error.rs,src/name.rs}`, `crates/dnscraft-proto/tests/name_oracle.rs`, root `Cargo.toml`
+
+**Estimated scope:** M
+
+## Task W2: Core RDATA types
+
+**Description:** `RecordType`, `Class`, `Record`, and `RData` for A, AAAA, NS, CNAME, DNAME, SOA,
+PTR, MX, TXT, SRV, CAA, SVCB/HTTPS (needed later for DDR), OPT placeholder, and unknown types
+as opaque bytes (RFC 3597). Names inside RDATA follow compression rules per RFC 3597 §4.
+
+**Acceptance criteria:**
+- [ ] Decode/encode for every listed type; RDLENGTH mismatch is an error, not a panic
+- [ ] Compression only used for names in NS/CNAME/SOA/PTR/MX (and decoded wherever legal)
+- [ ] Oracle round-trips against hickory for every type
+
+**Verification:**
+- [ ] `cargo test -p dnscraft-proto -- rdata`
+
+**Dependencies:** W1
+
+**Files likely touched:** `src/rtype.rs`, `src/record.rs`, `src/rdata/{mod.rs,basic.rs,svcb.rs}`, `tests/rdata_oracle.rs`
+
+**Estimated scope:** M
+
+## Task W3: Messages and EDNS
+
+**Description:** `Header` (all flags incl. AD/CD), `Message` with four sections, EDNS(0) OPT
+(payload size, DO bit, extended rcode, options: ECS, EDE (RFC 8914), padding, cookie, unknown),
+encoder with name compression and a size limit that truncates cleanly (TC bit, whole RRsets
+dropped), and a decoder with section count sanity checks.
+
+**Acceptance criteria:**
+- [ ] Every response the testkit sends (hickory-encoded) decodes and re-encodes to an equivalent message
+- [ ] Encoding with a 512/1232-byte limit sets TC and never splits an RRset
+- [ ] Malformed inputs (counts larger than data, trailing garbage, duplicate OPT) yield typed errors
+
+**Verification:**
+- [ ] `cargo test -p dnscraft-proto -- message edns`
+- [ ] `cargo test -p dnscraft-testkit` still green with the oracle check enabled
+
+**Dependencies:** W2, Task 3
+
+**Files likely touched:** `src/header.rs`, `src/message.rs`, `src/edns.rs`, `tests/message_oracle.rs`
+
+**Estimated scope:** M
+
+## Task W4: DNSSEC record types and canonical form
+
+**Description:** DNSKEY, DS, RRSIG, NSEC, NSEC3, NSEC3PARAM (type bitmaps), key tag (RFC 4034
+App. B), DS digest computation (SHA-1/256/384 via `ring`), NSEC3 hash (RFC 5155), and the
+canonical RRset form used as signature input (RFC 4034 §6.2/§6.3, RFC 4035 §5.3.2 incl.
+wildcard label count handling). No signature verification yet (Task 9a).
+
+**Acceptance criteria:**
+- [ ] Oracle round-trips against hickory for all six types
+- [ ] Key tags and DS digests match published values for the IANA root KSKs (20326, 38696)
+- [ ] NSEC3 hashes match RFC 5155 Appendix A test vectors; canonical form matches hickory's signature input for a test RRset
+
+**Verification:**
+- [ ] `cargo test -p dnscraft-proto -- dnssec`
+
+**Dependencies:** W3
+
+**Files likely touched:** `src/rdata/dnssec.rs`, `src/dnssec/{mod.rs,keytag.rs,digest.rs,nsec3hash.rs,canonical.rs}`, `tests/dnssec_oracle.rs`
+
+**Estimated scope:** M
+
+## Task W5: Fuzzing and oracle round-trips
+
+**Description:** `fuzz/` crate (outside the workspace, nightly) with targets: name decode,
+message decode, decode→encode→decode stability; `proptest` round-trip tests for names,
+records, and messages; a CI job that runs each fuzz target for 60 s.
+
+**Acceptance criteria:**
+- [ ] Three fuzz targets exist and run 10 min each locally without crashes or timeouts
+- [ ] Property tests: `decode(encode(x)) == x` for generated names/records/messages
+- [ ] CI runs the short fuzz job; `dnscraft-proto` line coverage ≥ 80 %
+
+**Verification:**
+- [ ] `cargo +nightly fuzz run <target> -- -max_total_time=600` per target
+- [ ] `cargo llvm-cov -p dnscraft-proto --summary-only`
+
+**Dependencies:** W3 (extended after W4)
+
+**Files likely touched:** `fuzz/{Cargo.toml,fuzz_targets/*.rs}`, `crates/dnscraft-proto/tests/props.rs`, `.github/workflows/ci.yml`
+
+**Estimated scope:** M
+
+## Checkpoint W: Wire format
+- [ ] All testkit responses decode with `dnscraft-proto`; oracle round-trips green
+- [ ] Fuzzing clean; coverage ≥ 80 %
+- [ ] Review with human
 
 ## Phase 2: Recursion
 
 ## Task 4: Iterative resolution happy path
 
 **Description:** Public API (`Resolver::new`, `resolve`, `ResolverConfig`, `Answer`, errors with
-`code()`) and iterative resolution from root hints with priming, following referrals and glue.
+`code()`) built on `dnscraft-proto`, and iterative resolution from root hints with priming, following referrals and glue.
 
 **Acceptance criteria:**
 - [ ] `A` and `AAAA` for `www.example.test.` resolve through the fake hierarchy
@@ -88,7 +205,7 @@ matching root hints. Servers can be stopped/started individually and record rece
 **Verification:**
 - [ ] `cargo test -p dnscraft-resolver --test recursion`
 
-**Dependencies:** Checkpoint A
+**Dependencies:** Checkpoint W
 
 **Files likely touched:** `crates/dnscraft-resolver/src/{lib.rs,config.rs,error.rs,iterate.rs}`, `crates/dnscraft-resolver/tests/recursion.rs`
 
@@ -158,7 +275,7 @@ smoothed-RTT server selection, randomized ids/ports, response matching, IPv4/IPv
 
 ## Task 8: Testkit DNSSEC zones
 
-**Description:** Sign testkit zones at test time with an injectable clock: `secure`,
+**Description:** Sign testkit zones at test time with hickory's signer (independent implementation) and explicit inception/expiration: `secure`,
 `insecure` (no DS), `bogus` variants (bad signature, expired RRSIG, missing DNSKEY),
 NSEC and NSEC3 (incl. opt-out) denial zones; expose the fake root's trust anchor.
 
@@ -177,10 +294,32 @@ NSEC and NSEC3 (incl. opt-out) denial zones; expose the fake root's trust anchor
 
 **Estimated scope:** M
 
-## Task 9: Chain-of-trust validation
+## Task 9a: Chain of trust and signature verification
 
-**Description:** Starts with a 1-day time box (ADR-0001): use hickory's `DnssecDnsHandle` over our own iterator if it works with an injectable clock and none of the open hickory bugs bite; otherwise write a thin validator over `hickory-proto` primitives and split this task into 9a (DNSKEY/DS chain) and 9b (RRSIG + status mapping). Validate DS → DNSKEY → RRSIG from the trust anchor down; set `DnssecStatus`,
-AD bit, `SERVFAIL` + EDE for bogus; honour CD bit; built-in IANA root anchors (KSK-2017, KSK-2024).
+**Description:** Own validator in `dnscraft-resolver` over `dnscraft-proto` (W4) and `ring`:
+trust anchors (built-in IANA root KSK-2017/KSK-2024, overridable for the testkit), DS → DNSKEY
+matching, RRSIG verification (algorithms 8, 10, 13, 14, 15; 5/7 as insecure-by-policy per RFC 8624),
+validity window against the injected clock, label-count/wildcard expansion check.
+
+**Acceptance criteria:**
+- [ ] `secure` zone validates via the testkit trust anchor; wrong signature, expired RRSIG, missing DNSKEY each fail with a distinct reason
+- [ ] Unsupported algorithm → treated as insecure, not bogus (RFC 4035 §5.2)
+- [ ] Root anchors verify the real root DNSKEY set (captured fixture)
+
+**Verification:**
+- [ ] `cargo test -p dnscraft-resolver --test dnssec -- chain`
+
+**Dependencies:** Tasks W4, 4, 8
+
+**Files likely touched:** `src/dnssec/{mod.rs,anchors.rs,chain.rs,verify.rs}`, `tests/dnssec.rs`
+
+**Estimated scope:** M
+
+## Task 9b: Validation status, AD, SERVFAIL + EDE, CD
+
+**Description:** Map validation results to `DnssecStatus` (`Secure`, `Insecure`, `Bogus`,
+`Indeterminate`), set the AD bit, turn `Bogus` into `SERVFAIL` with the matching EDE code,
+honour the CD bit per query, find insecure delegations (no DS) correctly.
 
 **Acceptance criteria:**
 - [ ] `secure` → `Secure` + AD; `insecure` → `Insecure`, no AD
@@ -188,17 +327,17 @@ AD bit, `SERVFAIL` + EDE for bogus; honour CD bit; built-in IANA root anchors (K
 - [ ] With CD bit set, the bogus answer is returned unvalidated
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-resolver --test dnssec`
+- [ ] `cargo test -p dnscraft-resolver --test dnssec -- status`
 
-**Dependencies:** Tasks 4, 8
+**Dependencies:** Task 9a
 
-**Files likely touched:** `src/dnssec/{mod.rs,chain.rs,anchors.rs}`, `tests/dnssec.rs`
+**Files likely touched:** `src/dnssec/status.rs`, `src/lib.rs`, `tests/dnssec.rs`
 
-**Estimated scope:** M
+**Estimated scope:** S
 
 ## Task 10: Authenticated denial and negative trust anchors
 
-**Description:** Validate NXDOMAIN/NODATA via NSEC and NSEC3 (incl. opt-out, wildcard proofs);
+**Description:** Own implementation: validate NXDOMAIN/NODATA via NSEC and NSEC3 (incl. opt-out, wildcard proofs, closest-encloser);
 configurable negative trust anchors.
 
 **Acceptance criteria:**
@@ -209,7 +348,7 @@ configurable negative trust anchors.
 **Verification:**
 - [ ] `cargo test -p dnscraft-resolver --test dnssec -- denial nta`
 
-**Dependencies:** Task 9
+**Dependencies:** Task 9b
 
 **Files likely touched:** `src/dnssec/{denial.rs,nta.rs}`, `tests/dnssec.rs`
 
@@ -235,7 +374,7 @@ TTL clamping, `flush(FlushScope::All | Domain)`; DNSSEC status cached with the e
 **Verification:**
 - [ ] `cargo test -p dnscraft-resolver --test cache`
 
-**Dependencies:** Tasks 5, 9
+**Dependencies:** Tasks 5, 9b
 
 **Files likely touched:** `src/cache.rs`, `src/lib.rs`, `tests/cache.rs`
 
@@ -296,7 +435,7 @@ flag per zone (default false), loop protection, cached like recursive answers.
 **Verification:**
 - [ ] `cargo test -p dnscraft-resolver --test forward`
 
-**Dependencies:** Tasks 4, 9, 11
+**Dependencies:** Tasks 4, 9b, 11
 
 **Files likely touched:** `src/forward.rs`, `src/config.rs`, `tests/forward.rs`
 

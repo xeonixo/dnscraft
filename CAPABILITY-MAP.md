@@ -27,6 +27,11 @@ resolver, filtering, clients, tls   (can run in parallel)
         → web-ui, cluster
 ```
 
+## Shared crates (not capabilities)
+
+- `dnscraft-proto`: DNS wire format and DNSSEC record types, used by every module that touches DNS messages. Built first (plan phase "wire format").
+- `dnscraft-testkit`: test-only helpers.
+
 ## Decisions recorded at map level
 
 - `clients` only enriches logs (device, VLAN, IPs) and does not select profiles.
