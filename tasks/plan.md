@@ -95,7 +95,7 @@ workspace (1) ── testkit hierarchy (3)
 - [x] Task 10: Authenticated denial (NSEC/NSEC3) and negative trust anchors
 
 ### Checkpoint C: DNSSEC
-- [ ] Success criteria 2 and 3 met
+- [x] Success criteria 2 and 3 met (owner approved 2026-10-24)
 
 ### Phase 4: Cache and resilience
 - [x] Task 11: Positive/negative cache

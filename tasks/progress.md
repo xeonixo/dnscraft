@@ -8,16 +8,19 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
 ## Current state
 
-- Phase: 4 (cache) — Task 12 in progress (in-flight dedup + prefetch); 13 open. Checkpoint C still open (manual/delv with owner).
+- Phase: 4 (cache) — Task 12 in progress (in-flight dedup + prefetch); 13 open.
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
 - Real-internet resolution works (example.com 4 queries / ~90 ms incl. priming; www.microsoft.com 13 with minimisation).
 - Checkpoint B passed (owner approved 2026-10-24).
+- Checkpoint C passed (owner approved 2026-10-24): testkit DNSSEC green; live example.com Secure + dnssec-failed.org SERVFAIL match delv/kdig.
 - Phase 3 DNSSEC tasks 8–10 done. Dev Do53 server deferred by owner.
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Checkpoint B checkboxes synced in todo.md; Checkpoint C passed (49 dnssec tests; live Secure/SERVFAIL cross-checked with delv/kdig).
 
 - 2026-10-24 — Task 12 started.
 

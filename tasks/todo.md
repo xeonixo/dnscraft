@@ -267,9 +267,9 @@ smoothed-RTT server selection, randomized ids/ports, response matching, IPv4/IPv
 **Estimated scope:** S
 
 ## Checkpoint B: Recursion
-- [ ] Success criterion 1 met
-- [ ] Manual: example binary resolves `example.com A` from the internet
-- [ ] Review with human
+- [x] Success criterion 1 met
+- [x] Manual: example binary resolves `example.com A` from the internet
+- [x] Review with human (owner approved 2026-10-24)
 
 ## Phase 3: DNSSEC
 
@@ -355,9 +355,9 @@ configurable negative trust anchors.
 **Estimated scope:** M
 
 ## Checkpoint C: DNSSEC
-- [ ] Success criterion 2 met against testkit
-- [ ] Success criterion 3 met manually (`example.com` Secure, `dnssec-failed.org` SERVFAIL); cross-check with `delv`
-- [ ] Review with human
+- [x] Success criterion 2 met against testkit
+- [x] Success criterion 3 met manually (`example.com` Secure, `dnssec-failed.org` SERVFAIL); cross-check with `delv`
+- [x] Review with human (owner approved 2026-10-24)
 
 ## Phase 4: Cache and resilience
 
