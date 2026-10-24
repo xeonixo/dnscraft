@@ -103,7 +103,7 @@ workspace (1) ── testkit hierarchy (3)
 - [x] Task 13: Serve-stale
 
 ### Checkpoint D: Cache
-- [ ] Success criteria 4, 5, 6 met (5 + 6 covered by Tasks 12/13; 4 needs Task 16 bench)
+- [x] Success criteria 4, 5, 6 met (owner approved 2026-10-24)
 
 ### Phase 5: Edges and completion
 - [ ] Task 14: Forward zones
