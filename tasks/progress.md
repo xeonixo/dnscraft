@@ -8,15 +8,18 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
 ## Current state
 
-- Phase: 1 (Foundation)
+- Phase: 2 (Recursion) complete; Phase 3 (DNSSEC) next
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
-- Real-internet resolution works (example.com 4 queries / ~90 ms incl. priming; www.microsoft.com 11).
-- Next: small fix (no full-QNAME retry on plain timeout), then Checkpoint B review, then Task 9b; optional dev Do53 server after 9b (awaiting owner OK)
+- Real-internet resolution works (example.com 4 queries / ~90 ms incl. priming; www.microsoft.com 13 with minimisation).
+- Checkpoint B presented to owner (awaiting ack).
+- Next: Task 9b; optional dev Do53 server after 9b (awaiting owner OK)
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Follow-up fix (Haiku, reviewed): no full-QNAME retry at a server that did not answer a minimised query; move to next candidate (one timeout per dead server). Regression test with a silent server. 232 tests green.
 
 - 2026-10-24 — Task 7 done (Sonnet, reviewed): RFC 9156 minimisation with A qtype, relaxed fallback on NXDOMAIN/errors/alias nodes, MAX_MINIMISE_COUNT 10 / ONE_LAB 4, config switch. Live: example.com 4 queries, microsoft 13 (+2), _dmarc.google.com TXT 4. Follow-up: plain timeout currently retries full name at the same dead server (double timeout).
 

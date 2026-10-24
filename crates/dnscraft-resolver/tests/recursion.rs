@@ -912,3 +912,83 @@ async fn qname_cname_at_minimised_name_sends_full_name() {
         ]
     );
 }
+
+/// A name server address that receives queries and never answers, logging
+/// the name of each question (a dead server that is still reachable on the wire).
+async fn spawn_silent_server() -> (
+    std::net::SocketAddr,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = socket.local_addr().unwrap();
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log2 = log.clone();
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 1500];
+        while let Ok((len, _)) = socket.recv_from(&mut buf).await {
+            if let Ok(req) = Message::decode(&buf[..len])
+                && let Some(question) = req.questions.first()
+            {
+                log2.lock().unwrap().push(question.name.to_string());
+            }
+        }
+    });
+    (addr, log)
+}
+
+#[tokio::test]
+async fn qname_timeout_at_minimised_name_moves_to_next_server() {
+    // `two.test.` is served by `ns1.two.test.` (glue, mapped to a dead server
+    // through the address override) and `ns2.example.test.` (glueless, so it is
+    // tried only after the address candidates: the dead server goes first
+    // deterministically). The name is deeper than one label below the cut, so
+    // minimisation applies.
+    let zone = simple_zone("two.test.")
+        .with_ns("two.test.", "ns1.two.test.")
+        .unwrap()
+        .with_ns("two.test.", "ns2.example.test.")
+        .unwrap()
+        .with_a("a.b.two.test.", Ipv4Addr::new(192, 0, 2, 56))
+        .unwrap();
+    let mut specs = default_servers().unwrap();
+    for spec in &mut specs {
+        if origin(spec) == "test." {
+            spec.zone = spec
+                .zone
+                .clone()
+                .with_ns("two.test.", "ns1.two.test.")
+                .unwrap()
+                .with_a("ns1.two.test.", LO)
+                .unwrap()
+                .with_ns("two.test.", "ns2.example.test.")
+                .unwrap();
+        }
+        if origin(spec) == "example.test." {
+            spec.zone = spec.zone.clone().with_a("ns2.example.test.", LO).unwrap();
+        }
+    }
+    specs.push(ServerSpec::new("ns2.example.test.", zone).unwrap());
+    let h = Hierarchy::start_with(specs).await.unwrap();
+    let (dead, dead_log) = spawn_silent_server().await;
+    let mut config = config_for(&h);
+    config.query_timeout = Duration::from_millis(200);
+    config
+        .nameserver_addr_overrides
+        .insert(n("ns1.two.test."), dead);
+    let r = Resolver::new(config).await.unwrap();
+
+    let start = Instant::now();
+    let ans = r
+        .resolve(
+            &query("a.b.two.test.", RecordType::A),
+            RequestFlags::default(),
+        )
+        .await
+        .unwrap();
+    let elapsed = start.elapsed();
+    assert_eq!(rdatas(&ans), vec![RData::A(Ipv4Addr::new(192, 0, 2, 56))]);
+    // The dead server got one minimised query and no full-QNAME retry.
+    assert_eq!(*dead_log.lock().unwrap(), vec!["b.two.test.".to_owned()]);
+    // One timeout (200 ms) was spent on the dead server, not two.
+    assert!(elapsed < Duration::from_millis(400), "{elapsed:?}");
+}

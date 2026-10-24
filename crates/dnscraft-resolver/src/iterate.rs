@@ -513,12 +513,18 @@ impl Minimiser {
 
 /// Asks one server for the next (possibly minimised) name of the zone.
 ///
-/// Returns `Ok(None)` when the server is lame for this question. A minimised
-/// query that gets anything but a referral or a plain NODATA (a name that
-/// exists, or an empty non-terminal) is repeated once with the full QNAME and
-/// QTYPE at the same server: this covers NXDOMAIN (RFC 9156 section 2.3,
-/// "relaxed" handling of servers that wrongly return NXDOMAIN for empty
-/// non-terminals), REFUSED/SERVFAIL/FORMERR, no answer, and CNAME/DNAME at the
+/// Returns `Ok(None)` when the server is lame for this question or gave no
+/// response at all. The caller then moves on to the next candidate server of
+/// the zone cut, sharing the minimisation progress with it.
+///
+/// A minimised query that gets no response (timeout or network error) is not
+/// retried with the full QNAME: the server is treated as unusable for this
+/// question, so a dead server costs a single timeout. A minimised query that
+/// gets anything but a referral or a plain NODATA (a name that exists, or an
+/// empty non-terminal) is instead repeated once with the full QNAME and QTYPE
+/// at the same server. That covers NXDOMAIN (RFC 9156 section 2.3, "relaxed"
+/// handling of servers that wrongly return NXDOMAIN for empty non-terminals),
+/// REFUSED/SERVFAIL/FORMERR and other lame responses, and CNAME/DNAME at the
 /// minimised name (an alias node: the full name must be asked to follow it).
 async fn ask_server(
     ctx: &Context<'_>,
@@ -531,28 +537,28 @@ async fn ask_server(
     while !mini.is_full() {
         let qname = mini.current(name);
         // RFC 9156 section 2.1: QTYPE A for minimised queries.
-        let resp = ctx.query_server(server, &qname, RecordType::A).await?;
-        let reason = match &resp {
-            None => "no response",
-            Some(resp) => match classify(ctx.config, resp, zone, &qname) {
-                v @ Verdict::Referral { .. } => {
-                    return Ok(Some((v, resp.clone())));
-                }
-                Verdict::Final if resp.rcode() == Rcode::NXDOMAIN => "NXDOMAIN",
-                Verdict::Final
-                    if resp
-                        .answers
-                        .iter()
-                        .any(|r| matches!(r.rtype, RecordType::CNAME | RecordType::DNAME)) =>
-                {
-                    "alias"
-                }
-                Verdict::Final => {
-                    mini.advance();
-                    continue;
-                }
-                Verdict::Lame => "lame or error response",
-            },
+        let Some(resp) = ctx.query_server(server, &qname, RecordType::A).await? else {
+            tracing::debug!(%server, qname = %qname, "no response to minimised query, trying next server");
+            return Ok(None);
+        };
+        let reason = match classify(ctx.config, &resp, zone, &qname) {
+            v @ Verdict::Referral { .. } => {
+                return Ok(Some((v, resp)));
+            }
+            Verdict::Final if resp.rcode() == Rcode::NXDOMAIN => "NXDOMAIN",
+            Verdict::Final
+                if resp
+                    .answers
+                    .iter()
+                    .any(|r| matches!(r.rtype, RecordType::CNAME | RecordType::DNAME)) =>
+            {
+                "alias"
+            }
+            Verdict::Final => {
+                mini.advance();
+                continue;
+            }
+            Verdict::Lame => "lame or error response",
         };
         tracing::debug!(%server, qname = %qname, reason, "minimised query failed, asking full name");
         break;
