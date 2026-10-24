@@ -4,8 +4,15 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -30,26 +37,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Coverage summary
         run: cargo llvm-cov --workspace --locked --summary-only
 
   fuzz:
-    name: fuzz (60 s per target)
+    name: fuzz (${{ matrix.target }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - name_decode
+          - message_decode
+          - message_roundtrip
+    # Root rust-toolchain.toml pins stable; cargo-fuzz needs nightly (-Zsanitizer).
+    # RUSTUP_TOOLCHAIN overrides that pin for this job only.
+    env:
+      RUSTUP_TOOLCHAIN: nightly
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+          # cargo-fuzz defaults to musl on Linux x86_64 for ASAN isolation.
+          targets: x86_64-unknown-linux-musl
+      - name: Install musl linker
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-fuzz
-      - name: name_decode
-        run: cd fuzz && cargo fuzz run name_decode -- -max_total_time=60
-      - name: message_decode
-        run: cd fuzz && cargo fuzz run message_decode -- -max_total_time=60
-      - name: message_roundtrip
-        run: cd fuzz && cargo fuzz run message_roundtrip -- -max_total_time=60
+          prefix-key: fuzz-${{ matrix.target }}
+      - uses: taiki-e/install-action@cargo-fuzz
+      - name: Fuzz ${{ matrix.target }}
+        working-directory: fuzz
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=60
