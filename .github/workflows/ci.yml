@@ -56,17 +56,12 @@ jobs:
           - message_roundtrip
     # Root rust-toolchain.toml pins stable; cargo-fuzz needs nightly (-Zsanitizer).
     # RUSTUP_TOOLCHAIN overrides that pin for this job only.
+    # Use the gnu target: musl defaults to crt-static, which is incompatible with ASAN.
     env:
       RUSTUP_TOOLCHAIN: nightly
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src
-          # cargo-fuzz defaults to musl on Linux x86_64 for ASAN isolation.
-          targets: x86_64-unknown-linux-musl
-      - name: Install musl linker
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
@@ -76,4 +71,7 @@ jobs:
           tool: cargo-fuzz
       - name: Fuzz ${{ matrix.target }}
         working-directory: fuzz
-        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=60
+        run: >
+          cargo fuzz run ${{ matrix.target }}
+          --target x86_64-unknown-linux-gnu
+          -- -max_total_time=60
