@@ -8,7 +8,7 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
 ## Current state
 
-- Phase: 4 (cache) — Task 11 done; 12/13 open. Checkpoint C still open (manual/delv with owner).
+- Phase: 4 (cache) — Task 12 in progress (in-flight dedup + prefetch); 13 open. Checkpoint C still open (manual/delv with owner).
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
@@ -18,6 +18,8 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Task 12 started.
 
 - 2026-10-24 — Task 11 done (Grok + lead review fix): byte-budget LRU message cache, RFC 2308 negative TTL (incl. CNAME→NODATA), TTL clamp, flush All/Domain, CD/Bogus not stored. 13 integration + 9 unit tests. Follow-ups: O(n) LRU scan, NXDOMAIN still per-qtype.
 
