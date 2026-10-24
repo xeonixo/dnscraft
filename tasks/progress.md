@@ -11,10 +11,13 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Phase: 1 (Foundation)
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
-- In progress: Task W4 (DNSSEC records) and Task W5 (fuzzing) in parallel (Sonnet agents)
+- In progress: Task W5 — code done (fuzz targets, proptest, CI job); 10-min fuzz runs and coverage measurement running
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Task W4 done (Sonnet agent, reviewed): DNSKEY/DS/RRSIG/NSEC/NSEC3/NSEC3PARAM, type bitmaps, key tag, DS digest, NSEC3 hash (RFC 5155 vectors), canonical signing input — verifies the live root DNSKEY RRSIG with ring. Review found RRSIG signer must be lowercased per RFC 6840 §5.1 (checked against RFC text) → fixed by Haiku agent. Note: hickory sorts RRsets by raw (not lowercased) RDATA; we follow RFC 4034 §6.3.
+- 2026-10-24 — Task W5 code (Sonnet agent): fuzz/ crate with 3 targets + seeds, proptest suite (5 properties, also 10k cases), CI fuzz job. libFuzzer needed gcc-c++ → installed by lead.
 
 - 2026-10-24 — Task W3 done (Sonnet agent, reviewed): Header/Rcode, EDNS (ECS, EDE, padding, cookie), Message decode with count sanity check, OPT interception, trailing-data check; encode_with_limit drops whole RRsets (TC only for answer/authority). Testkit now decodes every response with dnscraft-proto (oracle). 71 unit + 7 oracle + 4 testkit-oracle tests.
 

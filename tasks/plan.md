@@ -71,7 +71,7 @@ workspace (1) ── testkit hierarchy (3)
 - [x] Task W1: Domain names and compression
 - [x] Task W2: Core RDATA types
 - [x] Task W3: Messages and EDNS
-- [ ] Task W4: DNSSEC record types and canonical form
+- [x] Task W4: DNSSEC record types and canonical form
 - [ ] Task W5: Fuzzing and oracle round-trips
 
 ### Checkpoint W: Wire format

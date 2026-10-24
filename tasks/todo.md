@@ -151,12 +151,12 @@ canonical RRset form used as signature input (RFC 4034 §6.2/§6.3, RFC 4035 §5
 wildcard label count handling). No signature verification yet (Task 9a).
 
 **Acceptance criteria:**
-- [ ] Oracle round-trips against hickory for all six types
-- [ ] Key tags and DS digests match published values for the IANA root KSKs (20326, 38696)
-- [ ] NSEC3 hashes match RFC 5155 Appendix A test vectors; canonical form matches hickory's signature input for a test RRset
+- [x] Oracle round-trips against hickory for all six types
+- [x] Key tags and DS digests match published values for the IANA root KSKs (20326, 38696)
+- [x] NSEC3 hashes match RFC 5155 Appendix A test vectors; canonical form matches hickory's signature input for a test RRset
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-proto -- dnssec`
+- [x] `cargo test -p dnscraft-proto -- dnssec` and `cargo test -p dnscraft-proto --test dnssec_oracle --test dnssec_vectors`
 
 **Dependencies:** W3
 

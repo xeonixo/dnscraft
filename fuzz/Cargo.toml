@@ -1,0 +1,35 @@
+[package]
+name = "dnscraft-proto-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+dnscraft-proto = { path = "../crates/dnscraft-proto" }
+
+[[bin]]
+name = "name_decode"
+path = "fuzz_targets/name_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "message_decode"
+path = "fuzz_targets/message_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "message_roundtrip"
+path = "fuzz_targets/message_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

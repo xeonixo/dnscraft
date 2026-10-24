@@ -1,6 +1,7 @@
 //! Typed RDATA for the core record types.
 
 mod basic;
+mod dnssec;
 mod svcb;
 
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -9,19 +10,23 @@ use crate::error::ProtoError;
 use crate::name::{CompressionMap, Name};
 use crate::rtype::RecordType;
 
+pub use dnssec::TypeBitmap;
 pub use svcb::SvcbData;
 
 /// The data of a resource record.
 ///
-/// Types without a dedicated variant (including the DNSSEC types until they
-/// get typed support, and OPT) are kept as opaque bytes in
+/// Types without a dedicated variant (including OPT, which the message layer
+/// intercepts) are kept as opaque bytes in
 /// [`RData::Unknown`] per RFC 3597; their bytes are re-encoded verbatim.
 ///
 /// Name compression: when encoding, only the names of `NS`, `CNAME`, `SOA`,
 /// `PTR` and `MX` use the compression map (RFC 3597 section 4). `DNAME`,
-/// `SRV`, `SVCB`/`HTTPS` and everything else are written uncompressed. When
+/// `SRV`, `SVCB`/`HTTPS`, the RRSIG signer name, the NSEC next domain name and
+/// everything else are written uncompressed (RFC 4034 sections 3.1.7 and
+/// 4.1.1, RFC 6840 section 5.1). When
 /// decoding, compression pointers are accepted in every name field of the
-/// known types, including `DNAME`, `SRV` and the `SVCB`/`HTTPS` target, as
+/// known types, including `DNAME`, `SRV`, the `SVCB`/`HTTPS` target and the
+/// RRSIG signer / NSEC next names (which RFC 4034 forbids compressing), as
 /// real servers sometimes emit them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RData {
@@ -87,6 +92,83 @@ pub enum RData {
     SVCB(SvcbData),
     /// HTTPS service binding (RFC 9460).
     HTTPS(SvcbData),
+    /// DNSSEC public key (RFC 4034 section 2).
+    DNSKEY {
+        /// Flags (bit 7 zone key, bit 15 secure entry point, bit 8 revoke).
+        flags: u16,
+        /// Protocol; always 3.
+        protocol: u8,
+        /// Signature algorithm number.
+        algorithm: u8,
+        /// Public key, algorithm-specific octets.
+        public_key: Box<[u8]>,
+    },
+    /// Delegation signer (RFC 4034 section 5).
+    DS {
+        /// Key tag of the referenced DNSKEY.
+        key_tag: u16,
+        /// Signature algorithm of the referenced DNSKEY.
+        algorithm: u8,
+        /// Digest type (1 SHA-1, 2 SHA-256, 4 SHA-384).
+        digest_type: u8,
+        /// Digest of the DNSKEY.
+        digest: Box<[u8]>,
+    },
+    /// RRset signature (RFC 4034 section 3).
+    RRSIG {
+        /// Type of the covered RRset.
+        type_covered: RecordType,
+        /// Signature algorithm number.
+        algorithm: u8,
+        /// Number of labels in the original owner name (without a leading
+        /// wildcard label and the root).
+        labels: u8,
+        /// TTL of the RRset as signed.
+        original_ttl: u32,
+        /// Expiration as seconds since the epoch, modulo 2^32.
+        expiration: u32,
+        /// Inception as seconds since the epoch, modulo 2^32.
+        inception: u32,
+        /// Key tag of the signing DNSKEY.
+        key_tag: u16,
+        /// Name of the zone that owns the signing key.
+        signer_name: Name,
+        /// The signature octets.
+        signature: Box<[u8]>,
+    },
+    /// Next secure record (RFC 4034 section 4).
+    NSEC {
+        /// Next owner name in canonical zone order.
+        next_domain: Name,
+        /// Types present at the owner name.
+        types: TypeBitmap,
+    },
+    /// Hashed next secure record (RFC 5155 section 3).
+    NSEC3 {
+        /// Hash algorithm (1 is SHA-1).
+        hash_algorithm: u8,
+        /// Flags (bit 0 is opt-out).
+        flags: u8,
+        /// Additional hash iterations.
+        iterations: u16,
+        /// Salt, 0 to 255 octets.
+        salt: Box<[u8]>,
+        /// Next hashed owner name, 1 to 255 octets.
+        next_hashed_owner: Box<[u8]>,
+        /// Types present at the original owner name.
+        types: TypeBitmap,
+    },
+    /// NSEC3 parameters (RFC 5155 section 4).
+    NSEC3PARAM {
+        /// Hash algorithm (1 is SHA-1).
+        hash_algorithm: u8,
+        /// Flags; must be 0 in NSEC3PARAM.
+        flags: u8,
+        /// Additional hash iterations.
+        iterations: u16,
+        /// Salt, 0 to 255 octets.
+        salt: Box<[u8]>,
+    },
     /// Any other type, as opaque bytes (RFC 3597).
     Unknown {
         /// The record type the bytes belong to.
@@ -191,6 +273,12 @@ impl RData {
             Self::CAA { .. } => RecordType::CAA,
             Self::SVCB(_) => RecordType::SVCB,
             Self::HTTPS(_) => RecordType::HTTPS,
+            Self::DNSKEY { .. } => RecordType::DNSKEY,
+            Self::DS { .. } => RecordType::DS,
+            Self::RRSIG { .. } => RecordType::RRSIG,
+            Self::NSEC { .. } => RecordType::NSEC,
+            Self::NSEC3 { .. } => RecordType::NSEC3,
+            Self::NSEC3PARAM { .. } => RecordType::NSEC3PARAM,
             Self::Unknown { rtype, .. } => *rtype,
         }
     }
@@ -248,9 +336,14 @@ impl RData {
             RecordType::CAA => basic::decode_caa(r),
             RecordType::SVCB => Ok(Self::SVCB(svcb::decode(r, rtype)?)),
             RecordType::HTTPS => Ok(Self::HTTPS(svcb::decode(r, rtype)?)),
-            // Extension point: typed DNSSEC records (DS, RRSIG, NSEC, DNSKEY,
-            // NSEC3, NSEC3PARAM) get their own arms here. OPT is intercepted by
-            // the message layer. Until then these stay opaque (RFC 3597).
+            RecordType::DNSKEY => dnssec::decode_dnskey(r),
+            RecordType::DS => dnssec::decode_ds(r),
+            RecordType::RRSIG => dnssec::decode_rrsig(r),
+            RecordType::NSEC => dnssec::decode_nsec(r),
+            RecordType::NSEC3 => dnssec::decode_nsec3(r),
+            RecordType::NSEC3PARAM => dnssec::decode_nsec3param(r),
+            // OPT is intercepted by the message layer; everything else stays
+            // opaque (RFC 3597).
             other => Ok(Self::Unknown {
                 rtype: other,
                 data: r.rest().into(),
@@ -325,6 +418,77 @@ impl RData {
             Self::CAA { flags, tag, value } => basic::encode_caa(*flags, tag, value, buf)?,
             Self::SVCB(d) => svcb::encode(d, RecordType::SVCB, buf)?,
             Self::HTTPS(d) => svcb::encode(d, RecordType::HTTPS, buf)?,
+            Self::DNSKEY {
+                flags,
+                protocol,
+                algorithm,
+                public_key,
+            } => {
+                buf.extend_from_slice(&flags.to_be_bytes());
+                buf.push(*protocol);
+                buf.push(*algorithm);
+                buf.extend_from_slice(public_key);
+            }
+            Self::DS {
+                key_tag,
+                algorithm,
+                digest_type,
+                digest,
+            } => {
+                buf.extend_from_slice(&key_tag.to_be_bytes());
+                buf.push(*algorithm);
+                buf.push(*digest_type);
+                buf.extend_from_slice(digest);
+            }
+            Self::RRSIG {
+                type_covered,
+                algorithm,
+                labels,
+                original_ttl,
+                expiration,
+                inception,
+                key_tag,
+                signer_name,
+                signature,
+            } => {
+                buf.extend_from_slice(&type_covered.value().to_be_bytes());
+                buf.push(*algorithm);
+                buf.push(*labels);
+                for v in [original_ttl, expiration, inception] {
+                    buf.extend_from_slice(&v.to_be_bytes());
+                }
+                buf.extend_from_slice(&key_tag.to_be_bytes());
+                signer_name.encode(buf, None);
+                buf.extend_from_slice(signature);
+            }
+            Self::NSEC { next_domain, types } => {
+                next_domain.encode(buf, None);
+                types.encode(buf);
+            }
+            Self::NSEC3 {
+                hash_algorithm,
+                flags,
+                iterations,
+                salt,
+                next_hashed_owner,
+                types,
+            } => dnssec::encode_nsec3(
+                (
+                    *hash_algorithm,
+                    *flags,
+                    *iterations,
+                    salt,
+                    next_hashed_owner,
+                    types,
+                ),
+                buf,
+            )?,
+            Self::NSEC3PARAM {
+                hash_algorithm,
+                flags,
+                iterations,
+                salt,
+            } => dnssec::encode_nsec3param((*hash_algorithm, *flags, *iterations, salt), buf)?,
             Self::Unknown { data, .. } => buf.extend_from_slice(data),
         }
         Ok(())
@@ -413,9 +577,11 @@ mod tests {
             ),
             (
                 RecordType::DS,
-                RData::Unknown {
-                    rtype: RecordType::DS,
-                    data: vec![0, 1, 8, 2, 9, 9].into(),
+                RData::DS {
+                    key_tag: 1,
+                    algorithm: 8,
+                    digest_type: 2,
+                    digest: vec![9, 9].into(),
                 },
             ),
         ];

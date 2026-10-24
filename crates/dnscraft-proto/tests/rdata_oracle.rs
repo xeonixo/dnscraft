@@ -4,6 +4,8 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use dnscraft_proto::{Class, CompressionMap, Name, RData, Record, RecordType, SvcbData};
+use hickory_proto::dnssec::rdata::{DNSSECRData, DS};
+use hickory_proto::dnssec::{Algorithm, DigestType};
 use hickory_proto::op::{Message, MessageType, OpCode, Query};
 use hickory_proto::rr::rdata::caa::KeyValue;
 use hickory_proto::rr::rdata::null::NULL;
@@ -283,23 +285,27 @@ fn corpus() -> Vec<(HRecord, Record)> {
                 },
             ),
         ),
-        // DNSSEC types are opaque until W4; bytes must survive unchanged.
+        // DS is a typed record since W4.
         (
             h(
                 "example.com.",
                 300,
-                HRData::Unknown {
-                    code: HType::DS,
-                    rdata: NULL::with(vec![0x4E, 0x20, 8, 2, 1, 2, 3, 4, 5, 6, 7, 8]),
-                },
+                HRData::DNSSEC(DNSSECRData::DS(DS::new(
+                    0x4E20,
+                    Algorithm::RSASHA256,
+                    DigestType::SHA256,
+                    vec![1, 2, 3, 4, 5, 6, 7, 8],
+                ))),
             ),
             ours(
                 "example.com.",
                 RecordType::DS,
                 300,
-                RData::Unknown {
-                    rtype: RecordType::DS,
-                    data: vec![0x4E, 0x20, 8, 2, 1, 2, 3, 4, 5, 6, 7, 8].into(),
+                RData::DS {
+                    key_tag: 0x4E20,
+                    algorithm: 8,
+                    digest_type: 2,
+                    digest: vec![1, 2, 3, 4, 5, 6, 7, 8].into(),
                 },
             ),
         ),

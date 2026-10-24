@@ -21,7 +21,9 @@ expect_used = "warn"
 tokio = { version = "1.54", features = ["net", "rt", "macros", "time", "io-util", "sync"] }
 hickory-proto = { version = "=0.26.3", default-features = false, features = ["std"] }
 thiserror = "2.0"
+ring = "0.17"
 tracing = "0.1"
+proptest = "1"
 
 [profile.release]
 lto = "thin"

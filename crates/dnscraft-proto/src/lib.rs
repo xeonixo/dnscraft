@@ -4,6 +4,7 @@
 //! This crate performs no I/O, never panics on untrusted input, and reports
 //! every decode failure as a typed [`ProtoError`].
 
+pub mod dnssec;
 mod edns;
 mod error;
 mod header;
@@ -18,6 +19,6 @@ pub use error::ProtoError;
 pub use header::{Counts, Header, Opcode, Rcode};
 pub use message::{Message, Question};
 pub use name::{CompressionMap, Labels, Name};
-pub use rdata::{RData, SvcbData};
+pub use rdata::{RData, SvcbData, TypeBitmap};
 pub use record::Record;
 pub use rtype::{Class, RecordType};

@@ -34,3 +34,22 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Coverage summary
         run: cargo llvm-cov --workspace --locked --summary-only
+
+  fuzz:
+    name: fuzz (60 s per target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: name_decode
+        run: cd fuzz && cargo fuzz run name_decode -- -max_total_time=60
+      - name: message_decode
+        run: cd fuzz && cargo fuzz run message_decode -- -max_total_time=60
+      - name: message_roundtrip
+        run: cd fuzz && cargo fuzz run message_roundtrip -- -max_total_time=60

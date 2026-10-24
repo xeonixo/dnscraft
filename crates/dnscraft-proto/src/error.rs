@@ -130,6 +130,55 @@ pub enum ProtoError {
         /// Size of the header, questions and OPT record.
         needed: usize,
     },
+    /// An NSEC/NSEC3 type bitmap violates RFC 4034 section 4.1.2.
+    #[error("invalid type bitmap: {reason}")]
+    InvalidTypeBitmap {
+        /// Short static description of the violated rule.
+        reason: &'static str,
+    },
+    /// The DS digest type is not supported.
+    #[error("unsupported DS digest type {digest_type}")]
+    UnsupportedDigestType {
+        /// The DS digest type code.
+        digest_type: u8,
+    },
+    /// The NSEC3 hash algorithm is not supported (only 1, SHA-1, exists).
+    #[error("unsupported NSEC3 hash algorithm {algorithm}")]
+    UnsupportedNsec3Algorithm {
+        /// The NSEC3 hash algorithm code.
+        algorithm: u8,
+    },
+    /// The NSEC3 iteration count exceeds the caller's limit (RFC 9276).
+    #[error("NSEC3 iteration count {iterations} exceeds the limit of {max}")]
+    Nsec3IterationsTooHigh {
+        /// Iteration count found.
+        iterations: u16,
+        /// The limit that was enforced.
+        max: u16,
+    },
+    /// A base32hex string is malformed.
+    #[error("invalid base32hex string")]
+    InvalidBase32,
+    /// An RRset or RRSIG cannot be turned into DNSSEC signing input.
+    #[error("invalid RRset for signing input: {reason}")]
+    InvalidRrset {
+        /// Short static description of the violated rule.
+        reason: &'static str,
+    },
+    /// The RRSIG Labels field exceeds the label count of the owner name.
+    #[error("RRSIG labels {labels} exceed the {owner_labels} labels of the owner name")]
+    RrsigLabelsTooMany {
+        /// RRSIG Labels field.
+        labels: u8,
+        /// Labels in the owner name.
+        owner_labels: usize,
+    },
+    /// The canonical RDATA form is not implemented for this record type.
+    #[error("canonical form of type {rtype} is not supported")]
+    UnsupportedCanonicalType {
+        /// Numeric record type.
+        rtype: u16,
+    },
 }
 
 impl ProtoError {
@@ -157,6 +206,14 @@ impl ProtoError {
             Self::InvalidEdns { .. } => "proto.invalid_edns",
             Self::InvalidMessage { .. } => "proto.invalid_message",
             Self::LimitTooSmall { .. } => "proto.limit_too_small",
+            Self::InvalidTypeBitmap { .. } => "proto.invalid_type_bitmap",
+            Self::UnsupportedDigestType { .. } => "proto.unsupported_digest_type",
+            Self::UnsupportedNsec3Algorithm { .. } => "proto.unsupported_nsec3_algorithm",
+            Self::Nsec3IterationsTooHigh { .. } => "proto.nsec3_iterations_too_high",
+            Self::InvalidBase32 => "proto.invalid_base32",
+            Self::InvalidRrset { .. } => "proto.invalid_rrset",
+            Self::RrsigLabelsTooMany { .. } => "proto.rrsig_labels_too_many",
+            Self::UnsupportedCanonicalType { .. } => "proto.unsupported_canonical_type",
         }
     }
 }
