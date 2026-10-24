@@ -7,7 +7,7 @@ use dnscraft_proto::{Class, Edns, EdnsOption, Message, Name, RData, Rcode, Recor
 use dnscraft_resolver::dnssec::TrustAnchors;
 use dnscraft_resolver::local_zones::{LocalZones, strip_client_subnet};
 use dnscraft_resolver::{
-    AnswerSource, DnssecStatus, Query, RequestFlags, Resolver, ResolverConfig,
+    AnswerSource, DnssecStatus, ForwardZone, Query, RequestFlags, Resolver, ResolverConfig,
 };
 use dnscraft_testkit::Hierarchy;
 
@@ -277,30 +277,31 @@ async fn local_zone_answer_never_leaves_the_host() {
 async fn forward_zone_disables_local_answer_for_its_subtree() {
     let h = Hierarchy::start().await.unwrap();
     let mut config = config_for(&h);
-    config.forward_zones = vec![name("10.in-addr.arpa.")];
+    // The fake root is the forward target, so the query leaves the host as a
+    // stub query instead of being synthesized locally.
+    config.forward_zones = vec![ForwardZone {
+        zone: name("10.in-addr.arpa."),
+        targets: h.root_hints(),
+        validate: false,
+    }];
     let r = Resolver::new(config).await.unwrap();
     h.server(".").unwrap().clear_queries();
 
-    // The fake hierarchy has no in-addr.arpa. delegation, so recursion ends in
-    // some non-local outcome: an error, or a response that is not the
-    // synthesized local one (the resolver clears AA on recursive answers).
-    let result = r
+    let ans = r
         .resolve(
             &query("1.0.0.10.in-addr.arpa.", RecordType::PTR),
             RequestFlags::default(),
         )
-        .await;
-    if let Ok(ans) = &result {
-        assert!(!ans.message.header.aa);
-        assert_ne!(ans.dnssec, DnssecStatus::Insecure);
-    }
-    // The root saw the minimised `arpa.` (NXDOMAIN there: no such TLD in the
-    // fake hierarchy), then the full name through the relaxed fallback.
+        .await
+        .unwrap();
+    // Local answers are authoritative and do not set RA. A forwarded answer
+    // clears AA, sets RA, and is Insecure because the zone does not validate.
+    assert!(!ans.message.header.aa);
+    assert!(ans.message.header.ra);
+    assert_eq!(ans.dnssec, DnssecStatus::Insecure);
+    assert_eq!(ans.message.rcode(), Rcode::NXDOMAIN);
     assert_eq!(
         root_queries(&h),
-        vec![
-            ("arpa.".to_owned(), RecordType::A),
-            ("1.0.0.10.in-addr.arpa.".to_owned(), RecordType::PTR)
-        ]
+        vec![("1.0.0.10.in-addr.arpa.".to_owned(), RecordType::PTR)]
     );
 }

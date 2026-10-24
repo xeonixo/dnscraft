@@ -67,6 +67,16 @@ pub enum ResolveError {
         /// The name that was reached twice.
         name: Name,
     },
+    /// The peer asking this question is itself a forward target for the zone.
+    ///
+    /// That means the remote side forwarded the query back to this resolver.
+    /// Returned instead of forwarding again (or joining an in-flight forward
+    /// that is waiting on that peer), which would hang.
+    #[error("forwarding loop detected for {zone}")]
+    ForwardLoop {
+        /// The forward zone that matched the query.
+        zone: Name,
+    },
     /// A query could not be encoded.
     #[error("cannot encode query: {0}")]
     Encode(#[from] ProtoError),
@@ -80,6 +90,7 @@ impl ResolveError {
             Self::QueryBudgetExceeded { .. } => "resolver.query_budget",
             Self::ReferralDepthExceeded { .. } => "resolver.referral_depth",
             Self::CnameLimitExceeded { .. } | Self::CnameLoop { .. } => "resolver.cname_limit",
+            Self::ForwardLoop { .. } => "resolver.forward_loop",
             Self::Encode(_) => "resolver.encode",
         }
     }
@@ -94,5 +105,7 @@ mod tests {
         assert_eq!(ResolverError::NoRootHints.code(), "resolver.no_root_hints");
         let e = ResolveError::Unreachable { zone: Name::root() };
         assert_eq!(e.code(), "resolver.unreachable");
+        let looped = ResolveError::ForwardLoop { zone: Name::root() };
+        assert_eq!(looped.code(), "resolver.forward_loop");
     }
 }

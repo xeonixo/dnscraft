@@ -519,6 +519,7 @@ async fn cached_secure_answer_keeps_dnssec_status_and_records() {
         RequestFlags {
             checking_disabled: false,
             dnssec_ok: true,
+            client: None,
         },
     )
     .await;
@@ -550,6 +551,7 @@ async fn cached_secure_answer_keeps_dnssec_status_and_records() {
         RequestFlags {
             checking_disabled: false,
             dnssec_ok: true,
+            client: None,
         },
     )
     .await;
@@ -599,6 +601,7 @@ async fn checking_disabled_answers_are_not_stored() {
     let cd = RequestFlags {
         checking_disabled: true,
         dnssec_ok: false,
+        client: None,
     };
     let first = resolve(&r, "www.example.test.", RecordType::A, cd).await;
     assert_eq!(first.source, AnswerSource::Recursion);
@@ -629,6 +632,7 @@ async fn validated_cache_entry_is_served_to_a_cd_query() {
         RequestFlags {
             checking_disabled: true,
             dnssec_ok: false,
+            client: None,
         },
     )
     .await;

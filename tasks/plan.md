@@ -106,7 +106,7 @@ workspace (1) ── testkit hierarchy (3)
 - [x] Success criteria 4, 5, 6 met (owner approved 2026-10-24)
 
 ### Phase 5: Edges and completion
-- [ ] Task 14: Forward zones
+- [x] Task 14: Forward zones
 - [x] Task 15: Locally served private reverse zones and ECS stripping
 - [ ] Task 16: Stats, error codes, benchmark, example binary, acceptance
 

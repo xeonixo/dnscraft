@@ -71,9 +71,33 @@ pub struct ResolverConfig {
     /// How long IPv6 name servers are deprioritised after an IPv6 send failed
     /// with network-unreachable.
     pub ipv6_cooldown: Duration,
-    /// Zones answered by forward targets — full forwarding arrives in Task 14;
-    /// for now only used to exempt them from locally served zones.
-    pub forward_zones: Vec<Name>,
+    /// Zones answered by stub forwarders instead of iterative resolution.
+    ///
+    /// Empty by default. A name is forwarded to the most specific zone that
+    /// covers it. See [`ForwardZone`].
+    pub forward_zones: Vec<ForwardZone>,
+}
+
+/// A zone whose queries are sent to recursive targets (stub forwarding).
+///
+/// Queries for [`Self::zone`] and names below it go to [`Self::targets`] with
+/// the recursion-desired bit set, in smoothed-RTT order. A target that does
+/// not answer is skipped and the next one is tried.
+///
+/// [`Self::validate`] should stay `false` unless the zone is signed and a
+/// trust anchor for it is configured: `false` is an implicit negative trust
+/// anchor (status `Insecure`, no AD bit, records not checked). `true`
+/// validates positive RRsets against that zone's DNSKEY, fetched from the
+/// same targets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForwardZone {
+    /// Apex of the forwarded zone.
+    pub zone: Name,
+    /// Recursive servers that answer this zone.
+    pub targets: Vec<SocketAddr>,
+    /// When `false`, do not validate (implicit negative trust anchor).
+    /// When `true`, validate against a trust anchor for [`Self::zone`].
+    pub validate: bool,
 }
 
 impl Default for ResolverConfig {

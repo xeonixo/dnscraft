@@ -7,6 +7,8 @@
 //! - `prefetch`: background refresh of popular entries shortly before expiry.
 //! - `iterate`: iterative resolution and referral following (Tasks 5, 7 extend it:
 //!   CNAME chains, limits, QNAME minimisation).
+//! - `forward`: stub forwarding of configured zones, with failover and loop
+//!   protection.
 //! - `transport`: single UDP exchange with response matching (Task 6: TCP, retries,
 //!   server selection).
 //! - `priming`: root priming (RFC 8109).
@@ -17,6 +19,7 @@ mod clock;
 mod config;
 pub mod dnssec;
 mod error;
+mod forward;
 mod hints;
 mod inflight;
 mod iterate;
@@ -36,13 +39,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use dnscraft_proto::{Message, Rcode, Record, RecordType};
-use dnssec::status::Status;
+use dnscraft_proto::{Class, Message, Name, Rcode, Record, RecordType};
+use dnssec::status::{BogusReason, Status, rrsets};
+use dnssec::{ChainFailure, DelegationTrust, KeysOutcome, validate_dnskey_rrset, validate_rrset};
 use local_zones::LocalZones;
 use server_selection::ServerStats;
 
 pub use clock::{Clock, ManualClock, SystemClock};
-pub use config::ResolverConfig;
+pub use config::{ForwardZone, ResolverConfig};
 pub use error::{ResolveError, ResolverError};
 pub use hints::default_root_hints;
 pub use types::{
@@ -107,17 +111,24 @@ impl Resolver {
         })
     }
 
-    /// Resolves `query` by iterating from the root servers.
+    /// Resolves `query`.
+    ///
+    /// Names covered by a configured forward zone are sent to that zone's
+    /// targets. Every other name is resolved iteratively from the root
+    /// servers.
     pub async fn resolve(
         &self,
         query: &Query,
         flags: RequestFlags,
     ) -> Result<Answer, ResolveError> {
-        if let Some(answer) = self
-            .shared
-            .local_zones
-            .answer(query, &self.shared.config.forward_zones)
-        {
+        if let Some(answer) = self.shared.local_zones.answer(
+            query,
+            self.shared
+                .config
+                .forward_zones
+                .iter()
+                .map(|zone| &zone.zone),
+        ) {
             return Ok(answer);
         }
         self.shared.resolutions.fetch_add(1, Ordering::Relaxed);
@@ -127,7 +138,21 @@ impl Resolver {
             self.maybe_prefetch(query, flags, now);
             return Ok(present(answer, flags, query.qtype));
         }
-        // Misses for the same question share one iterative resolution. DO is
+        // Forward loop: peer is a configured target of the matching zone.
+        // Checked before dedup so we do not join a flight that is waiting on
+        // that same peer (deadlock). Ordinary clients are not targets, so
+        // they still coalesce on the in-flight forward.
+        if query.qclass == Class::IN
+            && let Some(client) = flags.client
+            && let Some(zone) = forward::covering(&self.shared.config.forward_zones, &query.name)
+            && zone.targets.contains(&client)
+        {
+            tracing::debug!(qname = %query.name, zone = %zone.zone, peer = %client, "forward loop");
+            return Err(ResolveError::ForwardLoop {
+                zone: zone.zone.clone(),
+            });
+        }
+        // Misses for the same question share one upstream resolution. DO is
         // applied per waiter afterwards, because it is not part of the key.
         let key = inflight::Key::new(query, flags.checking_disabled);
         let shared = Arc::clone(&self.shared);
@@ -252,15 +277,23 @@ impl Resolver {
 }
 
 impl Shared {
-    /// One iterative resolution, stored when the answer is cacheable.
+    /// One upstream resolution, stored when the answer is cacheable.
     ///
-    /// DNSSEC records are left in place. Each caller strips them according
-    /// to its own DO bit, including waiters that shared this flight.
+    /// A name covered by a forward zone is stub-forwarded. Everything else
+    /// is resolved iteratively from the roots. DNSSEC records are left in
+    /// place. Each caller strips them according to its own DO bit, including
+    /// waiters that shared this flight.
     async fn resolve_upstream(
         &self,
         query: &Query,
         flags: RequestFlags,
     ) -> Result<Answer, ResolveError> {
+        if query.qclass == Class::IN
+            && let Some(zone) = forward::covering(&self.config.forward_zones, &query.name)
+        {
+            let zone = zone.clone();
+            return self.forward_zone(zone, query, flags).await;
+        }
         let roots = lock(&self.roots).clone();
         let mut ctx =
             iterate::Context::new(&self.config, &roots, &self.outgoing, self.stats.clone());
@@ -275,7 +308,131 @@ impl Shared {
         let (outcome, status) =
             iterate::resolve_iterative(&ctx, &query.name, query.qtype, 0, Vec::new()).await?;
         tracing::debug!(qname = %query.name, zone = %outcome.zone, "resolved");
-        let mut message = outcome.message;
+        self.finish_answer(query, flags, outcome.message, status)
+    }
+
+    /// Sends `query` to `zone`'s targets and caches the answer like a
+    /// recursive one.
+    async fn forward_zone(
+        &self,
+        zone: ForwardZone,
+        query: &Query,
+        flags: RequestFlags,
+    ) -> Result<Answer, ResolveError> {
+        tracing::debug!(
+            qname = %query.name,
+            qtype = %query.qtype,
+            zone = %zone.zone,
+            "forwarding"
+        );
+        let message = self
+            .exchange_forward(&zone.targets, &zone.zone, &query.name, query.qtype)
+            .await?;
+        let status = self.forwarded_status(&zone, flags, &message).await?;
+        self.finish_answer(query, flags, message, status)
+    }
+
+    /// One stub query to `targets`. An empty list or no usable answer is
+    /// [`ResolveError::Unreachable`] for `zone`.
+    async fn exchange_forward(
+        &self,
+        targets: &[SocketAddr],
+        zone: &Name,
+        name: &Name,
+        qtype: RecordType,
+    ) -> Result<Message, ResolveError> {
+        if targets.is_empty() {
+            return Err(ResolveError::Unreachable { zone: zone.clone() });
+        }
+        self.outgoing.fetch_add(1, Ordering::Relaxed);
+        let query = transport::build_forward_query(name, qtype);
+        match transport::query_servers(targets, &query, self.config.query_timeout, &self.stats)
+            .await
+        {
+            Ok(resp) => Ok(resp.message),
+            Err(transport::TransportError::Encode(err)) => Err(ResolveError::Encode(err)),
+            Err(err) => {
+                tracing::debug!(qname = %name, qtype = %qtype, zone = %zone, error = %err, "forward failed");
+                Err(ResolveError::Unreachable { zone: zone.clone() })
+            }
+        }
+    }
+
+    /// DNSSEC status of a stub answer.
+    ///
+    /// `validate == false` is always `Insecure`. Otherwise CD, or no trust
+    /// anchors at all, yields `Indeterminate` (validation is off), matching
+    /// a recursive answer. With validation on, the zone apex must have a
+    /// trust anchor; DNSKEY is fetched from the same targets and positive
+    /// in-zone RRsets are checked against it. A response with nothing to
+    /// check stays `Indeterminate` — a stub answer does not carry a denial
+    /// proof this resolver rebuilds.
+    async fn forwarded_status(
+        &self,
+        zone: &ForwardZone,
+        flags: RequestFlags,
+        message: &Message,
+    ) -> Result<Status, ResolveError> {
+        if !zone.validate {
+            return Ok(Status::Insecure);
+        }
+        let validating =
+            !flags.checking_disabled && !self.config.trust_anchors.anchors().is_empty();
+        if !validating {
+            return Ok(Status::Indeterminate);
+        }
+        if !self.config.trust_anchors.has_zone(&zone.zone) {
+            return Ok(Status::Bogus(BogusReason::Chain(
+                ChainFailure::NoTrustAnchor,
+            )));
+        }
+        tracing::debug!(zone = %zone.zone, "validating forwarded answer");
+        let keys_msg = match self
+            .exchange_forward(&zone.targets, &zone.zone, &zone.zone, RecordType::DNSKEY)
+            .await
+        {
+            Ok(message) => message,
+            Err(ResolveError::Unreachable { .. }) => {
+                return Ok(Status::Bogus(BogusReason::DnskeyUnavailable));
+            }
+            Err(err) => return Err(err),
+        };
+        let keys = match validate_dnskey_rrset(
+            &zone.zone,
+            &keys_msg.answers,
+            &keys_msg.answers,
+            DelegationTrust::Anchors(&self.config.trust_anchors),
+            self.config.clock.now(),
+        ) {
+            Ok(KeysOutcome::Secure(keys)) => keys,
+            Ok(KeysOutcome::Insecure(_)) => return Ok(Status::Insecure),
+            Err(err) => return Ok(Status::Bogus(BogusReason::Chain(err))),
+        };
+        let now = self.config.clock.now();
+        let mut saw = false;
+        for set in rrsets(&message.answers, &zone.zone, |_| true) {
+            let owned: Vec<Record> = set.into_iter().cloned().collect();
+            if let Err(err) = validate_rrset(&owned, &message.answers, &keys, now) {
+                return Ok(Status::Bogus(BogusReason::Verify(err)));
+            }
+            saw = true;
+        }
+        if saw {
+            Ok(Status::Secure)
+        } else {
+            Ok(Status::Indeterminate)
+        }
+    }
+
+    /// Applies AA/RA/AD, rewrites Bogus to SERVFAIL, and stores a cacheable
+    /// answer. Shared by iterative and forwarded resolutions.
+    fn finish_answer(
+        &self,
+        query: &Query,
+        flags: RequestFlags,
+        mut message: Message,
+        status: Status,
+    ) -> Result<Answer, ResolveError> {
         message.header.aa = false;
         message.header.ra = true;
         // Never pass on an AD bit set by a server; only our own validation counts.

@@ -68,9 +68,13 @@ impl LocalZones {
     }
 
     /// True if a forward zone is equal to or inside `local`, or covers it.
-    pub fn is_overridden_by(&self, local: &Name, forward_zones: &[Name]) -> bool {
+    pub fn is_overridden_by<'a>(
+        &self,
+        local: &Name,
+        forward_zones: impl IntoIterator<Item = &'a Name>,
+    ) -> bool {
         forward_zones
-            .iter()
+            .into_iter()
             .any(|f| local.zone_of(f) || f.zone_of(local))
     }
 
@@ -89,7 +93,11 @@ impl LocalZones {
     /// Local answers carry the AA bit, use `DnssecStatus::Insecure` and
     /// `AnswerSource::Recursion` (there is no dedicated local source). The
     /// message id is 0; the caller must copy the id of the client request.
-    pub fn answer(&self, query: &Query, forward_zones: &[Name]) -> Option<Answer> {
+    pub fn answer<'a>(
+        &self,
+        query: &Query,
+        forward_zones: impl IntoIterator<Item = &'a Name>,
+    ) -> Option<Answer> {
         if query.qclass != Class::IN {
             return None;
         }

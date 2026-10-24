@@ -1,5 +1,7 @@
 //! Request and response types of the resolver boundary.
 
+use std::net::SocketAddr;
+
 use dnscraft_proto::{Class, Message, Name, RecordType};
 
 /// A question to resolve.
@@ -20,6 +22,12 @@ pub struct RequestFlags {
     pub checking_disabled: bool,
     /// The client's DO bit: wants DNSSEC records in the answer.
     pub dnssec_ok: bool,
+    /// Peer address of the client that asked this question, when known.
+    ///
+    /// Listeners should set this to the UDP/TCP peer. Forward-zone loop
+    /// protection refuses to forward when the peer is itself one of the
+    /// zone's targets (the remote side forwarded back here).
+    pub client: Option<SocketAddr>,
 }
 
 /// DNSSEC validation outcome of an answer.

@@ -44,6 +44,16 @@ pub fn build_query(name: &Name, qtype: RecordType) -> Message {
     msg
 }
 
+/// Builds a recursive query (RD set) with EDNS (1232 bytes, DO set) and a
+/// random id, for stub forwarding.
+///
+/// Iterative lookups use [`build_query`], which leaves RD clear.
+pub fn build_forward_query(name: &Name, qtype: RecordType) -> Message {
+    let mut msg = build_query(name, qtype);
+    msg.header.rd = true;
+    msg
+}
+
 /// Sends `query` over UDP to `server` and waits for a matching response;
 /// a truncated (TC=1) response is retried over TCP.
 ///

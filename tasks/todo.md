@@ -428,12 +428,12 @@ configured window (default 1 day) with EDE "Stale Answer" and `AnswerSource::Sta
 flag per zone (default false), loop protection, cached like recursive answers.
 
 **Acceptance criteria:**
-- [ ] Forward zone resolves via targets only; fake root sees no query for it
-- [ ] First target stopped → second target answers
-- [ ] Target forwarding back to the resolver ends in `SERVFAIL` (`resolver.forward_loop`), no hang
+- [x] Forward zone resolves via targets only; fake root sees no query for it
+- [x] First target stopped → second target answers
+- [x] Target forwarding back to the resolver ends in `SERVFAIL` (`resolver.forward_loop`), no hang
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-resolver --test forward`
+- [x] `cargo test -p dnscraft-resolver --test forward`
 
 **Dependencies:** Tasks 4, 9b, 11
 

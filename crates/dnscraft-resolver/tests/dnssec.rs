@@ -519,6 +519,7 @@ async fn status_ask(r: &Resolver, qname: &str, flags: RequestFlags) -> dnscraft_
 const DO: RequestFlags = RequestFlags {
     checking_disabled: false,
     dnssec_ok: true,
+    client: None,
 };
 
 async fn status_secure(alg: Option<SigAlgorithm>) {
@@ -753,6 +754,7 @@ async fn status_cd_returns_bogus_answer_unvalidated() {
     let cd = RequestFlags {
         checking_disabled: true,
         dnssec_ok: true,
+        client: None,
     };
     for qname in ["www.bogus-sig.test.", "www.bogus-nokey.test."] {
         let ans = status_ask(&r, qname, cd).await;
