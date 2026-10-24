@@ -71,7 +71,9 @@ jobs:
         with:
           workspaces: fuzz
           prefix-key: fuzz-${{ matrix.target }}
-      - uses: taiki-e/install-action@cargo-fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
       - name: Fuzz ${{ matrix.target }}
         working-directory: fuzz
         run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=60
