@@ -86,7 +86,7 @@ workspace (1) ── testkit hierarchy (3)
 - [x] Task 7: QNAME minimisation
 
 ### Checkpoint B: Recursion
-- [ ] Success criterion 1 met; manual `example.com A` resolves from the internet
+- [x] Success criterion 1 met; manual `example.com A` resolves from the internet (owner approved 2026-10-24)
 
 ### Phase 3: DNSSEC
 - [x] Task 8: Testkit DNSSEC zones

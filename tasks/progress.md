@@ -13,8 +13,8 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
 - Real-internet resolution works (example.com 4 queries / ~90 ms incl. priming; www.microsoft.com 13 with minimisation).
-- Checkpoint B presented to owner (awaiting ack).
-- Next: Task 9b; optional dev Do53 server after 9b (awaiting owner OK)
+- Checkpoint B passed (owner approved 2026-10-24).
+- In progress: Task 9b (Sonnet agent). Next: optional dev Do53 server after 9b (awaiting owner OK)
 - Blockers: none
 
 ## Log
