@@ -1,5 +1,7 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
+use hickory_proto::dnssec::Nsec3HashAlgorithm;
+use hickory_proto::dnssec::rdata::DNSSECRData;
 use hickory_proto::rr::rdata::{A, AAAA, NS, SOA};
 use hickory_proto::rr::{Name, RData, Record, RecordType};
 
@@ -28,6 +30,64 @@ pub fn parse_name(text: &str) -> Result<Name, TestkitError> {
 pub struct Zone {
     origin: Name,
     records: Vec<Record>,
+    chain: Option<DenialChain>,
+}
+
+/// Denial-of-existence data of a signed zone, used by the responder to pick
+/// the NSEC or NSEC3 records that prove a negative answer.
+#[derive(Clone, Debug)]
+pub(crate) enum DenialChain {
+    /// NSEC chain; the records live in the zone's record list.
+    Nsec,
+    /// NSEC3 chain with its parameters and the sorted hash to owner mapping.
+    Nsec3 {
+        salt: Vec<u8>,
+        iterations: u16,
+        /// `(hash, owner)` sorted by hash.
+        hashes: Vec<(Vec<u8>, Name)>,
+    },
+}
+
+impl DenialChain {
+    /// NSEC3 hash of `name` under this chain's parameters (`None` for NSEC).
+    pub(crate) fn hash(&self, name: &Name) -> Option<Vec<u8>> {
+        match self {
+            Self::Nsec => None,
+            Self::Nsec3 {
+                salt, iterations, ..
+            } => Nsec3HashAlgorithm::SHA1
+                .hash(salt, name, *iterations)
+                .ok()
+                .map(|d| d.as_ref().to_vec()),
+        }
+    }
+
+    /// Owner of the NSEC3 record whose hash equals `hash`.
+    pub(crate) fn nsec3_match(&self, hash: &[u8]) -> Option<&Name> {
+        match self {
+            Self::Nsec3 { hashes, .. } => hashes
+                .iter()
+                .find(|(h, _)| h.as_slice() == hash)
+                .map(|(_, n)| n),
+            Self::Nsec => None,
+        }
+    }
+
+    /// Owner of the NSEC3 record whose interval covers `hash`.
+    pub(crate) fn nsec3_cover(&self, hash: &[u8]) -> Option<&Name> {
+        match self {
+            Self::Nsec3 { hashes, .. } => {
+                let idx = hashes.partition_point(|(h, _)| h.as_slice() < hash);
+                let pick = if idx == 0 {
+                    hashes.last()
+                } else {
+                    hashes.get(idx - 1)
+                };
+                pick.map(|(_, n)| n)
+            }
+            Self::Nsec => None,
+        }
+    }
 }
 
 impl Zone {
@@ -36,6 +96,7 @@ impl Zone {
         Ok(Self {
             origin: parse_name(origin)?,
             records: Vec::new(),
+            chain: None,
         })
     }
 
@@ -47,6 +108,20 @@ impl Zone {
     /// All records of the zone.
     pub fn records(&self) -> &[Record] {
         &self.records
+    }
+
+    /// Whether the zone has been signed (see [`sign_zone`](crate::sign_zone)).
+    pub fn is_signed(&self) -> bool {
+        self.chain.is_some()
+    }
+
+    pub(crate) fn chain(&self) -> Option<&DenialChain> {
+        self.chain.as_ref()
+    }
+
+    pub(crate) fn with_chain(mut self, chain: DenialChain) -> Self {
+        self.chain = Some(chain);
+        self
     }
 
     /// Adds an arbitrary record.
@@ -122,5 +197,56 @@ impl Zone {
     /// Whether `name` owns records or has descendants that do (empty non-terminal).
     pub(crate) fn name_exists(&self, name: &Name) -> bool {
         self.records.iter().any(|r| name.zone_of(&r.name))
+    }
+}
+
+impl Zone {
+    /// RRSIG records at `name` covering `rtype`.
+    pub(crate) fn sigs(&self, name: &Name, rtype: RecordType) -> Vec<Record> {
+        self.records
+            .iter()
+            .filter(|r| r.name == *name && rrsig_covered(r) == Some(rtype))
+            .cloned()
+            .collect()
+    }
+
+    /// Whether `name` itself owns at least one record.
+    pub(crate) fn has_records(&self, name: &Name) -> bool {
+        self.records.iter().any(|r| r.name == *name)
+    }
+
+    /// The longest existing proper ancestor of `qname` (at worst the origin).
+    pub(crate) fn closest_encloser(&self, qname: &Name) -> Name {
+        let mut candidate = qname.base_name();
+        while candidate != self.origin && !self.name_exists(&candidate) {
+            candidate = candidate.base_name();
+        }
+        candidate
+    }
+
+    /// Owner of the NSEC record that matches or covers `name`.
+    pub(crate) fn nsec_covering(&self, name: &Name) -> Option<Name> {
+        let mut owners: Vec<&Name> = self
+            .records
+            .iter()
+            .filter(|r| r.record_type() == RecordType::NSEC)
+            .map(|r| &r.name)
+            .collect();
+        owners.sort();
+        owners.dedup();
+        owners
+            .iter()
+            .rev()
+            .find(|owner| ***owner <= *name)
+            .or(owners.last())
+            .map(|owner| (*owner).clone())
+    }
+}
+
+/// The type an RRSIG record covers (`None` for other record types).
+pub(crate) fn rrsig_covered(record: &Record) -> Option<RecordType> {
+    match &record.data {
+        RData::DNSSEC(DNSSECRData::RRSIG(sig)) => Some(sig.input().type_covered),
+        _ => None,
     }
 }

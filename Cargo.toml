@@ -24,6 +24,7 @@ thiserror = "2.0"
 ring = "0.17"
 tracing = "0.1"
 proptest = "1"
+rand = "0.9"
 
 [profile.release]
 lto = "thin"

@@ -80,7 +80,7 @@ workspace (1) ── testkit hierarchy (3)
 - [x] Review with human (owner approved 2026-10-24, fuzz result to follow)
 
 ### Phase 2: Recursion
-- [ ] Task 4: Iterative resolution happy path
+- [x] Task 4: Iterative resolution happy path
 - [ ] Task 5: CNAME chains, NXDOMAIN, NODATA, limits
 - [ ] Task 6: Transport robustness
 - [ ] Task 7: QNAME minimisation
@@ -89,7 +89,7 @@ workspace (1) ── testkit hierarchy (3)
 - [ ] Success criterion 1 met; manual `example.com A` resolves from the internet
 
 ### Phase 3: DNSSEC
-- [ ] Task 8: Testkit DNSSEC zones
+- [x] Task 8: Testkit DNSSEC zones
 - [ ] Task 9a: Chain of trust and signature verification
 - [ ] Task 9b: Validation status, AD, SERVFAIL + EDE, CD
 - [ ] Task 10: Authenticated denial (NSEC/NSEC3) and negative trust anchors

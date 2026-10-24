@@ -198,12 +198,12 @@ records, and messages; a CI job that runs each fuzz target for 60 s.
 `code()`) built on `dnscraft-proto`, and iterative resolution from root hints with priming, following referrals and glue.
 
 **Acceptance criteria:**
-- [ ] `A` and `AAAA` for `www.example.test.` resolve through the fake hierarchy
-- [ ] Priming query refreshes root NS set at startup
-- [ ] Missing glue is resolved (out-of-bailiwick nameserver)
+- [x] `A` and `AAAA` for `www.example.test.` resolve through the fake hierarchy
+- [x] Priming query refreshes root NS set at startup
+- [x] Missing glue is resolved (out-of-bailiwick nameserver)
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-resolver --test recursion`
+- [x] `cargo test -p dnscraft-resolver --test recursion`
 
 **Dependencies:** Checkpoint W
 
@@ -280,13 +280,13 @@ smoothed-RTT server selection, randomized ids/ports, response matching, IPv4/IPv
 NSEC and NSEC3 (incl. opt-out) denial zones; expose the fake root's trust anchor.
 
 **Acceptance criteria:**
-- [ ] Each zone variant is selectable by name from tests
-- [ ] Fake root DS/DNSKEY exported as a trust anchor for the resolver config
-- [ ] Responder answers `DS` queries at a zone cut authoritatively from the parent (today it returns a referral, see review note on Task 3)
-- [ ] Wildcard records supported (needed for wildcard denial proofs)
+- [x] Each zone variant is selectable by name from tests
+- [x] Fake root DS/DNSKEY exported as a trust anchor for the resolver config
+- [x] Responder answers `DS` queries at a zone cut authoritatively from the parent (today it returns a referral, see review note on Task 3)
+- [x] Wildcard records supported (needed for wildcard denial proofs)
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-testkit -- dnssec`
+- [x] `cargo test -p dnscraft-testkit -- dnssec`
 
 **Dependencies:** Task 3
 

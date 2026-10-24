@@ -4,6 +4,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use hickory_proto::rr::Name;
 
 use crate::TestkitError;
+use crate::dnssec_zones::{ChildVariant, DnssecScenario, TrustAnchor, signed_servers};
 use crate::server::ServerHandle;
 use crate::zone::{Zone, parse_name};
 
@@ -80,6 +81,7 @@ pub struct Hierarchy {
     servers: Vec<(Name, ServerHandle)>,
     ns_addrs: HashMap<Name, SocketAddr>,
     root_hints: Vec<SocketAddr>,
+    trust_anchor: Option<TrustAnchor>,
 }
 
 impl Hierarchy {
@@ -107,7 +109,27 @@ impl Hierarchy {
             servers,
             ns_addrs,
             root_hints,
+            trust_anchor: None,
         })
+    }
+
+    /// Starts a signed hierarchy (`.`, `test.` and the given child zones, see
+    /// [`ChildVariant`]) with ECDSA P-256 and the current time.
+    pub async fn start_signed(variants: &[ChildVariant]) -> Result<Self, TestkitError> {
+        Self::start_scenario(&DnssecScenario::new(variants)).await
+    }
+
+    /// Starts a signed hierarchy from a fully configured [`DnssecScenario`].
+    pub async fn start_scenario(scenario: &DnssecScenario) -> Result<Self, TestkitError> {
+        let (specs, anchor) = signed_servers(scenario)?;
+        let mut hierarchy = Self::start_with(specs).await?;
+        hierarchy.trust_anchor = Some(anchor);
+        Ok(hierarchy)
+    }
+
+    /// The fake root's trust anchor (DNSKEY and DS) for signed hierarchies.
+    pub fn trust_anchor(&self) -> Option<&TrustAnchor> {
+        self.trust_anchor.as_ref()
     }
 
     /// Addresses (`127.0.0.1:port`) of the root servers.

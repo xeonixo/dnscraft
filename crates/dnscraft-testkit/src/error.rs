@@ -27,6 +27,9 @@ pub enum TestkitError {
         /// Zone origin that was requested.
         zone: String,
     },
+    /// Key generation or zone signing failed.
+    #[error("signing failed: {0}")]
+    Signing(String),
 }
 
 impl TestkitError {
@@ -36,6 +39,7 @@ impl TestkitError {
             Self::Bind { .. } => "testkit.bind",
             Self::InvalidName { .. } => "testkit.invalid_name",
             Self::UnknownZone { .. } => "testkit.unknown_zone",
+            Self::Signing(_) => "testkit.signing",
         }
     }
 }

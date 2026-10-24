@@ -11,3 +11,13 @@ publish = false
 workspace = true
 
 [dependencies]
+dnscraft-proto = { path = "../dnscraft-proto" }
+tokio = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+dnscraft-testkit = { path = "../dnscraft-testkit" }
+hickory-proto = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
