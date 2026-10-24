@@ -72,7 +72,7 @@ matching root hints. Servers can be stopped/started individually and record rece
 ## Checkpoint A: Foundation + decision
 - [x] All tests pass, clippy clean
 - [x] ADR-0001 accepted by the owner (Option D)
-- [ ] Revised `tasks/plan.md` and this file approved
+- [x] Revised `tasks/plan.md` and this file approved
 
 ## Phase 1b: Wire format (`dnscraft-proto`)
 

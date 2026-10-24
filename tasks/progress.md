@@ -10,8 +10,8 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
 - Phase: 1 (Foundation)
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
-- **Waiting at Checkpoint A:** owner approves revised plan and new deps (`ring`, `proptest`, `libfuzzer-sys`)
-- Next after approval: Task W1 — Domain names and compression
+- Checkpoint A passed (plan + new deps approved).
+- In progress: Task W1 — Domain names and compression (Sonnet agent)
 - Blockers: none
 
 ## Log

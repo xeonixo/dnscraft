@@ -65,7 +65,7 @@ workspace (1) ── testkit hierarchy (3)
 ### Checkpoint A: Foundation + decision
 - [x] Builds clean, testkit answers referrals
 - [x] ADR-0001 accepted (Option D) by the owner
-- [ ] Revised plan approved
+- [x] Revised plan approved
 
 ### Phase 1b: Wire format (`dnscraft-proto`)
 - [ ] Task W1: Domain names and compression
@@ -123,12 +123,12 @@ Task 8 (testkit) alongside Tasks 5–7; Task 15 alongside Phase 3/4.
 | Crate | Purpose | Status |
 |---|---|---|
 | `tokio` | runtime, sockets, timers | approved |
-| `ring` | DNSSEC signature verification, digests | **new — approval requested** |
+| `ring` | DNSSEC signature verification, digests | approved |
 | `thiserror`, `tracing`, `serde`, `toml` | errors, logging, config | approved |
 | `rand` | query ids, source ports | approved |
 | `hickory-proto`, `hickory-server` (`=0.26.3`) | **testkit / dev only**, independent oracle | approved |
-| `proptest` | property tests for encode/decode (dev) | **new — approval requested** |
-| `libfuzzer-sys` + `cargo-fuzz` (nightly toolchain, fuzz crate only) | fuzzing | **new — approval requested** |
+| `proptest` | property tests for encode/decode (dev) | approved |
+| `libfuzzer-sys` + `cargo-fuzz` (nightly toolchain, fuzz crate only) | fuzzing | approved |
 | `criterion` | benchmarks (dev) | approved |
 | `cargo-llvm-cov` | coverage (tool) | approved |
 
@@ -155,3 +155,4 @@ Approved 2026-10-24:
 4. Initial dependency list approved.
 5. Implementation is delegated to Haiku/Sonnet subagents; the lead reviews every task before ticking it off.
 6. ADR-0001: Option D (in-house wire format and DNSSEC logic; `ring` for crypto; hickory only as test oracle).
+7. Revised plan (phase 1b) and new deps `ring`, `proptest`, `libfuzzer-sys`/`cargo-fuzz` approved.
