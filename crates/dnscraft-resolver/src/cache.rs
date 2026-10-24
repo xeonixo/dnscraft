@@ -22,7 +22,10 @@
 //! Expiry uses the resolver's monotonic clock. An expired entry is a miss.
 //! It stays in the map so serve-stale (Task 13) can still find it, until a
 //! flush or eviction removes it. Looking up an expired entry does not mark
-//! it recently used.
+//! it recently used and does not count as a hit.
+//!
+//! Each fresh hit increments a counter on the entry. Prefetch treats that
+//! counter as popularity. Replacing the entry starts the count again.
 //!
 //! Each entry is charged the compressed wire length of the stored message
 //! plus [`ENTRY_OVERHEAD`] bytes for the key, DNSSEC status and bookkeeping.
@@ -79,6 +82,8 @@ struct Entry {
     size: usize,
     /// Bumps on use. Higher means more recently used.
     last_used: u64,
+    /// Fresh lookups since this entry was stored. The insert is not a hit.
+    hits: u64,
 }
 
 #[derive(Debug)]
@@ -88,6 +93,17 @@ struct Inner {
     clock: u64,
     used: usize,
     budget: usize,
+}
+
+/// Popularity and lifetime of a fresh cache entry, for prefetch.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FreshStats {
+    /// Fresh lookups since the entry was stored.
+    pub hits: u64,
+    /// Clamped lifetime stored with the entry.
+    pub ttl: Duration,
+    /// Time left until expiry.
+    pub remaining: Duration,
 }
 
 /// Inclusive TTL clamp, in seconds, applied when an answer is stored.
@@ -135,6 +151,7 @@ impl Cache {
         let stamp = inner.clock;
         if let Some(entry) = inner.map.get_mut(&key) {
             entry.last_used = stamp;
+            entry.hits = entry.hits.saturating_add(1);
         }
         drop(inner);
         set_ttls(&mut message, ttl);
@@ -144,6 +161,23 @@ impl Cache {
             dnssec,
             source: AnswerSource::Cache,
             ede,
+        })
+    }
+
+    /// Hits and remaining lifetime of a fresh entry.
+    ///
+    /// Does not count another hit. `None` when the question is absent or
+    /// expired, matching [`Cache::lookup`].
+    pub(crate) fn fresh_stats(&self, query: &Query, now: Instant) -> Option<FreshStats> {
+        let inner = lock(&self.inner);
+        let entry = inner.map.get(&Key::from(query))?;
+        if now >= entry.expires_at {
+            return None;
+        }
+        Some(FreshStats {
+            hits: entry.hits,
+            ttl: Duration::from_secs(u64::from(entry.ttl)),
+            remaining: entry.expires_at.saturating_duration_since(now),
         })
     }
 
@@ -191,6 +225,7 @@ impl Cache {
                 expires_at,
                 size,
                 last_used,
+                hits: 0,
             },
         );
         evict(&mut inner);
@@ -777,5 +812,35 @@ mod tests {
         let once = cache.bytes_used();
         put(&cache, &q, &msg, now, 0, 86_400);
         assert_eq!(cache.bytes_used(), once);
+    }
+
+    #[test]
+    fn fresh_hits_accumulate_until_the_entry_is_replaced() {
+        let now = Instant::now();
+        let cache = Cache::new(usize::MAX);
+        let q = query("www.example.test.", RecordType::A);
+        let msg = message(
+            "www.example.test.",
+            Rcode::NOERROR,
+            vec![a_record("www.example.test.", 30)],
+            vec![],
+        );
+        put(&cache, &q, &msg, now, 0, 86_400);
+        assert_eq!(cache.fresh_stats(&q, now).unwrap().hits, 0);
+
+        cache.lookup(&q, now).unwrap();
+        cache.lookup(&q, now).unwrap();
+        let stats = cache.fresh_stats(&q, now).unwrap();
+        assert_eq!(stats.hits, 2);
+        assert_eq!(stats.ttl, Duration::from_secs(30));
+        assert!(stats.remaining > Duration::from_secs(29));
+
+        assert!(
+            cache
+                .fresh_stats(&q, now + Duration::from_secs(30))
+                .is_none()
+        );
+        put(&cache, &q, &msg, now, 0, 86_400);
+        assert_eq!(cache.fresh_stats(&q, now).unwrap().hits, 0);
     }
 }

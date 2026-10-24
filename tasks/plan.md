@@ -99,7 +99,7 @@ workspace (1) ── testkit hierarchy (3)
 
 ### Phase 4: Cache and resilience
 - [x] Task 11: Positive/negative cache
-- [ ] Task 12: In-flight dedup and prefetch
+- [x] Task 12: In-flight dedup and prefetch
 - [ ] Task 13: Serve-stale
 
 ### Checkpoint D: Cache

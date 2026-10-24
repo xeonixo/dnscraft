@@ -2,6 +2,8 @@
 //!
 //! Module layout (later tasks plug in here):
 //! - `cache`: positive and negative answer cache (RFC 2308, Task 11).
+//! - `inflight`: coalescing of identical concurrent misses.
+//! - `prefetch`: background refresh of popular entries shortly before expiry.
 //! - `iterate`: iterative resolution and referral following (Tasks 5, 7 extend it:
 //!   CNAME chains, limits, QNAME minimisation).
 //! - `transport`: single UDP exchange with response matching (Task 6: TCP, retries,
@@ -15,10 +17,12 @@ mod config;
 pub mod dnssec;
 mod error;
 mod hints;
+mod inflight;
 mod iterate;
 mod limits;
 #[doc(hidden)]
 pub mod local_zones;
+mod prefetch;
 mod priming;
 #[doc(hidden)]
 pub mod server_selection;
@@ -27,8 +31,9 @@ pub mod transport;
 mod types;
 
 use std::net::SocketAddr;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use dnscraft_proto::{Message, Rcode, Record, RecordType};
 use dnssec::status::Status;
@@ -44,9 +49,10 @@ pub use types::{
     RequestFlags, ResolverStats,
 };
 
-/// A recursive resolver.
+/// State shared with background prefetch tasks. Those tasks must not borrow
+/// the `Resolver`, which the caller is free to drop while a refresh runs.
 #[derive(Debug)]
-pub struct Resolver {
+struct Shared {
     config: ResolverConfig,
     local_zones: LocalZones,
     cache: cache::Cache,
@@ -55,6 +61,13 @@ pub struct Resolver {
     resolutions: AtomicU64,
     outgoing: AtomicU64,
     stats: ServerStats,
+    inflight: inflight::Inflight,
+}
+
+/// A recursive resolver.
+#[derive(Debug)]
+pub struct Resolver {
+    shared: Arc<Shared>,
 }
 
 impl Resolver {
@@ -79,14 +92,17 @@ impl Resolver {
         };
         let cache = cache::Cache::new(cache::budget_bytes(&config));
         Ok(Self {
-            config,
-            local_zones: LocalZones::rfc6303(),
-            cache,
-            roots: Mutex::new(roots),
-            priming: Mutex::new(status),
-            resolutions: AtomicU64::new(0),
-            outgoing,
-            stats,
+            shared: Arc::new(Shared {
+                config,
+                local_zones: LocalZones::rfc6303(),
+                cache,
+                roots: Mutex::new(roots),
+                priming: Mutex::new(status),
+                resolutions: AtomicU64::new(0),
+                outgoing,
+                stats,
+                inflight: inflight::Inflight::new(),
+            }),
         })
     }
 
@@ -96,18 +112,128 @@ impl Resolver {
         query: &Query,
         flags: RequestFlags,
     ) -> Result<Answer, ResolveError> {
-        if let Some(answer) = self.local_zones.answer(query, &self.config.forward_zones) {
+        if let Some(answer) = self
+            .shared
+            .local_zones
+            .answer(query, &self.shared.config.forward_zones)
+        {
             return Ok(answer);
         }
-        self.resolutions.fetch_add(1, Ordering::Relaxed);
-        let now = self.config.clock.instant();
-        if let Some(mut answer) = self.cache.lookup(query, now) {
+        self.shared.resolutions.fetch_add(1, Ordering::Relaxed);
+        let now = self.shared.config.clock.instant();
+        if let Some(answer) = self.shared.cache.lookup(query, now) {
             tracing::debug!(qname = %query.name, qtype = %query.qtype, "cache hit");
-            if !flags.dnssec_ok {
-                strip_dnssec_records(&mut answer.message, query.qtype);
-            }
-            return Ok(answer);
+            self.maybe_prefetch(query, flags, now);
+            return Ok(present(answer, flags, query.qtype));
         }
+        // Misses for the same question share one iterative resolution. DO is
+        // applied per waiter afterwards, because it is not part of the key.
+        let key = inflight::Key::new(query, flags.checking_disabled);
+        let shared = Arc::clone(&self.shared);
+        let owned = query.clone();
+        let answer = self
+            .shared
+            .inflight
+            .dedup(
+                key,
+                async move { shared.resolve_upstream(&owned, flags).await },
+            )
+            .await?;
+        Ok(present(answer, flags, query.qtype))
+    }
+
+    /// Starts a background refresh when the cached answer is popular and
+    /// close to expiry. The caller already has that answer and does not wait.
+    fn maybe_prefetch(&self, query: &Query, flags: RequestFlags, now: Instant) {
+        // CD would store an unvalidated replacement, which is the same reason
+        // CD answers are not cached. Bogus entries are never stored, so a hit
+        // is already something prefetch is allowed to refresh.
+        if !self.shared.config.prefetch || flags.checking_disabled {
+            return;
+        }
+        let Some(stats) = self.shared.cache.fresh_stats(query, now) else {
+            return;
+        };
+        if !prefetch::should_refresh(stats) {
+            return;
+        }
+        // CD is clear on the refresh itself, so it coalesces with validating
+        // misses and the result stays cacheable. A second hit finds this
+        // flight and does not start another.
+        let Some(leader) = self
+            .shared
+            .inflight
+            .try_lead(inflight::Key::new(query, false))
+        else {
+            return;
+        };
+        tracing::debug!(
+            qname = %query.name,
+            qtype = %query.qtype,
+            hits = stats.hits,
+            "prefetching"
+        );
+        let shared = Arc::clone(&self.shared);
+        let query = query.clone();
+        let task = tokio::spawn(async move {
+            let result = shared
+                .resolve_upstream(&query, RequestFlags::default())
+                .await;
+            if let Err(err) = &result {
+                // The client already received the cached answer. A failed
+                // refresh leaves that entry in place.
+                tracing::debug!(qname = %query.name, error = %err, "prefetch failed");
+            }
+            leader.complete(result);
+        });
+        drop(task);
+    }
+
+    /// Removes cached answers.
+    ///
+    /// [`FlushScope::Domain`] drops that name and every name below it. Locally
+    /// served zones are not cached.
+    pub fn flush(&self, scope: FlushScope) {
+        tracing::debug!(?scope, "flushing cache");
+        self.shared.cache.flush(&scope);
+    }
+
+    /// Waits until every resolution and prefetch has finished. For tests.
+    #[doc(hidden)]
+    pub async fn wait_idle(&self) {
+        self.shared.inflight.wait_idle().await;
+    }
+
+    /// Bytes currently charged to the answer cache. For tests.
+    #[doc(hidden)]
+    pub fn cached_bytes(&self) -> usize {
+        self.shared.cache.bytes_used()
+    }
+
+    /// Counters. Extended in Task 16.
+    pub fn stats(&self) -> ResolverStats {
+        ResolverStats {
+            resolutions: self.shared.resolutions.load(Ordering::Relaxed),
+            outgoing_queries: self.shared.outgoing.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Outcome of the priming done in [`Resolver::new`].
+    pub fn priming_status(&self) -> PrimingStatus {
+        lock(&self.shared.priming).clone()
+    }
+}
+
+impl Shared {
+    /// One iterative resolution, stored when the answer is cacheable.
+    ///
+    /// DNSSEC records are left in place. Each caller strips them according
+    /// to its own DO bit, including waiters that shared this flight.
+    async fn resolve_upstream(
+        &self,
+        query: &Query,
+        flags: RequestFlags,
+    ) -> Result<Answer, ResolveError> {
         let roots = lock(&self.roots).clone();
         let mut ctx =
             iterate::Context::new(&self.config, &roots, &self.outgoing, self.stats.clone());
@@ -167,9 +293,6 @@ impl Resolver {
         if let Some(ttl) = published_ttl {
             cache::set_ttls(&mut message, ttl);
         }
-        if !flags.dnssec_ok {
-            strip_dnssec_records(&mut message, query.qtype);
-        }
         Ok(Answer {
             message,
             dnssec,
@@ -177,34 +300,14 @@ impl Resolver {
             ede,
         })
     }
+}
 
-    /// Removes cached answers.
-    ///
-    /// [`FlushScope::Domain`] drops that name and every name below it. Locally
-    /// served zones are not cached.
-    pub fn flush(&self, scope: FlushScope) {
-        tracing::debug!(?scope, "flushing cache");
-        self.cache.flush(&scope);
+/// Applies the caller's DO bit. Shared by a cache hit and every in-flight waiter.
+fn present(mut answer: Answer, flags: RequestFlags, qtype: RecordType) -> Answer {
+    if !flags.dnssec_ok {
+        strip_dnssec_records(&mut answer.message, qtype);
     }
-
-    /// Bytes currently charged to the answer cache. For tests.
-    #[doc(hidden)]
-    pub fn cached_bytes(&self) -> usize {
-        self.cache.bytes_used()
-    }
-
-    /// Counters. Extended in Task 16.
-    pub fn stats(&self) -> ResolverStats {
-        ResolverStats {
-            resolutions: self.resolutions.load(Ordering::Relaxed),
-            outgoing_queries: self.outgoing.load(Ordering::Relaxed),
-        }
-    }
-
-    /// Outcome of the priming done in [`Resolver::new`].
-    pub fn priming_status(&self) -> PrimingStatus {
-        lock(&self.priming).clone()
-    }
+    answer
 }
 
 /// Removes RRSIG, NSEC and NSEC3 records from a response for a client that did

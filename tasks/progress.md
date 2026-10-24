@@ -8,7 +8,7 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
 ## Current state
 
-- Phase: 4 (cache) — Task 12 in progress (in-flight dedup + prefetch); 13 open.
+- Phase: 4 (cache) — Task 12 done; Task 13 (serve-stale) open. Checkpoint D next after 13.
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
@@ -19,6 +19,8 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Task 12 done (Grok + lead review): in-flight dedup (key = name/type/class + CD; DO stripped per waiter); prefetch for popular (≥3 hits) near-expiry entries (window max(10% TTL, 2s)); config `prefetch` default true; 2 integration + unit tests. Workspace DoD green.
 
 - 2026-10-24 — Checkpoint B checkboxes synced in todo.md; Checkpoint C passed (49 dnssec tests; live Secure/SERVFAIL cross-checked with delv/kdig).
 

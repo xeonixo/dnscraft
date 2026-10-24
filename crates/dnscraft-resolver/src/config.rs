@@ -48,6 +48,9 @@ pub struct ResolverConfig {
     /// Highest TTL kept in the cache, in seconds. Longer TTLs are lowered to
     /// this. Default: 86400 (one day).
     pub ttl_max: u32,
+    /// Refresh popular cache entries shortly before they expire, without
+    /// making the client wait. Default on.
+    pub prefetch: bool,
     /// Test hook: when a nameserver host name is in this map, its address is
     /// taken from here instead of glue/A lookups; exists because the testkit
     /// runs every server on 127.0.0.1 with distinct ports.
@@ -85,6 +88,7 @@ impl Default for ResolverConfig {
             cache_size_mb: 64,
             ttl_min: 0,
             ttl_max: 86_400,
+            prefetch: true,
             nameserver_addr_overrides: HashMap::new(),
             cache_capacity_bytes: None,
             ipv6_cooldown: Duration::from_secs(60),
@@ -103,6 +107,7 @@ mod tests {
         assert_eq!(config.cache_size_mb, 64);
         assert_eq!(config.ttl_min, 0);
         assert_eq!(config.ttl_max, 86_400);
+        assert!(config.prefetch);
         assert_eq!(config.cache_capacity_bytes, None);
     }
 }

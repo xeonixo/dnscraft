@@ -649,3 +649,131 @@ async fn local_answers_are_not_cached() {
     assert_eq!(r.stats().outgoing_queries, before);
     assert_eq!(r.cached_bytes(), 0);
 }
+
+#[tokio::test]
+async fn dedup_fifty_concurrent_identical_queries_share_one_resolution_chain() {
+    let h = Hierarchy::start().await.unwrap();
+    let r = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
+    // Priming already queried the root. The chain length below is one
+    // resolution only.
+    clear(&h, ZONES);
+    let once = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(once.source, AnswerSource::Recursion);
+    let chain = traffic(&h, ZONES);
+    assert!(
+        chain >= 3,
+        "one resolution should query root, TLD and apex, saw {chain}"
+    );
+
+    r.flush(FlushScope::All);
+    assert_eq!(r.cached_bytes(), 0);
+    clear(&h, ZONES);
+
+    let q = query("www.example.test.", RecordType::A);
+    let start = Arc::new(tokio::sync::Barrier::new(50));
+    let mut tasks = Vec::with_capacity(50);
+    for _ in 0..50 {
+        let r = Arc::clone(&r);
+        let q = q.clone();
+        let start = Arc::clone(&start);
+        tasks.push(tokio::spawn(async move {
+            start.wait().await;
+            r.resolve(&q, RequestFlags::default()).await.unwrap()
+        }));
+    }
+    let mut answers = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        answers.push(task.await.unwrap());
+    }
+    assert_eq!(answers.len(), 50);
+    for answer in &answers {
+        assert_eq!(answer.message.rcode(), Rcode::NOERROR);
+        assert_eq!(
+            answer.message.answers[0].rdata,
+            once.message.answers[0].rdata
+        );
+    }
+    assert_eq!(
+        traffic(&h, ZONES),
+        chain,
+        "50 concurrent queries must share one resolution chain"
+    );
+}
+
+#[tokio::test]
+async fn prefetch_refreshes_a_popular_entry_before_expiry_without_a_miss() {
+    let clock = clock();
+    let h = Hierarchy::start().await.unwrap();
+    let mut config = config_for(&h);
+    config.clock = clock.clone();
+    config.prefetch = true;
+    // Stored TTL is 100s. The prefetch window is max(10% of that, 2s) = 10s,
+    // and an entry is popular after 3 fresh hits (see prefetch.rs).
+    config.ttl_max = 100;
+    let r = Resolver::new(config).await.unwrap();
+
+    let first = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(first.source, AnswerSource::Recursion);
+    assert_eq!(first.message.answers[0].ttl, 100);
+    let rdata = first.message.answers[0].rdata.clone();
+
+    clear(&h, ZONES);
+    for _ in 0..3 {
+        let hit = resolve(
+            &r,
+            "www.example.test.",
+            RecordType::A,
+            RequestFlags::default(),
+        )
+        .await;
+        assert_eq!(hit.source, AnswerSource::Cache);
+    }
+    // Popular, but not near expiry yet: no background query.
+    r.wait_idle().await;
+    assert_eq!(traffic(&h, ZONES), 0);
+
+    clock.advance(Duration::from_secs(90));
+    let during = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(during.source, AnswerSource::Cache);
+    assert_eq!(during.message.answers[0].rdata, rdata);
+    assert_eq!(during.message.answers[0].ttl, 10);
+
+    r.wait_idle().await;
+    assert!(
+        traffic(&h, ZONES) > 0,
+        "prefetch should re-query upstream before expiry"
+    );
+
+    clear(&h, ZONES);
+    // t = 100s, the original expiry. The refresh stored a new lifetime.
+    clock.advance(Duration::from_secs(10));
+    let after = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(after.source, AnswerSource::Cache);
+    assert_eq!(after.message.answers[0].rdata, rdata);
+    assert_eq!(after.message.answers[0].ttl, 90);
+    assert_eq!(traffic(&h, ZONES), 0);
+}

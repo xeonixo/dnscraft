@@ -385,11 +385,11 @@ TTL clamping, `flush(FlushScope::All | Domain)`; DNSSEC status cached with the e
 **Description:** Coalesce identical concurrent questions; refresh popular entries before expiry.
 
 **Acceptance criteria:**
-- [ ] 50 concurrent identical queries → one outgoing resolution chain (testkit query log)
-- [ ] A frequently queried entry is refreshed before TTL expiry without a client-visible miss
+- [x] 50 concurrent identical queries → one outgoing resolution chain (testkit query log)
+- [x] A frequently queried entry is refreshed before TTL expiry without a client-visible miss
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-resolver --test cache -- dedup prefetch`
+- [x] `cargo test -p dnscraft-resolver --test cache -- dedup prefetch`
 
 **Dependencies:** Task 11
 

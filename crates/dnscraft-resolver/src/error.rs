@@ -28,7 +28,7 @@ impl ResolverError {
 }
 
 /// Failure to resolve one question.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum ResolveError {
     /// No authoritative server of the zone answered usefully.
