@@ -14,10 +14,12 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
 - Real-internet resolution works (example.com 4 queries / ~90 ms incl. priming; www.microsoft.com 13 with minimisation).
 - Checkpoint B passed (owner approved 2026-10-24).
-- Next: Checkpoint C (success criteria 2–3, delv cross-check) or Task 11 (cache). Dev Do53 server deferred by owner.
+- In progress: Task 11 (positive/negative cache). Checkpoint C still open (manual/delv with owner). Dev Do53 server deferred by owner.
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Task 11 started (Sonnet agent).
 
 - 2026-10-24 — Task 10 done (Sonnet + lead review fix): NSEC/NSEC3 denial (NXDOMAIN, NODATA, wildcards, opt-out, closest encloser), NTAs via config. Review found NSEC wildcard answers omitted closest-encloser consistency → fixed + unit/forge regression. 17 denial/nta integration tests; workspace green.
 
