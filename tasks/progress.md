@@ -8,7 +8,7 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
 ## Current state
 
-- Phase: 5 (edges) — Task 14 done (forward zones). Task 15 already done. Next Task 16, then Checkpoint E.
+- Phase: 5 (edges) — Task 16 in progress (stats, error codes, bench, acceptance). Task 14/15 done.
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
@@ -20,6 +20,8 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Task 16 started.
 
 - 2026-10-24 — Task 14 done (Grok + lead review): stub forward with RD=1 via targets (RTT/failover); `ForwardZone { zone, targets, validate }`; validate=false → Insecure; loop via `RequestFlags::client` ∈ targets → `resolver.forward_loop` (keeps inflight coalescing); 4 forward + local_zones green. DoD green.
 
