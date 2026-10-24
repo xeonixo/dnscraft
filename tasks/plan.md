@@ -100,10 +100,10 @@ workspace (1) ── testkit hierarchy (3)
 ### Phase 4: Cache and resilience
 - [x] Task 11: Positive/negative cache
 - [x] Task 12: In-flight dedup and prefetch
-- [ ] Task 13: Serve-stale
+- [x] Task 13: Serve-stale
 
 ### Checkpoint D: Cache
-- [ ] Success criteria 4, 5, 6 met
+- [ ] Success criteria 4, 5, 6 met (5 + 6 covered by Tasks 12/13; 4 needs Task 16 bench)
 
 ### Phase 5: Edges and completion
 - [ ] Task 14: Forward zones
