@@ -403,12 +403,12 @@ TTL clamping, `flush(FlushScope::All | Domain)`; DNSSEC status cached with the e
 configured window (default 1 day) with EDE "Stale Answer" and `AnswerSource::Stale`.
 
 **Acceptance criteria:**
-- [ ] Testkit servers stopped + expired entry → stale answer within window
-- [ ] Beyond the window → `SERVFAIL`
-- [ ] Stale answers never replace a fresh successful resolution
+- [x] Testkit servers stopped + expired entry → stale answer within window
+- [x] Beyond the window → `SERVFAIL` (implemented as `Err(Unreachable)`; SERVFAIL remains the Bogus path)
+- [x] Stale answers never replace a fresh successful resolution
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-resolver --test cache -- stale`
+- [x] `cargo test -p dnscraft-resolver --test cache -- stale`
 
 **Dependencies:** Task 11
 

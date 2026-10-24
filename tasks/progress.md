@@ -8,7 +8,7 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
 ## Current state
 
-- Phase: 4 (cache) — Task 13 in progress (serve-stale); Checkpoint D after that.
+- Phase: 4 (cache) — Tasks 11–13 done. Checkpoint D open (criterion 4 bench → Task 16; human review).
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
@@ -19,6 +19,8 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Task 13 done (Grok + lead review): serve-stale on Unreachable only; window via `serve_stale` (default 1d, ZERO disables); EDE 3 + AnswerSource::Stale + TTL 0 + AD clear; stale not stored. Beyond window → Err(Unreachable). 3 integration + 3 unit tests. DoD green. Left unrelated SPEC.md (bug-report row) unstaged.
 
 - 2026-10-24 — Task 13 started.
 

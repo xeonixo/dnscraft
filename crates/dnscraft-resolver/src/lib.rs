@@ -1,7 +1,8 @@
 //! Recursive, DNSSEC-validating DNS resolver with cache for DNScraft.
 //!
 //! Module layout (later tasks plug in here):
-//! - `cache`: positive and negative answer cache (RFC 2308, Task 11).
+//! - `cache`: positive and negative answer cache (RFC 2308), including
+//!   serve-stale when authoritative servers are unreachable (RFC 8767).
 //! - `inflight`: coalescing of identical concurrent misses.
 //! - `prefetch`: background refresh of popular entries shortly before expiry.
 //! - `iterate`: iterative resolution and referral following (Tasks 5, 7 extend it:
@@ -131,15 +132,41 @@ impl Resolver {
         let key = inflight::Key::new(query, flags.checking_disabled);
         let shared = Arc::clone(&self.shared);
         let owned = query.clone();
-        let answer = self
+        let upstream = self
             .shared
             .inflight
             .dedup(
                 key,
                 async move { shared.resolve_upstream(&owned, flags).await },
             )
-            .await?;
-        Ok(present(answer, flags, query.qtype))
+            .await;
+        match upstream {
+            Ok(answer) => Ok(present(answer, flags, query.qtype)),
+            // RFC 8767: serve an expired entry only when the authoritative
+            // servers could not be reached. A timeout of every server of a
+            // zone is reported as `Unreachable`. The stale answer is not
+            // stored (that would refresh its TTL) and does not start prefetch,
+            // which runs only for a fresh hit. Past the serve-stale window the
+            // original error is returned; it is not rewritten to SERVFAIL.
+            Err(err @ ResolveError::Unreachable { .. }) => {
+                let now = self.shared.config.clock.instant();
+                if let Some(answer) =
+                    self.shared
+                        .cache
+                        .lookup_stale(query, now, self.shared.config.serve_stale)
+                {
+                    tracing::debug!(
+                        qname = %query.name,
+                        qtype = %query.qtype,
+                        "serving stale answer"
+                    );
+                    Ok(present(answer, flags, query.qtype))
+                } else {
+                    Err(err)
+                }
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Starts a background refresh when the cached answer is popular and

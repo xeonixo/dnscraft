@@ -43,7 +43,8 @@ pub enum AnswerSource {
     Cache,
     /// Obtained by recursion.
     Recursion,
-    /// Expired cache entry served because servers are unreachable (Task 11).
+    /// Expired cache entry served because authoritative servers are
+    /// unreachable (RFC 8767).
     Stale,
 }
 

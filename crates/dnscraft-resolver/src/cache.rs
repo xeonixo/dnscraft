@@ -19,13 +19,17 @@
 //! section. The result is clamped to `[ttl_min, ttl_max]`. A clamped TTL of
 //! zero is not stored.
 //!
-//! Expiry uses the resolver's monotonic clock. An expired entry is a miss.
-//! It stays in the map so serve-stale (Task 13) can still find it, until a
-//! flush or eviction removes it. Looking up an expired entry does not mark
-//! it recently used and does not count as a hit.
+//! Expiry uses the resolver's monotonic clock. An expired entry is a miss
+//! for [`Cache::lookup`]. It stays in the map so serve-stale (RFC 8767) can
+//! still find it, until a flush or eviction removes it. A fresh lookup of an
+//! expired entry does not mark it recently used and does not count as a hit.
+//! Serving it stale does mark it recently used, so an entry clients are still
+//! reading is not dropped ahead of ones nobody asked for, but it does not
+//! count as a hit and does not move the expiry.
 //!
 //! Each fresh hit increments a counter on the entry. Prefetch treats that
-//! counter as popularity. Replacing the entry starts the count again.
+//! counter as popularity. Replacing the entry starts the count again. A
+//! stale serve does not increment it.
 //!
 //! Each entry is charged the compressed wire length of the stored message
 //! plus [`ENTRY_OVERHEAD`] bytes for the key, DNSSEC status and bookkeeping.
@@ -46,6 +50,9 @@ use crate::types::{Answer, AnswerSource, DnssecStatus, ExtendedError, FlushScope
 ///
 /// Over-counting evicts early, which keeps the cache inside its budget.
 const ENTRY_OVERHEAD: usize = 256;
+
+/// RFC 8914 INFO-CODE 3: the resolver served a stale answer (RFC 8767).
+const EDE_STALE_ANSWER: u16 = 3;
 
 /// One mebibyte, the unit of [`ResolverConfig::cache_size_mb`].
 const MIB: u64 = 1024 * 1024;
@@ -161,6 +168,64 @@ impl Cache {
             dnssec,
             source: AnswerSource::Cache,
             ede,
+        })
+    }
+
+    /// Expired entry still inside `window` after `expires_at` (RFC 8767).
+    ///
+    /// `None` when the question is absent, still fresh, `window` is zero, or
+    /// `now` is at or past `expires_at + window`. Record TTLs in the returned
+    /// message are 0, so a client does not cache the stale answer. The AD bit
+    /// is clear: this path does not revalidate. The stored DNSSEC status is
+    /// kept. The Extended DNS Error is INFO-CODE 3, "Stale Answer" (RFC 8914),
+    /// on this response only; the error stored with the entry is left as it was.
+    ///
+    /// `last_used` moves forward so an entry clients are still reading is not
+    /// the first eviction target. `hits` and `expires_at` stay put: a stale
+    /// serve is not a fresh hit and does not extend the entry's life. The
+    /// answer is not written back into the cache.
+    pub(crate) fn lookup_stale(
+        &self,
+        query: &Query,
+        now: Instant,
+        window: Duration,
+    ) -> Option<Answer> {
+        if window.is_zero() {
+            return None;
+        }
+        let mut inner = lock(&self.inner);
+        let key = Key::from(query);
+        let (mut message, dnssec) = {
+            let entry = inner.map.get(&key)?;
+            if now < entry.expires_at {
+                return None;
+            }
+            // A window that overflows `Instant` still contains `now`.
+            let inside = match entry.expires_at.checked_add(window) {
+                Some(deadline) => now < deadline,
+                None => true,
+            };
+            if !inside {
+                return None;
+            }
+            (entry.message.clone(), entry.dnssec)
+        };
+        inner.clock = inner.clock.saturating_add(1);
+        let stamp = inner.clock;
+        if let Some(entry) = inner.map.get_mut(&key) {
+            entry.last_used = stamp;
+        }
+        drop(inner);
+        set_ttls(&mut message, 0);
+        message.header.ad = false;
+        Some(Answer {
+            message,
+            dnssec,
+            source: AnswerSource::Stale,
+            ede: Some(ExtendedError {
+                code: EDE_STALE_ANSWER,
+                text: Some("Stale Answer".to_owned()),
+            }),
         })
     }
 
@@ -842,5 +907,164 @@ mod tests {
         );
         put(&cache, &q, &msg, now, 0, 86_400);
         assert_eq!(cache.fresh_stats(&q, now).unwrap().hits, 0);
+    }
+
+    fn bookkeeping(cache: &Cache, query: &Query) -> (u64, u64, Instant) {
+        let inner = lock(&cache.inner);
+        let entry = inner.map.get(&Key::from(query)).unwrap();
+        (entry.hits, entry.last_used, entry.expires_at)
+    }
+
+    #[test]
+    fn stale_lookup_is_only_an_expired_entry_inside_the_window() {
+        let now = Instant::now();
+        let cache = Cache::new(usize::MAX);
+        let q = query("www.example.test.", RecordType::A);
+        let msg = message(
+            "www.example.test.",
+            Rcode::NOERROR,
+            vec![a_record("www.example.test.", 30)],
+            vec![],
+        );
+        assert_eq!(put(&cache, &q, &msg, now, 0, 86_400), Some(30));
+        let day = Duration::from_secs(86_400);
+
+        assert!(cache.lookup_stale(&q, now, day).is_none());
+        assert!(
+            cache
+                .lookup_stale(&q, now + Duration::from_secs(29), day)
+                .is_none()
+        );
+
+        let expired = now + Duration::from_secs(30);
+        assert!(cache.lookup_stale(&q, expired, Duration::ZERO).is_none());
+        assert!(cache.lookup_stale(&q, expired, day).is_some());
+        // The end of the window is exclusive.
+        assert!(
+            cache
+                .lookup_stale(
+                    &q,
+                    expired + Duration::from_secs(10),
+                    Duration::from_secs(10)
+                )
+                .is_none()
+        );
+        assert!(
+            cache
+                .lookup_stale(
+                    &q,
+                    expired + Duration::from_secs(9),
+                    Duration::from_secs(10)
+                )
+                .is_some()
+        );
+        assert!(
+            cache
+                .lookup_stale(&query("other.example.", RecordType::A), expired, day)
+                .is_none()
+        );
+        assert!(cache.lookup(&q, expired).is_none());
+        assert!(cache.fresh_stats(&q, expired).is_none());
+    }
+
+    #[test]
+    fn stale_lookup_clears_ad_sets_ede_and_does_not_refresh_the_entry() {
+        let now = Instant::now();
+        let cache = Cache::new(usize::MAX);
+        let q = query("www.example.test.", RecordType::A);
+        let mut msg = message(
+            "www.example.test.",
+            Rcode::NOERROR,
+            vec![a_record("www.example.test.", 30)],
+            vec![soa(300, 60)],
+        );
+        msg.additionals.push(a_record("ns.example.test.", 50));
+        msg.header.ad = true;
+        let stored_ede = ExtendedError {
+            code: 27,
+            text: Some("dnssec.nsec3_iterations".to_owned()),
+        };
+        cache.store(
+            &q,
+            &msg,
+            DnssecStatus::Secure,
+            Some(stored_ede.clone()),
+            now,
+            TtlClamp {
+                min: 0,
+                max: 86_400,
+            },
+        );
+        cache.lookup(&q, now).unwrap();
+        let (hits, last_used, expires_at) = bookkeeping(&cache, &q);
+        assert_eq!(hits, 1);
+
+        let expired = now + Duration::from_secs(30);
+        let stale = cache
+            .lookup_stale(&q, expired, Duration::from_secs(86_400))
+            .unwrap();
+        assert_eq!(stale.source, AnswerSource::Stale);
+        assert_eq!(stale.dnssec, DnssecStatus::Secure);
+        assert!(!stale.message.header.ad);
+        assert_eq!(stale.message.answers[0].ttl, 0);
+        assert_eq!(stale.message.authorities[0].ttl, 0);
+        assert_eq!(stale.message.additionals[0].ttl, 0);
+        assert_eq!(
+            stale.ede,
+            Some(ExtendedError {
+                code: 3,
+                text: Some("Stale Answer".to_owned()),
+            })
+        );
+
+        let (hits_after, last_used_after, expires_after) = bookkeeping(&cache, &q);
+        assert_eq!(hits_after, 1);
+        assert!(last_used_after > last_used);
+        assert_eq!(expires_after, expires_at);
+        {
+            let inner = lock(&cache.inner);
+            let entry = inner.map.get(&Key::from(&q)).unwrap();
+            assert_eq!(entry.message.answers[0].ttl, 30);
+            assert_eq!(entry.message.authorities[0].ttl, 300);
+            assert_eq!(entry.message.additionals[0].ttl, 50);
+            assert_eq!(entry.ede, Some(stored_ede));
+        }
+        assert!(cache.lookup(&q, expired).is_none());
+    }
+
+    #[test]
+    fn stale_serve_is_not_the_first_eviction_target() {
+        let now = Instant::now();
+        let window = Duration::from_secs(60);
+        let names = ["a.example.", "b.example.", "c.example."];
+        let items: Vec<(Query, Message)> = names
+            .iter()
+            .map(|owner| {
+                (
+                    query(owner, RecordType::A),
+                    message(owner, Rcode::NOERROR, vec![a_record(owner, 30)], vec![]),
+                )
+            })
+            .collect();
+        let big = Cache::new(usize::MAX);
+        put(&big, &items[0].0, &items[0].1, now, 0, 86_400);
+        let one = big.bytes_used();
+        let cache = Cache::new(one * 2);
+        put(&cache, &items[0].0, &items[0].1, now, 0, 86_400);
+        put(&cache, &items[1].0, &items[1].1, now, 0, 86_400);
+
+        let expired = now + Duration::from_secs(30);
+        assert!(cache.lookup_stale(&items[0].0, expired, window).is_some());
+        put(&cache, &items[2].0, &items[2].1, expired, 0, 86_400);
+
+        assert!(
+            cache.lookup_stale(&items[1].0, expired, window).is_none(),
+            "the expired entry that was not served is evicted"
+        );
+        assert!(
+            cache.lookup_stale(&items[0].0, expired, window).is_some(),
+            "serving stale keeps the entry ahead of unused ones"
+        );
+        assert!(cache.lookup(&items[2].0, expired).is_some());
     }
 }

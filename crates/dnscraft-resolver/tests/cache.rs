@@ -8,8 +8,8 @@ use std::time::{Duration, SystemTime};
 use dnscraft_proto::{Class, Name, RData, Rcode, Record, RecordType};
 use dnscraft_resolver::dnssec::TrustAnchors;
 use dnscraft_resolver::{
-    Answer, AnswerSource, DnssecStatus, FlushScope, ManualClock, Query, RequestFlags, Resolver,
-    ResolverConfig,
+    Answer, AnswerSource, DnssecStatus, FlushScope, ManualClock, Query, RequestFlags, ResolveError,
+    Resolver, ResolverConfig,
 };
 use dnscraft_testkit::{ChildVariant, DnssecScenario, Hierarchy, default_servers};
 use hickory_proto::serialize::binary::BinEncodable;
@@ -54,6 +54,18 @@ fn traffic(h: &Hierarchy, zones: &[&str]) -> usize {
         .iter()
         .map(|zone| h.server(zone).unwrap().queries().len())
         .sum()
+}
+
+async fn stop_zones(h: &Hierarchy, zones: &[&str]) {
+    for zone in zones {
+        h.server(zone).unwrap().stop().await;
+    }
+}
+
+async fn start_zones(h: &Hierarchy, zones: &[&str]) {
+    for zone in zones {
+        h.server(zone).unwrap().start().await.unwrap();
+    }
 }
 
 fn soa(answer: &Answer) -> &Record {
@@ -775,5 +787,171 @@ async fn prefetch_refreshes_a_popular_entry_before_expiry_without_a_miss() {
     assert_eq!(after.source, AnswerSource::Cache);
     assert_eq!(after.message.answers[0].rdata, rdata);
     assert_eq!(after.message.answers[0].ttl, 90);
+    assert_eq!(traffic(&h, ZONES), 0);
+}
+
+#[tokio::test]
+async fn stale_answer_within_window_when_servers_are_unreachable() {
+    let clock = clock();
+    let h = Hierarchy::start().await.unwrap();
+    let mut config = config_for(&h);
+    config.clock = clock.clone();
+    config.ttl_max = 30;
+    config.serve_stale = Duration::from_secs(86_400);
+    config.prefetch = false;
+    config.query_timeout = Duration::from_millis(200);
+    let r = Resolver::new(config).await.unwrap();
+
+    let first = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(first.source, AnswerSource::Recursion);
+    assert_eq!(first.message.answers[0].ttl, 30);
+    let rdata = first.message.answers[0].rdata.clone();
+
+    // The entry expires at this instant, which is still inside the window.
+    clock.advance(Duration::from_secs(30));
+    stop_zones(&h, ZONES).await;
+
+    let stale = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(stale.source, AnswerSource::Stale);
+    assert_eq!(stale.dnssec, first.dnssec);
+    assert!(!stale.message.header.ad);
+    assert_eq!(stale.message.rcode(), Rcode::NOERROR);
+    assert_eq!(stale.message.answers[0].rdata, rdata);
+    assert!(!stale.message.answers.is_empty());
+    for record in stale
+        .message
+        .answers
+        .iter()
+        .chain(&stale.message.authorities)
+        .chain(&stale.message.additionals)
+    {
+        assert_eq!(record.ttl, 0);
+    }
+    let ede = stale.ede.expect("stale answer carries EDE");
+    assert_eq!(ede.code, 3);
+    assert_eq!(ede.text.as_deref(), Some("Stale Answer"));
+
+    // Serving stale must not refresh the entry into a fresh hit.
+    let again = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(again.source, AnswerSource::Stale);
+    assert_eq!(again.message.answers[0].ttl, 0);
+}
+
+#[tokio::test]
+async fn stale_beyond_window_is_unreachable() {
+    let clock = clock();
+    let h = Hierarchy::start().await.unwrap();
+    let mut config = config_for(&h);
+    config.clock = clock.clone();
+    config.ttl_max = 30;
+    config.serve_stale = Duration::from_secs(30);
+    config.prefetch = false;
+    config.query_timeout = Duration::from_millis(200);
+    let r = Resolver::new(config).await.unwrap();
+
+    let first = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(first.source, AnswerSource::Recursion);
+    assert_eq!(first.message.answers[0].ttl, 30);
+
+    // Exactly expires_at + serve_stale: too old to serve. The failure stays
+    // Unreachable rather than a SERVFAIL answer; SERVFAIL is the Bogus path.
+    clock.advance(Duration::from_secs(60));
+    stop_zones(&h, ZONES).await;
+    let started = std::time::Instant::now();
+    let err = r
+        .resolve(
+            &query("www.example.test.", RecordType::A),
+            RequestFlags::default(),
+        )
+        .await
+        .unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(matches!(err, ResolveError::Unreachable { .. }));
+    assert_eq!(err.code(), "resolver.unreachable");
+}
+
+#[tokio::test]
+async fn stale_answer_does_not_replace_a_fresh_resolution() {
+    let clock = clock();
+    let h = Hierarchy::start().await.unwrap();
+    let mut config = config_for(&h);
+    config.clock = clock.clone();
+    config.ttl_max = 30;
+    config.serve_stale = Duration::from_secs(86_400);
+    config.prefetch = false;
+    config.query_timeout = Duration::from_millis(200);
+    let r = Resolver::new(config).await.unwrap();
+
+    let first = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(first.source, AnswerSource::Recursion);
+    let rdata = first.message.answers[0].rdata.clone();
+
+    clock.advance(Duration::from_secs(30));
+    stop_zones(&h, ZONES).await;
+    let stale = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(stale.source, AnswerSource::Stale);
+    assert_eq!(stale.message.answers[0].ttl, 0);
+
+    start_zones(&h, ZONES).await;
+    clear(&h, ZONES);
+    let fresh = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(fresh.source, AnswerSource::Recursion);
+    assert_eq!(fresh.message.answers[0].rdata, rdata);
+    assert!(fresh.message.answers[0].ttl > 0);
+    assert!(traffic(&h, ZONES) > 0);
+
+    clear(&h, ZONES);
+    let hit = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(hit.source, AnswerSource::Cache);
+    assert!(hit.message.answers[0].ttl > 0);
+    assert_eq!(hit.message.answers[0].rdata, rdata);
     assert_eq!(traffic(&h, ZONES), 0);
 }
