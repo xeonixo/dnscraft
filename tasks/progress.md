@@ -8,14 +8,13 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
 ## Current state
 
-- Phase: 3 (DNSSEC) — 8, 9a, 9b, 10 done; Checkpoint C open
+- Phase: 4 (cache) — Task 11 done; 12/13 open. Checkpoint C still open (manual/delv with owner).
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
 - Real-internet resolution works (example.com 4 queries / ~90 ms incl. priming; www.microsoft.com 13 with minimisation).
 - Checkpoint B passed (owner approved 2026-10-24).
-- Phase: 4 (cache) — Task 11 done; 12/13 open. Checkpoint C still open (manual/delv with owner).
-- Dev Do53 server deferred by owner.
+- Phase 3 DNSSEC tasks 8–10 done. Dev Do53 server deferred by owner.
 - Blockers: none
 
 ## Log
