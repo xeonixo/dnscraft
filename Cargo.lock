@@ -131,6 +131,7 @@ dependencies = [
  "dnscraft-testkit",
  "hickory-proto",
  "rand 0.9.5",
+ "ring",
  "thiserror",
  "tokio",
  "tracing",

@@ -12,10 +12,12 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W approved by owner (coverage 96 %); 10-min fuzz runs still running, result to be reported
-- In progress: Task 5 (CNAME/limits), Task 6 (transport), Task 9a (DNSSEC chain) in parallel (Sonnet agents; file ownership split)
+- In progress: integrate server selection/TCP fallback into iterate.rs (follow-up of Task 6, Haiku agent); then Task 7 and Task 9b
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Tasks 5, 6, 9a done in parallel (Sonnet, reviewed; 203 workspace tests, stable 3x). 5: CNAME/DNAME chains (bailiwick rule, RFC 6604), shared query budget. 6: TC→TCP, strict response matching, SRTT server selection, IPv6 cool-down — not yet wired into iterate.rs (follow-up). 9a: own validator over ring (alg 8/10/13/14/15, RSA ≥1024 legacy), DS matching with SHA-1 suppression, RFC 1982 validity, EDE mapping, wildcard hook; root fixture verifies.
 
 - 2026-10-24 — Task 4 done (Sonnet, reviewed): Resolver API, iterative resolution with priming, glueless NS lookups, injectable clock, test hook for per-name nameserver addresses; root hints verified against IANA named.root. 9 tests.
 - 2026-10-24 — Task 8 done (Sonnet, reviewed): signed testkit hierarchy via hickory (independent signer): secure/NSEC3/opt-out/insecure/bogus-sig/bogus-expired/bogus-nokey, wildcards, DS at cut from parent, DO-bit responses. Embedded RSA keys are test-only fixtures (not secrets). `rustls-pki-types` added as direct testkit dep (already transitive via hickory). 15 tests. Workspace: 164 tests, stable 3x.

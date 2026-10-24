@@ -217,12 +217,12 @@ records, and messages; a CI job that runs each fuzz target for 60 s.
 CNAME length (≤ 16), delegation depth, and per-question outgoing query budget.
 
 **Acceptance criteria:**
-- [ ] Cross-zone CNAME chain resolves; NXDOMAIN and NODATA carry the right rcode/SOA
-- [ ] CNAME loop and over-long chain return `SERVFAIL` with code `resolver.cname_limit`
-- [ ] Exceeding the outgoing budget returns `SERVFAIL` instead of hanging
+- [x] Cross-zone CNAME chain resolves; NXDOMAIN and NODATA carry the right rcode/SOA
+- [x] CNAME loop and over-long chain return `SERVFAIL` with code `resolver.cname_limit`
+- [x] Exceeding the outgoing budget returns `SERVFAIL` instead of hanging
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-resolver --test recursion`
+- [x] `cargo test -p dnscraft-resolver --test recursion`
 
 **Dependencies:** Task 4
 
@@ -236,12 +236,12 @@ CNAME length (≤ 16), delegation depth, and per-question outgoing query budget.
 smoothed-RTT server selection, randomized ids/ports, response matching, IPv4/IPv6 preference.
 
 **Acceptance criteria:**
-- [ ] Truncated UDP answer is retried over TCP and succeeds
-- [ ] A stopped or lame nameserver is skipped; resolution succeeds via the other one
-- [ ] Mismatched id/question responses are ignored (spoofing test)
+- [x] Truncated UDP answer is retried over TCP and succeeds
+- [x] A stopped or lame nameserver is skipped; resolution succeeds via the other one
+- [x] Mismatched id/question responses are ignored (spoofing test)
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-resolver --test transport`
+- [x] `cargo test -p dnscraft-resolver --test transport`
 
 **Dependencies:** Task 4
 
@@ -302,12 +302,12 @@ matching, RRSIG verification (algorithms 8, 10, 13, 14, 15; 5/7 as insecure-by-p
 validity window against the injected clock, label-count/wildcard expansion check.
 
 **Acceptance criteria:**
-- [ ] `secure` zone validates via the testkit trust anchor; wrong signature, expired RRSIG, missing DNSKEY each fail with a distinct reason
-- [ ] Unsupported algorithm → treated as insecure, not bogus (RFC 4035 §5.2)
-- [ ] Root anchors verify the real root DNSKEY set (captured fixture)
+- [x] `secure` zone validates via the testkit trust anchor; wrong signature, expired RRSIG, missing DNSKEY each fail with a distinct reason
+- [x] Unsupported algorithm → treated as insecure, not bogus (RFC 4035 §5.2)
+- [x] Root anchors verify the real root DNSKEY set (captured fixture)
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-resolver --test dnssec -- chain`
+- [x] `cargo test -p dnscraft-resolver --test dnssec -- chain`
 
 **Dependencies:** Tasks W4, 4, 8
 

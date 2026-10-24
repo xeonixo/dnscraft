@@ -15,6 +15,7 @@ dnscraft-proto = { path = "../dnscraft-proto" }
 tokio = { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
+ring = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

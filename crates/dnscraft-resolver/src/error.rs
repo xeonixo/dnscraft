@@ -53,6 +53,20 @@ pub enum ResolveError {
         /// The configured limit.
         limit: u8,
     },
+    /// A CNAME/DNAME chain is longer than the configured limit.
+    #[error("CNAME chain limit of {limit} exceeded while resolving {name}")]
+    CnameLimitExceeded {
+        /// The name being resolved.
+        name: Name,
+        /// The configured limit.
+        limit: u8,
+    },
+    /// A CNAME/DNAME chain points back to a name it already visited.
+    #[error("CNAME loop detected at {name}")]
+    CnameLoop {
+        /// The name that was reached twice.
+        name: Name,
+    },
     /// A query could not be encoded.
     #[error("cannot encode query: {0}")]
     Encode(#[from] ProtoError),
@@ -65,6 +79,7 @@ impl ResolveError {
             Self::Unreachable { .. } => "resolver.unreachable",
             Self::QueryBudgetExceeded { .. } => "resolver.query_budget",
             Self::ReferralDepthExceeded { .. } => "resolver.referral_depth",
+            Self::CnameLimitExceeded { .. } | Self::CnameLoop { .. } => "resolver.cname_limit",
             Self::Encode(_) => "resolver.encode",
         }
     }

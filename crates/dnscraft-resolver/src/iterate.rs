@@ -4,12 +4,13 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use dnscraft_proto::{Message, Name, RData, Rcode, Record, RecordType};
+use dnscraft_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
 
 use crate::config::ResolverConfig;
 use crate::error::ResolveError;
+use crate::limits::{Budget, Limits};
 use crate::transport::{self, TransportError};
 
 /// A server to try: a known address, or a name server host still to resolve.
@@ -32,7 +33,8 @@ pub(crate) struct Context<'a> {
     pub config: &'a ResolverConfig,
     pub roots: &'a [SocketAddr],
     pub total_sent: &'a AtomicU64,
-    sent: AtomicU32,
+    pub limits: Limits,
+    budget: Budget,
 }
 
 impl<'a> Context<'a> {
@@ -45,7 +47,8 @@ impl<'a> Context<'a> {
             config,
             roots,
             total_sent,
-            sent: AtomicU32::new(0),
+            limits: Limits::from(config),
+            budget: Budget::new(config.max_queries_per_resolve),
         }
     }
 
@@ -56,13 +59,7 @@ impl<'a> Context<'a> {
         name: &Name,
         qtype: RecordType,
     ) -> Result<Option<Message>, ResolveError> {
-        let limit = self.config.max_queries_per_resolve;
-        if self.sent.fetch_add(1, Ordering::Relaxed) >= limit {
-            return Err(ResolveError::QueryBudgetExceeded {
-                name: name.clone(),
-                limit,
-            });
-        }
+        self.budget.charge(name)?;
         self.total_sent.fetch_add(1, Ordering::Relaxed);
         let query = transport::build_query(name, qtype);
         match transport::exchange(server, &query, self.config.query_timeout).await {
@@ -124,11 +121,207 @@ pub(crate) fn candidates_for(
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// Resolves `name`/`qtype` iteratively and returns the authoritative response.
+/// Resolves `name`/`qtype` and follows CNAME and DNAME chains.
+///
+/// Records of the chain that the answering server is authoritative for
+/// (in bailiwick of the answering zone) are used directly; for a target
+/// outside that zone resolution restarts from the root. The returned message
+/// is the last authoritative response; when links were followed its answer
+/// section holds the chain in order followed by the target RRset, while the
+/// rcode and authority section (SOA of a negative answer) are those of the
+/// final target (RFC 6604). Responses without any link are returned untouched.
 ///
 /// `chain` holds the lookups currently in progress (for loop detection);
 /// `depth` is the nesting level of address lookups.
-pub(crate) fn resolve_iterative<'a>(
+pub(crate) async fn resolve_iterative(
+    ctx: &Context<'_>,
+    name: &Name,
+    qtype: RecordType,
+    depth: u8,
+    chain: Vec<(Name, RecordType)>,
+) -> Result<Outcome, ResolveError> {
+    let follow = !matches!(qtype, RecordType::CNAME | RecordType::ANY);
+    let mut cur = name.clone();
+    let mut links: Vec<Record> = Vec::new();
+    let mut link_count: usize = 0;
+    let mut seen = vec![name.clone()];
+    loop {
+        let mut outcome = resolve_once(ctx, &cur, qtype, depth, chain.clone()).await?;
+        if !follow {
+            return Ok(outcome);
+        }
+        let step = walk_answer(
+            ctx,
+            &outcome,
+            &cur,
+            qtype,
+            &mut seen,
+            &mut links,
+            &mut link_count,
+            name,
+        )?;
+        match step {
+            Step::Restart(target) => {
+                tracing::debug!(qname = %name, target = %target, links = link_count, "restarting at CNAME target");
+                cur = target;
+            }
+            Step::Done(data) => {
+                if link_count > 0 {
+                    links.extend(data);
+                    outcome.message.answers = links;
+                }
+                return Ok(outcome);
+            }
+            Step::End => {
+                if link_count > 0 {
+                    outcome.message.answers = links;
+                }
+                return Ok(outcome);
+            }
+        }
+    }
+}
+
+/// What to do after inspecting one authoritative response.
+enum Step {
+    /// The answer holds the target RRset (records to append to the chain).
+    Done(Vec<Record>),
+    /// The chain continues at a name this response cannot answer.
+    Restart(Name),
+    /// No further data: NODATA, NXDOMAIN or an unusable response.
+    End,
+}
+
+/// Follows CNAME/DNAME links inside `outcome`, appending them to `links`.
+#[allow(clippy::too_many_arguments)]
+fn walk_answer(
+    ctx: &Context<'_>,
+    outcome: &Outcome,
+    start: &Name,
+    qtype: RecordType,
+    seen: &mut Vec<Name>,
+    links: &mut Vec<Record>,
+    link_count: &mut usize,
+    origin_name: &Name,
+) -> Result<Step, ResolveError> {
+    let answers = &outcome.message.answers;
+    let in_bailiwick = |r: &Record| outcome.zone.zone_of(&r.name);
+    let rrsigs_at = |owner: &Name| {
+        answers
+            .iter()
+            .filter(|r| r.rtype == RecordType::RRSIG && r.name == *owner && in_bailiwick(r))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let mut at = start.clone();
+    loop {
+        let data: Vec<Record> = answers
+            .iter()
+            .filter(|r| r.name == at && r.rtype == qtype && in_bailiwick(r))
+            .cloned()
+            .collect();
+        if !data.is_empty() {
+            let mut out = data;
+            out.extend(rrsigs_at(&at));
+            return Ok(Step::Done(out));
+        }
+        let Some((records, target)) = next_link(answers, &outcome.zone, &at, &rrsigs_at) else {
+            return Ok(if at == *start {
+                Step::End
+            } else {
+                Step::Restart(at)
+            });
+        };
+        let target = target.map_err(ResolveError::Encode)?;
+        *link_count += 1;
+        if *link_count > usize::from(ctx.limits.max_cname_chain) {
+            return Err(ResolveError::CnameLimitExceeded {
+                name: origin_name.clone(),
+                limit: ctx.limits.max_cname_chain,
+            });
+        }
+        if seen.contains(&target) {
+            return Err(ResolveError::CnameLoop { name: target });
+        }
+        seen.push(target.clone());
+        links.extend(records);
+        at = target;
+    }
+}
+
+/// The CNAME or DNAME (with synthesized CNAME) in `answers` that applies to
+/// `at`, restricted to records in bailiwick of `zone`.
+///
+/// Returns the records to append to the chain and the next name.
+fn next_link(
+    answers: &[Record],
+    zone: &Name,
+    at: &Name,
+    rrsigs_at: &dyn Fn(&Name) -> Vec<Record>,
+) -> Option<(Vec<Record>, Result<Name, dnscraft_proto::ProtoError>)> {
+    // DNAME (RFC 6672): owner is a proper ancestor of `at`.
+    for r in answers {
+        if let RData::DNAME(target) = &r.rdata
+            && zone.zone_of(&r.name)
+            && r.name != *at
+            && r.name.zone_of(at)
+        {
+            let synthesized = substitute(at, &r.name, target);
+            let mut records = vec![r.clone()];
+            records.extend(rrsigs_at(&r.name));
+            if let Ok(next) = &synthesized {
+                records.push(Record {
+                    name: at.clone(),
+                    rtype: RecordType::CNAME,
+                    class: Class::IN,
+                    ttl: r.ttl,
+                    rdata: RData::CNAME(next.clone()),
+                });
+            }
+            return Some((records, synthesized));
+        }
+    }
+    for r in answers {
+        if let RData::CNAME(target) = &r.rdata
+            && r.name == *at
+            && zone.zone_of(&r.name)
+        {
+            let mut records = vec![r.clone()];
+            records.extend(rrsigs_at(at));
+            return Some((records, Ok(target.clone())));
+        }
+    }
+    None
+}
+
+/// Replaces the `owner` suffix of `name` by `target` (DNAME substitution).
+fn substitute(
+    name: &Name,
+    owner: &Name,
+    target: &Name,
+) -> Result<Name, dnscraft_proto::ProtoError> {
+    let keep = name.label_count().saturating_sub(owner.label_count());
+    let mut text = String::new();
+    for label in name.labels().take(keep) {
+        for &b in label {
+            match b {
+                b'.' | b'\\' => {
+                    text.push('\\');
+                    text.push(char::from(b));
+                }
+                0x21..=0x7E => text.push(char::from(b)),
+                _ => text.push_str(&format!("\\{b:03}")),
+            }
+        }
+        text.push('.');
+    }
+    text.push_str(&target.to_string());
+    Name::from_ascii(&text)
+}
+
+/// Resolves `name`/`qtype` iteratively without following CNAMEs and returns
+/// the authoritative response.
+fn resolve_once<'a>(
     ctx: &'a Context<'a>,
     name: &'a Name,
     qtype: RecordType,
@@ -141,7 +334,7 @@ pub(crate) fn resolve_iterative<'a>(
         let mut zone = Name::root();
         let mut candidates: VecDeque<Candidate> =
             ctx.roots.iter().copied().map(Candidate::Addr).collect();
-        let max_depth = ctx.config.max_referral_depth;
+        let max_depth = ctx.limits.max_referral_depth;
 
         for hop in 0..=max_depth {
             tracing::debug!(qname = %name, qtype = %qtype, zone = %zone, hop, "asking zone");
@@ -228,7 +421,7 @@ async fn resolve_host(
     depth: u8,
     chain: &[(Name, RecordType)],
 ) -> Result<Vec<SocketAddr>, ResolveError> {
-    if depth >= ctx.config.max_nested_depth {
+    if depth >= ctx.limits.max_nested_depth {
         tracing::debug!(host = %host, depth, "nested lookup depth reached");
         return Ok(Vec::new());
     }
@@ -238,7 +431,7 @@ async fn resolve_host(
             tracing::debug!(host = %host, "nested lookup loop avoided");
             continue;
         }
-        match resolve_iterative(ctx, host, qtype, depth + 1, chain.to_vec()).await {
+        match resolve_once(ctx, host, qtype, depth + 1, chain.to_vec()).await {
             Ok(outcome) => ips.extend(outcome.message.answers.iter().filter_map(|r| {
                 if r.name != *host {
                     return None;

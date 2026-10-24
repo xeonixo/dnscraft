@@ -10,10 +10,13 @@
 
 mod clock;
 mod config;
+pub mod dnssec;
 mod error;
 mod hints;
 mod iterate;
+mod limits;
 mod priming;
+mod server_selection;
 mod transport;
 mod types;
 

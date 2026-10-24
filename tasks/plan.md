@@ -81,8 +81,8 @@ workspace (1) ── testkit hierarchy (3)
 
 ### Phase 2: Recursion
 - [x] Task 4: Iterative resolution happy path
-- [ ] Task 5: CNAME chains, NXDOMAIN, NODATA, limits
-- [ ] Task 6: Transport robustness
+- [x] Task 5: CNAME chains, NXDOMAIN, NODATA, limits
+- [x] Task 6: Transport robustness
 - [ ] Task 7: QNAME minimisation
 
 ### Checkpoint B: Recursion
@@ -90,7 +90,7 @@ workspace (1) ── testkit hierarchy (3)
 
 ### Phase 3: DNSSEC
 - [x] Task 8: Testkit DNSSEC zones
-- [ ] Task 9a: Chain of trust and signature verification
+- [x] Task 9a: Chain of trust and signature verification
 - [ ] Task 9b: Validation status, AD, SERVFAIL + EDE, CD
 - [ ] Task 10: Authenticated denial (NSEC/NSEC3) and negative trust anchors
 
