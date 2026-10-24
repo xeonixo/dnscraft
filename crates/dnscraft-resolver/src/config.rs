@@ -8,6 +8,7 @@ use std::time::Duration;
 use dnscraft_proto::Name;
 
 use crate::clock::{Clock, SystemClock};
+use crate::dnssec::TrustAnchors;
 use crate::hints::default_root_hints;
 
 /// Configuration of a [`Resolver`](crate::Resolver).
@@ -29,6 +30,9 @@ pub struct ResolverConfig {
     /// QNAME minimisation (RFC 9156): send each server only the labels it
     /// needs. Default on; when off the full QNAME/QTYPE goes to every server.
     pub qname_minimisation: bool,
+    /// DNSSEC trust anchors. An empty set switches validation off: every
+    /// answer is then `Indeterminate`.
+    pub trust_anchors: TrustAnchors,
     /// Time source.
     pub clock: Arc<dyn Clock>,
     /// Test hook: when a nameserver host name is in this map, its address is
@@ -58,6 +62,7 @@ impl Default for ResolverConfig {
             max_nested_depth: 4,
             max_cname_chain: 16,
             qname_minimisation: true,
+            trust_anchors: TrustAnchors::iana_root(),
             clock: Arc::new(SystemClock),
             nameserver_addr_overrides: HashMap::new(),
             ipv6_cooldown: Duration::from_secs(60),

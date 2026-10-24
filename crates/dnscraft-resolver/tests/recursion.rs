@@ -4,6 +4,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
 use dnscraft_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
+use dnscraft_resolver::dnssec::TrustAnchors;
 use dnscraft_resolver::{
     AnswerSource, DnssecStatus, PrimingStatus, Query, RequestFlags, Resolver, ResolverConfig,
 };
@@ -22,6 +23,7 @@ fn config_for(h: &Hierarchy) -> ResolverConfig {
         root_hints: h.root_hints(),
         query_timeout: Duration::from_millis(300),
         nameserver_addr_overrides: overrides,
+        trust_anchors: TrustAnchors::empty(),
         ..ResolverConfig::default()
     }
 }

@@ -21,7 +21,9 @@
 
 mod anchors;
 mod chain;
+pub(crate) mod status;
 mod verify;
+pub(crate) mod walk;
 
 pub use anchors::{Anchor, AnchorError, TrustAnchors};
 pub use chain::{

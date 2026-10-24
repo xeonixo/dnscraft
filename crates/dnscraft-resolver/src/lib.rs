@@ -28,6 +28,8 @@ use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use dnscraft_proto::{Message, Rcode, Record, RecordType};
+use dnssec::status::Status;
 use local_zones::LocalZones;
 use server_selection::ServerStats;
 
@@ -94,7 +96,9 @@ impl Resolver {
         }
         self.resolutions.fetch_add(1, Ordering::Relaxed);
         let roots = lock(&self.roots).clone();
-        let ctx = iterate::Context::new(&self.config, &roots, &self.outgoing, self.stats.clone());
+        let mut ctx =
+            iterate::Context::new(&self.config, &roots, &self.outgoing, self.stats.clone());
+        ctx.validate = !flags.checking_disabled && !self.config.trust_anchors.anchors().is_empty();
         tracing::debug!(
             qname = %query.name,
             qtype = %query.qtype,
@@ -102,18 +106,38 @@ impl Resolver {
             do_bit = flags.dnssec_ok,
             "resolving"
         );
-        let outcome =
+        let (outcome, status) =
             iterate::resolve_iterative(&ctx, &query.name, query.qtype, 0, Vec::new()).await?;
         tracing::debug!(qname = %query.name, zone = %outcome.zone, "resolved");
         let mut message = outcome.message;
         message.header.aa = false;
         message.header.ra = true;
+        // Never pass on an AD bit set by a server; only our own validation counts.
+        message.header.ad = false;
         message.edns = None;
+        let mut ede = None;
+        match status {
+            Status::Secure => message.header.ad = true,
+            Status::Bogus(reason) => {
+                message.answers.clear();
+                message.authorities.clear();
+                message.additionals.clear();
+                message.set_rcode(Rcode::SERVFAIL)?;
+                ede = Some(ExtendedError {
+                    code: reason.ede_code(),
+                    text: Some(reason.code().to_owned()),
+                });
+            }
+            Status::Insecure | Status::Indeterminate => {}
+        }
+        if !flags.dnssec_ok {
+            strip_dnssec_records(&mut message, query.qtype);
+        }
         Ok(Answer {
             message,
-            dnssec: DnssecStatus::Indeterminate,
+            dnssec: status.public(),
             source: AnswerSource::Recursion,
-            ede: None,
+            ede,
         })
     }
 
@@ -134,6 +158,20 @@ impl Resolver {
     pub fn priming_status(&self) -> PrimingStatus {
         lock(&self.priming).clone()
     }
+}
+
+/// Removes RRSIG, NSEC and NSEC3 records from a response for a client that did
+/// not set DO (RFC 4035 section 3.2.1); records of the queried type stay.
+fn strip_dnssec_records(message: &mut Message, qtype: RecordType) {
+    let drop = |r: &Record| {
+        matches!(
+            r.rtype,
+            RecordType::RRSIG | RecordType::NSEC | RecordType::NSEC3
+        ) && r.rtype != qtype
+    };
+    message.answers.retain(|r| !drop(r));
+    message.authorities.retain(|r| !drop(r));
+    message.additionals.retain(|r| !drop(r));
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

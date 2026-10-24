@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use dnscraft_proto::{Class, Edns, EdnsOption, Message, Name, RData, Rcode, RecordType};
+use dnscraft_resolver::dnssec::TrustAnchors;
 use dnscraft_resolver::local_zones::{LocalZones, strip_client_subnet};
 use dnscraft_resolver::{
     AnswerSource, DnssecStatus, Query, RequestFlags, Resolver, ResolverConfig,
@@ -234,6 +235,7 @@ fn config_for(h: &Hierarchy) -> ResolverConfig {
         root_hints: h.root_hints(),
         query_timeout: Duration::from_millis(300),
         nameserver_addr_overrides: overrides,
+        trust_anchors: TrustAnchors::empty(),
         ..ResolverConfig::default()
     }
 }

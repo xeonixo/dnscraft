@@ -10,6 +10,8 @@ use std::sync::{Mutex, PoisonError};
 use dnscraft_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
 
 use crate::config::ResolverConfig;
+use crate::dnssec::status::{Status, Trust};
+use crate::dnssec::walk;
 use crate::error::ResolveError;
 use crate::limits::{Budget, Limits};
 use crate::server_selection::ServerStats;
@@ -28,6 +30,8 @@ pub(crate) struct Outcome {
     pub message: Message,
     /// The deepest zone cut reached (the zone whose server answered).
     pub zone: Name,
+    /// Validation result of `message` (`Indeterminate` when validation is off).
+    pub status: Status,
 }
 
 /// State shared by one resolution and its nested lookups.
@@ -37,6 +41,14 @@ pub(crate) struct Context<'a> {
     pub total_sent: &'a AtomicU64,
     pub stats: ServerStats,
     pub limits: Limits,
+    /// Whether DNSSEC validation is on for this resolution (CD bit clear and
+    /// trust anchors configured).
+    pub validate: bool,
+    /// Trust in the zones whose DNSKEY RRset was already fetched during this
+    /// resolution.
+    pub zone_trust: Mutex<HashMap<Name, Trust>>,
+    /// Hidden-cut probes (DS queries) sent during this resolution.
+    pub probes: std::sync::atomic::AtomicU32,
     budget: Budget,
     /// Name server hosts looked up during this resolution: `Some` once
     /// resolved (empty when the lookup failed), `None` while in progress.
@@ -60,6 +72,9 @@ impl<'a> Context<'a> {
             total_sent,
             stats,
             limits: Limits::from(config),
+            validate: false,
+            zone_trust: Mutex::new(HashMap::new()),
+            probes: std::sync::atomic::AtomicU32::new(0),
             budget: Budget::new(config.max_queries_per_resolve),
             ns_hosts: Mutex::new(HashMap::new()),
         }
@@ -161,6 +176,9 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// rcode and authority section (SOA of a negative answer) are those of the
 /// final target (RFC 6604). Responses without any link are returned untouched.
 ///
+/// Each link is validated in the zone that served it; the returned status is
+/// the weakest over all links (see [`Status::combine`]).
+///
 /// `chain` holds the lookups currently in progress (for loop detection);
 /// `depth` is the nesting level of address lookups.
 pub(crate) async fn resolve_iterative(
@@ -169,16 +187,19 @@ pub(crate) async fn resolve_iterative(
     qtype: RecordType,
     depth: u8,
     chain: Vec<(Name, RecordType)>,
-) -> Result<Outcome, ResolveError> {
+) -> Result<(Outcome, Status), ResolveError> {
     let follow = !matches!(qtype, RecordType::CNAME | RecordType::ANY);
     let mut cur = name.clone();
     let mut links: Vec<Record> = Vec::new();
     let mut link_count: usize = 0;
     let mut seen = vec![name.clone()];
+    let mut status = Status::Secure;
     loop {
-        let mut outcome = resolve_once(ctx, &cur, qtype, depth, chain.clone()).await?;
-        if !follow {
-            return Ok(outcome);
+        let mut outcome =
+            resolve_once(ctx, &cur, qtype, depth, chain.clone(), ctx.validate).await?;
+        status = status.combine(outcome.status);
+        if !follow || matches!(status, Status::Bogus(_)) {
+            return Ok((outcome, status));
         }
         let step = walk_answer(
             ctx,
@@ -200,13 +221,13 @@ pub(crate) async fn resolve_iterative(
                     links.extend(data);
                     outcome.message.answers = links;
                 }
-                return Ok(outcome);
+                return Ok((outcome, status));
             }
             Step::End => {
                 if link_count > 0 {
                     outcome.message.answers = links;
                 }
-                return Ok(outcome);
+                return Ok((outcome, status));
             }
         }
     }
@@ -357,8 +378,10 @@ fn resolve_once<'a>(
     qtype: RecordType,
     depth: u8,
     chain: Vec<(Name, RecordType)>,
+    validate: bool,
 ) -> BoxFuture<'a, Result<Outcome, ResolveError>> {
     Box::pin(async move {
+        let mut trust = if validate { Trust::Anchor } else { Trust::Off };
         let mut chain = chain;
         chain.push((name.clone(), qtype));
         let mut zone = Name::root();
@@ -398,8 +421,8 @@ fn resolve_once<'a>(
                     }
                 };
                 match ask_server(ctx, server, &zone, name, qtype, &mut mini).await? {
-                    Some(found) => {
-                        verdict = Some(found);
+                    Some((v, message)) => {
+                        verdict = Some((v, message, server));
                         break;
                     }
                     None => {
@@ -409,13 +432,31 @@ fn resolve_once<'a>(
             }
             match verdict {
                 None => return Err(ResolveError::Unreachable { zone }),
-                Some((Verdict::Final, message)) => return Ok(Outcome { message, zone }),
-                Some((Verdict::Referral { cut, next }, _)) => {
+                Some((Verdict::Final, message, server)) => {
+                    let trust = walk::settle(ctx, &zone, trust, server, &candidates).await?;
+                    let status = walk::assess_final(ctx, &zone, &trust, &message, server).await?;
+                    return Ok(Outcome {
+                        message,
+                        zone,
+                        status,
+                    });
+                }
+                Some((Verdict::Referral { cut, next }, message, server)) => {
                     tracing::debug!(from = %zone, to = %cut, "following referral");
+                    trust = walk::descend(ctx, &zone, trust, &cut, &message, server, &candidates)
+                        .await?;
                     zone = cut;
+                    if let Trust::Bogus(reason) = trust {
+                        // The chain of trust is broken: stop asking.
+                        return Ok(Outcome {
+                            message,
+                            zone,
+                            status: Status::Bogus(reason),
+                        });
+                    }
                     candidates = order_candidates(&ctx.stats, next);
                 }
-                Some((Verdict::Lame, _)) => {}
+                Some((Verdict::Lame, _, _)) => {}
             }
         }
         Err(ResolveError::ReferralDepthExceeded {
@@ -652,7 +693,7 @@ async fn lookup_host(
             tracing::debug!(host = %host, "nested lookup loop avoided");
             continue;
         }
-        match resolve_once(ctx, host, qtype, depth + 1, chain.to_vec()).await {
+        match resolve_once(ctx, host, qtype, depth + 1, chain.to_vec(), false).await {
             Ok(outcome) => ips.extend(outcome.message.answers.iter().filter_map(|r| {
                 if r.name != *host {
                     return None;

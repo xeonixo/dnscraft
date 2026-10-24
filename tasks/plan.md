@@ -91,7 +91,7 @@ workspace (1) ── testkit hierarchy (3)
 ### Phase 3: DNSSEC
 - [x] Task 8: Testkit DNSSEC zones
 - [x] Task 9a: Chain of trust and signature verification
-- [ ] Task 9b: Validation status, AD, SERVFAIL + EDE, CD
+- [x] Task 9b: Validation status, AD, SERVFAIL + EDE, CD
 - [ ] Task 10: Authenticated denial (NSEC/NSEC3) and negative trust anchors
 
 ### Checkpoint C: DNSSEC

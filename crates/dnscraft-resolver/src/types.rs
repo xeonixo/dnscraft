@@ -31,7 +31,9 @@ pub enum DnssecStatus {
     Insecure,
     /// Validation failed.
     Bogus,
-    /// Not determined (always the case until validation lands in Task 9).
+    /// Not determined: validation was off (CD bit, no trust anchors), or the
+    /// answer is a negative or wildcard-expanded one whose denial proof is not
+    /// checked yet. Never carries the AD bit.
     Indeterminate,
 }
 

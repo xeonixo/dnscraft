@@ -11,8 +11,10 @@ use dnscraft_resolver::dnssec::{
     ChainFailure, DelegationTrust, DsStatus, InsecureReason, KeysOutcome, TrustAnchors,
     ValidatedKeys, VerifyFailure, ds_status, validate_dnskey_rrset, validate_rrset, verify_rrsig,
 };
+use dnscraft_resolver::{DnssecStatus, ManualClock, Query, RequestFlags, Resolver, ResolverConfig};
 use dnscraft_testkit::{ChildVariant, DnssecScenario, Hierarchy, SigAlgorithm};
 use hickory_proto::serialize::binary::BinEncodable;
+use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
@@ -480,4 +482,632 @@ fn chain_dnskey_style_anchor_works() {
     )
     .unwrap();
     assert!(matches!(out, KeysOutcome::Secure(_)));
+}
+
+// ---------------------------------------------------------------------------
+// Task 9b: validation status, AD, SERVFAIL + EDE, CD
+// ---------------------------------------------------------------------------
+
+fn status_config(h: &Hierarchy) -> ResolverConfig {
+    let overrides = h
+        .nameserver_addrs()
+        .iter()
+        .map(|(n, a)| (Name::from_ascii(&n.to_string()).unwrap(), *a))
+        .collect();
+    ResolverConfig {
+        root_hints: h.root_hints(),
+        query_timeout: Duration::from_millis(500),
+        nameserver_addr_overrides: overrides,
+        trust_anchors: anchors_of(h),
+        ..ResolverConfig::default()
+    }
+}
+
+async fn status_resolver(h: &Hierarchy) -> Resolver {
+    Resolver::new(status_config(h)).await.unwrap()
+}
+
+async fn status_ask(r: &Resolver, qname: &str, flags: RequestFlags) -> dnscraft_resolver::Answer {
+    let q = Query {
+        name: name(qname),
+        qtype: RecordType::A,
+        qclass: Class::IN,
+    };
+    r.resolve(&q, flags).await.unwrap()
+}
+
+const DO: RequestFlags = RequestFlags {
+    checking_disabled: false,
+    dnssec_ok: true,
+};
+
+async fn status_secure(alg: Option<SigAlgorithm>) {
+    let mut s = DnssecScenario::new(&[ChildVariant::Secure]);
+    if let Some(a) = alg {
+        s = s.with_algorithm(a);
+    }
+    let h = Hierarchy::start_scenario(&s).await.unwrap();
+    let r = status_resolver(&h).await;
+    let ans = status_ask(&r, "www.secure.test.", DO).await;
+    assert_eq!(ans.dnssec, DnssecStatus::Secure);
+    assert!(ans.message.header.ad);
+    assert_eq!(ans.message.rcode(), dnscraft_proto::Rcode::NOERROR);
+    assert!(ans.ede.is_none());
+    assert_eq!(
+        ans.message
+            .answers
+            .iter()
+            .filter(|r| r.rtype == RecordType::A)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn status_secure_ecdsa() {
+    status_secure(None).await;
+}
+
+#[tokio::test]
+async fn status_secure_rsa() {
+    status_secure(Some(SigAlgorithm::RsaSha256)).await;
+}
+
+#[tokio::test]
+async fn status_secure_ed25519() {
+    status_secure(Some(SigAlgorithm::Ed25519)).await;
+}
+
+#[tokio::test]
+async fn status_insecure_child_has_no_ad() {
+    let h = Hierarchy::start_signed(&[ChildVariant::Insecure])
+        .await
+        .unwrap();
+    let r = status_resolver(&h).await;
+    let ans = status_ask(&r, "www.insecure.test.", DO).await;
+    assert_eq!(ans.dnssec, DnssecStatus::Insecure);
+    assert!(!ans.message.header.ad);
+    assert_eq!(ans.message.rcode(), dnscraft_proto::Rcode::NOERROR);
+    assert_eq!(
+        ans.message
+            .answers
+            .iter()
+            .filter(|r| r.rtype == RecordType::A)
+            .count(),
+        1
+    );
+    assert!(ans.ede.is_none());
+}
+
+#[tokio::test]
+async fn status_insecure_stops_dnskey_fetches() {
+    let h = Hierarchy::start_signed(&[ChildVariant::Insecure])
+        .await
+        .unwrap();
+    let r = status_resolver(&h).await;
+    status_ask(&r, "www.insecure.test.", DO).await;
+    let asked_dnskey = |zone: &str| {
+        h.server(zone)
+            .unwrap()
+            .queries()
+            .iter()
+            .filter(|q| RecordType(u16::from(q.query_type)) == RecordType::DNSKEY)
+            .count()
+    };
+    assert_eq!(asked_dnskey("."), 1);
+    assert_eq!(asked_dnskey("test."), 1);
+    assert_eq!(asked_dnskey("insecure.test."), 0);
+}
+
+/// A UDP proxy that routes each query to the server of the longest matching
+/// zone in `routes` (a DS query at a zone apex goes to the next shorter match,
+/// like a server hosting parent and child), and optionally removes the
+/// DS/NSEC/NSEC3/RRSIG records from referrals and DS responses (an attacker
+/// trying to downgrade a signed child to insecure).
+async fn proxy(routes: Vec<(Name, SocketAddr)>, strip: bool) -> SocketAddr {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = socket.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 8192];
+        loop {
+            let Ok((len, from)) = socket.recv_from(&mut buf).await else {
+                return;
+            };
+            let q = Message::decode(&buf[..len]).unwrap();
+            let (qname, qtype) = (q.questions[0].name.clone(), q.questions[0].qtype);
+            let upstream = routes
+                .iter()
+                .filter(|(zone, _)| zone.zone_of(&qname))
+                .filter(|(zone, _)| !(qtype == RecordType::DS && *zone == qname))
+                .max_by_key(|(zone, _)| zone.label_count())
+                .map(|(_, a)| *a)
+                .unwrap();
+            let up = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            up.send_to(&buf[..len], upstream).await.unwrap();
+            let mut rbuf = vec![0u8; 8192];
+            let Ok(Ok((rlen, _))) = timeout(Duration::from_secs(2), up.recv_from(&mut rbuf)).await
+            else {
+                continue;
+            };
+            let mut m = Message::decode(&rbuf[..rlen]).unwrap();
+            let is_ds_query = qtype == RecordType::DS;
+            let is_referral =
+                m.authorities.iter().any(|r| r.rtype == RecordType::NS) && m.answers.is_empty();
+            if strip && (is_referral || is_ds_query) {
+                let strip = |r: &Record| {
+                    matches!(
+                        r.rtype,
+                        RecordType::DS | RecordType::NSEC | RecordType::NSEC3 | RecordType::RRSIG
+                    )
+                };
+                m.authorities.retain(|r| !strip(r));
+                if is_ds_query {
+                    m.answers.retain(|r| !strip(r));
+                }
+            }
+            socket.send_to(&m.encode().unwrap(), from).await.unwrap();
+        }
+    });
+    addr
+}
+
+async fn strip_proxy(upstream: SocketAddr) -> SocketAddr {
+    proxy(vec![(Name::root(), upstream)], true).await
+}
+
+async fn status_downgraded(variant: ChildVariant, qname: &str) -> dnscraft_resolver::Answer {
+    let h = Hierarchy::start_signed(&[variant]).await.unwrap();
+    let proxy = strip_proxy(h.server("test.").unwrap().addr()).await;
+    let mut config = status_config(&h);
+    config
+        .nameserver_addr_overrides
+        .insert(name("ns1.test."), proxy);
+    let r = Resolver::new(config).await.unwrap();
+    status_ask(&r, qname, DO).await
+}
+
+#[tokio::test]
+async fn status_missing_ds_and_no_nsec_proof_is_bogus_not_insecure() {
+    // Stripping the NSEC proof of an unsigned delegation must not be accepted as insecure.
+    let ans = status_downgraded(ChildVariant::Insecure, "www.insecure.test.").await;
+    assert_eq!(ans.dnssec, DnssecStatus::Bogus);
+    assert_eq!(ans.message.rcode(), dnscraft_proto::Rcode::SERVFAIL);
+    assert_eq!(ans.ede.unwrap().code, 12);
+}
+
+#[tokio::test]
+async fn status_stripped_ds_of_signed_child_is_bogus_not_insecure() {
+    let ans = status_downgraded(ChildVariant::Secure, "www.secure.test.").await;
+    assert_eq!(ans.dnssec, DnssecStatus::Bogus);
+    assert_eq!(ans.message.rcode(), dnscraft_proto::Rcode::SERVFAIL);
+    assert!(ans.message.answers.is_empty());
+}
+
+#[tokio::test]
+async fn status_insecure_sibling_does_not_taint_secure() {
+    // The testkit has no signed zone below an unsigned one; the "once insecure,
+    // always insecure" descent is covered by status_insecure_stops_dnskey_fetches.
+    let h = Hierarchy::start_signed(&[ChildVariant::Insecure, ChildVariant::Secure])
+        .await
+        .unwrap();
+    let r = status_resolver(&h).await;
+    let ans = status_ask(&r, "www.insecure.test.", DO).await;
+    assert_eq!(ans.dnssec, DnssecStatus::Insecure);
+    let ans = status_ask(&r, "www.secure.test.", DO).await;
+    assert_eq!(ans.dnssec, DnssecStatus::Secure);
+}
+
+async fn status_bogus(variant: ChildVariant, qname: &str, ede: u16, text: &str) {
+    let h = Hierarchy::start_signed(&[variant]).await.unwrap();
+    let r = status_resolver(&h).await;
+    let ans = status_ask(&r, qname, DO).await;
+    assert_eq!(ans.dnssec, DnssecStatus::Bogus);
+    assert_eq!(ans.message.rcode(), dnscraft_proto::Rcode::SERVFAIL);
+    assert!(ans.message.answers.is_empty());
+    assert!(ans.message.authorities.is_empty());
+    assert!(!ans.message.header.ad);
+    let e = ans.ede.expect("EDE");
+    assert_eq!(e.code, ede);
+    assert_eq!(e.text.as_deref(), Some(text));
+}
+
+#[tokio::test]
+async fn status_bogus_sig() {
+    status_bogus(
+        ChildVariant::BogusSig,
+        "www.bogus-sig.test.",
+        VerifyFailure::BadSignature.ede_code(),
+        VerifyFailure::BadSignature.code(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn status_bogus_expired() {
+    status_bogus(
+        ChildVariant::BogusExpired,
+        "www.bogus-expired.test.",
+        7,
+        VerifyFailure::Expired.code(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn status_bogus_nokey() {
+    status_bogus(
+        ChildVariant::BogusNoKey,
+        "www.bogus-nokey.test.",
+        ChainFailure::DsNoMatch.ede_code(),
+        ChainFailure::DsNoMatch.code(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn status_cd_returns_bogus_answer_unvalidated() {
+    let h = Hierarchy::start_signed(&[ChildVariant::BogusSig, ChildVariant::BogusNoKey])
+        .await
+        .unwrap();
+    let r = status_resolver(&h).await;
+    let cd = RequestFlags {
+        checking_disabled: true,
+        dnssec_ok: true,
+    };
+    for qname in ["www.bogus-sig.test.", "www.bogus-nokey.test."] {
+        let ans = status_ask(&r, qname, cd).await;
+        assert_eq!(ans.dnssec, DnssecStatus::Indeterminate);
+        assert_eq!(ans.message.rcode(), dnscraft_proto::Rcode::NOERROR);
+        assert!(!ans.message.header.ad);
+        assert!(ans.ede.is_none());
+        assert_eq!(
+            ans.message
+                .answers
+                .iter()
+                .filter(|r| r.rtype == RecordType::A)
+                .count(),
+            1
+        );
+    }
+    // No DNSKEY was fetched for a CD query.
+    assert!(
+        h.server("test.")
+            .unwrap()
+            .queries()
+            .iter()
+            .all(|q| RecordType(u16::from(q.query_type)) != RecordType::DNSKEY)
+    );
+}
+
+#[tokio::test]
+async fn status_empty_anchors_is_indeterminate() {
+    let h = Hierarchy::start_signed(&[ChildVariant::Secure, ChildVariant::BogusSig])
+        .await
+        .unwrap();
+    let mut config = status_config(&h);
+    config.trust_anchors = TrustAnchors::empty();
+    let r = Resolver::new(config).await.unwrap();
+    for qname in ["www.secure.test.", "www.bogus-sig.test."] {
+        let ans = status_ask(&r, qname, DO).await;
+        assert_eq!(ans.dnssec, DnssecStatus::Indeterminate);
+        assert!(!ans.message.header.ad);
+        assert_eq!(ans.message.rcode(), dnscraft_proto::Rcode::NOERROR);
+    }
+}
+
+#[tokio::test]
+async fn status_do_controls_dnssec_records() {
+    let h = Hierarchy::start_signed(&[ChildVariant::Secure])
+        .await
+        .unwrap();
+    let r = status_resolver(&h).await;
+    let with = status_ask(&r, "www.secure.test.", DO).await;
+    assert!(
+        with.message
+            .answers
+            .iter()
+            .any(|r| r.rtype == RecordType::RRSIG)
+    );
+    let without = status_ask(&r, "www.secure.test.", RequestFlags::default()).await;
+    assert_eq!(without.dnssec, DnssecStatus::Secure);
+    assert!(without.message.header.ad);
+    assert!(
+        without
+            .message
+            .answers
+            .iter()
+            .all(|r| r.rtype == RecordType::A)
+    );
+    assert_eq!(without.message.answers.len(), 1);
+}
+
+#[tokio::test]
+async fn status_expired_signatures_after_time_travel_are_bogus() {
+    let h = Hierarchy::start_signed(&[ChildVariant::Secure])
+        .await
+        .unwrap();
+    let clock = Arc::new(ManualClock::new(SystemTime::now()));
+    let mut config = status_config(&h);
+    config.clock = clock.clone();
+    let r = Resolver::new(config).await.unwrap();
+    let ans = status_ask(&r, "www.secure.test.", DO).await;
+    assert_eq!(ans.dnssec, DnssecStatus::Secure);
+    clock.advance(Duration::from_secs(60 * 86_400));
+    let ans = status_ask(&r, "www.secure.test.", DO).await;
+    assert_eq!(ans.dnssec, DnssecStatus::Bogus);
+    assert_eq!(ans.message.rcode(), dnscraft_proto::Rcode::SERVFAIL);
+    assert_eq!(ans.ede.unwrap().code, 7);
+}
+
+#[tokio::test]
+async fn status_wildcard_and_negative_answers_are_not_secure_yet() {
+    // TODO(Task 10): these become Secure once denial proofs are checked.
+    let h = Hierarchy::start_signed(&[ChildVariant::Secure])
+        .await
+        .unwrap();
+    let r = status_resolver(&h).await;
+    let wild = status_ask(&r, "x.wild.secure.test.", DO).await;
+    assert_eq!(wild.dnssec, DnssecStatus::Indeterminate);
+    assert!(!wild.message.header.ad);
+    assert_eq!(
+        wild.message
+            .answers
+            .iter()
+            .filter(|r| r.rtype == RecordType::A)
+            .count(),
+        1
+    );
+    let nx = status_ask(&r, "nope.secure.test.", DO).await;
+    assert_eq!(nx.dnssec, DnssecStatus::Indeterminate);
+    assert_eq!(nx.message.rcode(), dnscraft_proto::Rcode::NXDOMAIN);
+}
+
+// ---------------------------------------------------------------------------
+// Hidden zone cuts: parent and child served by the same servers, so the
+// resolver never sees a referral for the child (like uk, co.uk and bbc.co.uk).
+// The testkit serves one zone per server, so a routing proxy plays the part of
+// the shared server.
+// ---------------------------------------------------------------------------
+
+struct Cohost {
+    h: Hierarchy,
+    anchors: TrustAnchors,
+    proxy: SocketAddr,
+}
+
+/// Builds root, `test.` and the nested zones of `chain` (each a child of the
+/// previous one, the first a child of `test.`). A zone is `(origin, signed,
+/// hidden)`: hidden zones are served through the shared proxy together with
+/// `test.`; a visible one is reached through the referral of its parent.
+async fn cohost(chain: &[(&str, bool, bool)], strip: bool) -> Cohost {
+    use dnscraft_testkit::{ServerSpec, SigningOptions, Zone, ZoneKey, parse_name, sign_zone};
+    use std::net::Ipv4Addr;
+    let lo = Ipv4Addr::LOCALHOST;
+    let alg = SigAlgorithm::default();
+    let root_key = ZoneKey::generate(alg).unwrap();
+    let test_key = ZoneKey::generate(alg).unwrap();
+    let keys: Vec<Option<ZoneKey>> = chain
+        .iter()
+        .map(|(_, signed, _)| signed.then(|| ZoneKey::generate(alg).unwrap()))
+        .collect();
+    let delegate = |zone: Zone, child: usize| {
+        let (origin, _, _) = chain[child];
+        let mut zone = zone
+            .with_ns(origin, &format!("ns1.{origin}"))
+            .unwrap()
+            .with_a(&format!("ns1.{origin}"), lo)
+            .unwrap();
+        if let Some(k) = &keys[child] {
+            zone = zone.with_record(k.ds_record(&parse_name(origin).unwrap()).unwrap());
+        }
+        zone
+    };
+    let mut specs = Vec::new();
+    let mut test = Zone::new("test.")
+        .unwrap()
+        .with_soa("ns1.test.", "hostmaster.test.")
+        .unwrap()
+        .with_ns("test.", "ns1.test.")
+        .unwrap()
+        .with_a("ns1.test.", lo)
+        .unwrap();
+    test = delegate(test, 0);
+    for (i, (origin, _, _)) in chain.iter().enumerate() {
+        let mut zone = Zone::new(origin)
+            .unwrap()
+            .with_soa(&format!("ns1.{origin}"), &format!("hostmaster.{origin}"))
+            .unwrap()
+            .with_ns(origin, &format!("ns1.{origin}"))
+            .unwrap()
+            .with_a(&format!("ns1.{origin}"), lo)
+            .unwrap()
+            .with_a(&format!("www.{origin}"), Ipv4Addr::new(192, 0, 2, 50))
+            .unwrap();
+        if i + 1 < chain.len() {
+            zone = delegate(zone, i + 1);
+        }
+        if let Some(k) = &keys[i] {
+            zone = sign_zone(zone, k, &SigningOptions::now()).unwrap();
+        }
+        specs.push(ServerSpec::new(&format!("ns1.{origin}"), zone).unwrap());
+    }
+    let test = sign_zone(test, &test_key, &SigningOptions::now()).unwrap();
+    let root = Zone::new(".")
+        .unwrap()
+        .with_soa("a.root-servers.net.", "hostmaster.root-servers.net.")
+        .unwrap()
+        .with_ns(".", "a.root-servers.net.")
+        .unwrap()
+        .with_a("a.root-servers.net.", lo)
+        .unwrap()
+        .with_ns("test.", "ns1.test.")
+        .unwrap()
+        .with_a("ns1.test.", lo)
+        .unwrap()
+        .with_record(test_key.ds_record(&parse_name("test.").unwrap()).unwrap());
+    let root = sign_zone(root, &root_key, &SigningOptions::now()).unwrap();
+    let mut all = vec![
+        ServerSpec::new("a.root-servers.net.", root).unwrap(),
+        ServerSpec::new("ns1.test.", test).unwrap(),
+    ];
+    all.extend(specs);
+    let h = Hierarchy::start_with(all).await.unwrap();
+
+    let mut routes = vec![(name("test."), h.server("test.").unwrap().addr())];
+    for (origin, _, hidden) in chain {
+        if *hidden {
+            routes.push((name(origin), h.server(origin).unwrap().addr()));
+        }
+    }
+    let proxy = proxy(routes, strip).await;
+
+    let ds = root_key
+        .ds(&Name::root().to_string().parse().unwrap())
+        .unwrap();
+    let bytes = ds.to_bytes().unwrap();
+    let anchor_ds = Record {
+        name: Name::root(),
+        rtype: RecordType::DS,
+        class: Class::IN,
+        ttl: 3600,
+        rdata: RData::decode(&bytes, RecordType::DS, 0, bytes.len()).unwrap(),
+    };
+    Cohost {
+        h,
+        anchors: TrustAnchors::from_records(&[anchor_ds]).unwrap(),
+        proxy,
+    }
+}
+
+impl Cohost {
+    async fn resolver(&self, minimisation: bool) -> Resolver {
+        let mut config = status_config_with(&self.h, self.anchors.clone());
+        config
+            .nameserver_addr_overrides
+            .insert(name("ns1.test."), self.proxy);
+        config.qname_minimisation = minimisation;
+        Resolver::new(config).await.unwrap()
+    }
+}
+
+fn status_config_with(h: &Hierarchy, anchors: TrustAnchors) -> ResolverConfig {
+    ResolverConfig {
+        trust_anchors: anchors,
+        ..status_config_base(h)
+    }
+}
+
+fn status_config_base(h: &Hierarchy) -> ResolverConfig {
+    let overrides = h
+        .nameserver_addrs()
+        .iter()
+        .map(|(n, a)| (Name::from_ascii(&n.to_string()).unwrap(), *a))
+        .collect();
+    ResolverConfig {
+        root_hints: h.root_hints(),
+        query_timeout: Duration::from_millis(500),
+        nameserver_addr_overrides: overrides,
+        ..ResolverConfig::default()
+    }
+}
+
+async fn cohost_status(
+    chain: &[(&str, bool, bool)],
+    strip: bool,
+    qname: &str,
+) -> Vec<(DnssecStatus, bool)> {
+    let c = cohost(chain, strip).await;
+    let mut out = Vec::new();
+    for minimisation in [true, false] {
+        let r = c.resolver(minimisation).await;
+        let ans = status_ask(&r, qname, DO).await;
+        if ans.dnssec != DnssecStatus::Bogus {
+            assert_eq!(
+                ans.message.rcode(),
+                dnscraft_proto::Rcode::NOERROR,
+                "{qname}"
+            );
+            assert_eq!(
+                ans.message
+                    .answers
+                    .iter()
+                    .filter(|r| r.rtype == RecordType::A)
+                    .count(),
+                1
+            );
+        } else {
+            assert_eq!(ans.message.rcode(), dnscraft_proto::Rcode::SERVFAIL);
+            assert!(ans.message.answers.is_empty());
+        }
+        out.push((ans.dnssec, ans.message.header.ad));
+    }
+    out
+}
+
+fn both(status: DnssecStatus, ad: bool) -> Vec<(DnssecStatus, bool)> {
+    vec![(status, ad), (status, ad)]
+}
+
+#[tokio::test]
+async fn status_hidden_signed_child_is_secure() {
+    let r = cohost_status(&[("i.test.", true, true)], false, "www.i.test.").await;
+    assert_eq!(r, both(DnssecStatus::Secure, true));
+}
+
+#[tokio::test]
+async fn status_hidden_unsigned_child_with_proof_is_insecure() {
+    let r = cohost_status(&[("i.test.", false, true)], false, "www.i.test.").await;
+    assert_eq!(r, both(DnssecStatus::Insecure, false));
+}
+
+#[tokio::test]
+async fn status_hidden_children_with_stripped_proofs_are_bogus() {
+    for signed in [true, false] {
+        let r = cohost_status(&[("i.test.", signed, true)], true, "www.i.test.").await;
+        assert_eq!(r, both(DnssecStatus::Bogus, false), "signed={signed}");
+    }
+}
+
+#[tokio::test]
+async fn status_hidden_intermediate_zone_between_parent_and_signer() {
+    let r = cohost_status(
+        &[("i.test.", true, true), ("s.i.test.", true, true)],
+        false,
+        "www.s.i.test.",
+    )
+    .await;
+    assert_eq!(r, both(DnssecStatus::Secure, true));
+    let r = cohost_status(
+        &[("i.test.", true, true), ("s.i.test.", false, true)],
+        false,
+        "www.s.i.test.",
+    )
+    .await;
+    assert_eq!(r, both(DnssecStatus::Insecure, false));
+    let r = cohost_status(
+        &[("i.test.", true, true), ("s.i.test.", true, true)],
+        true,
+        "www.s.i.test.",
+    )
+    .await;
+    assert_eq!(r, both(DnssecStatus::Bogus, false));
+}
+
+#[tokio::test]
+async fn status_referral_signed_by_hidden_zone() {
+    // Like bbc.co.uk below uk/co.uk: the referral for c.s.i.test. comes from
+    // the shared server, but its DS is signed by the hidden zone s.i.test.
+    let chain = |c_signed| {
+        vec![
+            ("i.test.", true, true),
+            ("s.i.test.", true, true),
+            ("c.s.i.test.", c_signed, false),
+        ]
+    };
+    let r = cohost_status(&chain(true), false, "www.c.s.i.test.").await;
+    assert_eq!(r, both(DnssecStatus::Secure, true));
+    let r = cohost_status(&chain(false), false, "www.c.s.i.test.").await;
+    assert_eq!(r, both(DnssecStatus::Insecure, false));
+    let r = cohost_status(&chain(true), true, "www.c.s.i.test.").await;
+    assert_eq!(r, both(DnssecStatus::Bogus, false));
 }

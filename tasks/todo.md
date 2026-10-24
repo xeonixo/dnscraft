@@ -322,12 +322,12 @@ validity window against the injected clock, label-count/wildcard expansion check
 honour the CD bit per query, find insecure delegations (no DS) correctly.
 
 **Acceptance criteria:**
-- [ ] `secure` → `Secure` + AD; `insecure` → `Insecure`, no AD
-- [ ] Every bogus variant → `SERVFAIL` with the matching EDE code
-- [ ] With CD bit set, the bogus answer is returned unvalidated
+- [x] `secure` → `Secure` + AD; `insecure` → `Insecure`, no AD
+- [x] Every bogus variant → `SERVFAIL` with the matching EDE code
+- [x] With CD bit set, the bogus answer is returned unvalidated
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-resolver --test dnssec -- status`
+- [x] `cargo test -p dnscraft-resolver --test dnssec -- status`
 
 **Dependencies:** Task 9a
 
