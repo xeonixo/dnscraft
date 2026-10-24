@@ -8,7 +8,7 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
 ## Current state
 
-- Phase: 5 (edges) — Checkpoint D passed; next Task 14 (forward zones). Task 15 already done.
+- Phase: 5 (edges) — Task 14 in progress (forward zones). Task 15 already done. Checkpoint E after 14+16.
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
@@ -20,6 +20,8 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Task 14 started.
 
 - 2026-10-24 — Checkpoint D passed: criterion 4 (2nd query zero traffic + release cache-hit p50≈542 ns / p99≈625 ns over 200 samples; formal `criterion` bench still Task 16), 5 (stale within window), 6 (50 concurrent → one chain). Workspace DoD green. Owner approved.
 
