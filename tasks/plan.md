@@ -98,7 +98,7 @@ workspace (1) ── testkit hierarchy (3)
 - [ ] Success criteria 2 and 3 met
 
 ### Phase 4: Cache and resilience
-- [ ] Task 11: Positive/negative cache
+- [x] Task 11: Positive/negative cache
 - [ ] Task 12: In-flight dedup and prefetch
 - [ ] Task 13: Serve-stale
 

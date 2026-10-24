@@ -1,6 +1,7 @@
 //! Recursive, DNSSEC-validating DNS resolver with cache for DNScraft.
 //!
 //! Module layout (later tasks plug in here):
+//! - `cache`: positive and negative answer cache (RFC 2308, Task 11).
 //! - `iterate`: iterative resolution and referral following (Tasks 5, 7 extend it:
 //!   CNAME chains, limits, QNAME minimisation).
 //! - `transport`: single UDP exchange with response matching (Task 6: TCP, retries,
@@ -8,6 +9,7 @@
 //! - `priming`: root priming (RFC 8109).
 //! - `clock`: injectable time for the cache and DNSSEC (Tasks 9, 11).
 
+mod cache;
 mod clock;
 mod config;
 pub mod dnssec;
@@ -47,6 +49,7 @@ pub use types::{
 pub struct Resolver {
     config: ResolverConfig,
     local_zones: LocalZones,
+    cache: cache::Cache,
     roots: Mutex<Vec<SocketAddr>>,
     priming: Mutex<PrimingStatus>,
     resolutions: AtomicU64,
@@ -74,9 +77,11 @@ impl Resolver {
             let ctx = iterate::Context::new(&config, &config.root_hints, &outgoing, stats.clone());
             priming::prime(&ctx).await
         };
+        let cache = cache::Cache::new(cache::budget_bytes(&config));
         Ok(Self {
             config,
             local_zones: LocalZones::rfc6303(),
+            cache,
             roots: Mutex::new(roots),
             priming: Mutex::new(status),
             resolutions: AtomicU64::new(0),
@@ -95,6 +100,14 @@ impl Resolver {
             return Ok(answer);
         }
         self.resolutions.fetch_add(1, Ordering::Relaxed);
+        let now = self.config.clock.instant();
+        if let Some(mut answer) = self.cache.lookup(query, now) {
+            tracing::debug!(qname = %query.name, qtype = %query.qtype, "cache hit");
+            if !flags.dnssec_ok {
+                strip_dnssec_records(&mut answer.message, query.qtype);
+            }
+            return Ok(answer);
+        }
         let roots = lock(&self.roots).clone();
         let mut ctx =
             iterate::Context::new(&self.config, &roots, &self.outgoing, self.stats.clone());
@@ -119,6 +132,10 @@ impl Resolver {
             code,
             text: Some(text.to_owned()),
         });
+        let dnssec = status.public();
+        // CD skips validation, and Bogus is rewritten to SERVFAIL below. Neither
+        // is cached: an unvalidated or bogus answer must not be replayed later.
+        let cacheable = !flags.checking_disabled && !matches!(status, Status::Bogus(_));
         match status {
             Status::Secure => message.header.ad = true,
             Status::Bogus(_) => {
@@ -129,20 +146,51 @@ impl Resolver {
             }
             Status::Insecure | Status::InsecureNsec3Iterations | Status::Indeterminate => {}
         }
+        // Store before DO stripping so a later client with DO still gets the
+        // DNSSEC records. The TTL window starts when the answer is stored.
+        let stored_at = self.config.clock.instant();
+        let published_ttl = if cacheable {
+            self.cache.store(
+                query,
+                &message,
+                dnssec,
+                ede.clone(),
+                stored_at,
+                cache::TtlClamp {
+                    min: self.config.ttl_min,
+                    max: self.config.ttl_max,
+                },
+            )
+        } else {
+            None
+        };
+        if let Some(ttl) = published_ttl {
+            cache::set_ttls(&mut message, ttl);
+        }
         if !flags.dnssec_ok {
             strip_dnssec_records(&mut message, query.qtype);
         }
         Ok(Answer {
             message,
-            dnssec: status.public(),
+            dnssec,
             source: AnswerSource::Recursion,
             ede,
         })
     }
 
-    /// Removes cached data. Implemented in Task 11 (there is no cache yet).
+    /// Removes cached answers.
+    ///
+    /// [`FlushScope::Domain`] drops that name and every name below it. Locally
+    /// served zones are not cached.
     pub fn flush(&self, scope: FlushScope) {
-        tracing::debug!(?scope, "flush requested; no cache yet");
+        tracing::debug!(?scope, "flushing cache");
+        self.cache.flush(&scope);
+    }
+
+    /// Bytes currently charged to the answer cache. For tests.
+    #[doc(hidden)]
+    pub fn cached_bytes(&self) -> usize {
+        self.cache.bytes_used()
     }
 
     /// Counters. Extended in Task 16.

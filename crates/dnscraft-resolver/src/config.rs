@@ -39,6 +39,15 @@ pub struct ResolverConfig {
     pub negative_trust_anchors: Vec<Name>,
     /// Time source.
     pub clock: Arc<dyn Clock>,
+    /// Answer-cache limit in mebibytes (1024×1024 bytes). `0` stores nothing.
+    /// Default: 64.
+    pub cache_size_mb: u64,
+    /// Lowest TTL kept in the cache, in seconds. Shorter TTLs are raised to
+    /// this before the entry is stored. Default: 0.
+    pub ttl_min: u32,
+    /// Highest TTL kept in the cache, in seconds. Longer TTLs are lowered to
+    /// this. Default: 86400 (one day).
+    pub ttl_max: u32,
     /// Test hook: when a nameserver host name is in this map, its address is
     /// taken from here instead of glue/A lookups; exists because the testkit
     /// runs every server on 127.0.0.1 with distinct ports.
@@ -48,6 +57,10 @@ pub struct ResolverConfig {
     /// mapped address.
     #[doc(hidden)]
     pub nameserver_addr_overrides: HashMap<Name, SocketAddr>,
+    /// Test hook: exact cache budget in bytes. When set, replaces
+    /// [`Self::cache_size_mb`].
+    #[doc(hidden)]
+    pub cache_capacity_bytes: Option<u64>,
     /// How long IPv6 name servers are deprioritised after an IPv6 send failed
     /// with network-unreachable.
     pub ipv6_cooldown: Duration,
@@ -69,9 +82,27 @@ impl Default for ResolverConfig {
             trust_anchors: TrustAnchors::iana_root(),
             negative_trust_anchors: Vec::new(),
             clock: Arc::new(SystemClock),
+            cache_size_mb: 64,
+            ttl_min: 0,
+            ttl_max: 86_400,
             nameserver_addr_overrides: HashMap::new(),
+            cache_capacity_bytes: None,
             ipv6_cooldown: Duration::from_secs(60),
             forward_zones: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_defaults_match_the_spec() {
+        let config = ResolverConfig::default();
+        assert_eq!(config.cache_size_mb, 64);
+        assert_eq!(config.ttl_min, 0);
+        assert_eq!(config.ttl_max, 86_400);
+        assert_eq!(config.cache_capacity_bytes, None);
     }
 }

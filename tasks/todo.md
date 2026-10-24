@@ -367,12 +367,12 @@ configurable negative trust anchors.
 TTL clamping, `flush(FlushScope::All | Domain)`; DNSSEC status cached with the entry.
 
 **Acceptance criteria:**
-- [ ] Second identical query causes zero testkit traffic
-- [ ] TTL clamp and negative TTL (SOA minimum) honoured using the injected clock
-- [ ] Memory bound respected under a fill test; flush by domain removes subdomains too
+- [x] Second identical query causes zero testkit traffic
+- [x] TTL clamp and negative TTL (SOA minimum) honoured using the injected clock
+- [x] Memory bound respected under a fill test; flush by domain removes subdomains too
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-resolver --test cache`
+- [x] `cargo test -p dnscraft-resolver --test cache`
 
 **Dependencies:** Tasks 5, 9b
 

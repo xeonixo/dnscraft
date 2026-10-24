@@ -14,12 +14,15 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
 - Real-internet resolution works (example.com 4 queries / ~90 ms incl. priming; www.microsoft.com 13 with minimisation).
 - Checkpoint B passed (owner approved 2026-10-24).
-- In progress: Task 11 (positive/negative cache). Checkpoint C still open (manual/delv with owner). Dev Do53 server deferred by owner.
+- Phase: 4 (cache) — Task 11 done; 12/13 open. Checkpoint C still open (manual/delv with owner).
+- Dev Do53 server deferred by owner.
 - Blockers: none
 
 ## Log
 
-- 2026-10-24 — Task 11 started (Sonnet agent).
+- 2026-10-24 — Task 11 done (Grok + lead review fix): byte-budget LRU message cache, RFC 2308 negative TTL (incl. CNAME→NODATA), TTL clamp, flush All/Domain, CD/Bogus not stored. 13 integration + 9 unit tests. Follow-ups: O(n) LRU scan, NXDOMAIN still per-qtype.
+
+- 2026-10-24 — Task 11 started (Grok agent; Sonnet unavailable).
 
 - 2026-10-24 — Task 10 done (Sonnet + lead review fix): NSEC/NSEC3 denial (NXDOMAIN, NODATA, wildcards, opt-out, closest encloser), NTAs via config. Review found NSEC wildcard answers omitted closest-encloser consistency → fixed + unit/forge regression. 17 denial/nta integration tests; workspace green.
 
