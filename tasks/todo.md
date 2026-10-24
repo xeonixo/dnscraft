@@ -56,12 +56,12 @@ random ports for `.`, `test.`, and `example.test.` from inline zone definitions,
 matching root hints. Servers can be stopped/started individually and record received queries.
 
 **Acceptance criteria:**
-- [ ] `Hierarchy::start()` returns root hints (`ip:port`) and handles to each server
-- [ ] A query for `www.example.test. A` sent to the fake root returns a referral to `test.`
-- [ ] Per-server query log and `stop()`/`start()` available for tests
+- [x] `Hierarchy::start()` returns root hints (`ip:port`) and handles to each server
+- [x] A query for `www.example.test. A` sent to the fake root returns a referral to `test.`
+- [x] Per-server query log and `stop()`/`start()` available for tests
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-testkit`
+- [x] `cargo test -p dnscraft-testkit`
 
 **Dependencies:** Task 1
 
@@ -165,6 +165,8 @@ NSEC and NSEC3 (incl. opt-out) denial zones; expose the fake root's trust anchor
 **Acceptance criteria:**
 - [ ] Each zone variant is selectable by name from tests
 - [ ] Fake root DS/DNSKEY exported as a trust anchor for the resolver config
+- [ ] Responder answers `DS` queries at a zone cut authoritatively from the parent (today it returns a referral, see review note on Task 3)
+- [ ] Wildcard records supported (needed for wildcard denial proofs)
 
 **Verification:**
 - [ ] `cargo test -p dnscraft-testkit -- dnssec`
