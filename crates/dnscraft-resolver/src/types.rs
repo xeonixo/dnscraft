@@ -56,6 +56,10 @@ pub struct ExtendedError {
 }
 
 /// The result of a resolution.
+///
+/// The message id is not meaningful (it is 0 for locally synthesized answers).
+/// The caller (listeners) must set the id of the client's request before
+/// sending.
 #[derive(Clone, Debug)]
 pub struct Answer {
     /// Final answer records and response code.

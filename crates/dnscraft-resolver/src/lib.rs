@@ -15,6 +15,8 @@ mod error;
 mod hints;
 mod iterate;
 mod limits;
+#[doc(hidden)]
+pub mod local_zones;
 mod priming;
 #[doc(hidden)]
 pub mod server_selection;
@@ -26,6 +28,7 @@ use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use local_zones::LocalZones;
 use server_selection::ServerStats;
 
 pub use clock::{Clock, ManualClock, SystemClock};
@@ -41,6 +44,7 @@ pub use types::{
 #[derive(Debug)]
 pub struct Resolver {
     config: ResolverConfig,
+    local_zones: LocalZones,
     roots: Mutex<Vec<SocketAddr>>,
     priming: Mutex<PrimingStatus>,
     resolutions: AtomicU64,
@@ -70,6 +74,7 @@ impl Resolver {
         };
         Ok(Self {
             config,
+            local_zones: LocalZones::rfc6303(),
             roots: Mutex::new(roots),
             priming: Mutex::new(status),
             resolutions: AtomicU64::new(0),
@@ -84,6 +89,9 @@ impl Resolver {
         query: &Query,
         flags: RequestFlags,
     ) -> Result<Answer, ResolveError> {
+        if let Some(answer) = self.local_zones.answer(query, &self.config.forward_zones) {
+            return Ok(answer);
+        }
         self.resolutions.fetch_add(1, Ordering::Relaxed);
         let roots = lock(&self.roots).clone();
         let ctx = iterate::Context::new(&self.config, &roots, &self.outgoing, self.stats.clone());

@@ -107,7 +107,7 @@ workspace (1) ── testkit hierarchy (3)
 
 ### Phase 5: Edges and completion
 - [ ] Task 14: Forward zones
-- [ ] Task 15: Locally served private reverse zones and ECS stripping
+- [x] Task 15: Locally served private reverse zones and ECS stripping
 - [ ] Task 16: Stats, error codes, benchmark, example binary, acceptance
 
 ### Checkpoint E: Complete

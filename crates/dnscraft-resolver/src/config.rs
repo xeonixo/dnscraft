@@ -40,6 +40,9 @@ pub struct ResolverConfig {
     /// How long IPv6 name servers are deprioritised after an IPv6 send failed
     /// with network-unreachable.
     pub ipv6_cooldown: Duration,
+    /// Zones answered by forward targets — full forwarding arrives in Task 14;
+    /// for now only used to exempt them from locally served zones.
+    pub forward_zones: Vec<Name>,
 }
 
 impl Default for ResolverConfig {
@@ -54,6 +57,7 @@ impl Default for ResolverConfig {
             clock: Arc::new(SystemClock),
             nameserver_addr_overrides: HashMap::new(),
             ipv6_cooldown: Duration::from_secs(60),
+            forward_zones: Vec::new(),
         }
     }
 }

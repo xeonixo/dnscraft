@@ -12,10 +12,12 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
-- In progress: wire Task 15 (local zones, ECS strip) into Resolver::resolve + example query binary (Haiku); then Task 7, Task 9b
+- **Bug found by real-internet test:** every real query fails with `resolver.query_budget` (glueless NS chase, e.g. av3.nstld.com, exhausts 64-query budget). Fix in progress (Sonnet). Then Task 7, Task 9b
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Task 15 done + wired (Haiku, reviewed): RFC 6303 local zones answered before recursion, forward zones exempt; `examples/query.rs` added (pulled forward from Task 16). First real-internet run: all lookups fail with query budget exhaustion → bug ticket.
 
 - 2026-10-24 — Follow-up of Task 6 (Haiku, reviewed): Resolver owns shared ServerStats; iterate.rs orders candidates by SRTT and uses query_servers (TC→TCP); transport/server_selection exposed as doc(hidden) pub, test #[path] hack removed. Priming still uses plain exchange (acceptable).
 

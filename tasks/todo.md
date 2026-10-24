@@ -447,12 +447,12 @@ flag per zone (default false), loop protection, cached like recursive answers.
 forward zone covers them; ECS never sent and stripped from incoming queries.
 
 **Acceptance criteria:**
-- [ ] PTR for `10.in-addr.arpa` space → local NXDOMAIN, zero testkit traffic
-- [ ] Forward zone for a private reverse zone overrides the local answer
-- [ ] Outgoing queries never carry ECS (testkit inspects received EDNS options)
+- [x] PTR for `10.in-addr.arpa` space → local NXDOMAIN, zero testkit traffic
+- [x] Forward zone for a private reverse zone overrides the local answer
+- [x] Outgoing queries never carry ECS (testkit inspects received EDNS options)
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-resolver --test local_zones`
+- [x] `cargo test -p dnscraft-resolver --test local_zones`
 
 **Dependencies:** Task 4 (Task 14 for the override case)
 
