@@ -19,7 +19,7 @@ expect_used = "warn"
 # Shared dependency versions. Dependencies are added per task.
 [workspace.dependencies]
 tokio = { version = "1.54", features = ["net", "rt", "macros", "time", "io-util", "sync"] }
-hickory-proto = { version = "0.26.3", default-features = false, features = ["std"] }
+hickory-proto = { version = "=0.26.3", default-features = false, features = ["std"] }
 thiserror = "2.0"
 tracing = "0.1"
 

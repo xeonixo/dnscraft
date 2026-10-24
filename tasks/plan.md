@@ -68,7 +68,7 @@ workspace (1) ── testkit hierarchy (3)
 - [x] Revised plan approved
 
 ### Phase 1b: Wire format (`dnscraft-proto`)
-- [ ] Task W1: Domain names and compression
+- [x] Task W1: Domain names and compression
 - [ ] Task W2: Core RDATA types
 - [ ] Task W3: Messages and EDNS
 - [ ] Task W4: DNSSEC record types and canonical form

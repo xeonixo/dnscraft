@@ -88,12 +88,12 @@ Oracle tests live in `crates/dnscraft-proto/tests/` and use `hickory-proto` as a
 wire decode with compression pointers and wire encode with an optional compression table.
 
 **Acceptance criteria:**
-- [ ] Limits enforced: label ≤ 63, name ≤ 255 octets on the wire, pointers only backwards, max 128 pointer jumps, no recursion
-- [ ] `zone_of`, `parent`, label iteration, and RFC 4034 §6.1 canonical ordering implemented
-- [ ] Round-trip against hickory `Name` for a corpus incl. escapes, root, max-length names
+- [x] Limits enforced: label ≤ 63, name ≤ 255 octets on the wire, pointers only backwards, max 128 pointer jumps, no recursion
+- [x] `zone_of`, `parent`, label iteration, and RFC 4034 §6.1 canonical ordering implemented
+- [x] Round-trip against hickory `Name` for a corpus incl. escapes, root, max-length names
 
 **Verification:**
-- [ ] `cargo test -p dnscraft-proto -- name`
+- [x] `cargo test -p dnscraft-proto -- name`
 
 **Dependencies:** Task 1
 

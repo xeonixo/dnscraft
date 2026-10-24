@@ -11,10 +11,12 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Phase: 1 (Foundation)
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
-- In progress: Task W1 — Domain names and compression (Sonnet agent)
+- In progress: Task W2 — Core RDATA types (Sonnet agent)
 - Blockers: none
 
 ## Log
+
+- 2026-10-24 — Task W1 done (Sonnet agent, reviewed): `Name` with iterative hardened decoder (backward-only pointers, 128 jumps, 255-octet limit), compression map, RFC 4034 ordering; 17 unit + 4 hickory-oracle tests. Follow-up for later perf work: compression map allocates a lowercase key per suffix.
 
 - 2026-10-24 — Owner chose Option D at Checkpoint A. ADR amended, SPEC/map updated, plan revised: new phase 1b (W1–W5), Task 9 split into 9a/9b.
 

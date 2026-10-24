@@ -78,6 +78,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dnscraft-proto"
+version = "0.1.0"
+dependencies = [
+ "hickory-proto",
+ "thiserror",
+]
+
+[[package]]
 name = "dnscraft-resolver"
 version = "0.1.0"
 
