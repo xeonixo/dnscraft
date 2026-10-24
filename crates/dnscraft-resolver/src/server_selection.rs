@@ -1,6 +1,5 @@
 //! Server selection: smoothed RTT per address, exploration and IPv6
 //! availability tracking.
-#![allow(dead_code)] // adopted by iterate.rs later.
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -22,7 +21,7 @@ const INITIAL_RANGE_MS: std::ops::Range<f64> = 1.0..10.0;
 /// Default probability of putting a random candidate first.
 const DEFAULT_EXPLORATION: f64 = 0.05;
 /// Default time IPv6 stays disabled after a network-unreachable error.
-pub(crate) const DEFAULT_IPV6_COOLDOWN: Duration = Duration::from_secs(60);
+pub const DEFAULT_IPV6_COOLDOWN: Duration = Duration::from_secs(60);
 
 #[derive(Debug)]
 struct Inner {
@@ -32,7 +31,7 @@ struct Inner {
 
 /// Shared per-server statistics. Cheap to clone (handles share state).
 #[derive(Clone, Debug)]
-pub(crate) struct ServerStats {
+pub struct ServerStats {
     inner: Arc<Mutex<Inner>>,
     exploration: f64,
     ipv6_cooldown: Duration,
@@ -45,7 +44,7 @@ impl Default for ServerStats {
 }
 
 impl ServerStats {
-    pub(crate) fn new(ipv6_cooldown: Duration) -> Self {
+    pub fn new(ipv6_cooldown: Duration) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 srtt_ms: HashMap::new(),
@@ -58,7 +57,7 @@ impl ServerStats {
 
     /// Sets the probability (0.0..=1.0) that [`ServerStats::order`] moves a
     /// random candidate to the front. Tests use 0.0 for determinism.
-    pub(crate) fn with_exploration(mut self, probability: f64) -> Self {
+    pub fn with_exploration(mut self, probability: f64) -> Self {
         self.exploration = probability.clamp(0.0, 1.0);
         self
     }
@@ -68,7 +67,7 @@ impl ServerStats {
     }
 
     /// Current smoothed RTT of `server`, `None` if it was never seen.
-    pub(crate) fn srtt(&self, server: SocketAddr) -> Option<Duration> {
+    pub fn srtt(&self, server: SocketAddr) -> Option<Duration> {
         self.lock()
             .srtt_ms
             .get(&server)
@@ -76,19 +75,19 @@ impl ServerStats {
     }
 
     /// Whether IPv6 is currently considered usable.
-    pub(crate) fn ipv6_available(&self) -> bool {
+    pub fn ipv6_available(&self) -> bool {
         self.lock()
             .ipv6_down_until
             .is_none_or(|until| Instant::now() >= until)
     }
 
     /// Marks IPv6 unusable for the cool-down period.
-    pub(crate) fn mark_ipv6_unavailable(&self) {
+    pub fn mark_ipv6_unavailable(&self) {
         self.lock().ipv6_down_until = Some(Instant::now() + self.ipv6_cooldown);
     }
 
     /// Records a successful exchange.
-    pub(crate) fn record_success(&self, server: SocketAddr, rtt: Duration) {
+    pub fn record_success(&self, server: SocketAddr, rtt: Duration) {
         let sample = (rtt.as_secs_f64() * 1000.0).min(SRTT_CAP_MS);
         let mut inner = self.lock();
         let old = *inner
@@ -101,7 +100,7 @@ impl ServerStats {
     }
 
     /// Records a timeout or other failure: doubles the srtt (capped).
-    pub(crate) fn record_failure(&self, server: SocketAddr) {
+    pub fn record_failure(&self, server: SocketAddr) {
         let mut inner = self.lock();
         let old = *inner
             .srtt_ms
@@ -114,7 +113,7 @@ impl ServerStats {
 
     /// Records a socket error: penalises the server and, for IPv6 servers
     /// with a network-unreachable style error, disables IPv6 for a while.
-    pub(crate) fn record_io_error(&self, server: SocketAddr, err: &std::io::Error) {
+    pub fn record_io_error(&self, server: SocketAddr, err: &std::io::Error) {
         if server.is_ipv6() && is_unreachable(err) {
             self.mark_ipv6_unavailable();
         }
@@ -125,7 +124,7 @@ impl ServerStats {
     /// small random initial value). While IPv6 is marked unavailable, IPv6
     /// addresses go last (they stay in the list as a last resort). With the
     /// exploration probability a random candidate is moved to the front.
-    pub(crate) fn order(&self, candidates: &[SocketAddr]) -> Vec<SocketAddr> {
+    pub fn order(&self, candidates: &[SocketAddr]) -> Vec<SocketAddr> {
         let v6_ok = self.ipv6_available();
         let mut keyed: Vec<(bool, f64, SocketAddr)> = {
             let mut inner = self.lock();

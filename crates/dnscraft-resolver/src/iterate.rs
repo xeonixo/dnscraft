@@ -11,6 +11,7 @@ use dnscraft_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
 use crate::config::ResolverConfig;
 use crate::error::ResolveError;
 use crate::limits::{Budget, Limits};
+use crate::server_selection::ServerStats;
 use crate::transport::{self, TransportError};
 
 /// A server to try: a known address, or a name server host still to resolve.
@@ -33,6 +34,7 @@ pub(crate) struct Context<'a> {
     pub config: &'a ResolverConfig,
     pub roots: &'a [SocketAddr],
     pub total_sent: &'a AtomicU64,
+    pub stats: ServerStats,
     pub limits: Limits,
     budget: Budget,
 }
@@ -42,11 +44,13 @@ impl<'a> Context<'a> {
         config: &'a ResolverConfig,
         roots: &'a [SocketAddr],
         total_sent: &'a AtomicU64,
+        stats: ServerStats,
     ) -> Self {
         Self {
             config,
             roots,
             total_sent,
+            stats,
             limits: Limits::from(config),
             budget: Budget::new(config.max_queries_per_resolve),
         }
@@ -62,8 +66,10 @@ impl<'a> Context<'a> {
         self.budget.charge(name)?;
         self.total_sent.fetch_add(1, Ordering::Relaxed);
         let query = transport::build_query(name, qtype);
-        match transport::exchange(server, &query, self.config.query_timeout).await {
-            Ok(resp) => Ok(Some(resp)),
+        match transport::query_servers(&[server], &query, self.config.query_timeout, &self.stats)
+            .await
+        {
+            Ok(resp) => Ok(Some(resp.message)),
             Err(TransportError::Encode(e)) => Err(ResolveError::Encode(e)),
             Err(e) => {
                 tracing::debug!(%server, qname = %name, qtype = %qtype, error = %e, "query failed");
@@ -332,8 +338,12 @@ fn resolve_once<'a>(
         let mut chain = chain;
         chain.push((name.clone(), qtype));
         let mut zone = Name::root();
-        let mut candidates: VecDeque<Candidate> =
-            ctx.roots.iter().copied().map(Candidate::Addr).collect();
+        let mut candidates: VecDeque<Candidate> = ctx
+            .stats
+            .order(ctx.roots)
+            .into_iter()
+            .map(Candidate::Addr)
+            .collect();
         let max_depth = ctx.limits.max_referral_depth;
 
         for hop in 0..=max_depth {
@@ -344,6 +354,7 @@ fn resolve_once<'a>(
                     Candidate::Addr(addr) => addr,
                     Candidate::Host(host) => {
                         let resolved = resolve_host(ctx, &host, depth, &chain).await?;
+                        let resolved = ctx.stats.order(&resolved);
                         for addr in resolved.into_iter().rev() {
                             candidates.push_front(Candidate::Addr(addr));
                         }
@@ -369,7 +380,7 @@ fn resolve_once<'a>(
                 Some((Verdict::Referral { cut, next }, _)) => {
                     tracing::debug!(from = %zone, to = %cut, "following referral");
                     zone = cut;
-                    candidates = next.into();
+                    candidates = order_candidates(&ctx.stats, next);
                 }
                 Some((Verdict::Lame, _)) => {}
             }
@@ -379,6 +390,26 @@ fn resolve_once<'a>(
             limit: max_depth,
         })
     })
+}
+
+/// Puts the address candidates of a referral in server-statistics order, with
+/// name server hosts still to be resolved after them.
+fn order_candidates(stats: &ServerStats, next: Vec<Candidate>) -> VecDeque<Candidate> {
+    let mut addrs = Vec::new();
+    let mut hosts = Vec::new();
+    for candidate in next {
+        match candidate {
+            Candidate::Addr(addr) => addrs.push(addr),
+            host @ Candidate::Host(_) => hosts.push(host),
+        }
+    }
+    let mut out: VecDeque<Candidate> = stats
+        .order(&addrs)
+        .into_iter()
+        .map(Candidate::Addr)
+        .collect();
+    out.extend(hosts);
+    out
 }
 
 fn classify(config: &ResolverConfig, resp: &Message, zone: &Name, qname: &Name) -> Verdict {

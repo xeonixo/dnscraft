@@ -5,7 +5,6 @@
 //! picks an ephemeral source port per query (randomised on Linux, BSD and
 //! Windows). Together with the random 16-bit id this gives the usual
 //! anti-spoofing entropy; we do not manage our own port pool.
-#![allow(dead_code)] // `query_servers*` are adopted by iterate.rs later.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -18,11 +17,11 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::Instant;
 
 /// EDNS UDP payload size advertised to authoritative servers.
-pub(crate) const EDNS_PAYLOAD: u16 = 1232;
+pub const EDNS_PAYLOAD: u16 = 1232;
 
 /// Why an exchange produced no usable response.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum TransportError {
+pub enum TransportError {
     #[error("no matching response within the timeout")]
     Timeout,
     #[error("socket error: {0}")]
@@ -36,7 +35,7 @@ pub(crate) enum TransportError {
 }
 
 /// Builds a non-recursive query with EDNS (1232 bytes, DO set) and a random id.
-pub(crate) fn build_query(name: &Name, qtype: RecordType) -> Message {
+pub fn build_query(name: &Name, qtype: RecordType) -> Message {
     let mut msg = Message::query(rand::random::<u16>(), name.clone(), qtype);
     msg.header.rd = false;
     let mut edns = Edns::new(EDNS_PAYLOAD);
@@ -53,7 +52,7 @@ pub(crate) fn build_query(name: &Name, qtype: RecordType) -> Message {
 /// that do not decode or do not match (id, QR, opcode, question) are ignored
 /// until `timeout` expires. The TCP retry gets its own `timeout` for connect,
 /// write and read.
-pub(crate) async fn exchange(
+pub async fn exchange(
     server: SocketAddr,
     query: &Message,
     timeout: Duration,
@@ -96,7 +95,7 @@ async fn exchange_udp(
 }
 
 /// One query over a fresh TCP connection (RFC 7766 framing).
-pub(crate) async fn exchange_tcp(
+pub async fn exchange_tcp(
     server: SocketAddr,
     query: &Message,
     timeout: Duration,
@@ -133,7 +132,7 @@ pub(crate) async fn exchange_tcp(
 
 /// A response together with the server that produced it.
 #[derive(Debug)]
-pub(crate) struct ServerResponse {
+pub struct ServerResponse {
     /// The server that answered.
     pub server: SocketAddr,
     /// The response message.
@@ -148,7 +147,7 @@ pub(crate) struct ServerResponse {
 /// Tries `candidates` in the order given by `stats` until one gives a valid
 /// response. See [`query_servers_with`]; every valid response is accepted
 /// (REFUSED, SERVFAIL etc. are returned to the caller, who decides).
-pub(crate) async fn query_servers(
+pub async fn query_servers(
     candidates: &[SocketAddr],
     query: &Message,
     timeout: Duration,
@@ -167,7 +166,7 @@ pub(crate) async fn query_servers(
 /// all servers were lame the last lame response is returned with
 /// `lame = true`. If no server produced any valid response, the last error is
 /// returned (`NoServers` for an empty list).
-pub(crate) async fn query_servers_with(
+pub async fn query_servers_with(
     candidates: &[SocketAddr],
     query: &Message,
     timeout: Duration,

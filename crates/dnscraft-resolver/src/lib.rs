@@ -16,13 +16,17 @@ mod hints;
 mod iterate;
 mod limits;
 mod priming;
-mod server_selection;
-mod transport;
+#[doc(hidden)]
+pub mod server_selection;
+#[doc(hidden)]
+pub mod transport;
 mod types;
 
 use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use server_selection::ServerStats;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::ResolverConfig;
@@ -41,6 +45,7 @@ pub struct Resolver {
     priming: Mutex<PrimingStatus>,
     resolutions: AtomicU64,
     outgoing: AtomicU64,
+    stats: ServerStats,
 }
 
 impl Resolver {
@@ -58,8 +63,9 @@ impl Resolver {
             });
         }
         let outgoing = AtomicU64::new(0);
+        let stats = ServerStats::new(config.ipv6_cooldown);
         let (roots, status) = {
-            let ctx = iterate::Context::new(&config, &config.root_hints, &outgoing);
+            let ctx = iterate::Context::new(&config, &config.root_hints, &outgoing, stats.clone());
             priming::prime(&ctx).await
         };
         Ok(Self {
@@ -68,6 +74,7 @@ impl Resolver {
             priming: Mutex::new(status),
             resolutions: AtomicU64::new(0),
             outgoing,
+            stats,
         })
     }
 
@@ -79,7 +86,7 @@ impl Resolver {
     ) -> Result<Answer, ResolveError> {
         self.resolutions.fetch_add(1, Ordering::Relaxed);
         let roots = lock(&self.roots).clone();
-        let ctx = iterate::Context::new(&self.config, &roots, &self.outgoing);
+        let ctx = iterate::Context::new(&self.config, &roots, &self.outgoing, self.stats.clone());
         tracing::debug!(
             qname = %query.name,
             qtype = %query.qtype,

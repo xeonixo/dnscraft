@@ -176,6 +176,52 @@ async fn unreachable_zone_errors_in_bounded_time() {
     assert!(start.elapsed() < Duration::from_secs(3));
 }
 
+#[tokio::test]
+async fn resolves_when_first_nameserver_of_zone_is_stopped() {
+    let lo = Ipv4Addr::LOCALHOST;
+    let zone = simple_zone("two.test.")
+        .with_ns("two.test.", "ns1.two.test.")
+        .unwrap()
+        .with_ns("two.test.", "ns2.two.test.")
+        .unwrap()
+        .with_a("www.two.test.", Ipv4Addr::new(192, 0, 2, 55))
+        .unwrap();
+    let mut specs = default_servers().unwrap();
+    for spec in &mut specs {
+        if origin(spec) == "test." {
+            spec.zone = spec
+                .zone
+                .clone()
+                .with_ns("two.test.", "ns1.two.test.")
+                .unwrap()
+                .with_a("ns1.two.test.", lo)
+                .unwrap()
+                .with_ns("two.test.", "ns2.two.test.")
+                .unwrap()
+                .with_a("ns2.two.test.", lo)
+                .unwrap();
+        }
+    }
+    specs.push(ServerSpec::new("ns1.two.test.", zone.clone()).unwrap());
+    specs.push(ServerSpec::new("ns2.two.test.", zone).unwrap());
+    let h = Hierarchy::start_with(specs).await.unwrap();
+    // `server` returns the first server of the zone, i.e. ns1.
+    h.server("two.test.").unwrap().stop().await;
+    let r = Resolver::new(config_for(&h)).await.unwrap();
+
+    let ans = r
+        .resolve(
+            &query("www.two.test.", RecordType::A),
+            RequestFlags::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        ans.message.answers[0].rdata,
+        RData::A(Ipv4Addr::new(192, 0, 2, 55))
+    );
+}
+
 // ---- Task 5: CNAME chains, NXDOMAIN/NODATA, limits ----
 
 const LO: Ipv4Addr = Ipv4Addr::LOCALHOST;

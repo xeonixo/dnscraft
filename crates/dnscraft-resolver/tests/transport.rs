@@ -1,20 +1,16 @@
-//! Transport tests. The modules under test are crate-private, so their
-//! sources are compiled into this test crate directly.
-#![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
-
-#[path = "../src/server_selection.rs"]
-mod server_selection;
-#[path = "../src/transport.rs"]
-mod transport;
+//! Transport tests against fake servers on loopback.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use dnscraft_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
-use server_selection::ServerStats;
+use dnscraft_resolver::server_selection::ServerStats;
+use dnscraft_resolver::transport::{
+    TransportError, build_query, exchange, query_servers, query_servers_with,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
-use transport::{TransportError, build_query, exchange, query_servers, query_servers_with};
 
 const TIMEOUT: Duration = Duration::from_millis(500);
 
