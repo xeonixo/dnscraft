@@ -85,30 +85,32 @@ C4 gateway HTTP + TLS modes (risk, early)     O1 owner hardware check (manual, b
 ## Task List
 
 ### Phase 1: Core
-- [ ] C1: Crate skeleton, types, config validation, errors
-- [ ] C2: DNS label normalisation and FQDN building
-- [ ] C3: Manual-only `ClientLookup` (exact IP, longest CIDR, names, PTR)
-- [ ] C4: Gateway HTTP client with TLS pin / CA / insecure modes
+- [x] C1: Crate skeleton, types, config validation, errors
+- [x] C2: DNS label normalisation and FQDN building
+- [x] C3: Manual-only `ClientLookup` (exact IP, longest CIDR, names, PTR)
+- [x] C4: Gateway HTTP client with TLS pin / CA / insecure modes
 
 ### Checkpoint A: Core + TLS
-- [ ] DoD green; pin mismatch fails closed against the HTTPS mock; lead review
+- [x] DoD green; pin mismatch fails closed against the HTTPS mock
+- [ ] Lead review (verifier + index layout)
 
 ### Phase 2: UniFi
-- [ ] O1: Owner checks the classic API on real hardware (manual, no code)
-- [ ] C5: UniFi merge into the snapshot (pure)
-- [ ] C6: Integration API: sites, networks, paged clients
-- [ ] C7: Classic API: `stat/sta`, `rest/user`, `rest/networkconf`, site mapping
+- [x] O1: Owner checks the classic API on real hardware (manual, no code) — classic accepts `X-API-KEY`; fields `ip` / `ipv6_addresses` / `domain_name`
+- [x] C5: UniFi merge into the snapshot (pure)
+- [x] C6: Integration API: sites, networks, paged clients
+- [x] C7: Classic API: `stat/sta`, `rest/user`, `rest/networkconf`, site mapping
 
 ### Checkpoint B: Sync path
-- [ ] A `sync_once` against both mocks builds the expected lookup; failure tests keep the last good snapshot
+- [x] A `sync_once` against both mocks builds the expected lookup; failure tests keep the last good snapshot — review fixes landed, re-review open
 
 ### Phase 3: Engine
-- [ ] C8: `ClientEngine`: background sync, change detection, stale/status, backoff
-- [ ] C9: Last-good disk cache + persisted label state
-- [ ] C10: Polish: README, coverage ≥ 80 % (non-HTTP), parser proptest
+- [x] C8: `ClientEngine`: background sync, change detection, stale/status, backoff
+- [x] C9: Last-good disk cache + persisted label state
+- [x] C10: Polish: README, coverage ≥ 80 % (non-HTTP), parser proptest
 
 ### Checkpoint C: Complete
-- [ ] All spec success criteria met; review; **owner approval**
+- [x] All spec success criteria met (table in progress.md)
+- [ ] Independent review; **owner approval**
 
 ## Risks and Mitigations
 

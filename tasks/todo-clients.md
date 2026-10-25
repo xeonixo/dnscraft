@@ -25,9 +25,9 @@ dependencies. Contents:
 - `read_secret(name)`: env var or `<name>_FILE`, trimmed, never in `Debug`.
 
 **Acceptance criteria:**
-- [ ] Every public item documented; every error variant has a unique `code()` (enumerating test)
-- [ ] Config table tests: valid example from the spec, http URL rejected, bad pin, both ip+cidr, 1 001 manuals
-- [ ] `read_secret`: env, `_FILE`, missing → `clients.secret.missing`; secret not in `Debug` output
+- [x] Every public item documented; every error variant has a unique `code()` (enumerating test)
+- [x] Config table tests: valid example from the spec, http URL rejected, bad pin, both ip+cidr, 1 001 manuals
+- [x] `read_secret`: env, `_FILE`, missing → `clients.secret.missing`; secret not in `Debug` output
 
 **Verification:** `cargo test -p dnscraft-clients`
 
@@ -35,7 +35,7 @@ dependencies. Contents:
 
 **Files:** `Cargo.toml`, `crates/dnscraft-clients/{Cargo.toml,src/lib.rs,src/types.rs,src/config.rs,src/error.rs,src/clock.rs,src/secret.rs}`
 
-**Scope:** M
+**Scope:** M · **Done:** 2026-10-25 (Cursor)
 
 ## Task C2: DNS label normalisation and FQDN building
 
@@ -49,13 +49,13 @@ dependencies. Contents:
 `suffixed(label, id)` returns `{label}-{id_suffix8}` and still fits in 63 octets.
 
 **Acceptance criteria:**
-- [ ] Table tests: umlauts / full-width / ligatures (UTS 46), `"Docker on server1"`, emoji-only → `client-…`, 80-char name, trailing/leading/repeated `-`
-- [ ] Output always matches `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` (proptest)
-- [ ] `suffixed` stays ≤ 63 and differs for different ids
+- [x] Table tests: umlauts / full-width / ligatures (UTS 46), `"Docker on server1"`, emoji-only → `client-…`, 80-char name, trailing/leading/repeated `-`
+- [x] Output always matches `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` (proptest)
+- [x] `suffixed` stays ≤ 63 and differs for different ids
 
 **Verification:** `cargo test -p dnscraft-clients label`
 
-**Dependencies:** C1 · **Files:** `src/label.rs`, `tests/label.rs` · **Scope:** S
+**Dependencies:** C1 · **Files:** `src/label.rs`, `tests/label.rs` · **Scope:** S · **Done:** 2026-10-25 (Cursor)
 
 ## Task C3: Manual-only `ClientLookup`
 
@@ -70,13 +70,13 @@ dependencies. Contents:
 No UniFi yet. This task fixes the index layout that C5 extends.
 
 **Acceptance criteria:**
-- [ ] Precedence table: manual IP > /28 > /24 > no match; IPv4 and IPv6
-- [ ] `by_name` FQDN vs bare label (unique / ambiguous); unknown name → `None`
-- [ ] `by_ip` returns `Arc` clones (no deep copy); lookup of 1 000 manuals in < 1 µs p50 (criterion or simple timing test, documented)
+- [x] Precedence table: manual IP > /28 > /24 > no match; IPv4 and IPv6
+- [x] `by_name` FQDN vs bare label (unique / ambiguous); unknown name → `None`
+- [x] `by_ip` returns `Arc` clones (no deep copy); lookup of 1 000 manuals in < 1 µs p50 (criterion or simple timing test, documented)
 
 **Verification:** `cargo test -p dnscraft-clients lookup`
 
-**Dependencies:** C2 · **Files:** `src/lookup.rs`, `tests/lookup.rs` · **Scope:** M
+**Dependencies:** C2 · **Files:** `src/lookup.rs`, `tests/lookup.rs` · **Scope:** M · **Done:** 2026-10-25 (Cursor)
 
 ## Task C4: Gateway HTTP client with TLS modes
 
@@ -93,18 +93,18 @@ No UniFi yet. This task fixes the index layout that C5 extends.
 - A hand-written HTTPS mock server for tests (tokio-rustls + rcgen self-signed), reused by C6/C7.
 
 **Acceptance criteria:**
-- [ ] Right pin → OK; wrong pin → `clients.tls.untrusted`; CA mode with the mock's CA → OK, with another CA → untrusted
-- [ ] Insecure only when configured; warning emitted; never the default
-- [ ] 401 / 429 → `clients.http.status`; body > 8 MiB → `clients.http.body`; refused port → `clients.connect`; API key header sent, key absent from errors/logs
+- [x] Right pin → OK; wrong pin → `clients.tls.untrusted`; CA mode with the mock's CA → OK, with another CA → untrusted
+- [x] Insecure only when configured; warning emitted; never the default
+- [x] 401 / 429 → `clients.http.status`; body > 8 MiB → `clients.http.body`; refused port → `clients.connect`; API key header sent, key absent from errors/logs
 
 **Verification:** `cargo test -p dnscraft-clients gateway`
 
-**Dependencies:** C1 · **Files:** `src/gateway.rs`, `src/tls.rs`, `tests/support/mock_gateway.rs`, `tests/gateway.rs` · **Scope:** M
+**Dependencies:** C1 · **Files:** `src/gateway.rs`, `src/tls.rs`, `tests/support/mock_gateway.rs`, `tests/gateway.rs` · **Scope:** M · **Done:** 2026-10-25 (Cursor)
 
 ## Checkpoint A: Core + TLS
-- [ ] DoD green
-- [ ] Lead review of the verifier code (security-sensitive) and the index layout
-- [ ] progress.md updated
+- [x] DoD green (`fmt` / `clippy -D warnings` / `cargo test -p dnscraft-clients`)
+- [x] Lead review of the verifier code (security-sensitive) and the index layout (Claude 2026-10-25: passed; optional items in brief C11)
+- [x] progress.md updated
 
 ## Phase 2: UniFi
 
@@ -124,10 +124,12 @@ curl -sk -H "X-API-KEY: $KEY" "$GW/proxy/network/api/s/default/rest/networkconf"
 ```
 
 **Acceptance criteria:**
-- [ ] Owner reports: (1) status code, (2) IPv4/IPv6 field names (e.g. `ip`, `ipv6`, `ipv6_addresses`…), (3) whether `domain_name` exists
-- [ ] Results recorded in progress.md as field names only. If (1) is not 200: STOP and ask the owner (cookie login vs Integration-only)
+- [x] Owner reports: (1) status code, (2) IPv4/IPv6 field names (e.g. `ip`, `ipv6`, `ipv6_addresses`…), (3) whether `domain_name` exists
+- [x] Results recorded in progress.md as field names only. If (1) is not 200: STOP and ask the owner (cookie login vs Integration-only)
 
-**Dependencies:** none (can run any time) · **Scope:** XS (manual)
+**Result (2026-10-25):** (1) classic `stat/sta` + `networkconf` → **200** with `X-API-KEY` (401 without / bogus; Bearer unused). (2) `ip`, `ipv6_addresses` (array), `network_id`, `hostname`/`name`, `last_seen`. (3) `domain_name` yes (sometimes empty).
+
+**Dependencies:** none (can run any time) · **Scope:** XS (manual) · **Done:** 2026-10-25 (Cursor on owner gateway)
 
 ## Task C5: UniFi merge into the snapshot (pure)
 
@@ -149,13 +151,13 @@ Rules:
 - `clients.ip.conflict` counter.
 
 **Acceptance criteria:**
-- [ ] Table tests for each rule above with `ManualClock` (retain 7 d, TTL 24 h boundaries), including "newcomer with a smaller id never renames an existing client"
-- [ ] A client with 3 IPv6 + 1 IPv4 resolves via `by_ip`/`reverse` for each address; `fe80::` is not indexed
-- [ ] Two networks with different domains give different FQDNs; missing domain → config fallback; mode `config` overrides
+- [x] Table tests for each rule above with `ManualClock` (retain 7 d, TTL 24 h boundaries), including "newcomer with a smaller id never renames an existing client"
+- [x] A client with 3 IPv6 + 1 IPv4 resolves via `by_ip`/`reverse` for each address; `fe80::` is not indexed
+- [x] Two networks with different domains give different FQDNs; missing domain → config fallback; mode `config` overrides
 
 **Verification:** `cargo test -p dnscraft-clients merge`
 
-**Dependencies:** C3 · **Files:** `src/merge.rs`, `src/state.rs`, `src/lookup.rs`, `tests/merge.rs` · **Scope:** M
+**Dependencies:** C3 · **Files:** `src/merge.rs`, `src/state.rs`, `src/lookup.rs`, `tests/merge.rs` · **Scope:** M · **Done:** 2026-10-25 (Cursor)
 
 ## Task C6: Integration API
 
@@ -170,13 +172,13 @@ Rules:
 Mock fixtures are written from the OpenAPI schemas cited in the spec.
 
 **Acceptance criteria:**
-- [ ] One site auto-picked; two sites without `site_id` → error; 450 clients over 3 pages
-- [ ] Network details give prefixes + VLAN; missing details → VLAN via id only
-- [ ] Page 2 returns 500 → `clients.sync.partial`; truncated JSON → `clients.http.body`
+- [x] One site auto-picked; two sites without `site_id` → error; 450 clients over 3 pages
+- [x] Network details give prefixes + VLAN; missing details → VLAN via id only
+- [x] Page 2 returns 500 → `clients.sync.partial`; truncated JSON → `clients.http.body`
 
 **Verification:** `cargo test -p dnscraft-clients integration`
 
-**Dependencies:** C4, C5 · **Files:** `src/integration.rs`, `tests/integration_api.rs`, `tests/fixtures/integration/*.json` · **Scope:** M
+**Dependencies:** C4, C5 · **Files:** `src/integration.rs`, `tests/integration_api.rs`, `tests/fixtures/integration/*.json` · **Scope:** M · **Done:** 2026-10-25 (Cursor) — fixtures inlined via mock (no JSON files needed)
 
 ## Task C7: Classic API
 
@@ -192,18 +194,20 @@ Mock fixtures are written from the OpenAPI schemas cited in the spec.
   alone still produce a snapshot (singular IPs).
 
 **Acceptance criteria:**
-- [ ] Fixture with multi-IPv6 rows, unknown fields, wrong types, missing MAC → good rows kept, bad rows counted
-- [ ] Classic down, Integration up → snapshot from Integration only, status records the classic error
-- [ ] `classic_clients = false` → no classic request is made (mock asserts)
+- [x] Fixture with multi-IPv6 rows, unknown fields, wrong types, missing MAC → good rows kept, bad rows counted
+- [x] Classic down, Integration up → snapshot from Integration only, status records the classic error
+- [x] `classic_clients = false` → no classic request is made (mock asserts)
 
-**Verification:** `cargo test -p dnscraft-clients classic`
+**Verification:** `cargo test -p dnscraft-clients --test classic_api`
 
-**Dependencies:** C6, O1 · **Files:** `src/classic.rs`, `src/sync.rs`, `tests/classic_api.rs`, `tests/fixtures/classic/*.json` · **Scope:** M
+**Dependencies:** C6, O1 · **Files:** `src/classic.rs`, `src/sync.rs`, `tests/classic_api.rs` · **Scope:** M · **Done:** 2026-10-25 (Cursor) — fixtures inlined via mock
 
 ## Checkpoint B: Sync path
-- [ ] `sync_once` against both mocks builds the expected lookup (spec success criteria 1, 2, 3, 5, 7)
-- [ ] Failure tests (connect refused, bad pin, 401, truncated JSON, empty site list, > max clients) keep the previous snapshot
+- [x] `sync_once` against both mocks builds the expected lookup (spec success criteria 1, 2, 3, 5, 7)
+- [x] Failure tests (connect refused, bad pin, 401, truncated JSON, empty site list, > max clients) keep the previous snapshot
 - [ ] Lead review; progress.md updated
+
+**Done:** 2026-10-25 (Cursor) — covered by `tests/engine.rs` (happy path + failure matrix; `too_many` via merge unit test). Lead review found Engine bugs; **C11 + C11b fixes 2026-10-25** (state on unchanged hash, order-independent hash, sync lock, apply_config validate→build→store, immediate first sync, deterministic poll waits, `Secret` zeroize). Awaiting Lead re-review.
 
 ## Phase 3: Engine
 
@@ -220,13 +224,13 @@ Mock fixtures are written from the OpenAPI schemas cited in the spec.
 - Lookups never await.
 
 **Acceptance criteria:**
-- [ ] `ManualClock` tests: poll cadence with jitter bounds, backoff on 429, recovery clears `stale`
-- [ ] Unchanged data → no rebuild (generation counter unchanged)
-- [ ] Dropping the engine stops the task (no leak; test with a `Weak`)
+- [x] `ManualClock` tests: poll cadence with jitter bounds, backoff on 429, recovery clears `stale`
+- [x] Unchanged data → no rebuild (generation counter unchanged)
+- [x] Dropping the engine stops the task (no leak; test with a `Weak`)
 
-**Verification:** `cargo test -p dnscraft-clients engine`
+**Verification:** `cargo test -p dnscraft-clients --test engine`
 
-**Dependencies:** C7 · **Files:** `src/engine.rs`, `src/status.rs`, `tests/engine.rs` · **Scope:** M
+**Dependencies:** C7 · **Files:** `src/engine.rs`, `src/status.rs`, `tests/engine.rs` · **Scope:** M · **Done:** 2026-10-25 (Cursor)
 
 ## Task C9: Last-good disk cache
 
@@ -242,13 +246,13 @@ Mock fixtures are written from the OpenAPI schemas cited in the spec.
 - The snapshot is served before the first poll.
 
 **Acceptance criteria:**
-- [ ] Restart with the gateway down serves the previous names with `stale = true`
-- [ ] Labels survive restart (newcomer after restart still gets the suffix)
-- [ ] Corrupt / oversized / wrong-version file → ignored, no panic; file mode 0600
+- [x] Restart with the gateway down serves the previous names with `stale = true`
+- [x] Labels survive restart (newcomer after restart still gets the suffix)
+- [x] Corrupt / oversized / wrong-version file → ignored, no panic; file mode 0600
 
-**Verification:** `cargo test -p dnscraft-clients cache`
+**Verification:** `cargo test -p dnscraft-clients --test cache`
 
-**Dependencies:** C8 · **Files:** `src/cache.rs`, `src/engine.rs`, `tests/cache.rs` · **Scope:** S
+**Dependencies:** C8 · **Files:** `src/cache.rs`, `src/engine.rs`, `tests/cache.rs` · **Scope:** S · **Done:** 2026-10-25 (Cursor)
 
 ## Task C10: Polish
 
@@ -260,15 +264,15 @@ Mock fixtures are written from the OpenAPI schemas cited in the spec.
 - Cross-check against the spec success criteria 1–8, then list the results in progress.md.
 
 **Acceptance criteria:**
-- [ ] README complete; no `missing_docs` warnings
-- [ ] Parser proptests pass (≥ 1 000 cases)
-- [ ] Success criteria table in progress.md, each item with its covering test
+- [x] README complete; no `missing_docs` warnings
+- [x] Parser proptests pass (≥ 1 000 cases)
+- [x] Success criteria table in progress.md, each item with its covering test
 
 **Verification:** `cargo test -p dnscraft-clients` + DoD
 
-**Dependencies:** C9 · **Files:** `crates/dnscraft-clients/README.md`, `tests/proptest_parsers.rs` · **Scope:** S
+**Dependencies:** C9 · **Files:** `crates/dnscraft-clients/README.md`, `tests/proptest_parsers.rs` · **Scope:** S · **Done:** 2026-10-25 (Cursor) — llvm-cov 86.28 % lines
 
 ## Checkpoint C: Complete
-- [ ] All spec success criteria met
+- [x] All spec success criteria met (table in progress.md)
 - [ ] Independent review (security: verifier, secret handling, untrusted cache)
 - [ ] **Owner approval**

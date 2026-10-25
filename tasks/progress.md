@@ -12,7 +12,7 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
-- Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)). **C1–C10 + O1 done**; Checkpoint A passed; **Checkpoint B fixes landed** (awaiting re-review). Next: Checkpoint B re-review → **Checkpoint C**.
+- Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)). **C1–C11 + O1 done** (incl. C11b); Checkpoint A passed; **Checkpoint B fixes + follow-ups landed** (awaiting Lead re-review). Next: Checkpoint B tick → **Checkpoint C**.
 
 ### clients success criteria (SPEC-clients.md)
 
@@ -31,7 +31,7 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.28 %** lines / **85.49 %** regions.
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L11 done**; Checkpoints A and B passed (2026-10-25). Next: **Checkpoint C** (security review + owner staging acceptance).
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P10 done. Checkpoint A passed** (2026-10-25). **Checkpoint B passed** (Claude re-review 2026-10-25). Next: P9b (HTTPS/SVCB rebind hints) if not yet done, then P11 → P12 (brief in cursor-next.md).
-- Blockers: clients Checkpoint B needs C11 review fixes. T2 open (bundled with L12).
+- Blockers: clients Checkpoint B awaiting Lead re-review of C11/C11b. T2 open (bundled with L12).
 
 ### tls success criteria (SPEC-tls.md)
 
@@ -48,6 +48,8 @@ Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86
 Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **80.32 %** lines / **79.82 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
 
 ## Log
+
+- 2026-10-25 — clients **C11b done** (Cursor): (1) engine tests wait on `last_success` / `scheduler_parked` instead of wall-clock sleeps — `cargo test -p dnscraft-clients` **20× / 0 failures**; (2) `apply_config` validate → build → store only on success (`failed_apply_config_keeps_old_config_and_lookup`); (3) workspace `zeroize` + `Secret(Zeroizing<String>)`, no `expose().to_owned()` copies. C1–C11 committed. STOP for Checkpoint B Lead tick + Checkpoint C.
 
 - 2026-10-25 — tls Checkpoint C hardenings (Cursor, 144804a): structured `Retry-After` on `TlsError::CloudflareHttp` / `AcmeRateLimited` (`retry_after()` / `parse_retry_after_header`; no message scraping); Client-ID SNI always lower-cased (`SniKind::ClientId(String)`); `key.pem` group/other bits rejected on load; README LE-staging manual checklist; llvm-cov **80.32 %** lines. DoD green. Ready for Checkpoint C formal review.
 
