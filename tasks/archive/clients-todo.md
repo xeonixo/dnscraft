@@ -1,6 +1,6 @@
 # Tasks: `clients` module
 
-> Plan: [plan-clients.md](plan-clients.md) · Spec: [SPEC-clients.md](../SPEC-clients.md) · Resume log: [progress.md](progress.md)
+> Plan: [clients-plan.md](clients-plan.md) · Spec: [SPEC-clients.md](../../SPEC-clients.md) · Resume log: [progress.md](../progress.md)
 > Definition of done per task: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
 > `cargo test --workspace --locked` green; lead review; committed. Fixtures are invented (documentation ranges,
 > `example.com`); never real captures. No test touches a real gateway.
@@ -274,8 +274,8 @@ Mock fixtures are written from the OpenAPI schemas cited in the spec.
 
 ## Checkpoint C: Complete
 - [x] All spec success criteria met (table in progress.md)
-- [ ] Independent review (security: verifier, secret handling, untrusted cache)
-- [ ] **Owner approval**
+- [x] Independent review (security: verifier, secret handling, untrusted cache) (Claude 2026-10-25: passed after C12/C13)
+- [x] **Owner approval** (2026-10-25)
 
 **C12 (2026-10-25, Cursor):** cache labels re-validated on load (`[a-z0-9-]{1,63}`, no leading/trailing `-`; warn `clients.cache.invalid_label`); `fqdn` rejects non-normalised labels; optional hardenings (Zeroizing in `read_secret_parts`, rustls TLS classify via nested `io::Error`, no `install_default`, reused `GatewayClient`, classic site-key charset, cache `File::take`, `clients.sync.backoff`, sync lock only around build+install). Do not tick Independent review / Owner approval here.
 

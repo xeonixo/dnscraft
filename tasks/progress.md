@@ -12,7 +12,7 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
-- Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)). **C1–C13 + O1 done**; Checkpoints A and B passed; **C13 stale-fetch race fixes landed** (awaiting Lead re-review). Next: Checkpoint C tick → owner approval.
+- Module `clients` COMPLETE (Checkpoint C approved by the owner 2026-10-25). Plan and tasks archived: [archive/clients-plan.md](archive/clients-plan.md), [archive/clients-todo.md](archive/clients-todo.md).
 
 ### clients success criteria (SPEC-clients.md)
 
@@ -31,7 +31,7 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.24 %** lines / **80.27 %** regions.
 - Module `tls`: **COMPLETE** — SPEC + plan approved; L1–L12c done; Checkpoints A/B/C passed (2026-10-25). Owner approved after LE-staging acceptance (node DynDNS only; `public_entry` owner-managed).
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P12b + P10b/P9b/P11b done. Checkpoint A/B passed.** Next: **Checkpoint C** re-review (do not tick Independent review / Owner approval).
-- Blockers: clients Checkpoint C awaiting Lead re-review of C13.
+- Blockers: policy Checkpoint C awaiting P12b (orphan RRSIGs after rebind).
 
 ### policy success criteria (SPEC-policy.md)
 
@@ -62,6 +62,10 @@ Coverage (`cargo llvm-cov -p dnscraft-policy --summary-only`, 2026-10-25): **92.
 Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **80.32 %** lines / **79.82 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
 
 ## Log
+
+- 2026-10-25 — **Checkpoint C approved by the owner: module `clients` COMPLETE.** Plan and tasks archived to tasks/archive/clients-plan.md and clients-todo.md. Optional follow-up kept open: record fetch errors only for non-superseded fetches (see previous entry).
+
+- 2026-10-25 — **Claude Checkpoint C review clients C13 (79b2116): independent review PASSED.** fmt/clippy green; `cargo test -p dnscraft-clients` 5× / 0 failures. C13 verified: `apply_config(enabled = false)` builds manuals-only and drops retain/IPv6/inventory (mutant "ignore disabled" → 2 tests fail); fetch sequence number + invalidation on every `apply_config` (mutant "no seq check" → caught); the extra guards `!cfg.unifi.enabled` / `cfg.unifi != fetched_with` survive individually because `apply_config` already invalidates every in-flight fetch via `installed_seq` — redundant defence in depth, not a test gap. Security summary for Checkpoint C: pin/CA/insecure verifier (leaf SHA-256 + handshake signatures), API key only via env/`*_FILE`, `Zeroizing`, redacted in errors and `Debug`; gateway responses capped (8 MiB streamed), no redirects, site key charset-checked before URL use, TLS errors classified via `rustls::Error`; cache 0600/0700, atomic write, `File::take` cap, version check, ids and labels re-validated, `TooMany` → manuals-only. **Optional follow-up (not blocking):** a fetch that fails for the OLD target after a config switch still runs `on_sync_error` (stale + `last_error`, and for 429/5xx a backoff of up to 5 min that then delays the first sync of the NEW target) — check supersession before recording the error. FYI: any `apply_config`, also a manual-only edit, discards the in-flight fetch (the kicked poll refetches). **Remaining for Checkpoint C: owner approval.**
 
 - 2026-10-25 — Policy **P12b** done (Cursor): drop stale RRSIGs when rebind removes/rewrites type `T` (RFC 4035 §3.1.1 / §5); NODATA SOA decided on data RRs only (ignore RRSIG/NSEC). **Probe killed:** `signed_private_secure()` + DO=1 on `www.secure.test.` A no longer leaves orphan `answers=[RRSIG(A)]` — full strip → empty + synthetic SOA + AD clear; also DO=1 partial / CNAME→private / HTTPS hint rewrite. **Mutant killed:** `strip_svcb_rrs` DropRecord `rrs.remove(i)` → `i += 1` (mandatory+all-private ipv4hint leaves HTTPS+RRSIG). README updated. DoD: clippy green; `cargo test -p dnscraft-policy` **5× / 0 failures**; llvm-cov **92.53 %** lines. **STOP for Claude Checkpoint C re-review** (do not tick Independent review / Owner approval).
 

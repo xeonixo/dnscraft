@@ -1,8 +1,8 @@
 # Implementation Plan: `clients` module
 
-> Spec: [SPEC-clients.md](../SPEC-clients.md) · Project spec: [SPEC.md](../SPEC.md) ·
-> Tasks: [todo-clients.md](todo-clients.md) · Resume log: [progress.md](progress.md) ·
-> Shared decisions for all three plans: [plan-policy.md § Cross-module decisions](plan-policy.md#cross-module-decisions)
+> Spec: [SPEC-clients.md](../../SPEC-clients.md) · Project spec: [SPEC.md](../../SPEC.md) ·
+> Tasks: [clients-todo.md](clients-todo.md) · Resume log: [progress.md](../progress.md) ·
+> Shared decisions for all three plans: [plan-policy.md § Cross-module decisions](../plan-policy.md#cross-module-decisions)
 
 ## Overview
 
@@ -51,7 +51,7 @@ never selects profiles, and it never blocks DNS on I/O.
 
 ## Dependencies (need approval — one table for all three plans)
 
-See [plan-policy.md § Dependencies](plan-policy.md#dependencies-need-approval--all-three-plans).
+See [plan-policy.md § Dependencies](../plan-policy.md#dependencies-need-approval--all-three-plans).
 This module needs:
 
 | Crate | Kind | Why |
@@ -125,5 +125,5 @@ C4 gateway HTTP + TLS modes (risk, early)     O1 owner hardware check (manual, b
 ## Open Questions
 
 - O1 needs about two minutes of the owner's time on the real gateway (commands in
-  [todo-clients.md](todo-clients.md#task-o1-owner-checks-the-classic-api-on-real-hardware)). Answers are
+  [clients-todo.md](clients-todo.md#task-o1-owner-checks-the-classic-api-on-real-hardware)). Answers are
   yes/no plus field names only. No data goes into the repo.
