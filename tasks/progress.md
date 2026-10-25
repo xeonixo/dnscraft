@@ -29,7 +29,7 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 | 8 | Invented fixtures only; DoD green | mock gateway; `fmt` / `clippy -D warnings` / `cargo test -p dnscraft-clients` |
 
 Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.39 %** lines / **80.22 %** regions.
-- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L11 + L12b + L12c done**; Checkpoints A and B passed (2026-10-25); independent security review passed; owner LE-staging run executed (report in Log; Manual acceptance / Owner approval still unticked). Next: **owner** decides Manual acceptance + Owner approval ticks.
+- Module `tls`: **COMPLETE** — SPEC + plan approved; L1–L12c done; Checkpoints A/B/C passed (2026-10-25). Owner approved after LE-staging acceptance (node DynDNS only; `public_entry` owner-managed).
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P12 + P10b/P9b/P11b done. Checkpoint A/B passed.** Next: **Checkpoint C** (Claude independent review + owner approval).
 - Blockers: clients Checkpoint C awaiting Lead re-review of C12.
 
@@ -62,6 +62,8 @@ Coverage (`cargo llvm-cov -p dnscraft-policy --summary-only`, 2026-10-25): **93.
 Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **80.32 %** lines / **79.82 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
 
 ## Log
+
+- 2026-10-25 — **tls Checkpoint C complete / module CLOSED** (owner): Manual LE-staging acceptance + Owner approval ticked. DynDNS: node `srvXY.dns.<apex>` only; apex/`*.dns` owner-managed (`public_entry=false`). Code on origin/main through staging run; close-out at `b3472cf`.
 
 - 2026-10-25 — Owner LE-**staging** acceptance (Cursor, placeholders only): zone=`<apex>`; contact=`acme@<apex>`; node=`<node>.dns.<apex>`; token via `DNSCRAFT_CLOUDFLARE_API_TOKEN_FILE` (0600, outside repo); data=`$HOME/.local/share/dnscraft-staging`. **Issue ✓** (SANs `dns.`+`*.dns.<apex>`, modes 0700/0600, issuer `(STAGING)…`, ACME TXT remaining 0). **SNI ✓** (`sni-check`: Client-ID accept_public=true; apex/node/unknown/missing false). **Handshake ✓** (loopback Client-ID SNI). **Renew ✓** (serial changed, TXT 0, ~7–15 s). **Failure ✓** (bogus token → `tls.cloudflare.http`, prior cert kept). **DynDNS ✓** (`public_entry=false`: only `<node>.dns.<apex>` A/AAAA = echo, `proxied=false`, apex/`*.dns` untouched; `public_entry=true`: also `dns.`+`*.dns.<apex>` match echo/`proxied=false`; entry records removed after test, node record kept). Fixed renew-task panic: `ScheduleFn`/`StatusFn` used `blocking_read` inside Tokio → `try_read`. Staging example + README checklist wording updated (openssl issuer for STAGING; `*_FILE` preferred). Staging data dir wiped after run. **Do not tick** Manual acceptance / Owner approval (owner decides).
 

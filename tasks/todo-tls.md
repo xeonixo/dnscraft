@@ -286,5 +286,5 @@ Scheduler loop on the injectable clock:
 ## Checkpoint C: Complete
 - [x] All spec success criteria met (Claude 2026-10-25: DoD green, Pebble issue + renew green locally, aws-lc/openssl absent)
 - [x] Independent security review (keys, file modes, token handling, SNI predicate) (Claude 2026-10-25: passed after L12b/L12c)
-- [ ] Manual acceptance against LE **staging** with the owner's Cloudflare zone (owner runs it; not automated)
-- [ ] **Owner approval**
+- [x] Manual acceptance against LE **staging** with the owner's Cloudflare zone (owner 2026-10-25: issue/SNI/handshake/renew/failure/DynDNS node-only; `public_entry` left to owner)
+- [x] **Owner approval** (2026-10-25)
