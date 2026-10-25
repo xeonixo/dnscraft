@@ -63,7 +63,7 @@ Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **80.32 
 
 ## Log
 
-- 2026-10-25 — **tls Checkpoint C complete / module CLOSED** (owner): Manual LE-staging acceptance + Owner approval ticked. DynDNS: node `srvXY.dns.<apex>` only; apex/`*.dns` owner-managed (`public_entry=false`). Code on origin/main through staging run; close-out at `559f7ca`.
+- 2026-10-25 — **tls Checkpoint C complete / module CLOSED** (owner): Manual LE-staging acceptance + Owner approval ticked. DynDNS: node `srvXY.dns.<apex>` only; apex/`*.dns` owner-managed (`public_entry=false`). Code and close-out on `origin/main`.
 
 - 2026-10-25 — Owner LE-**staging** acceptance (Cursor, placeholders only): zone=`<apex>`; contact=`acme@<apex>`; node=`<node>.dns.<apex>`; token via `DNSCRAFT_CLOUDFLARE_API_TOKEN_FILE` (0600, outside repo); data=`$HOME/.local/share/dnscraft-staging`. **Issue ✓** (SANs `dns.`+`*.dns.<apex>`, modes 0700/0600, issuer `(STAGING)…`, ACME TXT remaining 0). **SNI ✓** (`sni-check`: Client-ID accept_public=true; apex/node/unknown/missing false). **Handshake ✓** (loopback Client-ID SNI). **Renew ✓** (serial changed, TXT 0, ~7–15 s). **Failure ✓** (bogus token → `tls.cloudflare.http`, prior cert kept). **DynDNS ✓** (`public_entry=false`: only `<node>.dns.<apex>` A/AAAA = echo, `proxied=false`, apex/`*.dns` untouched; `public_entry=true`: also `dns.`+`*.dns.<apex>` match echo/`proxied=false`; entry records removed after test, node record kept). Fixed renew-task panic: `ScheduleFn`/`StatusFn` used `blocking_read` inside Tokio → `try_read`. Staging example + README checklist wording updated (openssl issuer for STAGING; `*_FILE` preferred). Staging data dir wiped after run. **Do not tick** Manual acceptance / Owner approval (owner decides).
 
