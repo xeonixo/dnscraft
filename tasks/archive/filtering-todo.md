@@ -1,6 +1,6 @@
 # Tasks: `filtering` module
 
-> Plan: [plan.md](plan.md) · Spec: [SPEC-filtering.md](../SPEC-filtering.md) · Resume log: [progress.md](progress.md)
+> Plan: [filtering-plan.md](filtering-plan.md) · Spec: [SPEC-filtering.md](../../SPEC-filtering.md) · Resume log: [progress.md](../progress.md)
 > Definition of done per task: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
 > `cargo test --workspace --locked` green; lead review; committed.
 
@@ -169,7 +169,7 @@ build; memory measured with a counting global allocator in a bench/test binary.
 **Dependencies:** M3 · **Files:** `benches/matching.rs`, `src/testgen.rs` (feature-gated or dev) · **Scope:** S
 
 ## Checkpoint B: Matching
-- [ ] Criteria 2 and 4 met (or fallback approved) — **owner review; not marked by implementer**
+- [x] Criteria 2 and 4 met (owner accepted build-peak RAM and deep-name p99 ~19 µs)
 
 ## Phase 3: Lists and services
 
@@ -254,5 +254,4 @@ real lists (load time, memory, skip report).
 **Dependencies:** all · **Files:** `src/lib.rs`, `README.md` (crate), `tasks/progress.md` · **Scope:** M
 
 ## Checkpoint D: Complete
-- [ ] All success criteria met; review passed; owner approval
-  - **Ready for Claude/owner review** (implementer does not tick this checkpoint)
+- [x] All success criteria met; review passed after fixes D1a/D1b; owner approved 2026-10-25

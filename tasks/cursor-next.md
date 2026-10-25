@@ -6,9 +6,7 @@
 
 ## Status (updated 2026-10-25)
 
-- `resolver`: complete. `filtering`: Checkpoint D review done (not passed yet); fixes D1a/D1b are being
-  done by Claude's agents — **Cursor does not touch `crates/dnscraft-filtering` until progress.md logs
-  Checkpoint D as approved.**
+- `resolver` and `filtering`: complete (filtering Checkpoint D approved 2026-10-25).
 - `clients`, `tls`, `policy`: specs approved in progress.md — P1 planning may start (clients → tls → policy).
 - Spec drafts S1–S3: done, archived in [archive/cursor-specs.md](archive/cursor-specs.md).
 - Deep-name p99 ≈ 19 µs accepted by the owner → T3 dropped.
@@ -21,7 +19,7 @@
 | 1 | ~~T1 — `Record` enforces rtype ↔ RDATA~~ | tech debt (proto) | done |
 | 2 | R2 — per-query forward-zone allow-list in the resolver | feature (resolver) | – (needed by policy) |
 | 3 | P1 — plan + tasks for clients, then tls, then policy | planning | spec approved in progress.md |
-| 4 | T2 — fetcher TLS error classification | tech debt (filtering, small) | Checkpoint D approved |
+| 4 | T2 — fetcher TLS error classification | tech debt (filtering, small) | – |
 
 R2 next. P1: one module at a time, STOP after each plan for owner approval.
 
@@ -102,8 +100,7 @@ Precondition: progress.md logs SPEC-<module>.md as approved by the owner. Order:
 one module per run, STOP after each.
 
 Do:
-- The filtering plan is still active (tasks/plan.md, tasks/todo.md) until its Checkpoint D: do NOT move or
-  overwrite them. Write the new module's plan to tasks/plan-<module>.md and tasks/todo-<module>.md.
+- Write the new module's plan to tasks/plan-<module>.md and tasks/todo-<module>.md.
 - Plan: phases, dependency order, risks, checkpoints (every 2–4 tasks, last one = review + owner approval).
   Tasks in exactly the format of tasks/archive/resolver-todo.md: Description, Acceptance criteria
   (checkboxes), Verification command, Dependencies, Files, Scope (S/M; split anything bigger).
@@ -115,7 +112,7 @@ Do:
 - Commit "plan: <module> plan and tasks". STOP for owner approval of the plan before any code.
 ```
 
-## T2: Fetcher TLS error classification (filtering, after Checkpoint D is approved)
+## T2: Fetcher TLS error classification (filtering)
 
 ```text
 Known gap from progress.md (Task L2): the fetcher maps TLS failures to an error code by matching the error

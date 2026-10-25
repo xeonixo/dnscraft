@@ -1,8 +1,8 @@
 # Implementation Plan: `filtering` module
 
-> Spec: [SPEC-filtering.md](../SPEC-filtering.md) · Project spec: [SPEC.md](../SPEC.md) ·
-> Tasks: [todo.md](todo.md) · Resume log: [progress.md](progress.md) ·
-> Previous module: [archive/resolver-plan.md](archive/resolver-plan.md)
+> Spec: [SPEC-filtering.md](../../SPEC-filtering.md) · Project spec: [SPEC.md](../../SPEC.md) ·
+> Tasks: [filtering-todo.md](filtering-todo.md) · Resume log: [progress.md](../progress.md) ·
+> Previous module: [archive/resolver-plan.md](resolver-plan.md)
 
 ## Overview
 
@@ -93,8 +93,8 @@ F1 skeleton + types ── F2 core rule parser ── F3 modifiers + IDNA ──
 - [x] Task M4: Benchmark and memory measurement on a generated reference-sized set (deep-name p99 and build-peak over budget — see progress.md; Checkpoint B owner)
 
 ### Checkpoint B: Matching
-- [ ] Priority table (success criterion 2) green
-- [ ] Budgets met (criterion 4) or fallback index decided with owner — **awaiting owner**
+- [x] Priority table (success criterion 2) green
+- [x] Budgets met (criterion 4) or exceptions accepted by the owner (build-peak RAM; deep-name p99 ~19 µs)
 
 ### Phase 3: Lists and services
 - [x] Task L1: List store (data directory, atomic writes, metadata, local file lists)
@@ -109,8 +109,7 @@ F1 skeleton + types ── F2 core rule parser ── F3 modifiers + IDNA ──
 - [x] Task C1: Engine API polish, stats, README, error-code table, coverage ≥ 80 %, real-list acceptance run
 
 ### Checkpoint D: Complete
-- [ ] All 8 success criteria met; review (`/agent-skills:code-review-and-quality`) passed
-  - **Ready for Claude/owner** — not marked by implementer
+- [x] All 8 success criteria met; review passed after fixes D1a/D1b; owner approved 2026-10-25
 
 ## Parallelization
 
