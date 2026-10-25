@@ -2,7 +2,7 @@
 
 > Spec: [SPEC-clients.md](../../SPEC-clients.md) · Project spec: [SPEC.md](../../SPEC.md) ·
 > Tasks: [clients-todo.md](clients-todo.md) · Resume log: [progress.md](../progress.md) ·
-> Shared decisions for all three plans: [plan-policy.md § Cross-module decisions](../plan-policy.md#cross-module-decisions)
+> Shared decisions for all three plans: [policy-plan.md § Cross-module decisions](policy-plan.md#cross-module-decisions)
 
 ## Overview
 
@@ -51,7 +51,7 @@ never selects profiles, and it never blocks DNS on I/O.
 
 ## Dependencies (need approval — one table for all three plans)
 
-See [plan-policy.md § Dependencies](../plan-policy.md#dependencies-need-approval--all-three-plans).
+See [policy-plan.md § Dependencies](policy-plan.md#dependencies-need-approval--all-three-plans).
 This module needs:
 
 | Crate | Kind | Why |

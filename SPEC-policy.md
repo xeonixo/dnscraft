@@ -274,7 +274,7 @@ Per profile flags:
 
 Trait lives in `dnscraft-policy` and returns policy-owned types (no dependency on
 `dnscraft-clients` / `ClientInfo`). Cross-module decision in
-[tasks/plan-policy.md](tasks/plan-policy.md):
+[tasks/archive/policy-plan.md](tasks/archive/policy-plan.md):
 
 ```rust
 pub trait ClientDirectory: Send + Sync {

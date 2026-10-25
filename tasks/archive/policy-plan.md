@@ -1,8 +1,8 @@
 # Implementation Plan: `policy` module
 
-> Spec: [SPEC-policy.md](../SPEC-policy.md) · Project spec: [SPEC.md](../SPEC.md) ·
-> Tasks: [todo-policy.md](todo-policy.md) · Resume log: [progress.md](progress.md) ·
-> Sibling plans: [archive/clients-plan.md](archive/clients-plan.md), [plan-tls.md](plan-tls.md)
+> Spec: [SPEC-policy.md](../../SPEC-policy.md) · Project spec: [SPEC.md](../../SPEC.md) ·
+> Tasks: [policy-todo.md](policy-todo.md) · Resume log: [progress.md](../progress.md) ·
+> Sibling plans: [clients-plan.md](clients-plan.md), [plan-tls.md](../plan-tls.md)
 
 ## Overview
 

@@ -1,6 +1,6 @@
 # Tasks: `policy` module
 
-> Plan: [plan-policy.md](plan-policy.md) · Spec: [SPEC-policy.md](../SPEC-policy.md) · Resume log: [progress.md](progress.md)
+> Plan: [policy-plan.md](policy-plan.md) · Spec: [SPEC-policy.md](../../SPEC-policy.md) · Resume log: [progress.md](../progress.md)
 > Definition of done per task: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
 > `cargo test --workspace --locked` green; lead review; committed. Tests use `dnscraft-testkit`, `FilterEngine::from_snapshot`
 > and a mock `ClientDirectory`; never the internet. Documentation ranges and `example.com` only.

@@ -323,11 +323,11 @@ Do:
 
 ```text
 Precondition: the owner approved tasks/plan-<module>.md (logged in progress.md) and the dependency table in
-tasks/plan-policy.md. Work on exactly ONE task id (e.g. P1, L2, C3) from tasks/todo-<module>.md.
+tasks/archive/policy-plan.md. Work on exactly ONE task id (e.g. P1, L2, C3) from tasks/todo-<module>.md.
 
 Do:
 - Read the task's Description, Acceptance criteria, Dependencies and Files, the plan's Architecture Decisions
-  and "Cross-module decisions" in tasks/plan-policy.md, and the spec sections the task touches.
+  and "Cross-module decisions" in tasks/archive/policy-plan.md, and the spec sections the task touches.
 - Check the task's Dependencies are ticked; if not, STOP and say which is missing.
 - Implement with tests first where practical. Stay inside the listed files; if you must touch more, say why in
   the commit message. Dependencies only from the approved table, with the listed features; for tls run

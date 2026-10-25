@@ -2,7 +2,7 @@
 
 > Spec: [SPEC-tls.md](../SPEC-tls.md) · Project spec: [SPEC.md](../SPEC.md) ·
 > Tasks: [todo-tls.md](todo-tls.md) · Resume log: [progress.md](progress.md) ·
-> Shared decisions for all three plans: [plan-policy.md § Cross-module decisions](plan-policy.md#cross-module-decisions)
+> Shared decisions for all three plans: [archive/policy-plan.md § Cross-module decisions](archive/policy-plan.md#cross-module-decisions)
 
 ## Overview
 
@@ -66,7 +66,7 @@ does not own the Client-ID registry.
 
 ## Dependencies (need approval — one table for all three plans)
 
-See [plan-policy.md § Dependencies](plan-policy.md#dependencies-need-approval--all-three-plans).
+See [archive/policy-plan.md § Dependencies](archive/policy-plan.md#dependencies-need-approval--all-three-plans).
 This module needs:
 
 | Crate | Kind | Why |
@@ -139,4 +139,4 @@ L9 DynDNS (needs L5) ── L10 TlsEngine ── L11 polish
 
 ## Open Questions
 
-See [plan-policy.md § Open questions](plan-policy.md#open-questions-for-the-owner) (dependency approval, Pebble in CI).
+See [archive/policy-plan.md § Open questions](archive/policy-plan.md#open-questions-for-the-owner) (dependency approval, Pebble in CI).

@@ -30,8 +30,8 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 
 Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.24 %** lines / **80.27 %** regions.
 - Module `tls`: **COMPLETE** — SPEC + plan approved; L1–L12c done; Checkpoints A/B/C passed (2026-10-25). Owner approved after LE-staging acceptance (node DynDNS only; `public_entry` owner-managed).
-- Module `policy`: v1 COMPLETE (Checkpoint C approved by the owner 2026-10-25). **P13 + P14 + P14b done** (SafeSearch + schedules; resolve-detail follow-ups). Plan + todo ready to archive after this lands.
-- Blockers: none. **STOP:** Claude merges the dependency upgrade next; do not start new work until the owner says so — then `git pull --rebase` and rebuild. Next module: `listeners` (spec pending).
+- Module `policy` COMPLETE (Checkpoint C approved 2026-10-25; P13 SafeSearch + P14 schedules done). Plan and tasks archived: [archive/policy-plan.md](archive/policy-plan.md), [archive/policy-todo.md](archive/policy-todo.md).
+- Blockers: none. Dependency upgrade merged (MSRV 1.88). Next module: `listeners` (spec pending).
 
 ### policy success criteria (SPEC-policy.md)
 
@@ -62,6 +62,8 @@ Coverage (`cargo llvm-cov -p dnscraft-policy --summary-only`, 2026-10-25 P14): *
 Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **80.32 %** lines / **79.82 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
 
 ## Log
+
+- 2026-10-25 — **Module `policy` COMPLETE** after P13/P14 (Claude review accepted, P14 follow-ups ee927cf). Plan and tasks archived to tasks/archive/policy-plan.md and policy-todo.md. Dependency upgrade (MSRV 1.88, time 0.3.55, rand 0.10, criterion 0.8, reqwest 0.13 ring-only) rebased onto ee927cf, gates green (fmt, clippy -D warnings, 81 test binaries, cargo deny, no aws-lc/openssl, Pebble 2/2) and fast-forwarded to main.
 
 - 2026-10-25 — **Dependency upgrade to latest stable (owner request "everything latest version")**, one commit per crate/group. **MSRV 1.85 → 1.88** (time ≥ 0.3.47, hickory-proto, proptest 1.12, rcgen 0.14.10, icu 2.4; CI uses `stable`, no pin). With 1.88 clippy `collapsible_if` fires for let chains: nested ifs collapsed (no behaviour change). RUSTSEC-2026-0009 ignore removed from `deny.toml`, `cargo deny check` green with `ignore = []`.
 
