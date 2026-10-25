@@ -182,9 +182,9 @@ Also:
 - An unknown set at runtime (race during reload) → `policy.internal` + SERVFAIL, logged once.
 
 **Acceptance criteria:**
-- [ ] Each `BlockMode` produces the right rcode / records / EDE / AD clear; blocked names cause zero resolver queries
-- [ ] Rewrite to A record, to NXDOMAIN, to CNAME (target resolved via testkit; blocked target → block)
-- [ ] Temporary allow and set pause from filtering are honoured (verdict passes through)
+- [x] Each `BlockMode` produces the right rcode / records / EDE / AD clear; blocked names cause zero resolver queries
+- [x] Rewrite to A record, to NXDOMAIN, to CNAME (target resolved via testkit; blocked target → block)
+- [x] Temporary allow and set pause from filtering are honoured (verdict passes through)
 
 **Verification:** `cargo test -p dnscraft-policy filter`
 

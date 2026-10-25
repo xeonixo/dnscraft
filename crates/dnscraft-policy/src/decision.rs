@@ -23,7 +23,7 @@ pub enum AnswerOrigin {
     LocalClient,
     /// Bypass / canary (Firefox DoH, iCloud Private Relay).
     Bypass,
-    /// Filter block or rewrite (later tasks).
+    /// Filter block or rewrite synthesis.
     Filter,
 }
 
@@ -46,6 +46,15 @@ pub enum DecisionStep {
     SpecialUseNxdomain,
     /// Bypass / canary answer (profile flag on).
     Bypass,
+    /// Filter blocked the qname (or a CNAME-rewrite target).
+    FilterBlocked,
+    /// Filter rewrote the answer (records or rcode).
+    FilterRewrite,
+    /// Name could not be converted for filtering; treated as Pass.
+    FilterSkipped {
+        /// Why filtering was skipped.
+        reason: &'static str,
+    },
     /// Resolver returned an answer.
     Resolve {
         /// Cache / recursion / stale.

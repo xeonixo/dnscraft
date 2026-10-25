@@ -1,10 +1,22 @@
-//! Synthesised DNS answers (ANY, SERVFAIL, and later block/local answers).
+//! Synthesised DNS answers (ANY, SERVFAIL, block/rewrite, local answers).
 
+use std::net::{Ipv4Addr, Ipv6Addr};
+
+use dnscraft_filtering::BlockMode;
 use dnscraft_proto::{Class, Header, Message, Name, Question, RData, Rcode, Record, RecordType};
-use dnscraft_resolver::Query;
+use dnscraft_resolver::{ExtendedError, Query};
 
 use crate::decision::AnswerOrigin;
 use crate::pipeline::{Synth, clear_ad};
+
+/// Default TTL for filter block / rewrite answers when the set has no
+/// dedicated blocked-response TTL field yet (plan: 10 s).
+pub const DEFAULT_BLOCK_TTL: u32 = 10;
+
+/// RFC 8914 INFO-CODE 15 Blocked (operator policy).
+pub const EDE_BLOCKED: u16 = 15;
+/// RFC 8914 INFO-CODE 4 Forged Answer (null/custom IP).
+pub const EDE_FORGED_ANSWER: u16 = 4;
 
 /// HINFO type number (RFC 1035); not a first-class [`RData`] variant.
 const HINFO: RecordType = RecordType(13);
@@ -115,6 +127,265 @@ pub fn bypass_nxdomain(query: &Query, rd: bool) -> Synth {
         ede: None,
         origin: AnswerOrigin::Bypass,
     }
+}
+
+/// SERVFAIL when the profile's filter set is missing at runtime (`policy.internal`).
+pub fn filter_internal_servfail(query: &Query, rd: bool) -> Synth {
+    let mut message = response_skeleton(query, rd);
+    message.header.ra = true;
+    let _ = message.set_rcode(Rcode::SERVFAIL);
+    clear_ad(&mut message);
+    Synth {
+        message,
+        ede: None,
+        origin: AnswerOrigin::Filter,
+    }
+}
+
+/// Block synthesis for a [`BlockMode`], with the matching EDE.
+pub fn block_answer(
+    query: &Query,
+    rd: bool,
+    mode: BlockMode,
+    ttl: u32,
+    ede_text: Option<String>,
+) -> Synth {
+    match mode {
+        BlockMode::Refused => {
+            let mut message = response_skeleton(query, rd);
+            message.header.ra = true;
+            let _ = message.set_rcode(Rcode::REFUSED);
+            clear_ad(&mut message);
+            Synth {
+                message,
+                ede: Some(ede(EDE_BLOCKED, ede_text)),
+                origin: AnswerOrigin::Filter,
+            }
+        }
+        BlockMode::NxDomain => {
+            let mut message = response_skeleton(query, rd);
+            message.header.aa = true;
+            message.header.ra = true;
+            let _ = message.set_rcode(Rcode::NXDOMAIN);
+            message.authorities.push(synthetic_soa(&query.name, ttl));
+            clear_ad(&mut message);
+            Synth {
+                message,
+                ede: Some(ede(EDE_BLOCKED, ede_text)),
+                origin: AnswerOrigin::Filter,
+            }
+        }
+        BlockMode::NullIp => match query.qtype {
+            RecordType::A => filter_address_answer(
+                query,
+                rd,
+                ttl,
+                vec![RData::A(Ipv4Addr::UNSPECIFIED)],
+                ede_text,
+            ),
+            RecordType::AAAA => filter_address_answer(
+                query,
+                rd,
+                ttl,
+                vec![RData::AAAA(Ipv6Addr::UNSPECIFIED)],
+                ede_text,
+            ),
+            _ => filter_nodata(query, rd, ttl, Some(ede(EDE_FORGED_ANSWER, ede_text))),
+        },
+        BlockMode::CustomIp { v4, v6 } => match query.qtype {
+            RecordType::A => match v4 {
+                Some(ip) => filter_address_answer(query, rd, ttl, vec![RData::A(ip)], ede_text),
+                None => filter_nodata(query, rd, ttl, Some(ede(EDE_FORGED_ANSWER, ede_text))),
+            },
+            RecordType::AAAA => match v6 {
+                Some(ip) => filter_address_answer(query, rd, ttl, vec![RData::AAAA(ip)], ede_text),
+                None => filter_nodata(query, rd, ttl, Some(ede(EDE_FORGED_ANSWER, ede_text))),
+            },
+            _ => filter_nodata(query, rd, ttl, Some(ede(EDE_FORGED_ANSWER, ede_text))),
+        },
+        _ => {
+            let mut message = response_skeleton(query, rd);
+            message.header.ra = true;
+            let _ = message.set_rcode(Rcode::REFUSED);
+            clear_ad(&mut message);
+            Synth {
+                message,
+                ede: Some(ede(EDE_BLOCKED, ede_text)),
+                origin: AnswerOrigin::Filter,
+            }
+        }
+    }
+}
+
+/// Rewrite synthesis (no EDE). Type-mismatched address/TXT rewrites → NODATA.
+pub fn rewrite_answer(
+    query: &Query,
+    rd: bool,
+    rewrite: &dnscraft_filtering::Rewrite,
+    ttl: u32,
+) -> Synth {
+    use dnscraft_filtering::Rewrite;
+    match rewrite {
+        Rewrite::Refused => {
+            let mut message = response_skeleton(query, rd);
+            message.header.ra = true;
+            let _ = message.set_rcode(Rcode::REFUSED);
+            clear_ad(&mut message);
+            Synth {
+                message,
+                ede: None,
+                origin: AnswerOrigin::Filter,
+            }
+        }
+        Rewrite::NxDomain => {
+            let mut message = response_skeleton(query, rd);
+            message.header.aa = true;
+            message.header.ra = true;
+            let _ = message.set_rcode(Rcode::NXDOMAIN);
+            message.authorities.push(synthetic_soa(&query.name, ttl));
+            clear_ad(&mut message);
+            Synth {
+                message,
+                ede: None,
+                origin: AnswerOrigin::Filter,
+            }
+        }
+        Rewrite::ServFail => {
+            let mut message = response_skeleton(query, rd);
+            message.header.ra = true;
+            let _ = message.set_rcode(Rcode::SERVFAIL);
+            clear_ad(&mut message);
+            Synth {
+                message,
+                ede: None,
+                origin: AnswerOrigin::Filter,
+            }
+        }
+        Rewrite::NoErrorEmpty => filter_nodata(query, rd, ttl, None),
+        Rewrite::A(ip) => {
+            if query.qtype == RecordType::A {
+                filter_records_answer(query, rd, ttl, vec![RData::A(*ip)])
+            } else {
+                filter_nodata(query, rd, ttl, None)
+            }
+        }
+        Rewrite::Aaaa(ip) => {
+            if query.qtype == RecordType::AAAA {
+                filter_records_answer(query, rd, ttl, vec![RData::AAAA(*ip)])
+            } else {
+                filter_nodata(query, rd, ttl, None)
+            }
+        }
+        Rewrite::Txt(text) => {
+            if query.qtype == RecordType::TXT {
+                let bytes: Box<[u8]> = text.as_bytes().into();
+                filter_records_answer(query, rd, ttl, vec![RData::TXT(vec![bytes])])
+            } else {
+                filter_nodata(query, rd, ttl, None)
+            }
+        }
+        Rewrite::Cname(target) => match Name::from_ascii(target.as_str()) {
+            Ok(n) => filter_records_answer(query, rd, ttl, vec![RData::CNAME(n)]),
+            Err(_) => filter_nodata(query, rd, ttl, None),
+        },
+        _ => filter_nodata(query, rd, ttl, None),
+    }
+}
+
+/// CNAME rewrite answer: synthesised CNAME plus the target's resolved records.
+pub fn rewrite_cname_follow(
+    query: &Query,
+    rd: bool,
+    ttl: u32,
+    target: &Name,
+    target_answers: Vec<Record>,
+    target_rcode: Rcode,
+) -> Synth {
+    let mut message = response_skeleton(query, rd);
+    message.header.aa = false;
+    message.header.ra = true;
+    let _ = message.set_rcode(target_rcode);
+    message.answers.push(Record::new(
+        query.name.clone(),
+        Class::IN,
+        ttl,
+        RData::CNAME(target.clone()),
+    ));
+    message.answers.extend(target_answers);
+    clear_ad(&mut message);
+    Synth {
+        message,
+        ede: None,
+        origin: AnswerOrigin::Filter,
+    }
+}
+
+fn filter_address_answer(
+    query: &Query,
+    rd: bool,
+    ttl: u32,
+    rdata: Vec<RData>,
+    ede_text: Option<String>,
+) -> Synth {
+    let mut s = filter_records_answer(query, rd, ttl, rdata);
+    s.ede = Some(ede(EDE_FORGED_ANSWER, ede_text));
+    s
+}
+
+fn filter_records_answer(query: &Query, rd: bool, ttl: u32, rdata: Vec<RData>) -> Synth {
+    let mut message = response_skeleton(query, rd);
+    message.header.aa = true;
+    message.header.ra = true;
+    let _ = message.set_rcode(Rcode::NOERROR);
+    message.answers = rdata
+        .into_iter()
+        .map(|r| Record::new(query.name.clone(), Class::IN, ttl, r))
+        .collect();
+    clear_ad(&mut message);
+    Synth {
+        message,
+        ede: None,
+        origin: AnswerOrigin::Filter,
+    }
+}
+
+fn filter_nodata(query: &Query, rd: bool, ttl: u32, ede: Option<ExtendedError>) -> Synth {
+    let mut message = response_skeleton(query, rd);
+    message.header.aa = true;
+    message.header.ra = true;
+    let _ = message.set_rcode(Rcode::NOERROR);
+    message.authorities.push(synthetic_soa(&query.name, ttl));
+    clear_ad(&mut message);
+    Synth {
+        message,
+        ede,
+        origin: AnswerOrigin::Filter,
+    }
+}
+
+fn synthetic_soa(zone: &Name, ttl: u32) -> Record {
+    let rname = match Name::from_ascii("nobody.invalid.") {
+        Ok(n) => n,
+        Err(_) => Name::root(),
+    };
+    Record::new(
+        zone.clone(),
+        Class::IN,
+        ttl,
+        RData::SOA {
+            mname: zone.clone(),
+            rname,
+            serial: 1,
+            refresh: 604_800,
+            retry: 86_400,
+            expire: 2_419_200,
+            minimum: ttl,
+        },
+    )
+}
+
+fn ede(code: u16, text: Option<String>) -> ExtendedError {
+    ExtendedError { code, text }
 }
 
 /// Special-use suffix NXDOMAIN with a synthetic SOA in authority. No EDE.
@@ -233,6 +504,7 @@ mod tests {
                 rd
             );
             assert_eq!(bypass_nxdomain(&q, rd).message.header.rd, rd);
+            assert_eq!(filter_internal_servfail(&q, rd).message.header.rd, rd);
         }
     }
 

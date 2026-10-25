@@ -14,7 +14,7 @@ use crate::directory::ClientDirectory;
 use crate::error::PolicyError;
 use crate::pipeline::{Draft, Flow, StepCtx, apply_ad_policy};
 use crate::snapshot::PolicySnapshot;
-use crate::steps::{canary, directory, local_records};
+use crate::steps::{canary, directory, filter, local_records};
 use crate::synth::{any_rfc8482, resolve_servfail};
 
 /// Final answer from [`PolicyEngine::handle`].
@@ -36,7 +36,6 @@ pub struct PolicyEngine {
     filter: Arc<FilterEngine>,
     resolver: Arc<Resolver>,
     clients: Arc<dyn ClientDirectory>,
-    #[allow(dead_code)] // pause / filter steps use it from P5+
     clock: Arc<dyn Clock>,
 }
 
@@ -73,7 +72,8 @@ impl PolicyEngine {
     ///
     /// Selection, RFC 8482 ANY, view local records (step 1), ClientDirectory
     /// names/PTR and special-use NXDOMAIN (step 2), bypass canaries (step 3),
-    /// then resolver passthrough (step 7). Steps 4–6 and 8–11 follow later.
+    /// filter qname (step 4), then resolver passthrough (step 7). Steps 5–6
+    /// and 8–11 follow later.
     ///
     /// ECS is never forwarded: policy calls the resolver with
     /// [`RequestFlags`] only (no client EDNS options).
@@ -117,6 +117,8 @@ impl PolicyEngine {
             clients: self.clients.as_ref(),
             resolver: self.resolver.as_ref(),
             forward_zones_allow: forward_zones.as_deref(),
+            filter: self.filter.as_ref(),
+            clock: self.clock.as_ref(),
         };
 
         // Step 1: view local records.
@@ -158,7 +160,20 @@ impl PolicyEngine {
             ));
         }
 
-        // Steps 4–6 / 8–11: later tasks. Then resolve.
+        // Step 4: filter original qname (block / rewrite).
+        if let Flow::Answer(synth) = filter::run(&ctx, step_ctx, &mut draft).await {
+            draft.timings.total_us = elapsed_us(total_start);
+            return Ok(emit(
+                draft,
+                synth,
+                ctx.client_id.clone(),
+                loggable,
+                None,
+                None,
+            ));
+        }
+
+        // Steps 5–6 / 8–11: later tasks. Then resolve.
 
         let flags = RequestFlags {
             checking_disabled: ctx.flags.checking_disabled,

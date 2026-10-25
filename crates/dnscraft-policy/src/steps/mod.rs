@@ -2,4 +2,5 @@
 
 pub(crate) mod canary;
 pub(crate) mod directory;
+pub(crate) mod filter;
 pub(crate) mod local_records;

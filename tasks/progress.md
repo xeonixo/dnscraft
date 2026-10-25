@@ -14,10 +14,12 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L7 done**; Checkpoint A passed (2026-10-25). Next: **L8** (renewal scheduler).
-- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P6 done. Checkpoint A passed** (2026-10-25). Next: P7.
+- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P7 done. Checkpoint A passed** (2026-10-25). Next: P8.
 - Blockers: none. Clients last. T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — Policy P7 done (Cursor): step 4 filter qname — `match_name` → Blocked synthesises per set `BlockMode` (REFUSED/NXDOMAIN → EDE 15; NullIp/CustomIp → EDE 4; TTL default 10 s + SOA on NXDOMAIN/NODATA); Rewrite A/NXDOMAIN/CNAME (CNAME target filtered again then resolved via step 7; blocked target → block); Allowed/Pass continue; unrepresentable name → Pass + `FilterSkipped`; unknown set → SERVFAIL once-logged. Temporary allow + set pause honoured. Tests for all BlockModes, rewrites, allow/pause. DoD green. Next: P8.
 
 - 2026-10-25 — tls L7 done (Cursor): `issue()` — account, DNS-01 order (apex+wildcard), orphan TXT cleanup, Cloudflare TXT add under writer mutex, `wait_for_txt`, set ready / finalize (rcgen P-256/P-384 CSR), store+install, best-effort TXT delete. `AcmeOrder` on InstantAcme + FakeAcme (fail injection). Fake tests: happy path + P-384 + challenge/finalize/propagation keep last cert. Pebble `#[ignore]` issuance test. DoD green. Next: L8.
 

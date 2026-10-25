@@ -100,10 +100,14 @@ pub struct StepCtx<'a> {
     pub snapshot: &'a PolicySnapshot,
     /// Client directory for step 2.
     pub clients: &'a dyn crate::directory::ClientDirectory,
-    /// Resolver (forward-zone lookups for special-use NXDOMAIN).
+    /// Resolver (forward-zone lookups and CNAME rewrite follow).
     pub resolver: &'a dnscraft_resolver::Resolver,
     /// Profile forward-zone allow-list (`None` = all configured zones).
     pub forward_zones_allow: Option<&'a [dnscraft_resolver::ForwardZoneId]>,
+    /// Filter engine for step 4+.
+    pub filter: &'a dnscraft_filtering::FilterEngine,
+    /// Shared clock (pause / temporary allows / match_name `now`).
+    pub clock: &'a dyn dnscraft_filtering::Clock,
 }
 
 #[cfg(test)]
