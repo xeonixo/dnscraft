@@ -11,10 +11,12 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 ## Current state
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
-- Module `filtering`: Checkpoint A done; M4a/R1/F6/M3/M4b done. **Checkpoint B needs owner review** (do not mark): M4a build peak over budget; M4b deep-name match p99 over 10 µs. Next: L3, L4, C1.
-- Blockers: Checkpoint B owner decision on budgets / fallbacks.
+- Module `filtering`: Checkpoint B owner (2026-10-25): **RAM may grow** — build peak / 150 MB RSS not a hard stop; continue L3→L4→C1. Deep-name p99 miss accepted for now unless revisited at Checkpoint D.
+- Blockers: none.
 
 ## Log
+
+- 2026-10-25 — Checkpoint B owner: RAM budget relaxed (“RAM darf ruhig größer werden”); Cursor continues with L3. Deep-name p99 and M4a peak left as-is for now (not blocking). Checkpoint B checkboxes left for owner/Claude to tick formally if desired.
 
 - 2026-10-25 — Filtering M4b done (Cursor): criterion `benches/matching.rs` + feature-gated `src/testgen.rs` (`--features testgen`, ~2.249 M rules across lists: 1.87 M subdomain + 85 k exact + 500 globs + 30 regexes + 100 IP + 15 % cross-list dups). Measured release (`--sample-size 50`), raw p50/p99 n=1000 warm:
 
