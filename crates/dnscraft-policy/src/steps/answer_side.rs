@@ -32,8 +32,7 @@ pub(crate) fn run(
         return AnswerSide::Keep;
     }
 
-    let profile = step.snapshot.profile_for_view(draft.selection.view_idx);
-    let set_id = &profile.config.filter_set;
+    let set_id = step.filter_set;
     let now = step.clock.now();
     let qtype = u16::from(ctx.query.qtype);
     let rd = ctx.flags.recursion_desired;

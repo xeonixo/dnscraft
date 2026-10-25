@@ -1,5 +1,6 @@
 //! Pipeline step framework: draft answer and control flow.
 
+use dnscraft_filtering::SetId;
 use dnscraft_proto::Message;
 use dnscraft_resolver::{DnssecStatus, ExtendedError};
 
@@ -45,6 +46,8 @@ pub(crate) fn apply_ad_policy(message: &mut Message, status: DnssecStatus) {
 pub struct Draft {
     /// Selection result.
     pub selection: Selection,
+    /// Effective filter set (profile default or active schedule).
+    pub filter_set: SetId,
     /// Pipeline breadcrumbs.
     pub steps: Vec<DecisionStep>,
     /// Filter hit, if any.
@@ -56,11 +59,14 @@ pub struct Draft {
 }
 
 impl Draft {
-    /// Starts a draft after selection.
-    pub fn new(selection: Selection) -> Self {
+    /// Starts a draft after selection with the profile's default filter set.
+    ///
+    /// The engine may overwrite [`Self::filter_set`] when a schedule is active.
+    pub fn new(selection: Selection, filter_set: SetId) -> Self {
         let cause = selection.matched_by;
         Self {
             selection,
+            filter_set,
             steps: vec![DecisionStep::Selected { cause }],
             filter: None,
             timings: DecisionTimings::default(),
@@ -82,6 +88,7 @@ impl Draft {
             profile_id: self.selection.profile_id,
             selection: self.selection.matched_by,
             client_id,
+            filter_set: self.filter_set,
             steps: self.steps,
             filter: self.filter,
             forward_zone,
@@ -106,6 +113,8 @@ pub struct StepCtx<'a> {
     pub forward_zones_allow: Option<&'a [dnscraft_resolver::ForwardZoneId]>,
     /// Filter engine for step 4+.
     pub filter: &'a dnscraft_filtering::FilterEngine,
+    /// Effective filter set for steps 4 / 6 / 8 / 9.
+    pub filter_set: &'a SetId,
     /// Shared clock (pause / temporary allows / match_name `now`).
     pub clock: &'a dyn dnscraft_filtering::Clock,
     /// When true, filter steps 4 / 6 / 8 / 9 return Pass (user-facing pause).

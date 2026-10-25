@@ -15,6 +15,7 @@ use crate::error::PolicyError;
 use crate::ids::ProfileId;
 use crate::pause::{PauseScope, PauseTable, PauseUntil};
 use crate::pipeline::{Draft, Flow, StepCtx, Synth, apply_ad_policy};
+use crate::schedule::{active_schedule, offset_in_week};
 use crate::snapshot::PolicySnapshot;
 use crate::stats::{PolicyStats, StatsTable};
 use crate::status::PolicyStatus;
@@ -97,9 +98,9 @@ impl PolicyEngine {
             .snapshot()
     }
 
-    /// Coarse status for the UI (`schedules_applied` stays false until P14).
+    /// Coarse status for the UI, including per-profile active schedule ids.
     pub fn status(&self) -> PolicyStatus {
-        PolicyStatus::current()
+        PolicyStatus::from_snapshot(self.snapshot().as_ref(), self.clock.now())
     }
 
     /// Rebuilds and swaps the snapshot. On validation failure the previous
@@ -158,9 +159,10 @@ impl PolicyEngine {
     /// Handles one query: select, run steps, emit.
     ///
     /// Selection, RFC 8482 ANY, view local records (step 1), ClientDirectory
-    /// (step 2), bypass canaries (step 3), filter qname (step 4), resolve
-    /// (step 7), CNAME uncloaking + answer-IP rules (steps 8–9), rebind
-    /// (step 10), and AAAA suppression (step 11). Steps 5–6 follow later.
+    /// (step 2), bypass canaries (step 3), filter qname (step 4), SafeSearch
+    /// (steps 5–6), resolve (step 7), CNAME uncloaking + answer-IP rules
+    /// (steps 8–9), rebind (step 10), and AAAA suppression (step 11).
+    /// Schedule windows may swap the filter set for steps 4 / 6 / 8 / 9.
     ///
     /// ECS is never forwarded: policy calls the resolver with
     /// [`RequestFlags`] only (no client EDNS options).
@@ -173,8 +175,21 @@ impl PolicyEngine {
         let selection = snapshot.select(&ctx);
         let select_us = elapsed_us(select_start);
 
-        let mut draft = Draft::new(selection);
+        let profile = snapshot.profile_for_view(selection.view_idx);
+        let week_offset = offset_in_week(self.clock.now());
+        let active = active_schedule(&profile.config.schedules, week_offset);
+        let filter_set = active
+            .map(|s| s.filter_set.clone())
+            .unwrap_or_else(|| profile.config.filter_set.clone());
+
+        let mut draft = Draft::new(selection, filter_set.clone());
         draft.timings.select_us = select_us;
+        if let Some(sched) = active {
+            draft.steps.push(DecisionStep::ScheduleActive {
+                id: sched.id.clone(),
+                filter_set: sched.filter_set.clone(),
+            });
+        }
 
         let pause_scope = self.active_pause(&draft.selection.profile_id);
         let paused = pause_scope.is_some();
@@ -190,7 +205,6 @@ impl PolicyEngine {
             return Ok(self.finish_synth(draft, synth, total_start, ctx.client_id, loggable));
         }
 
-        let profile = snapshot.profile_for_view(draft.selection.view_idx);
         let forward_zones = profile
             .config
             .forward_zones
@@ -203,6 +217,7 @@ impl PolicyEngine {
             resolver: self.resolver.as_ref(),
             forward_zones_allow: forward_zones.as_deref(),
             filter: self.filter.as_ref(),
+            filter_set: &filter_set,
             clock: self.clock.as_ref(),
             paused,
         };

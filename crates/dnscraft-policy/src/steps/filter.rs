@@ -28,8 +28,7 @@ pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Dra
         return Flow::Continue;
     }
 
-    let profile = step.snapshot.profile_for_view(draft.selection.view_idx);
-    let set_id = &profile.config.filter_set;
+    let set_id = step.filter_set;
     let Some(domain) = name_to_domain(&ctx.query.name) else {
         draft.steps.push(DecisionStep::FilterSkipped {
             reason: "unrepresentable_name",

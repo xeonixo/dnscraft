@@ -146,7 +146,8 @@ pub struct SafeSearchConfig {
 
 /// One schedule window that may switch the active filter set.
 ///
-/// Evaluation is optional in v1; the config is stored and validated.
+/// Windows are offsets within one week from Monday 00:00 UTC
+/// (`start` inclusive, `end` exclusive). See [`crate::active_schedule`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScheduleConfig {
     /// Human-readable id for status / UI.

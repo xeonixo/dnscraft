@@ -453,13 +453,13 @@ the active filter set for steps 4, 6, 8, 9.
   profile (status only).
 
 **Acceptance criteria:**
-- [ ] Before / inside / after a window (ManualClock)
-- [ ] Window boundaries: start inclusive, end exclusive
-- [ ] Sunday-to-Monday split into two windows
-- [ ] Overlap rejected with stable ConfigReason code
-- [ ] Schedule set blocks a name the default set allows, and vice versa
-- [ ] Pause wins over schedule; reload swaps windows
-- [ ] `active_schedule` takes offset-in-week; status exposes active schedule id
+- [x] Before / inside / after a window (ManualClock)
+- [x] Window boundaries: start inclusive, end exclusive
+- [x] Sunday-to-Monday split into two windows
+- [x] Overlap rejected with stable ConfigReason code
+- [x] Schedule set blocks a name the default set allows, and vice versa
+- [x] Pause wins over schedule; reload swaps windows
+- [x] `active_schedule` takes offset-in-week; status exposes active schedule id
 
 **Verification:** `cargo test -p dnscraft-policy` (schedule / pause / reload);
 DoD as for P13

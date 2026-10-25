@@ -20,6 +20,7 @@ mod pipeline;
 mod private;
 mod reverse;
 mod safesearch_table;
+mod schedule;
 mod select;
 mod snapshot;
 mod stats;
@@ -34,8 +35,8 @@ pub use config::{
     ScheduleConfig, ViewConfig, ViewRecordConfig, YoutubeMode,
 };
 pub use decision::{
-    AnswerOrigin, DecisionRecord, DecisionStep, DecisionTimings, FilterHit, NotAppliedStep,
-    ProtectionPauseScope, RebindSkipReason,
+    AnswerOrigin, DecisionRecord, DecisionStep, DecisionTimings, FilterHit, ProtectionPauseScope,
+    RebindSkipReason,
 };
 pub use directory::{ClientDirectory, NoClients};
 pub use engine::{PolicyAnswer, PolicyEngine};
@@ -43,6 +44,7 @@ pub use error::{ConfigReason, IdError, PolicyError};
 pub use ids::{ClientId, ListenerId, ProfileId, ViewId};
 pub use pause::{PauseScope, PauseUntil};
 pub use pipeline::{Draft, Flow, StepCtx, Synth, clear_ad};
+pub use schedule::{active_schedule, offset_in_week};
 pub use select::{Selection, SelectionCause};
 pub use snapshot::{
     PolicySnapshot, PrefixTable, ProfileIdx, RebindException, SnapshotProfile, SnapshotView,
@@ -50,3 +52,4 @@ pub use snapshot::{
 };
 pub use stats::{PolicyStats, ProfileStats, ViewStats};
 pub use status::PolicyStatus;
+pub use status::ProfileScheduleStatus;

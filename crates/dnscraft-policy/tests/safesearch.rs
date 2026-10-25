@@ -12,9 +12,9 @@ use dnscraft_filtering::{
     SnapshotBuilder,
 };
 use dnscraft_policy::{
-    ClientFlags, DecisionStep, DnsProtocol, ListenerId, NoClients, NotAppliedStep, PauseScope,
-    PauseUntil, PolicyConfig, PolicyEngine, ProfileConfig, ProfileId, RequestContext,
-    SafeSearchConfig, ScheduleConfig, ViewConfig, ViewId, YoutubeMode,
+    ClientFlags, DecisionStep, DnsProtocol, ListenerId, NoClients, PauseScope, PauseUntil,
+    PolicyConfig, PolicyEngine, ProfileConfig, ProfileId, RequestContext, SafeSearchConfig,
+    ScheduleConfig, ViewConfig, ViewId, YoutubeMode,
 };
 use dnscraft_proto::{Class, Name, RData, Rcode, RecordType};
 use dnscraft_resolver::dnssec::TrustAnchors;
@@ -288,7 +288,7 @@ async fn each_provider_rewrites_and_country_domain() {
     );
     let (_h, eng) = engine_with(profile, empty_filter(), clock_at(1_000)).await;
     assert!(eng.status().safesearch_applied);
-    assert!(!eng.status().schedules_applied);
+    assert!(eng.status().schedules_applied);
 
     let cases = [
         (
@@ -494,26 +494,6 @@ async fn pause_keeps_safesearch_running() {
     assert!(has_rewrite(&ans, "google", "forcesafesearch.google.com"));
     assert!(!ans.record.steps.contains(&DecisionStep::FilterBlocked));
     assert_eq!(cname_target(&ans), "forcesafesearch.google.com");
-}
-
-#[tokio::test]
-async fn schedules_still_not_applied_breadcrumb() {
-    let mut profile = profile_base();
-    profile.schedules = vec![ScheduleConfig {
-        id: Arc::from("evening"),
-        filter_set: sid("evening"),
-        start: Duration::from_secs(18 * 3600),
-        end: Duration::from_secs(22 * 3600),
-    }];
-    let (_h, eng) = engine_with(profile, empty_filter(), clock_at(1_000)).await;
-    assert!(!eng.status().schedules_applied);
-    let ans = eng
-        .handle(ctx("www.example.test.", RecordType::A))
-        .await
-        .unwrap();
-    assert!(ans.record.steps.contains(&DecisionStep::NotApplied {
-        step: NotAppliedStep::Schedules,
-    }));
 }
 
 #[test]

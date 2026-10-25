@@ -18,7 +18,7 @@ use dnscraft_resolver::{Query, RequestFlags};
 use tracing::warn;
 
 use crate::config::RequestContext;
-use crate::decision::{DecisionStep, FilterHit, NotAppliedStep};
+use crate::decision::{DecisionStep, FilterHit};
 use crate::pipeline::{Draft, Flow, StepCtx};
 use crate::safesearch_table::{self, SafeSearchProvider};
 use crate::steps::filter::follow_cname_rewrite;
@@ -28,16 +28,8 @@ use crate::synth::{
 use crate::util::ede_text;
 
 /// Runs steps 5–6. May call the resolver to follow the safe-host CNAME.
-///
-/// Also records a schedules `NotApplied` breadcrumb until P14 lands.
 pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Draft) -> Flow {
     let profile = step.snapshot.profile_for_view(draft.selection.view_idx);
-
-    if !profile.config.schedules.is_empty() {
-        draft.steps.push(DecisionStep::NotApplied {
-            step: NotAppliedStep::Schedules,
-        });
-    }
 
     if !profile.config.safesearch.enabled {
         return Flow::Continue;
@@ -67,7 +59,7 @@ pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Dra
         target: Arc::from(hit.target),
     });
 
-    let set_id = &profile.config.filter_set;
+    let set_id = step.filter_set;
     let rd = ctx.flags.recursion_desired;
     let ttl = DEFAULT_BLOCK_TTL;
     let mode = step

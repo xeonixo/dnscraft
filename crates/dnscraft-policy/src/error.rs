@@ -160,6 +160,14 @@ pub enum ConfigReason {
         /// The duplicated provider.
         name: Arc<str>,
     },
+    /// Two schedule windows on one profile overlap in time.
+    #[error("schedule windows {id_a} and {id_b} overlap")]
+    OverlappingScheduleWindows {
+        /// First overlapping schedule id.
+        id_a: Arc<str>,
+        /// Second overlapping schedule id.
+        id_b: Arc<str>,
+    },
 }
 
 impl ConfigReason {
@@ -171,6 +179,7 @@ impl ConfigReason {
             Self::ScheduleWindowTooLong { .. } => "policy.config.schedule_window",
             Self::DuplicateScheduleId { .. } => "policy.config.duplicate_schedule_id",
             Self::InvalidScheduleId { .. } => "policy.config.invalid_schedule_id",
+            Self::OverlappingScheduleWindows { .. } => "policy.config.overlapping_schedules",
             Self::UnknownSafeSearchProvider { .. } => "policy.config.unknown_safesearch_provider",
             Self::DuplicateSafeSearchProvider { .. } => {
                 "policy.config.duplicate_safesearch_provider"
@@ -296,6 +305,65 @@ mod tests {
         for (want, err) in &samples {
             assert_eq!(err.code(), *want);
         }
+    }
+
+    #[test]
+    fn config_reason_stable_codes_are_unique() {
+        let samples: Vec<(&str, ConfigReason)> = vec![
+            ("policy.config.invalid", ConfigReason::NoDefaultView),
+            (
+                "policy.config.schedule_window",
+                ConfigReason::ScheduleWindowOrder {
+                    id: Arc::from("evening"),
+                },
+            ),
+            (
+                "policy.config.duplicate_schedule_id",
+                ConfigReason::DuplicateScheduleId {
+                    id: Arc::from("evening"),
+                },
+            ),
+            (
+                "policy.config.invalid_schedule_id",
+                ConfigReason::InvalidScheduleId {
+                    id: Arc::from("Bad"),
+                },
+            ),
+            (
+                "policy.config.overlapping_schedules",
+                ConfigReason::OverlappingScheduleWindows {
+                    id_a: Arc::from("a"),
+                    id_b: Arc::from("b"),
+                },
+            ),
+            (
+                "policy.config.unknown_safesearch_provider",
+                ConfigReason::UnknownSafeSearchProvider {
+                    name: Arc::from("yahoo"),
+                },
+            ),
+            (
+                "policy.config.duplicate_safesearch_provider",
+                ConfigReason::DuplicateSafeSearchProvider {
+                    name: Arc::from("google"),
+                },
+            ),
+        ];
+        let mut codes: Vec<&str> = samples.iter().map(|(c, _)| *c).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), samples.len());
+        for (want, reason) in &samples {
+            assert_eq!(reason.code(), *want);
+        }
+        // Shared code for order vs too-long is intentional (same validation family).
+        assert_eq!(
+            ConfigReason::ScheduleWindowTooLong {
+                id: Arc::from("evening"),
+            }
+            .code(),
+            "policy.config.schedule_window"
+        );
     }
 
     #[test]

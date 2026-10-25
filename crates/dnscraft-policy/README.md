@@ -8,9 +8,8 @@ Formal requirements: [`SPEC-policy.md`](../../SPEC-policy.md).
 ## Status
 
 Library for configuration validation, hot-reloadable snapshots, pause
-protection, and the query pipeline through SafeSearch, rebind / AAAA
-suppression. Schedule evaluation lands in P14 (`schedules_applied = false`
-until then).
+protection, and the query pipeline through SafeSearch, schedules, rebind /
+AAAA suppression.
 
 ## Pipeline
 
@@ -62,11 +61,34 @@ always wins. Hosts and citations live in `src/safesearch_table.rs`.
 | `firefox_canary` / `icloud_private_relay` | Bypass answers |
 | `forward_zones` | Optional allow-list of resolver zone ids |
 | `safesearch` | `enabled`, `providers`, `youtube_mode` (`strict` \| `moderate`, default strict) |
-| `schedules` | `start < end`, `end ≤ 7d` from Monday 00:00 UTC; unique `[a-z0-9-]{1,64}` ids (evaluation P14) |
+| `schedules` | Windows from Monday 00:00 UTC (`start` inclusive, `end` exclusive, `end ≤ 7d`); unique ids; no overlaps; while active, swap `filter_set` for steps 4/6/8/9 via `active_schedule` + `offset_in_week` |
+
+## Schedule semantics
+
+Windows are offsets within one UTC week from Monday 00:00. A Sunday→Monday span
+is two windows. The hot path uses a pre-sorted schedule list on the snapshot and
+[`active_schedule`](fn.active_schedule.html) (no allocation). Pause still wins
+(filtering Passes). `DecisionRecord.filter_set` is the effective set;
+`PolicyStatus.active_schedules` exposes the active schedule id per profile.
+Open question: local time zones (tz dependency) — only `offset_in_week` would
+change.
 
 `apply_config` validates then swaps `Arc<PolicySnapshot>` under a short lock
 (never held across `.await`). Counters and pauses survive by id; removed ids
 are dropped.
+
+## Failure codes (config)
+
+| Code | Meaning |
+|------|---------|
+| `policy.config.invalid` | Generic validation (no default view, zero pause, …) |
+| `policy.config.schedule_window` | `start >= end` or `end > 7d` |
+| `policy.config.duplicate_schedule_id` | Two schedules share an id on one profile |
+| `policy.config.invalid_schedule_id` | Id outside `[a-z0-9-]{1,64}` |
+| `policy.config.overlapping_schedules` | Two windows overlap (`end > next.start`) |
+| `policy.config.unknown_filter_set` | Profile / schedule set missing from filtering |
+| `policy.config.unknown_safesearch_provider` | Provider not in the known list |
+| `policy.config.duplicate_safesearch_provider` | Same provider listed twice |
 
 ## `ClientDirectory` (for `control-api`)
 

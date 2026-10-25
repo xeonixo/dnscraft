@@ -749,12 +749,14 @@ mod unit {
     async fn run_strips_private_additional_and_clears_ad() {
         let (snap, filter, resolver, clock) = harness().await;
         let clients = NoClients;
+        let filter_set = SetId::new("default").unwrap();
         let step = StepCtx {
             snapshot: &snap,
             clients: &clients,
             resolver: resolver.as_ref(),
             forward_zones_allow: None,
             filter: filter.as_ref(),
+            filter_set: &filter_set,
             clock: clock.as_ref(),
             paused: false,
         };
@@ -773,7 +775,7 @@ mod unit {
         };
         let selection = snap.select(&ctx);
         assert_eq!(selection.matched_by, SelectionCause::Default);
-        let mut draft = Draft::new(selection);
+        let mut draft = Draft::new(selection, filter_set.clone());
         let mut message = Message {
             header: Header {
                 ad: true,

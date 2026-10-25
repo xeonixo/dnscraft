@@ -30,8 +30,8 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 
 Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.24 %** lines / **80.27 %** regions.
 - Module `tls`: **COMPLETE** — SPEC + plan approved; L1–L12c done; Checkpoints A/B/C passed (2026-10-25). Owner approved after LE-staging acceptance (node DynDNS only; `public_entry` owner-managed).
-- Module `policy`: v1 COMPLETE (Checkpoint C approved by the owner 2026-10-25). **P13 SafeSearch evaluation done**; **P14 schedule evaluation** next; plan + todo stay active until P14, then archive.
-- Blockers: none. Next module after P14: `listeners` (spec pending). Dependency upgrade branch awaiting Claude review.
+- Module `policy`: v1 COMPLETE (Checkpoint C approved by the owner 2026-10-25). **P13 + P14 done** (SafeSearch + schedules evaluated). Plan + todo ready to archive after Claude review of P13/P14.
+- Blockers: none. Next module: `listeners` (spec pending). Dependency upgrade branch awaiting Claude review.
 
 ### policy success criteria (SPEC-policy.md)
 
@@ -42,10 +42,10 @@ Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86
 | 3 | Rebind strips private A/AAAA (+ SVCB hints / additional); stale RRSIGs dropped | `tests/golden.rs`; `tests/rebind.rs`; `tests/ad_ede.rs` DO=1; `rebind::unit` |
 | 3a | Special-use NXDOMAIN; unknown under public-looking domain reaches resolver; blocked service not bypassed by SafeSearch | `tests/golden.rs`; `tests/directory.rs`; `tests/safesearch.rs` |
 | 4 | AD/EDE matrix | `tests/ad_ede.rs` |
-| 5 | Cached resolve + filter miss p50 < 1 ms | `benches/pipeline.rs` (p50 ≈ 3.2 µs, 2026-10-25 P13) |
-| 6 | Coverage ≥ 80 %; DoD green | llvm-cov **91.75 %** lines; fmt / clippy / `cargo test -p dnscraft-policy` 5× |
+| 5 | Cached resolve + filter miss p50 < 1 ms | `benches/pipeline.rs` (p50 ≈ 3.0 µs, 2026-10-25 P14) |
+| 6 | Coverage ≥ 80 %; DoD green | llvm-cov **91.98 %** lines; fmt / clippy / `cargo test -p dnscraft-policy` 5× |
 
-Coverage (`cargo llvm-cov -p dnscraft-policy --summary-only`, 2026-10-25 P13): **91.75 %** lines / **92.51 %** regions.
+Coverage (`cargo llvm-cov -p dnscraft-policy --summary-only`, 2026-10-25 P14): **91.98 %** lines / **92.70 %** regions.
 
 ### tls success criteria (SPEC-tls.md)
 
@@ -62,6 +62,8 @@ Coverage (`cargo llvm-cov -p dnscraft-policy --summary-only`, 2026-10-25 P13): *
 Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **80.32 %** lines / **79.82 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
 
 ## Log
+
+- 2026-10-25 — Policy **P14** done (Cursor): schedule evaluation live. Windows are UTC week offsets from Monday 00:00 (`start` inclusive / `end` exclusive); `active_schedule(schedules, offset_in_week)` swaps `filter_set` for steps 4/6/8/9; overlaps rejected (`policy.config.overlapping_schedules`); Sunday→Monday is two windows; pause wins; reload swaps windows; `DecisionStep::ScheduleActive` + `DecisionRecord.filter_set`; `PolicyStatus.schedules_applied` + per-profile active schedule id. Open question noted in SPEC: local time zones (tz dep later). DoD: fmt/clippy green; tests 5× / 0 failures; llvm-cov 91.98 %; bench p50 ≈ 3.0 µs. **STOP for Claude review of P13/P14.**
 
 - 2026-10-25 — Policy **P13** done (Cursor): SafeSearch steps 5–6 live. Provider table in `src/safesearch_table.rs` (Google country list from https://www.google.com/supported_domains fetched 2026-10-25 → 187 `www.*` hosts). **Verified** (official docs, 2026-10-25): Google `www.google.com` + country domains → `forcesafesearch.google.com` (https://support.google.com/websearch/answer/186669); YouTube five hosts → `restrict.youtube.com` / `restrictmoderate.youtube.com` (https://support.google.com/a/answer/6214622); Bing `www.bing.com` + `edgeservices.bing.com` → `strict.bing.com` (https://support.microsoft.com/en-us/bing/blocking-explicit-content-with-safesearch); DuckDuckGo `duckduckgo.com` → `safe.duckduckgo.com` (https://duckduckgo.com/duckduckgo-help-pages/features/safe-search). **Unverified** (not on the official DDG page; kept as companion names): `www.duckduckgo.com`, `start.duckduckgo.com`. Config: `youtube_mode` Strict|Moderate (default Strict). Pause: SafeSearch still runs (step 6 Pass). Golden criterion 3a: blocked youtube never rewrites to restrict.youtube.com. DoD: fmt/clippy green; tests 5× / 0 failures; llvm-cov 91.75 %; bench p50 ≈ 3.2 µs. Next: P14.
 

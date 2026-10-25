@@ -152,8 +152,9 @@ impl PolicySnapshot {
                 }
             }
             let rebind_exceptions = parse_rebind_exceptions(&profile.rebind_exceptions)?;
-            validate_schedules(&profile.schedules, &known_set)?;
+            let schedules = validate_schedules(&profile.schedules, &known_set)?;
             let mut profile = profile;
+            profile.schedules = schedules;
             let safesearch = std::mem::take(&mut profile.safesearch);
             profile.safesearch = validate_safesearch(safesearch)?;
             let idx = ProfileIdx::try_from(profiles.len()).map_err(|_| PolicyError::Internal {
@@ -307,10 +308,15 @@ fn parse_rebind_exceptions(patterns: &[Arc<str>]) -> Result<Arc<[RebindException
     Ok(Arc::from(out))
 }
 
+/// Validates schedule windows and returns them sorted by `start` ascending.
+///
+/// Overlapping windows on one profile are rejected
+/// (`policy.config.overlapping_schedules`). Touching at the boundary
+/// (`end == next.start`) is allowed because end is exclusive.
 fn validate_schedules(
     schedules: &[ScheduleConfig],
     known_set: &HashSet<&str>,
-) -> Result<(), PolicyError> {
+) -> Result<Vec<ScheduleConfig>, PolicyError> {
     let mut seen: HashSet<&str> = HashSet::new();
     for schedule in schedules {
         // Same charset as profile/view ids: `[a-z0-9-]{1,64}`.
@@ -348,7 +354,19 @@ fn validate_schedules(
             });
         }
     }
-    Ok(())
+    let mut sorted = schedules.to_vec();
+    sorted.sort_by_key(|s| s.start);
+    for pair in sorted.windows(2) {
+        if pair[0].end > pair[1].start {
+            return Err(PolicyError::InvalidConfig {
+                reason: ConfigReason::OverlappingScheduleWindows {
+                    id_a: pair[0].id.clone(),
+                    id_b: pair[1].id.clone(),
+                },
+            });
+        }
+    }
+    Ok(sorted)
 }
 
 fn validate_safesearch(mut cfg: SafeSearchConfig) -> Result<SafeSearchConfig, PolicyError> {
@@ -807,6 +825,49 @@ mod tests {
         cfg.profiles[0].schedules = vec![s("dup"), s("dup")];
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert_eq!(err.code(), "policy.config.duplicate_schedule_id");
+    }
+
+    #[test]
+    fn config_rejects_overlapping_schedule_windows() {
+        let mut cfg = spec_excerpt_config();
+        cfg.profiles[0].schedules = vec![
+            crate::config::ScheduleConfig {
+                id: Arc::from("a"),
+                filter_set: set("default"),
+                start: std::time::Duration::from_secs(10 * 3600),
+                end: std::time::Duration::from_secs(14 * 3600),
+            },
+            crate::config::ScheduleConfig {
+                id: Arc::from("b"),
+                filter_set: set("default"),
+                start: std::time::Duration::from_secs(12 * 3600),
+                end: std::time::Duration::from_secs(16 * 3600),
+            },
+        ];
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.overlapping_schedules");
+    }
+
+    #[test]
+    fn config_accepts_touching_schedule_windows() {
+        let mut cfg = spec_excerpt_config();
+        cfg.profiles[0].schedules = vec![
+            crate::config::ScheduleConfig {
+                id: Arc::from("a"),
+                filter_set: set("default"),
+                start: std::time::Duration::from_secs(10 * 3600),
+                end: std::time::Duration::from_secs(12 * 3600),
+            },
+            crate::config::ScheduleConfig {
+                id: Arc::from("b"),
+                filter_set: set("default"),
+                start: std::time::Duration::from_secs(12 * 3600),
+                end: std::time::Duration::from_secs(14 * 3600),
+            },
+        ];
+        let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
+        assert_eq!(snap.profiles[0].config.schedules[0].id.as_ref(), "a");
+        assert_eq!(snap.profiles[0].config.schedules[1].id.as_ref(), "b");
     }
 
     #[test]

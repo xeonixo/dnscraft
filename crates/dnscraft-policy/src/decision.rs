@@ -121,19 +121,13 @@ pub enum DecisionStep {
         /// Safe endpoint hostname (no trailing dot).
         target: std::sync::Arc<str>,
     },
-    /// A later step is configured but not applied yet (schedules until P14).
-    NotApplied {
-        /// Which stubbed pipeline step.
-        step: NotAppliedStep,
+    /// A schedule window is active for this query; filtering uses its set.
+    ScheduleActive {
+        /// Schedule id.
+        id: std::sync::Arc<str>,
+        /// Filter set used while the window is active.
+        filter_set: dnscraft_filtering::SetId,
     },
-}
-
-/// Identifies a pipeline step that is configured but not evaluated yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum NotAppliedStep {
-    /// Schedule windows that would swap the filter set (until P14).
-    Schedules,
 }
 
 /// Filter hit attached to the decision record when a list/custom rule matched.
@@ -169,6 +163,8 @@ pub struct DecisionRecord {
     pub selection: SelectionCause,
     /// Client ID from the request, if any.
     pub client_id: Option<ClientId>,
+    /// Effective filter set for this query (profile default or active schedule).
+    pub filter_set: dnscraft_filtering::SetId,
     /// Ordered pipeline breadcrumbs.
     pub steps: Vec<DecisionStep>,
     /// Filter hit when a list/custom rule decided the answer.

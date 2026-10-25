@@ -205,13 +205,27 @@ Per profile flags:
   against current Apple documentation at implement time (cite URL in the PR);
   until verified, mark the constant table `unverified` in code comments.
 
-### Schedules (low priority)
+### Schedules
 
-- Optional time windows on a profile that switch `filter_set` and/or enabled
-  blocked services.
-- Off by default. **v1:** accept/store config and expose in the model, but
-  evaluation may be a follow-up task before the profile checkpoint — must not
-  block the rest of the pipeline. Document “not applied yet” in status if stubbed.
+- Optional time windows on a profile that switch the active `filter_set` used
+  by pipeline steps **4, 6, 8, and 9** (qname / SafeSearch-host / chain /
+  answer-IP filtering). Other steps (local records, canaries, SafeSearch
+  rewrite, resolve, rebind, AAAA) are unchanged.
+- Each window is an offset within one week from **Monday 00:00 UTC**
+  (`start` inclusive, `end` exclusive; `end ≤ 7d`). While a window is active,
+  the profile uses the schedule’s `filter_set` instead of
+  `profile.filter_set`. No window active → `profile.filter_set`.
+- Overlapping windows on one profile are rejected at config validation
+  (`policy.config.overlapping_schedules`). A Sunday→Monday span must be two
+  windows (e.g. Sun 22:00–Mon 00:00 and Mon 00:00–02:00).
+- Evaluation uses the policy clock per query via
+  `active_schedule(schedules, offset_in_week) -> Option<&Schedule>` so a later
+  owner decision for **local time zones** (needs a tz dependency — **not now**)
+  only changes how `now` is converted to an offset. Open question: ship UTC-only
+  or add a profile/timezone field later.
+- Pause still wins: while protection is paused, filtering Passes regardless of
+  the active schedule. Hot reload keeps working; a schedule whose set vanished
+  at runtime uses the existing once-logged SERVFAIL path.
 
 ### SafeSearch
 
@@ -441,8 +455,8 @@ None — sensible defaults locked 2026-10-25 (owner asked to decide reasonably).
    NODATA**; if any public address remains, return those. No EDE for pure rebind
    stripping.
 3. **View records:** **exact names only** in v1 (no wildcards).
-4. **Schedules / SafeSearch:** config surface in v1; evaluation may follow as a
-   low-priority task — core pipeline must not wait on them.
+4. **Schedules / SafeSearch:** evaluated (P13/P14). Remaining open question:
+   schedule local time zones (UTC offsets only today; see Schedules).
 5. **Forward-zone allow-list:** **yes** — extend resolver `RequestFlags` (or
    equivalent) for a per-query allow-list.
 6. **Pause:** **both** global and per-profile in MVP.
