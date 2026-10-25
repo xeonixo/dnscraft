@@ -364,10 +364,10 @@ on data RRs only (ignore RRSIG/NSEC). Test DO=1 full/partial/CNAME/HTTPS; kill D
 
 ## Checkpoint C: Complete
 - [x] Spec success criteria 1–6
-- [ ] Independent review (DNSSEC/AD honesty, rebind, synthesis correctness)
-- [ ] **Owner approval**
+- [x] Independent review (DNSSEC/AD honesty, rebind, synthesis correctness) (Claude 2026-10-25: passed after P12b)
+- [x] **Owner approval** (2026-10-25)
 
-## Later (owner go required)
+## Later (owner go given 2026-10-25 — in progress)
 
 - **P13 SafeSearch evaluation:** provider host table verified against Google/Bing/YouTube/DuckDuckGo docs (URLs cited); steps 5 + 6 live.
 - **P14 Schedule evaluation:** time windows on the policy clock switch the active set.

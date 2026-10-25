@@ -30,8 +30,8 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 
 Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.24 %** lines / **80.27 %** regions.
 - Module `tls`: **COMPLETE** — SPEC + plan approved; L1–L12c done; Checkpoints A/B/C passed (2026-10-25). Owner approved after LE-staging acceptance (node DynDNS only; `public_entry` owner-managed).
-- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P12b + P10b/P9b/P11b done. Checkpoint A/B passed.** Next: **Checkpoint C** re-review (do not tick Independent review / Owner approval).
-- Blockers: policy Checkpoint C awaiting P12b (orphan RRSIGs after rebind).
+- Module `policy`: v1 COMPLETE (Checkpoint C approved by the owner 2026-10-25). Owner go for **P13 SafeSearch evaluation** and **P14 schedule evaluation** (brief in chat / cursor-next); plan + todo stay active until P14, then archive.
+- Blockers: none. Next module after P13/P14: `listeners` (spec pending). Dependency upgrade branch awaiting Claude review.
 
 ### policy success criteria (SPEC-policy.md)
 
@@ -62,6 +62,10 @@ Coverage (`cargo llvm-cov -p dnscraft-policy --summary-only`, 2026-10-25): **92.
 Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **80.32 %** lines / **79.82 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
 
 ## Log
+
+- 2026-10-25 — **Checkpoint C approved by the owner: module `policy` v1 COMPLETE.** Owner go for P13 (SafeSearch evaluation) and P14 (schedule evaluation); plan and tasks archived after P14.
+
+- 2026-10-25 — **Claude Checkpoint C re-review policy P12b (f3c9b12): independent review PASSED.** fmt/clippy green; `cargo test -p dnscraft-policy` 3× / 0 failures. Claude's earlier probe (signed zone, private A, DO=1) re-run as a temporary test: now `answers=[] authorities=[SOA] ad=false NOERROR` (before: orphan RRSIG(A), no SOA). Mutation probes: RRSIG(A) kept → 2 tests fail; RRSIG(HTTPS) kept → 1; DropRecord keeps the HTTPS record → 1 (earlier survivor now killed); removing the extra RRSIG/NSEC cleanup before the SOA survives — redundant, the covering RRSIGs are already gone at that point (defence in depth). Review summary: AD only for unmodified Secure answers, every synthesis/modification clears it; EDE dropped on modification; rebind covers A/AAAA, SVCB/HTTPS hints (RFC 9460 §7.3, §8 mandatory → drop record) and the additional section, with RRSIGs of modified RRsets removed (RFC 4035); synthetic NODATA/NXDOMAIN carry a SOA. Nit (not blocking): `strip_rrsigs_covering` removes every RRSIG of that type in the section, not only those of the modified owner — in the additional section an untouched glue RRset can lose its signature too; key by (owner, type) if it ever matters. **Remaining for Checkpoint C: owner approval.**
 
 - 2026-10-25 — **Checkpoint C approved by the owner: module `clients` COMPLETE.** Plan and tasks archived to tasks/archive/clients-plan.md and clients-todo.md. Optional follow-up kept open: record fetch errors only for non-superseded fetches (see previous entry).
 
