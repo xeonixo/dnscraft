@@ -275,9 +275,9 @@ Scheduler loop on the injectable clock:
 - Spec success criteria table in progress.md.
 
 **Acceptance criteria:**
-- [ ] README complete; no `missing_docs`
-- [ ] Secret-leak test passes
-- [ ] Success criteria table with covering tests
+- [x] README complete; no `missing_docs`
+- [x] Secret-leak test passes
+- [x] Success criteria table with covering tests
 
 **Verification:** DoD + `cargo test -p dnscraft-tls`
 

@@ -121,7 +121,7 @@ L9 DynDNS (needs L5) ── L10 TlsEngine ── L11 polish
 ### Phase 3: DynDNS and engine
 - [x] L9: DynDNS (node record, public entry wildcard/apex, only on change)
 - [x] L10: `TlsEngine` (open, apply_config, renew_now, dyndns_now, status, lifecycle)
-- [ ] L11: Polish: README (token scope, Pebble how-to), coverage, docs
+- [x] L11: Polish: README (token scope, Pebble how-to), coverage, docs
 
 ### Checkpoint C: Complete
 - [ ] All spec success criteria; security review (key handling, file modes, logs); **owner approval**

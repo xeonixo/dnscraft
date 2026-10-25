@@ -13,11 +13,27 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
-- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L10 done**; Checkpoints A and B passed (2026-10-25). Next: L11 polish → Checkpoint C.
+- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L11 done**; Checkpoints A and B passed (2026-10-25). Next: **Checkpoint C** (security review + owner staging acceptance).
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P9 done. Checkpoint A passed** (2026-10-25). Next: Checkpoint B (then P10).
 - Blockers: none. Clients last. T2 open (any time).
 
+### tls success criteria (SPEC-tls.md)
+
+| # | Criterion | Covered by |
+|---|-----------|------------|
+| 1 | Pebble + mock CF: issue `dns.` + `*.dns.`, persist, serve from `CertResolver` | `tests/issue.rs` (Fake ACME); `tests/pebble.rs` `#[ignore]` (local Pebble) |
+| 2 | Failed renewal keeps last good cert; status has stable error code | `tests/issue.rs` (`failure_at_*_keeps_previous_cert`, `failed_renewal_records_stable_code_*`); `tests/engine.rs` unreachable CF |
+| 3 | DynDNS updates only on change; failures isolated from cert path | `tests/dyndns.rs` |
+| 4 | `accept_public_sni` / Client-ID vs node hostname | `tests/sni.rs` |
+| 4a | `public_entry` wildcard+apex; non-entry never touches; dual entry → `tls.dyndns.entry_conflict` | `tests/dyndns.rs`; `config` unit tests |
+| 5 | No `aws-lc-rs` / `openssl-sys` in tree | DoD `cargo tree -i …` empty |
+| 6 | DoD gates green | fmt / clippy `-D warnings` / `cargo test -p dnscraft-tls` |
+
+Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **77.18 %** lines / **76.36 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
+
 ## Log
+
+- 2026-10-25 — tls L11 done (Cursor): README (token scope, env/`*_FILE`, staging-first, Pebble how-to, file modes, reserved labels, DynDNS/engine notes); `tests/no_leak.rs` formats every `TlsError` + `Secret`/`KeyPem`/`LoadedCert`/`TlsStatus` — no `BEGIN`/token; success-criteria table above; llvm-cov ~77 % lines. DoD green. Next: Checkpoint C.
 
 - 2026-10-25 — tls L10 done (Cursor): `TlsEngine` — `open`/`open_with` loads last-good cert into `CertResolver` even if CF/ACME unreachable; `RenewScheduler` + DynDNS loop hold `Weak<EngineInner>`; `ScheduleFn` uses cached ARI (`refresh_ari` after start/renew); `do_issue` single-flight (broadcast join) serialises scheduler vs `renew_now` (no double-order / kick-dup); `dyndns_now` under mutex; `apply_config` rebuilds CF client, domain change → renew without extra kick. 4 engine tests. DoD green. Next: L11.
 
