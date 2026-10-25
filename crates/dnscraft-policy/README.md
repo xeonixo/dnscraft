@@ -77,6 +77,17 @@ change.
 (never held across `.await`). Counters and pauses survive by id; removed ids
 are dropped.
 
+## Client ID registry (for listeners)
+
+`PolicyEngine::is_client_id_registered(&self, id: &str) -> bool` is the
+read-only check public listeners use before completing a TLS handshake or
+routing a DoH path. It takes a short snapshot read lock, looks up the already
+lower-cased id in the snapshot map (no allocation), and returns `false` for
+unknown or syntactically invalid ids (never panics). Hot reload is automatic:
+after `apply_config` removes an id, the next call returns `false`. The
+`dnscraft_tls::ClientIdRegistry` adapter lives in the listeners crate so policy
+does not depend on tls.
+
 ## Failure codes (config)
 
 | Code | Meaning |

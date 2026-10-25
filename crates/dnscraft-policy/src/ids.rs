@@ -1,5 +1,6 @@
 //! Stable identifiers for views, profiles, listeners and DoH/DoT Client IDs.
 
+use std::borrow::Borrow;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -59,7 +60,20 @@ macro_rules! id_type {
                 Self::new(s)
             }
         }
+
+        impl Borrow<str> for $name {
+            fn borrow(&self) -> &str {
+                &self.0
+            }
+        }
     };
+}
+
+impl ClientId {
+    /// Whether `s` matches `[a-z0-9-]{1,63}` without allocating.
+    pub(crate) fn is_valid_str(s: &str) -> bool {
+        validate_id(s, MAX_CLIENT_ID).is_ok()
+    }
 }
 
 id_type!(
@@ -131,5 +145,20 @@ mod tests {
             ViewId::new(&"v".repeat(65)).unwrap_err().code(),
             "policy.id.too_long"
         );
+    }
+
+    #[test]
+    fn client_id_is_valid_str_matches_new() {
+        assert!(ClientId::is_valid_str("iphone-k7q2x9"));
+        assert!(!ClientId::is_valid_str("iPhone"));
+        assert!(!ClientId::is_valid_str(""));
+        assert_eq!(ClientId::is_valid_str("a"), ClientId::new("a").is_ok());
+    }
+
+    #[test]
+    fn client_id_borrow_str_round_trips() {
+        let id = ClientId::new("iphone-k7q2x9").unwrap();
+        let borrowed: &str = std::borrow::Borrow::borrow(&id);
+        assert_eq!(borrowed, "iphone-k7q2x9");
     }
 }

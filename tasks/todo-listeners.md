@@ -22,9 +22,9 @@ lock + map lookup, case-sensitive on the already lower-cased id) and an adapter
 crate** (policy must not depend on tls). Hot reload: the check always uses the current snapshot.
 
 **Acceptance criteria:**
-- [ ] Registered id → true, unknown → false, invalid charset → false (no panic)
-- [ ] After `apply_config` removing the id → false on the next call
-- [ ] Policy README documents the accessor
+- [x] Registered id → true, unknown → false, invalid charset → false (no panic)
+- [x] After `apply_config` removing the id → false on the next call
+- [x] Policy README documents the accessor
 
 **Verification:** `cargo test -p dnscraft-policy client_id`
 

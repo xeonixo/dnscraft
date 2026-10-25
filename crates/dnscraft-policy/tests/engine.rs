@@ -453,3 +453,39 @@ async fn engine_forward_loop_yields_servfail_with_cause() {
     )));
     assert_eq!(target.hits(), 0, "a loop must not be forwarded");
 }
+
+#[tokio::test]
+async fn client_id_registered_unknown_and_invalid() {
+    let h = Hierarchy::start().await.unwrap();
+    let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
+    let mut cfg = policy_config(vec![profile("default", None)]);
+    cfg.views[0]
+        .client_ids
+        .push(dnscraft_policy::ClientId::new("iphone-k7q2x9").unwrap());
+    let engine =
+        PolicyEngine::new(cfg, empty_filter(), resolver, Arc::new(NoClients), clock()).unwrap();
+
+    assert!(engine.is_client_id_registered("iphone-k7q2x9"));
+    assert!(!engine.is_client_id_registered("unknown-id"));
+    assert!(!engine.is_client_id_registered("iPhone"));
+    assert!(!engine.is_client_id_registered("bad_id"));
+    assert!(!engine.is_client_id_registered(""));
+    assert!(!engine.is_client_id_registered(&"a".repeat(64)));
+}
+
+#[tokio::test]
+async fn client_id_unregistered_after_apply_config_removes_it() {
+    let h = Hierarchy::start().await.unwrap();
+    let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
+    let mut cfg = policy_config(vec![profile("default", None)]);
+    cfg.views[0]
+        .client_ids
+        .push(dnscraft_policy::ClientId::new("iphone-k7q2x9").unwrap());
+    let engine =
+        PolicyEngine::new(cfg, empty_filter(), resolver, Arc::new(NoClients), clock()).unwrap();
+    assert!(engine.is_client_id_registered("iphone-k7q2x9"));
+
+    let without = policy_config(vec![profile("default", None)]);
+    engine.apply_config(without).await.unwrap();
+    assert!(!engine.is_client_id_registered("iphone-k7q2x9"));
+}

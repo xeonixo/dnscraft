@@ -21,7 +21,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | spec + plan **approved** 2026-10-25; next: L0 + N0 spike | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md) |
+| `listeners` | L0 done; next: N0 spike → Checkpoint A | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md) |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -34,6 +34,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-25 — **policy: L0 client id accessor.** `PolicyEngine::is_client_id_registered(&self, id: &str) -> bool`: validates charset/length without allocating (`ClientId::is_valid_str`), short snapshot read lock, `HashMap` lookup via new `Borrow<str>` on id types. Invalid → false, never panics. Tests: registered / unknown / invalid; `apply_config` removing the id → false. Policy README: one paragraph (adapter stays in listeners). DoD: fmt, clippy `-D warnings`, workspace tests, `cargo deny check` green; `cargo tree -i aws-lc-rs` / `-i openssl-sys` empty.
 
 - 2026-10-25 — **Owner approved SPEC-listeners.md, the plan and the dependency table** with all six recommendations: deps as listed; HTTP/3 in v1 (late task N12); wildcard binds supported, concrete addresses preferred; public Do53 dropped silently; minimal `dnscraft` binary (N14) in scope; DDR opportunistic only. Next: L0 + N0 (Cursor).
 

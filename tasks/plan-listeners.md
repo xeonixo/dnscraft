@@ -56,7 +56,7 @@ Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i o
 
 ### Phase 0: Approval and risk spike
 - [x] **Owner approves SPEC-listeners.md + the dependency table** (2026-10-25; decisions in the spec)
-- [ ] L0: Policy accessor for registered Client IDs (cross-module, XS)
+- [x] L0: Policy accessor for registered Client IDs (cross-module, XS)
 - [ ] N0: Spike — pktinfo reply-source, quinn ring-only, h3/h3-quinn compile, hyper h2 server (spikes/listeners/)
 
 ### Checkpoint A: Approval + spike
