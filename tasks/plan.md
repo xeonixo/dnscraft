@@ -76,7 +76,7 @@ F1 skeleton + types ── F2 core rule parser ── F3 modifiers + IDNA ──
 
 ### Phase 1: Rules
 - [x] Task F1: Crate skeleton, core types, error codes
-- [ ] Task F2: Core rule parser (adblock domain rules, exceptions, anchors, plain, hosts, comments, skipped categories)
+- [x] Task F2: Core rule parser (adblock domain rules, exceptions, anchors, plain, hosts, comments, skipped categories)
 - [ ] Task F3: Modifiers and IDNA
 - [ ] Task F4: Wildcard and regex rules
 - [ ] Task F5: Rule builder, round trip, fuzz target, proptest

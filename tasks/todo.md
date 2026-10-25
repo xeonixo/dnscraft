@@ -36,9 +36,9 @@ block, multiple names per line), comments (`!`, `#`), blank lines. Browser-only 
 `RuleError` has a stable code, parameters, and a byte span.
 
 **Acceptance criteria:**
-- [ ] Table tests for each form, including edge cases (trailing dots, uppercase, `^` variants, `*` only, IPv6 hosts lines, inline comments)
-- [ ] `ParsedList` reports counts per skip reason; garbage lines never abort a list
-- [ ] No panics on arbitrary input (proptest smoke)
+- [x] Table tests for each form, including edge cases (trailing dots, uppercase, `^` variants, `*` only, IPv6 hosts lines, inline comments)
+- [x] `ParsedList` reports counts per skip reason; garbage lines never abort a list
+- [x] No panics on arbitrary input (proptest smoke)
 
 **Verification:** `cargo test -p dnscraft-filtering parser`
 
