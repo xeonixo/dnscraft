@@ -6,7 +6,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::{Duration, SystemTime};
 
-use rand::Rng;
+use rand::{Rng, RngExt};
 use reqwest::Client;
 use tracing::debug;
 

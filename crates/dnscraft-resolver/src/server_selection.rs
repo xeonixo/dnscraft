@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use rand::Rng;
+use rand::RngExt;
 
 /// Smoothing: `srtt = KEEP * old + (1 - KEEP) * sample`.
 const KEEP: f64 = 0.7;

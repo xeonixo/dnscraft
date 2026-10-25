@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use dnscraft_proto::{Message, Name, RData, RecordType};
-use rand::Rng;
+use rand::RngExt;
 use tokio::net::UdpSocket;
 use tracing::warn;
 
