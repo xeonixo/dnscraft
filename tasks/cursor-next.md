@@ -11,7 +11,8 @@
   progress.md (exception: brief T3, which says so explicitly).
 - `clients`: **SPEC-clients.md decisions locked** (incl. full IPv6 via classic API); formal approve for P1 still open; no code until approved.
 - `tls`: **SPEC-tls.md decisions locked**; formal approve for P1 still open.
-- Next spec: `policy` (S3). Spec-driven: no module code before its spec is approved.
+- `policy`: **SPEC-policy.md drafted** — owner Open Questions unanswered.
+- Spec-driven: no module code before its spec is approved. S1–S3 drafts exist; T1/P1 when ready.
 
 ## Order
 

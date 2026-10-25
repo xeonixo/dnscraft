@@ -13,10 +13,13 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
 - Module `filtering`: **C1 done** (engine polish, README, coverage, fuzz, real-list acceptance). **Checkpoint D ready for Claude/owner review** — implementer does **not** tick Checkpoint D. Checkpoint B owner: RAM may grow — not blocking. Deep-name p99 miss left for Checkpoint D if revisited.
 - Module `clients`: **SPEC-clients.md decisions locked** (defaults + full IPv6 via classic `stat/sta` + dynamic local domain from UniFi DHCP). Formal “approved” for P1 still open.
-- Module `tls`: **SPEC-tls.md decisions locked**. Formal “approved” for P1 still open. `policy` spec next (S3).
-- Blockers: none for coding; next owner input is S3 / formal approve of clients+tls; filtering Checkpoint D when ready.
+- Module `tls`: **SPEC-tls.md decisions locked**. Formal “approved” for P1 still open.
+- Module `policy`: **SPEC-policy.md drafted** — waiting on owner Open Questions.
+- Blockers: none for coding; next owner input is SPEC-policy open questions / formal approve of clients+tls; filtering Checkpoint D when ready.
 
 ## Log
+
+- 2026-10-25 — Spec draft SPEC-policy.md (Cursor, S3): View/profile selection (Client ID > LPM > default); pipeline local→bypass→SafeSearch→filter→resolve→chain/IP→rebind→AAAA; DecisionRecord; AD/EDE 15/4; ClientDirectory trait; pause; budgets. CAPABILITY-MAP draft link. **STOP for owner Open Questions.**
 
 - 2026-10-25 — SPEC-tls.md owner decisions (Cursor): SANs = `dns.` + `*.dns.` only; ECDSA P-256/P-384 (no RSA); DynDNS stays in `tls`; per-node DynDNS hostname; master renews and pushes cert to subs; ACME email required in UI; propagation 2m/5s; always apex+wildcard; one cert for all listeners.
 
