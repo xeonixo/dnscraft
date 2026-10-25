@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::fetch::{FetchOutcome, Fetcher};
+use crate::fetch::{FetchOutcome, Fetcher, MALFORMED_SERVICES_CODE};
 use crate::store::{ListMeta, ListStore, StoreError};
 
 /// Default URL of the HostlistsRegistry services catalog (not bundled).
@@ -80,7 +80,12 @@ pub struct ServiceInfo {
     pub name: String,
     /// Group id (for example `social_network`).
     pub group: String,
-    /// Icon SVG string exactly as provided by the catalog.
+    /// Icon SVG string as provided by the catalog; empty when absent or when
+    /// larger than [`MAX_ICON_BYTES`] (dropped).
+    ///
+    /// **Untrusted remote content.** Consumers must render it only through
+    /// `<img src="data:image/svg+xml,…">` (percent-encoded), never inline in
+    /// the DOM, and must HTML-escape [`Self::name`] and [`Self::group`].
     pub icon: String,
     /// Adblock-syntax rules, one per line (joined for parsing).
     pub(crate) rules_body: Arc<str>,
@@ -100,7 +105,25 @@ pub struct ServiceParseStats {
     pub accepted: usize,
     /// Entries skipped because required fields were missing or empty.
     pub skipped_malformed: usize,
+    /// Services skipped because the catalog holds more than [`MAX_SERVICES`].
+    pub skipped_over_limit: usize,
+    /// Rules dropped because a service has more than [`MAX_RULES_PER_SERVICE`].
+    pub skipped_rules: usize,
+    /// Icons dropped because they exceed [`MAX_ICON_BYTES`].
+    pub dropped_icons: usize,
 }
+
+/// Maximum accepted size of `services.json` and `services_i18n.json`.
+pub const MAX_SERVICES_BODY_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Maximum number of services taken from one catalog (excess is skipped).
+pub const MAX_SERVICES: usize = 2_000;
+
+/// Maximum number of rules taken from one service (excess is skipped).
+pub const MAX_RULES_PER_SERVICE: usize = 1_000;
+
+/// Maximum size of one `icon_svg` in bytes (a larger icon is dropped).
+pub const MAX_ICON_BYTES: usize = 16 * 1024;
 
 /// Parsed blocked-services catalog.
 ///
@@ -127,6 +150,11 @@ impl ServiceCatalog {
     /// non-empty `id` or that are not objects are skipped and counted. A
     /// completely unusable top-level document returns [`ServiceError::Malformed`].
     pub fn parse(services_json: &str, i18n_json: Option<&str>) -> Result<Self, ServiceError> {
+        if services_json.len() as u64 > MAX_SERVICES_BODY_BYTES {
+            return Err(ServiceError::Malformed {
+                detail: format!("services.json exceeds {MAX_SERVICES_BODY_BYTES} bytes"),
+            });
+        }
         let raw: RawServicesFile =
             serde_json::from_str(services_json).map_err(|e| ServiceError::Malformed {
                 detail: format!("services.json: {e}"),
@@ -142,7 +170,11 @@ impl ServiceCatalog {
         let mut stats = ServiceParseStats::default();
 
         for value in entries {
-            match parse_service_entry(value) {
+            if services.len() >= MAX_SERVICES {
+                stats.skipped_over_limit += 1;
+                continue;
+            }
+            match parse_service_entry(value, &mut stats) {
                 Some(info) => {
                     let id = Arc::clone(&info.id);
                     if by_id.contains_key(&id) {
@@ -169,6 +201,16 @@ impl ServiceCatalog {
             })
             .collect();
 
+        let i18n_json = i18n_json.filter(|s| {
+            let ok = s.len() as u64 <= MAX_SERVICES_BODY_BYTES;
+            if !ok {
+                tracing::warn!(
+                    code = "filter_services.malformed",
+                    "services_i18n.json too large; using English names only"
+                );
+            }
+            ok
+        });
         if let Some(i18n) = i18n_json {
             match serde_json::from_str::<RawI18nFile>(i18n) {
                 Ok(raw_i18n) => {
@@ -313,13 +355,26 @@ fn flatten_locale_names(
     out
 }
 
-fn parse_service_entry(value: serde_json::Value) -> Option<ServiceInfo> {
+/// Service ids use the [`ListId`](crate::ListId) charset plus `_` (real
+/// catalog ids such as `amazon_streaming` contain underscores).
+fn valid_service_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+fn parse_service_entry(
+    value: serde_json::Value,
+    stats: &mut ServiceParseStats,
+) -> Option<ServiceInfo> {
     let obj = match value {
         serde_json::Value::Object(m) => m,
         _ => return None,
     };
     let id = obj.get("id")?.as_str()?.trim();
-    if id.is_empty() {
+    if !valid_service_id(id) {
         return None;
     }
     let name = obj
@@ -334,12 +389,16 @@ fn parse_service_entry(value: serde_json::Value) -> Option<ServiceInfo> {
         .unwrap_or("")
         .trim()
         .to_owned();
-    let icon = obj
+    let mut icon = obj
         .get("icon_svg")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_owned();
-    let rules = match obj.get("rules") {
+    if icon.len() > MAX_ICON_BYTES {
+        icon.clear();
+        stats.dropped_icons += 1;
+    }
+    let mut rules = match obj.get("rules") {
         Some(serde_json::Value::Array(a)) => a
             .iter()
             .filter_map(|v| v.as_str())
@@ -350,6 +409,10 @@ fn parse_service_entry(value: serde_json::Value) -> Option<ServiceInfo> {
         None => Vec::new(),
         Some(_) => return None,
     };
+    if rules.len() > MAX_RULES_PER_SERVICE {
+        stats.skipped_rules += rules.len() - MAX_RULES_PER_SERVICE;
+        rules.truncate(MAX_RULES_PER_SERVICE);
+    }
     // A service with no rules is still listed (UI) but contributes nothing.
     let rules_body: Arc<str> = Arc::from(rules.join("\n"));
     Some(ServiceInfo {
@@ -395,6 +458,9 @@ pub struct ServicesUpdateReport {
     pub services_fetch: FetchOutcomeKind,
     /// Fetch outcome for `services_i18n.json`.
     pub i18n_fetch: FetchOutcomeKind,
+    /// A new, valid body was stored for `services.json` or
+    /// `services_i18n.json` (so dependents need a rebuild).
+    pub changed: bool,
 }
 
 /// Coarse fetch result for reporting (body not retained).
@@ -442,49 +508,84 @@ impl Default for ServicesUrls {
 /// On fetch failure the last good bodies stay. On parse failure the previous
 /// in-memory catalog (caller-owned) should be kept; this returns
 /// `catalog: None` and `error_code: Some("filter_services.malformed")`.
+///
+/// A downloaded body is validated **before** it is persisted: a malformed
+/// `services.json` (or `services_i18n.json`) never replaces the cached copy
+/// or its ETag, so the last good catalog survives a restart. Both files are
+/// capped at [`MAX_SERVICES_BODY_BYTES`].
 pub async fn update_services_catalog(
     fetcher: &Fetcher,
     store: &ListStore,
     urls: &ServicesUrls,
 ) -> ServicesUpdateReport {
     let services_fetch = fetcher
-        .fetch_and_store_services(store, SERVICES_STEM, &urls.services)
+        .fetch_and_store_services(
+            store,
+            SERVICES_STEM,
+            &urls.services,
+            MAX_SERVICES_BODY_BYTES,
+            &|body| {
+                ServiceCatalog::parse(body, None)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            },
+        )
         .await;
     let i18n_fetch = fetcher
-        .fetch_and_store_services(store, SERVICES_I18N_STEM, &urls.i18n)
+        .fetch_and_store_services(
+            store,
+            SERVICES_I18N_STEM,
+            &urls.i18n,
+            MAX_SERVICES_BODY_BYTES,
+            &|body| {
+                serde_json::from_str::<RawI18nFile>(body)
+                    .map(|_| ())
+                    .map_err(|e| format!("services_i18n.json: {e}"))
+            },
+        )
         .await;
 
     let services_kind = FetchOutcomeKind::from(&services_fetch);
     let i18n_kind = FetchOutcomeKind::from(&i18n_fetch);
+    let changed =
+        services_kind == FetchOutcomeKind::Updated || i18n_kind == FetchOutcomeKind::Updated;
+    let report = |catalog, error_code| ServicesUpdateReport {
+        catalog,
+        error_code,
+        services_fetch: services_kind,
+        i18n_fetch: i18n_kind,
+        changed,
+    };
+
+    // A rejected download keeps the old files; say so even though they parse.
+    if let FetchOutcome::Failed { meta, .. } = &services_fetch
+        && meta
+            .last_error
+            .as_ref()
+            .is_some_and(|e| e.code == MALFORMED_SERVICES_CODE)
+    {
+        return report(None, Some("filter_services.malformed"));
+    }
 
     // Prefer freshly downloaded bodies; else whatever is still on disk.
     let body = match &services_fetch {
         FetchOutcome::Updated { body, .. } => Some(body.clone()),
         _ => match store.read_services_body(SERVICES_STEM) {
             Ok(b) => b,
-            Err(e) => {
-                return ServicesUpdateReport {
-                    catalog: None,
-                    error_code: Some(ServiceError::from(e).code()),
-                    services_fetch: services_kind,
-                    i18n_fetch: i18n_kind,
-                };
-            }
+            Err(e) => return report(None, Some(ServiceError::from(e).code())),
         },
     };
 
     let Some(body) = body else {
-        return ServicesUpdateReport {
-            catalog: None,
-            error_code: Some(
+        return report(
+            None,
+            Some(
                 ServiceError::Malformed {
                     detail: "no services.json cached".into(),
                 }
                 .code(),
             ),
-            services_fetch: services_kind,
-            i18n_fetch: i18n_kind,
-        };
+        );
     };
 
     let i18n = match &i18n_fetch {
@@ -493,18 +594,8 @@ pub async fn update_services_catalog(
     };
 
     match ServiceCatalog::parse(&body, i18n.as_deref()) {
-        Ok(catalog) => ServicesUpdateReport {
-            catalog: Some(catalog),
-            error_code: None,
-            services_fetch: services_kind,
-            i18n_fetch: i18n_kind,
-        },
-        Err(e) => ServicesUpdateReport {
-            catalog: None,
-            error_code: Some(e.code()),
-            services_fetch: services_kind,
-            i18n_fetch: i18n_kind,
-        },
+        Ok(catalog) => report(Some(catalog), None),
+        Err(e) => report(None, Some(e.code())),
     }
 }
 

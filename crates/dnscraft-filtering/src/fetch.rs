@@ -51,6 +51,9 @@ use crate::types::ListId;
 /// Maximum number of redirects followed.
 pub const MAX_REDIRECTS: usize = 5;
 
+/// Code stored in the metadata of a services file rejected by validation.
+pub(crate) const MALFORMED_SERVICES_CODE: &str = "filter_services.malformed";
+
 /// Share of replacement characters above which a body counts as binary.
 const MAX_REPLACEMENT_RATIO: f64 = 0.05;
 
@@ -244,6 +247,17 @@ impl Fetcher {
         source: &ListSourceSpec,
         prev: Option<&ListMeta>,
     ) -> FetchOutcome {
+        self.fetch_capped(id, source, prev, self.max_body).await
+    }
+
+    /// [`Self::fetch`] with an explicit size cap for URL bodies.
+    async fn fetch_capped(
+        &self,
+        id: &ListId,
+        source: &ListSourceSpec,
+        prev: Option<&ListMeta>,
+        max_body: u64,
+    ) -> FetchOutcome {
         let now = self.store.now_unix();
         let mut meta = prev.cloned().unwrap_or_default();
         meta.last_attempt = Some(now);
@@ -255,20 +269,28 @@ impl Fetcher {
             return failed(meta, FetchError::Io(e.to_string()), None);
         }
         match source {
-            ListSourceSpec::Url(url) => self.fetch_url(url, prev, meta, now).await,
+            ListSourceSpec::Url(url) => self.fetch_url(url, prev, meta, now, max_body).await,
             ListSourceSpec::File(path) => self.fetch_file(id, path, meta, now).await,
         }
     }
 
     /// Fetches a URL into the services catalog cache (`services_dir/{stem}.json`).
     ///
-    /// Same conditional GET, size cap and last-good rules as list bodies. Used
-    /// for `services.json` / `services_i18n.json` (Task L4).
+    /// Same conditional GET and last-good rules as list bodies, with its own
+    /// size cap `max_body`. Used for `services.json` / `services_i18n.json`.
+    ///
+    /// A new body is passed to `validate` **before** anything is written. If
+    /// it is rejected, the old body *and* the old metadata (including the
+    /// ETag) stay on disk; only the attempt time and a
+    /// `filter_services.malformed` error are recorded, and the outcome is
+    /// [`FetchOutcome::Failed`].
     pub async fn fetch_and_store_services(
         &self,
         store: &ListStore,
         stem: &str,
         url: &str,
+        max_body: u64,
+        validate: &(dyn Fn(&str) -> Result<(), String> + Sync),
     ) -> FetchOutcome {
         let prev = match store.read_services_meta(stem) {
             Ok(m) => m,
@@ -291,7 +313,31 @@ impl Fetcher {
                 );
             }
         };
-        let outcome = self.fetch(&id, &source, prev.as_ref()).await;
+        let outcome = self
+            .fetch_capped(&id, &source, prev.as_ref(), max_body)
+            .await;
+        let outcome = match outcome {
+            FetchOutcome::Updated { body, meta } => match validate(&body) {
+                Ok(()) => FetchOutcome::Updated { body, meta },
+                Err(detail) => {
+                    // Keep the old body and old validators (ETag etc.).
+                    let mut kept = prev.clone().unwrap_or_default();
+                    kept.last_attempt = meta.last_attempt;
+                    kept.http_status = meta.http_status;
+                    let mut params = BTreeMap::new();
+                    params.insert("detail".to_owned(), detail.clone());
+                    kept.last_error = Some(MetaError {
+                        code: MALFORMED_SERVICES_CODE.to_owned(),
+                        params,
+                    });
+                    FetchOutcome::Failed {
+                        meta: kept,
+                        error: FetchError::Io(format!("services file rejected: {detail}")),
+                    }
+                }
+            },
+            other => other,
+        };
         let (result, outcome) = match outcome {
             FetchOutcome::Updated { body, meta } => {
                 let r = store.write_services_body(stem, &body, &meta);
@@ -358,6 +404,7 @@ impl Fetcher {
         prev: Option<&ListMeta>,
         mut meta: ListMeta,
         now: u64,
+        max_body: u64,
     ) -> FetchOutcome {
         let mut req = self.client.get(url);
         if let Some(prev) = prev {
@@ -382,12 +429,8 @@ impl Fetcher {
         if status != StatusCode::OK {
             return failed(meta, FetchError::HttpStatus(status.as_u16()), Some(status));
         }
-        if declared_length(resp.headers()).is_some_and(|n| n > self.max_body) {
-            return failed(
-                meta,
-                FetchError::TooLarge { max: self.max_body },
-                Some(status),
-            );
+        if declared_length(resp.headers()).is_some_and(|n| n > max_body) {
+            return failed(meta, FetchError::TooLarge { max: max_body }, Some(status));
         }
         let etag = header_string(resp.headers(), &ETAG);
         let last_modified = header_string(resp.headers(), &LAST_MODIFIED);
@@ -396,13 +439,9 @@ impl Fetcher {
         loop {
             match resp.chunk().await {
                 Ok(Some(chunk)) => {
-                    if (bytes.len() as u64).saturating_add(chunk.len() as u64) > self.max_body {
+                    if (bytes.len() as u64).saturating_add(chunk.len() as u64) > max_body {
                         // Dropping `resp` closes the connection.
-                        return failed(
-                            meta,
-                            FetchError::TooLarge { max: self.max_body },
-                            Some(status),
-                        );
+                        return failed(meta, FetchError::TooLarge { max: max_body }, Some(status));
                     }
                     bytes.extend_from_slice(&chunk);
                 }

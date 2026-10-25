@@ -60,8 +60,9 @@ pub use pattern::{
 pub use rule::{BadfilterKey, DnsRewrite, DnsTypeFilter, MatchKind, Modifiers, Rule, RuleAction};
 pub use scheduler::UpdateScheduler;
 pub use services::{
-    FetchOutcomeKind as ServicesFetchKind, SERVICES_I18N_STEM, SERVICES_I18N_URL,
-    SERVICES_JSON_URL, SERVICES_STEM, ServiceCatalog, ServiceError, ServiceInfo, ServiceParseStats,
+    FetchOutcomeKind as ServicesFetchKind, MAX_ICON_BYTES, MAX_RULES_PER_SERVICE, MAX_SERVICES,
+    MAX_SERVICES_BODY_BYTES, SERVICES_I18N_STEM, SERVICES_I18N_URL, SERVICES_JSON_URL,
+    SERVICES_STEM, ServiceCatalog, ServiceError, ServiceInfo, ServiceParseStats,
     ServicesUpdateReport, ServicesUrls, seed_services_cache, update_services_catalog,
 };
 pub use set::{

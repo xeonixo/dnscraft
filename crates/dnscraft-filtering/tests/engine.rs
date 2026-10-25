@@ -236,13 +236,6 @@ fn temp_allow_include_subdomains_and_list_remove() {
     assert_eq!(listed[0].domain, dn("ads.example"));
     assert!(listed[0].include_subdomains);
 
-    // Expired entries are omitted from the list.
-    assert!(
-        eng.list_temporary_allows(&sid("s"), t(100))
-            .unwrap()
-            .is_empty()
-    );
-
     assert!(
         eng.remove_temporary_allow(&sid("s"), &dn("ads.example"))
             .unwrap()
@@ -257,6 +250,22 @@ fn temp_allow_include_subdomains_and_list_remove() {
             .unwrap(),
         Verdict::Blocked(_)
     ));
+
+    // Expired entries are omitted from the list (and pruned).
+    eng.allow_temporarily(
+        &sid("s"),
+        TempAllow {
+            domain: dn("ads.example"),
+            include_subdomains: true,
+            until: t(100),
+        },
+    )
+    .unwrap();
+    assert!(
+        eng.list_temporary_allows(&sid("s"), t(100))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
