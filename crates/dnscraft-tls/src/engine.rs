@@ -412,9 +412,14 @@ fn start_renew_scheduler(inner: Arc<EngineInner>, acme_enabled: Arc<AtomicBool>)
         let Some(inner) = weak_sched.upgrade() else {
             return now;
         };
-        // blocking_read is OK: ScheduleFn is sync and called from the renew task.
-        let cfg = inner.config.blocking_read();
-        let ari = *inner.ari_window.blocking_read();
+        // Called from the Tokio renew task — never `blocking_read` (panics in runtime).
+        let Ok(cfg) = inner.config.try_read() else {
+            return now;
+        };
+        let Ok(ari) = inner.ari_window.try_read() else {
+            return now;
+        };
+        let ari = *ari;
         let not_after = inner.store.load().ok().flatten().map(|c| c.not_after);
         next_renewal(not_after, cfg.renew_before, ari, now)
     });
@@ -433,7 +438,11 @@ fn start_renew_scheduler(inner: Arc<EngineInner>, acme_enabled: Arc<AtomicBool>)
         let Some(inner) = weak_status.upgrade() else {
             return TlsStatus::default();
         };
-        inner.status.blocking_read().clone()
+        // Called from the Tokio renew task — never `blocking_read` (panics in runtime).
+        match inner.status.try_read() {
+            Ok(guard) => guard.clone(),
+            Err(_) => TlsStatus::default(),
+        }
     });
 
     RenewScheduler::start(

@@ -284,7 +284,7 @@ Scheduler loop on the injectable clock:
 **Dependencies:** L10 · **Files:** `crates/dnscraft-tls/README.md`, `tests/no_leak.rs` · **Scope:** S
 
 ## Checkpoint C: Complete
-- [ ] All spec success criteria met
-- [ ] Independent security review (keys, file modes, token handling, SNI predicate)
+- [x] All spec success criteria met (Claude 2026-10-25: DoD green, Pebble issue + renew green locally, aws-lc/openssl absent)
+- [x] Independent security review (keys, file modes, token handling, SNI predicate) (Claude 2026-10-25: passed after L12b/L12c)
 - [ ] Manual acceptance against LE **staging** with the owner's Cloudflare zone (owner runs it; not automated)
 - [ ] **Owner approval**

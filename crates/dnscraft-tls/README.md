@@ -27,30 +27,52 @@ Automated tests never call real Let’s Encrypt, Cloudflare, or `cdn-cgi/trace`.
 Owner / lead run this checklist against **Let’s Encrypt staging** once before
 Checkpoint C / production cutover.
 
+Helper (token via `*_FILE` only; data dir outside the repo; never commit real
+domains/emails/tokens):
+
+```bash
+export DNSCRAFT_DATA_DIR=$HOME/.local/share/dnscraft-staging
+export DNSCRAFT_PUBLIC_DOMAIN=…          # zone apex
+export DNSCRAFT_ACME_EMAIL=…             # ACME contact
+export DNSCRAFT_NODE_HOSTNAME=node1.dns.…
+export DNSCRAFT_RESERVED_LABELS=node1
+export DNSCRAFT_CLOUDFLARE_API_TOKEN_FILE=$HOME/.config/dnscraft-staging/cf-token
+export DNSCRAFT_DYNDNS=0                 # leave DynDNS off unless testing step 6
+# chmod 0600 the token file; unset DNSCRAFT_CLOUDFLARE_API_TOKEN
+cargo run -p dnscraft-tls --example staging -- issue|status|renew|handshake phone|sni-check
+```
+
 ### Manual checklist (LE staging + real Cloudflare zone)
 
 1. **Token:** Create a Cloudflare API token with **Zone → DNS → Edit** on exactly
-   one zone; export it as `DNSCRAFT_CLOUDFLARE_API_TOKEN` (or `*_FILE`).
+   one zone; put it in a **0600** file and set `DNSCRAFT_CLOUDFLARE_API_TOKEN_FILE`
+   (prefer over putting the token in the process environment).
 2. **Config:** `public_domain` = that zone’s apex; `acme.directory = "staging"`;
    `acme.email` set; `dyndns.hostname` = `<node>.dns.<domain>` with the label in
-   `reserved_labels`; `proxied = false`. Prefer a throwaway data dir.
-3. **Issue:** Start the node / call `TlsEngine::renew_now` (or equivalent UI).
-   Confirm `_acme-challenge.dns.<domain>` TXT appears briefly, then is removed.
+   `reserved_labels`; `proxied = false`. Prefer a throwaway data dir **outside**
+   the repo.
+3. **Issue:** Start the node / call `TlsEngine::renew_now` (or the `staging`
+   example). Confirm `_acme-challenge.dns.<domain>` TXT appears briefly, then is
+   removed (API list should show **0** leftover records).
 4. **Cert:** Inspect `<data>/tls/cert.pem` — SANs must be `dns.<domain>` and
-   `*.dns.<domain>`; `key.pem` mode `0600`; `state.json` has `last_issue` and
-   no `last_error`.
-5. **Handshake:** Point a test client at `dns.<domain>` (DoT/DoH) with the
-   staging-trusting roots if needed; confirm the served leaf matches the store
-   (`CertResolver` / `openssl s_client -servername dns.<domain>`).
+   `*.dns.<domain>`; `tls/` mode `0700`, `key.pem`/`cert.pem`/`account.json`
+   mode `0600`; `state.json` has `last_issue` and no `last_error`. Confirm the
+   issuer is staging with `openssl x509 -in …/cert.pem -noout -issuer` (look for
+   `(STAGING)` — it is **not** a literal substring of the PEM bytes).
+5. **Handshake / SNI:** Local loopback handshake with Client-ID SNI
+   (`staging -- handshake <id>`) or `openssl s_client -servername …`; confirm
+   `accept_public_sni` allows only registered Client-IDs (`sni-check`). Node
+   hostname and apex must **not** accept public.
 6. **DynDNS (optional):** With `dyndns.enabled`, confirm the node A/AAAA matches
    the echo IP; with `public_entry = true`, also `*.dns.<domain>` and
    `dns.<domain>`; with `false`, those names are untouched.
-7. **Failure path:** Temporarily break the token or set Fake failure — renew
-   must leave the previous `cert.pem`/`key.pem` in place and record a stable
-   `tls.*` code in `state.json` / status.
+7. **Failure path:** Temporarily point `*_FILE` at a bogus token — renew must
+   leave the previous `cert.pem`/`key.pem` in place and record a stable
+   `tls.cloudflare.*` (or similar) code in `state.json` / status.
 8. **Promote:** Only after the above is green, wipe or replace `account.json`
    when switching `directory` to `production` (staging and production accounts
-   differ), then repeat issue once on production.
+   differ), then repeat issue once on production. Wipe the staging data dir
+   when done.
 
 ## On-disk layout
 

@@ -23,7 +23,12 @@
 //! ACME directory is hard-wired to Let's Encrypt **staging**. The token is
 //! never printed.
 
-#![allow(clippy::print_stdout, clippy::print_stderr, clippy::unwrap_used)]
+#![allow(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::unwrap_used,
+    clippy::expect_used
+)]
 
 use std::collections::HashSet;
 use std::env;
@@ -175,10 +180,18 @@ fn inspect_store(dir: &std::path::Path, public_domain: &str) {
         println!("san_{w}={}", if ok { "ok" } else { "MISSING" });
     }
 
-    // Staging intermediates / roots advertise "(STAGING)" in the subject.
-    let chain = String::from_utf8_lossy(&loaded.chain_pem);
-    let staging_marker = chain.contains("(STAGING)") || chain.contains("Staging");
-    println!("chain_contains_STAGING_marker={staging_marker}");
+    // PEM is DER-in-base64; "(STAGING)" is not a literal substring. Use openssl text.
+    let cert_path = tls.join("cert.pem");
+    let staging_marker = std::process::Command::new("openssl")
+        .args(["x509", "-in"])
+        .arg(&cert_path)
+        .args(["-noout", "-issuer"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.contains("(STAGING)") || s.contains("Staging"))
+        .unwrap_or(false);
+    println!("issuer_contains_STAGING_marker={staging_marker}");
 
     let state = store.load_state();
     println!(
