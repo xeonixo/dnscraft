@@ -294,6 +294,67 @@ async fn open_with_world_readable_key_refuses_serve_and_reports_permissions() {
 
 #[tokio::test]
 #[cfg(unix)]
+async fn open_key_with_acme_on_reissues_and_writes_0600() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let data = temp_dir("open-key-reissue");
+    let store = CertStore::open(&data).unwrap();
+    let (chain, key) = self_signed();
+    store.save(&chain, &key, &CertMeta::default()).unwrap();
+    let key_path = store.dir().join("key.pem");
+    let key_before = fs::read(&key_path).unwrap();
+    let mut perms = fs::metadata(&key_path).unwrap().permissions();
+    perms.set_mode(0o644);
+    fs::set_permissions(&key_path, perms).unwrap();
+
+    let (mock, _ns) = mock_cf_with_ns().await;
+    let mut cfg = base_cfg();
+    cfg.acme.enabled = true;
+    cfg.dyndns.enabled = false;
+    cfg.validate_with_token(|_| Ok(Secret::new(TOKEN))).unwrap();
+
+    let acme = Arc::new(FakeAcmeDirectory::new());
+    let engine = TlsEngine::open_with(
+        cfg,
+        &data,
+        clock(),
+        EngineDeps {
+            acme: acme.clone(),
+            cloudflare_base_url: Some(mock.base_url()),
+            echo: EchoClient::unbound().unwrap(),
+            token: Secret::new(TOKEN),
+        },
+    )
+    .expect("open must not fail on key.pem permissions");
+
+    assert!(
+        !engine.resolver().has_cert(),
+        "open key must not be served before reissue"
+    );
+    assert_eq!(
+        engine.status_async().await.last_error.as_deref(),
+        Some("tls.store.permissions")
+    );
+
+    engine.renew_now().await.expect("reissue after exposed key");
+    assert!(engine.resolver().has_cert());
+    let status = engine.status_async().await;
+    assert_eq!(
+        status.last_error, None,
+        "successful reissue clears permissions error: {status:?}"
+    );
+
+    let key_after = fs::read(&key_path).unwrap();
+    assert_ne!(key_before, key_after, "exposed key must be replaced");
+    let mode = fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "new key.pem must be 0600");
+
+    drop(engine);
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+#[cfg(unix)]
 async fn open_with_world_readable_account_reports_permissions_keeps_cert() {
     use std::os::unix::fs::PermissionsExt;
 

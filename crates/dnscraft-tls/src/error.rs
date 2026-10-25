@@ -203,14 +203,21 @@ impl TlsError {
 }
 
 /// Maximum accepted length of a `Retry-After` header value.
-///
-/// Caps stack use in the RFC 2822 path (RUSTSEC-2026-0009 / time < 0.3.47).
 const RETRY_AFTER_MAX_LEN: usize = 64;
+
+/// IMF-fixdate (RFC 9110 §5.6.7), e.g. `Sun, 06 Nov 1994 08:49:37 GMT`.
+///
+/// Fixed format only — no RFC 2822 comments or obsolete forms (avoids the
+/// RUSTSEC-2026-0009 `Rfc2822` parser entirely).
+const IMF_FIXDATE: &[time::format_description::BorrowedFormatItem<'static>] = time::macros::format_description!(
+    "[weekday repr:short], [day] [month repr:short] [year] [hour]:[minute]:[second] GMT"
+);
 
 /// Parses an HTTP `Retry-After` header (RFC 9110 §10.2.3).
 ///
-/// Accepts delta-seconds and HTTP-date (IMF-fixdate / RFC 2822). Past dates
-/// yield a zero delay. Values longer than [`RETRY_AFTER_MAX_LEN`] are rejected.
+/// Accepts delta-seconds and HTTP-date as IMF-fixdate. Past dates yield a zero
+/// delay. Values longer than [`RETRY_AFTER_MAX_LEN`], RFC 2822 comment forms,
+/// and other non-IMF dates are rejected.
 pub fn parse_retry_after_header(value: &str) -> Option<Duration> {
     let value = value.trim();
     if value.len() > RETRY_AFTER_MAX_LEN {
@@ -219,8 +226,10 @@ pub fn parse_retry_after_header(value: &str) -> Option<Duration> {
     if let Ok(secs) = value.parse::<u64>() {
         return Some(Duration::from_secs(secs));
     }
-    let then =
-        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc2822).ok()?;
+    // IMF-fixdate has no numeric offset; "GMT" is a literal meaning UTC.
+    let then = time::PrimitiveDateTime::parse(value, &IMF_FIXDATE)
+        .ok()?
+        .assume_utc();
     let now = time::OffsetDateTime::now_utc();
     let secs = (then - now).whole_seconds();
     if secs <= 0 {
@@ -307,13 +316,44 @@ mod tests {
             Some(Duration::from_secs(30))
         );
         assert_eq!(TlsError::AcmePropagation.retry_after(), None);
+    }
+
+    #[test]
+    fn retry_after_delta_seconds() {
         assert_eq!(
             parse_retry_after_header(" 45 "),
             Some(Duration::from_secs(45))
         );
+        assert_eq!(parse_retry_after_header("0"), Some(Duration::from_secs(0)));
+    }
+
+    #[test]
+    fn retry_after_imf_fixdate_past_is_zero() {
         assert_eq!(
             parse_retry_after_header("Wed, 01 Jan 2020 00:00:00 GMT"),
             Some(Duration::from_secs(0))
         );
+    }
+
+    #[test]
+    fn retry_after_imf_fixdate_future_is_positive() {
+        let delay =
+            parse_retry_after_header("Wed, 01 Jan 2098 00:00:00 GMT").expect("future IMF-fixdate");
+        assert!(
+            delay > Duration::from_secs(3600),
+            "expected multi-hour delay, got {delay:?}"
+        );
+    }
+
+    #[test]
+    fn retry_after_rejects_rfc2822_comments_and_overlong() {
+        // Nested comments are valid RFC 2822 but not IMF-fixdate — must not parse.
+        assert_eq!(parse_retry_after_header("(a(b(c)))"), None);
+        assert_eq!(
+            parse_retry_after_header("Wed, 01 Jan 2020 00:00:00 GMT (comment)"),
+            None
+        );
+        let overlong = "x".repeat(RETRY_AFTER_MAX_LEN + 1);
+        assert_eq!(parse_retry_after_header(&overlong), None);
     }
 }

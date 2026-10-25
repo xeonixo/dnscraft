@@ -31,7 +31,8 @@ dnscraft-proto = { path = "../dnscraft-proto" }
 rand = { workspace = true }
 rcgen = { workspace = true }
 zeroize = { workspace = true }
-time = { workspace = true }
+# `macros` for a compile-time IMF-fixdate format (Retry-After); not Rfc2822.
+time = { workspace = true, features = ["macros"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

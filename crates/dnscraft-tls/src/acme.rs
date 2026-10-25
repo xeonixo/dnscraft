@@ -664,3 +664,43 @@ pub fn challenge_txt_name(identifier: &str) -> String {
     let host = identifier.strip_prefix("*.").unwrap_or(identifier);
     format!("_acme-challenge.{host}")
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn rate_limited_error() -> instant_acme::Error {
+        instant_acme::Problem {
+            r#type: Some("urn:ietf:params:acme:error:rateLimited".into()),
+            detail: Some("too many orders".into()),
+            status: Some(429),
+            subproblems: Vec::new(),
+        }
+        .into()
+    }
+
+    #[test]
+    fn map_acme_order_keeps_captured_retry_after() {
+        let hint = Some(Duration::from_secs(77));
+        let err = map_acme_order(rate_limited_error(), hint);
+        assert_eq!(err.code(), "tls.acme.rate_limited");
+        assert_eq!(err.retry_after(), hint);
+    }
+
+    #[test]
+    fn map_acme_challenge_keeps_captured_retry_after() {
+        let hint = Some(Duration::from_secs(33));
+        let err = map_acme_challenge(rate_limited_error(), hint);
+        assert_eq!(err.code(), "tls.acme.rate_limited");
+        assert_eq!(err.retry_after(), hint);
+    }
+
+    #[test]
+    fn map_acme_order_rate_limit_without_hint_is_none() {
+        let err = map_acme_order(rate_limited_error(), None);
+        assert_eq!(err.code(), "tls.acme.rate_limited");
+        assert_eq!(err.retry_after(), None);
+    }
+}

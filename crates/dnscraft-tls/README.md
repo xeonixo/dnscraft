@@ -72,8 +72,13 @@ yield `tls.store.permissions` (file name + mode only — never key/account bytes
 [`TlsEngine::open`](src/engine.rs) still succeeds: a too-open `key.pem` is **not**
 installed into the resolver (refuse to serve that material); a too-open
 `account.json` alone does not unload a good cert. In both cases
-`status.last_error` / `state.json` record `tls.store.permissions` so the operator
-can `chmod 0600` without restarting into a panic.
+`status.last_error` / `state.json` record `tls.store.permissions`.
+
+An exposed `key.pem` is treated as **compromised**. With ACME enabled the engine
+therefore issues a **new** keypair on the next renew (scheduler or
+`renew_now`); `save()` overwrites `key.pem` / `cert.pem` with mode **0600** and
+clears the permissions error. With ACME disabled the open key stays on disk for
+the operator to replace or `chmod` offline.
 
 ## Failure codes
 

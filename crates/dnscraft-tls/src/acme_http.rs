@@ -110,14 +110,18 @@ impl HttpClient for ReqwestHttpClient {
             let status = rsp.status();
             let headers = rsp.headers().clone();
 
-            if status.as_u16() == 429 {
-                let delay = headers
+            // Always rewrite the slot so a stale 429 hint cannot attach to a
+            // later, unrelated rate-limit mapping (e.g. account then order).
+            let delay = if status.as_u16() == 429 {
+                headers
                     .get(reqwest::header::RETRY_AFTER)
                     .and_then(|v| v.to_str().ok())
-                    .and_then(parse_retry_after_header);
-                if let Ok(mut slot) = last_retry_after.lock() {
-                    *slot = delay;
-                }
+                    .and_then(parse_retry_after_header)
+            } else {
+                None
+            };
+            if let Ok(mut slot) = last_retry_after.lock() {
+                *slot = delay;
             }
 
             let bytes = rsp
@@ -250,6 +254,52 @@ mod tests {
         assert!(
             delay > Duration::from_secs(3600),
             "expected multi-hour delay from 2098 date, got {delay:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_429_response_clears_stale_retry_after() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let hits2 = hits.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let n = hits2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let resp = if n == 0 {
+                    "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 99\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+                        .to_owned()
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_owned()
+                };
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let client = ReqwestHttpClient::new().unwrap();
+        let get = |path: &str| {
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("http://{addr}{path}"))
+                .body(BodyWrapper::from(Vec::<u8>::new()))
+                .unwrap()
+        };
+        let _ = HttpClient::request(&client, get("/first"))
+            .await
+            .expect("429");
+        // Do not take() — leave the stale hint in the slot, then a 200 must clear it.
+        let _ = HttpClient::request(&client, get("/second"))
+            .await
+            .expect("200");
+        assert_eq!(
+            client.take_last_retry_after(),
+            None,
+            "200 must clear a prior 429 Retry-After"
         );
     }
 }

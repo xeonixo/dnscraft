@@ -29,7 +29,7 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 | 8 | Invented fixtures only; DoD green | mock gateway; `fmt` / `clippy -D warnings` / `cargo test -p dnscraft-clients` |
 
 Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.39 %** lines / **80.22 %** regions.
-- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L11 + L12b done**; Checkpoints A and B passed (2026-10-25). Next: **Checkpoint C** re-review (security review + owner staging acceptance).
+- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L11 + L12b + L12c done**; Checkpoints A and B passed (2026-10-25). Next: **Checkpoint C** re-review (security review + owner staging acceptance).
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P12 + P10b/P9b/P11b done. Checkpoint A/B passed.** Next: **Checkpoint C** (Claude independent review + owner approval).
 - Blockers: clients Checkpoint C awaiting Lead re-review of C12.
 
@@ -62,6 +62,8 @@ Coverage (`cargo llvm-cov -p dnscraft-policy --summary-only`, 2026-10-25): **93.
 Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **80.32 %** lines / **79.82 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
 
 ## Log
+
+- 2026-10-25 — tls **L12c** done (Cursor): Retry-After HTTP-date via const IMF-fixdate `format_description` (not `Rfc2822`); deny.toml ignore reason updated (Rfc2822 unused in workspace); `last_retry_after` cleared on every response; open 0644 `key.pem` + ACME on → FakeAcme reissue writes 0600 and clears status. **Mutant killed:** `map_acme_order` / `map_acme_challenge` dropping captured `retry_after` (unit tests with `Problem` `rateLimited`). DoD green; `cargo deny check` green. **STOP for Claude Checkpoint C re-review** (do not tick Independent security review / Owner approval).
 
 - 2026-10-25 — Policy **P12** done (Cursor): golden tests (`tests/golden.rs`) for criteria 2/3/3a; criterion bench `benches/pipeline.rs` cache-hit+filter-miss **p50 ≈ 7.4 µs** / p99 ≈ 50 µs (≪ 1 ms); README (pipeline incl. SVCB hints + additional, ClientDirectory, AD/EDE, pause, stubs); llvm-cov **93.25 %** lines. Success-criteria table above. DoD: clippy green; `cargo test -p dnscraft-policy` **5× / 0 failures**. **STOP for Checkpoint C** (do not tick Independent review / Owner approval).
 
