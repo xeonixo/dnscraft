@@ -42,6 +42,7 @@
 //! | [`RuleError::InvalidIdna`] | `filter_rule.invalid_idna` |
 //! | [`RuleError::InvalidRegex`] | `filter_rule.invalid_regex` |
 //! | [`RuleError::RegexTooLarge`] | `filter_rule.regex_too_large` |
+//! | [`FilterError::UnknownSet`] | `filter_set.unknown` |
 //!
 //! [`FilterError`] delegates to the code of the wrapped error.
 
@@ -350,6 +351,9 @@ pub enum FilterError {
     /// A rule was rejected.
     #[error(transparent)]
     Rule(#[from] RuleError),
+    /// No filter set with this id exists in the snapshot.
+    #[error("unknown filter set {0:?}")]
+    UnknownSet(String),
 }
 
 impl FilterError {
@@ -359,6 +363,7 @@ impl FilterError {
             Self::Name(e) => e.code(),
             Self::Id(e) => e.code(),
             Self::Rule(e) => e.code(),
+            Self::UnknownSet(_) => "filter_set.unknown",
         }
     }
 }
@@ -475,6 +480,7 @@ mod tests {
                 "filter_rule.regex_too_large",
                 RuleError::RegexTooLarge { span: 0..1 }.into(),
             ),
+            ("filter_set.unknown", FilterError::UnknownSet("x".into())),
             ("filter_id.empty", IdError::Empty.into()),
             ("filter_id.too_long", IdError::TooLong { len: 65 }.into()),
             (

@@ -21,6 +21,8 @@ mod name;
 mod parser;
 mod pattern;
 mod rule;
+mod set;
+mod snapshot;
 mod store;
 mod types;
 
@@ -43,6 +45,10 @@ pub use pattern::{
     Glob, GlobStart, REGEX_DFA_SIZE_LIMIT, REGEX_MESSAGE_MAX, REGEX_SIZE_LIMIT, RegexRule,
 };
 pub use rule::{BadfilterKey, DnsRewrite, DnsTypeFilter, MatchKind, Modifiers, Rule, RuleAction};
+pub use set::{
+    DEFAULT_UPDATE_INTERVAL, FilterConfig, FilterSetConfig, ListBodies, ListConfig, SnapshotError,
+};
+pub use snapshot::{CustomFacts, ListFacts, SharedIndex, Snapshot, SnapshotBuilder};
 pub use store::{
     DEFAULT_MAX_BODY_BYTES, ListMeta, ListSourceSpec, ListStore, META_VERSION, MetaError,
     StoreConfig, StoreError,

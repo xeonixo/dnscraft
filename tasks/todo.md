@@ -132,9 +132,9 @@ pause), merged per-set index with dedup and `$badfilter`, sharing of identical l
 combinations, custom-rule line sources.
 
 **Acceptance criteria:**
-- [ ] `$badfilter` in one list disables the identical rule from another list in the same set only
-- [ ] Two sets with identical lists share one index (`Arc::ptr_eq` in test)
-- [ ] Custom rules override lists per priority rules; reasons point to custom line numbers
+- [x] `$badfilter` in one list disables the identical rule from another list in the same set only
+- [x] Two sets with identical lists share one index (`Arc::ptr_eq` in test)
+- [x] Custom rules override lists per priority rules; reasons point to custom line numbers
 
 **Verification:** `cargo test -p dnscraft-filtering sets`
 
