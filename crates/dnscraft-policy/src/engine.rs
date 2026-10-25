@@ -14,7 +14,7 @@ use crate::directory::ClientDirectory;
 use crate::error::PolicyError;
 use crate::pipeline::{Draft, Flow, StepCtx, apply_ad_policy};
 use crate::snapshot::PolicySnapshot;
-use crate::steps::{directory, local_records};
+use crate::steps::{canary, directory, local_records};
 use crate::synth::{any_rfc8482, resolve_servfail};
 
 /// Final answer from [`PolicyEngine::handle`].
@@ -72,8 +72,8 @@ impl PolicyEngine {
     /// Handles one query: select, run steps, emit.
     ///
     /// Selection, RFC 8482 ANY, view local records (step 1), ClientDirectory
-    /// names/PTR and special-use NXDOMAIN (step 2), then resolver passthrough
-    /// (step 7). Steps 3–6 and 8–11 follow in later tasks.
+    /// names/PTR and special-use NXDOMAIN (step 2), bypass canaries (step 3),
+    /// then resolver passthrough (step 7). Steps 4–6 and 8–11 follow later.
     ///
     /// ECS is never forwarded: policy calls the resolver with
     /// [`RequestFlags`] only (no client EDNS options).
@@ -145,7 +145,20 @@ impl PolicyEngine {
             ));
         }
 
-        // Steps 3–6 / 8–11: later tasks. Then resolve.
+        // Step 3: bypass canaries (Firefox DoH / iCloud Private Relay).
+        if let Flow::Answer(synth) = canary::run(&ctx, step_ctx, &mut draft) {
+            draft.timings.total_us = elapsed_us(total_start);
+            return Ok(emit(
+                draft,
+                synth,
+                ctx.client_id.clone(),
+                loggable,
+                None,
+                None,
+            ));
+        }
+
+        // Steps 4–6 / 8–11: later tasks. Then resolve.
 
         let flags = RequestFlags {
             checking_disabled: ctx.flags.checking_disabled,

@@ -6,9 +6,10 @@
 //! the [`ClientDirectory`] contract for device names without depending on
 //! `dnscraft-clients`.
 //!
-//! Phase 1–5: ids, config, snapshot build/select, engine with view local
+//! Phase 1–6: ids, config, snapshot build/select, engine with view local
 //! records (step 1), ClientDirectory names/PTR and special-use NXDOMAIN
-//! (step 2), and resolver passthrough. Steps 3–6 and 8–11 follow later.
+//! (step 2), bypass canaries (step 3), and resolver passthrough. Steps 4–6
+//! and 8–11 follow later.
 
 mod config;
 mod decision;

@@ -159,8 +159,8 @@ Also:
 - Synthetic: AD clear, no EDE (not a list block). The decision record says `Bypass`.
 
 **Acceptance criteria:**
-- [ ] Canary answered without resolver/filter involvement when enabled; resolved normally when disabled
-- [ ] Doc URLs present in the constant table; commit message states verified/unverified
+- [x] Canary answered without resolver/filter involvement when enabled; resolved normally when disabled
+- [x] Doc URLs present in the constant table; commit message states verified/unverified
 
 **Verification:** `cargo test -p dnscraft-policy canary`
 

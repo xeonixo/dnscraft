@@ -14,10 +14,12 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L6 done**; Checkpoint A passed (2026-10-25). Next: **L7** (issuance flow).
-- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P5 done. Checkpoint A passed** (2026-10-25). Next: P6.
+- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P6 done. Checkpoint A passed** (2026-10-25). Next: P7.
 - Blockers: none. Clients last. T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — Policy P6 done (Cursor): step 3 bypass canaries — `firefox_canary` → exact `use-application-dns.net` NXDOMAIN; `icloud_private_relay` → exact `mask.icloud.com` / `mask-h2.icloud.com` NXDOMAIN (Apple allows NXDOMAIN or NODATA). Constant table with doc URLs: Apple **verified** (developer.apple.com prepare-your-network page); Firefox **unverified** (support.mozilla.org JS challenge). AD clear, no EDE, `DecisionStep::Bypass` / `AnswerOrigin::Bypass`. Disabled flags fall through to resolve. Tests: enabled/disabled for both canaries, no resolver traffic when on. DoD green. Next: P7.
 
 - 2026-10-25 — Policy P5 done (Cursor): step 2 ClientDirectory — `addresses` → A/AAAA or NODATA (other qtypes NODATA); PTR for RFC 1918 / ULA / loopback / `ptr_prefixes`; special-use NXDOMAIN (`local_nxdomain_suffixes`) with synthetic SOA when unknown and `forward_zone_for` is `None` (covering forward zone wins). Resolver accessor `forward_zone_for` + tests. SPEC-policy/clients note for trait signature (cross-module decision 1). Tests: known A-only / AAAA NODATA / unknown under local domain; PTR private + prefixes vs public; `printer.lan` NXDOMAIN / forwarded / deny allow-list. DoD green. Next: P6.
 

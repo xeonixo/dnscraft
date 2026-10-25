@@ -103,6 +103,20 @@ pub fn directory_nodata(query: &Query, rd: bool) -> Synth {
     }
 }
 
+/// Bypass / canary NXDOMAIN (Firefox DoH, iCloud Private Relay). Clears AD; no EDE.
+pub fn bypass_nxdomain(query: &Query, rd: bool) -> Synth {
+    let mut message = response_skeleton(query, rd);
+    message.header.aa = true;
+    message.header.ra = true;
+    let _ = message.set_rcode(Rcode::NXDOMAIN);
+    clear_ad(&mut message);
+    Synth {
+        message,
+        ede: None,
+        origin: AnswerOrigin::Bypass,
+    }
+}
+
 /// Special-use suffix NXDOMAIN with a synthetic SOA in authority. No EDE.
 ///
 /// `zone` is the matching `local_nxdomain_suffixes` apex. TTL follows the
@@ -218,7 +232,24 @@ mod tests {
                     .rd,
                 rd
             );
+            assert_eq!(bypass_nxdomain(&q, rd).message.header.rd, rd);
         }
+    }
+
+    #[test]
+    fn bypass_nxdomain_clears_ad_no_ede() {
+        let q = Query {
+            name: Name::from_ascii("use-application-dns.net").unwrap(),
+            qtype: RecordType::A,
+            qclass: Class::IN,
+        };
+        let s = bypass_nxdomain(&q, true);
+        assert_eq!(s.message.rcode(), Rcode::NXDOMAIN);
+        assert!(s.message.header.aa);
+        assert!(!s.message.header.ad);
+        assert!(s.ede.is_none());
+        assert!(s.message.answers.is_empty());
+        assert_eq!(s.origin, AnswerOrigin::Bypass);
     }
 
     #[test]

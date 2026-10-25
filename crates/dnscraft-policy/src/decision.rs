@@ -21,7 +21,7 @@ pub enum AnswerOrigin {
     LocalView,
     /// ClientDirectory name, PTR, or special-use NXDOMAIN.
     LocalClient,
-    /// Bypass / canary (later tasks).
+    /// Bypass / canary (Firefox DoH, iCloud Private Relay).
     Bypass,
     /// Filter block or rewrite (later tasks).
     Filter,
@@ -44,6 +44,8 @@ pub enum DecisionStep {
     LocalClient,
     /// Special-use suffix NXDOMAIN (unknown name, no covering forward zone).
     SpecialUseNxdomain,
+    /// Bypass / canary answer (profile flag on).
+    Bypass,
     /// Resolver returned an answer.
     Resolve {
         /// Cache / recursion / stale.
