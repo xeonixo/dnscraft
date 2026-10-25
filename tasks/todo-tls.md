@@ -251,11 +251,11 @@ Scheduler loop on the injectable clock:
 - Background tasks hold a `Weak` and are aborted on drop.
 
 **Acceptance criteria:**
-- [ ] Start with a stored cert and unreachable mocks → resolver serves it, status shows the error code and days to expiry
-- [ ] `renew_now` / `dyndns_now` work against mocks; concurrent calls do not double-order (single-flight)
-- [ ] Engine drop stops all tasks (`Weak` test)
+- [x] Start with a stored cert and unreachable mocks → resolver serves it, status shows the error code and days to expiry
+- [x] `renew_now` / `dyndns_now` work against mocks; concurrent calls do not double-order (single-flight)
+- [x] Engine drop stops all tasks (`Weak` test)
 
-**Verification:** `cargo test -p dnscraft-tls engine`
+**Verification:** `cargo test -p dnscraft-tls --test engine`
 
 **Dependencies:** L8, L9 · **Files:** `src/engine.rs`, `src/status.rs`, `tests/engine.rs` · **Scope:** M
 

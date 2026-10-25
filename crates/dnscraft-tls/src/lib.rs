@@ -12,7 +12,7 @@
 //! [`read_secret`], SNI helpers, [`CertStore`], [`CertResolver`], ACME
 //! ([`InstantAcme`], [`AcmeDirectory`], [`AcmeOrder`]), [`CloudflareClient`],
 //! DNS-01 [`wait_for_txt`], [`issue`], renewal scheduling ([`next_renewal`]),
-//! and DynDNS ([`dyndns_once`]).
+//! DynDNS ([`dyndns_once`]), and [`TlsEngine`].
 
 #![deny(missing_docs)]
 
@@ -22,6 +22,7 @@ mod clock;
 mod cloudflare;
 mod config;
 mod dyndns;
+mod engine;
 mod error;
 mod issue;
 mod pem_util;
@@ -34,7 +35,7 @@ mod status;
 mod store;
 
 pub use acme::{
-    AcmeDirectory, AcmeOrder, Dns01Txt, FakeAcmeDirectory, FakeAcmeFail, InstantAcme,
+    AcmeBackend, AcmeDirectory, AcmeOrder, Dns01Txt, FakeAcmeDirectory, FakeAcmeFail, InstantAcme,
     ari_certificate_id, challenge_txt_name, default_identifiers,
 };
 pub use acme_http::ReqwestHttpClient;
@@ -51,6 +52,7 @@ pub use dyndns::{
     DynDnsResult, EchoClient, dyndns_interval, dyndns_interval_with_rng, dyndns_names, dyndns_once,
     parse_trace_ip,
 };
+pub use engine::{EngineDeps, EngineInner, TlsEngine};
 pub use error::TlsError;
 pub use issue::issue;
 pub use pem_util::KeyPem;

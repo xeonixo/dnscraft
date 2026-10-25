@@ -13,11 +13,13 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
-- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L9 done**; Checkpoints A and B passed (2026-10-25). Next: L10 (`TlsEngine`).
+- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L10 done**; Checkpoints A and B passed (2026-10-25). Next: L11 polish → Checkpoint C.
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P9 done. Checkpoint A passed** (2026-10-25). Next: Checkpoint B (then P10).
 - Blockers: none. Clients last. T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — tls L10 done (Cursor): `TlsEngine` — `open`/`open_with` loads last-good cert into `CertResolver` even if CF/ACME unreachable; `RenewScheduler` + DynDNS loop hold `Weak<EngineInner>`; `ScheduleFn` uses cached ARI (`refresh_ari` after start/renew); `do_issue` single-flight (broadcast join) serialises scheduler vs `renew_now` (no double-order / kick-dup); `dyndns_now` under mutex; `apply_config` rebuilds CF client, domain change → renew without extra kick. 4 engine tests. DoD green. Next: L11.
 
 - 2026-10-25 — tls L9 done (Cursor): `dyndns_once` — per-family echo (`EchoClient` bound `0.0.0.0`/`::`, unbound for mocks), parse `ip=`, compare-then-upsert under Cloudflare writer mutex; `public_entry` also maintains `*.dns.<d>` + `dns.<d>`; no-route family skipped; echo garbage/wrong family → `tls.dyndns.echo`; CF failure → `tls.dyndns.update` (cert path untouched); interval ±10 % helper. 7 mock tests. DoD green. Next: L10.
 

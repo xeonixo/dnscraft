@@ -42,6 +42,11 @@ pub trait AcmeDirectory: Send + Sync {
     async fn ensure_account(&self, store: &CertStore, cfg: &AcmeConfig) -> Result<(), TlsError>;
 }
 
+/// Combined ACME backend for [`crate::TlsEngine`] (object-safe).
+pub trait AcmeBackend: AcmeDirectory + AcmeOrder {}
+
+impl<T: AcmeDirectory + AcmeOrder> AcmeBackend for T {}
+
 /// ACME order operations (DNS-01 collect → finalize → download).
 ///
 /// Also exposes ACME Renewal Information (ARI, RFC 9773): [`Self::certificate_id`]
