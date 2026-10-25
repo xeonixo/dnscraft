@@ -3,7 +3,7 @@
 //!
 //! This crate owns configuration validation and (in later tasks) the twelve
 //! pipeline steps. It depends on [`dnscraft_resolver`] and
-//! [`dnscraft_filtering`], and defines the [`ClientDirectory`](crate) contract
+//! [`dnscraft_filtering`], and defines the `ClientDirectory` contract
 //! for device names without depending on `dnscraft-clients`.
 //!
 //! Phase 1 (this release): ids, [`PolicyConfig`], [`PolicySnapshot::build`] and

@@ -103,6 +103,24 @@ pub enum ConfigReason {
     /// A view record owner name contains a wildcard label.
     #[error("wildcard owner names are not allowed in view records")]
     WildcardOwner,
+    /// The same subnet (same network address and prefix length) is listed on two views.
+    #[error("subnet {net} is listed on more than one view")]
+    DuplicateSubnet {
+        /// The duplicated subnet, masked to its network address.
+        net: ipnet::IpNet,
+    },
+    /// Records at one owner name and type carry different TTLs (RFC 2181 section 5.2).
+    #[error("records at {name} with the same type have different TTLs")]
+    RrsetTtlMismatch {
+        /// Owner name of the inconsistent RRset.
+        name: Name,
+    },
+    /// A rebind exception is neither a domain name nor `*.` plus a domain name.
+    #[error("invalid rebind exception {pattern:?}")]
+    InvalidRebindException {
+        /// The rejected pattern.
+        pattern: Arc<str>,
+    },
 }
 
 impl ConfigReason {

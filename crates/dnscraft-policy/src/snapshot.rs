@@ -1,6 +1,6 @@
 //! Immutable, validated policy snapshot swapped on hot reload.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dnscraft_filtering::SetId;
@@ -106,11 +106,11 @@ impl PolicySnapshot {
         known_sets: &[SetId],
         known_zones: &[ForwardZoneId],
     ) -> Result<Self, PolicyError> {
-        let known_set: HashMap<&str, ()> = known_sets.iter().map(|s| (s.as_str(), ())).collect();
-        let known_zone: HashMap<&str, ()> = known_zones.iter().map(|z| (z.as_str(), ())).collect();
+        let known_set: HashSet<&str> = known_sets.iter().map(|s| s.as_str()).collect();
+        let known_zone: HashSet<&str> = known_zones.iter().map(|z| z.as_str()).collect();
 
         for zone in &config.rebind_check_forward_zones {
-            if !known_zone.contains_key(zone.as_str()) {
+            if !known_zone.contains(zone.as_str()) {
                 return Err(PolicyError::UnknownForwardZone { id: zone.clone() });
             }
         }
@@ -125,20 +125,29 @@ impl PolicySnapshot {
                     },
                 });
             }
-            if !known_set.contains_key(profile.filter_set.as_str()) {
+            if !known_set.contains(profile.filter_set.as_str()) {
                 return Err(PolicyError::UnknownFilterSet {
                     id: profile.filter_set.clone(),
                 });
             }
             if let Some(zones) = &profile.forward_zones {
                 for zone in zones {
-                    if !known_zone.contains_key(zone.as_str()) {
+                    if !known_zone.contains(zone.as_str()) {
                         return Err(PolicyError::UnknownForwardZone { id: zone.clone() });
                     }
                 }
             }
+            for pattern in &profile.rebind_exceptions {
+                if !is_valid_rebind_exception(pattern) {
+                    return Err(PolicyError::InvalidConfig {
+                        reason: ConfigReason::InvalidRebindException {
+                            pattern: pattern.clone(),
+                        },
+                    });
+                }
+            }
             for schedule in &profile.schedules {
-                if !known_set.contains_key(schedule.filter_set.as_str()) {
+                if !known_set.contains(schedule.filter_set.as_str()) {
                     return Err(PolicyError::UnknownFilterSet {
                         id: schedule.filter_set.clone(),
                     });
@@ -158,6 +167,7 @@ impl PolicySnapshot {
         let mut client_ids: HashMap<ClientId, ViewIdx> = HashMap::new();
         let mut v4 = PrefixTable::default();
         let mut v6 = PrefixTable::default();
+        let mut subnet_owner: HashMap<IpNet, ViewIdx> = HashMap::new();
         let mut views: Vec<SnapshotView> = Vec::with_capacity(config.views.len());
         let mut default_view: Option<ViewIdx> = None;
 
@@ -202,6 +212,17 @@ impl PolicySnapshot {
             }
 
             for net in &view.subnets {
+                let masked = net.trunc();
+                match subnet_owner.get(&masked) {
+                    Some(&owner) if owner != view_idx => {
+                        return Err(PolicyError::InvalidConfig {
+                            reason: ConfigReason::DuplicateSubnet { net: masked },
+                        });
+                    }
+                    _ => {
+                        subnet_owner.insert(masked, view_idx);
+                    }
+                }
                 match net {
                     IpNet::V4(n) => {
                         v4.insert(n.prefix_len(), n.network().octets(), view_idx);
@@ -252,6 +273,12 @@ impl PolicySnapshot {
     }
 }
 
+/// A rebind exception is `domain` or `*.domain`; no other `*` is allowed.
+fn is_valid_rebind_exception(pattern: &str) -> bool {
+    let domain = pattern.strip_prefix("*.").unwrap_or(pattern);
+    !domain.is_empty() && !domain.contains('*') && Name::from_ascii(domain).is_ok()
+}
+
 fn build_view_records(view: &ViewConfig) -> Result<HashMap<Name, ViewRrSets>, PolicyError> {
     let mut by_name: HashMap<Name, Vec<ViewRecordConfig>> = HashMap::new();
     for rec in &view.records {
@@ -277,13 +304,21 @@ fn build_view_records(view: &ViewConfig) -> Result<HashMap<Name, ViewRrSets>, Po
         if has_cname && recs.len() > 1 {
             return Err(PolicyError::CnameConflict { name });
         }
-        if has_cname {
-            // A single CNAME is fine; also reject CNAME + same-type duplicates.
-            if recs.len() != 1 {
-                return Err(PolicyError::CnameConflict { name });
+        let mut deduped: Vec<ViewRecordConfig> = Vec::with_capacity(recs.len());
+        for r in recs {
+            if deduped
+                .iter()
+                .any(|d| d.rtype() == r.rtype() && d.ttl != r.ttl)
+            {
+                return Err(PolicyError::InvalidConfig {
+                    reason: ConfigReason::RrsetTtlMismatch { name },
+                });
+            }
+            if !deduped.iter().any(|d| d.rdata == r.rdata) {
+                deduped.push(r);
             }
         }
-        let records: Arc<[Record]> = recs
+        let records: Arc<[Record]> = deduped
             .into_iter()
             .map(|r| Record::new(r.name, Class::IN, r.ttl, r.rdata))
             .collect::<Vec<_>>()
@@ -535,5 +570,184 @@ mod tests {
         cfg.views[0].profile = ProfileId::new("missing").unwrap();
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert_eq!(err.code(), "policy.config.invalid");
+    }
+
+    #[test]
+    fn config_rejects_same_subnet_on_two_views_v4() {
+        let mut cfg = spec_excerpt_config();
+        // lan already has 192.0.2.0/24; the unmasked host form must conflict.
+        cfg.views[1].subnets =
+            vec![IpNet::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 77)), 24).unwrap()];
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.invalid");
+        assert!(matches!(
+            err,
+            PolicyError::InvalidConfig {
+                reason: ConfigReason::DuplicateSubnet { net }
+            } if net == doc_v4()
+        ));
+    }
+
+    #[test]
+    fn config_rejects_same_subnet_on_two_views_v6() {
+        let mut cfg = spec_excerpt_config();
+        cfg.views[1].subnets = vec![
+            IpNet::new(
+                IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 5)),
+                64,
+            )
+            .unwrap(),
+        ];
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert!(matches!(
+            err,
+            PolicyError::InvalidConfig {
+                reason: ConfigReason::DuplicateSubnet { net }
+            } if net == doc_v6()
+        ));
+    }
+
+    #[test]
+    fn config_accepts_same_subnet_repeated_in_one_view() {
+        let mut cfg = spec_excerpt_config();
+        cfg.views[0].subnets = vec![doc_v4(), doc_v4(), doc_v6(), doc_v6()];
+        PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
+    }
+
+    #[test]
+    fn config_rejects_duplicate_view_id() {
+        let mut cfg = spec_excerpt_config();
+        cfg.views[1].id = ViewId::new("lan").unwrap();
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert!(matches!(
+            err,
+            PolicyError::InvalidConfig {
+                reason: ConfigReason::DuplicateViewId { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn config_rejects_duplicate_profile_id() {
+        let mut cfg = spec_excerpt_config();
+        cfg.profiles.push(profile("default", "default"));
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert!(matches!(
+            err,
+            PolicyError::InvalidConfig {
+                reason: ConfigReason::DuplicateProfileId { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn config_rejects_unknown_schedule_filter_set() {
+        let mut cfg = spec_excerpt_config();
+        cfg.profiles[0].schedules = vec![crate::config::ScheduleConfig {
+            id: Arc::from("night"),
+            filter_set: set("night"),
+            start: std::time::Duration::from_secs(0),
+            end: std::time::Duration::from_secs(3600),
+        }];
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.unknown_filter_set");
+    }
+
+    #[test]
+    fn config_accepts_single_cname() {
+        let mut cfg = spec_excerpt_config();
+        let name = Name::from_ascii("alias.example.com").unwrap();
+        cfg.views[0].records.push(ViewRecordConfig {
+            name: name.clone(),
+            ttl: 60,
+            rdata: RData::CNAME(Name::from_ascii("nas.lan.example.com").unwrap()),
+        });
+        let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
+        let sets = snap.views[0].records.get(&name).unwrap();
+        assert_eq!(sets.records.len(), 1);
+    }
+
+    #[test]
+    fn config_collapses_exact_duplicate_records() {
+        let mut cfg = spec_excerpt_config();
+        for owner in ["x.example", "X.example"] {
+            cfg.views[0].records.push(ViewRecordConfig {
+                name: Name::from_ascii(owner).unwrap(),
+                ttl: 60,
+                rdata: RData::A(Ipv4Addr::new(192, 0, 2, 50)),
+            });
+        }
+        let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
+        let sets = snap.views[0]
+            .records
+            .get(&Name::from_ascii("x.example").unwrap())
+            .unwrap();
+        assert_eq!(sets.records.len(), 1);
+    }
+
+    #[test]
+    fn config_rejects_rrset_ttl_mismatch() {
+        let mut cfg = spec_excerpt_config();
+        for (ttl, last) in [(60, 50), (120, 51)] {
+            cfg.views[0].records.push(ViewRecordConfig {
+                name: Name::from_ascii("x.example").unwrap(),
+                ttl,
+                rdata: RData::A(Ipv4Addr::new(192, 0, 2, last)),
+            });
+        }
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.invalid");
+        assert!(matches!(
+            err,
+            PolicyError::InvalidConfig {
+                reason: ConfigReason::RrsetTtlMismatch { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn config_rejects_ttl_mismatch_on_identical_records() {
+        let mut cfg = spec_excerpt_config();
+        for ttl in [60, 3600] {
+            cfg.views[0].records.push(ViewRecordConfig {
+                name: Name::from_ascii("x.example").unwrap(),
+                ttl,
+                rdata: RData::A(Ipv4Addr::new(192, 0, 2, 50)),
+            });
+        }
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert!(matches!(
+            err,
+            PolicyError::InvalidConfig {
+                reason: ConfigReason::RrsetTtlMismatch { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn config_accepts_valid_rebind_exceptions() {
+        let mut cfg = spec_excerpt_config();
+        cfg.profiles[0].rebind_exceptions =
+            vec![Arc::from("*.example.com"), Arc::from("nas.example.com")];
+        PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
+    }
+
+    #[test]
+    fn config_rejects_invalid_rebind_exceptions() {
+        for bad in ["**bad", "*.", "a.*.b", "", "*example.com"] {
+            let mut cfg = spec_excerpt_config();
+            cfg.profiles[0].rebind_exceptions = vec![Arc::from(bad)];
+            let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+            assert_eq!(err.code(), "policy.config.invalid", "{bad:?}");
+            assert!(
+                matches!(
+                    err,
+                    PolicyError::InvalidConfig {
+                        reason: ConfigReason::InvalidRebindException { .. }
+                    }
+                ),
+                "{bad:?}"
+            );
+        }
     }
 }
