@@ -21,7 +21,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | L0 + N0 done; **STOP Checkpoint A** (Claude review + owner go for Phase 1) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); spike `spikes/listeners/` |
+| `listeners` | Checkpoint A approved (2026-10-25); **next: N1** (Phase 1: N1–N5, STOP at Checkpoint B) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); spike `spikes/listeners/` |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -34,6 +34,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-25 — **listeners: Checkpoint A approved** (Claude review, owner go for Phase 1). Re-ran the spike (`cargo run --locked`, 4/4 PASS; `cargo tree -i aws-lc-rs` / `-i aws-lc-sys` / `-i openssl-sys` no match) and the L0 gates (fmt, clippy `-D warnings`, `client_id` tests, `cargo deny check` green). Extra probes in a scratch copy of the spike: `0.0.0.0:p` + `[::]:p` → `EADDRINUSE` (dual-stack); IPv4 peers on `[::]` arrive as `::ffff:…` with correct reply source; `quinn-udp` 0.5.16 behaves like 0.6.3. Owner decisions: **`socket2` 0.6 direct with `IPV6_V6ONLY`** on all IPv6 sockets; **`quinn-udp` 0.5.16** (no duplicate). Plan/tasks updated: N1 socket helper, N2 `to_canonical()` source, N4 tokio integration + same-port v4/v6 test, N6 `PolicyClientIds` acceptance + lower-cased SNI, N8 lower-cased path id, N9/N12 `Endpoint::new` + 0-RTT off. L0 review: `Borrow<str>` consistent with derived `Hash`/`Eq` on `Arc<str>`; no findings.
 
 - 2026-10-25 — **spikes: listeners N0** (pktinfo, quinn ring-only, h3, hyper h2). Standalone crate `spikes/listeners/` (own `[workspace]` + `Cargo.lock`; main workspace / root `Cargo.lock` untouched). Host: aarch64 Linux. Commands: `cd spikes/listeners && cargo run`; `cargo tree -i aws-lc-rs` / `-i aws-lc-sys` / `-i openssl-sys` → each `error: package ID specification … did not match any packages`.
 

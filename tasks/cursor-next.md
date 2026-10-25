@@ -9,7 +9,7 @@
 ## Status (updated 2026-10-25)
 
 - `resolver`, `filtering`, `clients`, `tls`, `policy`: complete.
-- `listeners`: spec draft + plan + tasks written by Claude (SPEC-listeners.md, tasks/plan-listeners.md, tasks/todo-listeners.md) — **approved 2026-10-25**; build task by task with template B, starting with L0 and the spike N0.
+- `listeners`: spec draft + plan + tasks written by Claude (SPEC-listeners.md, tasks/plan-listeners.md, tasks/todo-listeners.md) — **approved 2026-10-25**; build task by task with template B. L0 + N0 done, Checkpoint A approved 2026-10-25; Phase 1 (N1–N5) next, STOP at Checkpoint B.
 
 ## Rules for every task (paste once per session)
 

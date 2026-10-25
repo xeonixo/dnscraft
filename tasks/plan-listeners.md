@@ -39,7 +39,8 @@ AdGuard Home before `control-api` exists.
 | Crate | Version | Features | Why | Alternatives |
 |---|---|---|---|---|
 | `quinn` | 0.11.12 | `default-features = false`, `runtime-tokio`, `rustls-ring` | DoQ + HTTP/3 transport; ring-only (N0 ✓) | `s2n-quic` (aws-lc) ✗ |
-| `quinn-udp` | **0.6.3** (direct, Do53 wildcard) | default | `IP_PKTINFO` reply-source without our own `unsafe` (N0 ✓ on aarch64) | `socket2` + `nix` + `unsafe` ✗ |
+| `quinn-udp` | **0.5.16** (direct, Do53 wildcard; same version quinn 0.11.12 pulls, no duplicate) | default | `IP_PKTINFO` reply-source without our own `unsafe` (N0 ✓ on aarch64; 0.5.16 re-checked at Checkpoint A) | `socket2` + `nix` + `unsafe` ✗ |
+| `socket2` | 0.6.5 (already in the tree via hyper-util) | `all` only if `set_only_v6` needs it, else default | `IPV6_V6ONLY` on every IPv6 listener socket before bind (Checkpoint A) | validation rule forbidding `0.0.0.0` + `::` on one port ✗ (owner chose V6ONLY) |
 | `hyper` | 1.12.0 | `server`, `http1`, `http2` | DoH h2 / http/1.1 server (N0 ✓) | `axum` (more than needed here) |
 | `hyper-util` | 0.1.21 | `tokio`, `server-auto` (+ client helpers in tests) | connection driver for hyper (N0 ✓) | – |
 | `h3` | 0.0.8 | default | DoH over HTTP/3 (pre-1.0; N0 ✓ one GET) | – |
@@ -50,6 +51,8 @@ AdGuard Home before `control-api` exists.
 | `toml` (N14 only) | 1.1 (latest stable at implement time) | default | bootstrap config of the minimal binary | `serde_json` config (less readable) |
 
 **N0 corrections / notes (2026-10-25):** `quinn` 0.11.12 still pulls **`quinn-udp` 0.5.16** transitively; our Do53 wildcard code depends on **0.6.3** directly — both versions coexist in the spike tree (fine). Keep `default-features = false` on quinn or aws-lc returns. h3: do not drop the server `Connection` before the client finishes reading (early drop → `ApplicationClose H3_NO_ERROR` on `recv_response`). ULA-on-dummy not tested (needs root).
+
+**Checkpoint A review (Claude, 2026-10-25; owner accepted):** (1) On Linux `[::]` is dual-stack: binding `0.0.0.0:p` then `[::]:p` fails with `EADDRINUSE` (measured) → every IPv6 socket sets `IPV6_V6ONLY` via `socket2` before bind (helper in N1, used by N4/N5/N7/N8/N9/N12). (2) On a dual-stack socket IPv4 peers appear as `::ffff:a.b.c.d` (measured: peer, `dst_ip` and `src_ip` all mapped; the reply still leaves from the right IPv4 address) → `QueryMeta.source` is `to_canonical()`-ed at entry (N2). (3) `quinn-udp` pinned to 0.5.16 (quinn's own version; spike re-run green, identical `RecvMeta.dst_ip` / `Transmit.src_ip`). (4) The spike used blocking std sockets; N4 must show the tokio integration (`readable()` + `try_io`). (5) Do not copy the spike's `max_early_data_size = u32::MAX`: 0-RTT stays off for DoQ and h3.
 
 Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i openssl-sys` empty;
 `cargo deny check` green.
@@ -62,7 +65,7 @@ Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i o
 - [x] N0: Spike — pktinfo reply-source, quinn ring-only, h3/h3-quinn compile, hyper h2 server (spikes/listeners/)
 
 ### Checkpoint A: Approval + spike
-- [ ] Spike findings in progress.md; dependency table confirmed or adjusted; owner go for Phase 1
+- [x] Spike findings in progress.md; dependency table confirmed or adjusted; owner go for Phase 1
 
 ### Phase 1: Core + Do53
 - [ ] N1: Crate skeleton — config, validation, errors, `Clock`, `QueryHandler` trait

@@ -54,8 +54,8 @@ that answer four questions with evidence:
 **Dependencies:** owner approval ✓ (2026-10-25) · **Files:** `spikes/listeners/**`, `tasks/progress.md` · **Scope:** M
 
 ## Checkpoint A: Approval + spike
-- [ ] Spike findings reviewed by Claude; dependency table final
-- [ ] **Owner go for Phase 1**
+- [x] Spike findings reviewed by Claude; dependency table final (2026-10-25; findings in plan-listeners.md "Checkpoint A review")
+- [x] **Owner go for Phase 1** (2026-10-25; `socket2` V6ONLY and `quinn-udp` 0.5.16 accepted)
 
 ## Phase 1: Core + Do53
 
@@ -69,21 +69,25 @@ unique ids (`policy::ListenerId`), public exposure only for dot/doh/doq, public 
 limits > 0, rate strings parsed (`N/s`). `ListenersError` with stable `code()`s from the spec +
 uniqueness test. `Clock` / `ManualClock` (per-crate pattern). `QueryHandler` trait + impl for
 `PolicyEngine`; `FakeHandler` for tests (records contexts, returns canned answers).
+Socket helper `bind_udp(addr)` / `bind_tcp(addr)` (std sockets via `socket2`, non-blocking, `SO_REUSEADDR`
+for TCP; IPv6 → `set_only_v6(true)` **before** bind) that every transport uses (Checkpoint A finding 1).
 
 **Acceptance criteria:**
 - [ ] Spec excerpt as Rust values validates; each rejection rule has a test with its code
 - [ ] `QueryHandler` impl for `PolicyEngine` compiles and is exercised by one test
 - [ ] Crate README skeleton
+- [ ] Socket helper: `0.0.0.0:p` and `[::]:p` bind side by side (UDP and TCP); an IPv6 socket reports `only_v6() == true`
 
-**Verification:** `cargo test -p dnscraft-listeners config`
+**Verification:** `cargo test -p dnscraft-listeners config` and `cargo test -p dnscraft-listeners socket`
 
-**Dependencies:** L0, Checkpoint A · **Files:** `Cargo.toml`, `crates/dnscraft-listeners/{Cargo.toml,src/lib.rs,src/config.rs,src/error.rs,src/clock.rs,src/handler.rs}` · **Scope:** M
+**Dependencies:** L0, Checkpoint A · **Files:** `Cargo.toml`, `crates/dnscraft-listeners/{Cargo.toml,src/lib.rs,src/config.rs,src/error.rs,src/clock.rs,src/handler.rs,src/socket.rs}` · **Scope:** M
 
 ## Task N2: Message core (`handle_wire`)
 
 **Description:** Transport-independent `handle_wire(bytes, QueryMeta) -> Option<Vec<u8>>` where
 `QueryMeta = { protocol, listener_id, source, client_id, size_limit, pad }`:
-decode with dnscraft-proto; undecodable without header → None; QR=1 → None; opcode ≠ QUERY → NOTIMP;
+decode with dnscraft-proto; undecodable without header → None; QR=1 → None; opcode ≠ QUERY → NOTIMP; `source` is normalised with `IpAddr::to_canonical()` before anything else
+(IPv4-mapped → IPv4, Checkpoint A finding 2);
 QDCOUNT ≠ 1 → FORMERR; class not IN/CH/ANY → REFUSED; CHAOS → REFUSED; EDNS version ≠ 0 → BADVERS;
 strip ECS; build `RequestContext` (RD/CD/DO); call handler; set id (0 for DoH/DoQ per RFC, else the
 query id), copy RD, set RA; OPT echo with `min(client, udp_payload_max)`; attach `PolicyAnswer.ede` only
@@ -92,6 +96,7 @@ when the client sent OPT; encode with `size_limit` (TC on truncation); pad to a 
 
 **Acceptance criteria:**
 - [ ] Table test per rule above (FORMERR/NOTIMP/REFUSED/BADVERS/TC/RA/RD/id/ECS/EDE/padding)
+- [ ] `::ffff:192.0.2.1` source reaches the handler / `RequestContext` as `192.0.2.1`
 - [ ] Padding length property: padded size % 468 == 0 and ≤ limit
 - [ ] Never panics on arbitrary input (proptest ≥ 1024 cases; fuzz target added in N13)
 
@@ -120,8 +125,9 @@ tables LRU-bounded by `max_tracked_sources` (evict oldest; never allocate per pa
 
 ## Task N4: Do53 UDP
 
-**Description:** UDP listener task: concrete-address socket via tokio; wildcard socket via `quinn-udp`
-with destination-address recv + source-address send (spike N0). Per datagram: admission (public source →
+**Description:** UDP listener task: concrete-address socket via tokio; wildcard socket via `quinn-udp` 0.5
+with destination-address recv + source-address send (spike N0), driven by tokio (`UdpSocket::readable()` +
+`try_io`, no sleep loops). Sockets come from the N1 helper (IPv6 = V6ONLY). Per datagram: admission (public source →
 drop), `handle_wire` with `size_limit = min(client EDNS size, udp_payload_max)` or 512 without OPT,
 bounded in-flight set (`max_inflight_per_listener`, excess dropped and counted), deadline
 `query_timeout` (expiry → drop). Counters for status.
@@ -129,6 +135,7 @@ bounded in-flight set (`max_inflight_per_listener`, excess dropped and counted),
 **Acceptance criteria:**
 - [ ] IPv4 + IPv6 loopback query answered through `FakeHandler` and through the real `PolicyEngine`
 - [ ] Wildcard socket replies from the arrival address (two loopback addresses)
+- [ ] `0.0.0.0` and `::` listeners on the same port both answer (IPv4 and IPv6 query)
 - [ ] Truncation: large answer → TC=1 within the limit; no OPT → 512 limit
 - [ ] In-flight cap and public-source drop counted
 
@@ -165,13 +172,15 @@ when requested; max message 65 535; public source → close immediately.
 **Description:** Build `rustls::ServerConfig`s (ring provider) from `Arc<CertResolver>`: TCP family with
 ALPN `dot` / `h2` + `http/1.1`, QUIC family (TLS 1.3) with ALPN `doq` / `h3`. Wrap the resolver so that
 on **public** listeners a ClientHello with an unregistered / missing SNI fails the handshake (via
-`tls::accept_public_sni` + `PolicyClientIds`), records a ban strike — except `SniKind::NodeHostname` /
+`tls::accept_public_sni` + `PolicyClientIds`; the SNI label is lower-cased before the registry lookup
+because `is_client_id_registered` is case-sensitive), records a ban strike — except `SniKind::NodeHostname` /
 `Apex`, which fail without a strike. No certificate installed → handshake fails with
 `listeners.tls.no_cert` (counted), listener stays bound. `tls_handshake_timeout` enforced by the callers
 (helper here). Extract the Client ID for `QueryMeta`.
 
 **Acceptance criteria:**
-- [ ] Handshake matrix (local/public × registered/unknown/missing/node/apex SNI) with rcgen certs
+- [ ] `PolicyClientIds(Arc<PolicyEngine>)` implements `dnscraft_tls::ClientIdRegistry` (L0 adapter) and follows `apply_config`
+- [ ] Handshake matrix (local/public × registered/unknown/missing/node/apex SNI, incl. upper-case SNI of a registered id) with rcgen certs
 - [ ] Cert A → install cert B → a new handshake sees B without restart; an open connection keeps working
 - [ ] `no_cert` state then install → next handshake succeeds
 
@@ -196,7 +205,7 @@ config and handshake timeout; Client ID from SNI into `QueryMeta`; padding on.
 ## Task N8: DoH over HTTP/2 + HTTP/1.1
 
 **Description:** `hyper` 1 server (via `hyper-util` auto connection builder) over the N6 TLS config.
-Routes: local listeners `/dns-query` and `/dns-query/<id>`; public listeners `/dns-query/<id>` only (unknown
+Routes: local listeners `/dns-query` and `/dns-query/<id>` (`<id>` lower-cased before the registry lookup); public listeners `/dns-query/<id>` only (unknown
 id → 404 + strike, other paths → 404 without strike). `GET ?dns=` (base64url, no padding; reject padding
 and oversize), `POST` with `Content-Type: application/dns-message` and a body cap; errors 400/405/413/415;
 rate limit → 429. Response: `application/dns-message`, `Cache-Control: max-age=<min TTL of answer>` for
@@ -213,7 +222,8 @@ NOERROR/NXDOMAIN, id 0, padding on. No other routes, no directory listing, no se
 
 ## Task N9: DoQ
 
-**Description:** `quinn` endpoint (spike N0 features) with the N6 QUIC config (ALPN `doq`, 0-RTT off).
+**Description:** `quinn` endpoint (spike N0 features) with the N6 QUIC config (ALPN `doq`, 0-RTT off), built with
+`Endpoint::new` on a socket from the N1 helper (IPv6 = V6ONLY).
 Per connection accept bidirectional streams up to `max_quic_streams_per_connection`; each stream: read
 2-byte length + message, require message id 0 (else close the connection with `DOQ_PROTOCOL_ERROR`),
 `handle_wire`, write length + answer, finish the stream. Idle timeout; Client ID from SNI; public
@@ -274,7 +284,8 @@ shutdown stops accepting and drains in-flight queries up to `grace`. `QueryEvent
 ## Task N12: DoH over HTTP/3 (owner: in v1)
 
 **Description:** When `h3 = true` on a DoH listener, also run a `quinn` endpoint on UDP with ALPN `h3` and
-serve the same DoH routes through `h3` + `h3-quinn`, reusing `doh_request.rs`. HTTP/2 responses carry
+serve the same DoH routes through `h3` + `h3-quinn`, reusing `doh_request.rs`. 0-RTT off
+(`max_early_data_size = 0`; do not copy the spike's `u32::MAX`). Socket from the N1 helper via `Endpoint::new`. HTTP/2 responses carry
 `Alt-Svc: h3=":<port>"; ma=86400`.
 
 **Acceptance criteria:**
