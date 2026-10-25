@@ -87,7 +87,7 @@ F1 skeleton + types ── F2 core rule parser ── F3 modifiers + IDNA ──
 - [ ] All 19 reference lists parse (manual run), skip report reviewed with owner
 
 ### Phase 2: Matching
-- [ ] Task M1: Domain index and verdicts with reasons
+- [x] Task M1: Domain index and verdicts with reasons
 - [ ] Task M2: Filter sets (merge, dedup, `$badfilter`, shared indexes, block mode, custom rules)
 - [ ] Task M3: CNAME chain matching, temporary allows, pause, counters
 - [ ] Task M4: Benchmark and memory measurement on a generated reference-sized set

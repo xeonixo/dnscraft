@@ -117,9 +117,9 @@ suffix walk lookup; pattern/regex stage; AdGuard priority evaluation (`$importan
 (rule text, source, important).
 
 **Acceptance criteria:**
-- [ ] Table-driven priority tests (success criterion 2 cases without sets)
-- [ ] Subdomain vs exact (`|x^`) semantics correct; dnstype filtering correct
-- [ ] Index build is deterministic; memory per domain entry measured in a unit test
+- [x] Table-driven priority tests (success criterion 2 cases without sets)
+- [x] Subdomain vs exact (`|x^`) semantics correct; dnstype filtering correct
+- [x] Index build is deterministic; memory per domain entry measured in a unit test
 
 **Verification:** `cargo test -p dnscraft-filtering index`
 

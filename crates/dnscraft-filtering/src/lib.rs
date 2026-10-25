@@ -15,6 +15,7 @@ mod builder;
 mod clock;
 mod error;
 mod fetch;
+mod index;
 mod modifiers;
 mod name;
 mod parser;
@@ -29,6 +30,10 @@ pub use builder::{
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use error::{FilterError, IdError, NameError, RuleError, UnsupportedKind};
 pub use fetch::{FetchError, FetchOutcome, Fetcher, FetcherConfig, MAX_REDIRECTS};
+pub use index::{
+    ENTRY_OVERHEAD_BYTES, Index, IndexBuilder, IndexError, IndexMemory, MemoryTexts,
+    RuleTextSource, SourceId, SourceKind,
+};
 pub use name::{DomainName, Labels, Suffixes};
 pub use parser::{
     ListSource, MAX_LINE_LEN, ParsedList, SKIP_SAMPLE_LIMIT, SkipCounts, SkipReason, SkippedLine,
