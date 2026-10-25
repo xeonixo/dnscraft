@@ -205,11 +205,11 @@ Scheduler loop on the injectable clock:
 - Only runs when `acme.enabled`.
 
 **Acceptance criteria:**
-- [ ] `ManualClock` table: no cert → issue now; ARI window used when present; fallback 30 d; backoff sequence capped; `Retry-After` respected
-- [ ] Expiring / expired flags at the 14 d / 0 d boundaries
-- [ ] `acme.enabled = false` → never orders, still loads/imports
+- [x] `ManualClock` table: no cert → issue now; ARI window used when present; fallback 30 d; backoff sequence capped; `Retry-After` respected
+- [x] Expiring / expired flags at the 14 d / 0 d boundaries
+- [x] `acme.enabled = false` → never orders, still loads/imports
 
-**Verification:** `cargo test -p dnscraft-tls renew`
+**Verification:** `cargo test -p dnscraft-tls --test renew`
 
 **Dependencies:** L7 · **Files:** `src/renew.rs`, `src/status.rs`, `tests/renew.rs` · **Scope:** M
 

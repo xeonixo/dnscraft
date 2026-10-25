@@ -11,7 +11,7 @@
 //! So far: [`TlsConfig`], [`TlsError`], [`Clock`] / [`ManualClock`],
 //! [`read_secret`], SNI helpers, [`CertStore`], [`CertResolver`], ACME
 //! ([`InstantAcme`], [`AcmeDirectory`], [`AcmeOrder`]), [`CloudflareClient`],
-//! DNS-01 [`wait_for_txt`], and [`issue`].
+//! DNS-01 [`wait_for_txt`], [`issue`], and renewal scheduling ([`next_renewal`]).
 
 #![deny(missing_docs)]
 
@@ -24,9 +24,11 @@ mod error;
 mod issue;
 mod pem_util;
 mod propagation;
+mod renew;
 mod resolver;
 mod secret;
 mod sni;
+mod status;
 mod store;
 
 pub use acme::{
@@ -47,10 +49,16 @@ pub use error::TlsError;
 pub use issue::issue;
 pub use pem_util::KeyPem;
 pub use propagation::{resolve_nameservers, wait_for_txt};
+pub use renew::{
+    AriWindow, BACKOFF_BASE, BACKOFF_CAP, RenewFn, RenewFut, RenewScheduler, ScheduleFn, StatusFn,
+    apply_cert_flags, backoff_delay, backoff_delay_with_rng, is_transient_renew_error,
+    next_renewal, next_renewal_with_rng, parse_retry_after, retry_after_from_error,
+};
 pub use resolver::CertResolver;
 pub use secret::{CLOUDFLARE_API_TOKEN_ENV, Secret, read_secret};
 pub use sni::{
     ClientIdRegistry, FIXED_RESERVED_LABELS, ReservedLabels, SniKind, accept_public_sni,
     parse_client_id_sni,
 };
+pub use status::{TlsStatus, cert_flags};
 pub use store::{CertMeta, CertStore, LoadedCert, TLS_DIR_NAME};

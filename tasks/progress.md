@@ -13,11 +13,13 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
-- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L7 done**; Checkpoint A passed (2026-10-25). Next: **L8** (renewal scheduler).
+- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L8 done**; Checkpoint A passed (2026-10-25). Next: **Checkpoint B** (issuance review), then L9.
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P8 done. Checkpoint A passed** (2026-10-25). Next: P9.
 - Blockers: none. Clients last. T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — tls L8 done (Cursor): `next_renewal` (ARI window or `not_after − renew_before`), exponential backoff + jitter (cap 6 h) honouring Retry-After, `RenewScheduler` on injectable clock (skips orders when `acme.enabled=false`), `TlsStatus` / `cert_flags` (expiring < 14 d, expired). 14 ManualClock tests. DoD green. Next: Checkpoint B, then L9.
 
 - 2026-10-25 — Policy P8 done (Cursor): steps 8–9 answer-side — CNAME chain names (qname + targets) via `match_chain` → Blocked replaces with block synthesis; each A/AAAA via `match_answer_ip` → Blocked same; skipped when `draft.synthetic`; AD cleared on replace, Secure AD kept when unblocked. Important allow on qname overrides chain block. Tests: chain block, important allow, IP rule, Secure AD. DoD green. Next: P9 (then Checkpoint B).
 
