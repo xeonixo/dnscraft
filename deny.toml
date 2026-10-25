@@ -1,0 +1,66 @@
+# cargo-deny configuration for the DNScraft workspace.
+# Project license: MIT OR Apache-2.0. Run `cargo deny check` before merging.
+
+[graph]
+all-features = false
+no-default-features = false
+
+[advisories]
+# RustSec advisory database (default URL). No ignores without a written reason.
+ignore = [
+    # Fixed in time ≥ 0.3.47, which requires rustc 1.88; workspace MSRV is 1.85.
+    # Impact is stack exhaustion on malicious RFC 2822 input. Our only Rfc2822
+    # use is Retry-After HTTP-date parsing with a hard length cap (see
+    # parse_retry_after_header); delta-seconds is preferred. Revisit when MSRV
+    # moves to ≥ 1.88.
+    { id = "RUSTSEC-2026-0009", reason = "time ≥0.3.47 needs rustc 1.88; MSRV 1.85; Retry-After length-capped" },
+]
+
+[licenses]
+# Permissive licenses compatible with MIT OR Apache-2.0 dual-licensing of this
+# workspace. Non-MIT/Apache entries are listed with a reason below.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception", # wasi / wit-bindgen (WebAssembly stubs)
+    "BSD-2-Clause",                   # zerocopy
+    "BSD-3-Clause",                   # subtle (constant-time crypto helpers)
+    "BSL-1.0",                        # ryu (float formatting; Boost permissive)
+    "ISC",                            # rustls / ring / untrusted
+    "Unicode-3.0",                    # ICU / idna Unicode data (permissive)
+    "Zlib",                           # miniz_oxide / tinyvec
+    "0BSD",                           # adler2 (public-domain style)
+    "CDLA-Permissive-2.0",            # webpki-roots (Mozilla root store data)
+    "Unlicense",                      # memchr / aho-corasick (public domain)
+]
+confidence-threshold = 0.8
+# No per-crate license exceptions yet. (r-efi also offers LGPL-2.1-or-later as an
+# OR option; MIT / Apache-2.0 already satisfy it — no LGPL copy-left is selected.)
+exceptions = []
+
+# ring ships an OpenSSL-derived license file that SPDX cannot express as a
+# single identifier; clarify so cargo-deny does not reject it.
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[licenses.private]
+# Workspace crates are `publish = false`; still check their declared licenses.
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+deny = [
+    { crate = "aws-lc-rs", reason = "SPEC: ring-only TLS; no aws-lc" },
+    { crate = "aws-lc-sys", reason = "SPEC: ring-only TLS; no aws-lc" },
+    { crate = "openssl", reason = "SPEC: no OpenSSL; rustls + ring only" },
+    { crate = "openssl-sys", reason = "SPEC: no OpenSSL; rustls + ring only" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

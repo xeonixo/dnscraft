@@ -36,6 +36,18 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+  # Pin: https://github.com/EmbarkStudios/cargo-deny-action/releases/tag/v2.1.1
+  # (README: https://github.com/EmbarkStudios/cargo-deny-action#usage)
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2.1.1
+        with:
+          command: check
+          arguments: --locked
+
   coverage:
     name: coverage (≥ 80 % lines)
     runs-on: ubuntu-latest

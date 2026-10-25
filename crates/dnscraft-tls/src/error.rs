@@ -202,12 +202,20 @@ impl TlsError {
     }
 }
 
+/// Maximum accepted length of a `Retry-After` header value.
+///
+/// Caps stack use in the RFC 2822 path (RUSTSEC-2026-0009 / time < 0.3.47).
+const RETRY_AFTER_MAX_LEN: usize = 64;
+
 /// Parses an HTTP `Retry-After` header (RFC 9110 §10.2.3).
 ///
 /// Accepts delta-seconds and HTTP-date (IMF-fixdate / RFC 2822). Past dates
-/// yield a zero delay.
+/// yield a zero delay. Values longer than [`RETRY_AFTER_MAX_LEN`] are rejected.
 pub fn parse_retry_after_header(value: &str) -> Option<Duration> {
     let value = value.trim();
+    if value.len() > RETRY_AFTER_MAX_LEN {
+        return None;
+    }
     if let Ok(secs) = value.parse::<u64>() {
         return Some(Duration::from_secs(secs));
     }
