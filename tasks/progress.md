@@ -3,12 +3,15 @@
 Resume point for interrupted sessions. Newest entry first.
 Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
+Earlier modules: [archive/](archive/) (resolver plan + tasks).
+
 **Workflow:** each task is implemented by a Haiku/Sonnet subagent, reviewed by the lead
 (diff, `fmt`, `clippy`, tests), ticked off in `todo.md`, logged here, and committed.
 
 ## Current state
 
-- Module `resolver` COMPLETE (Checkpoint E approved by owner 2026-10-25). Next module: `filtering` — SPEC-filtering.md drafted, awaiting owner approval.
+- Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
+- Module `filtering`: spec approved 2026-10-25; plan + tasks drafted (tasks/plan.md, tasks/todo.md) — awaiting owner approval incl. dependencies (reqwest+rustls, regex, idna, serde_json) and CI fuzz job.
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)

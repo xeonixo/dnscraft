@@ -1,159 +1,132 @@
-# Implementation Plan: `resolver` module
+# Implementation Plan: `filtering` module
 
-> Spec: [SPEC-resolver.md](../SPEC-resolver.md) · Project spec: [SPEC.md](../SPEC.md) ·
-> ADR: [0001-recursion-engine.md](../docs/adr/0001-recursion-engine.md) · Tasks: [todo.md](todo.md)
+> Spec: [SPEC-filtering.md](../SPEC-filtering.md) · Project spec: [SPEC.md](../SPEC.md) ·
+> Tasks: [todo.md](todo.md) · Resume log: [progress.md](progress.md) ·
+> Previous module: [archive/resolver-plan.md](archive/resolver-plan.md)
 
 ## Overview
 
-Build `crates/dnscraft-proto` (in-house DNS wire format and DNSSEC record types) and
-`crates/dnscraft-resolver`: a recursive, DNSSEC-validating resolver with cache, serve-stale,
-prefetch, in-flight dedup, forward zones, and locally served private reverse zones —
-plus `crates/dnscraft-testkit`, an in-process fake DNS hierarchy so every behaviour is
-tested without internet access.
+Build `crates/dnscraft-filtering`: an AdGuard-DNS-compatible rule parser and rule
+builder, a compact in-memory match index with AdGuard priority semantics, filter sets,
+temporary allows, list download/caching/scheduling with atomic hot reload, and the
+blocked-services catalog. Pure library, no DNS transport; `policy` consumes it later.
 
 ## Architecture Decisions
 
-- **ADR-0001 accepted: Option D — write as much as reasonable in-house.**
-  - In-house: wire format (`dnscraft-proto`), DNSSEC validation logic, recursion, transport,
-    cache, dedup, serve-stale, prefetch, forward zones, EDE.
-  - Third-party by design: crypto primitives via `ring` (never hand-written), `tokio`.
-  - hickory only in `dnscraft-testkit` (dev), acting as an **independent oracle**: the testkit
-    encodes with hickory, the resolver decodes with `dnscraft-proto`, so mismatches surface.
-    hickory pinned exactly (`=0.26.3`).
-- **`dnscraft-proto` has no I/O and no async.** Pure encode/decode, reusable by listeners,
-  policy, and filtering later. Decoding is hardened for untrusted input: length and pointer
-  limits, no recursion on compression pointers, no panics (fuzzed).
-- **Testkit first, real internet last.** All success criteria except #3 are proven against
-  the fake hierarchy. Internet checks are manual and happen at checkpoints.
-- **Injectable time and root hints.** Clock and root hints (`SocketAddr`, so ports work) come
-  via config; expiry, serve-stale, and RRSIG validity are testable without sleeping.
-- **Narrow public API** exactly as in the spec (`Resolver::new/resolve/flush/stats`).
-- **Trust anchors built in** (RFC 5011 tracking deferred, see Decisions).
+- **Parser is pure and hardened** (lists are untrusted): line-based, no panics, per-line
+  length cap (4 KiB), fuzzed. Unsupported rules are skipped with a reason, never fatal.
+- **Match index (in-house, no extra dependency):**
+  - Domain rules (`||x^`, plain domains, hosts lines — the vast majority) live in one
+    byte arena of reversed, lower-cased names plus a sorted `Vec<u32>` of offsets.
+    Lookup walks the queried name's suffixes (≤ 127) and binary-searches each.
+    Expected ≈ 35–45 MB for the reference set, no per-entry heap allocation.
+  - Per-entry flags (block/allow, important, subdomains, dnstype set, source id) in a
+    parallel compact `Vec`; sources referenced by `u32` id → list id + line number.
+  - Patterns (wildcards) and regexes (few thousand at most) are evaluated only after the
+    domain index, with a cheap literal prefilter (required substring) to skip most.
+  - If the benchmark misses the budgets, fall back to a hash table keyed by suffix hash
+    (`hashbrown` is already in the lockfile) — decided at Checkpoint B, not up front.
+- **Filter sets share list data:** each list is parsed once into an immutable `ListIndex`.
+  A set's effective index is built by merging its lists' indexes plus custom rules and
+  service rules (dedup + `$badfilter` applied at build time). Sets with the same list
+  combination share one merged index (`Arc`), so typical setups hold one copy.
+- **Hot reload:** `RwLock<Arc<Snapshot>>`; readers clone the `Arc` (lock held for
+  nanoseconds), rebuilds run on a blocking thread and swap atomically. No `arc-swap` dep.
+- **Clock injectable** (reuse the resolver's `Clock` trait shape; filtering gets its own
+  small trait to keep the dependency graph clean) for temporary allows, pause, schedules
+  of updates.
+- **I/O isolated:** `ListStore` (data directory, atomic writes, metadata JSON) and
+  `Fetcher` (HTTP) behind small traits, so tests use a temp dir and a local test server.
+
+## Dependencies (need approval)
+
+| Crate | Purpose | Notes |
+|---|---|---|
+| `reqwest` 0.12, `default-features = false`, features `rustls-tls` (ring provider, webpki roots), `gzip` | list + catalog downloads | Also the natural HTTP client for `tls` (ACME, Cloudflare, DynDNS echo) and `clients` (UniFi API) later, so it is paid for once. Redirect policy hook refuses HTTPS→HTTP. webpki roots because the container has no system CA store. |
+| `regex` 1.x (already in the lockfile) | regex rules | Linear-time engine; compiled size limit per rule (`RegexBuilder::size_limit`). |
+| `idna` 1.x (already in the lockfile) | non-ASCII rules → punycode | Alternative if you prefer smaller: skip non-ASCII rules with a warning (lists are > 99.9 % ASCII). |
+| `serde` + `serde_json` (serde already approved) | `services.json` catalog, list metadata | — |
+
+Dev only: none new (local HTTP test server is hand-written on tokio, as the testkit does
+for DNS).
 
 ## Dependency graph
 
 ```
-workspace (1) ── testkit hierarchy (3)
-   │
-   └── W1 names ── W2 rdata ── W3 message/EDNS ── W4 DNSSEC records
-                                   │                    │
-                                   │              W5 fuzzing (after W3, extended after W4)
-                                   │
-                                   └── 4 iterative resolution
-                                          ├── 5 CNAME/NX/NODATA/limits
-                                          ├── 6 transport robustness
-                                          └── 7 QNAME minimisation
-                                                 └── 8 testkit DNSSEC zones (◄ 3)
-                                                        └── 9a chain + signature verification (◄ W4)
-                                                               └── 9b status mapping
-                                                                      └── 10 denial + NTAs
-                                                                             └── 11 cache
-                                                                                    ├── 12 dedup + prefetch
-                                                                                    └── 13 serve-stale
-                                          14 forward zones ◄── 4, 9b, 11
-                                          15 local reverse zones + ECS ◄── 4
-                                          16 stats, codes, bench, acceptance ◄── all
+F1 skeleton + types ── F2 core rule parser ── F3 modifiers + IDNA ── F4 wildcard/regex
+                               │                                          │
+                               └── F5 builder + fuzz + proptest ◄─────────┘
+                                          │
+                                M1 domain index + verdicts
+                                          │
+                                M2 filter sets (merge, dedup, $badfilter, sharing)
+                                          │
+                     M3 chain, temporary allow, pause, counters
+                                          │
+                                M4 benchmark + memory (Checkpoint B)
+                                          │
+         L1 list store ── L2 fetcher ── L3 scheduler + hot reload + status
+                                          │
+                                L4 blocked services catalog
+                                          │
+                     C1 engine API polish, docs, coverage, fuzz, real-list run
 ```
 
 ## Task List
 
-### Phase 1: Foundation
-- [x] Task 1: Workspace skeleton and toolchain
-- [x] Task 2: Spike `hickory-recursor` vs. in-house, write ADR-0001
-- [x] Task 3: Testkit fake hierarchy
+### Phase 1: Rules
+- [ ] Task F1: Crate skeleton, core types, error codes
+- [ ] Task F2: Core rule parser (adblock domain rules, exceptions, anchors, plain, hosts, comments, skipped categories)
+- [ ] Task F3: Modifiers and IDNA
+- [ ] Task F4: Wildcard and regex rules
+- [ ] Task F5: Rule builder, round trip, fuzz target, proptest
 
-### Checkpoint A: Foundation + decision
-- [x] Builds clean, testkit answers referrals
-- [x] ADR-0001 accepted (Option D) by the owner
-- [x] Revised plan approved
+### Checkpoint A: Rules
+- [ ] All syntax/modifier unit tests green; fuzz target 10 min clean
+- [ ] All 19 reference lists parse (manual run), skip report reviewed with owner
 
-### Phase 1b: Wire format (`dnscraft-proto`)
-- [x] Task W1: Domain names and compression
-- [x] Task W2: Core RDATA types
-- [x] Task W3: Messages and EDNS
-- [x] Task W4: DNSSEC record types and canonical form
-- [x] Task W5: Fuzzing and oracle round-trips
+### Phase 2: Matching
+- [ ] Task M1: Domain index and verdicts with reasons
+- [ ] Task M2: Filter sets (merge, dedup, `$badfilter`, shared indexes, block mode, custom rules)
+- [ ] Task M3: CNAME chain matching, temporary allows, pause, counters
+- [ ] Task M4: Benchmark and memory measurement on a generated reference-sized set
 
-### Checkpoint W: Wire format
-- [x] Every testkit response decodes with `dnscraft-proto`; round-trips against hickory pass
-- [x] Fuzz targets run 10 min each without findings — coverage 96 %
-- [x] Review with human (owner approved 2026-10-24, fuzz result to follow)
+### Checkpoint B: Matching
+- [ ] Priority table (success criterion 2) green
+- [ ] Budgets met (criterion 4) or fallback index decided with owner
 
-### Phase 2: Recursion
-- [x] Task 4: Iterative resolution happy path
-- [x] Task 5: CNAME chains, NXDOMAIN, NODATA, limits
-- [x] Task 6: Transport robustness
-- [x] Task 7: QNAME minimisation
+### Phase 3: Lists and services
+- [ ] Task L1: List store (data directory, atomic writes, metadata, local file lists)
+- [ ] Task L2: Fetcher (conditional GET, size cap, timeout, redirect policy, last-good fallback)
+- [ ] Task L3: Scheduler, hot reload, `apply_config`, list status and unique contribution
+- [ ] Task L4: Blocked services catalog
 
-### Checkpoint B: Recursion
-- [x] Success criterion 1 met; manual `example.com A` resolves from the internet (owner approved 2026-10-24)
+### Checkpoint C: Lists and services
+- [ ] Criteria 5 and 6 met; reload never blocks matching (concurrency test)
 
-### Phase 3: DNSSEC
-- [x] Task 8: Testkit DNSSEC zones
-- [x] Task 9a: Chain of trust and signature verification
-- [x] Task 9b: Validation status, AD, SERVFAIL + EDE, CD
-- [x] Task 10: Authenticated denial (NSEC/NSEC3) and negative trust anchors
+### Phase 4: Completion
+- [ ] Task C1: Engine API polish, stats, README, error-code table, coverage ≥ 80 %, real-list acceptance run
 
-### Checkpoint C: DNSSEC
-- [x] Success criteria 2 and 3 met (owner approved 2026-10-24)
-
-### Phase 4: Cache and resilience
-- [x] Task 11: Positive/negative cache
-- [x] Task 12: In-flight dedup and prefetch
-- [x] Task 13: Serve-stale
-
-### Checkpoint D: Cache
-- [x] Success criteria 4, 5, 6 met (owner approved 2026-10-24)
-
-### Phase 5: Edges and completion
-- [x] Task 14: Forward zones
-- [x] Task 15: Locally served private reverse zones and ECS stripping
-- [x] Task 16: Stats, error codes, benchmark, example binary, acceptance
-
-### Checkpoint E: Complete
-- [x] All 8 success criteria met, coverage ≥ 80 % (92.78 %; cache-hit p50 ≈ 214 ns)
-- [x] Ready for review (`/review`) — owner approved 2026-10-25 after review fixes
+### Checkpoint D: Complete
+- [ ] All 8 success criteria met; review (`/agent-skills:code-review-and-quality`) passed
 
 ## Parallelization
 
-W1 → W2 → W3 are sequential. W4 and Phase 2 can run in parallel once W3 is done.
-Task 8 (testkit) alongside Tasks 5–7; Task 15 alongside Phase 3/4.
-
-## Dependencies
-
-| Crate | Purpose | Status |
-|---|---|---|
-| `tokio` | runtime, sockets, timers | approved |
-| `ring` | DNSSEC signature verification, digests | approved |
-| `thiserror`, `tracing`, `serde`, `toml` | errors, logging, config | approved |
-| `rand` | query ids, source ports | approved |
-| `hickory-proto`, `hickory-server` (`=0.26.3`) | **testkit / dev only**, independent oracle | approved |
-| `proptest` | property tests for encode/decode (dev) | approved |
-| `libfuzzer-sys` + `cargo-fuzz` (nightly toolchain, fuzz crate only) | fuzzing | approved |
-| `criterion` | benchmarks (dev) | approved |
-| `cargo-llvm-cov` | coverage (tool) | approved |
-
-Cache: implemented in-house (size-in-bytes bounded); no `moka`.
+F2 → F3 → F4 sequential (same parser files). F5 can start after F2 (builder) and get the
+fuzz target extended after F4. L1 and L2 can run in parallel with M2–M4 (separate files).
+L4 after L1/L2.
 
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Own wire parser has bugs on untrusted input | High | Strict limits, no panics (`clippy` + `#![forbid(unsafe_code)]`), fuzzing (W5), hickory oracle round-trips |
-| In-house recursion + wire format increase effort | Med | Accepted by the owner; tasks stay S/M; testkit already in place |
-| DNSSEC validation is subtle (canonical form, NSEC3 opt-out, wildcards, algorithms) | High | Dedicated testkit zones per case (Task 8, signed by hickory = independent implementation); cross-check with `delv`/`kdig +dnssec` at Checkpoint C |
-| Testkit signing with controllable time | Med | Sign at test time with explicit inception/expiration; no static fixtures with expiring signatures |
-| Fake hierarchy on one loopback IP with many ports | Med | Root hints and an address map carry `ip:port`; resolver accepts a test-only address override |
-| IPv6 unavailable in CI/container | Low | IPv6 tests skip with a clear message when `::1` cannot bind |
+| Memory budget missed with 2.25 M rules | High | Arena + offsets design; measured in M4 before list I/O exists; hash fallback ready |
+| AdGuard priority/modifier semantics subtly differ | Med | Table-driven tests from AdGuard's documented examples; manual comparison on a few real lists |
+| Regex rules from lists are slow or huge | Med | Size limit per regex, literal prefilter, count of regex rules reported; budget test with many regexes |
+| Malicious/garbled list content | Med | Line cap, fuzzing, skip-with-reason, 64 MiB cap, last-good fallback |
+| HTTP client weight (binary size budget 30 MB image) | Low | `default-features = false`, rustls+ring only; size checked when the binary exists |
+| Tests hitting the internet | Low | Local test server only; real lists only in manual runs |
 
 ## Decisions
 
-Approved 2026-10-24:
-
-1. Toolchain installed: `rustup` (stable 1.99.1, rustfmt, clippy), `bind-utils`, `knot-utils`.
-2. RFC 5011: built-in anchors per release + UI warning on mismatch; tracking may follow later.
-3. CI: GitHub Actions workflow (fmt, clippy, test, coverage) — done in Task 1.
-4. Initial dependency list approved.
-5. Implementation is delegated to Haiku/Sonnet subagents; the lead reviews every task before ticking it off.
-6. ADR-0001: Option D (in-house wire format and DNSSEC logic; `ring` for crypto; hickory only as test oracle).
-7. Revised plan (phase 1b) and new deps `ring`, `proptest`, `libfuzzer-sys`/`cargo-fuzz` approved.
+Pending owner approval: this plan and the dependency list above.

@@ -212,9 +212,10 @@ custom_rules = ["@@||example.org^"]
 - Block mode: selectable per filter set; default `REFUSED`.
 - List updates every 24 h by default.
 - Hosts lines in lists always block, never redirect.
+- `$dnsrewrite` record rewrites are honoured only in custom rules; from downloaded lists
+  only rcode/blocking forms apply.
+- Spec approved 2026-10-25. Dependencies are proposed in the plan for approval.
 
 ## Open Questions
 
-- `$dnsrewrite` record rewrites from downloaded lists are ignored (consistent with the
-  hosts decision) — confirm.
-- Dependencies (HTTP client, regex, IDNA) are proposed in the plan for approval.
+None.
