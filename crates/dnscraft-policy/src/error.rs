@@ -121,6 +121,9 @@ pub enum ConfigReason {
         /// The rejected pattern.
         pattern: Arc<str>,
     },
+    /// [`PauseUntil::For`](crate::PauseUntil::For) was called with a zero duration.
+    #[error("pause duration must be greater than zero")]
+    ZeroPauseDuration,
 }
 
 impl ConfigReason {

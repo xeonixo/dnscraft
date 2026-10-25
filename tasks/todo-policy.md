@@ -259,6 +259,22 @@ Step 11: profile `suppress_aaaa` and qtype AAAA → NODATA; other qtypes unchang
 
 **Dependencies:** P9 · **Files:** `src/pause.rs`, `src/engine.rs`, `src/stats.rs`, `tests/pause.rs`, `tests/reload.rs` · **Scope:** M
 
+## Task P10b: Pause trace, stats scope (review follow-ups)
+
+**Description:** Claude P10 review follow-ups: decision-record pause breadcrumb; test queries
+skip counters; `StatsTable` adds new ids and drops removed ones; zero-duration pause rejected;
+`apply_config` serialised; `resume` infallible; accessors hidden.
+
+**Acceptance criteria:**
+- [x] Global / profile pause → exactly one `DecisionStep::ProtectionPaused { scope }`; no pause → none
+- [x] `test_query: true` leaves `stats()` unchanged; normal query is counted
+- [x] Reload adding a view+profile counts queries on the new ids; removed ids leave `stats()`
+- [x] `PauseUntil::For(Duration::ZERO)` → `policy.config.invalid`; concurrent `apply_config` serialised
+
+**Verification:** `cargo test -p dnscraft-policy pause` / `reload`
+
+**Dependencies:** P10 · **Files:** `src/decision.rs`, `src/pause.rs`, `src/engine.rs`, `src/stats.rs`, `tests/pause.rs`, `tests/reload.rs` · **Scope:** S
+
 ## Task P11: SafeSearch + schedules config surface
 
 **Description:** Accept and validate the `safesearch` (enabled + providers) and `schedules` (time

@@ -13,8 +13,8 @@ use dnscraft_filtering::{
 };
 use dnscraft_policy::{
     AnswerOrigin, ClientFlags, ClientId, DecisionStep, DnsProtocol, ListenerId, NoClients,
-    PauseScope, PauseUntil, PolicyConfig, PolicyEngine, ProfileConfig, ProfileId, RequestContext,
-    SafeSearchConfig, ViewConfig, ViewId,
+    PauseScope, PauseUntil, PolicyConfig, PolicyEngine, ProfileConfig, ProfileId,
+    ProtectionPauseScope, RequestContext, SafeSearchConfig, ViewConfig, ViewId,
 };
 use dnscraft_proto::{Class, Name, Rcode, RecordType};
 use dnscraft_resolver::dnssec::TrustAnchors;
@@ -243,12 +243,97 @@ async fn pause_until_resumed_stays_until_resume() {
         .unwrap();
     assert!(!still.record.steps.contains(&DecisionStep::FilterBlocked));
 
-    eng.resume(PauseScope::Global).unwrap();
+    eng.resume(PauseScope::Global);
     let after = eng
         .handle(ctx("ads.example", RecordType::A, None))
         .await
         .unwrap();
     assert!(after.record.steps.contains(&DecisionStep::FilterBlocked));
+}
+
+fn paused_steps(record: &dnscraft_policy::DecisionRecord) -> Vec<ProtectionPauseScope> {
+    record
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            DecisionStep::ProtectionPaused { scope } => Some(*scope),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn pause_records_protection_paused_once_with_scope() {
+    let clock = clock_at(1_000);
+    let (_h, eng) = engine_blocking(Arc::clone(&clock)).await;
+
+    // No pause → no ProtectionPaused breadcrumb.
+    let plain = eng
+        .handle(ctx("ads.example", RecordType::A, None))
+        .await
+        .unwrap();
+    assert!(paused_steps(&plain.record).is_empty());
+    assert!(plain.record.steps.contains(&DecisionStep::FilterBlocked));
+
+    eng.pause(PauseScope::Global, PauseUntil::UntilResumed)
+        .unwrap();
+    let global = eng
+        .handle(ctx("ads.example", RecordType::A, None))
+        .await
+        .unwrap();
+    assert_eq!(
+        paused_steps(&global.record),
+        vec![ProtectionPauseScope::Global]
+    );
+    assert!(!global.record.steps.contains(&DecisionStep::FilterBlocked));
+    eng.resume(PauseScope::Global);
+
+    // Per-profile pause on a dedicated view.
+    let h = Hierarchy::start().await.unwrap();
+    let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
+    let eng2 = PolicyEngine::new(
+        policy_cfg(
+            vec![profile("kids"), profile("default")],
+            vec![
+                view("kids", false, "kids", &["kids"]),
+                view("default", true, "default", &[]),
+            ],
+        ),
+        blocking_filter(),
+        resolver,
+        Arc::new(NoClients),
+        clock_at(1_000),
+    )
+    .unwrap();
+    eng2.pause(
+        PauseScope::Profile(ProfileId::new("kids").unwrap()),
+        PauseUntil::UntilResumed,
+    )
+    .unwrap();
+    let kids = eng2
+        .handle(ctx("ads.example", RecordType::A, Some("kids")))
+        .await
+        .unwrap();
+    assert_eq!(
+        paused_steps(&kids.record),
+        vec![ProtectionPauseScope::Profile]
+    );
+    assert!(!kids.record.steps.contains(&DecisionStep::FilterBlocked));
+
+    let other = eng2
+        .handle(ctx("ads.example", RecordType::A, None))
+        .await
+        .unwrap();
+    assert!(paused_steps(&other.record).is_empty());
+}
+
+#[tokio::test]
+async fn pause_zero_duration_rejected() {
+    let (_h, eng) = engine_blocking(clock_at(1_000)).await;
+    let err = eng
+        .pause(PauseScope::Global, PauseUntil::For(Duration::ZERO))
+        .unwrap_err();
+    assert_eq!(err.code(), "policy.config.invalid");
 }
 
 #[tokio::test]

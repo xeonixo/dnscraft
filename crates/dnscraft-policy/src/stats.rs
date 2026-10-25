@@ -119,18 +119,18 @@ impl StatsTable {
         }
     }
 
-    /// Ensures counters exist for the given ids (config reload). Existing
-    /// counters for matching ids are kept so totals survive hot reload.
-    pub(crate) fn ensure(
-        &mut self,
-        views: impl IntoIterator<Item = ViewId>,
-        profiles: impl IntoIterator<Item = ProfileId>,
-    ) {
+    /// Syncs the table to the live id set on config reload: adds missing
+    /// counters (so new views/profiles start at zero) and drops counters for
+    /// removed ids. Existing counters for matching ids are kept.
+    pub(crate) fn sync_ids(&mut self, views: &[ViewId], profiles: &[ProfileId]) {
+        self.views.retain(|id, _| views.iter().any(|v| v == id));
+        self.profiles
+            .retain(|id, _| profiles.iter().any(|p| p == id));
         for v in views {
-            self.views.entry(v).or_default();
+            self.views.entry(v.clone()).or_default();
         }
         for p in profiles {
-            self.profiles.entry(p).or_default();
+            self.profiles.entry(p.clone()).or_default();
         }
     }
 

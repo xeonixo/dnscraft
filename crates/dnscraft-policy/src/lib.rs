@@ -33,7 +33,8 @@ pub use config::{
     ProfileConfig, RequestContext, SafeSearchConfig, ScheduleConfig, ViewConfig, ViewRecordConfig,
 };
 pub use decision::{
-    AnswerOrigin, DecisionRecord, DecisionStep, DecisionTimings, FilterHit, RebindSkipReason,
+    AnswerOrigin, DecisionRecord, DecisionStep, DecisionTimings, FilterHit, ProtectionPauseScope,
+    RebindSkipReason,
 };
 pub use directory::{ClientDirectory, NoClients};
 pub use engine::{PolicyAnswer, PolicyEngine};

@@ -244,6 +244,107 @@ async fn counters_increment_and_survive_reload() {
 }
 
 #[tokio::test]
+async fn test_query_does_not_inflate_stats() {
+    let eng = engine().await;
+    let before = eng.stats();
+
+    let mut tq = ctx("ads.example", RecordType::A);
+    tq.test_query = true;
+    let ans = eng.handle(tq).await.unwrap();
+    assert!(!ans.loggable);
+    assert!(ans.record.steps.contains(&DecisionStep::FilterBlocked));
+    assert_eq!(eng.stats(), before, "test_query must not bump counters");
+
+    eng.handle(ctx("ads.example", RecordType::A)).await.unwrap();
+    let after = eng.stats();
+    let view = after
+        .views
+        .iter()
+        .find(|v| v.view.as_str() == "default")
+        .unwrap();
+    assert_eq!(view.queries, 1);
+    assert_eq!(view.blocked, 1);
+}
+
+#[tokio::test]
+async fn apply_config_adds_new_ids_and_drops_removed_counters() {
+    let eng = engine().await;
+    eng.handle(ctx("ads.example", RecordType::A)).await.unwrap();
+    assert_eq!(
+        eng.stats()
+            .views
+            .iter()
+            .find(|v| v.view.as_str() == "default")
+            .unwrap()
+            .queries,
+        1
+    );
+
+    // Add a new view + profile (mutant that skips ensure/sync for new ids fails).
+    let mut next = base_cfg();
+    next.profiles.push(profile("kids"));
+    next.views.push(ViewConfig {
+        id: ViewId::new("kids").unwrap(),
+        is_default: false,
+        subnets: Vec::new(),
+        client_ids: vec![dnscraft_policy::ClientId::new("kids").unwrap()],
+        records: Vec::new(),
+        profile: ProfileId::new("kids").unwrap(),
+    });
+    eng.apply_config(next).await.unwrap();
+
+    let mut kids_ctx = ctx("ads.example", RecordType::A);
+    kids_ctx.client_id = Some(dnscraft_policy::ClientId::new("kids").unwrap());
+    eng.handle(kids_ctx).await.unwrap();
+
+    let stats = eng.stats();
+    let kids_view = stats
+        .views
+        .iter()
+        .find(|v| v.view.as_str() == "kids")
+        .expect("new view must appear in stats");
+    assert_eq!(kids_view.queries, 1);
+    assert_eq!(kids_view.blocked, 1);
+    let kids_profile = stats
+        .profiles
+        .iter()
+        .find(|p| p.profile.as_str() == "kids")
+        .expect("new profile must appear in stats");
+    assert_eq!(kids_profile.queries, 1);
+    assert_eq!(
+        stats
+            .views
+            .iter()
+            .find(|v| v.view.as_str() == "default")
+            .unwrap()
+            .queries,
+        1,
+        "existing counters survive"
+    );
+
+    // Drop kids → counters for removed ids must leave stats().
+    eng.apply_config(base_cfg()).await.unwrap();
+    let pruned = eng.stats();
+    assert!(
+        pruned.views.iter().all(|v| v.view.as_str() != "kids"),
+        "removed view counters must be dropped"
+    );
+    assert!(
+        pruned.profiles.iter().all(|p| p.profile.as_str() != "kids"),
+        "removed profile counters must be dropped"
+    );
+    assert_eq!(
+        pruned
+            .views
+            .iter()
+            .find(|v| v.view.as_str() == "default")
+            .unwrap()
+            .queries,
+        1
+    );
+}
+
+#[tokio::test]
 async fn apply_config_drops_pause_for_removed_profile() {
     let h = Hierarchy::start().await.unwrap();
     let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());

@@ -9,7 +9,7 @@ use dnscraft_proto::RecordType;
 use dnscraft_resolver::{DnssecStatus, RequestFlags, Resolver};
 
 use crate::config::{PolicyConfig, RequestContext};
-use crate::decision::{AnswerOrigin, DecisionStep};
+use crate::decision::{AnswerOrigin, DecisionStep, ProtectionPauseScope};
 use crate::directory::ClientDirectory;
 use crate::error::PolicyError;
 use crate::ids::ProfileId;
@@ -43,6 +43,9 @@ pub struct PolicyEngine {
     clock: Arc<dyn Clock>,
     pauses: Mutex<PauseTable>,
     stats: RwLock<StatsTable>,
+    /// Serialises [`Self::apply_config`] so concurrent reloads cannot let an
+    /// older build overwrite a newer one.
+    config_lock: Mutex<()>,
 }
 
 impl PolicyEngine {
@@ -69,6 +72,7 @@ impl PolicyEngine {
             clock,
             pauses: Mutex::new(PauseTable::default()),
             stats: RwLock::new(StatsTable::new(view_ids, profile_ids)),
+            config_lock: Mutex::new(()),
         })
     }
 
@@ -92,8 +96,16 @@ impl PolicyEngine {
 
     /// Rebuilds and swaps the snapshot. On validation failure the previous
     /// snapshot stays in place. Pause state and counters survive by id;
-    /// pauses for removed profiles are dropped.
+    /// pauses and counters for removed profiles/views are dropped.
+    ///
+    /// Concurrent calls are serialised so an older build cannot overwrite a
+    /// newer one.
     pub async fn apply_config(&self, config: PolicyConfig) -> Result<(), PolicyError> {
+        let _serial = self
+            .config_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
         let known_sets: Vec<_> = self.filter.snapshot().set_ids().cloned().collect();
         let known_zones = self.resolver.forward_zone_ids();
         let snapshot = PolicySnapshot::build(config, &known_sets, &known_zones)?;
@@ -113,7 +125,7 @@ impl PolicyEngine {
         self.stats
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .ensure(view_ids, profile_ids);
+            .sync_ids(&view_ids, &profile_ids);
         Ok(())
     }
 
@@ -128,12 +140,11 @@ impl PolicyEngine {
     }
 
     /// Clears a previously set pause for `scope`.
-    pub fn resume(&self, scope: PauseScope) -> Result<(), PolicyError> {
+    pub fn resume(&self, scope: PauseScope) {
         self.pauses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .resume(scope);
-        Ok(())
     }
 
     /// Handles one query: select, run steps, emit.
@@ -157,7 +168,11 @@ impl PolicyEngine {
         let mut draft = Draft::new(selection);
         draft.timings.select_us = select_us;
 
-        let paused = self.is_paused(&draft.selection.profile_id);
+        let pause_scope = self.active_pause(&draft.selection.profile_id);
+        let paused = pause_scope.is_some();
+        if let Some(scope) = pause_scope {
+            draft.steps.push(DecisionStep::ProtectionPaused { scope });
+        }
 
         // ANY → RFC 8482, never resolve (and never view records).
         if ctx.query.qtype == RecordType::ANY {
@@ -314,7 +329,9 @@ impl PolicyEngine {
             Some(answer.dnssec),
             ctx.client_id,
         );
-        self.record_stats(&record);
+        if loggable {
+            self.record_stats(&record);
+        }
 
         Ok(PolicyAnswer {
             message,
@@ -324,11 +341,11 @@ impl PolicyEngine {
         })
     }
 
-    fn is_paused(&self, profile: &ProfileId) -> bool {
+    fn active_pause(&self, profile: &ProfileId) -> Option<ProtectionPauseScope> {
         self.pauses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_paused(profile, self.clock.now())
+            .active_scope(profile, self.clock.now())
     }
 
     fn finish_synth(
@@ -341,7 +358,9 @@ impl PolicyEngine {
     ) -> PolicyAnswer {
         draft.timings.total_us = elapsed_us(total_start);
         let answer = emit(draft, synth, client_id, loggable, None, None);
-        self.record_stats(&answer.record);
+        if loggable {
+            self.record_stats(&answer.record);
+        }
         answer
     }
 
@@ -352,12 +371,14 @@ impl PolicyEngine {
             .record(decision);
     }
 
-    /// Client directory (for later steps and tests).
+    /// Client directory (internal / integration tests).
+    #[doc(hidden)]
     pub fn clients(&self) -> &Arc<dyn ClientDirectory> {
         &self.clients
     }
 
-    /// Filter engine (for later steps and tests).
+    /// Filter engine (internal / integration tests).
+    #[doc(hidden)]
     pub fn filter(&self) -> &Arc<FilterEngine> {
         &self.filter
     }

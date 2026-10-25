@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use crate::decision::ProtectionPauseScope;
 use crate::error::{ConfigReason, PolicyError};
 use crate::ids::ProfileId;
 
@@ -22,7 +23,9 @@ pub enum PauseScope {
 #[non_exhaustive]
 pub enum PauseUntil {
     /// Absolute duration from the moment [`PolicyEngine::pause`](crate::PolicyEngine::pause)
-    /// is called (spec: 5 minutes or 1 hour; any positive duration is accepted).
+    /// is called (spec: 5 minutes or 1 hour). Must be strictly positive —
+    /// [`Duration::ZERO`](std::time::Duration::ZERO) is rejected with
+    /// [`ConfigReason::ZeroPauseDuration`].
     For(Duration),
     /// Stays paused until [`PolicyEngine::resume`](crate::PolicyEngine::resume).
     UntilResumed,
@@ -60,11 +63,18 @@ impl PauseTable {
     ) -> Result<(), PolicyError> {
         let deadline = match until {
             PauseUntil::UntilResumed => Deadline::UntilResumed,
-            PauseUntil::For(d) => match now.checked_add(d) {
-                Some(t) => Deadline::Until(t),
-                // Overflow: treat as until-resumed rather than an already-expired deadline.
-                None => Deadline::UntilResumed,
-            },
+            PauseUntil::For(d) => {
+                if d.is_zero() {
+                    return Err(PolicyError::InvalidConfig {
+                        reason: ConfigReason::ZeroPauseDuration,
+                    });
+                }
+                match now.checked_add(d) {
+                    Some(t) => Deadline::Until(t),
+                    // Overflow: treat as until-resumed rather than an already-expired deadline.
+                    None => Deadline::UntilResumed,
+                }
+            }
         };
         match scope {
             PauseScope::Global => {
@@ -96,12 +106,21 @@ impl PauseTable {
         }
     }
 
-    /// True when global or this profile's pause is still active at `now`.
-    pub(crate) fn is_paused(&self, profile: &ProfileId, now: SystemTime) -> bool {
+    /// Active pause scope for `profile` at `now`, if any.
+    ///
+    /// Global wins when both are set (matches [`Self::is_paused`] precedence).
+    pub(crate) fn active_scope(
+        &self,
+        profile: &ProfileId,
+        now: SystemTime,
+    ) -> Option<ProtectionPauseScope> {
         if self.global.as_ref().is_some_and(|d| d.active(now)) {
-            return true;
+            return Some(ProtectionPauseScope::Global);
         }
-        self.profiles.get(profile).is_some_and(|d| d.active(now))
+        if self.profiles.get(profile).is_some_and(|d| d.active(now)) {
+            return Some(ProtectionPauseScope::Profile);
+        }
+        None
     }
 
     /// Drops pauses for profile ids that are no longer present.

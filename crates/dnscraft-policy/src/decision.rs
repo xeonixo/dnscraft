@@ -7,6 +7,16 @@ use dnscraft_resolver::{AnswerSource, DnssecStatus, ForwardZoneId};
 use crate::ids::{ClientId, ProfileId, ViewId};
 use crate::select::SelectionCause;
 
+/// Which pause protection scope suppressed filtering for this query.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ProtectionPauseScope {
+    /// [`PauseScope::Global`](crate::PauseScope::Global) was active.
+    Global,
+    /// A per-profile pause was active (and global was not).
+    Profile,
+}
+
 /// Why step 10 (rebind) did not strip addresses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -58,6 +68,13 @@ pub enum DecisionStep {
     SpecialUseNxdomain,
     /// Bypass / canary answer (profile flag on).
     Bypass,
+    /// User-facing pause suppressed filter steps 4 / 6 / 8 / 9 for this query.
+    ///
+    /// Recorded at most once per query (not once per skipped step).
+    ProtectionPaused {
+        /// Global vs per-profile pause that was active.
+        scope: ProtectionPauseScope,
+    },
     /// Filter blocked the qname (or a CNAME-rewrite target).
     FilterBlocked,
     /// Filter rewrote the answer (records or rcode).
