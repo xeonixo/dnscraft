@@ -393,3 +393,52 @@ async fn filter_custom_ip_aaaa_only_and_ipv6_null() {
     );
     assert_eq!(aaaa.ede.as_ref().map(|e| e.code), Some(4));
 }
+
+#[tokio::test]
+async fn filter_long_rule_ede_text_truncates_on_char_boundary() {
+    // Long custom rule text (> 200 bytes) with `ü` starting at byte 199 so a
+    // naive `rule[..200]` panics mid-character. Padding is `$denyallow=`
+    // domains (ASCII); the multi-byte char is the last denyallow label.
+    // (Long `/regex/` literals hit `regex_too_large` before 200 bytes.)
+    const MAX: usize = 200;
+    let mut rule = String::from("||ads.example^$denyallow=");
+    let mut i = 0u32;
+    while rule.len() < 190 {
+        if i > 0 {
+            rule.push('|');
+        }
+        rule.push_str(&format!("p{i}.com"));
+        i += 1;
+    }
+    while rule.len() < 199 {
+        rule.push('x');
+    }
+    rule.truncate(199);
+    rule.push('ü'); // U+00FC, two bytes; index 200 is mid-character
+    rule.push_str(".com");
+    assert!(!rule.is_char_boundary(MAX));
+
+    let filter = filter_engine(&[], &format!("{rule}\n"), BlockMode::NxDomain, None);
+    let (_h, engine) = engine_with(filter, clock_at(1_000)).await;
+    let ans = engine
+        .handle(ctx("ads.example", RecordType::A))
+        .await
+        .unwrap();
+    assert_eq!(
+        ans.record.answer_source,
+        AnswerOrigin::Filter,
+        "long rule must block; rcode={:?} steps={:?}",
+        ans.message.rcode(),
+        ans.record.steps
+    );
+    assert!(ans.record.steps.contains(&DecisionStep::FilterBlocked));
+    let text = ans
+        .ede
+        .as_ref()
+        .and_then(|e| e.text.as_deref())
+        .expect("EDE EXTRA-TEXT");
+    assert!(text.ends_with('…'));
+    assert!(std::str::from_utf8(text.as_bytes()).is_ok());
+    let without = text.len() - '…'.len_utf8();
+    assert!(without <= MAX);
+}

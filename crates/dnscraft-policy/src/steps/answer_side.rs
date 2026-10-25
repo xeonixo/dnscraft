@@ -10,6 +10,7 @@ use crate::config::RequestContext;
 use crate::decision::{DecisionStep, FilterHit};
 use crate::pipeline::{Draft, StepCtx};
 use crate::synth::{DEFAULT_BLOCK_TTL, block_answer, filter_internal_servfail};
+use crate::util::{ede_text, name_to_domain};
 
 /// Outcome of answer-side filtering.
 pub(crate) enum AnswerSide {
@@ -149,22 +150,6 @@ fn answer_ips(answers: &[Record]) -> Vec<IpAddr> {
             _ => None,
         })
         .collect()
-}
-
-fn name_to_domain(name: &Name) -> Option<DomainName> {
-    DomainName::parse(&name.to_string()).ok()
-}
-
-fn ede_text(reason: &Reason) -> String {
-    const MAX: usize = 200;
-    let rule = reason.rule.as_ref();
-    if rule.len() <= MAX {
-        rule.to_owned()
-    } else {
-        let mut s = rule[..MAX].to_owned();
-        s.push('…');
-        s
-    }
 }
 
 #[cfg(test)]

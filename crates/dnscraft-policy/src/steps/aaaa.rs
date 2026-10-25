@@ -6,8 +6,10 @@ use crate::config::RequestContext;
 use crate::decision::DecisionStep;
 use crate::pipeline::{Draft, StepCtx, clear_ad};
 
-/// When the profile has `suppress_aaaa` and the qtype is AAAA, replace with
-/// NOERROR/NODATA. Other qtypes (including HTTPS/SVCB) are left unchanged.
+/// When the profile has `suppress_aaaa` and the qtype is AAAA, replace a
+/// **NOERROR** answer with NODATA. Other qtypes (including HTTPS/SVCB) and
+/// non-NOERROR rcodes (SERVFAIL, NXDOMAIN, …) are left unchanged so DNSSEC
+/// failure signalling and its EDE stay intact.
 ///
 /// Returns `true` when the answer was replaced (caller should drop EDE).
 pub(crate) fn run(
@@ -17,6 +19,9 @@ pub(crate) fn run(
     message: &mut Message,
 ) -> bool {
     if ctx.query.qtype != RecordType::AAAA {
+        return false;
+    }
+    if message.rcode() != Rcode::NOERROR {
         return false;
     }
     let profile = step.snapshot.profile_for_view(draft.selection.view_idx);

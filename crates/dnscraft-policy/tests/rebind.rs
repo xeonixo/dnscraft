@@ -142,9 +142,17 @@ fn ctx(name: &str, qtype: RecordType) -> RequestContext {
 }
 
 fn specs_with_rebind_names() -> Vec<ServerSpec> {
+    use hickory_proto::rr::rdata::CNAME;
+    use hickory_proto::rr::{Name as HName, RData as HRData, Record as HRecord};
+
     let mut specs = default_servers().unwrap();
     for spec in &mut specs {
         if spec.zone.origin().to_string() == "example.test." {
+            let cname = HRecord::from_rdata(
+                HName::from_ascii("alias.example.test.").unwrap(),
+                300,
+                HRData::CNAME(CNAME(HName::from_ascii("private.example.test.").unwrap())),
+            );
             spec.zone = spec
                 .zone
                 .clone()
@@ -160,7 +168,8 @@ fn specs_with_rebind_names() -> Vec<ServerSpec> {
                     "www.example.test.",
                     Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
                 )
-                .unwrap();
+                .unwrap()
+                .with_record(cname);
         }
     }
     specs
@@ -510,4 +519,69 @@ async fn rebind_off_skips_and_records_disabled() {
     assert!(ans.record.steps.contains(&DecisionStep::RebindSkipped {
         reason: RebindSkipReason::Disabled,
     }));
+}
+
+#[tokio::test]
+async fn rebind_cname_to_private_keeps_cname_chain() {
+    let h = Hierarchy::start_with(specs_with_rebind_names())
+        .await
+        .unwrap();
+    let engine = engine_on(
+        &h,
+        policy_cfg(profile_base(), Vec::new()),
+        empty_filter(),
+        config_for(&h),
+    )
+    .await;
+
+    let ans = engine
+        .handle(ctx("alias.example.test.", RecordType::A))
+        .await
+        .unwrap();
+    assert_eq!(ans.message.rcode(), Rcode::NOERROR);
+    assert!(
+        ans.record
+            .steps
+            .contains(&DecisionStep::RebindStripped { count: 1 })
+    );
+    assert!(!ans.message.header.ad);
+    assert!(ans.ede.is_none());
+    assert_eq!(ans.message.answers.len(), 1);
+    assert_eq!(ans.message.answers[0].rtype(), RecordType::CNAME);
+    assert!(
+        !ans.message
+            .answers
+            .iter()
+            .any(|r| matches!(&r.rdata, RData::A(_) | RData::AAAA(_))),
+        "private A must be stripped; CNAME kept"
+    );
+}
+
+#[tokio::test]
+async fn aaaa_suppress_leaves_nxdomain_untouched() {
+    let h = Hierarchy::start_with(specs_with_rebind_names())
+        .await
+        .unwrap();
+    let mut profile = profile_base();
+    profile.suppress_aaaa = true;
+    let engine = engine_on(
+        &h,
+        policy_cfg(profile, Vec::new()),
+        empty_filter(),
+        config_for(&h),
+    )
+    .await;
+
+    let nx = engine
+        .handle(ctx("no-such.example.test.", RecordType::AAAA))
+        .await
+        .unwrap();
+    assert_eq!(nx.message.rcode(), Rcode::NXDOMAIN);
+    assert!(
+        !nx.record
+            .steps
+            .iter()
+            .any(|s| matches!(s, DecisionStep::AaaaSuppressed)),
+        "AAAA suppression must not rewrite NXDOMAIN"
+    );
 }

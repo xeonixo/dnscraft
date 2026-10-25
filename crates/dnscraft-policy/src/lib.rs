@@ -23,6 +23,7 @@ mod select;
 mod snapshot;
 mod steps;
 mod synth;
+mod util;
 
 pub use config::{
     ClientFlags, DEFAULT_LOCAL_NXDOMAIN_SUFFIXES, DEFAULT_RECORD_TTL, DnsProtocol, PolicyConfig,
@@ -38,5 +39,6 @@ pub use ids::{ClientId, ListenerId, ProfileId, ViewId};
 pub use pipeline::{Draft, Flow, StepCtx, Synth, clear_ad};
 pub use select::{Selection, SelectionCause};
 pub use snapshot::{
-    PolicySnapshot, PrefixTable, ProfileIdx, SnapshotProfile, SnapshotView, ViewIdx, ViewRrSets,
+    PolicySnapshot, PrefixTable, ProfileIdx, RebindException, SnapshotProfile, SnapshotView,
+    ViewIdx, ViewRrSets,
 };

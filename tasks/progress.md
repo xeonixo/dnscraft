@@ -14,8 +14,8 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L11 done**; Checkpoints A and B passed (2026-10-25). Next: **Checkpoint C** (security review + owner staging acceptance).
-- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P9 done. Checkpoint A passed** (2026-10-25). Next: Checkpoint B (then P10).
-- Blockers: none. Clients last. T2 open (any time).
+- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P9 done. Checkpoint A passed** (2026-10-25). Checkpoint B review fixes landed (awaiting Claude re-review). Do **not** start P10 until Checkpoint B boxes are ticked.
+- Blockers: policy Checkpoint B re-review. Clients last. T2 open (any time).
 
 ### tls success criteria (SPEC-tls.md)
 
@@ -32,6 +32,8 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **77.18 %** lines / **76.36 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
 
 ## Log
+
+- 2026-10-25 — Policy Checkpoint B review fixes (Cursor): (1) `ede_text`/`name_to_domain` shared in `util.rs`; truncate walks back with `is_char_boundary` — mutant `rule[..200]` panics on multi-byte at byte 200 (`util` unit + `filter_long_rule_ede_text_truncates_on_char_boundary`). (2) AAAA suppress only when rcode is NOERROR — mutant removing the guard fails `aaaa_suppress_leaves_bogus_servfail_with_ede` (BogusExpired SERVFAIL+EDE 7 kept); NXDOMAIN untouched. (3) AD/EDE matrix in `tests/ad_ede.rs`: Secure+rebind / Secure+AAAA clear AD; rebind/AAAA each drop stale EDE 3 separately; Bogus keeps SERVFAIL+AD clear+EDE 6; unmodified stale passes EDE 3 (stale Secure impossible — cache sets Indeterminate). (4) Rebind keeps CNAME when all addresses stripped (`rebind_cname_to_private_keeps_cname_chain`; mutant `answers.clear()` fails). Optional: pre-parsed `RebindException` on snapshot; private adds `::`, broadcast, NAT64. Checkpoint B boxes left unchecked for Claude re-review. **STOP — no P10.**
 
 - 2026-10-25 — tls L11 done (Cursor): README (token scope, env/`*_FILE`, staging-first, Pebble how-to, file modes, reserved labels, DynDNS/engine notes); `tests/no_leak.rs` formats every `TlsError` + `Secret`/`KeyPem`/`LoadedCert`/`TlsStatus` — no `BEGIN`/token; success-criteria table above; llvm-cov ~77 % lines. DoD green. Next: Checkpoint C.
 

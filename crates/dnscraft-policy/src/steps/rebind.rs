@@ -1,4 +1,8 @@
 //! Step 10: DNS rebind protection (strip private A/AAAA from resolver answers).
+//!
+//! When every address record is private and removed, **CNAME chain records are
+//! kept**: the response is NOERROR with only the CNAMEs (NODATA-for-alias
+//! shape). Only A/AAAA are stripped; the answer section is not cleared.
 
 use dnscraft_proto::{Message, Name, RData, Rcode};
 use dnscraft_resolver::ForwardZoneId;
@@ -7,11 +11,14 @@ use crate::config::RequestContext;
 use crate::decision::{DecisionStep, RebindSkipReason};
 use crate::pipeline::{Draft, StepCtx, clear_ad};
 use crate::private::is_private_for_rebind;
+use crate::snapshot::RebindException;
 
-/// Runs rebind stripping on a resolver answer. Skipped when `draft.synthetic`.
+/// Runs rebind stripping on a resolver answer. Skipped when `draft.synthetic`
+/// (defence in depth; synthetic paths return before step 10).
 ///
 /// Mutates `message` in place: private A/AAAA removed; if every address was
-/// stripped → NOERROR/NODATA (empty answers, no EDE). Clears AD on any change.
+/// stripped → NOERROR with remaining non-address records (e.g. CNAMEs), no EDE.
+/// Clears AD on any change.
 pub(crate) fn run(
     ctx: &RequestContext,
     step: StepCtx<'_>,
@@ -33,7 +40,7 @@ pub(crate) fn run(
         return;
     }
 
-    if exception_matches(&ctx.query.name, &profile.config.rebind_exceptions) {
+    if exception_matches(&ctx.query.name, &profile.rebind_exceptions) {
         draft.steps.push(DecisionStep::RebindSkipped {
             reason: RebindSkipReason::Exception,
         });
@@ -70,33 +77,30 @@ pub(crate) fn run(
         count: u32::try_from(stripped).unwrap_or(u32::MAX),
     });
 
+    // All addresses gone: keep any CNAME (or other non-address) records and
+    // ensure NOERROR — NODATA-for-alias, not an empty answer section.
     let any_address_left = message
         .answers
         .iter()
         .any(|r| matches!(&r.rdata, RData::A(_) | RData::AAAA(_)));
     if !any_address_left {
-        // All addresses were private: NOERROR/NODATA, no EDE.
-        message.answers.clear();
         let _ = message.set_rcode(Rcode::NOERROR);
     }
 }
 
-/// `exact` or `*.suffix` against the qname (suffix includes the apex).
-fn exception_matches(qname: &Name, exceptions: &[std::sync::Arc<str>]) -> bool {
-    for pattern in exceptions {
-        if let Some(suffix) = pattern.strip_prefix("*.") {
-            let Ok(zone) = Name::from_ascii(suffix) else {
-                continue;
-            };
-            if zone.zone_of(qname) {
-                return true;
+/// Pre-parsed `exact` or `*.suffix` against the qname (suffix includes the apex).
+fn exception_matches(qname: &Name, exceptions: &[RebindException]) -> bool {
+    for ex in exceptions {
+        match ex {
+            RebindException::Exact(name) => {
+                if name == qname {
+                    return true;
+                }
             }
-        } else {
-            let Ok(exact) = Name::from_ascii(pattern.as_ref()) else {
-                continue;
-            };
-            if &exact == qname {
-                return true;
+            RebindException::Suffix(zone) => {
+                if zone.zone_of(qname) {
+                    return true;
+                }
             }
         }
     }
@@ -107,29 +111,31 @@ fn exception_matches(qname: &Name, exceptions: &[std::sync::Arc<str>]) -> bool {
 #[allow(clippy::unwrap_used)]
 mod unit {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn exception_exact_and_suffix() {
+        let suffix = RebindException::Suffix(Name::from_ascii("example.com").unwrap());
+        let exact = RebindException::Exact(Name::from_ascii("nas.lan").unwrap());
+        let list = Arc::from(vec![suffix, exact]);
+
         let q = Name::from_ascii("cdn.internal.example.com.").unwrap();
-        assert!(exception_matches(
-            &q,
-            &[std::sync::Arc::from("*.example.com")]
-        ));
+        assert!(exception_matches(&q, &list));
         assert!(exception_matches(
             &Name::from_ascii("example.com.").unwrap(),
-            &[std::sync::Arc::from("*.example.com")]
+            &list
         ));
         assert!(!exception_matches(
             &Name::from_ascii("example.org.").unwrap(),
-            &[std::sync::Arc::from("*.example.com")]
+            &list
         ));
         assert!(exception_matches(
             &Name::from_ascii("nas.lan.").unwrap(),
-            &[std::sync::Arc::from("nas.lan")]
+            &list
         ));
         assert!(!exception_matches(
             &Name::from_ascii("other.lan.").unwrap(),
-            &[std::sync::Arc::from("nas.lan")]
+            &list
         ));
     }
 }

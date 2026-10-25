@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use dnscraft_filtering::{BlockMode, DomainName, FilterError, Reason, Rewrite, SetId, Verdict};
+use dnscraft_filtering::{BlockMode, DomainName, FilterError, Rewrite, SetId, Verdict};
 use dnscraft_proto::{Class, Name, RecordType};
 use dnscraft_resolver::{Query, RequestFlags};
 use tracing::warn;
@@ -14,6 +14,7 @@ use crate::pipeline::{Draft, Flow, StepCtx};
 use crate::synth::{
     DEFAULT_BLOCK_TTL, block_answer, filter_internal_servfail, rewrite_answer, rewrite_cname_follow,
 };
+use crate::util::{ede_text, name_to_domain};
 
 /// Logs at most once per process when a set vanishes mid-flight (reload race).
 static UNKNOWN_SET_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -194,37 +195,5 @@ async fn follow_cname_rewrite(
                 ttl,
             ))
         }
-    }
-}
-
-fn name_to_domain(name: &Name) -> Option<DomainName> {
-    DomainName::parse(&name.to_string()).ok()
-}
-
-fn ede_text(reason: &Reason) -> String {
-    const MAX: usize = 200;
-    let rule = reason.rule.as_ref();
-    if rule.len() <= MAX {
-        rule.to_owned()
-    } else {
-        let mut s = rule[..MAX].to_owned();
-        s.push('…');
-        s
-    }
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod unit {
-    use super::*;
-
-    #[test]
-    fn name_to_domain_accepts_common_names() {
-        assert_eq!(
-            name_to_domain(&Name::from_ascii("Ads.Example.COM.").unwrap())
-                .unwrap()
-                .as_str(),
-            "ads.example.com"
-        );
     }
 }

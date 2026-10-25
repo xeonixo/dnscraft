@@ -42,6 +42,15 @@ pub struct SnapshotView {
     pub(crate) records: HashMap<Name, ViewRrSets>,
 }
 
+/// A pre-parsed `rebind_exceptions` entry (built once at snapshot load).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RebindException {
+    /// Exact owner match.
+    Exact(Name),
+    /// Suffix match (`*.zone`): `zone.zone_of(qname)`.
+    Suffix(Name),
+}
+
 /// One validated profile.
 #[derive(Clone, Debug)]
 pub struct SnapshotProfile {
@@ -49,6 +58,8 @@ pub struct SnapshotProfile {
     pub(crate) id: ProfileId,
     /// Source config (filter set, canaries, rebind, …).
     pub(crate) config: ProfileConfig,
+    /// Parsed [`ProfileConfig::rebind_exceptions`] for the hot path.
+    pub(crate) rebind_exceptions: Arc<[RebindException]>,
 }
 
 /// Per-prefix-length table: masked address → view index.
@@ -140,15 +151,7 @@ impl PolicySnapshot {
                     }
                 }
             }
-            for pattern in &profile.rebind_exceptions {
-                if !is_valid_rebind_exception(pattern) {
-                    return Err(PolicyError::InvalidConfig {
-                        reason: ConfigReason::InvalidRebindException {
-                            pattern: pattern.clone(),
-                        },
-                    });
-                }
-            }
+            let rebind_exceptions = parse_rebind_exceptions(&profile.rebind_exceptions)?;
             for schedule in &profile.schedules {
                 if !known_set.contains(schedule.filter_set.as_str()) {
                     return Err(PolicyError::UnknownFilterSet {
@@ -163,6 +166,7 @@ impl PolicySnapshot {
             profiles.push(SnapshotProfile {
                 id: profile.id.clone(),
                 config: profile,
+                rebind_exceptions,
             });
         }
 
@@ -276,10 +280,34 @@ impl PolicySnapshot {
     }
 }
 
-/// A rebind exception is `domain` or `*.domain`; no other `*` is allowed.
-fn is_valid_rebind_exception(pattern: &str) -> bool {
-    let domain = pattern.strip_prefix("*.").unwrap_or(pattern);
-    !domain.is_empty() && !domain.contains('*') && Name::from_ascii(domain).is_ok()
+/// Parses `domain` / `*.domain` exceptions; rejects anything else with a
+/// stable [`ConfigReason::InvalidRebindException`] code via [`PolicyError`].
+fn parse_rebind_exceptions(patterns: &[Arc<str>]) -> Result<Arc<[RebindException]>, PolicyError> {
+    let mut out = Vec::with_capacity(patterns.len());
+    for pattern in patterns {
+        let parsed = if let Some(suffix) = pattern.strip_prefix("*.") {
+            if suffix.is_empty() || suffix.contains('*') {
+                None
+            } else {
+                Name::from_ascii(suffix).ok().map(RebindException::Suffix)
+            }
+        } else if pattern.is_empty() || pattern.contains('*') {
+            None
+        } else {
+            Name::from_ascii(pattern.as_ref())
+                .ok()
+                .map(RebindException::Exact)
+        };
+        let Some(ex) = parsed else {
+            return Err(PolicyError::InvalidConfig {
+                reason: ConfigReason::InvalidRebindException {
+                    pattern: pattern.clone(),
+                },
+            });
+        };
+        out.push(ex);
+    }
+    Ok(Arc::from(out))
 }
 
 fn build_view_records(view: &ViewConfig) -> Result<HashMap<Name, ViewRrSets>, PolicyError> {
