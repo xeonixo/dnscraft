@@ -122,12 +122,13 @@ async fn rate_limit_keeps_retry_after_hint() {
     mock.force_next_status(429, Some("30")).await;
     let err = client.zone().await.expect_err("429");
     assert_eq!(err.code(), "tls.cloudflare.http");
-    let TlsError::CloudflareHttp { message } = &err else {
+    assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(30)));
+    let TlsError::CloudflareHttp { message, .. } = &err else {
         panic!("expected CloudflareHttp, got {err:?}");
     };
     assert!(
-        message.contains("Retry-After: 30"),
-        "retry hint missing in {message}"
+        !message.contains("Retry-After"),
+        "retry hint must be structured, not in message: {message}"
     );
     assert!(!message.contains(TOKEN));
 }
@@ -143,10 +144,11 @@ async fn http_429_on_record_write_is_cloudflare_http() {
         .await
         .expect_err("429");
     assert_eq!(err.code(), "tls.cloudflare.http");
-    let TlsError::CloudflareHttp { message } = &err else {
+    assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(60)));
+    let TlsError::CloudflareHttp { message, .. } = &err else {
         panic!("expected CloudflareHttp");
     };
-    assert!(message.contains("Retry-After: 60"), "{message}");
+    assert!(!message.contains("Retry-After"), "{message}");
     assert!(!message.contains(TOKEN));
     assert!(!format!("{err:?}").contains(TOKEN));
 }

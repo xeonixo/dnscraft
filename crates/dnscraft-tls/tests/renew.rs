@@ -10,7 +10,7 @@ use dnscraft_tls::{
     AcmeDirectoryKind, AriWindow, BACKOFF_CAP, CertMeta, DEFAULT_EXPIRY_WARN, DEFAULT_RENEW_BEFORE,
     IssueState, KeyPem, LoadedCert, ManualClock, RenewFn, RenewScheduler, TlsError, TlsStatus,
     backoff_delay_with_rng, cert_flags, is_transient_renew_error, next_renewal,
-    next_renewal_with_rng, parse_retry_after, retry_after_from_error,
+    next_renewal_with_rng, retry_after_from_error,
 };
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -112,16 +112,21 @@ fn backoff_honours_retry_after() {
 }
 
 #[test]
-fn parse_retry_after_from_cloudflare_message() {
+fn retry_after_from_structured_field() {
     assert_eq!(
-        parse_retry_after("HTTP 429: rate limited; Retry-After: 45"),
-        Some(Duration::from_secs(45))
+        retry_after_from_error(&TlsError::CloudflareHttp {
+            message: "HTTP 429".into(),
+            retry_after: Some(Duration::from_secs(12)),
+        }),
+        Some(Duration::from_secs(12))
     );
     assert_eq!(
         retry_after_from_error(&TlsError::CloudflareHttp {
             message: "HTTP 429; Retry-After: 12".into(),
+            retry_after: None,
         }),
-        Some(Duration::from_secs(12))
+        None,
+        "message text alone is not parsed"
     );
 }
 
@@ -151,10 +156,12 @@ fn cert_flags_at_expiry_boundaries() {
 fn transient_error_classification() {
     assert!(is_transient_renew_error(&TlsError::AcmePropagation));
     assert!(is_transient_renew_error(&TlsError::AcmeRateLimited {
-        message: "x".into()
+        message: "x".into(),
+        retry_after: None,
     }));
     assert!(is_transient_renew_error(&TlsError::CloudflareHttp {
-        message: "429".into()
+        message: "429".into(),
+        retry_after: None,
     }));
     assert!(!is_transient_renew_error(&TlsError::ConfigInvalid {
         reason: "x".into()
@@ -263,7 +270,8 @@ async fn scheduler_backoff_after_transient_failure() {
         Box::pin(async move {
             c.fetch_add(1, Ordering::SeqCst);
             Err(TlsError::CloudflareHttp {
-                message: "HTTP 429; Retry-After: 60".into(),
+                message: "HTTP 429".into(),
+                retry_after: Some(Duration::from_secs(60)),
             })
         })
     });

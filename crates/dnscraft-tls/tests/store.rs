@@ -214,12 +214,43 @@ fn store_load_rejects_mismatched_pair_and_keeps_files() {
     // Simulates a crash between the cert and key writes of a save.
     fs::write(store.dir().join("cert.pem"), &chain_a).unwrap();
     fs::write(store.dir().join("key.pem"), &key_b).unwrap();
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(store.dir().join("key.pem"))
+            .unwrap()
+            .permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(store.dir().join("key.pem"), perms).unwrap();
+    }
 
     let err = store.load().expect_err("mismatched pair");
     assert_eq!(err.code(), "tls.store.corrupt");
     assert!(!format!("{err} {err:?}").contains("PRIVATE"));
     assert!(store.dir().join("cert.pem").exists());
     assert!(store.dir().join("key.pem").exists());
+
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[test]
+#[cfg(unix)]
+fn store_load_rejects_world_readable_key() {
+    let data = temp_data_dir("key-mode");
+    let store = CertStore::open(&data).unwrap();
+    let (chain, key) = self_signed(&["dns.example.com"]);
+    store.save(&chain, &key, &CertMeta::default()).unwrap();
+
+    let key_path = store.dir().join("key.pem");
+    let mut perms = fs::metadata(&key_path).unwrap().permissions();
+    perms.set_mode(0o644);
+    fs::set_permissions(&key_path, perms).unwrap();
+
+    let err = store.load().expect_err("open key");
+    assert_eq!(err.code(), "tls.store.corrupt");
+    assert!(err.to_string().contains("0600") || err.to_string().contains("group/other"));
+    // Files kept for the operator to chmod.
+    assert!(key_path.exists());
+    assert!(store.dir().join("cert.pem").exists());
 
     let _ = fs::remove_dir_all(&data);
 }

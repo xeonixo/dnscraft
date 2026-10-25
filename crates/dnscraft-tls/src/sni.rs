@@ -53,10 +53,13 @@ impl ReservedLabels {
 }
 
 /// Classification of a TLS SNI name relative to `dns.<public_domain>`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SniKind<'a> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SniKind {
     /// `<id>.dns.<public_domain>` where `<id>` is not reserved.
-    ClientId(&'a str),
+    ///
+    /// The label is always **ASCII-lowercased** so registry lookups and ban
+    /// strikes do not depend on the client's SNI casing.
+    ClientId(String),
     /// `<reserved>.dns.<public_domain>` (e.g. a node hostname).
     ///
     /// Rejected on public listeners, but **not** an unknown Client-ID strike.
@@ -70,6 +73,9 @@ pub enum SniKind<'a> {
 }
 
 /// Registry of registered Client IDs (owned by policy / control-api).
+///
+/// Implementations should treat IDs as lower-case (or compare
+/// case-insensitively); [`parse_client_id_sni`] always passes a lower-cased id.
 pub trait ClientIdRegistry: Send + Sync {
     /// Returns true if `client_id` is a registered DoH/DoT Client ID.
     fn is_registered(&self, client_id: &str) -> bool;
@@ -79,12 +85,9 @@ pub trait ClientIdRegistry: Send + Sync {
 ///
 /// Matching is case-insensitive; a single trailing dot is accepted. Only
 /// exactly one label below `dns.<domain>` can be a Client ID —
-/// `a.b.dns.<domain>` is [`SniKind::Other`].
-pub fn parse_client_id_sni<'a>(
-    sni: &'a str,
-    public_domain: &str,
-    reserved: &ReservedLabels,
-) -> SniKind<'a> {
+/// `a.b.dns.<domain>` is [`SniKind::Other`]. Client-ID labels are returned
+/// lower-cased.
+pub fn parse_client_id_sni(sni: &str, public_domain: &str, reserved: &ReservedLabels) -> SniKind {
     let sni = strip_trailing_dot(sni);
     let domain = strip_trailing_dot(public_domain);
     if sni.is_empty() || domain.is_empty() {
@@ -119,10 +122,11 @@ pub fn parse_client_id_sni<'a>(
     // already took one label; if rest_domain equals domain we have exactly one.
     // Suffix tricks like dns.example.com.evil.net fail the domain equality.
 
-    if reserved.contains(label) {
+    let label_lower = label.to_ascii_lowercase();
+    if reserved.contains(&label_lower) {
         SniKind::NodeHostname
     } else {
-        SniKind::ClientId(label)
+        SniKind::ClientId(label_lower)
     }
 }
 
@@ -145,7 +149,7 @@ pub fn accept_public_sni(
         return false;
     };
     match parse_client_id_sni(sni, public_domain, reserved) {
-        SniKind::ClientId(id) => registry.is_registered(id),
+        SniKind::ClientId(id) => registry.is_registered(&id),
         SniKind::NodeHostname | SniKind::Apex | SniKind::Other => false,
     }
 }
@@ -186,5 +190,14 @@ mod tests {
         assert!(r.contains("node1"));
         assert!(r.contains("NODE2"));
         assert!(!r.contains("phone"));
+    }
+
+    #[test]
+    fn client_id_is_lowercased() {
+        let r = ReservedLabels::new(["node1".into()]);
+        assert_eq!(
+            parse_client_id_sni("Phone.DNS.Example.COM.", "Example.COM", &r),
+            SniKind::ClientId("phone".into())
+        );
     }
 }

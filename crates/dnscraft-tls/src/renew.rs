@@ -180,32 +180,12 @@ pub fn is_transient_renew_error(err: &TlsError) -> bool {
     )
 }
 
-/// Parses `Retry-After: <seconds>` from an error message (Cloudflare / ACME).
-pub fn parse_retry_after(message: &str) -> Option<Duration> {
-    for part in message.split(';') {
-        let p = part.trim();
-        let Some(rest) = p
-            .strip_prefix("Retry-After:")
-            .or_else(|| p.strip_prefix("retry-after:"))
-        else {
-            continue;
-        };
-        let secs: u64 = rest.trim().parse().ok()?;
-        return Some(Duration::from_secs(secs));
-    }
-    None
-}
-
 /// Extracts a retry hint from a [`TlsError`] when present.
+///
+/// Prefer [`TlsError::retry_after`]; this alias remains for call sites that
+/// already imported the renew helpers.
 pub fn retry_after_from_error(err: &TlsError) -> Option<Duration> {
-    match err {
-        TlsError::CloudflareHttp { message }
-        | TlsError::AcmeRateLimited { message }
-        | TlsError::AcmeOrder { message }
-        | TlsError::AcmeChallenge { message }
-        | TlsError::AcmeAccount { message } => parse_retry_after(message),
-        _ => None,
-    }
+    err.retry_after()
 }
 
 /// Boxed renew future returned by [`RenewFn`].

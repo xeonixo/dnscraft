@@ -42,11 +42,13 @@ fn all_errors() -> Vec<TlsError> {
             message: "ready failed".into(),
         },
         TlsError::AcmeRateLimited {
-            message: "HTTP 429; Retry-After: 60".into(),
+            message: "HTTP 429".into(),
+            retry_after: Some(std::time::Duration::from_secs(60)),
         },
         TlsError::AcmePropagation,
         TlsError::CloudflareHttp {
             message: "HTTP 401: Authentication error".into(),
+            retry_after: None,
         },
         TlsError::CloudflareZone {
             message: "no zone named example.com".into(),

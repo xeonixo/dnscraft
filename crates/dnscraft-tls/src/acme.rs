@@ -398,6 +398,7 @@ fn map_acme_order(e: instant_acme::Error) -> TlsError {
     if is_rate_limited(&e) {
         return TlsError::AcmeRateLimited {
             message: redact_acme_err(&e),
+            retry_after: None,
         };
     }
     TlsError::AcmeOrder {
@@ -409,6 +410,7 @@ fn map_acme_challenge(e: instant_acme::Error) -> TlsError {
     if is_rate_limited(&e) {
         return TlsError::AcmeRateLimited {
             message: redact_acme_err(&e),
+            retry_after: None,
         };
     }
     TlsError::AcmeChallenge {

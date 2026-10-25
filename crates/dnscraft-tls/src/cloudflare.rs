@@ -95,9 +95,7 @@ impl CloudflareClient {
             .timeout(REQUEST_TIMEOUT)
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
-            .map_err(|e| TlsError::CloudflareHttp {
-                message: format!("build HTTP client: {e}"),
-            })?;
+            .map_err(|e| TlsError::cloudflare_http(format!("build HTTP client: {e}")))?;
         Ok(Self {
             http,
             token,
@@ -193,9 +191,7 @@ impl CloudflareClient {
         envelope
             .result
             .map(DnsRecord::from)
-            .ok_or_else(|| TlsError::CloudflareHttp {
-                message: "create TXT: empty result".into(),
-            })
+            .ok_or_else(|| TlsError::cloudflare_http("create TXT: empty result"))
     }
 
     /// Deletes a record by id.
@@ -220,9 +216,9 @@ impl CloudflareClient {
         content: &str,
     ) -> Result<DnsRecord, TlsError> {
         if record_type != "A" && record_type != "AAAA" {
-            return Err(TlsError::CloudflareHttp {
-                message: format!("upsert_address: unsupported type {record_type}"),
-            });
+            return Err(TlsError::cloudflare_http(format!(
+                "upsert_address: unsupported type {record_type}"
+            )));
         }
         let existing = self.list_records(name, record_type).await?;
         let zone = self.zone().await?;
@@ -249,9 +245,7 @@ impl CloudflareClient {
             envelope
                 .result
                 .map(DnsRecord::from)
-                .ok_or_else(|| TlsError::CloudflareHttp {
-                    message: "upsert: empty result".into(),
-                })
+                .ok_or_else(|| TlsError::cloudflare_http("upsert: empty result"))
         } else {
             let url = format!("{}/zones/{}/dns_records", self.base_url, zone.id);
             let body = json!({
@@ -272,9 +266,7 @@ impl CloudflareClient {
             envelope
                 .result
                 .map(DnsRecord::from)
-                .ok_or_else(|| TlsError::CloudflareHttp {
-                    message: "create address: empty result".into(),
-                })
+                .ok_or_else(|| TlsError::cloudflare_http("create address: empty result"))
         }
     }
 
@@ -309,7 +301,7 @@ impl CloudflareClient {
                     name_servers: z.name_servers,
                 })
             }
-            Err(TlsError::CloudflareHttp { message }) if message.contains("404") => {
+            Err(TlsError::CloudflareHttp { message, .. }) if message.contains("404") => {
                 Err(TlsError::CloudflareZone {
                     message: format!("zone id {id} not found ({message})"),
                 })
@@ -327,8 +319,8 @@ impl CloudflareClient {
             .header("Authorization", format!("Bearer {token}"))
             .send()
             .await
-            .map_err(|e| TlsError::CloudflareHttp {
-                message: redact_token(&format!("transport: {e}"), token),
+            .map_err(|e| {
+                TlsError::cloudflare_http(redact_token(&format!("transport: {e}"), token))
             })?;
 
         let status = response.status();
@@ -336,14 +328,16 @@ impl CloudflareClient {
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+            .and_then(crate::error::parse_retry_after_header);
 
         let bytes = read_capped(response, token).await?;
 
-        let envelope: Envelope<T> =
-            serde_json::from_slice(&bytes).map_err(|e| TlsError::CloudflareHttp {
-                message: redact_token(&format!("HTTP {status}: unparseable body ({e})"), token),
-            })?;
+        let envelope: Envelope<T> = serde_json::from_slice(&bytes).map_err(|e| {
+            TlsError::cloudflare_http(redact_token(
+                &format!("HTTP {status}: unparseable body ({e})"),
+                token,
+            ))
+        })?;
 
         if !envelope.success || !status.is_success() {
             let detail = envelope
@@ -352,16 +346,14 @@ impl CloudflareClient {
                 .map(|e| format!("{}: {}", e.code, e.message))
                 .collect::<Vec<_>>()
                 .join("; ");
-            let mut message = if detail.is_empty() {
+            let message = if detail.is_empty() {
                 format!("HTTP {status}")
             } else {
                 format!("HTTP {status}: {detail}")
             };
-            if let Some(ra) = retry_after {
-                message.push_str(&format!("; Retry-After: {ra}"));
-            }
             return Err(TlsError::CloudflareHttp {
                 message: redact_token(&message, token),
+                retry_after,
             });
         }
 
@@ -372,8 +364,8 @@ impl CloudflareClient {
 /// Reads the body while enforcing [`MAX_BODY_BYTES`]: rejects early on an
 /// oversized `Content-Length` and aborts as soon as streamed chunks exceed the cap.
 async fn read_capped(mut response: reqwest::Response, token: &str) -> Result<Vec<u8>, TlsError> {
-    let too_large = |what: String| TlsError::CloudflareHttp {
-        message: format!("response body {what} exceeds {MAX_BODY_BYTES} cap"),
+    let too_large = |what: String| {
+        TlsError::cloudflare_http(format!("response body {what} exceeds {MAX_BODY_BYTES} cap"))
     };
     if let Some(len) = response.content_length()
         && len > MAX_BODY_BYTES as u64
@@ -384,9 +376,7 @@ async fn read_capped(mut response: reqwest::Response, token: &str) -> Result<Vec
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|e| TlsError::CloudflareHttp {
-            message: redact_token(&format!("read body: {e}"), token),
-        })?
+        .map_err(|e| TlsError::cloudflare_http(redact_token(&format!("read body: {e}"), token)))?
     {
         if body.len() + chunk.len() > MAX_BODY_BYTES {
             return Err(too_large(format!(

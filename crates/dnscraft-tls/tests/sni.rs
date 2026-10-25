@@ -28,7 +28,7 @@ fn sni_table_registered_and_unregistered_client_id() {
 
     assert_eq!(
         parse_client_id_sni("phone.dns.example.com", DOMAIN, &reserved),
-        SniKind::ClientId("phone")
+        SniKind::ClientId("phone".into())
     );
     assert!(accept_public_sni(
         Some("phone.dns.example.com"),
@@ -83,10 +83,10 @@ fn sni_table_apex() {
 #[test]
 fn sni_table_case_and_trailing_dot_on_client_id() {
     let reserved = reserved_nodes(&["node1"]);
-    match parse_client_id_sni("Phone.DNS.Example.COM.", DOMAIN, &reserved) {
-        SniKind::ClientId(id) => assert!(id.eq_ignore_ascii_case("phone")),
-        other => panic!("expected ClientId, got {other:?}"),
-    }
+    assert_eq!(
+        parse_client_id_sni("Phone.DNS.Example.COM.", DOMAIN, &reserved),
+        SniKind::ClientId("phone".into())
+    );
 }
 
 #[test]
@@ -164,8 +164,8 @@ proptest! {
         let sni = format!("{label}.dns.{domain}");
         match parse_client_id_sni(&sni, &domain, &reserved) {
             SniKind::ClientId(id) => {
-                assert!(!reserved.contains(id));
-                assert!(id.eq_ignore_ascii_case(&label));
+                assert!(!reserved.contains(&id));
+                assert_eq!(id, label.to_ascii_lowercase());
             }
             SniKind::NodeHostname => {
                 assert!(reserved.contains(&label));

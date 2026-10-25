@@ -3,6 +3,9 @@
 //! Every error exposes a `code()` of the form `area.reason` for APIs and i18n.
 //! Human-readable text is for logs, not for end users.
 //!
+//! Rate-limit hints live on [`TlsError::retry_after`] (structured
+//! [`Duration`]), not buried in the message string.
+//!
 //! ## `TlsError` codes
 //!
 //! | Variant | Code |
@@ -23,6 +26,8 @@
 //! | [`TlsError::DyndnsEntryConflict`] | `tls.dyndns.entry_conflict` |
 //! | [`TlsError::CertExpiring`] | `tls.cert.expiring` |
 //! | [`TlsError::CertExpired`] | `tls.cert.expired` |
+
+use std::time::Duration;
 
 /// Top-level error of the TLS module.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -61,8 +66,10 @@ pub enum TlsError {
     /// Let's Encrypt rate limit or Retry-After.
     #[error("ACME rate limited: {message}")]
     AcmeRateLimited {
-        /// Detail for logs (may include retry hint).
+        /// Detail for logs.
         message: String,
+        /// Parsed `Retry-After` delay when the CA provided one.
+        retry_after: Option<Duration>,
     },
     /// Challenge TXT not visible on authoritative nameservers before timeout.
     #[error("ACME DNS-01 propagation timed out")]
@@ -72,6 +79,8 @@ pub enum TlsError {
     CloudflareHttp {
         /// Detail for logs (must not include the API token).
         message: String,
+        /// Parsed `Retry-After` delay when the API provided one.
+        retry_after: Option<Duration>,
     },
     /// Zone id / name resolution failed.
     #[error("Cloudflare zone not found: {message}")]
@@ -143,6 +152,33 @@ impl TlsError {
             reason: reason.into(),
         }
     }
+
+    /// Cloudflare HTTP error without a Retry-After hint.
+    pub(crate) fn cloudflare_http(message: impl Into<String>) -> Self {
+        Self::CloudflareHttp {
+            message: message.into(),
+            retry_after: None,
+        }
+    }
+
+    /// Structured `Retry-After` delay, when the upstream provided one.
+    ///
+    /// Prefer this over scraping [`Display`] / message text.
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::CloudflareHttp { retry_after, .. }
+            | Self::AcmeRateLimited { retry_after, .. } => *retry_after,
+            _ => None,
+        }
+    }
+}
+
+/// Parses an HTTP `Retry-After` header value as a delay in seconds.
+///
+/// HTTP-date forms are ignored (Cloudflare and ACME use delta-seconds).
+pub fn parse_retry_after_header(value: &str) -> Option<Duration> {
+    let secs: u64 = value.trim().parse().ok()?;
+    Some(Duration::from_secs(secs))
 }
 
 #[cfg(test)]
@@ -166,10 +202,12 @@ mod tests {
             },
             TlsError::AcmeRateLimited {
                 message: "x".into(),
+                retry_after: Some(Duration::from_secs(12)),
             },
             TlsError::AcmePropagation,
             TlsError::CloudflareHttp {
                 message: "x".into(),
+                retry_after: Some(Duration::from_secs(30)),
             },
             TlsError::CloudflareZone {
                 message: "x".into(),
@@ -205,5 +243,19 @@ mod tests {
             assert!(!err.to_string().is_empty());
         }
         assert_eq!(seen.len(), 16);
+        assert_eq!(
+            TlsError::CloudflareHttp {
+                message: "x".into(),
+                retry_after: Some(Duration::from_secs(30)),
+            }
+            .retry_after(),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(TlsError::AcmePropagation.retry_after(), None);
+        assert_eq!(
+            parse_retry_after_header(" 45 "),
+            Some(Duration::from_secs(45))
+        );
+        assert_eq!(parse_retry_after_header("Wed, 01 Jan 2020"), None);
     }
 }

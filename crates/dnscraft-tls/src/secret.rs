@@ -139,4 +139,20 @@ mod tests {
         let err = read_secret_parts("X", Some("   "), None, |_| unreachable!()).expect_err("empty");
         assert_eq!(err.code(), "tls.secret.missing");
     }
+
+    #[test]
+    fn read_secret_empty_file_is_missing() {
+        let err = read_secret_parts("X", None, Some("/tmp/x"), |_| Ok("  \n".into()))
+            .expect_err("empty file");
+        assert_eq!(err.code(), "tls.secret.missing");
+    }
+
+    #[test]
+    fn read_secret_missing_file_is_missing() {
+        let err = read_secret_parts("X", None, Some("/no/such/token"), |_| {
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"))
+        })
+        .expect_err("missing file");
+        assert_eq!(err.code(), "tls.secret.missing");
+    }
 }

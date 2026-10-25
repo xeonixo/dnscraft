@@ -249,7 +249,7 @@ async fn ensure_address(
 
 fn map_update_err(err: TlsError) -> TlsError {
     match err {
-        TlsError::CloudflareHttp { message } | TlsError::CloudflareZone { message } => {
+        TlsError::CloudflareHttp { message, .. } | TlsError::CloudflareZone { message } => {
             TlsError::DyndnsUpdate { message }
         }
         other => other,

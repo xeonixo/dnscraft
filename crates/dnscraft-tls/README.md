@@ -23,14 +23,34 @@ appears in `Debug` output (`Secret([redacted])`).
 
 ## Staging first (manual acceptance)
 
-1. Set `acme.directory = "staging"` (Let’s Encrypt staging).
-2. Issue once against your real Cloudflare zone; confirm `dns.<domain>` /
-   `*.dns.<domain>` in the leaf SANs and that listeners handshake.
-3. Only then switch to `production`. Staging and production use different
-   account keys — wiping `account.json` (or changing directory) forces a new
-   account.
-
 Automated tests never call real Let’s Encrypt, Cloudflare, or `cdn-cgi/trace`.
+Owner / lead run this checklist against **Let’s Encrypt staging** once before
+Checkpoint C / production cutover.
+
+### Manual checklist (LE staging + real Cloudflare zone)
+
+1. **Token:** Create a Cloudflare API token with **Zone → DNS → Edit** on exactly
+   one zone; export it as `DNSCRAFT_CLOUDFLARE_API_TOKEN` (or `*_FILE`).
+2. **Config:** `public_domain` = that zone’s apex; `acme.directory = "staging"`;
+   `acme.email` set; `dyndns.hostname` = `<node>.dns.<domain>` with the label in
+   `reserved_labels`; `proxied = false`. Prefer a throwaway data dir.
+3. **Issue:** Start the node / call `TlsEngine::renew_now` (or equivalent UI).
+   Confirm `_acme-challenge.dns.<domain>` TXT appears briefly, then is removed.
+4. **Cert:** Inspect `<data>/tls/cert.pem` — SANs must be `dns.<domain>` and
+   `*.dns.<domain>`; `key.pem` mode `0600`; `state.json` has `last_issue` and
+   no `last_error`.
+5. **Handshake:** Point a test client at `dns.<domain>` (DoT/DoH) with the
+   staging-trusting roots if needed; confirm the served leaf matches the store
+   (`CertResolver` / `openssl s_client -servername dns.<domain>`).
+6. **DynDNS (optional):** With `dyndns.enabled`, confirm the node A/AAAA matches
+   the echo IP; with `public_entry = true`, also `*.dns.<domain>` and
+   `dns.<domain>`; with `false`, those names are untouched.
+7. **Failure path:** Temporarily break the token or set Fake failure — renew
+   must leave the previous `cert.pem`/`key.pem` in place and record a stable
+   `tls.*` code in `state.json` / status.
+8. **Promote:** Only after the above is green, wipe or replace `account.json`
+   when switching `directory` to `production` (staging and production accounts
+   differ), then repeat issue once on production.
 
 ## On-disk layout
 

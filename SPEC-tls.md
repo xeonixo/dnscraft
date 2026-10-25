@@ -122,16 +122,16 @@ impl ReservedLabels {
     pub fn contains(&self, label: &str) -> bool;
 }
 
-pub enum SniKind<'a> {
-    ClientId(&'a str), // "<id>.dns.<public_domain>", <id> not reserved
-    NodeHostname,      // "<reserved>.dns.<public_domain>" (e.g. node1)
-    Apex,              // "dns.<public_domain>"
-    Other,             // anything else / not under the domain
+pub enum SniKind {
+    ClientId(String), // "<id>.dns.<public_domain>", <id> not reserved; always lower-cased
+    NodeHostname,     // "<reserved>.dns.<public_domain>" (e.g. node1)
+    Apex,             // "dns.<public_domain>"
+    Other,            // anything else / not under the domain
 }
 
 /// SNI helpers for listeners (Client ID registry is elsewhere).
-pub fn parse_client_id_sni<'a>(sni: &'a str, public_domain: &str,
-                               reserved: &ReservedLabels) -> SniKind<'a>;
+pub fn parse_client_id_sni(sni: &str, public_domain: &str,
+                           reserved: &ReservedLabels) -> SniKind;
 
 pub trait ClientIdRegistry: Send + Sync {
     fn is_registered(&self, client_id: &str) -> bool;

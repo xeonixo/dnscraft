@@ -72,3 +72,34 @@ pub fn certified_key_from_pem(chain_pem: &[u8], key_pem: &[u8]) -> Result<Certif
     CertifiedKey::from_der(certs, key, &default_provider())
         .map_err(|e| format!("cannot build CertifiedKey: {e}"))
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use rcgen::generate_simple_self_signed;
+
+    #[test]
+    fn parse_rejects_empty_and_garbage() {
+        assert!(parse_cert_chain(b"").is_err());
+        assert!(parse_cert_chain(b"not pem").is_err());
+        assert!(parse_private_key(b"not pem").is_err());
+        assert!(KeyPem::parse(b"not pem").is_err());
+    }
+
+    #[test]
+    fn round_trip_self_signed() {
+        let certified = generate_simple_self_signed(vec!["dns.example.com".into()]).unwrap();
+        let chain = certified.cert.pem();
+        let key = certified.signing_key.serialize_pem();
+        let parsed = KeyPem::parse(key.as_bytes()).unwrap();
+        assert_eq!(parsed.as_bytes(), key.as_bytes());
+        let info = parse_leaf_info(chain.as_bytes()).unwrap();
+        assert!(
+            info.identifiers
+                .iter()
+                .any(|i| i == "dns.example.com" || i.contains("example.com"))
+        );
+        certified_key_from_pem(chain.as_bytes(), key.as_bytes()).unwrap();
+    }
+}

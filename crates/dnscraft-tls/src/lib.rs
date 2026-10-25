@@ -53,14 +53,14 @@ pub use dyndns::{
     parse_trace_ip,
 };
 pub use engine::{EngineDeps, EngineInner, TlsEngine};
-pub use error::TlsError;
+pub use error::{TlsError, parse_retry_after_header};
 pub use issue::issue;
 pub use pem_util::KeyPem;
 pub use propagation::{resolve_nameservers, wait_for_txt, wait_for_txt_with_query_timeout};
 pub use renew::{
     AriWindow, BACKOFF_BASE, BACKOFF_CAP, RenewFn, RenewFut, RenewScheduler, ScheduleFn, StatusFn,
     apply_cert_flags, backoff_delay, backoff_delay_with_rng, current_ari_window,
-    is_transient_renew_error, next_renewal, next_renewal_with_rng, parse_retry_after, plan_renewal,
+    is_transient_renew_error, next_renewal, next_renewal_with_rng, plan_renewal,
     retry_after_from_error,
 };
 pub use resolver::CertResolver;

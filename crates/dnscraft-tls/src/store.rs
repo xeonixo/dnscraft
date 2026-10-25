@@ -139,6 +139,8 @@ impl CertStore {
             });
         }
 
+        ensure_private_key_mode(&key_path)?;
+
         let chain_pem = fs::read(&cert_path).map_err(|e| store_io("read", &cert_path, e))?;
         let key_bytes = fs::read(&key_path).map_err(|e| store_io("read", &key_path, e))?;
 
@@ -263,6 +265,28 @@ pub(crate) fn leaf_info_from_der(der: &[u8]) -> Result<LeafInfo, String> {
         not_after,
         identifiers,
     })
+}
+
+/// Rejects `key.pem` that is readable by group/other (must be `0600`).
+///
+/// Does not rewrite the mode: a too-open key is a hard error so the operator
+/// notices. Files are left in place ([`TlsError::StoreCorrupt`]).
+fn ensure_private_key_mode(path: &Path) -> Result<(), TlsError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = fs::metadata(path).map_err(|e| store_io("metadata", path, e))?;
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(TlsError::StoreCorrupt {
+                message: format!(
+                    "key.pem mode {mode:04o} allows group/other access (expected 0600)"
+                ),
+            });
+        }
+    }
+    let _ = path;
+    Ok(())
 }
 
 fn ensure_private_dir(dir: &Path) -> Result<(), TlsError> {

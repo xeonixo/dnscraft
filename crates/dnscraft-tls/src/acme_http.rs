@@ -101,3 +101,53 @@ impl HttpClient for ReqwestHttpClient {
         })
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use http::Method;
+    use instant_acme::HttpClient;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[test]
+    fn builds_default_and_rejects_bad_root_pem() {
+        let c = ReqwestHttpClient::new().expect("webpki client");
+        assert!(c.inner().get("https://example.com").build().is_ok());
+        let err = ReqwestHttpClient::with_extra_roots(
+            b"-----BEGIN CERTIFICATE-----\nbm90LWEtY2VydA==\n-----END CERTIFICATE-----\n",
+        )
+        .expect_err("bad pem");
+        assert_eq!(err.code(), "tls.acme.account");
+    }
+
+    #[tokio::test]
+    async fn http_client_round_trips_loopback() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let body = b"{\"ok\":true}";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                std::str::from_utf8(body).unwrap()
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+        });
+
+        let client = ReqwestHttpClient::new().unwrap();
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(format!("http://{addr}/dir"))
+            .body(BodyWrapper::from(Vec::<u8>::new()))
+            .unwrap();
+        let rsp = HttpClient::request(&client, req)
+            .await
+            .expect("loopback GET");
+        assert_eq!(rsp.parts.status, 200);
+    }
+}
