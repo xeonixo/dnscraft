@@ -12,7 +12,7 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
-- Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)). **C1–C11 + O1 done** (incl. C11b); Checkpoint A passed; **Checkpoint B fixes + follow-ups landed** (awaiting Lead re-review). Next: Checkpoint B tick → **Checkpoint C**.
+- Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)). **C1–C12 + O1 done**; Checkpoints A and B passed; **C12 Checkpoint C follow-ups landed** (awaiting Lead re-review). Next: Checkpoint C tick → owner approval.
 
 ### clients success criteria (SPEC-clients.md)
 
@@ -28,10 +28,10 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 | 7 | VLAN via `network_id` join or LPM | `tests/engine.rs`; `tests/merge.rs` `vlan_*` |
 | 8 | Invented fixtures only; DoD green | mock gateway; `fmt` / `clippy -D warnings` / `cargo test -p dnscraft-clients` |
 
-Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.28 %** lines / **85.49 %** regions.
+Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.39 %** lines / **80.22 %** regions.
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L11 + L12b done**; Checkpoints A and B passed (2026-10-25). Next: **Checkpoint C** re-review (security review + owner staging acceptance).
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P11 + P10b + P9b done. Checkpoint A/B passed.** Next: P12 (STOP for Claude review of P10b/P9b/P11 first).
-- Blockers: clients Checkpoint B awaiting Lead re-review of C11/C11b.
+- Blockers: clients Checkpoint C awaiting Lead re-review of C12.
 
 ### tls success criteria (SPEC-tls.md)
 
@@ -48,6 +48,10 @@ Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86
 Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **80.32 %** lines / **79.82 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
 
 ## Log
+
+- 2026-10-25 — **Claude re-review tls L12b (b7bb423) + cargo-deny (ac07b6d) + filtering T2 (c3c136c): good, one small round (L12c) before the security review is ticked.** fmt/clippy/tests green for tls + filtering; `cargo deny check` → advisories/bans/licenses/sources ok. Verified: `tls.store.permissions` for key.pem + account.json, engine open soft-fails, zeroize on `Secret`/`KeyPem`, `CloudflareHttp.status`, alias removed, ACME 429 `Retry-After` captured in our `ReqwestHttpClient`, T2 classifies via the `rustls::Error` source chain. Mutation probes: account perms not checked at open → caught; Retry-After captured on 503 instead of 429 → caught; T2 classification off → caught; **survived:** `map_acme_order` dropping the captured `retry_after` (adapter only tested in isolation). **Required (L12c):** (1) `parse_retry_after_header` parses HTTP-dates with `time::…::Rfc2822` — exactly the function of RUSTSEC-2026-0009 (stack exhaustion, time < 0.3.47), now fed with network input; the 64-byte cap makes it practically harmless, but HTTP `Retry-After` is IMF-fixdate (RFC 9110 §5.6.7), not RFC 2822 — parse that fixed format (no comments/obsolete forms) and rewrite the deny.toml ignore reason accordingly (the ignore currently cites MSRV 1.85; owner question: bump `rust-version` to 1.88 and `time` to ≥ 0.3.47 instead, dropping the ignore); (2) test that a rate-limited ACME order/challenge error carries the captured `retry_after` (kills the survivor); (3) the `last_retry_after` slot is only written on 429 and never cleared, so a stale value from an earlier, unmapped 429 (e.g. account creation) can be attached to a later rate-limit error — reset it on every response; (4) the permission tests run with `acme.enabled = false`; with ACME on, a refused too-open key.pem means "no cert" → the scheduler issues a new cert and `save()` overwrites key/cert with 0600 files. That is arguably the secure outcome (treat the exposed key as compromised) but contradicts the README's "files left for the operator to chmod" — document it and test it with FakeAcme. FYI: filtering gains `rustls` as a direct dependency for the downcast (already in the tree via reqwest; no new crate in Cargo.lock).
+
+- 2026-10-25 — clients **C12** done (Cursor): cache labels re-validated on load (`is_normalised_label`; warn `clients.cache.invalid_label`, count only); `fqdn` rejects non-normalised labels; Zeroizing in `read_secret_parts`; TLS classify via nested `io::Error` → `rustls::Error` (no string match); no `CryptoProvider::install_default`; reused `GatewayClient`; classic site-key `[A-Za-z0-9_-]{1,64}`; cache `File::take(MAX+1)`; `clients.sync.backoff`; sync lock only around build+install + race test. `cargo test -p dnscraft-clients` **10× / 0 failures**; llvm-cov **86.39 %** lines. STOP for Checkpoint C Lead re-review (do not tick Independent review / Owner approval).
 
 - 2026-10-25 — tls **L12b** + **cargo-deny** + filtering **T2** done (Cursor, `b7bb423` / `ac07b6d` / `c3c136c`). `tls.store.permissions` for `key.pem` + `account.json` (0644/0640); engine open soft-fails (refuse open key, keep good cert when only account is open); zeroize `Secret`/`KeyPem`; ACME `Retry-After` via `ReqwestHttpClient`; `CloudflareHttp.status`; deleted `retry_after_from_error`. **Mutants killed:** group-readable 0640 key/account; `NODE1.DNS.Example.COM` → `SniKind::NodeHostname` + `accept_public_sni` false. `deny.toml` + CI `EmbarkStudios/cargo-deny-action@v2.1.1`; T2 classifies via `rustls::Error` chain (self-signed / plain HTTP on https / refused). llvm-cov **80.32 %** lines. DoD green for tls+filtering; `cargo deny check` green; `cargo tree -i aws-lc-rs` / `openssl-sys` empty. **STOP for Claude Checkpoint C re-review** (do not tick Independent security review / Owner approval).
 
