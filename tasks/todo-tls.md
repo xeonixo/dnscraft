@@ -158,10 +158,10 @@ Also in this task:
   time.
 
 **Acceptance criteria:**
-- [ ] Values appear after 2 polls → success; only one of two values → keeps waiting; never → `tls.acme.propagation` (`ManualClock` / paused time)
-- [ ] Mismatched query id / truncated response ignored, no panic
+- [x] Values appear after 2 polls → success; only one of two values → keeps waiting; never → `tls.acme.propagation` (`ManualClock` / paused time)
+- [x] Mismatched query id / truncated response ignored, no panic
 
-**Verification:** `cargo test -p dnscraft-tls propagation`
+**Verification:** `cargo test -p dnscraft-tls --test propagation`
 
 **Dependencies:** L1 · **Files:** `src/propagation.rs`, `tests/propagation.rs` · **Scope:** S
 

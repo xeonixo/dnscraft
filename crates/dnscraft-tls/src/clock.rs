@@ -80,6 +80,32 @@ impl Clock for ManualClock {
     }
 }
 
+/// Waits until `clock.now() >= deadline`.
+///
+/// Uses [`Clock::tick_notify`] when present (manual clocks). Otherwise sleeps
+/// for the remaining real time.
+pub async fn wait_until(clock: &dyn Clock, deadline: SystemTime) {
+    let tick = clock.tick_notify();
+    loop {
+        if let Some(tick) = tick.as_ref() {
+            let tick_n = tick.notified();
+            tokio::pin!(tick_n);
+            tick_n.as_mut().enable();
+            if clock.now() >= deadline {
+                return;
+            }
+            tick_n.await;
+        } else {
+            let now = clock.now();
+            if now >= deadline {
+                return;
+            }
+            let remaining = deadline.duration_since(now).unwrap_or(Duration::ZERO);
+            tokio::time::sleep(remaining).await;
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

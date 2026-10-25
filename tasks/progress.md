@@ -13,11 +13,13 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
-- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L5 done**; Checkpoint A passed (2026-10-25). Next: **L6** (propagation check).
+- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L6 done**; Checkpoint A passed (2026-10-25). Next: **L7** (issuance flow).
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P4 done. Checkpoint A passed** (2026-10-25). Next: P5.
 - Blockers: none. Clients last. T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — tls L6 done (Cursor): `wait_for_txt` polls authoritative NS over UDP (`dnscraft-proto` TXT); all expected values at every NS; `ManualClock` + `wait_until`; mismatch/truncated ignored; timeout → `tls.acme.propagation`. `resolve_nameservers` via `lookup_host` :53. Tiny loopback UDP responder; 5 tests. Deps: `dnscraft-proto`, `rand`. DoD green; tree free of aws-lc/openssl. Next: L7.
 
 - 2026-10-25 — tls L5 done (Cursor): `CloudflareClient` (Bearer token, zone by name/id + `name_servers`, list/create/delete, TXT add-not-upsert, A/AAAA upsert `proxied: false` TTL auto, envelope → `tls.cloudflare.http` with `Retry-After`, unknown zone → `tls.cloudflare.zone`, 30 s / 1 MiB, shared writer `Arc<Mutex>`). Hand-written mock Cloudflare on loopback; 9 tests. DoD green; `cargo tree -i aws-lc-rs` / `openssl-sys` empty. Next: L6.
 

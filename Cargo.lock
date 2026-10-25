@@ -462,11 +462,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "dnscraft-proto",
  "http",
  "http-body-util",
  "idna",
  "instant-acme",
  "proptest",
+ "rand 0.9.5",
  "rcgen",
  "reqwest",
  "rustls",

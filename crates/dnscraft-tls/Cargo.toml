@@ -27,10 +27,12 @@ async-trait = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }
 http-body-util = { workspace = true }
+dnscraft-proto = { path = "../dnscraft-proto" }
+rand = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 rcgen = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
