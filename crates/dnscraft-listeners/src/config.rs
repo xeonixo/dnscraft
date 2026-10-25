@@ -1,0 +1,359 @@
+//! Listener configuration values (no TOML parsing — the binary does that later).
+
+use std::collections::HashSet;
+use std::net::SocketAddr;
+use std::time::Duration;
+
+use dnscraft_policy::ListenerId;
+
+use crate::error::ListenersError;
+
+/// Default EDNS UDP payload size (DNS Flag Day 2020).
+pub const DEFAULT_UDP_PAYLOAD_MAX: u16 = 1232;
+/// Default per-query deadline.
+pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+/// Default TCP/DoT idle timeout.
+pub const DEFAULT_TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Default TLS handshake timeout.
+pub const DEFAULT_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default in-flight queries per listener.
+pub const DEFAULT_MAX_INFLIGHT: u32 = 4096;
+/// Default concurrent connections per listener.
+pub const DEFAULT_MAX_CONNECTIONS: u32 = 1024;
+/// Default concurrent connections per source IP.
+pub const DEFAULT_MAX_CONNECTIONS_PER_SOURCE: u32 = 32;
+/// Default QUIC bidirectional streams per connection.
+pub const DEFAULT_MAX_QUIC_STREAMS: u32 = 64;
+/// Default ban strikes before a temporary ban.
+pub const DEFAULT_BAN_STRIKES: u32 = 5;
+/// Default window in which ban strikes accumulate.
+pub const DEFAULT_BAN_WINDOW: Duration = Duration::from_secs(60);
+/// Default ban duration after the strike threshold.
+pub const DEFAULT_BAN_DURATION: Duration = Duration::from_secs(15 * 60);
+/// Default LRU cap for rate/ban tables.
+pub const DEFAULT_MAX_TRACKED_SOURCES: u32 = 100_000;
+
+/// Transport protocol of one listener.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Protocol {
+    /// Plain DNS over UDP (port 53 by convention).
+    Udp53,
+    /// Plain DNS over TCP (port 53 by convention).
+    Tcp53,
+    /// DNS over TLS.
+    Dot,
+    /// DNS over HTTPS (HTTP/2 + HTTP/1.1; HTTP/3 when [`ListenerConfig::h3`]).
+    Doh,
+    /// DNS over QUIC.
+    Doq,
+}
+
+impl Protocol {
+    /// Wire / config name (`udp53`, `tcp53`, `dot`, `doh`, `doq`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Udp53 => "udp53",
+            Self::Tcp53 => "tcp53",
+            Self::Dot => "dot",
+            Self::Doh => "doh",
+            Self::Doq => "doq",
+        }
+    }
+
+    /// Whether this protocol may be exposed as [`Exposure::Public`].
+    pub fn allows_public(self) -> bool {
+        matches!(self, Self::Dot | Self::Doh | Self::Doq)
+    }
+}
+
+/// Who may use the listener.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum Exposure {
+    /// Private / local sources only (default).
+    #[default]
+    Local,
+    /// Also reachable from public sources (encrypted protocols only).
+    Public,
+}
+
+/// One listener entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListenerConfig {
+    /// Unique id (`[a-z0-9-]{1,64}`), passed to policy as `listener_id`.
+    pub id: ListenerId,
+    /// Transport protocol.
+    pub protocol: Protocol,
+    /// Bind address (concrete or wildcard).
+    pub address: SocketAddr,
+    /// Local vs public exposure.
+    pub exposure: Exposure,
+    /// When `protocol == Doh`, also serve HTTP/3 on UDP of the same port.
+    pub h3: bool,
+}
+
+/// Token-bucket rate: `N` tokens per second, burst capacity `2N` when parsed from `N/s`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TokenRate {
+    /// Tokens replenished per second.
+    pub per_second: u32,
+    /// Maximum burst size.
+    pub burst: u32,
+}
+
+impl TokenRate {
+    /// Parses `"N/s"` (N > 0). Burst defaults to `2 * N`.
+    pub fn parse(s: &str) -> Result<Self, ListenersError> {
+        let s = s.trim();
+        let Some(num) = s.strip_suffix("/s") else {
+            return Err(ListenersError::config(format!(
+                "rate must look like `N/s`, got `{s}`"
+            )));
+        };
+        let per_second: u32 = num
+            .parse()
+            .map_err(|_| ListenersError::config(format!("rate numerator is not a u32: `{num}`")))?;
+        if per_second == 0 {
+            return Err(ListenersError::config("rate must be > 0"));
+        }
+        Ok(Self {
+            per_second,
+            burst: per_second.saturating_mul(2),
+        })
+    }
+}
+
+/// Resource and timing limits shared by all listeners.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// EDNS UDP payload maximum advertised and enforced.
+    pub udp_payload_max: u16,
+    /// Per-query deadline.
+    pub query_timeout: Duration,
+    /// TCP / DoT idle timeout.
+    pub tcp_idle_timeout: Duration,
+    /// TLS handshake timeout.
+    pub tls_handshake_timeout: Duration,
+    /// Max concurrent in-flight queries per listener.
+    pub max_inflight_per_listener: u32,
+    /// Max concurrent connections per listener.
+    pub max_connections_per_listener: u32,
+    /// Max concurrent connections per source IP.
+    pub max_connections_per_source: u32,
+    /// Max QUIC bidirectional streams per connection.
+    pub max_quic_streams_per_connection: u32,
+    /// Token bucket per source IP (all sources).
+    pub rate_per_source: TokenRate,
+    /// Token bucket per Client ID (public sources).
+    pub rate_per_client_id: TokenRate,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            udp_payload_max: DEFAULT_UDP_PAYLOAD_MAX,
+            query_timeout: DEFAULT_QUERY_TIMEOUT,
+            tcp_idle_timeout: DEFAULT_TCP_IDLE_TIMEOUT,
+            tls_handshake_timeout: DEFAULT_TLS_HANDSHAKE_TIMEOUT,
+            max_inflight_per_listener: DEFAULT_MAX_INFLIGHT,
+            max_connections_per_listener: DEFAULT_MAX_CONNECTIONS,
+            max_connections_per_source: DEFAULT_MAX_CONNECTIONS_PER_SOURCE,
+            max_quic_streams_per_connection: DEFAULT_MAX_QUIC_STREAMS,
+            rate_per_source: TokenRate {
+                per_second: 200,
+                burst: 400,
+            },
+            rate_per_client_id: TokenRate {
+                per_second: 50,
+                burst: 100,
+            },
+        }
+    }
+}
+
+/// Per-node public DoH/DoT/DoQ settings (off by default).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublicConfig {
+    /// When false, no listener may use [`Exposure::Public`].
+    pub enabled: bool,
+    /// Strikes within [`Self::ban_window`] before a ban.
+    pub ban_strikes: u32,
+    /// Sliding window for ban strikes.
+    pub ban_window: Duration,
+    /// How long a ban lasts.
+    pub ban_duration: Duration,
+    /// LRU cap for rate buckets and the ban table.
+    pub max_tracked_sources: u32,
+}
+
+impl Default for PublicConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ban_strikes: DEFAULT_BAN_STRIKES,
+            ban_window: DEFAULT_BAN_WINDOW,
+            ban_duration: DEFAULT_BAN_DURATION,
+            max_tracked_sources: DEFAULT_MAX_TRACKED_SOURCES,
+        }
+    }
+}
+
+/// DDR (`_dns.resolver.arpa`) settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DdrConfig {
+    /// When false, DDR queries fall through to policy.
+    pub enabled: bool,
+    /// Target label (`dns` → `dns.<public_domain>`, or a node hostname label).
+    pub target: String,
+}
+
+impl Default for DdrConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            target: "dns".into(),
+        }
+    }
+}
+
+/// Full listeners configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ListenersConfig {
+    /// Configured listeners.
+    pub listeners: Vec<ListenerConfig>,
+    /// Shared limits.
+    pub limits: Limits,
+    /// Public exposure settings.
+    pub public: PublicConfig,
+    /// DDR discovery.
+    pub ddr: DdrConfig,
+}
+
+/// Underlying socket kind used for bind-conflict detection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum SocketKind {
+    Udp,
+    Tcp,
+}
+
+fn socket_kinds(protocol: Protocol, h3: bool) -> &'static [SocketKind] {
+    match protocol {
+        Protocol::Udp53 | Protocol::Doq => &[SocketKind::Udp],
+        Protocol::Tcp53 | Protocol::Dot => &[SocketKind::Tcp],
+        Protocol::Doh if h3 => &[SocketKind::Tcp, SocketKind::Udp],
+        Protocol::Doh => &[SocketKind::Tcp],
+    }
+}
+
+impl ListenersConfig {
+    /// Validates ids, exposure rules, bind conflicts, limits and rates.
+    pub fn validate(&self) -> Result<(), ListenersError> {
+        let mut ids = HashSet::new();
+        let mut binds: HashSet<(SocketKind, SocketAddr)> = HashSet::new();
+
+        for listener in &self.listeners {
+            let id = listener.id.as_str();
+            if !ids.insert(id.to_owned()) {
+                return Err(ListenersError::ConfigDuplicateId { id: id.to_owned() });
+            }
+
+            if listener.exposure == Exposure::Public {
+                if !listener.protocol.allows_public() {
+                    return Err(ListenersError::ConfigPublicPlaintext {
+                        protocol: listener.protocol.as_str().to_owned(),
+                    });
+                }
+                if !self.public.enabled {
+                    return Err(ListenersError::config(
+                        "public listeners require listeners_public.enabled = true",
+                    ));
+                }
+            }
+
+            if listener.h3 && listener.protocol != Protocol::Doh {
+                return Err(ListenersError::config(
+                    "h3 = true is only allowed on protocol = doh",
+                ));
+            }
+
+            for &kind in socket_kinds(listener.protocol, listener.h3) {
+                if !binds.insert((kind, listener.address)) {
+                    return Err(ListenersError::config(format!(
+                        "duplicate bind: {:?} {} ({})",
+                        kind,
+                        listener.address,
+                        listener.protocol.as_str()
+                    )));
+                }
+            }
+        }
+
+        validate_limits(&self.limits)?;
+        validate_public(&self.public)?;
+
+        if self.ddr.target.is_empty() {
+            return Err(ListenersError::config("ddr.target must not be empty"));
+        }
+
+        Ok(())
+    }
+}
+
+fn validate_limits(limits: &Limits) -> Result<(), ListenersError> {
+    if limits.udp_payload_max == 0 {
+        return Err(ListenersError::config("udp_payload_max must be > 0"));
+    }
+    if limits.query_timeout.is_zero() {
+        return Err(ListenersError::config("query_timeout must be > 0"));
+    }
+    if limits.tcp_idle_timeout.is_zero() {
+        return Err(ListenersError::config("tcp_idle_timeout must be > 0"));
+    }
+    if limits.tls_handshake_timeout.is_zero() {
+        return Err(ListenersError::config("tls_handshake_timeout must be > 0"));
+    }
+    if limits.max_inflight_per_listener == 0 {
+        return Err(ListenersError::config(
+            "max_inflight_per_listener must be > 0",
+        ));
+    }
+    if limits.max_connections_per_listener == 0 {
+        return Err(ListenersError::config(
+            "max_connections_per_listener must be > 0",
+        ));
+    }
+    if limits.max_connections_per_source == 0 {
+        return Err(ListenersError::config(
+            "max_connections_per_source must be > 0",
+        ));
+    }
+    if limits.max_quic_streams_per_connection == 0 {
+        return Err(ListenersError::config(
+            "max_quic_streams_per_connection must be > 0",
+        ));
+    }
+    if limits.rate_per_source.per_second == 0 || limits.rate_per_source.burst == 0 {
+        return Err(ListenersError::config("rate_per_source must be > 0"));
+    }
+    if limits.rate_per_client_id.per_second == 0 || limits.rate_per_client_id.burst == 0 {
+        return Err(ListenersError::config("rate_per_client_id must be > 0"));
+    }
+    Ok(())
+}
+
+fn validate_public(public: &PublicConfig) -> Result<(), ListenersError> {
+    if public.ban_strikes == 0 {
+        return Err(ListenersError::config("ban_strikes must be > 0"));
+    }
+    if public.ban_window.is_zero() {
+        return Err(ListenersError::config("ban_window must be > 0"));
+    }
+    if public.ban_duration.is_zero() {
+        return Err(ListenersError::config("ban_duration must be > 0"));
+    }
+    if public.max_tracked_sources == 0 {
+        return Err(ListenersError::config("max_tracked_sources must be > 0"));
+    }
+    Ok(())
+}

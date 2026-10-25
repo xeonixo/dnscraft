@@ -68,7 +68,7 @@ Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i o
 - [x] Spike findings in progress.md; dependency table confirmed or adjusted; owner go for Phase 1
 
 ### Phase 1: Core + Do53
-- [ ] N1: Crate skeleton — config, validation, errors, `Clock`, `QueryHandler` trait
+- [x] N1: Crate skeleton — config, validation, errors, `Clock`, `QueryHandler` trait
 - [ ] N2: Message core — validation, EDNS, ECS strip, EDE, id/flags, size limit, padding
 - [ ] N3: Admission — source class, token buckets, ban table (bounded), decision API
 - [ ] N4: Do53 UDP — concrete + wildcard sockets, reply source, in-flight cap

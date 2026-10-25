@@ -73,10 +73,10 @@ Socket helper `bind_udp(addr)` / `bind_tcp(addr)` (std sockets via `socket2`, no
 for TCP; IPv6 → `set_only_v6(true)` **before** bind) that every transport uses (Checkpoint A finding 1).
 
 **Acceptance criteria:**
-- [ ] Spec excerpt as Rust values validates; each rejection rule has a test with its code
-- [ ] `QueryHandler` impl for `PolicyEngine` compiles and is exercised by one test
-- [ ] Crate README skeleton
-- [ ] Socket helper: `0.0.0.0:p` and `[::]:p` bind side by side (UDP and TCP); an IPv6 socket reports `only_v6() == true`
+- [x] Spec excerpt as Rust values validates; each rejection rule has a test with its code
+- [x] `QueryHandler` impl for `PolicyEngine` compiles and is exercised by one test
+- [x] Crate README skeleton
+- [x] Socket helper: `0.0.0.0:p` and `[::]:p` bind side by side (UDP and TCP); an IPv6 socket reports `only_v6() == true`
 
 **Verification:** `cargo test -p dnscraft-listeners config` and `cargo test -p dnscraft-listeners socket`
 

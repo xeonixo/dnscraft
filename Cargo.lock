@@ -482,6 +482,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dnscraft-listeners"
+version = "0.1.0"
+dependencies = [
+ "dnscraft-filtering",
+ "dnscraft-policy",
+ "dnscraft-proto",
+ "dnscraft-resolver",
+ "socket2",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dnscraft-policy"
 version = "0.1.0"
 dependencies = [
