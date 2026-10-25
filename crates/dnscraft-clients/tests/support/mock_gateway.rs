@@ -263,64 +263,62 @@ async fn serve(
         headers: headers.clone(),
     });
 
-    let delay = {
+    // Snapshot the response *before* sleeping so a delayed request keeps the
+    // fixture as it was when the request arrived (out-of-order install tests).
+    enum Pending {
+        Oversize(OversizeBody),
+        Http(u16, Vec<u8>),
+        Raw(Vec<u8>),
+    }
+    let (delay, pending) = {
         let st = state.lock().await;
-        st.response_delay
+        let delay = st.response_delay;
+        let key_ok = headers
+            .get("x-api-key")
+            .is_some_and(|v| v == &st.expected_key);
+
+        if let Some(over) = st.force_oversize {
+            (delay, Pending::Oversize(over))
+        } else if let Some(code) = st.force_status {
+            let body = format!(r#"{{"error":"{code}"}}"#).into_bytes();
+            (delay, Pending::Http(code, body))
+        } else if !key_ok {
+            (delay, Pending::Http(401, br#"{"error":"401"}"#.to_vec()))
+        } else if let Some(resp) = integration_response(&st.integration, &path, &query) {
+            (
+                delay,
+                match resp {
+                    MockResp::Ok(body) => Pending::Http(200, body),
+                    MockResp::Status(code, body) => Pending::Http(code, body),
+                    MockResp::Raw(raw) => Pending::Raw(raw),
+                },
+            )
+        } else if let Some(resp) = classic_response(&st.classic, &path) {
+            (
+                delay,
+                match resp {
+                    MockResp::Ok(body) => Pending::Http(200, body),
+                    MockResp::Status(code, body) => Pending::Http(code, body),
+                    MockResp::Raw(raw) => Pending::Raw(raw),
+                },
+            )
+        } else {
+            (delay, Pending::Http(200, st.ok_body.clone()))
+        }
     };
+
     if let Some(d) = delay {
         tokio::time::sleep(d).await;
     }
 
-    let st = state.lock().await;
-    let key_ok = headers
-        .get("x-api-key")
-        .is_some_and(|v| v == &st.expected_key);
-
-    if let Some(over) = st.force_oversize {
-        drop(st);
-        return write_oversize(&mut tls, over).await;
+    match pending {
+        Pending::Oversize(over) => write_oversize(&mut tls, over).await,
+        Pending::Http(code, body) => write_http(&mut tls, code, &body).await,
+        Pending::Raw(raw) => {
+            tls.write_all(&raw).await?;
+            Ok(())
+        }
     }
-
-    if let Some(code) = st.force_status {
-        let body = format!(r#"{{"error":"{code}"}}"#);
-        drop(st);
-        return write_http(&mut tls, code, body.as_bytes()).await;
-    }
-
-    if !key_ok {
-        drop(st);
-        return write_http(&mut tls, 401, br#"{"error":"401"}"#).await;
-    }
-
-    // Integration API routing.
-    if let Some(resp) = integration_response(&st.integration, &path, &query) {
-        drop(st);
-        return match resp {
-            MockResp::Ok(body) => write_http(&mut tls, 200, &body).await,
-            MockResp::Status(code, body) => write_http(&mut tls, code, &body).await,
-            MockResp::Raw(raw) => {
-                tls.write_all(&raw).await?;
-                Ok(())
-            }
-        };
-    }
-
-    // Classic controller API routing.
-    if let Some(resp) = classic_response(&st.classic, &path) {
-        drop(st);
-        return match resp {
-            MockResp::Ok(body) => write_http(&mut tls, 200, &body).await,
-            MockResp::Status(code, body) => write_http(&mut tls, code, &body).await,
-            MockResp::Raw(raw) => {
-                tls.write_all(&raw).await?;
-                Ok(())
-            }
-        };
-    }
-
-    let body = st.ok_body.clone();
-    drop(st);
-    write_http(&mut tls, 200, &body).await
 }
 
 enum MockResp {

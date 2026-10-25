@@ -103,6 +103,11 @@ fn boot(config: ClientsConfig, data_dir: PathBuf) -> Result<Arc<ClientEngine>, d
 - `lookup()` → cheap `Arc<ClientLookup>` clone.
 - `sync_now()` / background poll rebuild only when the observation hash changes.
 - `apply_config` rebuilds from cached UniFi rows (manual edits need no gateway round-trip).
+  When `unifi.enabled` is false, UniFi contribution is empty (manuals only); first-seen
+  labels in state are kept, observations / retain inventory are cleared.
+- Gateway fetch runs **outside** the sync lock; under the lock a fetch is **discarded**
+  (`SyncReport.superseded = true`, no install / no stale) when UniFi was disabled, the
+  `UnifiConfig` changed mid-flight, or a newer fetch/apply already installed.
 - Tests: `ClientEngine::new_with_secret` + `ManualClock` (no process env mutation).
 
 ## Error codes
@@ -112,6 +117,9 @@ Stable `area.reason` via [`ClientsError::code`](src/error.rs):
 `clients.tls.handshake`, `clients.connect`, `clients.http.status`,
 `clients.http.body`, `clients.sync.partial`, `clients.sync.backoff`,
 `clients.too_many`, `clients.ip.conflict`, `clients.name.collision`.
+
+A superseded mid-flight fetch is **not** an error code — it returns `Ok(SyncReport)`
+with `superseded: true` and `rebuilt: false`.
 
 ## Coverage
 

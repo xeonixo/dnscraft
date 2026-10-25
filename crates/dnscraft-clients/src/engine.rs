@@ -44,6 +44,12 @@ pub struct SyncReport {
     pub client_count: usize,
     /// Classic error `code()` when Integration still succeeded.
     pub classic_error: Option<&'static str>,
+    /// True when this fetch was discarded without install: UniFi config changed
+    /// mid-flight, UniFi was disabled, or a newer fetch already installed.
+    ///
+    /// Not an error — the last-good snapshot and status stay as they were (no
+    /// `stale` / `last_error` update).
+    pub superseded: bool,
 }
 
 struct SyncScheduler {
@@ -106,6 +112,11 @@ struct Inner {
     sync_lock: AsyncMutex<()>,
     /// Reused [`GatewayClient`] rebuilt when UniFi connection settings change.
     gateway: Mutex<Option<(UnifiConfig, Arc<GatewayClient>)>>,
+    /// Monotonic id assigned to each gateway fetch before it starts.
+    next_fetch_seq: AtomicU64,
+    /// Highest fetch (or apply_config) sequence that has installed a snapshot.
+    /// In-flight fetches with `seq <= installed_seq` are discarded under the lock.
+    installed_seq: AtomicU64,
 }
 
 impl std::fmt::Debug for Inner {
@@ -231,6 +242,8 @@ impl ClientEngine {
             scheduler_parked: AtomicBool::new(false),
             sync_lock: AsyncMutex::new(()),
             gateway: Mutex::new(None),
+            next_fetch_seq: AtomicU64::new(0),
+            installed_seq: AtomicU64::new(0),
         });
 
         let eng = Arc::new(Self {
@@ -297,6 +310,13 @@ impl ClientEngine {
     /// Order under the sync lock: validate → build → only on success store
     /// config, install the snapshot, and persist. A failed build leaves the
     /// previous config and lookup untouched.
+    ///
+    /// When [`UnifiConfig::enabled`] is false, the rebuild uses **empty**
+    /// observations/networks (spec: UniFi contributes nothing; manuals only),
+    /// clears the in-memory UniFi cache, and persists that. First-seen DNS
+    /// **labels** in [`State`] are kept so a later re-enable can reuse them;
+    /// retained-offline inventory / IPv6 TTL maps are dropped with the
+    /// observations (they would otherwise reappear as UniFi clients).
     pub async fn apply_config(&self, mut config: ClientsConfig) -> Result<(), ClientsError> {
         let _guard = self.inner.sync_lock.lock().await;
 
@@ -319,24 +339,40 @@ impl ClientEngine {
         }
 
         let now = self.inner.clock.now();
-        let obs = self
-            .inner
-            .cached_obs
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let nets = self
-            .inner
-            .cached_nets
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let prev = self
-            .inner
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let unifi_on = config.unifi.enabled;
+        let (obs, nets, prev) = if unifi_on {
+            let obs = self
+                .inner
+                .cached_obs
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let nets = self
+                .inner
+                .cached_nets
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let prev = self
+                .inner
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            (obs, nets, prev)
+        } else {
+            // Manuals only: drop UniFi inventory so retain cannot resurrect rows.
+            let mut prev = self
+                .inner
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            prev.retained.clear();
+            prev.last_unifi.clear();
+            prev.ipv6_last_seen.clear();
+            (Vec::new(), Vec::new(), prev)
+        };
         // Build *before* swapping config so a TooMany / domain failure cannot
         // leave a broken config active for later polls.
         let built = merge::build(&config.manual, &obs, &nets, &prev, &config, now)?;
@@ -362,6 +398,9 @@ impl ClientEngine {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
         self.install_snapshot(built.lookup, built.state, &obs, &nets, true);
+        // Invalidate in-flight fetches that started before this apply.
+        let seq = self.inner.next_fetch_seq.load(Ordering::Relaxed);
+        self.inner.installed_seq.store(seq, Ordering::Relaxed);
         self.persist_cache();
         self.inner.kick.notify_one();
         Ok(())
@@ -402,15 +441,26 @@ impl ClientEngine {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
+            if cfg.unifi.enabled {
+                // Enabled again while we waited for the lock — fall through by
+                // returning a no-op; the next poll/sync_now will fetch.
+                return Ok(self.superseded_report());
+            }
             let now = self.inner.clock.now();
-            let prev = self
+            let mut prev = self
                 .inner
                 .state
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
+            prev.retained.clear();
+            prev.last_unifi.clear();
+            prev.ipv6_last_seen.clear();
             let built = merge::build(&cfg.manual, &[], &[], &prev, &cfg, now)?;
-            let rebuilt = self.install_snapshot(built.lookup, built.state, &[], &[], false);
+            let rebuilt = self.install_snapshot(built.lookup, built.state, &[], &[], true);
+            let seq = self.inner.next_fetch_seq.load(Ordering::Relaxed);
+            self.inner.installed_seq.store(seq, Ordering::Relaxed);
+            self.persist_cache();
             self.clear_backoff();
             self.mark_success(None);
             return Ok(SyncReport {
@@ -418,6 +468,7 @@ impl ClientEngine {
                 rebuilt,
                 client_count: self.lookup().len(),
                 classic_error: None,
+                superseded: false,
             });
         }
 
@@ -444,7 +495,8 @@ impl ClientEngine {
                 name: crate::secret::UNIFI_API_KEY_ENV.into(),
             })?;
 
-        let gw = match self.gateway_for(&cfg.unifi, key) {
+        let fetched_with = cfg.unifi.clone();
+        let gw = match self.gateway_for(&fetched_with, key) {
             Ok(g) => g,
             Err(e) => {
                 self.on_sync_error(&e);
@@ -452,9 +504,13 @@ impl ClientEngine {
             }
         };
 
+        // Sequence taken *before* the fetch so a concurrent newer fetch/apply
+        // can win even if this request finishes first on the wire.
+        let fetch_seq = self.inner.next_fetch_seq.fetch_add(1, Ordering::Relaxed) + 1;
+
         // Fetch outside the sync lock so apply_config is not blocked on gateway
         // timeouts; merge under the lock with the config current at install time.
-        let fetched = match sync::fetch_once(gw.as_ref(), &cfg.unifi).await {
+        let fetched = match sync::fetch_once(gw.as_ref(), &fetched_with).await {
             Ok(f) => f,
             Err(e) => {
                 self.on_sync_error(&e);
@@ -469,6 +525,14 @@ impl ClientEngine {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        // Discard when UniFi was disabled / connection settings changed, or a
+        // newer fetch/apply already installed.
+        if !cfg.unifi.enabled
+            || cfg.unifi != fetched_with
+            || fetch_seq <= self.inner.installed_seq.load(Ordering::Relaxed)
+        {
+            return Ok(self.superseded_report());
+        }
         let now = self.inner.clock.now();
         let prev = self
             .inner
@@ -490,6 +554,7 @@ impl ClientEngine {
                 return Err(e);
             }
         };
+        self.inner.installed_seq.store(fetch_seq, Ordering::Relaxed);
         Ok(self.apply_sync_result(SyncResult {
             merge,
             observations: fetched.observations,
@@ -499,6 +564,16 @@ impl ClientEngine {
             skipped_rows: fetched.skipped_rows,
             classic_error: fetched.classic_error,
         }))
+    }
+
+    fn superseded_report(&self) -> SyncReport {
+        SyncReport {
+            generation: self.inner.generation.load(Ordering::Relaxed),
+            rebuilt: false,
+            client_count: self.lookup().len(),
+            classic_error: None,
+            superseded: true,
+        }
     }
 
     fn gateway_for(
@@ -538,6 +613,7 @@ impl ClientEngine {
             rebuilt,
             client_count: self.lookup().len(),
             classic_error: classic_err,
+            superseded: false,
         }
     }
 

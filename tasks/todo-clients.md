@@ -278,3 +278,5 @@ Mock fixtures are written from the OpenAPI schemas cited in the spec.
 - [ ] **Owner approval**
 
 **C12 (2026-10-25, Cursor):** cache labels re-validated on load (`[a-z0-9-]{1,63}`, no leading/trailing `-`; warn `clients.cache.invalid_label`); `fqdn` rejects non-normalised labels; optional hardenings (Zeroizing in `read_secret_parts`, rustls TLS classify via nested `io::Error`, no `install_default`, reused `GatewayClient`, classic site-key charset, cache `File::take`, `clients.sync.backoff`, sync lock only around build+install). Do not tick Independent review / Owner approval here.
+
+**C13 (2026-10-25, Cursor):** discard stale fetches on UniFi config change — `apply_config(enabled=false)` manuals-only (keep labels, drop obs/retain); mid-flight fetch superseded when `UnifiConfig` changes / disabled / older seq; monotonic fetch seq. Do not tick Independent review / Owner approval.

@@ -98,6 +98,11 @@ pub async fn fetch_once(
 
 /// Runs one UniFi sync against `gw` and builds a snapshot.
 ///
+/// Thin wrapper over [`fetch_once`] + [`merge::build`] kept for acceptance
+/// tests that drive the HTTP path without a [`crate::ClientEngine`] (see
+/// `tests/classic_api.rs`). The engine uses [`fetch_once`] directly so it can
+/// discard stale fetches under its sync lock.
+///
 /// When `unifi.classic_clients` is false, no classic HTTP requests are made.
 /// When classic fails after a successful Integration fetch, Integration-only
 /// observations are used and the classic error is returned in

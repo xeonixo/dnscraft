@@ -17,8 +17,8 @@ use std::time::{Duration, SystemTime};
 static DATA_SEQ: AtomicU64 = AtomicU64::new(0);
 
 use dnscraft_clients::{
-    ClientEngine, ClientId, ClientsConfig, DEFAULT_LOCAL_DOMAIN, MAX_CLIENT_COUNT, ManualClock,
-    ManualEntry, Secret, TlsMode, UnifiConfig, UnifiObservation, leaf_sha256,
+    ClientEngine, ClientId, ClientSource, ClientsConfig, DEFAULT_LOCAL_DOMAIN, MAX_CLIENT_COUNT,
+    ManualClock, ManualEntry, Secret, TlsMode, UnifiConfig, UnifiObservation, leaf_sha256,
 };
 use mock_gateway::{CertKind, ClassicFixture, IntegrationFixture, MockGateway};
 use serde_json::{Value, json};
@@ -642,6 +642,261 @@ async fn failed_apply_config_keeps_old_config_and_lookup() {
     assert!(ok.classic_error.is_none());
     assert_eq!(eng.status().manual_count, before_manual);
     assert!(eng.lookup().by_ip(printer).is_some());
+}
+
+fn unifi_client_count(eng: &ClientEngine) -> usize {
+    eng.lookup()
+        .clients()
+        .iter()
+        .filter(|c| c.source == ClientSource::Unifi)
+        .count()
+}
+
+#[tokio::test]
+async fn disable_unifi_clears_unifi_clients_keeps_manuals() {
+    let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+    seed(&mock).await;
+    let clock = Arc::new(ManualClock::new(start()));
+    let eng = engine(
+        &mock,
+        Arc::clone(&clock) as Arc<_>,
+        Duration::from_secs(3600),
+    )
+    .await;
+    await_initial_sync(&eng).await;
+    assert_eq!(unifi_client_count(&eng), 1);
+    assert!(
+        eng.lookup()
+            .by_ip(IpAddr::from_str("198.51.100.50").unwrap())
+            .is_some()
+    );
+
+    let mut cfg = cfg_for(&mock, Duration::from_secs(3600));
+    cfg.unifi.enabled = false;
+    eng.apply_config(cfg).await.unwrap();
+
+    assert_eq!(unifi_client_count(&eng), 0);
+    assert_eq!(eng.status().unifi_count, 0);
+    assert!(
+        eng.lookup()
+            .by_ip(IpAddr::from_str("198.51.100.50").unwrap())
+            .is_some(),
+        "manual printer must remain"
+    );
+    assert!(
+        eng.lookup()
+            .by_ip(IpAddr::from_str("198.51.100.10").unwrap())
+            .is_none(),
+        "UniFi phone must be gone"
+    );
+}
+
+#[tokio::test]
+async fn disable_unifi_during_slow_sync_discards_stale_fetch() {
+    // Claude C12 probe: delay 400 ms, sync_now in flight, apply_config with
+    // unifi.enabled = false → UniFi count must be 0 after apply and after the
+    // in-flight sync finishes (not reinstalled by the stale fetch).
+    let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+    seed(&mock).await;
+    let clock = Arc::new(ManualClock::new(start()));
+    let eng = engine(
+        &mock,
+        Arc::clone(&clock) as Arc<_>,
+        Duration::from_secs(3600),
+    )
+    .await;
+    await_initial_sync(&eng).await;
+    assert_eq!(unifi_client_count(&eng), 1);
+
+    mock.set_response_delay(Some(Duration::from_millis(400)))
+        .await;
+    let sync_task = {
+        let eng = Arc::clone(&eng);
+        tokio::spawn(async move { eng.sync_now().await })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut cfg = cfg_for(&mock, Duration::from_secs(3600));
+    cfg.unifi.enabled = false;
+    eng.apply_config(cfg).await.unwrap();
+    assert_eq!(unifi_client_count(&eng), 0, "after apply_config");
+
+    let report = sync_task.await.unwrap().unwrap();
+    assert!(report.superseded, "stale fetch must be discarded");
+    assert!(!report.rebuilt);
+    assert_eq!(unifi_client_count(&eng), 0, "after in-flight sync");
+    assert!(
+        eng.lookup()
+            .by_ip(IpAddr::from_str("198.51.100.50").unwrap())
+            .is_some()
+    );
+    mock.set_response_delay(None).await;
+}
+
+#[tokio::test]
+async fn unifi_config_change_during_slow_fetch_discards_old_target() {
+    // Mid-flight fetch must not install data from the old gateway after
+    // base_url / site switch — even if the old fixture changed meanwhile.
+    let mock_a = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+    let mock_b = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+    seed(&mock_a).await;
+    seed(&mock_b).await;
+
+    let clock = Arc::new(ManualClock::new(start()));
+    let eng = engine(
+        &mock_a,
+        Arc::clone(&clock) as Arc<_>,
+        Duration::from_secs(3600),
+    )
+    .await;
+    await_initial_sync(&eng).await;
+
+    // Make the in-flight fetch return a *new* UniFi IP that must never appear
+    // after we switch away from mock_a.
+    mock_a
+        .set_integration(IntegrationFixture {
+            sites: vec![integ_site()],
+            networks: HashMap::from([(
+                SITE_UUID.into(),
+                vec![json!({ "id": "integ-net", "name": "IoT", "vlanId": 40 })],
+            )]),
+            clients: HashMap::from([(
+                SITE_UUID.into(),
+                vec![json!({
+                    "id": INTEG_ID,
+                    "name": "Phone",
+                    "ipAddress": "198.51.100.99",
+                    "macAddress": MAC,
+                    "connectedAt": "2026-10-25T12:00:00Z"
+                })],
+            )]),
+            ..IntegrationFixture::default()
+        })
+        .await;
+
+    mock_a
+        .set_response_delay(Some(Duration::from_millis(400)))
+        .await;
+    let sync_task = {
+        let eng = Arc::clone(&eng);
+        tokio::spawn(async move { eng.sync_now().await })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let cfg = cfg_for(&mock_b, Duration::from_secs(3600));
+    eng.apply_config(cfg).await.unwrap();
+
+    let report = sync_task.await.unwrap().unwrap();
+    assert!(report.superseded);
+    assert!(
+        eng.lookup()
+            .by_ip(IpAddr::from_str("198.51.100.99").unwrap())
+            .is_none(),
+        "old-target fetch must not install"
+    );
+    mock_a.set_response_delay(None).await;
+}
+
+#[tokio::test]
+async fn newer_fetch_wins_over_slower_older() {
+    let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+    seed(&mock).await;
+    let clock = Arc::new(ManualClock::new(start()));
+    let eng = engine(
+        &mock,
+        Arc::clone(&clock) as Arc<_>,
+        Duration::from_secs(3600),
+    )
+    .await;
+    await_initial_sync(&eng).await;
+
+    mock.set_response_delay(Some(Duration::from_millis(500)))
+        .await;
+    let older = {
+        let eng = Arc::clone(&eng);
+        tokio::spawn(async move { eng.sync_now().await })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Newer fetch sees a different UniFi IP and is not delayed.
+    mock.set_response_delay(None).await;
+    mock.set_integration(IntegrationFixture {
+        sites: vec![integ_site()],
+        networks: HashMap::from([(
+            SITE_UUID.into(),
+            vec![json!({ "id": "integ-net", "name": "IoT", "vlanId": 40 })],
+        )]),
+        clients: HashMap::from([(
+            SITE_UUID.into(),
+            vec![json!({
+                "id": INTEG_ID,
+                "name": "Phone",
+                "ipAddress": "198.51.100.77",
+                "macAddress": MAC,
+                "connectedAt": "2026-10-25T12:00:00Z"
+            })],
+        )]),
+        ..IntegrationFixture::default()
+    })
+    .await;
+    // Classic still has .10 — merge by MAC keeps Integration id; classic IP may
+    // enrich. Override classic too so the only IPv4 is .77.
+    mock.set_classic(ClassicFixture {
+        sites: vec![json!({ "name": SITE_KEY })],
+        sta: HashMap::from([(
+            SITE_KEY.into(),
+            vec![json!({
+                "_id": "classic-1",
+                "mac": MAC,
+                "hostname": "phone",
+                "ip": "198.51.100.77",
+                "ipv6_addresses": ["2001:db8::10"],
+                "network_id": NET_ID,
+                "last_seen": 1_729_863_600u64
+            })],
+        )]),
+        networkconf: HashMap::from([(
+            SITE_KEY.into(),
+            vec![json!({
+                "_id": NET_ID,
+                "name": "IoT",
+                "vlan": 40,
+                "domain_name": "iot.home.arpa",
+                "ip_subnet": "198.51.100.1/24"
+            })],
+        )]),
+        ..ClassicFixture::default()
+    })
+    .await;
+
+    let newer = eng.sync_now().await.unwrap();
+    assert!(!newer.superseded);
+    assert!(
+        eng.lookup()
+            .by_ip(IpAddr::from_str("198.51.100.77").unwrap())
+            .is_some()
+    );
+
+    let older_report = older.await.unwrap().unwrap();
+    assert!(
+        older_report.superseded,
+        "slower older fetch must not overwrite"
+    );
+    assert!(!older_report.rebuilt);
+    assert!(
+        eng.lookup()
+            .by_ip(IpAddr::from_str("198.51.100.77").unwrap())
+            .is_some(),
+        "newer data must remain"
+    );
+    // Delayed older requests snapshot the pre-swap fixture (.10); discarding
+    // them means .10 must not replace .77.
+    assert!(
+        eng.lookup()
+            .by_ip(IpAddr::from_str("198.51.100.10").unwrap())
+            .is_none(),
+        "stale older fetch must not reinstall .10"
+    );
 }
 
 #[tokio::test]

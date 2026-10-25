@@ -12,7 +12,7 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
-- Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)). **C1–C12 + O1 done**; Checkpoints A and B passed; **C12 Checkpoint C follow-ups landed** (awaiting Lead re-review). Next: Checkpoint C tick → owner approval.
+- Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)). **C1–C13 + O1 done**; Checkpoints A and B passed; **C13 stale-fetch race fixes landed** (awaiting Lead re-review). Next: Checkpoint C tick → owner approval.
 
 ### clients success criteria (SPEC-clients.md)
 
@@ -28,10 +28,10 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 | 7 | VLAN via `network_id` join or LPM | `tests/engine.rs`; `tests/merge.rs` `vlan_*` |
 | 8 | Invented fixtures only; DoD green | mock gateway; `fmt` / `clippy -D warnings` / `cargo test -p dnscraft-clients` |
 
-Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.39 %** lines / **80.22 %** regions.
+Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.24 %** lines / **80.27 %** regions.
 - Module `tls`: **COMPLETE** — SPEC + plan approved; L1–L12c done; Checkpoints A/B/C passed (2026-10-25). Owner approved after LE-staging acceptance (node DynDNS only; `public_entry` owner-managed).
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P12 + P10b/P9b/P11b done. Checkpoint A/B passed.** Next: **Checkpoint C** (Claude independent review + owner approval).
-- Blockers: clients Checkpoint C awaiting Lead re-review of C12.
+- Blockers: clients Checkpoint C awaiting Lead re-review of C13.
 
 ### policy success criteria (SPEC-policy.md)
 
@@ -62,6 +62,12 @@ Coverage (`cargo llvm-cov -p dnscraft-policy --summary-only`, 2026-10-25): **93.
 Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **80.32 %** lines / **79.82 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
 
 ## Log
+
+- 2026-10-25 — clients **C13** done (Cursor): discard stale UniFi fetches on config change. (1) `apply_config(enabled=false)` builds manuals-only (empty obs/nets, clear cache; keep first-seen labels, drop retain/last_unifi). (2) `run_sync` remembers `UnifiConfig` used for the fetch; under the lock discards if disabled / `unifi` changed / older seq (`SyncReport.superseded`, no stale). (3) Monotonic fetch seq so overlapping poll/`sync_now` cannot install older data last. Tests reproduce Claude's probe (`disable_unifi_during_slow_sync_discards_stale_fetch`: delay 400 ms → UniFi 1→0→0), plus base_url switch and newer-wins. Kept `sync_once` for classic_api tests. `cargo test -p dnscraft-clients` **10× / 0 failures**; llvm-cov **86.24 %** lines. STOP for Checkpoint C Lead re-review.
+
+- 2026-10-25 — **Claude Checkpoint C review policy (P11b 92f7d2a, P12 3231449): one required round (P12b) — DNSSEC consistency of rebind-modified answers.** fmt/clippy green; `cargo test -p dnscraft-policy` 3× / 0 failures; success criteria 1–6 map to tests (golden.rs, select.rs, rebind.rs, ad_ede.rs, bench p50 ≈ 7.4 µs, llvm-cov 93.25 %). AD honesty ✓: `apply_ad_policy` keeps AD only for unmodified Secure, every synthesis and modification goes through `clear_ad` (mutant "keep AD for non-Bogus" → caught). AAAA suppression with DO=1 ✓ (answers cleared, authority replaced by synthetic SOA). **Required (P12b), reproduced with a temporary probe (removed again):** rebind on a Secure, signed answer with `dnssec_ok = true` leaves **only an orphan RRSIG(A)** in the answer section (`answers=[RRSIG] authorities=[] ad=false`): the covered A RRset is gone, and because `answers` is not empty the synthetic NODATA SOA is skipped. A partially stripped RRset keeps an RRSIG that no longer matches; the same holds for rewritten HTTPS/SVCB records. Fix: whenever records of type T are removed or rewritten, also drop the RRSIGs with `type_covered == T` from that section; decide "all addresses gone" and the SOA on the data records (ignore RRSIG/NSEC when checking emptiness); test with DO=1 for full strip, partial strip and SVCB hint rewrite. **Survived mutant (required):** in `strip_svcb_rrs` replacing `rrs.remove(i)` for `DropRecord` (RFC 9460 §8 mandatory hint) by `i += 1` fails no test — only `strip_svcb_hints` is unit-tested; add a test through `strip_svcb_rrs` / `rebind::run`. FYI: criterion 3a's "blocked service is not bypassed by SafeSearch" is trivially true while SafeSearch is a stub — re-test when it is implemented.
+
+- 2026-10-25 — **Claude Checkpoint C review clients C12 (b1f75e9): cache/secret/TLS hardening good; one required round (C13) for a config race found by experiment.** fmt/clippy green; `cargo test -p dnscraft-clients` 5× / 0 failures. Verified: cache labels re-validated (`is_normalised_label`, mutant "no validation" → caught), `fqdn` rejects non-normalised labels, `File::take` cap, `Zeroizing` in `read_secret_parts`, TLS classified via `rustls::Error` (no string match), no `install_default`, reused `GatewayClient`, classic site-key charset, `clients.sync.backoff`, fetch outside the lock with a race test for manuals. **Required (C13), reproduced with a temporary probe test (removed again):** disabling UniFi via `apply_config(unifi.enabled = false)` leaves the UniFi clients in the lookup — `apply_config` rebuilds from `cached_obs` regardless of `enabled` (probe: before=1, after apply=1) — and a fetch already in flight installs them again afterwards (after sync=1). Same class: a fetch started for the old gateway/site/TLS settings is merged into a config that now points elsewhere. Fix: (1) `apply_config` with UniFi disabled builds with empty obs/nets and clears `cached_obs`/`cached_nets`; (2) `run_sync` remembers the `UnifiConfig` it fetched with and, under the lock, discards the result if `cfg.unifi` changed (no install, no persist, attempt not counted as failure); (3) also discard when a newer fetch already installed (fetch sequence number), so poll + `sync_now` cannot install older data last. Tests for all three. Nit: `sync::sync_once` is now only a convenience wrapper — keep it only if tests use it, else delete.
 
 - 2026-10-25 — **tls Checkpoint C complete / module CLOSED** (owner): Manual LE-staging acceptance + Owner approval ticked. DynDNS: node `srvXY.dns.<apex>` only; apex/`*.dns` owner-managed (`public_entry=false`). Code and close-out on `origin/main`.
 
