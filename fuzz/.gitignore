@@ -1,4 +1,5 @@
 target
 artifacts
 coverage
-corpus
+# libFuzzer-generated units (40-char hex); keep human-named seed files tracked.
+corpus/**/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*

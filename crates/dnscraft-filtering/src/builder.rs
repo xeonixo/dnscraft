@@ -317,6 +317,13 @@ pub fn describe_rule(rule: &Rule) -> Option<RuleSpec> {
         MatchKind::Exact => false,
         _ => return None,
     };
+    // IP literals are answer rules; the guided builder rejects them.
+    if rule
+        .domain()
+        .is_some_and(|d| d.as_str().parse::<std::net::IpAddr>().is_ok())
+    {
+        return None;
+    }
     let m = rule.modifiers();
     if m.badfilter || m.denyallow.is_some() {
         return None;

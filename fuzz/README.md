@@ -41,8 +41,9 @@ with the sanitizers that cargo-fuzz uses.
 
 ## Corpora and artifacts
 
-- Seed inputs live in `fuzz/corpus/<target>/` and are committed. libFuzzer adds
-  new interesting inputs to the same directory while it runs.
+- Named seed inputs live in `fuzz/corpus/<target>/` and are committed. libFuzzer
+  adds new interesting inputs as hex-named files in the same directory; those
+  generated units are git-ignored (see `.gitignore`).
 - Crashes and timeouts are written to `fuzz/artifacts/<target>/`. This
   directory is git-ignored. Reproduce a crash with
   `cargo +nightly fuzz run <target> <artifact-file>`.
@@ -51,12 +52,13 @@ with the sanitizers that cargo-fuzz uses.
 ## CI
 
 The `fuzz` job in `.github/workflows/ci.yml` runs on every push and pull
-request:
+request, plus a Monday schedule for a longer run:
 
-- It is a matrix over `name_decode`, `message_decode`, `message_roundtrip` and
-  `rule_parse`,
-  with `fail-fast: false`, so one failing target does not cancel the others.
-- It sets `RUSTUP_TOOLCHAIN=nightly` for the job, overriding the stable pin.
-- It installs cargo-fuzz with `taiki-e/install-action`.
-- It runs `cargo fuzz run <target> --target x86_64-unknown-linux-gnu -- -max_total_time=60`
-  in the `fuzz` directory, so each target gets 60 seconds per run.
+- Matrix over `name_decode`, `message_decode`, `message_roundtrip` and
+  `rule_parse`, with `fail-fast: false`.
+- `RUSTUP_TOOLCHAIN=nightly` overrides the stable pin for this job only.
+- `cargo-fuzz` via `taiki-e/install-action`.
+- Duration: **60 s** on push/PR (smoke); **600 s** on the weekly schedule.
+- Coverage for `dnscraft-proto`, `dnscraft-resolver`, and `dnscraft-filtering`
+  fails under **80 %** lines (`--fail-under-lines 80`).
+- Concurrency cancels superseded PR runs, but not pushes to `main`.

@@ -3,10 +3,15 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    # Longer fuzz smoke on a quiet weekday morning (UTC).
+    - cron: "17 5 * * 1"
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs; keep pushes to main so rapid commits do not
+  # abort a useful gate.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,7 +37,7 @@ jobs:
         run: cargo test --workspace --locked
 
   coverage:
-    name: coverage
+    name: coverage (≥ 80 % lines)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,8 +46,16 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - name: Coverage summary
-        run: cargo llvm-cov --workspace --locked --summary-only
+      # SPEC.md: ≥ 80 % lines for proto, resolver, filtering (policy not yet in tree).
+      - name: Coverage with fail-under
+        run: >
+          cargo llvm-cov
+          -p dnscraft-proto
+          -p dnscraft-resolver
+          -p dnscraft-filtering
+          --locked
+          --fail-under-lines 80
+          --summary-only
 
   fuzz:
     name: fuzz (${{ matrix.target }})
@@ -60,6 +73,8 @@ jobs:
     # Use the gnu target: musl defaults to crt-static, which is incompatible with ASAN.
     env:
       RUSTUP_TOOLCHAIN: nightly
+      # PRs/pushes: 60 s smoke. Monday schedule: 10 min (acceptance-style).
+      FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '600' || '60' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -70,9 +85,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
-      - name: Fuzz ${{ matrix.target }}
+      - name: Fuzz ${{ matrix.target }} (${{ env.FUZZ_SECONDS }}s)
         working-directory: fuzz
         run: >
           cargo fuzz run ${{ matrix.target }}
           --target x86_64-unknown-linux-gnu
-          -- -max_total_time=60
+          -- -max_total_time=${{ env.FUZZ_SECONDS }}
