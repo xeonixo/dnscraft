@@ -35,8 +35,11 @@ resolver, filtering, clients, tls   (can run in parallel)
 
 ## Decisions recorded at map level
 
-- `clients` only enriches logs (device, VLAN, IPs) and does not select profiles.
-  Therefore `policy` does not depend on `clients`; `control-api` consumes it.
+- `clients` enriches logs (device, VLAN, IPs) and supplies local-name / PTR **data**;
+  it never selects profiles/views. `policy` answers those names via a
+  `ClientDirectory` trait and must **not** take a Cargo dependency on
+  `dnscraft-clients` — `control-api` adapts. DoH/DoT Client IDs are separate
+  from UniFi client records.
 - Query logs are aggregated on the master only (hub-and-spoke, not full mesh).
   Sub-nodes keep a short local buffer (e.g. 24 h), stream to the master, and backfill
   after the master was unreachable. Details belong in `SPEC-cluster.md`.

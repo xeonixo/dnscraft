@@ -24,11 +24,12 @@ block responses.
    (`match_name` / `match_chain` / `match_answer_ip`, `Verdict`, `BlockMode`,
    temporary allows, per-set pause). Policy never re-implements AdGuard syntax.
 3. Recursion / DNSSEC / cache / forward zones are owned by `dnscraft-resolver`.
-   Policy calls `Resolver::resolve` (or a thin façade) and may later pass a
-   per-query forward-zone allow-list (see Open Questions).
-4. Device names / PTR data come from `ClientDirectory` (defined here or in a
-   tiny shared traits module). The `clients` crate implements it; policy does
-   not depend on UniFi types.
+   Policy calls `Resolver::resolve` with an optional per-query forward-zone
+   allow-list (`RequestFlags` extension — approved).
+4. Device names / PTR data come from `ClientDirectory` (**defined in this
+   crate**). `dnscraft-clients` does not become a Cargo dependency;
+   `control-api` adapts `ClientLookup` → `dyn ClientDirectory`. UniFi types
+   never appear here. DoH/DoT **Client ID** ≠ UniFi `ClientInfo`.
 5. Listeners supply `RequestContext` (source IP, protocol, Client ID from SNI
    or DoH path). Public Client-ID admission (unknown SNI → reject) is enforced
    at TLS/listener layer ([SPEC-tls.md](SPEC-tls.md)); policy still maps a
@@ -95,8 +96,8 @@ For each query, after selection:
 
 | Step | Action | Why this order |
 |---|---|---|
-| 1 | **View local records** — exact name (+ type) in the view’s record table | Split-horizon must win over public data and filters for names the admin authored |
-| 2 | **ClientDirectory local names / PTR** — FQDN under `local_domains()` or reverse for private/ULA PTR | Same “answer locally” idea; data from UniFi/manuals, not the view editor |
+| 1 | **View local records** — exact name in the view’s record table (A/AAAA/CNAME/TXT/SRV/MX/**PTR**). If the owner name has a CNAME and the qtype is not CNAME, return the CNAME (and follow **only** if the target is also a view-local name; otherwise leave following to the recursive path / client — do not half-resolve through filters twice) | Split-horizon must win over public data and filters for names the admin authored |
+| 2 | **ClientDirectory local names / PTR** — FQDN under `local_domains()` or reverse for private/ULA PTR (**skipped** if step 1 already answered) | Same “answer locally” idea; data from UniFi/manuals, not the view editor |
 | 3 | **Bypass / canary** — per profile: `use-application-dns.net` → NXDOMAIN; `mask.icloud.com` / `mask-h2.icloud.com` → configured answers (block Private Relay or not) | Must not depend on filter lists; fixed product behaviour |
 | 4 | **SafeSearch** (if enabled on profile, low priority) — rewrite qname to the provider’s safe host | Rewrite before filtering so the safe host is what gets checked / resolved |
 | 5 | **Filter qname** — `FilterEngine::match_name(set, name, qtype)` | Block/allow/rewrite before spending recursion budget |
@@ -154,10 +155,18 @@ pub struct FilterHit {
 
 ### Local records
 
-- Per view: map of owner name → RR sets for types A, AAAA, CNAME, TXT, SRV, MX.
+- Per view: map of owner name → RR sets for types A, AAAA, CNAME, TXT, SRV, MX,
+  **PTR** (static PTR overrides ClientDirectory when present).
 - TTL configurable per record (default 60 s).
 - CNAME at a node means no other types at that node (RFC 1034); validate on apply.
 - Wildcards: **exact names only in v1** (no `*.example` view records). Revisit if the UI needs them.
+
+### Other protocol defaults (from SPEC.md)
+
+- **ANY:** answer minimally per RFC 8482 (policy synthesises the minimal form or
+  delegates to a shared helper — do not recurse ANY).
+- **ECS:** never add Client Subnet options; strip if a client sent them before
+  calling the resolver (listeners may already strip — policy must not re-add).
 
 ### DNS rebind protection
 
@@ -167,9 +176,10 @@ pub struct FilterHit {
   clients reaching DNScraft).
 - Exceptions: list of domains / `*.suffix` on the profile (e.g. internal CDNs).
 - Filter `$dnsrewrite` / view records that intentionally point at private IPs
-  are not subject to rebind (they never went through the public answer path),
-  or are covered by automatic exception for the rewritten qname — prefer the
-  former (synthetic answers skip step 9).
+  are not subject to rebind (synthetic answers **skip** step 9).
+- Complementary to list-based rebind rules in the reference filter set (e.g.
+  HaGeZi DNS Rebind Protection): lists block **qnames**; this step sanitises
+  **answer addresses** from public recursion.
 
 ### Bypass control
 
@@ -387,3 +397,6 @@ None — sensible defaults locked 2026-10-25 (owner asked to decide reasonably).
     normal queries on the LAN.)
 11. Spec status: **decisions locked**; formal “approved” for P1 still to be
     marked by the owner (no code before that).
+12. **Review 2026-10-25:** PTR in view records; CNAME follow only within view;
+    ANY/ECS notes; rebind vs filter-list complementarity; stale forward-zone
+    “open question” wording removed; Client ID vs ClientInfo naming.

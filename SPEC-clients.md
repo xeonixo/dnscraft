@@ -140,16 +140,18 @@ impl ClientLookup {
 }
 ```
 
-`policy` consumes a trait (sketch):
+### Trait boundary (vs `policy`)
 
-```rust
-pub trait ClientDirectory: Send + Sync {
-    fn by_ip(&self, ip: IpAddr) -> Option<ClientInfo>;
-    fn by_name(&self, name: &str) -> Option<ClientInfo>;
-    fn reverse(&self, ip: IpAddr) -> Option<String>;
-    fn local_domains(&self) -> &[String];
-}
-```
+`policy` must not depend on this crate ([CAPABILITY-MAP.md](CAPABILITY-MAP.md)).
+`ClientLookup` therefore exposes the same method set as policy’s
+`ClientDirectory` trait; the **binary / `control-api`** adapts
+`Arc<ClientLookup>` → `Arc<dyn ClientDirectory>` (thin wrapper). Do not put the
+trait in a way that creates a `policy → clients` Cargo dependency.
+
+**Naming:** UniFi/manual devices are `ClientInfo` (enrichment). DoH/DoT
+**Client IDs** (`iphone-k7q2x9`) are a different identifier owned by
+policy/control-api for profile selection — never confused with UniFi client
+UUIDs.
 
 ### Local domain (dynamic)
 
@@ -225,10 +227,11 @@ known-but-offline rows; same retain/evict rules apply.
 | Upper bound | **10 000** clients / addresses indexed | soft warn above 2 000; hard refuse apply above 10 000 with `clients.too_many` |
 | Manual entries | ≤ 1 000 | config validation |
 
-Indexes: `HashMap<IpAddr, ClientId>`, `HashMap<dns_label, ClientId>`,
-`Arc<[ClientInfo]>`. No disk cache of UniFi payloads required for v1 (restart
-re-syncs); optional last-good JSON under `<data>/clients/` may be added later
-for faster cold start (ask first).
+Indexes: `HashMap<IpAddr, ClientId>`, `HashMap<Fqdn, ClientId>` (full
+`<label>.<domain>`, not bare label alone), `Arc<[ClientInfo]>`.
+**Last-good disk cache** under `<data>/clients/` (atomic write, treat as
+untrusted) so restart serves enrichment before the first successful poll
+(see Decisions).
 
 ### Interface (sketch)
 
@@ -327,8 +330,10 @@ cidr = "198.51.100.0/24"
 ## Boundaries
 
 - Always: keep last good snapshot on sync failure; never block DNS on UniFi I/O;
-  secrets only via env / `*_FILE`; treat UniFi JSON as untrusted (size caps,
-  timeouts); defensive classic parsing.
+  secrets only via env / `*_FILE`; treat UniFi JSON as untrusted; defensive
+  classic parsing. HTTP defaults aligned with filtering: **30 s** timeout per
+  request, **response size cap** (propose 8 MiB per page), HTTPS only to the
+  gateway URL.
 - Ask first: new dependencies; username/password cookie login if API-key-on-classic
   fails on real hardware; raising the 10 000 client hard cap; changing approved
   defaults below.
@@ -388,3 +393,5 @@ domain from UniFi when present.
     identity across the LAN). ULA and GUA are indexed.
 12. Spec status: **draft decisions locked**; formal “approved” for P1/plan still
     to be marked by the owner when ready (no code before that).
+13. **Review 2026-10-25:** FQDN index keys; HTTP 30 s / 8 MiB caps; trait
+    adapted by control-api (no `policy → clients` dep); disk last-good confirmed.

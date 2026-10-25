@@ -19,6 +19,8 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 
 ## Log
 
+- 2026-10-25 — Spec cross-review (Cursor): clients/tls/policy consistency pass — FQDN indexes + HTTP caps; ClientDirectory adapted by control-api (no policy→clients dep); CAPABILITY-MAP wording; wildcard DNS-01 name; node hostname vs Client-ID SNI; PTR in view records; CNAME follow-within-view; ANY/ECS; rebind vs list complementarity; shared reqwest / serialize CF writes.
+
 - 2026-10-25 — SPEC-policy.md decisions (Cursor): AAAA suppress only on AAAA qtype; rebind-empty → NODATA; exact view names only; schedules/SafeSearch config-first; resolver forward allow-list OK; pause global+per-profile; PTR RFC1918+ULA+loopback(+optional); RFC 6724 documented not gated; DDR owned by listeners; canaries cite docs at implement time.
 
 - 2026-10-25 — Spec draft SPEC-policy.md (Cursor, S3): View/profile selection (Client ID > LPM > default); pipeline local→bypass→SafeSearch→filter→resolve→chain/IP→rebind→AAAA; DecisionRecord; AD/EDE 15/4; ClientDirectory trait; pause; budgets. CAPABILITY-MAP draft link. **STOP for owner Open Questions.**

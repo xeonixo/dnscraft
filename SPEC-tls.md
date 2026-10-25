@@ -81,7 +81,11 @@ resolver and small helpers those modules call.
 1. Ensure ACME account exists (persist credentials under `<data>/tls/account.json`, 0o600).
 2. New order for the identifier set; for each DNS-01 challenge: create Cloudflare
    TXT → wait until authoritative NS serves the value (timeout + backoff) →
-   ready → finalize → download chain.
+   ready → finalize → download chain. For the wildcard name, the challenge host
+   is `_acme-challenge.dns.<public_domain>` (RFC 8555 / CA practice — not a
+   label under `*`). Both apex and wildcard challenges must succeed in the same
+   order. Delete TXT records after validation (best-effort; orphan cleanup on
+   next run).
 3. Renewal: prefer **ARI** suggested window when the CA supports it; else renew
    when `not_after - now < renew_before` (default **30 days**).
 4. Retry/backoff on transient errors (HTTP 503/`Retry-After`, Cloudflare 429,
@@ -131,8 +135,17 @@ pub fn accept_public_sni(
   internet exposure still requires a registered Client ID (SPEC.md Internet
   exposure) — listeners enforce that policy; `tls` only provides the predicate
   helper.
+- **DoT/DoH addressing vs SNI:** clients connect to the **node hostname**
+  (`node1.dns.<domain>` A/AAAA from DynDNS). The TLS **SNI** (DoT/DoQ) or DoH
+  path carries the **Client ID** (`<id>.dns.<domain>` / `/dns-query/<id>`).
+  SNI and connection hostname therefore differ; the wildcard cert covers both.
+  `ClientIdRegistry` (policy/control-api) is the single source of truth for
+  “registered”.
 - Reloading swaps the `CertifiedKey` under the resolver without dropping
   existing connections (new handshakes see the new cert).
+- Reuse workspace **reqwest** (rustls+ring) for Cloudflare and the IP echo;
+  no second HTTP stack. Avoid DynDNS updates while an ACME challenge TXT is
+  in flight (serialize Cloudflare writers).
 
 ### Multi-node
 
@@ -298,3 +311,5 @@ None — owner decisions locked 2026-10-25.
 9. **Listeners:** one cert set for all encrypted listeners (443 and 853).
 10. Spec status: **decisions locked**; formal “approved” for P1 still to be marked
     by the owner (no code before that).
+11. **Review 2026-10-25:** wildcard DNS-01 at `_acme-challenge.dns.<domain>`;
+    node hostname ≠ Client-ID SNI documented; shared reqwest; serialize CF writes.
