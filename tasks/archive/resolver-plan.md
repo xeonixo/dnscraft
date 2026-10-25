@@ -1,7 +1,7 @@
 # Implementation Plan: `resolver` module
 
-> Spec: [SPEC-resolver.md](../SPEC-resolver.md) · Project spec: [SPEC.md](../SPEC.md) ·
-> ADR: [0001-recursion-engine.md](../docs/adr/0001-recursion-engine.md) · Tasks: [todo.md](todo.md)
+> Spec: [SPEC-resolver.md](../../SPEC-resolver.md) · Project spec: [SPEC.md](../../SPEC.md) ·
+> ADR: [0001-recursion-engine.md](../../docs/adr/0001-recursion-engine.md) · Tasks: [todo.md](resolver-todo.md)
 
 ## Overview
 

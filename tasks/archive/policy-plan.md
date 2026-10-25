@@ -2,7 +2,7 @@
 
 > Spec: [SPEC-policy.md](../../SPEC-policy.md) · Project spec: [SPEC.md](../../SPEC.md) ·
 > Tasks: [policy-todo.md](policy-todo.md) · Resume log: [progress.md](../progress.md) ·
-> Sibling plans: [clients-plan.md](clients-plan.md), [plan-tls.md](../plan-tls.md)
+> Sibling plans: [clients-plan.md](clients-plan.md), [tls-plan.md](tls-plan.md)
 
 ## Overview
 

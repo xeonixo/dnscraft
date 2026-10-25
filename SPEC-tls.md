@@ -18,7 +18,7 @@ resolver and small helpers those modules call.
 1. `tls` is a library: configuration as Rust values; secrets
    (`DNSCRAFT_CLOUDFLARE_API_TOKEN` / `*_FILE`) from env / Docker secrets only.
 2. Crypto stack matches the rest of the workspace: **rustls + ring**, no aws-lc
-   (same decision as reqwest in filtering — see `tasks/progress.md`).
+   (same decision as reqwest in filtering — see `tasks/archive/progress-2026-10.md`).
 3. ACME challenge is **DNS-01** via Cloudflare only (no HTTP-01; the node may
    not be reachable on 80 from the internet).
 4. DDR (RFC 9462) answers are produced by `listeners`; this module only supplies

@@ -3,7 +3,7 @@
 //! Every rewrite hostname is checked against the provider's official
 //! documentation at implement time (2026-10-25). Citations sit next to the
 //! constants; hosts that could not be confirmed from the official page are
-//! marked `// unverified` and listed in `tasks/progress.md`.
+//! marked `// unverified` and listed in `tasks/archive/progress-2026-10.md` (P13 entry).
 
 use dnscraft_proto::Name;
 

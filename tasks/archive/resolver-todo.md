@@ -1,6 +1,6 @@
 # Tasks: `resolver` module
 
-> Plan: [plan.md](plan.md) · Spec: [SPEC-resolver.md](../SPEC-resolver.md)
+> Plan: [plan.md](resolver-plan.md) · Spec: [SPEC-resolver.md](../../SPEC-resolver.md)
 > Every task also clears the project Definition of Done: `cargo fmt --all --check`,
 > `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`.
 

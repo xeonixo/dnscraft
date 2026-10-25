@@ -1,6 +1,6 @@
 # Tasks: `tls` module
 
-> Plan: [plan-tls.md](plan-tls.md) · Spec: [SPEC-tls.md](../SPEC-tls.md) · Resume log: [progress.md](progress.md)
+> Plan: [tls-plan.md](tls-plan.md) · Spec: [SPEC-tls.md](../../SPEC-tls.md) · Resume log: [progress.md](../progress.md)
 > Definition of done per task: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
 > `cargo test --workspace --locked` green; `cargo tree -i aws-lc-rs` empty; lead review; committed.
 > Never call real Let's Encrypt, Cloudflare or `cdn-cgi/trace` from tests; use `example.com` and documentation ranges.

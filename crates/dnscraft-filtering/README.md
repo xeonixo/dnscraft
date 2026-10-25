@@ -23,7 +23,7 @@ catalog. Wired into the rest of DNScraft by later modules.
 | Temporary allows, match counters | done |
 | List store, conditional fetch, hot reload | done |
 | Blocked-services catalog (runtime download) | done |
-| Process RSS budget (reference set) | steady ≤ 80 MB; build peak see [progress](../../tasks/progress.md) |
+| Process RSS budget (reference set) | steady ≤ 80 MB; build peak see [progress log](../../tasks/archive/progress-2026-10.md) |
 
 ## Quick try
 
