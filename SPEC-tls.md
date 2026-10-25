@@ -359,8 +359,7 @@ None — owner decisions locked 2026-10-25.
 7. **Propagation:** 2 minutes timeout, 5 s polls — accepted as sensible.
 8. **Order identifiers:** always apex + wildcard together.
 9. **Listeners:** one cert set for all encrypted listeners (443 and 853).
-10. Spec status: **decisions locked**; formal “approved” for P1 still to be marked
-    by the owner (no code before that).
+10. Spec status: **approved by the owner 2026-10-25** (incl. the Claude review corrections).
 11. **Review 2026-10-25:** wildcard DNS-01 at `_acme-challenge.dns.<domain>`;
     node hostname ≠ Client-ID SNI documented; shared reqwest; serialize CF writes.
 12. **Review 2026-10-25 (Claude):** DoT/DoQ hostname == SNI, so Client-ID

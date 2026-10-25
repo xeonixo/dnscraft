@@ -11,13 +11,15 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 ## Current state
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
-- Module `filtering`: **C1 done** (engine polish, README, coverage, fuzz, real-list acceptance). **Checkpoint D ready for Claude/owner review** — implementer does **not** tick Checkpoint D. Checkpoint B owner: RAM may grow — not blocking. Deep-name p99 miss left for Checkpoint D if revisited.
-- Module `clients`: **SPEC-clients.md decisions locked** (defaults + full IPv6 via classic `stat/sta` + dynamic local domain from UniFi DHCP). Formal “approved” for P1 still open.
-- Module `tls`: **SPEC-tls.md decisions locked**. Formal “approved” for P1 still open.
-- Module `policy`: **SPEC-policy.md decisions locked** (sensible defaults). Formal “approved” for P1 still open for clients/tls/policy.
+- Module `filtering`: Checkpoint D reviewed by Claude — **not passed yet**; fixes D1a/D1b in progress (Claude's Sonnet agents), then re-review. Deep-name p99 ~19 µs and build-peak RAM accepted by the owner.
+- Module `clients`: **SPEC-clients.md approved** (2026-10-25). Next: P1 plan.
+- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Next: P1 plan.
+- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Next: P1 plan.
 - Blockers: none for coding; next: formal approve → P1 plans, and/or T1 tech debt; filtering Checkpoint D when ready.
 
 ## Log
+
+- 2026-10-25 — Owner **approved SPEC-clients.md, SPEC-tls.md and SPEC-policy.md** (incl. Claude's review corrections). P1 planning may start: clients, then tls, then policy (plans in tasks/plan-<module>.md / todo-<module>.md; STOP after each for owner approval).
 
 - 2026-10-25 — Checkpoint D review (Claude, 2 Sonnet reviewers, lead-verified): **not passed yet**. Core matching (priority, `$badfilter`, chain, temp allows, IP rules) correct and well tested; no list/catalog can redirect. Required fixes, split into D1a (data path: rule-text lookup did sequential disk reads from byte 0, ~11 ms per cold blocked match; stale rule-text cache after reload; no index-wide regex/glob budget — 20k regex lines → 938 MB peak; list `$badfilter` / `@@$dnsrewrite` could cancel custom rules in shared builders; untested custom-wins-on-tie) and D1b (engine: `apply_config` returned Ok on failed rebuild and kept the bad config; cancelled reload wedged the engine; malformed services catalog overwrote the last good cache; Arc cycle scheduler↔engine; double fetch on update-now; catalog caps + untrusted SVG note). Owner: CI changes from 732a76f accepted; deep-name p99 ~19 µs (10 labels) accepted (budget exception, T3 not needed); fixes by Sonnet agents (not Cursor). Spec review of clients/tls/policy: owner delegated the design gaps to Claude (Client-ID hostnames need a wildcard DNS record + reserved node labels; filter before SafeSearch; unknown names under a local domain fall through; first-seen stable labels; online beats offline on IP conflicts; forward zones exempt from rebind; `Arc` returns).
 

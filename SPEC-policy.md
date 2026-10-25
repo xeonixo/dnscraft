@@ -423,8 +423,7 @@ None — sensible defaults locked 2026-10-25 (owner asked to decide reasonably).
     using hostnames/ports from tls + listener config. Policy view records are
     **not** required for DDR. (Listeners may still call policy for the client’s
     normal queries on the LAN.)
-11. Spec status: **decisions locked**; formal “approved” for P1 still to be
-    marked by the owner (no code before that).
+11. Spec status: **approved by the owner 2026-10-25** (incl. the Claude review corrections).
 12. **Review 2026-10-25:** PTR in view records; CNAME follow only within view;
     ANY/ECS notes; rebind vs filter-list complementarity; stale forward-zone
     “open question” wording removed; Client ID vs ClientInfo naming.

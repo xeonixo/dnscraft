@@ -425,8 +425,7 @@ domain from UniFi when present.
     `clients.http.status`; no proactive local QPS cap until measured.
 11. **Link-local IPv6 (`fe80::/10`):** do **not** index (useless for DNS source
     identity across the LAN). ULA and GUA are indexed.
-12. Spec status: **draft decisions locked**; formal “approved” for P1/plan still
-    to be marked by the owner when ready (no code before that).
+12. Spec status: **approved by the owner 2026-10-25** (incl. the Claude review corrections).
 13. **Review 2026-10-25:** FQDN index keys; HTTP 30 s / 8 MiB caps; trait
     adapted by control-api (no `policy → clients` dep); disk last-good confirmed.
 14. **Review 2026-10-25 (Claude):** label collisions are **first-seen wins**
