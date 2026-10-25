@@ -23,9 +23,9 @@ fn n(s: &str) -> Name {
 }
 
 fn ours(name: &str, rtype: RecordType, ttl: u32, rdata: RData) -> Record {
+    assert_eq!(rdata.record_type(), rtype);
     Record {
         name: n(name),
-        rtype,
         class: Class::IN,
         ttl,
         rdata,
@@ -330,8 +330,8 @@ fn decode_hickory_bytes_with_and_without_compression() {
         for encoding in [NameEncoding::Compressed, NameEncoding::Uncompressed] {
             let bytes = hickory_bytes(&theirs, encoding);
             let (decoded, end) = Record::decode(&bytes, 0).expect("ours decodes");
-            assert_eq!(end, bytes.len(), "{}", expected.rtype);
-            assert_eq!(decoded, expected, "{}", expected.rtype);
+            assert_eq!(end, bytes.len(), "{}", expected.rtype());
+            assert_eq!(decoded, expected, "{}", expected.rtype());
         }
     }
 }
@@ -344,7 +344,7 @@ fn our_reencoding_decodes_in_hickory() {
 
         let mut plain = Vec::new();
         decoded.encode(&mut plain, None).expect("encode");
-        assert_eq!(hickory_decode(&plain), theirs, "plain {}", expected.rtype);
+        assert_eq!(hickory_decode(&plain), theirs, "plain {}", expected.rtype());
 
         let mut compressed = Vec::new();
         let mut map = CompressionMap::new();
@@ -355,7 +355,7 @@ fn our_reencoding_decodes_in_hickory() {
             hickory_decode(&compressed),
             theirs,
             "compressed {}",
-            expected.rtype
+            expected.rtype()
         );
         // And we read our own output back identically.
         assert_eq!(Record::decode(&compressed, 0).expect("own").0, expected);
@@ -368,7 +368,7 @@ fn uncompressed_bytes_match_hickory() {
         let want = hickory_bytes(&theirs, NameEncoding::Uncompressed);
         let mut got = Vec::new();
         expected.encode(&mut got, None).expect("encode");
-        assert_eq!(got, want, "{}", expected.rtype);
+        assert_eq!(got, want, "{}", expected.rtype());
     }
 }
 
@@ -378,7 +378,7 @@ fn compressed_bytes_match_hickory_for_legacy_types() {
     // both sides compress, the bytes agree.
     for (theirs, expected) in corpus() {
         if !matches!(
-            expected.rtype,
+            expected.rtype(),
             RecordType::NS
                 | RecordType::CNAME
                 | RecordType::SOA
@@ -394,7 +394,7 @@ fn compressed_bytes_match_hickory_for_legacy_types() {
         let mut got = Vec::new();
         let mut map = CompressionMap::new();
         expected.encode(&mut got, Some(&mut map)).expect("encode");
-        assert_eq!(got, want, "{}", expected.rtype);
+        assert_eq!(got, want, "{}", expected.rtype());
     }
 }
 
@@ -414,7 +414,7 @@ fn walk_hickory_message_with_shared_suffixes() {
     msg.add_query(Query::query(hn("www.example.com."), HType::A));
     let records: Vec<(HRecord, Record)> = corpus()
         .into_iter()
-        .filter(|(_, o)| !matches!(o.rtype, RecordType::SVCB | RecordType::HTTPS))
+        .filter(|(_, o)| !matches!(o.rtype(), RecordType::SVCB | RecordType::HTTPS))
         .collect();
     for (theirs, _) in &records {
         msg.add_answer(theirs.clone());

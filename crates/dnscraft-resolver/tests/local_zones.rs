@@ -51,7 +51,7 @@ fn ptr_in_private_space_is_local_nxdomain_with_soa() {
     assert_eq!(answer.message.authorities.len(), 1);
     let soa = &answer.message.authorities[0];
     assert_eq!(soa.name, name("10.in-addr.arpa."));
-    assert_eq!(soa.rtype, RecordType::SOA);
+    assert_eq!(soa.rtype(), RecordType::SOA);
     assert_eq!(
         soa.rdata,
         RData::SOA {
@@ -76,7 +76,7 @@ fn soa_at_apex_is_answered() {
         .unwrap();
     assert_eq!(answer.message.rcode(), Rcode::NOERROR);
     assert_eq!(answer.message.answers.len(), 1);
-    assert_eq!(answer.message.answers[0].rtype, RecordType::SOA);
+    assert_eq!(answer.message.answers[0].rtype(), RecordType::SOA);
     assert!(answer.message.authorities.is_empty());
 }
 
@@ -103,7 +103,7 @@ fn other_type_at_apex_is_nodata_with_soa() {
     assert_eq!(answer.message.rcode(), Rcode::NOERROR);
     assert!(answer.message.answers.is_empty());
     assert_eq!(answer.message.authorities.len(), 1);
-    assert_eq!(answer.message.authorities[0].rtype, RecordType::SOA);
+    assert_eq!(answer.message.authorities[0].rtype(), RecordType::SOA);
 }
 
 #[test]

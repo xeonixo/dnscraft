@@ -15,9 +15,11 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Next: P1 plan.
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Next: P1 plan.
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Next: P1 plan.
-- Blockers: none. Cursor: T1, R2, then P1 (clients → tls → policy). Claude: filtering D1a/D1b, then Checkpoint D re-review.
+- Blockers: none. Cursor: R2, then P1 (clients → tls → policy). Claude: filtering D1a/D1b, then Checkpoint D re-review. T1 done.
 
 ## Log
+
+- 2026-10-25 — T1 done (Cursor): `Record` derives wire type from `RData` (`Record::rtype()` / `Record::new`); separate `rtype` field removed so mismatched pairs are unrepresentable. Chose derive-over-checked-ctor for smaller blast radius (drop field + `.rtype`→`.rtype()` vs rewriting every literal to a fallible ctor). Decode/encode wire behaviour unchanged. Regression `rtype_is_derived_from_rdata`. DoD green; fuzz `name_decode` / `message_decode` / `message_roundtrip` 60 s each clean.
 
 - 2026-10-25 — Owner **approved SPEC-clients.md, SPEC-tls.md and SPEC-policy.md** (incl. Claude's review corrections). P1 planning may start: clients, then tls, then policy (plans in tasks/plan-<module>.md / todo-<module>.md; STOP after each for owner approval).
 

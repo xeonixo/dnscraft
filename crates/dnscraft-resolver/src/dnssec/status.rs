@@ -166,7 +166,7 @@ pub(crate) fn child_trust(
 ) -> Trust {
     let ds: Vec<Record> = authorities
         .iter()
-        .filter(|r| r.rtype == RecordType::DS && r.name == *cut)
+        .filter(|r| r.rtype() == RecordType::DS && r.name == *cut)
         .cloned()
         .collect();
     if ds.is_empty() {
@@ -201,7 +201,7 @@ pub(crate) fn check_no_ds(
     let mut failure: Option<VerifyFailure> = None;
     let mut valid: Vec<Record> = Vec::new();
     for set in rrsets(authorities, parent.zone(), |r| {
-        matches!(r.rtype, RecordType::NSEC | RecordType::NSEC3)
+        matches!(r.rtype(), RecordType::NSEC | RecordType::NSEC3)
     }) {
         let owned: Vec<Record> = set.into_iter().cloned().collect();
         match validate_rrset_budgeted(&owned, authorities, parent, now, budget) {
@@ -235,11 +235,11 @@ pub(crate) fn rrsets<'a>(
     let mut sets: Vec<Vec<&Record>> = Vec::new();
     for r in records
         .iter()
-        .filter(|r| r.rtype != RecordType::RRSIG && zone.zone_of(&r.name) && wanted(r))
+        .filter(|r| r.rtype() != RecordType::RRSIG && zone.zone_of(&r.name) && wanted(r))
     {
         match sets
             .iter_mut()
-            .find(|s| s[0].name == r.name && s[0].rtype == r.rtype && s[0].class == r.class)
+            .find(|s| s[0].name == r.name && s[0].rtype() == r.rtype() && s[0].class == r.class)
         {
             Some(set) => set.push(r),
             None => sets.push(vec![r]),

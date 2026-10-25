@@ -137,7 +137,6 @@ impl LocalZones {
         } else {
             let ns = Record {
                 name: zone.clone(),
-                rtype: RecordType::NS,
                 class: Class::IN,
                 ttl: LOCAL_TTL,
                 rdata: RData::NS(Name::from_ascii("localhost.").ok()?),
@@ -175,7 +174,6 @@ pub fn strip_client_subnet(msg: &mut Message) {
 fn soa_record(zone: &Name, rname: &Name) -> Record {
     Record {
         name: zone.clone(),
-        rtype: RecordType::SOA,
         class: Class::IN,
         ttl: LOCAL_TTL,
         rdata: RData::SOA {

@@ -23,7 +23,6 @@ fn answer_for(query: &Message, ip: Ipv4Addr) -> Message {
     resp.header.aa = true;
     resp.answers.push(Record {
         name: query.questions[0].name.clone(),
-        rtype: RecordType::A,
         class: Class::IN,
         ttl: 60,
         rdata: RData::A(ip),

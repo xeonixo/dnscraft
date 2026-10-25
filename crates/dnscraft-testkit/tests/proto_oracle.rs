@@ -82,7 +82,7 @@ async fn referral_from_root() {
     assert_eq!(m.rcode(), Rcode::NOERROR);
     assert!(m.answers.is_empty());
     assert_eq!(m.authorities.len(), 1);
-    assert_eq!(m.authorities[0].rtype, RecordType::NS);
+    assert_eq!(m.authorities[0].rtype(), RecordType::NS);
     assert_eq!(m.additionals.len(), 1);
 }
 
@@ -95,12 +95,12 @@ async fn authoritative_answers_a_and_aaaa() {
     assert!(m.header.aa);
     assert_eq!(m.rcode(), Rcode::NOERROR);
     assert_eq!(m.answers.len(), 1);
-    assert_eq!(m.answers[0].rtype, RecordType::A);
+    assert_eq!(m.answers[0].rtype(), RecordType::A);
 
     let raw = udp(addr, "www.example.test.", RecordType::AAAA, 3).await;
     let m = check_equivalent(&raw);
     assert_eq!(m.answers.len(), 1);
-    assert_eq!(m.answers[0].rtype, RecordType::AAAA);
+    assert_eq!(m.answers[0].rtype(), RecordType::AAAA);
 }
 
 #[tokio::test]
@@ -113,14 +113,14 @@ async fn nxdomain_and_nodata() {
     assert_eq!(m.rcode(), Rcode::NXDOMAIN);
     assert!(m.answers.is_empty());
     assert_eq!(m.authorities.len(), 1);
-    assert_eq!(m.authorities[0].rtype, RecordType::SOA);
+    assert_eq!(m.authorities[0].rtype(), RecordType::SOA);
 
     let raw = udp(addr, "www.example.test.", RecordType::TXT, 5).await;
     let m = check_equivalent(&raw);
     assert_eq!(m.rcode(), Rcode::NOERROR);
     assert!(m.answers.is_empty());
     assert_eq!(m.authorities.len(), 1);
-    assert_eq!(m.authorities[0].rtype, RecordType::SOA);
+    assert_eq!(m.authorities[0].rtype(), RecordType::SOA);
 }
 
 #[tokio::test]

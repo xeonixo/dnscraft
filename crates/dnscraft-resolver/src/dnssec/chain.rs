@@ -284,7 +284,7 @@ pub fn validate_dnskey_rrset_budgeted(
 
     let keys: Vec<&Record> = dnskey_rrset
         .iter()
-        .filter(|r| r.name == *zone && r.rtype == RecordType::DNSKEY)
+        .filter(|r| r.name == *zone && r.rtype() == RecordType::DNSKEY)
         .collect();
     if keys.is_empty() {
         return Err(ChainFailure::NoDnskeys);
@@ -451,7 +451,7 @@ pub fn validate_rrset_budgeted(
     for sig in rrsigs.iter().filter(|s| {
         s.name == first.name
             && s.class == first.class
-            && matches!(&s.rdata, RData::RRSIG { type_covered, .. } if *type_covered == first.rtype)
+            && matches!(&s.rdata, RData::RRSIG { type_covered, .. } if *type_covered == first.rtype())
     }) {
         seen = true;
         let RData::RRSIG {

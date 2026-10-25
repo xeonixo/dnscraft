@@ -77,7 +77,6 @@ fn rdata() -> impl Strategy<Value = RData> {
 fn record() -> impl Strategy<Value = Record> {
     (name(), any::<u16>(), any::<u32>(), rdata()).prop_map(|(name, class, ttl, rdata)| Record {
         name,
-        rtype: rdata.record_type(),
         class: Class(class),
         ttl,
         rdata,

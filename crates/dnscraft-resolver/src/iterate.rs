@@ -389,7 +389,7 @@ fn walk_answer(
             .filter(|r| {
                 r.name == *owner
                     && in_bailiwick(r)
-                    && (r.rtype == rtype || covered_type(r) == Some(rtype))
+                    && (r.rtype() == rtype || covered_type(r) == Some(rtype))
             })
             .cloned()
             .collect()
@@ -402,11 +402,10 @@ fn walk_answer(
             apply_caps(&mut records, caps, sig_cap);
             let ttl = records
                 .iter()
-                .find(|r| r.rtype == RecordType::DNAME)
+                .find(|r| r.rtype() == RecordType::DNAME)
                 .map_or(dname.ttl, |r| r.ttl);
             records.push(Record {
                 name: at.clone(),
-                rtype: RecordType::CNAME,
                 class: Class::IN,
                 ttl,
                 rdata: RData::CNAME(target.clone()),
@@ -429,14 +428,14 @@ fn walk_answer(
                 r.name == at
                     && in_bailiwick(r)
                     && (qtype == RecordType::ANY
-                        || r.rtype == qtype
+                        || r.rtype() == qtype
                         || covered_type(r) == Some(qtype))
             })
             .cloned()
             .collect();
         if data
             .iter()
-            .any(|r| r.rtype != RecordType::RRSIG || qtype == RecordType::RRSIG)
+            .any(|r| r.rtype() != RecordType::RRSIG || qtype == RecordType::RRSIG)
         {
             apply_caps(&mut data, caps, sig_cap);
             return Ok(Step::Done(data));
@@ -495,7 +494,7 @@ fn dname_above<'a>(
 ) -> Option<(&'a Record, &'a Name)> {
     answers.iter().find_map(|r| match &r.rdata {
         RData::DNAME(target)
-            if r.rtype == RecordType::DNAME
+            if r.rtype() == RecordType::DNAME
                 && zone.zone_of(&r.name)
                 && r.name != *at
                 && r.name.zone_of(at) =>
@@ -791,7 +790,7 @@ async fn ask_server(
                 if resp
                     .answers
                     .iter()
-                    .any(|r| matches!(r.rtype, RecordType::CNAME | RecordType::DNAME)) =>
+                    .any(|r| matches!(r.rtype(), RecordType::CNAME | RecordType::DNAME)) =>
             {
                 "alias"
             }
@@ -946,7 +945,6 @@ mod tests {
     fn glue(owner: &str, ip: Ipv4Addr) -> Record {
         Record {
             name: n(owner),
-            rtype: RecordType::A,
             class: Class::IN,
             ttl: 3600,
             rdata: RData::A(ip),

@@ -7,24 +7,38 @@ use crate::rtype::{Class, RecordType};
 
 /// A resource record.
 ///
-/// `rtype` and `rdata` are kept separately so that opaque types round-trip;
-/// [`Record::encode`] writes both as given and does not check that they
-/// agree (use [`RData::record_type`] to build consistent records).
+/// The wire type is derived from [`RData`] (via [`Record::rtype`]), so a
+/// mismatched `rtype` / RDATA pair cannot be constructed. Opaque types keep
+/// their type inside [`RData::Unknown`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record {
     /// Owner name.
     pub name: Name,
-    /// Record type.
-    pub rtype: RecordType,
     /// Record class.
     pub class: Class,
     /// Time to live in seconds.
     pub ttl: u32,
-    /// Record data.
+    /// Record data (also determines the record type).
     pub rdata: RData,
 }
 
 impl Record {
+    /// Builds a record whose type is taken from `rdata`.
+    pub fn new(name: Name, class: Class, ttl: u32, rdata: RData) -> Self {
+        Self {
+            name,
+            class,
+            ttl,
+            rdata,
+        }
+    }
+
+    /// Record type, derived from [`RData`].
+    #[inline]
+    pub fn rtype(&self) -> RecordType {
+        self.rdata.record_type()
+    }
+
     /// Decodes one record from `msg` at `offset`.
     ///
     /// Returns the record and the offset just after it (after RDLENGTH
@@ -44,7 +58,6 @@ impl Record {
         Ok((
             Self {
                 name,
-                rtype,
                 class,
                 ttl,
                 rdata,
@@ -78,7 +91,8 @@ impl Record {
         mut compression: Option<&mut CompressionMap>,
     ) -> Result<(), ProtoError> {
         self.name.encode(buf, compression.as_deref_mut());
-        buf.extend_from_slice(&self.rtype.value().to_be_bytes());
+        let rtype = self.rtype();
+        buf.extend_from_slice(&rtype.value().to_be_bytes());
         buf.extend_from_slice(&self.class.value().to_be_bytes());
         buf.extend_from_slice(&self.ttl.to_be_bytes());
         let len_at = buf.len();
@@ -86,7 +100,7 @@ impl Record {
         self.rdata.encode(buf, compression)?;
         let rdlength = buf.len() - len_at - 2;
         let rdlength = u16::try_from(rdlength).map_err(|_| ProtoError::InvalidRdata {
-            rtype: self.rtype.value(),
+            rtype: rtype.value(),
             reason: "rdata longer than 65535 octets",
         })?;
         if let Some(slot) = buf.get_mut(len_at..len_at + 2) {
@@ -99,7 +113,7 @@ impl Record {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
-    use std::net::Ipv4Addr;
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     use super::*;
 
@@ -108,13 +122,43 @@ mod tests {
     }
 
     fn a_record(name: &str) -> Record {
-        Record {
-            name: n(name),
-            rtype: RecordType::A,
-            class: Class::IN,
-            ttl: 300,
-            rdata: RData::A(Ipv4Addr::new(192, 0, 2, 1)),
-        }
+        Record::new(
+            n(name),
+            Class::IN,
+            300,
+            RData::A(Ipv4Addr::new(192, 0, 2, 1)),
+        )
+    }
+
+    #[test]
+    fn rtype_is_derived_from_rdata() {
+        let a = Record::new(
+            n("a."),
+            Class::IN,
+            60,
+            RData::A(Ipv4Addr::new(192, 0, 2, 1)),
+        );
+        assert_eq!(a.rtype(), RecordType::A);
+
+        let aaaa = Record::new(n("a."), Class::IN, 60, RData::AAAA(Ipv6Addr::LOCALHOST));
+        assert_eq!(aaaa.rtype(), RecordType::AAAA);
+
+        let unknown = Record::new(
+            n("x."),
+            Class(7),
+            0,
+            RData::Unknown {
+                rtype: RecordType(65280),
+                data: vec![1, 2, 3].into(),
+            },
+        );
+        assert_eq!(unknown.rtype(), RecordType(65280));
+
+        // There is no field that could disagree with RDATA: changing the
+        // payload changes the reported type.
+        let mut rec = a;
+        rec.rdata = RData::AAAA(Ipv6Addr::LOCALHOST);
+        assert_eq!(rec.rtype(), RecordType::AAAA);
     }
 
     #[test]
@@ -131,16 +175,15 @@ mod tests {
     fn several_records_with_compression() {
         let recs = [
             a_record("www.example.com."),
-            Record {
-                name: n("example.com."),
-                rtype: RecordType::MX,
-                class: Class::IN,
-                ttl: 60,
-                rdata: RData::MX {
+            Record::new(
+                n("example.com."),
+                Class::IN,
+                60,
+                RData::MX {
                     preference: 5,
                     exchange: n("mail.example.com."),
                 },
-            },
+            ),
             a_record("mail.example.com."),
         ];
         let mut buf = vec![0u8; 12];
@@ -206,16 +249,15 @@ mod tests {
 
     #[test]
     fn unknown_type_round_trips_bytes() {
-        let rec = Record {
-            name: n("x."),
-            rtype: RecordType(65280),
-            class: Class(7),
-            ttl: u32::MAX,
-            rdata: RData::Unknown {
+        let rec = Record::new(
+            n("x."),
+            Class(7),
+            u32::MAX,
+            RData::Unknown {
                 rtype: RecordType(65280),
                 data: vec![1, 2, 3].into(),
             },
-        };
+        );
         let mut buf = Vec::new();
         rec.encode(&mut buf, None).expect("encode");
         assert_eq!(Record::decode(&buf, 0), Ok((rec, buf.len())));
@@ -223,9 +265,7 @@ mod tests {
 
     #[test]
     fn encode_failure_restores_buffer() {
-        let mut rec = a_record("a.");
-        rec.rtype = RecordType::TXT;
-        rec.rdata = RData::TXT(Vec::new());
+        let rec = Record::new(n("a."), Class::IN, 300, RData::TXT(Vec::new()));
         let mut buf = vec![1, 2, 3];
         assert!(rec.encode(&mut buf, None).is_err());
         assert_eq!(buf, [1, 2, 3]);
@@ -233,16 +273,15 @@ mod tests {
 
     #[test]
     fn oversize_rdata_is_rejected() {
-        let rec = Record {
-            name: Name::root(),
-            rtype: RecordType(65280),
-            class: Class::IN,
-            ttl: 0,
-            rdata: RData::Unknown {
+        let rec = Record::new(
+            Name::root(),
+            Class::IN,
+            0,
+            RData::Unknown {
                 rtype: RecordType(65280),
                 data: vec![0u8; 65536].into(),
             },
-        };
+        );
         assert!(rec.encode(&mut Vec::new(), None).is_err());
     }
 }

@@ -258,13 +258,13 @@ pub(crate) fn verify_rrsig_budgeted(
     let first = rrset.first().ok_or(VerifyFailure::RrsetMismatch)?;
     if rrset
         .iter()
-        .any(|r| r.name != first.name || r.class != first.class || r.rtype != first.rtype)
+        .any(|r| r.name != first.name || r.class != first.class || r.rtype() != first.rtype())
         || rrsig.name != first.name
         || rrsig.class != first.class
     {
         return Err(VerifyFailure::RrsetMismatch);
     }
-    if *type_covered != first.rtype {
+    if *type_covered != first.rtype() {
         return Err(VerifyFailure::TypeCoveredMismatch);
     }
     if dnskey.name != *signer_name || !signer_name.zone_of(&first.name) {

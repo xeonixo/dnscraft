@@ -169,7 +169,7 @@ fn both(
     let owned = |t: RecordType| -> Vec<&Record> {
         records
             .iter()
-            .filter(|r| r.rtype == t && zone.zone_of(&r.name))
+            .filter(|r| r.rtype() == t && zone.zone_of(&r.name))
             .collect()
     };
     let (n1, n3) = (owned(RecordType::NSEC), owned(RecordType::NSEC3));
@@ -774,7 +774,6 @@ mod tests {
     fn nsec(owner: &str, next: &str, types: &[RecordType]) -> Record {
         Record {
             name: n(owner),
-            rtype: RecordType::NSEC,
             class: Class::IN,
             ttl: 300,
             rdata: RData::NSEC {
@@ -801,7 +800,6 @@ mod tests {
     ) -> Record {
         Record {
             name: n(&format!("{}.{zone}", base32hex_encode(owner))),
-            rtype: RecordType::NSEC3,
             class: Class::IN,
             ttl: 300,
             rdata: RData::NSEC3 {

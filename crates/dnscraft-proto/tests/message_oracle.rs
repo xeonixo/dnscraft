@@ -99,7 +99,7 @@ fn hickory_full_response_decodes() {
     assert_eq!(m.answers.len(), 2);
     assert_eq!(m.answers[1].rdata, RData::A(Ipv4Addr::new(192, 0, 2, 2)));
     assert_eq!(m.authorities.len(), 2);
-    assert_eq!(m.authorities[1].rtype, RecordType::SOA);
+    assert_eq!(m.authorities[1].rtype(), RecordType::SOA);
     assert_eq!(m.additionals.len(), 1);
     let e = m.edns.as_ref().unwrap();
     assert_eq!(e.udp_payload, 1232);
@@ -217,7 +217,6 @@ fn truncated_encoding_decodes_in_hickory_with_tc() {
     for i in 0..200u8 {
         m.answers.push(Record {
             name: n("big.example.com."),
-            rtype: RecordType::A,
             class: Class::IN,
             ttl: 1,
             rdata: RData::A(Ipv4Addr::new(10, 0, 0, i)),

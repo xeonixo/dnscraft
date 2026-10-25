@@ -167,7 +167,7 @@ fn cut_at<'a>(
         let ds: Vec<Record> = msg
             .answers
             .iter()
-            .filter(|r| r.rtype == RecordType::DS && r.name == *s)
+            .filter(|r| r.rtype() == RecordType::DS && r.name == *s)
             .cloned()
             .collect();
         let cut = if ds.is_empty() {
@@ -215,7 +215,7 @@ fn choose_signer(
             type_covered,
             signer_name,
             ..
-        } if r.rtype == RecordType::RRSIG
+        } if r.rtype() == RecordType::RRSIG
             && covered(*type_covered)
             && zone.zone_of(signer_name)
             && signer_name != zone
@@ -363,7 +363,7 @@ async fn validate_set(
             VerifyFailure::RrsetMismatch,
         )));
     };
-    let covers = |t: RecordType| t == first.rtype;
+    let covers = |t: RecordType| t == first.rtype();
     let signed = sigs.iter().any(|r| {
         r.name == first.name
             && matches!(&r.rdata, RData::RRSIG { type_covered, .. } if covers(*type_covered))
@@ -435,9 +435,9 @@ pub(crate) struct TtlCap {
 /// The type a record is about: its own, or the covered type of an RRSIG.
 pub(crate) fn covered_type(r: &Record) -> Option<RecordType> {
     match &r.rdata {
-        RData::RRSIG { type_covered, .. } if r.rtype == RecordType::RRSIG => Some(*type_covered),
-        _ if r.rtype == RecordType::RRSIG => None,
-        _ => Some(r.rtype),
+        RData::RRSIG { type_covered, .. } if r.rtype() == RecordType::RRSIG => Some(*type_covered),
+        _ if r.rtype() == RecordType::RRSIG => None,
+        _ => Some(r.rtype()),
     }
 }
 
@@ -476,12 +476,12 @@ pub(crate) fn nxdomain_contradicted(
         && message
             .answers
             .iter()
-            .filter(|r| zone.zone_of(&r.name) && r.rtype != RecordType::RRSIG)
+            .filter(|r| zone.zone_of(&r.name) && r.rtype() != RecordType::RRSIG)
             .any(|r| match qtype {
                 RecordType::ANY => r.name == *qname,
-                RecordType::CNAME => r.name == *qname && r.rtype == RecordType::CNAME,
+                RecordType::CNAME => r.name == *qname && r.rtype() == RecordType::CNAME,
                 // A DNAME above `qname` (synthesis) is a link, not the name itself.
-                _ => r.rtype == qtype && (r.rtype != RecordType::DNAME || r.name == *qname),
+                _ => r.rtype() == qtype && (r.rtype() != RecordType::DNAME || r.name == *qname),
             })
 }
 
@@ -516,13 +516,13 @@ pub(crate) async fn assess_final(
     let dnames: Vec<&Name> = message
         .answers
         .iter()
-        .filter(|r| r.rtype == RecordType::DNAME)
+        .filter(|r| r.rtype() == RecordType::DNAME)
         .map(|r| &r.name)
         .collect();
     // A CNAME below a DNAME is synthesized by the server (unsigned, RFC 6672
     // section 3.1); the resolver synthesizes its own, so it is not validated.
     let synthesized = |r: &Record| {
-        r.rtype == RecordType::CNAME && dnames.iter().any(|d| **d != r.name && d.zone_of(&r.name))
+        r.rtype() == RecordType::CNAME && dnames.iter().any(|d| **d != r.name && d.zone_of(&r.name))
     };
     let mut status = Status::Secure;
     let mut proved = false;
@@ -539,7 +539,7 @@ pub(crate) async fn assess_final(
                 if let Some(first) = owned.first() {
                     caps.push(TtlCap {
                         name: first.name.clone(),
-                        rtype: first.rtype,
+                        rtype: first.rtype(),
                         max_ttl,
                     });
                 }
@@ -557,7 +557,7 @@ pub(crate) async fn assess_final(
     let mut proofs: Vec<(Name, Record)> = Vec::new();
     for set in rrsets(&message.authorities, zone, |r| {
         matches!(
-            r.rtype,
+            r.rtype(),
             RecordType::SOA | RecordType::NSEC | RecordType::NSEC3
         )
     }) {
@@ -572,14 +572,14 @@ pub(crate) async fn assess_final(
                 if let Some(first) = owned.first() {
                     caps.push(TtlCap {
                         name: first.name.clone(),
-                        rtype: first.rtype,
+                        rtype: first.rtype(),
                         max_ttl,
                     });
                 }
                 proofs.extend(
                     owned
                         .into_iter()
-                        .filter(|r| r.rtype != RecordType::SOA)
+                        .filter(|r| r.rtype() != RecordType::SOA)
                         .map(|r| (signer.clone(), r)),
                 );
             }
@@ -612,9 +612,9 @@ pub(crate) async fn assess_final(
     let in_zone = |r: &Record| zone.zone_of(&r.name);
     let answered = message.answers.iter().filter(|r| in_zone(r)).any(|r| {
         let direct = r.name == *qname
-            && r.rtype != RecordType::RRSIG
-            && (qtype == RecordType::ANY || r.rtype == qtype || r.rtype == RecordType::CNAME);
-        let dname = r.rtype == RecordType::DNAME && r.name != *qname && r.name.zone_of(qname);
+            && r.rtype() != RecordType::RRSIG
+            && (qtype == RecordType::ANY || r.rtype() == qtype || r.rtype() == RecordType::CNAME);
+        let dname = r.rtype() == RecordType::DNAME && r.name != *qname && r.name.zone_of(qname);
         direct || dname
     });
     if !answered {

@@ -238,7 +238,7 @@ pub fn rrsig_signing_input(rrsig: &RData, rrset: &[Record]) -> Result<Vec<u8>, P
                 reason: "records differ in owner or class",
             });
         }
-        if rec.rtype != *type_covered || rec.rdata.record_type() != *type_covered {
+        if rec.rtype() != *type_covered || rec.rdata.record_type() != *type_covered {
             return Err(ProtoError::InvalidRrset {
                 reason: "record type differs from the RRSIG type covered",
             });
@@ -286,7 +286,6 @@ mod tests {
     fn rec(owner: &str, rdata: RData) -> Record {
         Record {
             name: n(owner),
-            rtype: rdata.record_type(),
             class: Class::IN,
             ttl: 999,
             rdata,

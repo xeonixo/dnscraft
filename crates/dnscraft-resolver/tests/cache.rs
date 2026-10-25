@@ -73,7 +73,7 @@ fn soa(answer: &Answer) -> &Record {
         .message
         .authorities
         .iter()
-        .find(|record| record.rtype == RecordType::SOA)
+        .find(|record| record.rtype() == RecordType::SOA)
         .unwrap()
 }
 
@@ -82,7 +82,6 @@ fn anchors_of(h: &Hierarchy) -> TrustAnchors {
     let bytes = anchor.ds.to_bytes().unwrap();
     let ds = Record {
         name: Name::root(),
-        rtype: RecordType::DS,
         class: Class::IN,
         ttl: 3600,
         rdata: RData::decode(&bytes, RecordType::DS, 0, bytes.len()).unwrap(),
@@ -96,7 +95,7 @@ fn has_rrsig(answer: &Answer) -> bool {
         .answers
         .iter()
         .chain(answer.message.authorities.iter())
-        .any(|record| record.rtype == RecordType::RRSIG)
+        .any(|record| record.rtype() == RecordType::RRSIG)
 }
 
 async fn hierarchy_with(extra: &[(&str, Ipv4Addr)]) -> Hierarchy {

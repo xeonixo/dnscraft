@@ -124,7 +124,7 @@ impl TrustAnchors {
                     algorithm: *algorithm,
                     public_key: public_key.to_vec(),
                 },
-                _ => return Err(AnchorError(r.rtype)),
+                _ => return Err(AnchorError(r.rtype())),
             });
         }
         Ok(Self { anchors })
@@ -187,7 +187,6 @@ mod tests {
     fn rejects_other_types() {
         let r = Record {
             name: Name::root(),
-            rtype: RecordType::A,
             class: dnscraft_proto::Class::IN,
             ttl: 0,
             rdata: RData::A(std::net::Ipv4Addr::LOCALHOST),

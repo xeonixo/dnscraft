@@ -497,7 +497,6 @@ async fn spawn_dname_server() -> std::net::SocketAddr {
             resp.header.aa = true;
             resp.answers.push(Record {
                 name: n("dn.test."),
-                rtype: RecordType::DNAME,
                 class: Class::IN,
                 ttl: 300,
                 rdata: RData::DNAME(n("example.test.")),
@@ -775,7 +774,6 @@ async fn spawn_ent_nxdomain_server(
             if qn == full {
                 resp.answers.push(Record {
                     name: qn,
-                    rtype: RecordType::A,
                     class: Class::IN,
                     ttl: 300,
                     rdata: RData::A(ip),
@@ -784,7 +782,6 @@ async fn spawn_ent_nxdomain_server(
                 resp.header.rcode_low = Rcode::NXDOMAIN.0 as u8;
                 resp.authorities.push(Record {
                     name: zone.clone(),
-                    rtype: RecordType::SOA,
                     class: Class::IN,
                     ttl: 60,
                     rdata: RData::SOA {

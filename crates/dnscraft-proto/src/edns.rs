@@ -238,7 +238,7 @@ impl Edns {
     /// The owner must be the root ([`ProtoError::OptOwnerNotRoot`]) and the
     /// type must be OPT.
     pub fn from_record(record: &Record) -> Result<Self, ProtoError> {
-        if record.rtype != RecordType::OPT {
+        if record.rtype() != RecordType::OPT {
             return Err(bad("record is not an OPT record"));
         }
         if !record.name.is_root() {
@@ -275,7 +275,6 @@ impl Edns {
             | (u32::from(self.dnssec_ok) << 15);
         Ok(Record {
             name: Name::root(),
-            rtype: RecordType::OPT,
             class: Class(self.udp_payload),
             ttl,
             rdata: RData::Unknown {

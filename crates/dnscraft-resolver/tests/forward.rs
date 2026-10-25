@@ -107,7 +107,6 @@ impl Target {
                 if code == Rcode::NOERROR {
                     resp.answers.push(Record {
                         name: qname,
-                        rtype: RecordType::A,
                         class: Class::IN,
                         ttl,
                         rdata: RData::A(ip),
@@ -346,7 +345,6 @@ async fn concurrent_forwards_coalesce_on_one_target_query() {
         resp.header.ra = true;
         resp.answers.push(Record {
             name: qname,
-            rtype: RecordType::A,
             class: Class::IN,
             ttl: 60,
             rdata: RData::A(Ipv4Addr::new(192, 0, 2, 30)),

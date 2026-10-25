@@ -55,7 +55,6 @@ fn name(s: &str) -> Name {
 fn root_dnskey(flags: u16, key: &str) -> Record {
     Record {
         name: Name::root(),
-        rtype: RecordType::DNSKEY,
         class: Class::IN,
         ttl: 2567,
         rdata: RData::DNSKEY {
@@ -75,7 +74,6 @@ fn real_root() -> (Vec<Record>, Record) {
     ];
     let sig = Record {
         name: Name::root(),
-        rtype: RecordType::RRSIG,
         class: Class::IN,
         ttl: 2567,
         rdata: RData::RRSIG {
@@ -115,13 +113,13 @@ async fn fetch(server: SocketAddr, qname: &str, qtype: RecordType) -> (Vec<Recor
     let rrset = m
         .answers
         .iter()
-        .filter(|r| r.rtype == qtype)
+        .filter(|r| r.rtype() == qtype)
         .cloned()
         .collect();
     let sigs = m
         .answers
         .iter()
-        .filter(|r| r.rtype == RecordType::RRSIG)
+        .filter(|r| r.rtype() == RecordType::RRSIG)
         .cloned()
         .collect();
     (rrset, sigs)
@@ -132,7 +130,6 @@ fn anchors_of(h: &Hierarchy) -> TrustAnchors {
     let rdata = |rtype, bytes: Vec<u8>| RData::decode(&bytes, rtype, 0, bytes.len()).unwrap();
     let ds = Record {
         name: Name::root(),
-        rtype: RecordType::DS,
         class: Class::IN,
         ttl: 3600,
         rdata: rdata(RecordType::DS, a.ds.to_bytes().unwrap()),
@@ -318,7 +315,6 @@ async fn chain_insecure_delegation_has_no_ds() {
 fn dnskey_rec(owner: &str, alg: u8, key: Vec<u8>) -> Record {
     Record {
         name: name(owner),
-        rtype: RecordType::DNSKEY,
         class: Class::IN,
         ttl: 300,
         rdata: RData::DNSKEY {
@@ -338,7 +334,6 @@ fn chain_unsupported_algorithm_is_insecure_not_bogus() {
     let tag = key_tag(257, 3, 5, &key);
     let ds = Record {
         name: name("old.test."),
-        rtype: RecordType::DS,
         class: Class::IN,
         ttl: 300,
         rdata: RData::DS {
@@ -384,14 +379,12 @@ fn chain_unsupported_algorithm_is_insecure_not_bogus() {
     // A direct RRSIG check reports UnsupportedAlgorithm, not BadSignature.
     let a = Record {
         name: name("www.old.test."),
-        rtype: RecordType::A,
         class: Class::IN,
         ttl: 300,
         rdata: RData::A("192.0.2.1".parse().unwrap()),
     };
     let sig = Record {
         name: a.name.clone(),
-        rtype: RecordType::RRSIG,
         class: Class::IN,
         ttl: 300,
         rdata: RData::RRSIG {
@@ -540,7 +533,7 @@ async fn status_secure(alg: Option<SigAlgorithm>) {
         ans.message
             .answers
             .iter()
-            .filter(|r| r.rtype == RecordType::A)
+            .filter(|r| r.rtype() == RecordType::A)
             .count(),
         1
     );
@@ -575,7 +568,7 @@ async fn status_insecure_child_has_no_ad() {
         ans.message
             .answers
             .iter()
-            .filter(|r| r.rtype == RecordType::A)
+            .filter(|r| r.rtype() == RecordType::A)
             .count(),
         1
     );
@@ -638,11 +631,11 @@ async fn proxy(routes: Vec<(Name, SocketAddr)>, strip: bool) -> SocketAddr {
             let mut m = Message::decode(&rbuf[..rlen]).unwrap();
             let is_ds_query = qtype == RecordType::DS;
             let is_referral =
-                m.authorities.iter().any(|r| r.rtype == RecordType::NS) && m.answers.is_empty();
+                m.authorities.iter().any(|r| r.rtype() == RecordType::NS) && m.answers.is_empty();
             if strip && (is_referral || is_ds_query) {
                 let strip = |r: &Record| {
                     matches!(
-                        r.rtype,
+                        r.rtype(),
                         RecordType::DS | RecordType::NSEC | RecordType::NSEC3 | RecordType::RRSIG
                     )
                 };
@@ -771,7 +764,7 @@ async fn status_cd_returns_bogus_answer_unvalidated() {
             ans.message
                 .answers
                 .iter()
-                .filter(|r| r.rtype == RecordType::A)
+                .filter(|r| r.rtype() == RecordType::A)
                 .count(),
             1
         );
@@ -813,7 +806,7 @@ async fn status_do_controls_dnssec_records() {
         with.message
             .answers
             .iter()
-            .any(|r| r.rtype == RecordType::RRSIG)
+            .any(|r| r.rtype() == RecordType::RRSIG)
     );
     let without = status_ask(&r, "www.secure.test.", RequestFlags::default()).await;
     assert_eq!(without.dnssec, DnssecStatus::Secure);
@@ -823,7 +816,7 @@ async fn status_do_controls_dnssec_records() {
             .message
             .answers
             .iter()
-            .all(|r| r.rtype == RecordType::A)
+            .all(|r| r.rtype() == RecordType::A)
     );
     assert_eq!(without.message.answers.len(), 1);
 }
@@ -865,7 +858,11 @@ async fn ask_type(
 }
 
 fn count_type(ans: &dnscraft_resolver::Answer, t: RecordType) -> usize {
-    ans.message.answers.iter().filter(|r| r.rtype == t).count()
+    ans.message
+        .answers
+        .iter()
+        .filter(|r| r.rtype() == t)
+        .count()
 }
 
 fn assert_secure(ans: &dnscraft_resolver::Answer, rcode: dnscraft_proto::Rcode) {
@@ -952,7 +949,7 @@ async fn denial_nsec3_optout_nxdomain_needs_the_wildcard_proof_for_secure() {
     let mut owners: Vec<Name> = genuine
         .authorities
         .iter()
-        .filter(|r| r.rtype == RecordType::NSEC3)
+        .filter(|r| r.rtype() == RecordType::NSEC3)
         .map(|r| r.name.clone())
         .collect();
     owners.dedup();
@@ -1009,7 +1006,6 @@ async fn stub_server() -> SocketAddr {
             if q.questions[0].qtype == RecordType::A {
                 m.answers.push(Record {
                     name: q.questions[0].name.clone(),
-                    rtype: RecordType::A,
                     class: Class::IN,
                     ttl: 60,
                     rdata: RData::A("192.0.2.77".parse().unwrap()),
@@ -1088,7 +1084,7 @@ async fn forged(
 }
 
 fn is_denial(r: &Record) -> bool {
-    matches!(r.rtype, RecordType::NSEC | RecordType::NSEC3)
+    matches!(r.rtype(), RecordType::NSEC | RecordType::NSEC3)
         || matches!(&r.rdata, RData::RRSIG { type_covered, .. }
             if matches!(*type_covered, RecordType::NSEC | RecordType::NSEC3))
 }
@@ -1162,9 +1158,12 @@ async fn denial_wildcard_with_wrong_closest_encloser_is_bogus() {
         .cloned()
         .collect();
     assert!(
-        proof.iter().any(|r| r.rtype == RecordType::NSEC),
+        proof.iter().any(|r| r.rtype() == RecordType::NSEC),
         "expected an NSEC at ns1: {:?}",
-        proof.iter().map(|r| (&r.name, r.rtype)).collect::<Vec<_>>()
+        proof
+            .iter()
+            .map(|r| (&r.name, r.rtype()))
+            .collect::<Vec<_>>()
     );
     let proxy = forge_proxy(
         upstream,
@@ -1200,7 +1199,7 @@ async fn denial_dropping_any_single_proof_record_is_bogus() {
         let mut owners: Vec<Name> = genuine
             .authorities
             .iter()
-            .filter(|r| matches!(r.rtype, RecordType::NSEC | RecordType::NSEC3))
+            .filter(|r| matches!(r.rtype(), RecordType::NSEC | RecordType::NSEC3))
             .map(|r| r.name.clone())
             .collect();
         owners.dedup();
@@ -1540,7 +1539,6 @@ async fn cohost(chain: &[(&str, bool, bool)], strip: bool) -> Cohost {
     let bytes = ds.to_bytes().unwrap();
     let anchor_ds = Record {
         name: Name::root(),
-        rtype: RecordType::DS,
         class: Class::IN,
         ttl: 3600,
         rdata: RData::decode(&bytes, RecordType::DS, 0, bytes.len()).unwrap(),
@@ -1604,7 +1602,7 @@ async fn cohost_status(
                 ans.message
                     .answers
                     .iter()
-                    .filter(|r| r.rtype == RecordType::A)
+                    .filter(|r| r.rtype() == RecordType::A)
                     .count(),
                 1
             );
@@ -1740,7 +1738,7 @@ mod keytrap {
     ) -> Record {
         let first = &rrset[0];
         let mut rdata = RData::RRSIG {
-            type_covered: first.rtype,
+            type_covered: first.rtype(),
             algorithm: ALG_ED25519,
             labels: first.name.label_count() as u8,
             original_ttl: 300,
@@ -1762,7 +1760,6 @@ mod keytrap {
         }
         Record {
             name: first.name.clone(),
-            rtype: RecordType::RRSIG,
             class: Class::IN,
             ttl: 300,
             rdata,
@@ -1854,7 +1851,6 @@ mod keytrap {
     fn a_record() -> Record {
         Record {
             name: name("www.kt.test."),
-            rtype: RecordType::A,
             class: Class::IN,
             ttl: 300,
             rdata: RData::A("192.0.2.7".parse().unwrap()),

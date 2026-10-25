@@ -536,12 +536,12 @@ fn is_nodata(query: &Query, message: &Message) -> bool {
 }
 
 fn matches_qtype(qtype: RecordType, record: &Record) -> bool {
-    if record.rtype == RecordType::RRSIG {
+    if record.rtype() == RecordType::RRSIG {
         return false;
     }
     match qtype {
-        RecordType::ANY => !matches!(record.rtype, RecordType::CNAME | RecordType::DNAME),
-        _ => record.rtype == qtype,
+        RecordType::ANY => !matches!(record.rtype(), RecordType::CNAME | RecordType::DNAME),
+        _ => record.rtype() == qtype,
     }
 }
 
@@ -624,7 +624,6 @@ mod tests {
     fn a_record(owner: &str, ttl: u32) -> Record {
         Record {
             name: name(owner),
-            rtype: RecordType::A,
             class: Class::IN,
             ttl,
             rdata: RData::A(Ipv4Addr::new(192, 0, 2, 1)),
@@ -634,7 +633,6 @@ mod tests {
     fn cname_record(owner: &str, target: &str, ttl: u32) -> Record {
         Record {
             name: name(owner),
-            rtype: RecordType::CNAME,
             class: Class::IN,
             ttl,
             rdata: RData::CNAME(name(target)),
@@ -645,7 +643,6 @@ mod tests {
         let apex = name("example.test.");
         Record {
             name: apex.clone(),
-            rtype: RecordType::SOA,
             class: Class::IN,
             ttl,
             rdata: RData::SOA {

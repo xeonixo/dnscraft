@@ -44,7 +44,11 @@ fn print_records(title: &str, records: &[Record]) {
     for r in records {
         println!(
             "  {} {} {} {} {:?}",
-            r.name, r.ttl, r.class, r.rtype, r.rdata
+            r.name,
+            r.ttl,
+            r.class,
+            r.rtype(),
+            r.rdata
         );
     }
 }

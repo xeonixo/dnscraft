@@ -66,7 +66,7 @@ pub(crate) fn scrub(mut message: Message, qname: &Name, qtype: RecordType) -> Me
     while i < names.len() && names.len() < MAX_SCRUB_CHAIN {
         for r in &message.answers {
             if let RData::CNAME(target) = &r.rdata
-                && r.rtype == RecordType::CNAME
+                && r.rtype() == RecordType::CNAME
                 && r.name == names[i]
                 && !names.contains(target)
             {
@@ -76,9 +76,9 @@ pub(crate) fn scrub(mut message: Message, qname: &Name, qtype: RecordType) -> Me
         i += 1;
     }
     let covered = |r: &Record| match &r.rdata {
-        RData::RRSIG { type_covered, .. } if r.rtype == RecordType::RRSIG => Some(*type_covered),
-        _ if r.rtype == RecordType::RRSIG => None,
-        _ => Some(r.rtype),
+        RData::RRSIG { type_covered, .. } if r.rtype() == RecordType::RRSIG => Some(*type_covered),
+        _ if r.rtype() == RecordType::RRSIG => None,
+        _ => Some(r.rtype()),
     };
     message.answers.retain(|r| {
         let Some(kind) = covered(r) else {
@@ -214,7 +214,7 @@ impl Shared {
                     if let Some(first) = owned.first() {
                         caps.push(TtlCap {
                             name: first.name.clone(),
-                            rtype: first.rtype,
+                            rtype: first.rtype(),
                             max_ttl: valid.max_ttl,
                         });
                     }
@@ -228,7 +228,7 @@ impl Shared {
         let outside = message
             .answers
             .iter()
-            .any(|r| r.rtype != RecordType::RRSIG && !zone.zone.zone_of(&r.name));
+            .any(|r| r.rtype() != RecordType::RRSIG && !zone.zone.zone_of(&r.name));
         if saw && !outside {
             Ok(Status::Secure)
         } else {
@@ -311,7 +311,6 @@ mod tests {
         let bytes = ds.to_bytes().unwrap();
         let anchors = TrustAnchors::from_records(&[Record {
             name: origin.clone(),
-            rtype: RecordType::DS,
             class: Class::IN,
             ttl: 3600,
             rdata: RData::decode(&bytes, RecordType::DS, 0, bytes.len()).unwrap(),

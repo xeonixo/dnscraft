@@ -22,7 +22,6 @@ fn n(s: &str) -> Name {
 fn rec(owner: &str, rdata: RData) -> Record {
     Record {
         name: n(owner),
-        rtype: rdata.record_type(),
         class: Class::IN,
         ttl: 300,
         rdata,
@@ -136,7 +135,7 @@ fn round_trip_all_six_types() {
     for ours in corpus() {
         let theirs = hickory_of(&ours);
         // Hickory re-emits exactly the octets we produced...
-        assert_eq!(hickory_bytes(&theirs), our_bytes(&ours), "{}", ours.rtype);
+        assert_eq!(hickory_bytes(&theirs), our_bytes(&ours), "{}", ours.rtype());
         // ...and we decode hickory's output back to the same record.
         let (back, end) = Record::decode(&hickory_bytes(&theirs), 0).expect("ours decodes");
         assert_eq!(back, ours);
@@ -277,7 +276,6 @@ fn assert_tbs_matches(rrsig_rdata: &RData, rrset: &[Record]) {
 
     let sig_record = Record {
         name: rrset.first().expect("non-empty").name.clone(),
-        rtype: RecordType::RRSIG,
         class: Class::IN,
         ttl: 300,
         rdata: rrsig_rdata.clone(),

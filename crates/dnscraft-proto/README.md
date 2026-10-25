@@ -32,7 +32,7 @@ Input from the network is untrusted. Decoding follows these rules:
 | `name` | `Name` (wire form, case-insensitive equality), presentation parsing, compression |
 | `header` | Header, `Counts`, `Opcode`, `Rcode` |
 | `message` | `Message` and `Question`; section decoding and encoding, size limits |
-| `record` | `Record` with owner, class, TTL and `RData` |
+| `record` | `Record` with owner, class, TTL and `RData` (wire type derived from `RData`) |
 | `rtype` | `RecordType` and `Class` |
 | `rdata` | `RData` variants: `basic` (A, AAAA, names, SOA, MX, TXT, ...), `dnssec` (DNSKEY, DS, RRSIG, NSEC, NSEC3, ...), `svcb` |
 | `edns` | OPT pseudo-record and EDNS options |

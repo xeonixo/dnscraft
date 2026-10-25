@@ -82,7 +82,7 @@ async fn ns_set_is_signed(ctx: &Context<'_>, server: SocketAddr, resp: &Message)
     let ns: Vec<Record> = resp
         .answers
         .iter()
-        .filter(|r| r.name.is_root() && r.rtype == RecordType::NS)
+        .filter(|r| r.name.is_root() && r.rtype() == RecordType::NS)
         .cloned()
         .collect();
     if ns.is_empty() {

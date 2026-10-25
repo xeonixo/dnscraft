@@ -638,9 +638,9 @@ fn present(mut answer: Answer, flags: RequestFlags, qtype: RecordType) -> Answer
 fn strip_dnssec_records(message: &mut Message, qtype: RecordType) {
     let drop = |r: &Record| {
         matches!(
-            r.rtype,
+            r.rtype(),
             RecordType::RRSIG | RecordType::NSEC | RecordType::NSEC3
-        ) && r.rtype != qtype
+        ) && r.rtype() != qtype
     };
     message.answers.retain(|r| !drop(r));
     message.authorities.retain(|r| !drop(r));

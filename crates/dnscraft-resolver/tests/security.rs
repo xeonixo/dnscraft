@@ -68,7 +68,6 @@ fn anchors_from(ds: &hickory_proto::dnssec::rdata::DS, owner: &Name) -> TrustAnc
     let rdata = RData::decode(&bytes, RecordType::DS, 0, bytes.len()).unwrap();
     TrustAnchors::from_records(&[Record {
         name: owner.clone(),
-        rtype: RecordType::DS,
         class: Class::IN,
         ttl: 3600,
         rdata,
@@ -136,7 +135,6 @@ async fn raw_query(server: SocketAddr, qname: &str, qtype: RecordType) -> Messag
 fn a_record(owner: &str, ip: Ipv4Addr) -> Record {
     Record {
         name: name(owner),
-        rtype: RecordType::A,
         class: Class::IN,
         ttl: 300,
         rdata: RData::A(ip),
@@ -278,7 +276,7 @@ async fn injected_records_are_dropped_from_a_negative_answer() {
             ans.message.authorities.iter().all(|r| {
                 name("secure.test.").zone_of(&r.name)
                     && matches!(
-                        r.rtype,
+                        r.rtype(),
                         RecordType::SOA | RecordType::NSEC | RecordType::RRSIG
                     )
             }),
@@ -289,7 +287,7 @@ async fn injected_records_are_dropped_from_a_negative_answer() {
             ans.message
                 .authorities
                 .iter()
-                .any(|r| r.rtype == RecordType::SOA)
+                .any(|r| r.rtype() == RecordType::SOA)
         );
     }
 }
@@ -522,7 +520,6 @@ async fn forged_dname_proxy(upstream: SocketAddr) -> SocketAddr {
                 m.answers = genuine.clone();
                 m.answers.push(Record {
                     name: qname,
-                    rtype: RecordType::CNAME,
                     class: Class::IN,
                     ttl: 3600,
                     rdata: RData::CNAME(name("host.evil.test.")),
@@ -597,7 +594,7 @@ async fn forged_synthesized_cname_is_replaced_for_qtype_cname() {
         ans.message
             .answers
             .iter()
-            .any(|r| r.rtype == RecordType::from(39u16)),
+            .any(|r| r.rtype() == RecordType::from(39u16)),
         "{:?}",
         ans.message.answers
     );
@@ -634,7 +631,7 @@ fn ttl_of(ans: &Answer, rtype: RecordType) -> u32 {
         .answers
         .iter()
         .chain(&ans.message.authorities)
-        .find(|r| r.rtype == rtype)
+        .find(|r| r.rtype() == rtype)
         .unwrap()
         .ttl
 }
@@ -706,7 +703,7 @@ async fn ttl_raised_by_a_forger_is_capped_to_the_original_ttl() {
         .answers
         .iter()
         .find_map(|r| match &r.rdata {
-            RData::RRSIG { original_ttl, .. } if r.rtype == RecordType::RRSIG => {
+            RData::RRSIG { original_ttl, .. } if r.rtype() == RecordType::RRSIG => {
                 Some(*original_ttl)
             }
             _ => None,
@@ -859,7 +856,7 @@ async fn priming_forger(
 
 fn rogue_root(m: &mut Message) {
     for r in &mut m.answers {
-        if r.rtype == RecordType::NS {
+        if r.rtype() == RecordType::NS {
             r.rdata = RData::NS(name("b.root-servers.net."));
         }
     }
@@ -883,7 +880,7 @@ async fn forged_priming_response_is_rejected_when_validating() {
 
     // An unsigned reply (RRSIG removed) is no better.
     let unsigned = priming_forger(&h, |m| {
-        m.answers.retain(|r| r.rtype != RecordType::RRSIG);
+        m.answers.retain(|r| r.rtype() != RecordType::RRSIG);
     })
     .await;
     let mut config = signed_config(&h);

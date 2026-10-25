@@ -9,22 +9,21 @@
 - `resolver`: complete. `filtering`: Checkpoint D review done (not passed yet); fixes D1a/D1b are being
   done by Claude's agents — **Cursor does not touch `crates/dnscraft-filtering` until progress.md logs
   Checkpoint D as approved.**
-- `clients`, `tls`, `policy`: specs reviewed and corrected by Claude (see the "Review 2026-10-25 (Claude)"
-  decision in each spec). P1 planning may start for a module once progress.md logs its spec as approved.
+- `clients`, `tls`, `policy`: specs approved in progress.md — P1 planning may start (clients → tls → policy).
 - Spec drafts S1–S3: done, archived in [archive/cursor-specs.md](archive/cursor-specs.md).
 - Deep-name p99 ≈ 19 µs accepted by the owner → T3 dropped.
+- **T1 done** (Record derives type from RData).
 
 ## Order
 
 | # | Brief | Kind | Blocks |
 |---|---|---|---|
-| 1 | T1 — `Record` enforces rtype ↔ RDATA | tech debt (proto) | – |
+| 1 | ~~T1 — `Record` enforces rtype ↔ RDATA~~ | tech debt (proto) | done |
 | 2 | R2 — per-query forward-zone allow-list in the resolver | feature (resolver) | – (needed by policy) |
 | 3 | P1 — plan + tasks for clients, then tls, then policy | planning | spec approved in progress.md |
 | 4 | T2 — fetcher TLS error classification | tech debt (filtering, small) | Checkpoint D approved |
 
-T1 and R2 touch different crates and can run in either order. P1: one module at a time, STOP after each
-plan for owner approval.
+R2 next. P1: one module at a time, STOP after each plan for owner approval.
 
 ## Rules for every task (paste once per session)
 

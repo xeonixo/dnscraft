@@ -28,7 +28,6 @@ fn positive_a(name: &Name) -> Message {
         }],
         answers: vec![Record {
             name: name.clone(),
-            rtype: RecordType::A,
             class: Class::IN,
             ttl: 300,
             rdata: RData::A(Ipv4Addr::new(93, 184, 216, 34)),

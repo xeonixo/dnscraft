@@ -103,7 +103,6 @@ fn root_dnskey_rrset_signing_input_verifies() {
     .into_iter()
     .map(|rdata| Record {
         name: Name::root(),
-        rtype: RecordType::DNSKEY,
         class: Class::IN,
         ttl: 2567,
         rdata,

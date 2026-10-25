@@ -172,7 +172,7 @@ impl Message {
                 for _ in 0..count {
                     let (rec, next) = Record::decode(bytes, pos)?;
                     pos = next;
-                    if rec.rtype == RecordType::OPT {
+                    if rec.rtype() == RecordType::OPT {
                         return Err(ProtoError::MisplacedOpt { section });
                     }
                     out.push(rec);
@@ -186,7 +186,7 @@ impl Message {
         for _ in 0..counts.ar {
             let (rec, next) = Record::decode(bytes, pos)?;
             pos = next;
-            if rec.rtype == RecordType::OPT {
+            if rec.rtype() == RecordType::OPT {
                 if edns.is_some() {
                     return Err(ProtoError::DuplicateOpt);
                 }
@@ -270,7 +270,7 @@ impl Message {
             if let Some(section) = sections.get_mut(idx) {
                 if let Some(last) = section.last().copied() {
                     section.retain(|r| {
-                        !(r.name == last.name && r.rtype == last.rtype && r.class == last.class)
+                        !(r.name == last.name && r.rtype() == last.rtype() && r.class == last.class)
                     });
                 }
             }
@@ -307,7 +307,7 @@ fn encode_parts(
         q.encode(&mut buf, &mut map);
     }
     for rec in answers.iter().chain(authorities).chain(additionals) {
-        if rec.rtype == RecordType::OPT {
+        if rec.rtype() == RecordType::OPT {
             return Err(ProtoError::InvalidMessage {
                 reason: "OPT record in a record section; use Message::edns",
             });
@@ -336,7 +336,6 @@ mod tests {
     fn a(name: &str, last: u8) -> Record {
         Record {
             name: n(name),
-            rtype: RecordType::A,
             class: Class::IN,
             ttl: 60,
             rdata: RData::A(Ipv4Addr::new(192, 0, 2, last)),
@@ -346,7 +345,6 @@ mod tests {
     fn txt(name: &str) -> Record {
         Record {
             name: n(name),
-            rtype: RecordType::TXT,
             class: Class::IN,
             ttl: 60,
             rdata: RData::TXT(vec![b"hello".to_vec().into()]),
@@ -362,7 +360,6 @@ mod tests {
         m.answers.push(a("www.example.com.", 2));
         m.authorities.push(Record {
             name: n("example.com."),
-            rtype: RecordType::NS,
             class: Class::IN,
             ttl: 300,
             rdata: RData::NS(n("ns1.example.com.")),
@@ -547,7 +544,6 @@ mod tests {
         }
         m.authorities.push(Record {
             name: n("example.com."),
-            rtype: RecordType::NS,
             class: Class::IN,
             ttl: 1,
             rdata: RData::NS(n("ns1.example.com.")),
@@ -570,7 +566,7 @@ mod tests {
         assert!(got.additionals.is_empty() && got.authorities.is_empty());
         // The 256-record A RRset (last) is dropped whole; the earlier TXT
         // RRset survives.
-        assert!(got.answers.iter().all(|r| r.rtype != RecordType::A));
+        assert!(got.answers.iter().all(|r| r.rtype() != RecordType::A));
         assert_eq!(got.answers.len(), 1);
         // Never splits: for every limit the A records are all or nothing.
         for max in (60..m.encode().unwrap().len()).step_by(37) {
@@ -580,7 +576,7 @@ mod tests {
                 let na = g
                     .answers
                     .iter()
-                    .filter(|r| r.rtype == RecordType::A)
+                    .filter(|r| r.rtype() == RecordType::A)
                     .count();
                 assert!(na == 0 || na == 256, "split at {max}: {na}");
                 assert!(g.edns.is_some());
