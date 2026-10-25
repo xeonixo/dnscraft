@@ -30,8 +30,22 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 
 Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.39 %** lines / **80.22 %** regions.
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L11 + L12b done**; Checkpoints A and B passed (2026-10-25). Next: **Checkpoint C** re-review (security review + owner staging acceptance).
-- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P11 + P10b + P9b done. Checkpoint A/B passed.** Next: P12 (STOP for Claude review of P10b/P9b/P11 first).
+- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P12 + P10b/P9b/P11b done. Checkpoint A/B passed.** Next: **Checkpoint C** (Claude independent review + owner approval).
 - Blockers: clients Checkpoint C awaiting Lead re-review of C12.
+
+### policy success criteria (SPEC-policy.md)
+
+| # | Criterion | Covered by |
+|---|-----------|------------|
+| 1 | Selection: Client ID > LPM > default | `tests/select.rs` |
+| 2 | View/directory never hit resolver; blocked never hits; CNAME chain block | `tests/golden.rs`; also `local_records` / `directory` / `filter` / `answer_side` |
+| 3 | Rebind strips private A/AAAA (+ SVCB hints / additional); exceptions & forward exempt | `tests/golden.rs`; `tests/rebind.rs`; `rebind::unit` |
+| 3a | Special-use NXDOMAIN; unknown under public-looking domain reaches resolver | `tests/golden.rs`; `tests/directory.rs` |
+| 4 | AD/EDE matrix | `tests/ad_ede.rs` |
+| 5 | Cached resolve + filter miss p50 < 1 ms | `benches/pipeline.rs` (p50 ≈ 7.4 µs, 2026-10-25) |
+| 6 | Coverage ≥ 80 %; DoD green | llvm-cov **93.25 %** lines; fmt / clippy / `cargo test -p dnscraft-policy` 5× |
+
+Coverage (`cargo llvm-cov -p dnscraft-policy --summary-only`, 2026-10-25): **93.25 %** lines / **92.64 %** regions.
 
 ### tls success criteria (SPEC-tls.md)
 
@@ -48,6 +62,10 @@ Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86
 Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **80.32 %** lines / **79.82 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
 
 ## Log
+
+- 2026-10-25 — Policy **P12** done (Cursor): golden tests (`tests/golden.rs`) for criteria 2/3/3a; criterion bench `benches/pipeline.rs` cache-hit+filter-miss **p50 ≈ 7.4 µs** / p99 ≈ 50 µs (≪ 1 ms); README (pipeline incl. SVCB hints + additional, ClientDirectory, AD/EDE, pause, stubs); llvm-cov **93.25 %** lines. Success-criteria table above. DoD: clippy green; `cargo test -p dnscraft-policy` **5× / 0 failures**. **STOP for Checkpoint C** (do not tick Independent review / Owner approval).
+
+- 2026-10-25 — Policy **P11b** done (Cursor, `92f7d2a`): `rebind::run` additional-section wiring test (resolver clears glue — documented; constructed Message); ipv6hint non-×16 + empty hint → Malformed; RFC 9460 §8 mandatory+dropped hint → `DropRecord`; schedule window/id validation; SafeSearch provider allow-list + lower-case; `NotAppliedStep` enum; DRY `filter_hint`. **Mutants killed:** drop `strip_address_rrs(additionals)` from `run`; weaken ipv6 length to `% 4`; empty hint silently dropped; unknown/duplicate providers; `start >= end` / `end > 7d` / bad schedule id.
 
 - 2026-10-25 — **Claude re-review tls L12b (b7bb423) + cargo-deny (ac07b6d) + filtering T2 (c3c136c): good, one small round (L12c) before the security review is ticked.** fmt/clippy/tests green for tls + filtering; `cargo deny check` → advisories/bans/licenses/sources ok. Verified: `tls.store.permissions` for key.pem + account.json, engine open soft-fails, zeroize on `Secret`/`KeyPem`, `CloudflareHttp.status`, alias removed, ACME 429 `Retry-After` captured in our `ReqwestHttpClient`, T2 classifies via the `rustls::Error` source chain. Mutation probes: account perms not checked at open → caught; Retry-After captured on 503 instead of 429 → caught; T2 classification off → caught; **survived:** `map_acme_order` dropping the captured `retry_after` (adapter only tested in isolation). **Required (L12c):** (1) `parse_retry_after_header` parses HTTP-dates with `time::…::Rfc2822` — exactly the function of RUSTSEC-2026-0009 (stack exhaustion, time < 0.3.47), now fed with network input; the 64-byte cap makes it practically harmless, but HTTP `Retry-After` is IMF-fixdate (RFC 9110 §5.6.7), not RFC 2822 — parse that fixed format (no comments/obsolete forms) and rewrite the deny.toml ignore reason accordingly (the ignore currently cites MSRV 1.85; owner question: bump `rust-version` to 1.88 and `time` to ≥ 0.3.47 instead, dropping the ignore); (2) test that a rate-limited ACME order/challenge error carries the captured `retry_after` (kills the survivor); (3) the `last_retry_after` slot is only written on 429 and never cleared, so a stale value from an earlier, unmapped 429 (e.g. account creation) can be attached to a later rate-limit error — reset it on every response; (4) the permission tests run with `acme.enabled = false`; with ACME on, a refused too-open key.pem means "no cert" → the scheduler issues a new cert and `save()` overwrites key/cert with 0600 files. That is arguably the secure outcome (treat the exposed key as compromised) but contradicts the README's "files left for the operator to chmod" — document it and test it with FakeAcme. FYI: filtering gains `rustls` as a direct dependency for the downcast (already in the tree via reqwest; no new crate in Cargo.lock).
 

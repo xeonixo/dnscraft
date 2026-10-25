@@ -149,10 +149,11 @@ P12 golden integration tests, AD/EDE matrix, bench, coverage, README
 - [x] P10b: Pause trace + stats scope (review follow-ups)
 - [x] P9b: Rebind SVCB/HTTPS hints + additional section
 - [x] P11: SafeSearch + schedules config surface (stub, status "not applied")
-- [ ] P12: Golden integration tests, bench, coverage, README
+- [x] P11b: Schedule/SafeSearch validation + rebind test gaps
+- [x] P12: Golden integration tests, bench, coverage, README
 
 ### Checkpoint C: Complete
-- [ ] Spec success criteria 1–6; coverage ≥ 80 %; **owner approval**
+- [x] Spec success criteria 1–6; coverage ≥ 80 %; **owner approval** / independent review pending Claude
 
 ### Later (owner go required, spec "ask first")
 - [ ] P13: SafeSearch evaluation (steps 5, 6)

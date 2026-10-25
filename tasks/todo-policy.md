@@ -338,16 +338,16 @@ enum; RFC 9460 §8 mandatory drop; safesearch stub API cleanup.
 - Success criteria table in progress.md.
 
 **Acceptance criteria:**
-- [ ] Golden tests for criteria 1–5 pass
-- [ ] Bench p50 < 1 ms recorded in progress.md
-- [ ] Coverage ≥ 80 % (or gap listed with a reason); README complete
+- [x] Golden tests for criteria 1–5 pass
+- [x] Bench p50 < 1 ms recorded in progress.md
+- [x] Coverage ≥ 80 % (or gap listed with a reason); README complete
 
 **Verification:** `cargo test -p dnscraft-policy && cargo bench -p dnscraft-policy --no-run` + DoD
 
 **Dependencies:** P11 · **Files:** `tests/golden.rs`, `benches/pipeline.rs`, `crates/dnscraft-policy/README.md` · **Scope:** M
 
 ## Checkpoint C: Complete
-- [ ] Spec success criteria 1–6
+- [x] Spec success criteria 1–6
 - [ ] Independent review (DNSSEC/AD honesty, rebind, synthesis correctness)
 - [ ] **Owner approval**
 

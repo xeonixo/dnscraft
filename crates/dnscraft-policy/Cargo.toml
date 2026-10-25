@@ -20,6 +20,11 @@ tracing = { workspace = true }
 ipnet = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 dnscraft-testkit = { path = "../dnscraft-testkit" }
 hickory-proto = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+
+[[bench]]
+name = "pipeline"
+harness = false
