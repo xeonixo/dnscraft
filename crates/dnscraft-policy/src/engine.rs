@@ -17,8 +17,11 @@ use crate::pause::{PauseScope, PauseTable, PauseUntil};
 use crate::pipeline::{Draft, Flow, StepCtx, Synth, apply_ad_policy};
 use crate::snapshot::PolicySnapshot;
 use crate::stats::{PolicyStats, StatsTable};
+use crate::status::PolicyStatus;
 use crate::steps::answer_side::AnswerSide;
-use crate::steps::{aaaa, answer_side, canary, directory, filter, local_records, rebind};
+use crate::steps::{
+    aaaa, answer_side, canary, directory, filter, local_records, rebind, safesearch,
+};
 use crate::synth::{any_rfc8482, resolve_servfail};
 
 /// Final answer from [`PolicyEngine::handle`].
@@ -92,6 +95,12 @@ impl PolicyEngine {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .snapshot()
+    }
+
+    /// Coarse status for the UI (`safesearch_applied` / `schedules_applied` are
+    /// false until evaluation lands).
+    pub fn status(&self) -> PolicyStatus {
+        PolicyStatus::stubs()
     }
 
     /// Rebuilds and swaps the snapshot. On validation failure the previous
@@ -243,7 +252,8 @@ impl PolicyEngine {
             ));
         }
 
-        // Steps 5–6: later (SafeSearch / schedules stubs). Then resolve (step 7).
+        // Steps 5–6: SafeSearch + re-filter (config surface / NotApplied stubs).
+        let _ = safesearch::run(&ctx, step_ctx, &mut draft);
 
         let flags = RequestFlags {
             checking_disabled: ctx.flags.checking_disabled,

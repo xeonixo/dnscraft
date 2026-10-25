@@ -7,3 +7,4 @@ pub(crate) mod directory;
 pub(crate) mod filter;
 pub(crate) mod local_records;
 pub(crate) mod rebind;
+pub(crate) mod safesearch;

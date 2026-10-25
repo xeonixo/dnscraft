@@ -299,8 +299,8 @@ windows → set id) profile fields. Steps 5 and 6 exist as no-ops that add a
 `schedules_applied = false` so the UI can say "not applied yet" (spec: low priority).
 
 **Acceptance criteria:**
-- [ ] Config with SafeSearch/schedules validates (unknown set in a schedule rejected)
-- [ ] Decision record shows the not-applied step when enabled; status flags false
+- [x] Config with SafeSearch/schedules validates (unknown set in a schedule rejected)
+- [x] Decision record shows the not-applied step when enabled; status flags false
 
 **Verification:** `cargo test -p dnscraft-policy safesearch`
 

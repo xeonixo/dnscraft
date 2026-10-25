@@ -24,6 +24,7 @@ mod reverse;
 mod select;
 mod snapshot;
 mod stats;
+mod status;
 mod steps;
 mod synth;
 mod util;
@@ -48,3 +49,4 @@ pub use snapshot::{
     ViewIdx, ViewRrSets,
 };
 pub use stats::{PolicyStats, ProfileStats, ViewStats};
+pub use status::PolicyStatus;
