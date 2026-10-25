@@ -201,6 +201,85 @@ async fn labels_survive_restart() {
 }
 
 #[tokio::test]
+async fn tampered_labels_dropped_and_re_labelled() {
+    // C12: evil labels in state.json must not reach by_name / PTR.
+    let long = "a".repeat(64);
+    let cases = [
+        ("evil.example", "dot"),
+        ("UPPER", "upper"),
+        ("-x", "lead"),
+        (long.as_str(), "long"),
+        ("büro", "utf"),
+    ];
+    for (evil, tag) in cases {
+        let dir = temp_dir(&format!("evil-{tag}"));
+        fs::create_dir_all(dir.join("clients")).unwrap();
+        let wire = format!(
+            r#"{{
+              "version": 1,
+              "state": {{
+                "labels": [["{INTEG_ID}", "{evil}"]],
+                "retained": [],
+                "ipv6_last_seen": [],
+                "last_unifi": []
+              }},
+              "observations": [{{
+                "id": "{INTEG_ID}",
+                "display_name": "Phone",
+                "macs": ["{MAC}"],
+                "addresses": ["198.51.100.10"],
+                "network_id": "integ-net",
+                "last_seen": 1729863600,
+                "online": true
+              }}],
+              "networks": [{{
+                "id": "integ-net",
+                "name": "IoT",
+                "vlan_id": 40,
+                "ipv4_prefix": "198.51.100.0/24",
+                "ipv6_prefix": null,
+                "domain_name": "iot.home.arpa"
+              }}]
+            }}"#
+        );
+        fs::write(cache_path(&dir), wire).unwrap();
+
+        let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+        seed(&mock).await;
+        let clock = Arc::new(ManualClock::new(start()));
+        let eng = ClientEngine::new_with_secret(
+            cfg(&mock),
+            dir.clone(),
+            Arc::clone(&clock) as Arc<_>,
+            Some(Secret::new(API_KEY)),
+        )
+        .unwrap();
+
+        let ip = IpAddr::from_str("198.51.100.10").unwrap();
+        let info = eng.lookup().by_ip(ip).expect("client from cache obs");
+        assert!(
+            !info.dns_label.contains('.'),
+            "label part must not contain a dot: {}",
+            info.dns_label
+        );
+        assert_ne!(info.dns_label, evil, "tampered label must not be reused");
+        // Fresh normalised label from display name "Phone".
+        assert_eq!(info.dns_label, "phone");
+        assert!(
+            eng.lookup()
+                .by_name(&format!("{evil}.iot.home.arpa"))
+                .is_none()
+        );
+        let ptr = eng.lookup().reverse(ip).unwrap();
+        let label_part = ptr.split('.').next().unwrap();
+        assert!(!label_part.contains('.'));
+        assert_eq!(label_part, "phone");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[tokio::test]
 async fn corrupt_cache_ignored_no_panic() {
     let data = temp_dir("corrupt");
     fs::create_dir_all(data.join("clients")).unwrap();

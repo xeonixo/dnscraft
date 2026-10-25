@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 
 use crate::cache::{self, CachePayload};
 use crate::clock::{self, Clock};
-use crate::config::ClientsConfig;
+use crate::config::{ClientsConfig, UnifiConfig};
 use crate::error::ClientsError;
 use crate::gateway::GatewayClient;
 use crate::lookup::ClientLookup;
@@ -101,9 +101,11 @@ struct Inner {
     sync_attempts: AtomicU64,
     /// True while the poll loop is blocked in [`clock::wait_until`] (tests).
     scheduler_parked: AtomicBool,
-    /// Serialises [`ClientEngine::run_sync`] and [`ClientEngine::apply_config`]
-    /// so a poll cannot overwrite a just-applied config (or vice versa).
+    /// Serialises merge+install for [`ClientEngine::run_sync`] and
+    /// [`ClientEngine::apply_config`] (gateway fetch runs outside this lock).
     sync_lock: AsyncMutex<()>,
+    /// Reused [`GatewayClient`] rebuilt when UniFi connection settings change.
+    gateway: Mutex<Option<(UnifiConfig, Arc<GatewayClient>)>>,
 }
 
 impl std::fmt::Debug for Inner {
@@ -228,6 +230,7 @@ impl ClientEngine {
             sync_attempts: AtomicU64::new(0),
             scheduler_parked: AtomicBool::new(false),
             sync_lock: AsyncMutex::new(()),
+            gateway: Mutex::new(None),
         });
 
         let eng = Arc::new(Self {
@@ -338,11 +341,26 @@ impl ClientEngine {
         // leave a broken config active for later polls.
         let built = merge::build(&config.manual, &obs, &nets, &prev, &config, now)?;
 
+        let unifi_changed = {
+            let old = self
+                .inner
+                .config
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            old.unifi != config.unifi
+        };
         *self
             .inner
             .config
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = config;
+        if unifi_changed {
+            *self
+                .inner
+                .gateway
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
         self.install_snapshot(built.lookup, built.state, &obs, &nets, true);
         self.persist_cache();
         self.inner.kick.notify_one();
@@ -358,7 +376,6 @@ impl ClientEngine {
     }
 
     async fn run_sync(&self) -> Result<SyncReport, ClientsError> {
-        let _guard = self.inner.sync_lock.lock().await;
         self.inner.sync_attempts.fetch_add(1, Ordering::Relaxed);
         let now = self.inner.clock.now();
         {
@@ -378,6 +395,14 @@ impl ClientEngine {
             .clone();
 
         if !cfg.unifi.enabled {
+            let _guard = self.inner.sync_lock.lock().await;
+            let cfg = self
+                .inner
+                .config
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let now = self.inner.clock.now();
             let prev = self
                 .inner
                 .state
@@ -404,8 +429,7 @@ impl ClientEngine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             && now < until
         {
-            return Err(ClientsError::HttpStatus {
-                status: 429,
+            return Err(ClientsError::SyncBackoff {
                 message: "sync backoff active".into(),
             });
         }
@@ -420,7 +444,7 @@ impl ClientEngine {
                 name: crate::secret::UNIFI_API_KEY_ENV.into(),
             })?;
 
-        let gw = match GatewayClient::new(&cfg.unifi, key) {
+        let gw = match self.gateway_for(&cfg.unifi, key) {
             Ok(g) => g,
             Err(e) => {
                 self.on_sync_error(&e);
@@ -428,20 +452,73 @@ impl ClientEngine {
             }
         };
 
+        // Fetch outside the sync lock so apply_config is not blocked on gateway
+        // timeouts; merge under the lock with the config current at install time.
+        let fetched = match sync::fetch_once(gw.as_ref(), &cfg.unifi).await {
+            Ok(f) => f,
+            Err(e) => {
+                self.on_sync_error(&e);
+                return Err(e);
+            }
+        };
+
+        let _guard = self.inner.sync_lock.lock().await;
+        let cfg = self
+            .inner
+            .config
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let now = self.inner.clock.now();
         let prev = self
             .inner
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-
-        match sync::sync_once(&gw, &cfg, &cfg.unifi, &prev, now).await {
-            Ok(result) => Ok(self.apply_sync_result(result)),
+        let merge = match merge::build(
+            &cfg.manual,
+            &fetched.observations,
+            &fetched.networks,
+            &prev,
+            &cfg,
+            now,
+        ) {
+            Ok(m) => m,
             Err(e) => {
                 self.on_sync_error(&e);
-                Err(e)
+                return Err(e);
             }
+        };
+        Ok(self.apply_sync_result(SyncResult {
+            merge,
+            observations: fetched.observations,
+            networks: fetched.networks,
+            site_id: fetched.site_id,
+            classic_site_key: fetched.classic_site_key,
+            skipped_rows: fetched.skipped_rows,
+            classic_error: fetched.classic_error,
+        }))
+    }
+
+    fn gateway_for(
+        &self,
+        unifi: &UnifiConfig,
+        key: Secret,
+    ) -> Result<Arc<GatewayClient>, ClientsError> {
+        let mut slot = self
+            .inner
+            .gateway
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((cfg, gw)) = slot.as_ref()
+            && cfg == unifi
+        {
+            return Ok(Arc::clone(gw));
         }
+        let gw = Arc::new(GatewayClient::new(unifi, key)?);
+        *slot = Some((unifi.clone(), Arc::clone(&gw)));
+        Ok(gw)
     }
 
     fn apply_sync_result(&self, result: SyncResult) -> SyncReport {

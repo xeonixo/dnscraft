@@ -110,8 +110,8 @@ fn boot(config: ClientsConfig, data_dir: PathBuf) -> Result<Arc<ClientEngine>, d
 Stable `area.reason` via [`ClientsError::code`](src/error.rs):
 `clients.config.invalid`, `clients.secret.missing`, `clients.tls.untrusted`,
 `clients.tls.handshake`, `clients.connect`, `clients.http.status`,
-`clients.http.body`, `clients.sync.partial`, `clients.too_many`,
-`clients.ip.conflict`, `clients.name.collision`.
+`clients.http.body`, `clients.sync.partial`, `clients.sync.backoff`,
+`clients.too_many`, `clients.ip.conflict`, `clients.name.collision`.
 
 ## Coverage
 

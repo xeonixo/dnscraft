@@ -200,9 +200,8 @@ async fn sync_builds_indexes_criteria_1_2_3_5_7() {
     seed(&mock).await;
     let clock = Arc::new(ManualClock::new(start()));
     let eng = engine(&mock, Arc::clone(&clock) as Arc<_>, Duration::from_secs(60)).await;
-
+    await_initial_sync(&eng).await;
     let report = eng.sync_now().await.unwrap();
-    assert!(report.rebuilt);
     assert!(report.classic_error.is_none());
 
     let lookup = eng.lookup();
@@ -511,7 +510,7 @@ async fn backoff_on_429_then_recovery_clears_stale() {
 
     // Immediate retry blocked by backoff window.
     let blocked = eng.sync_now().await.expect_err("backoff");
-    assert_eq!(blocked.code(), "clients.http.status");
+    assert_eq!(blocked.code(), "clients.sync.backoff");
 
     mock.clear_force_status().await;
     clock.advance(Duration::from_secs(6)); // past BACKOFF_BASE
@@ -643,6 +642,61 @@ async fn failed_apply_config_keeps_old_config_and_lookup() {
     assert!(ok.classic_error.is_none());
     assert_eq!(eng.status().manual_count, before_manual);
     assert!(eng.lookup().by_ip(printer).is_some());
+}
+
+#[tokio::test]
+async fn apply_config_during_slow_sync_keeps_manual() {
+    // Lock is held only around build+install; apply_config must succeed while
+    // a delayed gateway fetch is in flight, and the new manual must survive.
+    let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+    seed(&mock).await;
+    mock.set_response_delay(Some(Duration::from_millis(400)))
+        .await;
+    let clock = Arc::new(ManualClock::new(start()));
+    let eng = engine(
+        &mock,
+        Arc::clone(&clock) as Arc<_>,
+        Duration::from_secs(3600),
+    )
+    .await;
+    await_initial_sync(&eng).await;
+    mock.set_response_delay(Some(Duration::from_millis(400)))
+        .await;
+
+    let sync_task = {
+        let eng = Arc::clone(&eng);
+        tokio::spawn(async move { eng.sync_now().await })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut cfg = cfg_for(&mock, Duration::from_secs(3600));
+    cfg.manual.push(ManualEntry {
+        name: "camera".into(),
+        ip: Some(IpAddr::from_str("198.51.100.60").unwrap()),
+        cidr: None,
+        domain: None,
+    });
+    let apply_started = tokio::time::Instant::now();
+    eng.apply_config(cfg).await.unwrap();
+    assert!(
+        apply_started.elapsed() < Duration::from_millis(300),
+        "apply_config must not wait for the slow gateway fetch"
+    );
+    assert!(
+        eng.lookup()
+            .by_ip(IpAddr::from_str("198.51.100.60").unwrap())
+            .is_some()
+    );
+
+    let report = sync_task.await.unwrap().unwrap();
+    let _ = report;
+    assert!(
+        eng.lookup()
+            .by_ip(IpAddr::from_str("198.51.100.60").unwrap())
+            .is_some(),
+        "manual must still be present after the in-flight sync installs"
+    );
+    mock.set_response_delay(None).await;
 }
 
 #[tokio::test]

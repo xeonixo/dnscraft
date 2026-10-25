@@ -107,13 +107,10 @@ async fn insecure_connects_and_warns() {
     let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
 
     // Capture tracing warnings that carry our stable insecure code.
+    // `with_default` (not `set_default`) keeps the subscriber on the same
+    // thread as `GatewayClient::new` so a multi-thread runtime cannot miss it.
     static WARNED: Mutex<bool> = Mutex::new(false);
-    let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::WARN)
-            .with_writer(|| WarnCapture)
-            .finish(),
-    );
+    *WARNED.lock().unwrap() = false;
 
     struct WarnCapture;
     impl std::io::Write for WarnCapture {
@@ -129,11 +126,17 @@ async fn insecure_connects_and_warns() {
         }
     }
 
-    let client = GatewayClient::new(
-        &unifi(mock.base_url(), TlsMode::Insecure),
-        Secret::new(API_KEY),
-    )
-    .unwrap();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(|| WarnCapture)
+        .finish();
+    let client = tracing::subscriber::with_default(subscriber, || {
+        GatewayClient::new(
+            &unifi(mock.base_url(), TlsMode::Insecure),
+            Secret::new(API_KEY),
+        )
+        .unwrap()
+    });
     assert!(
         *WARNED.lock().unwrap(),
         "insecure mode must emit clients.tls.insecure warning"

@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -17,6 +17,7 @@ use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::label::is_normalised_label;
 use crate::merge::{NetworkInfo, UnifiObservation};
 use crate::state::{RetainedClient, State};
 use crate::types::{ClientId, MacAddr};
@@ -47,42 +48,41 @@ pub fn cache_path(data_dir: &Path) -> PathBuf {
 /// Loads the cache. Corrupt / oversized / wrong-version → `Ok(None)` + warn.
 pub fn load(data_dir: &Path) -> io::Result<Option<CachePayload>> {
     let path = cache_path(data_dir);
-    match fs::metadata(&path) {
-        Ok(meta) => {
-            if meta.len() > MAX_CACHE_BYTES {
-                warn!(
-                    code = "clients.cache.oversized",
-                    path = %path.display(),
-                    len = meta.len(),
-                    "clients cache ignored (oversized)"
-                );
-                return Ok(None);
-            }
-        }
+    let file = match fs::File::open(&path) {
+        Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
             warn!(
                 code = "clients.cache.io",
                 path = %path.display(),
                 error = %e,
-                "clients cache ignored (stat failed)"
-            );
-            return Ok(None);
-        }
-    }
-
-    let bytes = match fs::read(&path) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(
-                code = "clients.cache.io",
-                path = %path.display(),
-                error = %e,
-                "clients cache ignored (read failed)"
+                "clients cache ignored (open failed)"
             );
             return Ok(None);
         }
     };
+    // Cap via `take` (not metadata-then-read) to avoid a TOCTOU race with a
+    // growing file between `stat` and `read`.
+    let mut limited = file.take(MAX_CACHE_BYTES.saturating_add(1));
+    let mut bytes = Vec::new();
+    if let Err(e) = limited.read_to_end(&mut bytes) {
+        warn!(
+            code = "clients.cache.io",
+            path = %path.display(),
+            error = %e,
+            "clients cache ignored (read failed)"
+        );
+        return Ok(None);
+    }
+    if bytes.len() as u64 > MAX_CACHE_BYTES {
+        warn!(
+            code = "clients.cache.oversized",
+            path = %path.display(),
+            len = bytes.len(),
+            "clients cache ignored (oversized)"
+        );
+        return Ok(None);
+    }
 
     let wire: DiskCache = match serde_json::from_slice(&bytes) {
         Ok(w) => w,
@@ -305,9 +305,23 @@ impl DiskState {
 
     fn into_state(self) -> Result<State, String> {
         let mut labels = HashMap::new();
+        let mut dropped_labels = 0u64;
         for (id, lab) in self.labels {
             let id = ClientId::new(&id).map_err(|e| e.to_string())?;
+            if !is_normalised_label(&lab) {
+                dropped_labels += 1;
+                continue;
+            }
             labels.insert(id, lab);
+        }
+        if dropped_labels > 0 {
+            // Never log the raw label values — they may contain attacker-chosen
+            // bytes from a tampered cache file.
+            warn!(
+                code = "clients.cache.invalid_label",
+                count = dropped_labels,
+                "clients cache dropped invalid DNS labels; clients will be re-labelled"
+            );
         }
         let mut retained = HashMap::new();
         for r in self.retained {
@@ -501,6 +515,58 @@ mod tests {
         )
         .unwrap();
         assert!(load(&dir).unwrap().is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalid_labels_dropped_on_load() {
+        let dir = std::env::temp_dir().join(format!(
+            "dnscraft-clients-cache-evil-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("clients")).unwrap();
+        let long = "a".repeat(64);
+        let wire = format!(
+            r#"{{
+              "version":1,
+              "state":{{
+                "labels":[
+                  ["id-dot","evil.example"],
+                  ["id-upper","UPPER"],
+                  ["id-lead","-x"],
+                  ["id-long","{long}"],
+                  ["id-utf","büro"],
+                  ["id-ok","phone"]
+                ],
+                "retained":[],
+                "ipv6_last_seen":[],
+                "last_unifi":[]
+              }},
+              "observations":[],
+              "networks":[]
+            }}"#
+        );
+        fs::write(cache_path(&dir), wire).unwrap();
+        let loaded = load(&dir).unwrap().unwrap();
+        assert_eq!(loaded.state.labels.len(), 1);
+        assert_eq!(
+            loaded
+                .state
+                .labels
+                .get(&ClientId::new("id-ok").unwrap())
+                .map(String::as_str),
+            Some("phone")
+        );
+        for bad in ["id-dot", "id-upper", "id-lead", "id-long", "id-utf"] {
+            assert!(
+                !loaded
+                    .state
+                    .labels
+                    .contains_key(&ClientId::new(bad).unwrap()),
+                "{bad} should have been dropped"
+            );
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

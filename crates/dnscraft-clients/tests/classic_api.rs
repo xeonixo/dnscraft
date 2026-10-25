@@ -208,6 +208,48 @@ async fn multi_ipv6_unknown_fields_and_bad_rows() {
 }
 
 #[tokio::test]
+async fn invalid_classic_site_key_falls_back_to_integration() {
+    let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+    mock.set_integration(IntegrationFixture {
+        sites: vec![json!({
+            "id": SITE_UUID,
+            "name": "Default",
+            "internalReference": "../evil"
+        })],
+        networks: HashMap::from([(
+            SITE_UUID.into(),
+            vec![json!({ "id": "integ-net", "name": "IoT", "vlanId": 40 })],
+        )]),
+        clients: HashMap::from([(SITE_UUID.into(), vec![integ_client("198.51.100.10")])]),
+        ..IntegrationFixture::default()
+    })
+    .await;
+    // Classic self/sites claims the evil key exists so resolve_site_key accepts it;
+    // fetch must still reject the charset before interpolating into the URL.
+    mock.set_classic(ClassicFixture {
+        sites: vec![json!({ "name": "../evil" })],
+        sta: HashMap::from([("../evil".into(), vec![classic_sta_rich()])]),
+        ..ClassicFixture::default()
+    })
+    .await;
+
+    let (client, u) = gw(&mock, true).await;
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let result = sync_once(&client, &cfg(), &u, &State::default(), now)
+        .await
+        .expect("integration still succeeds");
+    let err = result.classic_error.expect("classic site key rejected");
+    assert_eq!(err.code(), "clients.http.body");
+    assert!(
+        result
+            .merge
+            .lookup
+            .by_ip(IpAddr::from_str("198.51.100.10").unwrap())
+            .is_some()
+    );
+}
+
+#[tokio::test]
 async fn classic_down_integration_up_records_error() {
     let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
     await_seed_integ_only(&mock).await;

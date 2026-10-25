@@ -61,9 +61,11 @@ pub(crate) fn read_secret_parts(
     read_file: impl Fn(&Path) -> std::io::Result<String>,
 ) -> Result<Secret, ClientsError> {
     if let Some(path) = file_path.map(str::trim).filter(|p| !p.is_empty()) {
-        let contents = read_file(Path::new(path)).map_err(|_| ClientsError::SecretMissing {
-            name: name.to_owned(),
-        })?;
+        let contents = Zeroizing::new(read_file(Path::new(path)).map_err(|_| {
+            ClientsError::SecretMissing {
+                name: name.to_owned(),
+            }
+        })?);
         let trimmed = contents.trim();
         if trimmed.is_empty() {
             return Err(ClientsError::SecretMissing {
@@ -74,7 +76,8 @@ pub(crate) fn read_secret_parts(
     }
     match env_value {
         Some(value) => {
-            let trimmed = value.trim();
+            let owned = Zeroizing::new(value.to_owned());
+            let trimmed = owned.trim();
             if trimmed.is_empty() {
                 Err(ClientsError::SecretMissing {
                     name: name.to_owned(),

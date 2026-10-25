@@ -15,6 +15,7 @@
 //! | [`ClientsError::HttpStatus`] | `clients.http.status` |
 //! | [`ClientsError::HttpBody`] | `clients.http.body` |
 //! | [`ClientsError::SyncPartial`] | `clients.sync.partial` |
+//! | [`ClientsError::SyncBackoff`] | `clients.sync.backoff` |
 //! | [`ClientsError::TooMany`] | `clients.too_many` |
 //! | [`ClientsError::IpConflict`] | `clients.ip.conflict` |
 //! | [`ClientsError::NameCollision`] | `clients.name.collision` |
@@ -73,6 +74,12 @@ pub enum ClientsError {
         /// Detail for logs.
         message: String,
     },
+    /// [`ClientEngine::sync_now`] refused because a 429/5xx backoff window is active.
+    #[error("sync backoff active: {message}")]
+    SyncBackoff {
+        /// Detail for logs.
+        message: String,
+    },
     /// Hard client / address cap exceeded.
     #[error("too many clients: {message}")]
     TooMany {
@@ -107,6 +114,7 @@ impl ClientsError {
             Self::HttpStatus { .. } => "clients.http.status",
             Self::HttpBody { .. } => "clients.http.body",
             Self::SyncPartial { .. } => "clients.sync.partial",
+            Self::SyncBackoff { .. } => "clients.sync.backoff",
             Self::TooMany { .. } => "clients.too_many",
             Self::IpConflict { .. } => "clients.ip.conflict",
             Self::NameCollision { .. } => "clients.name.collision",
@@ -150,6 +158,9 @@ mod tests {
             ClientsError::SyncPartial {
                 message: "x".into(),
             },
+            ClientsError::SyncBackoff {
+                message: "x".into(),
+            },
             ClientsError::TooMany {
                 message: "x".into(),
             },
@@ -173,6 +184,6 @@ mod tests {
             }
             assert!(!err.to_string().is_empty());
         }
-        assert_eq!(seen.len(), 11);
+        assert_eq!(seen.len(), 12);
     }
 }

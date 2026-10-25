@@ -49,7 +49,7 @@ pub use integration::{
 };
 /// Re-export for constructing [`ManualEntry`] CIDRs without a direct `ipnet` dependency.
 pub use ipnet::IpNet;
-pub use label::{MAX_LABEL_LEN, fqdn, normalise_label, suffixed};
+pub use label::{MAX_LABEL_LEN, fqdn, is_normalised_label, normalise_label, suffixed};
 pub use lookup::ClientLookup;
 pub use merge::{
     MAX_CLIENT_COUNT, MergeOutput, MergeStats, NetworkInfo, UnifiObservation, WARN_CLIENT_COUNT,

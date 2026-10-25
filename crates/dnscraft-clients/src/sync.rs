@@ -16,6 +16,23 @@ use crate::merge::{self, MergeOutput, NetworkInfo, UnifiObservation};
 use crate::state::State;
 use crate::types::{ClientId, MacAddr};
 
+/// Gateway rows fetched by [`fetch_once`] (no merge yet).
+#[derive(Clone, Debug)]
+pub struct FetchedUnifi {
+    /// Normalised observations (Integration ± classic).
+    pub observations: Vec<UnifiObservation>,
+    /// Networks that fed the merge.
+    pub networks: Vec<NetworkInfo>,
+    /// Integration site UUID that was synced.
+    pub site_id: String,
+    /// Classic site key when classic ran successfully.
+    pub classic_site_key: Option<String>,
+    /// Rows skipped across Integration + classic parsers.
+    pub skipped_rows: u64,
+    /// Classic fetch/mapping error when Integration still produced a snapshot.
+    pub classic_error: Option<ClientsError>,
+}
+
 /// Outcome of [`sync_once`].
 #[derive(Clone, Debug)]
 pub struct SyncResult {
@@ -35,19 +52,15 @@ pub struct SyncResult {
     pub classic_error: Option<ClientsError>,
 }
 
-/// Runs one UniFi sync against `gw` and builds a snapshot.
+/// Fetches Integration (+ optional classic) without building a snapshot.
 ///
-/// When `unifi.classic_clients` is false, no classic HTTP requests are made.
-/// When classic fails after a successful Integration fetch, Integration-only
-/// observations are used and the classic error is returned in
-/// [`SyncResult::classic_error`] (not as `Err`).
-pub async fn sync_once(
+/// The engine holds the sync lock only around merge+install so `apply_config`
+/// is not blocked on gateway I/O; callers re-read the current config under the
+/// lock before calling [`merge::build`].
+pub async fn fetch_once(
     gw: &GatewayClient,
-    cfg: &ClientsConfig,
     unifi: &UnifiConfig,
-    prev: &State,
-    now: SystemTime,
-) -> Result<SyncResult, ClientsError> {
+) -> Result<FetchedUnifi, ClientsError> {
     let integ: IntegrationFetch = integration::fetch(gw, unifi.site_id.as_deref()).await?;
 
     let mut skipped = integ.skipped_rows;
@@ -73,16 +86,47 @@ pub async fn sync_once(
     let observations = merge_observations(integ.observations, classic_obs);
     let networks = merge_networks(integ.networks, classic_nets);
 
-    let merge = merge::build(&cfg.manual, &observations, &networks, prev, cfg, now)?;
-
-    Ok(SyncResult {
-        merge,
+    Ok(FetchedUnifi {
         observations,
         networks,
         site_id: integ.site_id,
         classic_site_key,
         skipped_rows: skipped,
         classic_error,
+    })
+}
+
+/// Runs one UniFi sync against `gw` and builds a snapshot.
+///
+/// When `unifi.classic_clients` is false, no classic HTTP requests are made.
+/// When classic fails after a successful Integration fetch, Integration-only
+/// observations are used and the classic error is returned in
+/// [`SyncResult::classic_error`] (not as `Err`).
+pub async fn sync_once(
+    gw: &GatewayClient,
+    cfg: &ClientsConfig,
+    unifi: &UnifiConfig,
+    prev: &State,
+    now: SystemTime,
+) -> Result<SyncResult, ClientsError> {
+    let fetched = fetch_once(gw, unifi).await?;
+    let merge = merge::build(
+        &cfg.manual,
+        &fetched.observations,
+        &fetched.networks,
+        prev,
+        cfg,
+        now,
+    )?;
+
+    Ok(SyncResult {
+        merge,
+        observations: fetched.observations,
+        networks: fetched.networks,
+        site_id: fetched.site_id,
+        classic_site_key: fetched.classic_site_key,
+        skipped_rows: fetched.skipped_rows,
+        classic_error: fetched.classic_error,
     })
 }
 

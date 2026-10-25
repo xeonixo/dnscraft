@@ -11,9 +11,7 @@ use rustls::ClientConfig;
 use rustls::SignatureScheme;
 use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::{
-    CryptoProvider, ring as rustls_ring, verify_tls12_signature, verify_tls13_signature,
-};
+use rustls::crypto::{ring as rustls_ring, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, Error as RustlsError, RootCertStore};
 use rustls_pki_types::pem::PemObject;
@@ -34,10 +32,12 @@ pub fn leaf_sha256(der: &[u8]) -> [u8; 32] {
 }
 
 /// Builds a rustls client config for the given trust mode.
+///
+/// Uses an explicit ring provider on the builder — does **not** call
+/// [`rustls::crypto::CryptoProvider::install_default`] (that is a process-wide
+/// side effect reserved for the binary / test harness).
 pub fn build_client_config(mode: &TlsMode) -> Result<ClientConfig, ClientsError> {
     let provider = Arc::new(rustls_ring::default_provider());
-    // Best-effort process default so other rustls builders in-process agree.
-    let _ = CryptoProvider::install_default(rustls_ring::default_provider());
 
     match mode {
         TlsMode::Pin(pin) => {

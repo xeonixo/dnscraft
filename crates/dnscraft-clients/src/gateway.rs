@@ -3,11 +3,13 @@
 //! Defaults: `X-API-KEY` header, 30 s timeout, 8 MiB streamed body cap, no
 //! redirects. The API key never appears in error messages or `Debug`.
 
+use std::error::Error as StdError;
 use std::fmt;
 use std::time::Duration;
 
 use reqwest::Client;
 use reqwest::redirect::Policy;
+use rustls::Error as RustlsError;
 
 use crate::config::UnifiConfig;
 use crate::error::ClientsError;
@@ -126,26 +128,58 @@ async fn read_capped(mut response: reqwest::Response, key: &str) -> Result<Vec<u
 }
 
 fn map_transport(err: reqwest::Error, key: &str) -> ClientsError {
-    // reqwest's Display is often just "error sending request for url (…)";
-    // the rustls / certificate detail lives in the `source` chain.
-    let raw = error_chain(&err);
-    let msg = redact(&raw, key);
-    if is_tls_untrusted(&raw) {
-        return ClientsError::TlsUntrusted { message: msg };
+    let msg = redact(&error_chain(&err), key);
+    match classify_tls(&err) {
+        Some(TlsClass::Untrusted) => ClientsError::TlsUntrusted { message: msg },
+        Some(TlsClass::Handshake) => ClientsError::TlsHandshake { message: msg },
+        None => ClientsError::Connect { message: msg },
     }
-    if is_tls_handshake(&raw) {
-        return ClientsError::TlsHandshake { message: msg };
+}
+
+enum TlsClass {
+    Untrusted,
+    Handshake,
+}
+
+fn classify_rustls(re: &RustlsError) -> TlsClass {
+    match re {
+        RustlsError::InvalidCertificate(_) => TlsClass::Untrusted,
+        _ => TlsClass::Handshake,
     }
-    if err.is_connect() || err.is_timeout() {
-        return ClientsError::Connect { message: msg };
+}
+
+/// Walk the `std::error::Error` source chain and unwrap nested [`std::io::Error`]
+/// payloads to find a [`RustlsError`].
+///
+/// hyper-rustls often wraps `rustls::Error` as `io::Error::new(InvalidData, err)`,
+/// then another `io::Error` layer — so a plain `source()` walk never sees the
+/// typed rustls value without opening `get_ref()`.
+fn classify_tls(err: &reqwest::Error) -> Option<TlsClass> {
+    let mut cur: Option<&(dyn StdError + 'static)> = Some(err);
+    while let Some(e) = cur {
+        if let Some(c) = classify_error_node(e) {
+            return Some(c);
+        }
+        cur = e.source();
     }
-    ClientsError::Connect { message: msg }
+    None
+}
+
+fn classify_error_node(e: &(dyn StdError + 'static)) -> Option<TlsClass> {
+    if let Some(re) = e.downcast_ref::<RustlsError>() {
+        return Some(classify_rustls(re));
+    }
+    if let Some(ioe) = e.downcast_ref::<std::io::Error>()
+        && let Some(inner) = ioe.get_ref()
+    {
+        return classify_error_node(inner);
+    }
+    None
 }
 
 fn error_chain(err: &reqwest::Error) -> String {
-    use std::error::Error as _;
     let mut parts = vec![err.to_string()];
-    let mut cur: Option<&(dyn std::error::Error + 'static)> = err.source();
+    let mut cur: Option<&(dyn StdError + 'static)> = err.source();
     while let Some(e) = cur {
         parts.push(e.to_string());
         cur = e.source();
@@ -153,30 +187,37 @@ fn error_chain(err: &reqwest::Error) -> String {
     parts.join(": ")
 }
 
-fn is_tls_untrusted(msg: &str) -> bool {
-    let lower = msg.to_ascii_lowercase();
-    lower.contains("applicationverificationfailure")
-        || lower.contains("unknownissuer")
-        || lower.contains("unknown ca")
-        || lower.contains("invalidcertificate")
-        || lower.contains("invalid peer certificate")
-        || (lower.contains("certificate")
-            && (lower.contains("invalid")
-                || lower.contains("untrusted")
-                || lower.contains("unknown")
-                || lower.contains("not valid")))
-}
-
-fn is_tls_handshake(msg: &str) -> bool {
-    let lower = msg.to_ascii_lowercase();
-    (lower.contains("handshake") || lower.contains("tls") || lower.contains("ssl"))
-        && !is_tls_untrusted(msg)
-}
-
 fn redact(text: &str, key: &str) -> String {
     if key.is_empty() {
         text.to_owned()
     } else {
         text.replace(key, "[redacted]")
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_nested_io_rustls_untrusted() {
+        let rustls_err = RustlsError::InvalidCertificate(rustls::CertificateError::UnknownIssuer);
+        let inner = std::io::Error::new(std::io::ErrorKind::InvalidData, rustls_err);
+        let outer = std::io::Error::other(inner);
+        assert!(matches!(
+            classify_error_node(&outer),
+            Some(TlsClass::Untrusted)
+        ));
+    }
+
+    #[test]
+    fn classify_nested_io_rustls_handshake() {
+        let rustls_err = RustlsError::DecryptError;
+        let inner = std::io::Error::new(std::io::ErrorKind::InvalidData, rustls_err);
+        assert!(matches!(
+            classify_error_node(&inner),
+            Some(TlsClass::Handshake)
+        ));
     }
 }

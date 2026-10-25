@@ -99,8 +99,28 @@ pub fn parse_clients_json(body: &[u8]) -> Result<(Vec<UnifiObservation>, u64), C
     Ok((out, skipped))
 }
 
+/// Classic site keys used in URL path segments (`/api/s/{key}/…`).
+///
+/// Rejects anything outside `[A-Za-z0-9_-]{1,64}` so a hostile/misconfigured
+/// gateway cannot inject path separators into the request URL.
+pub(crate) fn validate_site_key(site_key: &str) -> Result<(), ClientsError> {
+    let ok = !site_key.is_empty()
+        && site_key.len() <= 64
+        && site_key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    if ok {
+        Ok(())
+    } else {
+        Err(ClientsError::HttpBody {
+            message: "classic site key rejected (expected [A-Za-z0-9_-]{1,64})".into(),
+        })
+    }
+}
+
 /// Fetches `stat/sta`, `rest/user`, and `rest/networkconf` for `site_key`.
 pub async fn fetch(gw: &GatewayClient, site_key: &str) -> Result<ClassicFetch, ClientsError> {
+    validate_site_key(site_key)?;
     let sta_path = format!("{CLASSIC_PREFIX}/s/{site_key}/stat/sta");
     let user_path = format!("{CLASSIC_PREFIX}/s/{site_key}/rest/user");
     let net_path = format!("{CLASSIC_PREFIX}/s/{site_key}/rest/networkconf");
@@ -317,4 +337,32 @@ fn merge_into(dst: &mut UnifiObservation, src: &UnifiObservation) {
     }
     // Keep online=true if either side is online (sta already set true).
     dst.online = dst.online || src.online;
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn site_key_charset() {
+        assert!(validate_site_key("default").is_ok());
+        assert!(validate_site_key("site_1-A").is_ok());
+        assert_eq!(
+            validate_site_key("../evil").unwrap_err().code(),
+            "clients.http.body"
+        );
+        assert_eq!(
+            validate_site_key("bad key").unwrap_err().code(),
+            "clients.http.body"
+        );
+        assert_eq!(
+            validate_site_key(&"a".repeat(65)).unwrap_err().code(),
+            "clients.http.body"
+        );
+        assert_eq!(
+            validate_site_key("").unwrap_err().code(),
+            "clients.http.body"
+        );
+    }
 }

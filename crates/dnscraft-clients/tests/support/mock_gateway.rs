@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
 use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, DnType, IsCa, KeyPair, SanType};
 use rustls::ServerConfig;
@@ -74,6 +75,8 @@ struct State {
     expected_key: String,
     force_status: Option<u16>,
     force_oversize: Option<OversizeBody>,
+    /// Artificial per-request delay (tests: apply_config during slow sync).
+    response_delay: Option<Duration>,
     ok_body: Vec<u8>,
     integration: IntegrationFixture,
     classic: ClassicFixture,
@@ -111,6 +114,7 @@ impl MockGateway {
             expected_key: api_key.to_owned(),
             force_status: None,
             force_oversize: None,
+            response_delay: None,
             ok_body: br#"{"ok":true}"#.to_vec(),
             integration: IntegrationFixture::default(),
             classic: ClassicFixture::default(),
@@ -166,6 +170,11 @@ impl MockGateway {
 
     pub async fn force_oversize(&self, kind: OversizeBody) {
         self.state.lock().await.force_oversize = Some(kind);
+    }
+
+    /// Sleep this long before answering each request (`None` clears the delay).
+    pub async fn set_response_delay(&self, delay: Option<Duration>) {
+        self.state.lock().await.response_delay = delay;
     }
 
     pub async fn take_log(&self) -> Vec<RecordedRequest> {
@@ -253,6 +262,14 @@ async fn serve(
         path: path_q.clone(),
         headers: headers.clone(),
     });
+
+    let delay = {
+        let st = state.lock().await;
+        st.response_delay
+    };
+    if let Some(d) = delay {
+        tokio::time::sleep(d).await;
+    }
 
     let st = state.lock().await;
     let key_ok = headers

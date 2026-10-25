@@ -34,17 +34,34 @@ pub fn normalise_label(display: &str, id: &ClientId) -> String {
     fit_label(&scrubbed, id)
 }
 
+/// Returns true when `label` is something [`normalise_label`] can produce:
+/// `[a-z0-9-]{1,63}` with no leading or trailing hyphen.
+pub fn is_normalised_label(label: &str) -> bool {
+    if label.is_empty() || label.len() > MAX_LABEL_LEN {
+        return false;
+    }
+    if label.as_bytes().first() == Some(&b'-') || label.as_bytes().last() == Some(&b'-') {
+        return false;
+    }
+    label
+        .bytes()
+        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+}
+
 /// Builds `<label>.<domain>` with the parent domain converted via UTS 46.
+///
+/// `label` must already be a normalised single DNS label (see
+/// [`is_normalised_label`]); this rejects dots, upper case, and other bytes
+/// so a tampered cache cannot leak into FQDNs / PTR names.
 pub fn fqdn(label: &str, domain: &str) -> Result<String, ClientsError> {
     let domain = normalise_domain(domain)?;
     if domain.is_empty() {
         return Err(ClientsError::config("fqdn domain is empty"));
     }
-    if label.is_empty() || label.len() > MAX_LABEL_LEN {
-        return Err(ClientsError::config(format!(
-            "fqdn label length {} out of range",
-            label.len()
-        )));
+    if !is_normalised_label(label) {
+        return Err(ClientsError::config(
+            "fqdn label is not a normalised DNS label",
+        ));
     }
     Ok(format!("{label}.{domain}"))
 }
@@ -233,5 +250,14 @@ mod tests {
     #[test]
     fn fqdn_normalises_domain() {
         assert_eq!(fqdn("phone", "Home.ARPA.").unwrap(), "phone.home.arpa");
+    }
+
+    #[test]
+    fn fqdn_rejects_non_normalised_labels() {
+        for bad in ["evil.example", "UPPER", "-x", "x-", &"a".repeat(64), "büro"] {
+            assert!(fqdn(bad, "home.arpa").is_err(), "{bad}");
+        }
+        assert!(is_normalised_label("phone"));
+        assert!(!is_normalised_label("evil.example"));
     }
 }
