@@ -12,7 +12,7 @@ This file is the index of all modules. Module ids are stable and never renamed.
 | `clients` | Client enrichment: IPv4/IPv6 → device, VLAN via the UniFi API (UniFi OS gateway); manual names for IPs/ranges | – | [SPEC-clients.md](SPEC-clients.md) |
 | `tls` | ACME DNS-01 via Cloudflare (wildcard for Client IDs), certificate store, hot reload, DynDNS of the public hostname | – | [SPEC-tls.md](SPEC-tls.md) |
 | `policy` | Query → profile by source subnet/IP: filter set, split-horizon answers | resolver, filtering | [SPEC-policy.md](SPEC-policy.md) |
-| `listeners` | Do53 UDP/TCP, DoT, DoH (h2/h3), DoQ; multiple NICs/addresses; public listeners for registered Client IDs | policy, tls | pending |
+| `listeners` | Do53 UDP/TCP, DoT, DoH (h2/h3), DoQ; multiple NICs/addresses; public listeners for registered Client IDs | policy, tls | [SPEC-listeners.md](SPEC-listeners.md) (draft) |
 | `control-api` | REST API, configuration, query log (filterable by device), statistics, OIDC (Authentik) + local break-glass login, locale-neutral error codes | policy, clients | pending |
 | `web-ui` | TypeScript frontend, fully internationalized, embedded into the binary as static assets | control-api | pending |
 | `mcp` | MCP server for AI assistants: query log, "why blocked?", test query, stats (viewer); temporary allow, rules, pause (admin); internal listener only, same tokens/roles/audit as the API | control-api | pending |

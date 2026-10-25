@@ -1,0 +1,123 @@
+# Implementation Plan: `listeners` module
+
+> Spec: [SPEC-listeners.md](../SPEC-listeners.md) (DRAFT — owner approval first) · Project spec: [SPEC.md](../SPEC.md) ·
+> Tasks: [todo-listeners.md](todo-listeners.md) · Resume log: [progress.md](progress.md) ·
+> Neighbours: [archive/policy-plan.md](archive/policy-plan.md), [archive/tls-plan.md](archive/tls-plan.md)
+> Built by **one Cursor agent**, one task per session (template B in [cursor-next.md](cursor-next.md)); Claude reviews at every checkpoint.
+
+## Overview
+
+A new library crate `crates/dnscraft-listeners` that binds Do53 (UDP/TCP), DoT, DoH (h2 + http/1.1, later
+h3) and DoQ listeners, admits each query (source class, Client ID, rate limit, bans), turns it into a
+`policy::RequestContext`, calls `PolicyEngine::handle`, and writes the answer back with the transport's
+framing. A last, optional phase adds a minimal `crates/dnscraft` binary so DNScraft can run next to
+AdGuard Home before `control-api` exists.
+
+## Architecture Decisions
+
+1. **Transport-independent core first.** `core::handle_wire(bytes, QueryMeta) -> Option<Vec<u8>>` does
+   decode → validation → admission decision → `RequestContext` → policy → id/RA/EDNS/EDE/padding/limit.
+   Every transport is a thin I/O shell around it. This keeps the risky logic unit-testable and fuzzable,
+   and makes all transports answer identically (success criterion 2).
+2. **Policy behind a trait.** `QueryHandler` (`async fn handle(&self, RequestContext) -> PolicyAnswer`)
+   with an impl for `PolicyEngine`; tests use a fake handler, integration tests the real engine on the
+   testkit hierarchy.
+3. **No `unsafe`.** Wildcard UDP/QUIC reply-source uses `quinn-udp` (`IP_PKTINFO`/`IPV6_RECVPKTINFO`).
+   Concrete-address sockets are the documented default; wildcard support is verified by a spike first.
+4. **Shared TLS.** All encrypted listeners use `Arc<tls::CertResolver>`; one `rustls::ServerConfig` per
+   ALPN family. SNI admission reuses `tls::accept_public_sni`; the Client-ID registry is a read-only
+   accessor on the policy snapshot (task L0, cross-module).
+5. **Bounded state everywhere.** Rate buckets and ban table are LRU-capped (`max_tracked_sources`); every
+   accept loop has a connection cap and every connection a query/stream cap.
+6. **HTTP stack:** `hyper` 1 + `hyper-util` directly (no `axum` in this crate; `control-api` uses axum
+   later). DoH h3 via `h3` + `h3-quinn` is a separate, late task so it can be dropped if the owner
+   defers HTTP/3.
+7. **Events, not logging.** A non-blocking `QueryEventSink` (bounded channel, drop + count when full).
+
+## Dependencies (need owner approval — versions checked 2026-10-25 with `cargo search`)
+
+| Crate | Version | Features | Why | Alternatives |
+|---|---|---|---|---|
+| `quinn` | 0.11.12 | `default-features = false`, `runtime-tokio`, `rustls-ring` | DoQ + HTTP/3 transport; ring-only | `s2n-quic` (aws-lc) ✗ |
+| `quinn-udp` | 0.6.3 | default | `IP_PKTINFO` reply-source on wildcard UDP 53 without our own `unsafe` | `socket2` + `nix` + `unsafe` ✗ |
+| `hyper` | 1.12 | `server`, `http1`, `http2` | DoH h2 / http/1.1 server | `axum` (more than needed here) |
+| `hyper-util` | 0.1.21 | `tokio`, `server-auto` | connection driver for hyper | – |
+| `h3` | 0.0.8 | default | DoH over HTTP/3 (pre-1.0, experimental) | defer h3 (open question 2) |
+| `h3-quinn` | 0.0.10 | default | h3 ↔ quinn glue | – |
+| `base64` | 0.23 (check if already in the tree) | `std` | DoH `GET ?dns=` base64url | 30-line local decoder |
+| `tokio-rustls` | 0.26 (workspace) | `ring`, `tls12` | DoT / DoH-h2 TLS | already in the tree |
+| dev: `rcgen` | workspace | – | test certificates | already in the tree |
+| `toml` (N14 only) | 1.1 (latest stable at implement time) | default | bootstrap config of the minimal binary | `serde_json` config (less readable) |
+
+Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i openssl-sys` empty;
+`cargo deny check` green.
+
+## Task List
+
+### Phase 0: Approval and risk spike
+- [ ] **Owner approves SPEC-listeners.md + the dependency table** (open questions answered in the spec's "Decisions")
+- [ ] L0: Policy accessor for registered Client IDs (cross-module, XS)
+- [ ] N0: Spike — pktinfo reply-source, quinn ring-only, h3/h3-quinn compile, hyper h2 server (spikes/listeners/)
+
+### Checkpoint A: Approval + spike
+- [ ] Spike findings in progress.md; dependency table confirmed or adjusted; owner go for Phase 1
+
+### Phase 1: Core + Do53
+- [ ] N1: Crate skeleton — config, validation, errors, `Clock`, `QueryHandler` trait
+- [ ] N2: Message core — validation, EDNS, ECS strip, EDE, id/flags, size limit, padding
+- [ ] N3: Admission — source class, token buckets, ban table (bounded), decision API
+- [ ] N4: Do53 UDP — concrete + wildcard sockets, reply source, in-flight cap
+- [ ] N5: Do53 TCP — RFC 7766 framing, pipelining, out-of-order, idle timeout, caps
+
+### Checkpoint B: Do53 end to end
+- [ ] Do53 UDP/TCP against the real `PolicyEngine` on the testkit hierarchy (IPv4 + IPv6); `examples/serve.rs` answers `dig` on a high port; Claude review
+
+### Phase 2: Encrypted transports
+- [ ] N6: TLS server configs from `CertResolver`, SNI admission, `no_cert` state, hot reload
+- [ ] N7: DoT
+- [ ] N8: DoH over HTTP/2 + HTTP/1.1
+- [ ] N9: DoQ
+
+### Checkpoint C: Encrypted end to end
+- [ ] DoT / DoH / DoQ answer identically to Do53; public admission matrix; cert hot reload; Claude review
+
+### Phase 3: Discovery, runtime, HTTP/3
+- [ ] N10: DDR `_dns.resolver.arpa`
+- [ ] N11: `ListenerSet` runtime — start, partial bind failure, `apply_config`, shutdown, status, query events
+- [ ] N12: DoH over HTTP/3 + `Alt-Svc` (skip if the owner defers h3)
+
+### Phase 4: Polish (+ optional binary)
+- [ ] N13: Fuzz targets, bench, README, coverage, success-criteria table
+- [ ] N14: Minimal `crates/dnscraft` binary (only if the owner says yes to open question 5)
+
+### Checkpoint D: Complete
+- [ ] All spec success criteria; independent security review (exposure, admission, resource caps); owner approval
+
+## Dependency graph
+
+```
+L0 (policy accessor) ──────────────┐
+N0 spike ─┬─ N1 skeleton ─ N2 core ─ N3 admission ─┬─ N4 UDP ─┐
+          │                                        └─ N5 TCP ─┴─ [B] ─ N6 TLS ─┬─ N7 DoT ─┐
+          │                                                                     ├─ N8 DoH ─┼─ [C] ─ N10 DDR ─ N11 runtime ─ N12 h3 ─ N13 polish ─ N14 bin ─ [D]
+          └─────────────────────────────────────────────────────────────────────└─ N9 DoQ ─┘
+```
+
+One agent works sequentially in this order; N7/N8/N9 are independent of each other once N6 is done.
+
+## Risks and Mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| pktinfo on wildcard sockets behaves differently on arm64 / in Docker macvlan | High | N0 spike on the dev box (aarch64) first; concrete addresses as the documented default |
+| `h3` / `h3-quinn` are pre-1.0 and churn | Med | isolated late task N12, behind `h3 = true`; can be deferred |
+| quinn pulls aws-lc through a default feature | High | `default-features = false` + explicit features; `cargo deny` bans fail the build |
+| Amplification / resource exhaustion from public sources | High | drop public Do53, caps on every loop, bounded LRU tables, bans; security review at D |
+| Identical answers across 5 transports drift apart | Med | single `handle_wire` core; cross-transport equality test at C |
+| Flaky socket tests | Med | loopback only, ephemeral ports, `ManualClock` for limits; no wall-clock sleeps (lesson from clients C11b) |
+| DDR clients ignore opportunistic discovery | Low | documented; verified DDR is an open question (IP SANs) |
+
+## Open Questions
+
+See [SPEC-listeners.md § Open Questions](../SPEC-listeners.md#open-questions-owner): dependencies, HTTP/3 in v1,
+wildcard binds, public Do53 drop vs REFUSED, minimal binary (N14), verified DDR.
