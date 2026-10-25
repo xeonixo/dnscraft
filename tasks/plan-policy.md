@@ -146,6 +146,8 @@ P12 golden integration tests, AD/EDE matrix, bench, coverage, README
 
 ### Phase 3: Operations
 - [x] P10: Pause (global + per profile), hot reload, counters
+- [x] P10b: Pause trace + stats scope (review follow-ups)
+- [x] P9b: Rebind SVCB/HTTPS hints + additional section
 - [ ] P11: SafeSearch + schedules config surface (stub, status "not applied")
 - [ ] P12: Golden integration tests, bench, coverage, README
 
