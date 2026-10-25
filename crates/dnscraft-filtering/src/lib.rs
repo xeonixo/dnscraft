@@ -10,7 +10,7 @@
 //! Currently provided: the canonical matching name [`DomainName`], validated
 //! ids ([`ListId`], [`SetId`]), verdict types, [`BlockMode`], an injectable
 //! [`Clock`], filter sets ([`Snapshot`]), temporary allows, match counters,
-//! and error types with stable codes.
+//! hot-reload [`FilterEngine`], and error types with stable codes.
 
 mod builder;
 mod clock;
@@ -23,6 +23,7 @@ mod name;
 mod parser;
 mod pattern;
 mod rule;
+mod scheduler;
 mod set;
 mod snapshot;
 mod stats;
@@ -39,8 +40,8 @@ pub mod testgen;
 pub use builder::{
     BuildError, MAX_TXT_LEN, RecordTypeSel, RewriteSpec, RuleSpec, build_rule, describe_rule,
 };
-pub use clock::{Clock, ManualClock, SystemClock};
-pub use engine::FilterEngine;
+pub use clock::{Clock, ManualClock, SystemClock, wait_until};
+pub use engine::{FilterEngine, ListSelection, ListStatus, ReloadReport};
 pub use error::{FilterError, IdError, NameError, RuleError, UnsupportedKind};
 pub use fetch::{FetchError, FetchOutcome, Fetcher, FetcherConfig, MAX_REDIRECTS};
 pub use index::{
@@ -56,6 +57,7 @@ pub use pattern::{
     Glob, GlobStart, REGEX_DFA_SIZE_LIMIT, REGEX_MESSAGE_MAX, REGEX_SIZE_LIMIT, RegexRule,
 };
 pub use rule::{BadfilterKey, DnsRewrite, DnsTypeFilter, MatchKind, Modifiers, Rule, RuleAction};
+pub use scheduler::UpdateScheduler;
 pub use set::{
     DEFAULT_UPDATE_INTERVAL, FilterConfig, FilterSetConfig, ListBodies, ListConfig, SnapshotError,
 };
@@ -63,7 +65,7 @@ pub use snapshot::{CustomFacts, ListFacts, SharedIndex, Snapshot, SnapshotBuilde
 pub use stats::{FilterStats, ListStats, SetStats};
 pub use store::{
     DEFAULT_MAX_BODY_BYTES, ListMeta, ListSourceSpec, ListStore, META_VERSION, MetaError,
-    StoreConfig, StoreError,
+    StoreConfig, StoreError, StoreListBodies,
 };
 pub use temp_allow::TempAllow;
 pub use types::{BlockMode, ListId, Reason, Rewrite, RuleSource, SetId, Verdict};

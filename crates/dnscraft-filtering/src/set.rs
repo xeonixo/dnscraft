@@ -84,11 +84,20 @@ impl Default for FilterConfig {
 /// Provides list bodies. The snapshot never keeps bodies; it asks again when
 /// the text of a matched rule is needed.
 ///
-/// Implemented from the on-disk `ListStore` by the engine (Task L3); tests use
-/// an in-memory map.
+/// Implemented from the on-disk [`crate::ListStore`] by the engine; tests use
+/// an in-memory map. Builders call [`Self::body`] once per list and drop the
+/// result so bodies are never all held at once.
 pub trait ListBodies: Send + Sync + std::fmt::Debug {
     /// The body of list `id`, or `None` if it has not been downloaded yet.
     fn body(&self, id: &ListId) -> Option<Arc<str>>;
+
+    /// Trimmed rule line at byte `offset` in list `id`, plus its 1-based line
+    /// number. The default loads [`Self::body`] and slices; store-backed
+    /// implementations seek without keeping the whole file.
+    fn rule_at(&self, id: &ListId, offset: u32) -> Option<(u32, Arc<str>)> {
+        let body = self.body(id)?;
+        crate::index::rule_at_body(&body, offset).map(|(line, text)| (line, Arc::from(text)))
+    }
 }
 
 /// Why a snapshot could not be built.

@@ -2,13 +2,23 @@
 //! tested without sleeping.
 
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
+
+use tokio::sync::Notify;
 
 /// Source of wall-clock time.
 pub trait Clock: Send + Sync + fmt::Debug {
     /// Current wall-clock time.
     fn now(&self) -> SystemTime;
+
+    /// Optional wake signal fired when time jumps (see [`ManualClock`]).
+    ///
+    /// Schedulers wait on this instead of a real sleep so tests can drive the
+    /// clock without blocking. [`SystemClock`] returns `None`.
+    fn tick_notify(&self) -> Option<Arc<Notify>> {
+        None
+    }
 }
 
 /// The real system clock.
@@ -25,6 +35,7 @@ impl Clock for SystemClock {
 #[derive(Debug)]
 pub struct ManualClock {
     now: Mutex<SystemTime>,
+    tick: Arc<Notify>,
 }
 
 impl ManualClock {
@@ -32,24 +43,27 @@ impl ManualClock {
     pub fn new(start: SystemTime) -> Self {
         Self {
             now: Mutex::new(start),
+            tick: Arc::new(Notify::new()),
         }
     }
 
-    /// Moves the clock forward by `by`.
+    /// Moves the clock forward by `by` and wakes waiters.
     pub fn advance(&self, by: Duration) {
         let mut now = self
             .now
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *now += by;
+        self.tick.notify_waiters();
     }
 
-    /// Sets the clock to an absolute time.
+    /// Sets the clock to an absolute time and wakes waiters.
     pub fn set(&self, to: SystemTime) {
         *self
             .now
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = to;
+        self.tick.notify_waiters();
     }
 }
 
@@ -59,6 +73,36 @@ impl Clock for ManualClock {
             .now
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn tick_notify(&self) -> Option<Arc<Notify>> {
+        Some(Arc::clone(&self.tick))
+    }
+}
+
+/// Waits until `clock.now() >= deadline`.
+///
+/// Uses [`Clock::tick_notify`] when present (manual clocks). Otherwise sleeps
+/// for the remaining real time, also waking early when `extra` is notified
+/// (manual "update now", config changes).
+pub async fn wait_until(clock: &dyn Clock, deadline: SystemTime, extra: &Notify) {
+    loop {
+        let now = clock.now();
+        if now >= deadline {
+            return;
+        }
+        let remaining = deadline.duration_since(now).unwrap_or(Duration::ZERO);
+        if let Some(tick) = clock.tick_notify() {
+            tokio::select! {
+                () = tick.notified() => {}
+                () = extra.notified() => {}
+            }
+        } else {
+            tokio::select! {
+                () = tokio::time::sleep(remaining) => {}
+                () = extra.notified() => {}
+            }
+        }
     }
 }
 

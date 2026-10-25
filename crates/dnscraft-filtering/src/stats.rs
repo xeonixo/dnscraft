@@ -109,6 +109,20 @@ impl StatsTable {
         }
     }
 
+    /// Ensures counters exist for the given sets and lists (config reload).
+    pub(crate) fn ensure(
+        &mut self,
+        sets: impl IntoIterator<Item = SetId>,
+        lists: impl IntoIterator<Item = ListId>,
+    ) {
+        for s in sets {
+            self.sets.entry(s).or_default();
+        }
+        for l in lists {
+            self.lists.entry(l).or_default();
+        }
+    }
+
     pub(crate) fn snapshot(&self) -> FilterStats {
         let mut sets: Vec<SetStats> = self
             .sets

@@ -34,17 +34,21 @@
 //! | [`StoreError::InvalidSource`] | `filter_store.invalid_source` |
 //! | [`StoreError::Serialize`] | `filter_store.serialize` |
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
 use crate::clock::{Clock, SystemClock};
+use crate::set::ListBodies;
 use crate::types::ListId;
+
+/// Entries kept in the on-disk rule-line LRU.
+const LINE_LRU_CAP: usize = 64;
 
 /// Default maximum size of a list body: 64 MiB.
 pub const DEFAULT_MAX_BODY_BYTES: u64 = 64 * 1024 * 1024;
@@ -287,7 +291,8 @@ impl ListStore {
             .map_or(0, |d| d.as_secs())
     }
 
-    fn body_path(&self, id: &ListId) -> PathBuf {
+    /// Path of the cached body file (may not exist yet).
+    pub fn body_path(&self, id: &ListId) -> PathBuf {
         self.lists_dir.join(format!("{id}.txt"))
     }
 
@@ -299,6 +304,14 @@ impl ListStore {
     /// cap are refused with [`StoreError::TooLarge`].
     pub fn read_body(&self, id: &ListId) -> Result<Option<String>, StoreError> {
         read_capped(&self.body_path(id), self.config.max_body_bytes)
+    }
+
+    /// Seeks to `offset` in the cached body and returns `(1-based line, text)`.
+    ///
+    /// Counts newlines from the start of the file up to `offset`. Missing or
+    /// unreadable files yield `None` (never an error).
+    pub fn read_rule_at(&self, id: &ListId, offset: u32) -> Option<(u32, Arc<str>)> {
+        read_rule_at_path(&self.body_path(id), offset)
     }
 
     /// Reads a local file list directly (same size cap, never copied).
@@ -389,6 +402,180 @@ impl ListStore {
         }
         Ok(ids.into_iter().collect())
     }
+}
+
+/// [`ListBodies`] over a [`ListStore`], with optional local-file fallbacks and
+/// a small LRU of recently read rule lines (seek/pread, never the whole file
+/// for Reasons).
+#[derive(Debug)]
+pub struct StoreListBodies {
+    store: ListStore,
+    /// Local file paths for lists whose body is not yet cached (File sources).
+    files: RwLock<HashMap<ListId, PathBuf>>,
+    line_cache: Mutex<LineLru>,
+}
+
+impl StoreListBodies {
+    /// Bodies from `store`, falling back to `files` when the cache is empty.
+    pub fn new(store: ListStore, files: HashMap<ListId, PathBuf>) -> Self {
+        Self {
+            store,
+            files: RwLock::new(files),
+            line_cache: Mutex::new(LineLru::new(LINE_LRU_CAP)),
+        }
+    }
+
+    /// The underlying store.
+    pub fn store(&self) -> &ListStore {
+        &self.store
+    }
+
+    /// Rebuilds the file-fallback map from list configs.
+    pub fn set_files(&self, files: HashMap<ListId, PathBuf>) {
+        *self
+            .files
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = files;
+    }
+
+    fn path_for(&self, id: &ListId) -> Option<PathBuf> {
+        let cached = self.store.body_path(id);
+        if cached.is_file() {
+            return Some(cached);
+        }
+        self.files
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .cloned()
+            .filter(|p| p.is_file())
+    }
+}
+
+impl ListBodies for StoreListBodies {
+    fn body(&self, id: &ListId) -> Option<Arc<str>> {
+        match self.store.read_body(id) {
+            Ok(Some(s)) => return Some(Arc::from(s)),
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(list = %id, error = %e, "cannot read cached list body");
+            }
+        }
+        let path = {
+            let files = self
+                .files
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            files.get(id).cloned()
+        }?;
+        match self.store.read_file_source(&path) {
+            Ok(s) => Some(Arc::from(s)),
+            Err(e) => {
+                tracing::warn!(list = %id, path = %path.display(), error = %e, "cannot read file list");
+                None
+            }
+        }
+    }
+
+    fn rule_at(&self, id: &ListId, offset: u32) -> Option<(u32, Arc<str>)> {
+        {
+            let mut cache = self
+                .line_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(hit) = cache.get(id, offset) {
+                return Some(hit);
+            }
+        }
+        let path = self.path_for(id)?;
+        let got = read_rule_at_path(&path, offset)?;
+        let mut cache = self
+            .line_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.insert(id.clone(), offset, got.clone());
+        Some(got)
+    }
+}
+
+#[derive(Debug)]
+struct LineLru {
+    cap: usize,
+    order: VecDeque<(ListId, u32)>,
+    map: HashMap<(ListId, u32), (u32, Arc<str>)>,
+}
+
+impl LineLru {
+    fn new(cap: usize) -> Self {
+        Self {
+            cap: cap.max(1),
+            order: VecDeque::new(),
+            map: HashMap::new(),
+        }
+    }
+
+    fn get(&mut self, id: &ListId, offset: u32) -> Option<(u32, Arc<str>)> {
+        let key = (id.clone(), offset);
+        let val = self.map.get(&key)?.clone();
+        if let Some(pos) = self.order.iter().position(|k| k == &key) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(key);
+        Some(val)
+    }
+
+    fn insert(&mut self, id: ListId, offset: u32, val: (u32, Arc<str>)) {
+        let key = (id, offset);
+        if self.map.insert(key.clone(), val).is_some() {
+            if let Some(pos) = self.order.iter().position(|k| k == &key) {
+                self.order.remove(pos);
+            }
+        }
+        self.order.push_back(key);
+        while self.order.len() > self.cap {
+            if let Some(old) = self.order.pop_front() {
+                self.map.remove(&old);
+            }
+        }
+    }
+}
+
+/// Seeks to `offset` in `path`, counts newlines before it, reads one line.
+fn read_rule_at_path(path: &Path, offset: u32) -> Option<(u32, Arc<str>)> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut remaining = offset as u64;
+    let mut newlines: u32 = 0;
+    let mut buf = [0u8; 8192];
+    while remaining > 0 {
+        let chunk = remaining.min(buf.len() as u64) as usize;
+        let n = file.read(&mut buf[..chunk]).ok()?;
+        if n == 0 {
+            return None;
+        }
+        newlines += buf[..n].iter().filter(|&&b| b == b'\n').count() as u32;
+        remaining -= n as u64;
+    }
+    // Position is already at `offset` after the sequential read.
+    let _ = file.seek(SeekFrom::Start(u64::from(offset))).ok()?;
+    let mut line_buf: Vec<u8> = Vec::new();
+    let mut one = [0u8; 1];
+    loop {
+        match file.read(&mut one) {
+            Ok(0) => break,
+            Ok(_) if one[0] == b'\n' => break,
+            Ok(_) => line_buf.push(one[0]),
+            Err(_) => return None,
+        }
+        if line_buf.len() > 4096 {
+            break;
+        }
+    }
+    let text = match String::from_utf8(line_buf) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    };
+    let text = text.trim_end_matches([' ', '\t', '\r']);
+    Some((newlines.saturating_add(1), Arc::from(text)))
 }
 
 /// Reads `path` as text, refusing more than `max` bytes. `None` if missing.

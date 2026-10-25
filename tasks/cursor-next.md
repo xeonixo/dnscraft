@@ -28,9 +28,9 @@ commit per task ending with the Co-Authored-By line used in earlier commits. Pus
 
 ## Status when this file was written (2026-10-25)
 
-- Done and committed: F1–F4, F5 builder, L1, L2, M1, M2.
-- Checkpoint A complete (parser fixes, fuzz target `rule_parse` clean for 10 min, CI job, real-list tool).
-  Nothing is running with Claude — Cursor can start with M4a.
+- Done and committed: F1–F4, F5 builder, F6, R1, L1–L3, M1–M4a/M4b.
+- Checkpoint A complete; Checkpoint B owner: RAM may grow — continue L4→C1.
+  Next Cursor brief: **L4**.
 
 ## Order
 

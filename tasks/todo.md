@@ -181,7 +181,7 @@ lists (`file://` or path), startup load without network.
 
 **Acceptance criteria:**
 - [x] Crash-safe write (interrupted write leaves the old file intact — simulated)
-- [ ] Startup with cached lists builds the index without any fetch (store side done; index build verified in L3)
+- [x] Startup with cached lists builds the index without any fetch (store side done; index build verified in L3)
 - [x] Corrupt metadata is recovered (re-fetch scheduled), never a crash
 
 **Verification:** `cargo test -p dnscraft-filtering store`
@@ -209,9 +209,9 @@ HTTP/1.1 test server in tests.
 incl. unique contribution after dedup.
 
 **Acceptance criteria:**
-- [ ] Concurrent matching during a rebuild never blocks > 1 ms and never sees a half-built index
-- [ ] Unique contribution numbers correct on a small fixture
-- [ ] Manual clock drives the schedule in tests (no sleeping)
+- [x] Concurrent matching during a rebuild never blocks > 1 ms and never sees a half-built index
+- [x] Unique contribution numbers correct on a small fixture
+- [x] Manual clock drives the schedule in tests (no sleeping)
 
 **Verification:** `cargo test -p dnscraft-filtering reload schedule`
 

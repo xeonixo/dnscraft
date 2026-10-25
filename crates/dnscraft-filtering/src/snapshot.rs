@@ -338,11 +338,12 @@ struct SnapshotTexts {
 
 impl RuleTextSource for SnapshotTexts {
     fn rule_at(&self, source: u32, offset: u32) -> Option<(u32, Arc<str>)> {
-        let body = match self.entries.get(source as usize)? {
-            TextEntry::Inline(body) => Arc::clone(body),
-            TextEntry::List(id) => self.bodies.body(id)?,
-        };
-        crate::index::rule_at_body(&body, offset).map(|(line, text)| (line, Arc::from(text)))
+        match self.entries.get(source as usize)? {
+            TextEntry::Inline(body) => {
+                crate::index::rule_at_body(body, offset).map(|(line, text)| (line, Arc::from(text)))
+            }
+            TextEntry::List(id) => self.bodies.rule_at(id, offset),
+        }
     }
 }
 

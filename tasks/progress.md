@@ -11,10 +11,12 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 ## Current state
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
-- Module `filtering`: Checkpoint B owner (2026-10-25): **RAM may grow** — build peak / 150 MB RSS not a hard stop; continue L3→L4→C1. Deep-name p99 miss accepted for now unless revisited at Checkpoint D.
+- Module `filtering`: **L3 done** (scheduler, hot reload, list status). Next: L4 blocked services, then C1. Checkpoint B owner (2026-10-25): RAM may grow — not blocking. Deep-name p99 miss left for Checkpoint D if revisited.
 - Blockers: none.
 
 ## Log
+
+- 2026-10-25 — Filtering L3 done (Cursor): `FilterEngine` holds `RwLock<Arc<Snapshot>>` (clone under short lock); `open` / `open_without_scheduler` build from `ListStore` cache with no network; `apply_config` + `update_lists(ListSelection)` rebuild via `spawn_blocking`, atomic swap, coalesce (oneshot waiters). `StoreListBodies` implements `ListBodies` (body per list, never all at once) + seek/`pread`-style `rule_at` with 64-line LRU; custom text stays inline in `SnapshotTexts`. Scheduler (`src/scheduler.rs`): FilterConfig interval (default 24 h) ±10 % jitter, `ManualClock::tick_notify` + `wait_until` (tests do not sleep wall time), `update_now`. `ReloadReport` / `list_status` with last attempt/success, error code, rules parsed/skipped, unique contribution. New codes: `filter_engine.build_failed`, `filter_engine.no_store`. tests/reload.rs: concurrent match during rebuild (< 1 ms Arc clone, never half-built), startup offline, failed fetch keeps last good, schedule with ManualClock, unique contribution fixture, on-disk rule text. Deferred to L4/C1: `services()` catalog wiring, SPEC `new(config,store,clock)` naming polish vs matching-only `new(snapshot)`, README.
 
 - 2026-10-25 — Checkpoint B owner: RAM budget relaxed (“RAM darf ruhig größer werden”); Cursor continues with L3. Deep-name p99 and M4a peak left as-is for now (not blocking). Checkpoint B checkboxes left for owner/Claude to tick formally if desired.
 

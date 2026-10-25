@@ -43,8 +43,10 @@
 //! | [`RuleError::InvalidRegex`] | `filter_rule.invalid_regex` |
 //! | [`RuleError::RegexTooLarge`] | `filter_rule.regex_too_large` |
 //! | [`FilterError::UnknownSet`] | `filter_set.unknown` |
+//! | [`FilterError::BuildFailed`] | `filter_engine.build_failed` |
+//! | [`FilterError::NoStore`] | `filter_engine.no_store` |
 //!
-//! [`FilterError`] delegates to the code of the wrapped error.
+//! [`FilterError`] delegates to the code of the wrapped error when nested.
 
 /// A domain name was rejected.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -354,6 +356,15 @@ pub enum FilterError {
     /// No filter set with this id exists in the snapshot.
     #[error("unknown filter set {0:?}")]
     UnknownSet(String),
+    /// Building a snapshot from the current config failed.
+    #[error("cannot build filter snapshot: {message}")]
+    BuildFailed {
+        /// Human-readable detail for logs.
+        message: String,
+    },
+    /// The engine was constructed without a list store (matching-only).
+    #[error("filter engine has no list store")]
+    NoStore,
 }
 
 impl FilterError {
@@ -364,6 +375,8 @@ impl FilterError {
             Self::Id(e) => e.code(),
             Self::Rule(e) => e.code(),
             Self::UnknownSet(_) => "filter_set.unknown",
+            Self::BuildFailed { .. } => "filter_engine.build_failed",
+            Self::NoStore => "filter_engine.no_store",
         }
     }
 }
@@ -481,6 +494,13 @@ mod tests {
                 RuleError::RegexTooLarge { span: 0..1 }.into(),
             ),
             ("filter_set.unknown", FilterError::UnknownSet("x".into())),
+            (
+                "filter_engine.build_failed",
+                FilterError::BuildFailed {
+                    message: "x".into(),
+                },
+            ),
+            ("filter_engine.no_store", FilterError::NoStore),
             ("filter_id.empty", IdError::Empty.into()),
             ("filter_id.too_long", IdError::TooLong { len: 65 }.into()),
             (
