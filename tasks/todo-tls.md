@@ -233,11 +233,11 @@ Scheduler loop on the injectable clock:
 - The echo URL is configurable; tests use a local echo mock.
 
 **Acceptance criteria:**
-- [ ] Same IP → zero write requests (mock asserts); changed IP → exactly one update per record
-- [ ] `public_entry = true` creates wildcard + apex A/AAAA; `false` never requests those names (spec 4a)
-- [ ] Echo garbage / wrong family → `tls.dyndns.echo`; Cloudflare 500 → `tls.dyndns.update`, cert untouched
+- [x] Same IP → zero write requests (mock asserts); changed IP → exactly one update per record
+- [x] `public_entry = true` creates wildcard + apex A/AAAA; `false` never requests those names (spec 4a)
+- [x] Echo garbage / wrong family → `tls.dyndns.echo`; Cloudflare 500 → `tls.dyndns.update`, cert untouched
 
-**Verification:** `cargo test -p dnscraft-tls dyndns`
+**Verification:** `cargo test -p dnscraft-tls --test dyndns`
 
 **Dependencies:** L5 · **Files:** `src/dyndns.rs`, `tests/dyndns.rs` · **Scope:** M
 

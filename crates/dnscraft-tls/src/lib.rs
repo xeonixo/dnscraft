@@ -11,7 +11,8 @@
 //! So far: [`TlsConfig`], [`TlsError`], [`Clock`] / [`ManualClock`],
 //! [`read_secret`], SNI helpers, [`CertStore`], [`CertResolver`], ACME
 //! ([`InstantAcme`], [`AcmeDirectory`], [`AcmeOrder`]), [`CloudflareClient`],
-//! DNS-01 [`wait_for_txt`], [`issue`], and renewal scheduling ([`next_renewal`]).
+//! DNS-01 [`wait_for_txt`], [`issue`], renewal scheduling ([`next_renewal`]),
+//! and DynDNS ([`dyndns_once`]).
 
 #![deny(missing_docs)]
 
@@ -20,6 +21,7 @@ mod acme_http;
 mod clock;
 mod cloudflare;
 mod config;
+mod dyndns;
 mod error;
 mod issue;
 mod pem_util;
@@ -44,6 +46,10 @@ pub use config::{
     AcmeConfig, AcmeDirectoryKind, CloudflareConfig, DEFAULT_DYNDNS_INTERVAL, DEFAULT_ECHO_URL,
     DEFAULT_EXPIRY_WARN, DEFAULT_PROPAGATION_POLL, DEFAULT_PROPAGATION_TIMEOUT,
     DEFAULT_RENEW_BEFORE, DynDnsConfig, KeyType, NodeEntry, TlsConfig, validate_public_entry,
+};
+pub use dyndns::{
+    DynDnsResult, EchoClient, dyndns_interval, dyndns_interval_with_rng, dyndns_names, dyndns_once,
+    parse_trace_ip,
 };
 pub use error::TlsError;
 pub use issue::issue;
