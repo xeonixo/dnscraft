@@ -17,6 +17,10 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Checkpoint C passed (owner approved 2026-10-24): testkit DNSSEC green; live example.com Secure + dnssec-failed.org SERVFAIL match delv/kdig.
 - Checkpoint D passed (owner approved 2026-10-24): criteria 4–6 (cache hit p50 ≪ 1 ms informal; no traffic on 2nd query; stale; dedup×50).
 - Phase 3 DNSSEC tasks 8–10 done. Dev Do53 server deferred by owner.
+- Checkpoint E review (2026-10-25, two Sonnet reviewers, lead-verified) found issues; fixing in batches (uncommitted until reviewed):
+  - Batch B (running): private PTR leak via inner forward zone; inflight leader cancellation; O(n) cache eviction + oversize entry; AD-on-hit test; forward failover on SERVFAIL; flush epoch; stale = Indeterminate + TTL 30 s; concurrency cap + prefetch backoff.
+  - Batch A1 (running): KeyTrap verification budget + per-RRset caps; NSEC3 hash budget/memo, max iterations 100; inception skew 300 s.
+  - Batch A2 (after A1+B): scrub unvalidated/out-of-bailiwick records before answer/cache; positive answer with rcode NXDOMAIN → Bogus; DNAME-synthesized CNAME target check; TTL cap to RRSIG original TTL/expiry; drop private/loopback glue (allow-list) + bound srtt map + cap candidates; validate priming (root NS RRSIG) + periodic re-prime; overall resolve deadline 10 s.
 - Blockers: none
 
 ## Log
