@@ -98,7 +98,8 @@ resolver and small helpers those modules call.
 
 - Directory `<data>/tls/` mode **0o700**; files **0o600**.
 - Layout (illustrative): `account.json`, `cert.pem`, `key.pem`, `meta.json`
-  (not_after, identifiers, ari id, last_error).
+  (not_after, identifiers, ari id), `state.json` (last_error code, last issue / renew attempt;
+  written even before the first certificate exists).
 - Writes: temp file + `fsync` + rename (same pattern as filtering `ListStore`).
 - On startup: load last good cert even if ACME/Cloudflare are unreachable so
   listeners can still serve (possibly with a soon-expiring cert + alert).

@@ -116,7 +116,7 @@ L9 DynDNS (needs L5) ── L10 TlsEngine ── L11 polish
 - [x] L8: Renewal scheduler (ARI / `renew_before`, backoff, expiry status)
 
 ### Checkpoint B: Issuance
-- [ ] Fake-ACME tests + Pebble (`--ignored`) issue and renew; last good kept on failure; lead review
+- [x] Fake-ACME tests + Pebble (`--ignored`) issue and renew; last good kept on failure; lead review
 
 ### Phase 3: DynDNS and engine
 - [ ] L9: DynDNS (node record, public entry wildcard/apex, only on change)

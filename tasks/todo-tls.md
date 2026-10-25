@@ -214,8 +214,8 @@ Scheduler loop on the injectable clock:
 **Dependencies:** L7 · **Files:** `src/renew.rs`, `src/status.rs`, `tests/renew.rs` · **Scope:** M
 
 ## Checkpoint B: Issuance
-- [ ] Spec success criteria 1, 2, 5 shown (fake ACME + Pebble locally)
-- [ ] Lead review; progress.md updated
+- [x] Spec success criteria 1, 2, 5 shown (fake ACME + Pebble locally)
+- [x] Lead review (2026-10-25; fixes in f79ab05); progress.md updated
 
 ## Phase 3: DynDNS and engine
 
