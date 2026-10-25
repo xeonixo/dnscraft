@@ -292,6 +292,15 @@ fn any_spec() -> impl Strategy<Value = RuleSpec> {
         prop::bool::ANY,
         prop::option::of(rewrite()),
     )
+        // All-numeric labels can form an IP literal, which the builder
+        // rejects on purpose (answer-IP rules are not guided-builder domains).
+        .prop_filter("IP literal", |(domain, ..)| {
+            domain
+                .trim()
+                .trim_end_matches('.')
+                .parse::<std::net::IpAddr>()
+                .is_err()
+        })
         .prop_map(|(domain, allow, sub, important, types, neg, rw)| {
             let action = if allow {
                 RuleAction::Allow

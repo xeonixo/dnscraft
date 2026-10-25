@@ -91,6 +91,13 @@ pub trait ListBodies: Send + Sync + std::fmt::Debug {
     /// The body of list `id`, or `None` if it has not been downloaded yet.
     fn body(&self, id: &ListId) -> Option<Arc<str>>;
 
+    /// The body of list `id` plus a rule-text reader pinned to those bytes.
+    /// Snapshot builders call this instead of [`Self::body`]. The default has
+    /// no pinned reader, so rule text then comes from [`Self::rule_at`].
+    fn open(&self, id: &ListId) -> Option<OpenedList> {
+        self.body(id).map(|body| OpenedList { body, text: None })
+    }
+
     /// Trimmed rule line at byte `offset` in list `id`, plus its 1-based line
     /// number. The default loads [`Self::body`] and slices; store-backed
     /// implementations seek without keeping the whole file.
@@ -98,6 +105,28 @@ pub trait ListBodies: Send + Sync + std::fmt::Debug {
         let body = self.body(id)?;
         crate::index::rule_at_body(&body, offset).map(|(line, text)| (line, Arc::from(text)))
     }
+}
+
+/// Reads rule text from exactly the bytes a snapshot was built from.
+///
+/// Obtained from [`ListBodies::open`]. The snapshot owns it, so a list body
+/// that is replaced later (hot reload) never changes the text that an older
+/// snapshot reports. Offsets are byte offsets into the body that
+/// [`ListBodies::open`] returned.
+pub trait ListText: Send + Sync + std::fmt::Debug {
+    /// Trimmed rule line at byte `offset` plus its 1-based line number, or
+    /// `None` if it cannot be read.
+    fn rule_at(&self, offset: u32) -> Option<(u32, Arc<str>)>;
+}
+
+/// A list body together with the reader for its rule text.
+#[derive(Debug)]
+pub struct OpenedList {
+    /// The body to parse.
+    pub body: Arc<str>,
+    /// Rule-text reader pinned to the same bytes as `body`. `None` falls back
+    /// to [`ListBodies::rule_at`] (which may see a newer body).
+    pub text: Option<Arc<dyn ListText>>,
 }
 
 /// Why a snapshot could not be built.

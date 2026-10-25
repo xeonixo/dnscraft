@@ -25,13 +25,16 @@
 //! private merged index containing its lists and its custom rules, built with
 //! the custom rules as first source. Trade-off: that set does not share, so it
 //! costs a full extra index (about the size of the combination index) and one
-//! more parse of its lists. In a merged index a list-side `$badfilter` can
-//! also remove an identical custom rule.
+//! more parse of its lists. Custom rules stay protected there: a `$badfilter`
+//! or `@@...$dnsrewrite` from a list or service never affects a custom rule.
 //!
 //! # Rule text
 //!
-//! List bodies are not kept. The index asks [`ListBodies`] lazily when a
-//! `Reason` needs the rule text; custom rules keep their (small) text inline.
+//! List bodies are not kept. The index asks the snapshot's text source lazily
+//! when a `Reason` needs the rule text; custom rules keep their (small) text
+//! inline. For each list the builder takes a [`ListText`] from
+//! [`ListBodies::open`], pinned to the exact bytes that were parsed, so a
+//! snapshot never reads text from a newer body (hot reload).
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -42,10 +45,10 @@ use crate::error::FilterError;
 use crate::index::{Index, IndexBuilder, IndexMemory, RuleTextSource, SourceId, SourceKind};
 use crate::modifiers::DnsRewrite;
 use crate::name::DomainName;
-use crate::parser::{ListSource, ParsedList, SkipCounts, parse_list, parse_list_each};
+use crate::parser::{ListSource, ParsedList, SkipCounts, SkipReason, parse_list, parse_list_each};
 use crate::rule::Rule;
 use crate::services::ServiceCatalog;
-use crate::set::{FilterConfig, ListBodies, SnapshotError};
+use crate::set::{FilterConfig, ListBodies, ListText, SnapshotError};
 use crate::types::{BlockMode, ListId, SetId, Verdict};
 
 /// Facts about one list inside one list combination.
@@ -335,7 +338,8 @@ fn verdict_rank(v: &Verdict) -> Option<u8> {
 
 #[derive(Debug)]
 enum TextEntry {
-    List(ListId),
+    /// A list; the reader is pinned to the bytes the snapshot was built from.
+    List(ListId, Option<Arc<dyn ListText>>),
     Inline(Arc<str>),
 }
 
@@ -352,7 +356,8 @@ impl RuleTextSource for SnapshotTexts {
             TextEntry::Inline(body) => {
                 crate::index::rule_at_body(body, offset).map(|(line, text)| (line, Arc::from(text)))
             }
-            TextEntry::List(id) => self.bodies.rule_at(id, offset),
+            TextEntry::List(_, Some(text)) => text.rule_at(offset),
+            TextEntry::List(id, None) => self.bodies.rule_at(id, offset),
         }
     }
 }
@@ -492,7 +497,11 @@ impl SnapshotBuilder {
         let mut sources: Vec<(SourceId, ListFacts)> = Vec::with_capacity(combo.len());
         for id in combo {
             let src = b.add_source(SourceKind::List(id.clone()))?;
-            texts.push(TextEntry::List(id.clone()));
+            let opened = self.bodies.open(id);
+            texts.push(TextEntry::List(
+                id.clone(),
+                opened.as_ref().and_then(|o| o.text.clone()),
+            ));
             let mut facts = ListFacts {
                 list: id.clone(),
                 body_available: false,
@@ -501,7 +510,7 @@ impl SnapshotBuilder {
                 skipped: SkipCounts::default(),
                 unique_contribution: 0,
             };
-            if let Some(body) = self.bodies.body(id) {
+            if let Some(body) = opened.map(|o| o.body) {
                 // Stream rules into the builder; drop each Rule immediately and
                 // drop the body Arc when this block ends (ListBodies may keep
                 // another copy — on-disk stores should not).
@@ -520,6 +529,9 @@ impl SnapshotBuilder {
                 facts.total_lines = stats.total_lines;
                 facts.rules_parsed = stats.rules_parsed;
                 facts.skipped = stats.skipped;
+                facts
+                    .skipped
+                    .add_n(SkipReason::PatternBudget, b.pattern_budget_skipped(src));
                 drop(body);
             }
             sources.push((src, facts));
@@ -531,7 +543,10 @@ impl SnapshotBuilder {
         let lists = sources
             .into_iter()
             .map(|(src, mut f)| {
-                f.unique_contribution = f.rules_parsed.saturating_sub(index.duplicates_of(src));
+                f.unique_contribution = f
+                    .rules_parsed
+                    .saturating_sub(index.duplicates_of(src))
+                    .saturating_sub(f.skipped.get(SkipReason::PatternBudget));
                 f
             })
             .collect();

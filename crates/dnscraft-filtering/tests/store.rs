@@ -132,27 +132,68 @@ fn corrupt_and_future_meta_recover_as_none() {
 
 #[test]
 fn failed_write_leaves_old_content_intact() {
-    // Simulation: the temp path `<id>.txt.tmp` is occupied by a directory, so
-    // creating the temp file fails before the rename. The old body and meta
-    // must survive and no stray state may remain.
+    // Simulation: the target `<id>.txt` is occupied by a directory, so the
+    // rename fails after the temp file was written. The metadata must survive
+    // and no stray temp file may remain.
     let t = TempDir::new();
     let store = ListStore::open(t.path()).unwrap();
     let meta = ListMeta::default();
-    store.write_body(&id("a"), "old\n", &meta).unwrap();
-
-    fs::create_dir(lists_dir(&t).join("a.txt.tmp")).unwrap();
+    store.write_meta(&id("a"), &meta).unwrap();
+    fs::create_dir(lists_dir(&t).join("a.txt")).unwrap();
     let err = store.write_body(&id("a"), "new\n", &meta).unwrap_err();
     assert_eq!(err.code(), "filter_store.io");
-    assert_eq!(store.read_body(&id("a")).unwrap().unwrap(), "old\n");
     assert_eq!(store.read_meta(&id("a")).unwrap().unwrap(), meta);
+    let stray: Vec<_> = fs::read_dir(lists_dir(&t))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(stray.is_empty(), "stray temp files: {stray:?}");
+    fs::remove_dir(lists_dir(&t).join("a.txt")).unwrap();
 
-    // A leftover temp file from a crash is simply overwritten next time.
-    fs::remove_dir(lists_dir(&t).join("a.txt.tmp")).unwrap();
+    // A leftover `<id>.txt.tmp` from an older version or a crash is never
+    // touched: temp names are unique and created exclusively.
+    store.write_body(&id("a"), "old\n", &meta).unwrap();
     fs::write(lists_dir(&t).join("a.txt.tmp"), "half writ").unwrap();
-    assert_eq!(store.read_body(&id("a")).unwrap().unwrap(), "old\n");
     store.write_body(&id("a"), "new\n", &meta).unwrap();
     assert_eq!(store.read_body(&id("a")).unwrap().unwrap(), "new\n");
-    assert!(!lists_dir(&t).join("a.txt.tmp").exists());
+    assert_eq!(
+        fs::read_to_string(lists_dir(&t).join("a.txt.tmp")).unwrap(),
+        "half writ"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn temp_file_never_follows_a_planted_symlink() {
+    let t = TempDir::new();
+    let store = ListStore::open(t.path()).unwrap();
+    let victim = t.path().join("victim.txt");
+    fs::write(&victim, "precious").unwrap();
+    std::os::unix::fs::symlink(&victim, lists_dir(&t).join("a.txt.tmp")).unwrap();
+    store
+        .write_body(&id("a"), "new\n", &ListMeta::default())
+        .unwrap();
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "precious");
+    assert_eq!(store.read_body(&id("a")).unwrap().unwrap(), "new\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn written_files_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = TempDir::new();
+    let store = ListStore::open(t.path()).unwrap();
+    store
+        .write_body(&id("a"), "x\n", &ListMeta::default())
+        .unwrap();
+    for f in ["a.txt", "a.meta.json"] {
+        let mode = fs::metadata(lists_dir(&t).join(f))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "{f}");
+    }
 }
 
 #[test]
