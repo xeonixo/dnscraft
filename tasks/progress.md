@@ -14,12 +14,14 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L8 done**; Checkpoints A and B passed (2026-10-25). Next: L9.
-- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P8 done. Checkpoint A passed** (2026-10-25). Next: P9.
+- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P9 done. Checkpoint A passed** (2026-10-25). Next: Checkpoint B (then P10).
 - Blockers: none. Clients last. T2 open (any time).
 
 ## Log
 
 - 2026-10-25 — **tls Checkpoint B passed** (Claude review, fixes by a Sonnet agent in f79ab05, lead-verified: workspace tests, fmt/clippy, `cargo tree -i aws-lc-rs` / `openssl-sys` empty, Pebble issue + renew green locally, mutation spot checks). Fixes: propagation bound UDP to `0.0.0.0` and required every NS address, so dual-stack Cloudflare NS (AAAA) always timed out in production — now per-family sockets, addresses grouped per NS (one answering address suffices), foreign-source datagrams ignored; ARI wired (`renewal_window`, `ari_cert_id` in meta.json, `replaces` on renewal orders, `plan_renewal` / `current_ari_window`); new `state.json` with `last_error` code / `last_issue` / `last_renew_attempt` written on every attempt (SPEC criterion 2); Cloudflare 1 MiB cap enforced while reading; tests for renewal, orphan TXT cleanup order, failed-renewal status. Notes for L10: `ScheduleFn` is sync — call `plan_renewal` after start / each renewal and cache the ARI window; `InstantAcme` holds one pending order, so serialise `issue` calls (scheduler vs renew_now); a `kick` during a running renewal triggers a second one. Nits left: Retry-After parsed from message text and capped at 6 h.
+
+- 2026-10-25 — Policy P9 done (Cursor): steps 10–11 — rebind strips private A/AAAA (RFC 1918 / loopback / link-local / ULA / `0.0.0.0/8` / CGNAT / IPv4-mapped) from resolver answers → NODATA when all gone, else remaining public; skip when profile off, `rebind_exceptions` (`*.suffix`/exact), or forward zone not in `rebind_check_forward_zones`; synthetics (view / filter rewrite) skip; AD/EDE cleared on strip. `suppress_aaaa` → AAAA NODATA only (HTTPS/SVCB untouched). Decision steps `RebindSkipped` / `RebindStripped` / `AaaaSuppressed`. Tests cover acceptance matrix. DoD green. Next: Checkpoint B, then P10.
 
 - 2026-10-25 — tls L8 done (Cursor): `next_renewal` (ARI window or `not_after − renew_before`), exponential backoff + jitter (cap 6 h) honouring Retry-After, `RenewScheduler` on injectable clock (skips orders when `acme.enabled=false`), `TlsStatus` / `cert_flags` (expiring < 14 d, expired). 14 ManualClock tests. DoD green. Next: Checkpoint B, then L9.
 

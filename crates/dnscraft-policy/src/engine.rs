@@ -15,7 +15,7 @@ use crate::error::PolicyError;
 use crate::pipeline::{Draft, Flow, StepCtx, apply_ad_policy};
 use crate::snapshot::PolicySnapshot;
 use crate::steps::answer_side::AnswerSide;
-use crate::steps::{answer_side, canary, directory, filter, local_records};
+use crate::steps::{aaaa, answer_side, canary, directory, filter, local_records, rebind};
 use crate::synth::{any_rfc8482, resolve_servfail};
 
 /// Final answer from [`PolicyEngine::handle`].
@@ -73,8 +73,8 @@ impl PolicyEngine {
     ///
     /// Selection, RFC 8482 ANY, view local records (step 1), ClientDirectory
     /// (step 2), bypass canaries (step 3), filter qname (step 4), resolve
-    /// (step 7), then CNAME uncloaking + answer-IP rules (steps 8–9). Steps
-    /// 5–6 and 10–11 follow later.
+    /// (step 7), CNAME uncloaking + answer-IP rules (steps 8–9), rebind
+    /// (step 10), and AAAA suppression (step 11). Steps 5–6 follow later.
     ///
     /// ECS is never forwarded: policy calls the resolver with
     /// [`RequestFlags`] only (no client EDNS options).
@@ -174,7 +174,7 @@ impl PolicyEngine {
             ));
         }
 
-        // Steps 5–6 / 10–11: later tasks. Then resolve (step 7).
+        // Steps 5–6: later (SafeSearch / schedules stubs). Then resolve (step 7).
 
         let flags = RequestFlags {
             checking_disabled: ctx.flags.checking_disabled,
@@ -233,6 +233,28 @@ impl PolicyEngine {
             AnswerSide::Keep => {}
         }
 
+        // Step 10: rebind protection (resolver answers only; synthetics skip).
+        let steps_before_rebind = draft.steps.len();
+        rebind::run(
+            &ctx,
+            step_ctx,
+            &mut draft,
+            &mut message,
+            answer.forward_zone.as_ref(),
+        );
+        let rebind_changed = draft.steps.len() > steps_before_rebind
+            && matches!(
+                draft.steps.last(),
+                Some(DecisionStep::RebindStripped { .. })
+            );
+
+        // Step 11: AAAA suppression.
+        let aaaa_suppressed = aaaa::run(&ctx, step_ctx, &mut draft, &mut message);
+        let mut ede = answer.ede;
+        if rebind_changed || aaaa_suppressed {
+            ede = None;
+        }
+
         draft.timings.total_us = elapsed_us(total_start);
         let rcode = message.rcode();
         let record = draft.into_record(
@@ -245,7 +267,7 @@ impl PolicyEngine {
 
         Ok(PolicyAnswer {
             message,
-            ede: answer.ede,
+            ede,
             record,
             loggable,
         })

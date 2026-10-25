@@ -6,9 +6,9 @@
 //! the [`ClientDirectory`] contract for device names without depending on
 //! `dnscraft-clients`.
 //!
-//! Phase 1–8: ids, config, snapshot build/select, engine through filter
-//! (step 4), resolve (step 7), and answer-side CNAME/IP filtering (steps
-//! 8–9). Steps 5–6 and 10–11 follow later.
+//! Phase 1–9: ids, config, snapshot build/select, engine through filter
+//! (step 4), resolve (step 7), answer-side CNAME/IP filtering (steps 8–9),
+//! rebind (step 10), and AAAA suppression (step 11). Steps 5–6 follow later.
 
 mod config;
 mod decision;
@@ -17,6 +17,7 @@ mod engine;
 mod error;
 mod ids;
 mod pipeline;
+mod private;
 mod reverse;
 mod select;
 mod snapshot;
@@ -27,7 +28,9 @@ pub use config::{
     ClientFlags, DEFAULT_LOCAL_NXDOMAIN_SUFFIXES, DEFAULT_RECORD_TTL, DnsProtocol, PolicyConfig,
     ProfileConfig, RequestContext, SafeSearchConfig, ScheduleConfig, ViewConfig, ViewRecordConfig,
 };
-pub use decision::{AnswerOrigin, DecisionRecord, DecisionStep, DecisionTimings, FilterHit};
+pub use decision::{
+    AnswerOrigin, DecisionRecord, DecisionStep, DecisionTimings, FilterHit, RebindSkipReason,
+};
 pub use directory::{ClientDirectory, NoClients};
 pub use engine::{PolicyAnswer, PolicyEngine};
 pub use error::{ConfigReason, IdError, PolicyError};

@@ -225,9 +225,9 @@ Also:
 Step 11: profile `suppress_aaaa` and qtype AAAA → NODATA; other qtypes unchanged.
 
 **Acceptance criteria:**
-- [ ] Public name resolving to 10.0.0.1 stripped → NODATA; mixed answer keeps the public address; exception suffix passes
-- [ ] Forward-zone answer with a private address passes by default and is stripped when the zone is listed in `rebind_check_forward_zones`
-- [ ] View record / filter rewrite to a private IP passes; AAAA suppression only on qtype AAAA (HTTPS/SVCB untouched)
+- [x] Public name resolving to 10.0.0.1 stripped → NODATA; mixed answer keeps the public address; exception suffix passes
+- [x] Forward-zone answer with a private address passes by default and is stripped when the zone is listed in `rebind_check_forward_zones`
+- [x] View record / filter rewrite to a private IP passes; AAAA suppression only on qtype AAAA (HTTPS/SVCB untouched)
 
 **Verification:** `cargo test -p dnscraft-policy rebind`
 

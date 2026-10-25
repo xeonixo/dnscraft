@@ -139,7 +139,7 @@ P12 golden integration tests, AD/EDE matrix, bench, coverage, README
 - [x] P6: Bypass canaries
 - [x] P7: Filter the original qname, block/rewrite synthesis
 - [x] P8: CNAME uncloaking + answer-IP rules
-- [ ] P9: Rebind protection + AAAA suppression
+- [x] P9: Rebind protection + AAAA suppression
 
 ### Checkpoint B: Pipeline
 - [ ] All twelve steps in order (SafeSearch stubbed); AD/EDE matrix rows covered; lead review

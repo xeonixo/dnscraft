@@ -7,6 +7,18 @@ use dnscraft_resolver::{AnswerSource, DnssecStatus, ForwardZoneId};
 use crate::ids::{ClientId, ProfileId, ViewId};
 use crate::select::SelectionCause;
 
+/// Why step 10 (rebind) did not strip addresses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RebindSkipReason {
+    /// Profile rebind flag is off (or default is off).
+    Disabled,
+    /// Qname matched a `rebind_exceptions` pattern.
+    Exception,
+    /// Answer came via a forward zone not listed in `rebind_check_forward_zones`.
+    ForwardZoneExempt,
+}
+
 /// Where the final answer came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -59,6 +71,18 @@ pub enum DecisionStep {
     AnswerChainBlocked,
     /// An answer A/AAAA matched an IP block rule (step 9).
     AnswerIpBlocked,
+    /// Rebind protection was skipped (step 10).
+    RebindSkipped {
+        /// Why the check did not run.
+        reason: RebindSkipReason,
+    },
+    /// Private A/AAAA were stripped from a resolver answer (step 10).
+    RebindStripped {
+        /// Number of address records removed.
+        count: u32,
+    },
+    /// Profile `suppress_aaaa` replaced an AAAA answer with NODATA (step 11).
+    AaaaSuppressed,
     /// Resolver returned an answer.
     Resolve {
         /// Cache / recursion / stale.
