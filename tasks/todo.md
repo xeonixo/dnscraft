@@ -146,9 +146,9 @@ combinations, custom-rule line sources.
 with expiry (manual clock), pause-until, per-list and per-set atomic counters.
 
 **Acceptance criteria:**
-- [ ] Blocked CNAME target blocks the chain; non-important allow on the qname does not unblock it; important allow does
-- [ ] Temporary allow ranks like `$important` allow and expires exactly at `until`
-- [ ] Counters increment once per match call and are readable via `stats()`
+- [x] Blocked CNAME target blocks the chain; non-important allow on the qname does not unblock it; important allow does
+- [x] Temporary allow ranks like `$important` allow and expires exactly at `until`
+- [x] Counters increment once per match call and are readable via `stats()`
 
 **Verification:** `cargo test -p dnscraft-filtering chain temp pause`
 

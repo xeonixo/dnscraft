@@ -7,12 +7,14 @@
 //! What it is not: it speaks no DNS on the wire, opens no sockets, and has no
 //! notion of clients. Callers hand in a name and get a [`Verdict`] back.
 //!
-//! Currently provided (Task F1): the canonical matching name [`DomainName`],
-//! validated ids ([`ListId`], [`SetId`]), verdict types, [`BlockMode`], an
-//! injectable [`Clock`], and error types with stable codes.
+//! Currently provided: the canonical matching name [`DomainName`], validated
+//! ids ([`ListId`], [`SetId`]), verdict types, [`BlockMode`], an injectable
+//! [`Clock`], filter sets ([`Snapshot`]), temporary allows, match counters,
+//! and error types with stable codes.
 
 mod builder;
 mod clock;
+mod engine;
 mod error;
 mod fetch;
 mod index;
@@ -23,13 +25,16 @@ mod pattern;
 mod rule;
 mod set;
 mod snapshot;
+mod stats;
 mod store;
+mod temp_allow;
 mod types;
 
 pub use builder::{
     BuildError, MAX_TXT_LEN, RecordTypeSel, RewriteSpec, RuleSpec, build_rule, describe_rule,
 };
 pub use clock::{Clock, ManualClock, SystemClock};
+pub use engine::FilterEngine;
 pub use error::{FilterError, IdError, NameError, RuleError, UnsupportedKind};
 pub use fetch::{FetchError, FetchOutcome, Fetcher, FetcherConfig, MAX_REDIRECTS};
 pub use index::{
@@ -49,8 +54,10 @@ pub use set::{
     DEFAULT_UPDATE_INTERVAL, FilterConfig, FilterSetConfig, ListBodies, ListConfig, SnapshotError,
 };
 pub use snapshot::{CustomFacts, ListFacts, SharedIndex, Snapshot, SnapshotBuilder};
+pub use stats::{FilterStats, ListStats, SetStats};
 pub use store::{
     DEFAULT_MAX_BODY_BYTES, ListMeta, ListSourceSpec, ListStore, META_VERSION, MetaError,
     StoreConfig, StoreError,
 };
+pub use temp_allow::TempAllow;
 pub use types::{BlockMode, ListId, Reason, Rewrite, RuleSource, SetId, Verdict};

@@ -183,17 +183,57 @@ impl Snapshot {
         if e.paused_until.is_some_and(|until| now < until) {
             return Ok(Verdict::Pass);
         }
-        let list_v = e.lists.index.match_name(name, qtype);
-        let Some(custom) = &e.custom else {
-            return Ok(list_v);
-        };
-        let custom_v = custom.match_name(name, qtype);
-        Ok(match (verdict_rank(&custom_v), verdict_rank(&list_v)) {
-            (None, _) => list_v,
-            (Some(_), None) => custom_v,
-            (Some(c), Some(l)) if c <= l => custom_v,
-            _ => list_v,
-        })
+        Ok(self.match_name_active(e, name, qtype))
+    }
+
+    /// CNAME-uncloaking match over a resolution chain.
+    ///
+    /// `names` is the queried name followed by each CNAME target in order
+    /// (`[qname, cname1, cname2, …]`). An empty slice yields [`Verdict::Pass`].
+    /// A paused set yields `Pass`. Unknown set → [`FilterError::UnknownSet`].
+    ///
+    /// # Rules
+    ///
+    /// 1. **Important allow on the queried name wins the whole chain.**  
+    ///    If `names[0]` matches an `$important` allow (or a temporary allow),
+    ///    that allow is returned and later names are not considered. A
+    ///    blocked CNAME target therefore does **not** block the request.
+    /// 2. **First blocking verdict along the chain wins.**  
+    ///    Walking the names in order, the first `Blocked` or `Rewrite` is
+    ///    returned. Non-blocking verdicts (`Pass`, plain `Allowed`) do not
+    ///    stop the walk.
+    /// 3. **A non-important allow on the queried name does not unblock a
+    ///    blocked CNAME target.**  
+    ///    Example: rules `@@||safe.example^` and `||tracker.example^`, chain
+    ///    `[safe.example, tracker.example]` → `Blocked` by the tracker rule.
+    /// 4. **An important allow on the (blocked) target does unblock it.**  
+    ///    Example: `||tracker.example^` and `@@||tracker.example^$important`,
+    ///    chain `[page.example, tracker.example]` → `Allowed` (important) for
+    ///    the target, so the chain does not return a block; the overall
+    ///    result is the queried name's verdict (`Pass` here).
+    /// 5. **If nothing in the chain blocks**, the queried name's verdict is
+    ///    returned (`Pass`, plain `Allowed`, or an `$important` allow already
+    ///    handled in rule 1).
+    ///
+    /// Temporary allows are applied by [`crate::FilterEngine`], which uses
+    /// the same chain rules with temps ranked as `$important` allows.
+    pub fn match_chain(
+        &self,
+        set: &SetId,
+        names: &[DomainName],
+        qtype: u16,
+        now: SystemTime,
+    ) -> Result<Verdict, FilterError> {
+        let e = self
+            .sets
+            .get(set)
+            .ok_or_else(|| FilterError::UnknownSet(set.to_string()))?;
+        if e.paused_until.is_some_and(|until| now < until) {
+            return Ok(Verdict::Pass);
+        }
+        Ok(resolve_chain(names, |name| {
+            self.match_name_active(e, name, qtype)
+        }))
     }
 
     /// Matches an answer address against IP rules of `set` at time `now`.
@@ -226,6 +266,52 @@ impl Snapshot {
             _ => list_v,
         })
     }
+
+    fn match_name_active(&self, e: &SetEntry, name: &DomainName, qtype: u16) -> Verdict {
+        let list_v = e.lists.index.match_name(name, qtype);
+        let Some(custom) = &e.custom else {
+            return list_v;
+        };
+        let custom_v = custom.match_name(name, qtype);
+        match (verdict_rank(&custom_v), verdict_rank(&list_v)) {
+            (None, _) => list_v,
+            (Some(_), None) => custom_v,
+            (Some(c), Some(l)) if c <= l => custom_v,
+            _ => list_v,
+        }
+    }
+}
+
+/// CNAME-chain evaluation given a per-name matcher (see [`Snapshot::match_chain`]).
+pub(crate) fn resolve_chain(
+    names: &[DomainName],
+    mut match_one: impl FnMut(&DomainName) -> Verdict,
+) -> Verdict {
+    let Some(first_name) = names.first() else {
+        return Verdict::Pass;
+    };
+    let first = match_one(first_name);
+    if is_important_allow(&first) {
+        return first;
+    }
+    if is_blocking(&first) {
+        return first;
+    }
+    for name in &names[1..] {
+        let v = match_one(name);
+        if is_blocking(&v) {
+            return v;
+        }
+    }
+    first
+}
+
+fn is_important_allow(v: &Verdict) -> bool {
+    matches!(v, Verdict::Allowed(r) if r.important)
+}
+
+fn is_blocking(v: &Verdict) -> bool {
+    matches!(v, Verdict::Blocked(_) | Verdict::Rewrite(_, _))
 }
 
 /// AdGuard priority rank of a verdict (lower wins), `None` for `Pass`.

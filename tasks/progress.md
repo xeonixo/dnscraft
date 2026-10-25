@@ -11,10 +11,12 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 ## Current state
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
-- Module `filtering`: Checkpoint A done; M4a/R1/F6 done. M4a build peak still over budget (owner @ Checkpoint B). Next: M3, M4b, L3, L4, C1.
-- Blockers: none for continuing the Cursor brief order; Checkpoint B needs owner review of M4a peak numbers.
+- Module `filtering`: Checkpoint A done; M4a/R1/F6/M3 done. M4a build peak still over budget (owner @ Checkpoint B). Next: M4b, L3, L4, C1.
+- Blockers: none for continuing the Cursor brief order; Checkpoint B needs owner review of M4a peak numbers (and M4b benches once landed).
 
 ## Log
+
+- 2026-10-25 — Filtering M3 done (Cursor): `Snapshot::match_chain` (CNAME uncloaking: first block wins; non-important allow on qname does not unblock CNAME; `$important` allow on qname or target does). Thin `FilterEngine` over immutable snapshot: `TempAllow` in per-set `RwLock` map (ranks as important allow, expires at `until` via injected `now`, list/remove, `RuleSource::TemporaryAllow`, no snapshot rebuild). Per-set and per-list Relaxed atomics (`matches`/`blocks`/`allows`), `stats()` plain struct; one increment per `match_*` call. Pause via existing `paused_until` (temps do not override). 16 tests in tests/engine.rs. Open for L3: swap `Arc<Snapshot>`, scheduler, coalesce rebuilds; Checkpoint B still needs M4b numbers.
 
 - 2026-10-25 — Filtering F6 done (Cursor): `MatchKind::Ip` / `Rule::ip`, parser accepts `||1.2.3.4^`, bare `1.2.3.4`, IPv6, `$important`/`$badfilter` (hosts *names* that are IPs stay invalid). Separate sorted IPv4/IPv6 index arrays; `Index::match_answer_ip` / `Snapshot::match_answer_ip` (pause + custom vs list priority). `describe_rule` returns `None` for IP. tests/ip_rules.rs. parse_lists: AdGuard DNS filter **72 IP rules**, `invalid_syntax` for that list gone (total IP across lists 81).
 
