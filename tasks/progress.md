@@ -21,7 +21,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | L0 done; next: N0 spike → Checkpoint A | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md) |
+| `listeners` | L0 + N0 done; **STOP Checkpoint A** (Claude review + owner go for Phase 1) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); spike `spikes/listeners/` |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -34,6 +34,18 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-25 — **spikes: listeners N0** (pktinfo, quinn ring-only, h3, hyper h2). Standalone crate `spikes/listeners/` (own `[workspace]` + `Cargo.lock`; main workspace / root `Cargo.lock` untouched). Host: aarch64 Linux. Commands: `cd spikes/listeners && cargo run`; `cargo tree -i aws-lc-rs` / `-i aws-lc-sys` / `-i openssl-sys` → each `error: package ID specification … did not match any packages`.
+
+  | Question | Result | Exact versions + features | Caveats |
+  |---|---|---|---|
+  | quinn-udp wildcard learns dst + reply FROM it | **Works** on `0.0.0.0` and `[::]`; verified 127.0.0.1, 127.0.0.2 (no extra addr needed on Linux `/8` loopback), ::1 | `quinn-udp` **0.6.3** (direct); `RecvMeta.dst_ip` / `Transmit.src_ip` | ULA on dummy iface **not tested** (`ip link add type dummy` → Operation not permitted, uid≠0) |
+  | quinn ring-only + ResolvesServerCert | **Works**; bi-stream echo | `quinn` **0.11.12** `default-features=false`, `runtime-tokio`, `rustls-ring`; `rustls` 0.23.46; `rcgen` 0.14.10; `QuicServerConfig::try_from` + `with_cert_resolver` | quinn also pulls `quinn-udp` **0.5.16** transitively (coexists with 0.6.3) |
+  | h3 + h3-quinn one GET | **Works** (in-process Rust client); curl has `Features: HTTP3` | `h3` **0.0.8**, `h3-quinn` **0.0.10** | pre-1.0; keep server `Connection` alive until client drains or `recv_response` sees `H3_NO_ERROR`; ALPN `h3`; h3-quinn re-exports quinn |
+  | hyper 1 + hyper-util h2 over tokio-rustls | **Works**; negotiated ALPN `h2` | `hyper` **1.12.0** (`server`,`http1`,`http2`), `hyper-util` **0.1.21** (`tokio`,`server-auto`,…), `tokio-rustls` **0.26.6** `ring`+`tls12` | `AutoBuilder` + `http2::Builder` client in spike |
+  | `base64` in main tree? | **Yes** — `base64@0.23.1` (hyper-util/pem/reqwest) and `base64@0.22.1` (instant-acme) | plan: use **0.23.1**, no new major | – |
+
+  Plan dependency table updated with N0 notes. **STOP: Checkpoint A** — Claude reviews spike; owner go for Phase 1 (do not start N1).
 
 - 2026-10-25 — **policy: L0 client id accessor.** `PolicyEngine::is_client_id_registered(&self, id: &str) -> bool`: validates charset/length without allocating (`ClientId::is_valid_str`), short snapshot read lock, `HashMap` lookup via new `Borrow<str>` on id types. Invalid → false, never panics. Tests: registered / unknown / invalid; `apply_config` removing the id → false. Policy README: one paragraph (adapter stays in listeners). DoD: fmt, clippy `-D warnings`, workspace tests, `cargo deny check` green; `cargo tree -i aws-lc-rs` / `-i openssl-sys` empty.
 

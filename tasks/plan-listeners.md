@@ -38,16 +38,18 @@ AdGuard Home before `control-api` exists.
 
 | Crate | Version | Features | Why | Alternatives |
 |---|---|---|---|---|
-| `quinn` | 0.11.12 | `default-features = false`, `runtime-tokio`, `rustls-ring` | DoQ + HTTP/3 transport; ring-only | `s2n-quic` (aws-lc) ✗ |
-| `quinn-udp` | 0.6.3 | default | `IP_PKTINFO` reply-source on wildcard UDP 53 without our own `unsafe` | `socket2` + `nix` + `unsafe` ✗ |
-| `hyper` | 1.12 | `server`, `http1`, `http2` | DoH h2 / http/1.1 server | `axum` (more than needed here) |
-| `hyper-util` | 0.1.21 | `tokio`, `server-auto` | connection driver for hyper | – |
-| `h3` | 0.0.8 | default | DoH over HTTP/3 (pre-1.0, experimental) | defer h3 (open question 2) |
-| `h3-quinn` | 0.0.10 | default | h3 ↔ quinn glue | – |
-| `base64` | 0.23 (check if already in the tree) | `std` | DoH `GET ?dns=` base64url | 30-line local decoder |
-| `tokio-rustls` | 0.26 (workspace) | `ring`, `tls12` | DoT / DoH-h2 TLS | already in the tree |
-| dev: `rcgen` | workspace | – | test certificates | already in the tree |
+| `quinn` | 0.11.12 | `default-features = false`, `runtime-tokio`, `rustls-ring` | DoQ + HTTP/3 transport; ring-only (N0 ✓) | `s2n-quic` (aws-lc) ✗ |
+| `quinn-udp` | **0.6.3** (direct, Do53 wildcard) | default | `IP_PKTINFO` reply-source without our own `unsafe` (N0 ✓ on aarch64) | `socket2` + `nix` + `unsafe` ✗ |
+| `hyper` | 1.12.0 | `server`, `http1`, `http2` | DoH h2 / http/1.1 server (N0 ✓) | `axum` (more than needed here) |
+| `hyper-util` | 0.1.21 | `tokio`, `server-auto` (+ client helpers in tests) | connection driver for hyper (N0 ✓) | – |
+| `h3` | 0.0.8 | default | DoH over HTTP/3 (pre-1.0; N0 ✓ one GET) | – |
+| `h3-quinn` | 0.0.10 | default | h3 ↔ quinn glue (N0 ✓; re-exports quinn) | – |
+| `base64` | **0.23.1 already in workspace tree** (also 0.22.1 via instant-acme) | `std` | DoH `GET ?dns=` base64url — use 0.23, no new crate line needed beyond the dep | 30-line local decoder |
+| `tokio-rustls` | 0.26.6 (workspace) | `ring`, `tls12` | DoT / DoH-h2 TLS (N0 ✓ ALPN `h2`) | already in the tree |
+| dev: `rcgen` | 0.14.10 (workspace) | – | test certificates | already in the tree |
 | `toml` (N14 only) | 1.1 (latest stable at implement time) | default | bootstrap config of the minimal binary | `serde_json` config (less readable) |
+
+**N0 corrections / notes (2026-10-25):** `quinn` 0.11.12 still pulls **`quinn-udp` 0.5.16** transitively; our Do53 wildcard code depends on **0.6.3** directly — both versions coexist in the spike tree (fine). Keep `default-features = false` on quinn or aws-lc returns. h3: do not drop the server `Connection` before the client finishes reading (early drop → `ApplicationClose H3_NO_ERROR` on `recv_response`). ULA-on-dummy not tested (needs root).
 
 Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i openssl-sys` empty;
 `cargo deny check` green.
@@ -57,7 +59,7 @@ Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i o
 ### Phase 0: Approval and risk spike
 - [x] **Owner approves SPEC-listeners.md + the dependency table** (2026-10-25; decisions in the spec)
 - [x] L0: Policy accessor for registered Client IDs (cross-module, XS)
-- [ ] N0: Spike — pktinfo reply-source, quinn ring-only, h3/h3-quinn compile, hyper h2 server (spikes/listeners/)
+- [x] N0: Spike — pktinfo reply-source, quinn ring-only, h3/h3-quinn compile, hyper h2 server (spikes/listeners/)
 
 ### Checkpoint A: Approval + spike
 - [ ] Spike findings in progress.md; dependency table confirmed or adjusted; owner go for Phase 1

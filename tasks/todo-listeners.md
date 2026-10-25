@@ -45,9 +45,9 @@ that answer four questions with evidence:
 4. `hyper` 1 + `hyper-util` serve HTTP/2 over `tokio-rustls` with ALPN `h2`.
 
 **Acceptance criteria:**
-- [ ] Findings (works / doesn't / caveats, exact feature lists, versions) logged in progress.md
-- [ ] Dependency table in plan-listeners.md confirmed or corrected
-- [ ] Spike code committed under `spikes/listeners/` only; main workspace untouched
+- [x] Findings (works / doesn't / caveats, exact feature lists, versions) logged in progress.md
+- [x] Dependency table in plan-listeners.md confirmed or corrected
+- [x] Spike code committed under `spikes/listeners/` only; main workspace untouched
 
 **Verification:** commands listed in the progress entry; `cargo tree -i aws-lc-rs` output pasted
 
