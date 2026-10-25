@@ -103,7 +103,7 @@ L9 DynDNS (needs L5) ── L10 TlsEngine ── L11 polish
 ### Phase 1: Foundation
 - [x] L1: Crate skeleton, config, errors, secrets
 - [x] L2: SNI helpers
-- [ ] L3: Certificate store and `CertResolver`
+- [x] L3: Certificate store and `CertResolver`
 - [ ] L4: instant-acme wiring spike (ring, reqwest `HttpClient`, account persistence)
 
 ### Checkpoint A: Foundation

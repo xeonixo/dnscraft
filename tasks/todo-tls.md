@@ -83,9 +83,9 @@ Also in this task:
 - Implements `ResolvesServerCert`.
 
 **Acceptance criteria:**
-- [ ] Round trip save → load; file modes 0600 / 0700 asserted; corrupt PEM → `tls.store.corrupt`, old cert still served
-- [ ] tokio-rustls handshake (rcgen self-signed) sees cert A, `install(B)`, the next handshake sees B while an open connection stays up
-- [ ] Key PEM never appears in `Debug`/`Display` of any public type (test)
+- [x] Round trip save → load; file modes 0600 / 0700 asserted; corrupt PEM → `tls.store.corrupt`, old cert still served
+- [x] tokio-rustls handshake (rcgen self-signed) sees cert A, `install(B)`, the next handshake sees B while an open connection stays up
+- [x] Key PEM never appears in `Debug`/`Display` of any public type (test)
 
 **Verification:** `cargo test -p dnscraft-tls store`
 

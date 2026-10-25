@@ -13,11 +13,13 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
-- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L2 done**. Next: L3 (store + CertResolver).
+- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L3 done**. Next: L4 (instant-acme spike).
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P2 done**. Next: P3 engine skeleton.
-- Blockers: none. Build order: policy (P3…) and tls (L3…) next, clients last (owner runs O1 before C7). T2 open (any time).
+- Blockers: none. Build order: policy (P3…) and tls (L4…) next, clients last (owner runs O1 before C7). T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — tls L3 done (Cursor): `CertStore` under `<data>/tls/` (0700, files 0600, atomic writes); load/save/account; leaf `not_after`+SANs via x509-parser; corrupt PEM → `tls.store.corrupt` without deleting last good. `CertResolver` (`RwLock<Arc<CertifiedKey>>`, ring provider) install/import + `ResolvesServerCert`; hot-reload handshake test (cert A→B, open conn kept). `KeyPem` redacted. Deps: rustls/ring, rustls-pki-types, x509-parser; rcgen+tokio-rustls (dev). `cargo tree -i aws-lc-rs` empty. DoD green.
 
 - 2026-10-25 — Policy P2 done (Cursor): `PolicySnapshot::select` — Client ID → longest-prefix (per-length tables from P1; IPv4-mapped IPv6 as v4) → default. `Selection` / `SelectionCause` (incl. matched prefix). No `String`/`Vec` on the path (only `Arc` id clones). Table tests + release timing < 1 µs avg with 100 views (debug budget 20 µs). DoD green. Next: P3.
 

@@ -16,6 +16,15 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 idna = { workspace = true }
 tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+x509-parser = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+rcgen = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }

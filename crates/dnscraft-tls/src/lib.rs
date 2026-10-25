@@ -2,23 +2,25 @@
 //!
 //! This crate obtains and renews the shared certificate for encrypted DNS
 //! listeners (`dns.<domain>` and `*.dns.<domain>`), exposes a hot-reloadable
-//! cert resolver (later tasks), and keeps the node's public A/AAAA records
-//! current via Cloudflare.
+//! cert resolver, and keeps the node's public A/AAAA records current via
+//! Cloudflare.
 //!
 //! It does **not** bind sockets (that is `listeners`) and does **not** own the
 //! Client-ID registry (that is `policy` / `control-api`).
 //!
-//! Phase-1 foundation (this crate so far): [`TlsConfig`], [`TlsError`],
-//! [`Clock`] / [`ManualClock`], [`read_secret`], and SNI helpers
-//! ([`parse_client_id_sni`], [`accept_public_sni`]).
+//! So far: [`TlsConfig`], [`TlsError`], [`Clock`] / [`ManualClock`],
+//! [`read_secret`], SNI helpers, [`CertStore`], and [`CertResolver`].
 
 #![deny(missing_docs)]
 
 mod clock;
 mod config;
 mod error;
+mod pem_util;
+mod resolver;
 mod secret;
 mod sni;
+mod store;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{
@@ -27,8 +29,11 @@ pub use config::{
     DEFAULT_RENEW_BEFORE, DynDnsConfig, KeyType, NodeEntry, TlsConfig, validate_public_entry,
 };
 pub use error::TlsError;
+pub use pem_util::KeyPem;
+pub use resolver::CertResolver;
 pub use secret::{CLOUDFLARE_API_TOKEN_ENV, Secret, read_secret};
 pub use sni::{
     ClientIdRegistry, FIXED_RESERVED_LABELS, ReservedLabels, SniKind, accept_public_sni,
     parse_client_id_sni,
 };
+pub use store::{CertMeta, CertStore, LoadedCert, TLS_DIR_NAME};
