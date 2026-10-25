@@ -132,7 +132,7 @@ P12 golden integration tests, AD/EDE matrix, bench, coverage, README
 - [x] P4: View local records
 
 ### Checkpoint A: Skeleton
-- [x] Query → selection → local record or resolver answer, end to end with the testkit; lead review pending
+- [x] Query → selection → local record or resolver answer, end to end with the testkit; lead review done
 
 ### Phase 2: Pipeline
 - [ ] P5: ClientDirectory names/PTR + special-use NXDOMAIN

@@ -107,7 +107,7 @@ L9 DynDNS (needs L5) ── L10 TlsEngine ── L11 polish
 - [x] L4: instant-acme wiring spike (ring, reqwest `HttpClient`, account persistence)
 
 ### Checkpoint A: Foundation
-- [ ] `cargo tree -i aws-lc-rs` empty; Pebble account test passes locally; HTTP-stack decision recorded; lead review
+- [x] `cargo tree -i aws-lc-rs` empty; Pebble account test passes locally; HTTP-stack decision recorded; lead review
 
 ### Phase 2: Issuance
 - [ ] L5: Cloudflare DNS client + mock

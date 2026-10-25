@@ -114,7 +114,7 @@ any view falls through to subnet matching.
 
 ## Checkpoint A: Skeleton
 - [x] DoD green; selection + local records + passthrough end to end
-- [ ] Lead review (step framework shape, AD handling)
+- [x] Lead review (step framework shape, AD handling) (2026-10-25; fixes in 3ff0e5c, resolver 80d54ee)
 - [x] progress.md updated
 
 ## Phase 2: Pipeline

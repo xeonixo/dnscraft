@@ -109,16 +109,16 @@ Also in this task:
 **Acceptance criteria:**
 - [x] `cargo tree -i aws-lc-rs` and `cargo tree -i openssl-sys` empty; output pasted into the commit message
 - [x] Unit test: credentials persisted 0600 and reloaded (fake directory)
-- [ ] `cargo test -p dnscraft-tls -- --ignored pebble` passes locally against Pebble (lead runs it at Checkpoint A)
+- [x] `cargo test -p dnscraft-tls -- --ignored pebble` passes locally against Pebble (lead runs it at Checkpoint A)
 
 **Verification:** `cargo test -p dnscraft-tls acme` (+ ignored Pebble test locally)
 
 **Dependencies:** L1, L3 · **Files:** `Cargo.toml`, `crates/dnscraft-tls/{Cargo.toml,src/acme.rs,src/acme_http.rs}`, `tests/pebble.rs` · **Scope:** M
 
 ## Checkpoint A: Foundation
-- [ ] DoD green; dependency tree free of aws-lc/openssl
-- [ ] HTTP-stack decision (reqwest adapter vs hyper-rustls) recorded in progress.md; owner informed if the fallback was used
-- [ ] Lead review
+- [x] DoD green; dependency tree free of aws-lc/openssl
+- [x] HTTP-stack decision (reqwest adapter vs hyper-rustls) recorded in progress.md; owner informed if the fallback was used
+- [x] Lead review (2026-10-25; fixes in 23c0714)
 
 ## Phase 2: Issuance
 

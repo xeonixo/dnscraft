@@ -13,11 +13,16 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
-- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L4 done** (Checkpoint A: lead review + local Pebble). Next: L5 after Checkpoint A.
-- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P4 done**. **Checkpoint A:** DoD green; lead review pending (step framework, AD).
-- Blockers: none. **tls Checkpoint A** and **policy Checkpoint A** awaiting lead review. Clients last. T2 open (any time).
+- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L4 done. Checkpoint A passed** (2026-10-25). Next: L5.
+- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P4 done. Checkpoint A passed** (2026-10-25). Next: P5.
+- Blockers: none. Clients last. T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — **Checkpoint A passed for tls and policy** (Claude review, fixes by two Sonnet agents, lead-verified; workspace 749 tests green, fmt/clippy clean).
+  - tls: gates ok (`cargo tree -i aws-lc-rs` / `openssl-sys` empty); Pebble account test green locally (podman); HTTP stack = reqwest adapter, no fallback. Fixes (23c0714): stored `account.json` for another ACME directory (staging → production) is no longer reused, a new account is created; `CertStore::save`/`load` verify the key matches the leaf (crash mid-save left a mismatched pair that loaded but could not be installed); SNI `eq_ignore_ascii_case` panicked on non-ASCII SNI (remote-triggerable, found by the proptest); test that the second label must be `dns`; store nits.
+  - policy + resolver: forward-loop detection never fired — resolver compared full `SocketAddr`, policy passes port 0 and a forwarder queries back from an ephemeral port. Now IP-only, IPv4-mapped = IPv4 (80d54ee). Policy fixes (3ff0e5c): tests for CD/DO passthrough and forward loop end to end; `apply_ad_policy` unit-tested; `ClientFlags::recursion_desired` mirrored into synthetic answers; view records answer class IN only; snapshot fields `pub(crate)` (P1 deferral closed).
+  - Notes for later: synthetic NODATA has no SOA yet (P7); a loopback forward target would also treat local loopback clients as a loop for that zone.
 
 - 2026-10-25 — Policy P4 done (Cursor): step 1 view local records — exact owner, A/AAAA/TXT/SRV/MX/PTR, NODATA when type missing, CNAME follow within view (max 8 hops; external target stops after CNAME), AA set / AD clear / `synthetic` flagged. Split-horizon per selected view. Wired before resolve in `handle`. Tests: all types without resolver traffic, CNAME local/external/loop, split-horizon, NODATA. DoD green. **STOP: Checkpoint A lead review.**
 
