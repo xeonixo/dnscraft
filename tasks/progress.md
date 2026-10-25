@@ -14,10 +14,12 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L2 done**. Next: L3 (store + CertResolver).
-- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1 done** (crate skeleton, config, snapshot validation, error codes). Next: P2 selection.
-- Blockers: none. Build order: policy (P2…) and tls (L3…) next, clients last (owner runs O1 before C7). T2 open (any time).
+- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P2 done**. Next: P3 engine skeleton.
+- Blockers: none. Build order: policy (P3…) and tls (L3…) next, clients last (owner runs O1 before C7). T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — Policy P2 done (Cursor): `PolicySnapshot::select` — Client ID → longest-prefix (per-length tables from P1; IPv4-mapped IPv6 as v4) → default. `Selection` / `SelectionCause` (incl. matched prefix). No `String`/`Vec` on the path (only `Arc` id clones). Table tests + release timing < 1 µs avg with 100 views (debug budget 20 µs). DoD green. Next: P3.
 
 - 2026-10-25 — Policy P1 review (Claude) + fixes (Sonnet agent, lead-verified): duplicate masked subnet on two views now rejected (`DuplicateSubnet`; before, the later view silently won); view records dedupe exact duplicates and reject differing TTLs in an RRset (`RrsetTtlMismatch`, RFC 2181 §5.2); `rebind_exceptions` validated as `domain` / `*.domain` (`InvalidRebindException`); tests added for duplicate view/profile id, unknown schedule set, lone CNAME accepted; dead CNAME branch removed. Mutation check: every new rule has a failing test when disabled. 32 tests green. Deferred: snapshot fields stay `pub` (revisit at Checkpoint A), `PolicyError::Resolve` cause code (P3), schedule window validation (P11).
 

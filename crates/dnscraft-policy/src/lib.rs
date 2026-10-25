@@ -6,12 +6,13 @@
 //! [`dnscraft_filtering`], and defines the `ClientDirectory` contract
 //! for device names without depending on `dnscraft-clients`.
 //!
-//! Phase 1 (this release): ids, [`PolicyConfig`], [`PolicySnapshot::build`] and
-//! [`PolicyError`] codes. Selection and the engine follow in P2+.
+//! Phase 1–2: ids, [`PolicyConfig`], [`PolicySnapshot::build`] / [`PolicySnapshot::select`],
+//! and [`PolicyError`] codes. The engine follows in P3+.
 
 mod config;
 mod error;
 mod ids;
+mod select;
 mod snapshot;
 
 pub use config::{
@@ -20,6 +21,7 @@ pub use config::{
 };
 pub use error::{ConfigReason, IdError, PolicyError};
 pub use ids::{ClientId, ListenerId, ProfileId, ViewId};
+pub use select::{Selection, SelectionCause};
 pub use snapshot::{
     PolicySnapshot, PrefixTable, ProfileIdx, SnapshotProfile, SnapshotView, ViewIdx, ViewRrSets,
 };

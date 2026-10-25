@@ -57,9 +57,9 @@ Contents:
 any view falls through to subnet matching.
 
 **Acceptance criteria:**
-- [ ] Table: Client ID beats a /32; /28 beats /24; IPv6 /64 vs /48; unlisted Client ID → subnet; nothing → default
-- [ ] IPv4-mapped IPv6 source selects the IPv4 view
-- [ ] Selection allocates nothing (no `String`/`Vec` in the path; reviewed) and takes < 1 µs p50 with 100 views (simple timing test or criterion)
+- [x] Table: Client ID beats a /32; /28 beats /24; IPv6 /64 vs /48; unlisted Client ID → subnet; nothing → default
+- [x] IPv4-mapped IPv6 source selects the IPv4 view
+- [x] Selection allocates nothing (no `String`/`Vec` in the path; reviewed) and takes < 1 µs p50 with 100 views (simple timing test or criterion)
 
 **Verification:** `cargo test -p dnscraft-policy select`
 
