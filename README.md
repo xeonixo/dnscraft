@@ -23,6 +23,11 @@ cargo run -p dnscraft-resolver --example query -- example.com A
 ## Documentation
 
 - [crates/dnscraft-resolver/README.md](crates/dnscraft-resolver/README.md) — human overview of the resolver
+- [crates/dnscraft-proto/README.md](crates/dnscraft-proto/README.md) — DNS wire format and DNSSEC record types
+- [crates/dnscraft-testkit/README.md](crates/dnscraft-testkit/README.md) — fake DNS hierarchy for tests
+- [fuzz/README.md](fuzz/README.md) — fuzz targets, corpora and CI job
+- [docs/adr/0001-recursion-engine.md](docs/adr/0001-recursion-engine.md) — ADR-0001: recursion engine decision
+- [tasks/progress.md](tasks/progress.md) — progress log (resume point for interrupted sessions)
 - [CAPABILITY-MAP.md](CAPABILITY-MAP.md) — modules, dependencies, build order
 - [SPEC.md](SPEC.md) — project-wide specification
 - [SPEC-resolver.md](SPEC-resolver.md) — resolver module (formal requirements)

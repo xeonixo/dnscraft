@@ -482,4 +482,4 @@ error, `criterion` benchmark for cache lookup, `examples/query.rs`, coverage run
 
 ## Checkpoint E: Complete
 - [x] All success criteria met, coverage ≥ 80 % (92.78 % lines; cache-hit p50 ≈ 214 ns)
-- [ ] Ready for review (`/review`) — owner
+- [x] Ready for review (`/review`) — owner

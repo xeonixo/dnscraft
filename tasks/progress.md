@@ -8,7 +8,7 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
 ## Current state
 
-- Phase: 5 done — Task 16 complete. Checkpoint E: review findings fixed (batches A1, B, A2; 390 tests); awaiting owner approval.
+- Module `resolver` COMPLETE (Checkpoint E approved by owner 2026-10-25). Next module: `filtering` (spec phase).
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
@@ -24,6 +24,8 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Blockers: none
 
 ## Log
+
+- 2026-10-25 — Docs completed (Haiku, lead-verified constants): resolver README config/forward zones/DNSSEC codes/hardening limits; READMEs for dnscraft-proto, dnscraft-testkit, fuzz. Checkpoint E approved. Filtering spec started; owner decisions: AdGuard DNS subset syntax ($important,$badfilter,$dnstype,$denyallow,$dnsrewrite, regex; $client/$ctag ignored with warning), block mode selectable with default REFUSED, list updates every 24 h, hosts-file lines in lists always block (never redirect).
 
 - 2026-10-25 — Checkpoint E review: 2 Sonnet reviewers (code + security), lead verified top findings. Fixed in 3 batches with fail-before regression tests: KeyTrap/NSEC3 budgets, inception skew; PTR leak, inflight cancellation, O(log n) LRU, flush epoch, forward failover, stale Indeterminate/30 s, concurrency cap; answer scrubbing, rcode-flip Bogus, DNAME CNAME check, RRSIG TTL cap, private/loopback glue filter, srtt bound, validated priming + 24 h re-prime, 10 s deadline. Live statuses unchanged. 390 tests green.
 

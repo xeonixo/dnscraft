@@ -167,19 +167,59 @@ to `policy` and friends.
 |-------|---------|--------|
 | `root_hints` | IANA named.root | Overridable for tests |
 | `query_timeout` | 1.5 s | Per server exchange |
+| `max_referral_depth` | `16` | Referrals followed for one lookup |
 | `qname_minimisation` | `true` | RFC 9156 |
 | `trust_anchors` | IANA root KSKs | Empty → no validation |
 | `negative_trust_anchors` | `[]` | Escape hatch for broken zones |
-| `cache_size_mb` | `64` | `0` disables the cache |
+| `cache_size_mb` | `64` | Cache limit in MiB; `0` stores nothing. Ignored when `cache_capacity_bytes` is set |
+| `cache_capacity_bytes` | `None` | Exact cache limit in bytes. When `Some`, it replaces `cache_size_mb` entirely (see note below) |
 | `ttl_min` / `ttl_max` | `0` / `86400` | Clamp before store |
 | `serve_stale` | 1 day | `Duration::ZERO` disables |
 | `prefetch` | `true` | Background refresh |
 | `max_cname_chain` | `16` | Loop / amplification guard |
 | `max_queries_per_resolve` | `64` | Budget per question |
+| `max_nested_depth` | `4` | Nesting of name server address lookups |
 | `max_concurrent_resolutions` | `1024` | Cap on parallel upstream resolutions |
 | `resolve_deadline` | 10 s | Upper bound on one upstream resolution; expiry is `resolver.unreachable` (serve-stale may apply) |
 | `root_reprime_interval` | 24 h | Priming again; `Duration::ZERO` primes once |
 | `allow_private_nameservers` | `false` | Accept RFC 1918 / CGNAT / ULA name server addresses from delegations |
+| `ipv6_cooldown` | 60 s | IPv6 name servers are deprioritised this long after a network-unreachable send error |
+| `forward_zones` | `[]` | Zones answered by stub forwarders instead of iteration; see [Forward zones](#forward-zones) |
+| `clock` | `SystemClock` | Time source. Test hook (`ManualClock` in tests) |
+| `nameserver_addr_overrides` | `{}` | Test hook: name server host to address, see below |
+
+`clock`, `cache_capacity_bytes` and `nameserver_addr_overrides` are test hooks, not production settings.
+
+### Forward zones
+
+A `ForwardZone` sends queries for `zone` and every name below it to `targets`
+with the recursion-desired bit set, instead of walking the delegation chain. A
+name goes to the most specific zone that covers it.
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `zone` | `Name` | none, required | Apex of the forwarded zone |
+| `targets` | `Vec<SocketAddr>` | none, required | Recursive servers, tried in smoothed-RTT order |
+| `validate` | `bool` | `false` | `false` is an implicit negative trust anchor: status `Insecure`, no AD bit, records not checked. `true` validates against a trust anchor for `zone`, with DNSKEYs fetched from `targets` |
+
+```rust
+use dnscraft_proto::Name;
+use dnscraft_resolver::{ForwardZone, ResolverConfig};
+
+fn forwarding_config() -> Result<ResolverConfig, Box<dyn std::error::Error>> {
+    Ok(ResolverConfig {
+        forward_zones: vec![ForwardZone {
+            zone: Name::from_ascii("corp.example.")?,
+            targets: vec!["192.0.2.53:53".parse()?],
+            validate: false,
+        }],
+        ..ResolverConfig::default()
+    })
+}
+```
+
+Loop protection for forwarding is described under **Forwarding** in
+[Behaviour in short](#behaviour-in-short).
 
 The eventual DNScraft TOML shape is sketched in the [spec](../../SPEC-resolver.md#configuration-excerpt-toml);
 this crate still takes a Rust `ResolverConfig` directly.
@@ -205,6 +245,79 @@ error is for logs, not for end users.
 
 DNSSEC failures are not `ResolveError`s: they return an `Answer` with
 `dnssec: Bogus`, `SERVFAIL`, and an Extended DNS Error.
+
+## DNSSEC failure codes
+
+Every DNSSEC outcome carries a stable, locale-neutral code string. On a Bogus
+answer the code is the EXTRA-TEXT of the Extended DNS Error (RFC 8914) and the
+INFO-CODE is given below. These strings are stable API: they are meant to serve
+as the i18n keys for a future web UI, so do not rename them.
+
+Only Bogus answers (`SERVFAIL`) and one Insecure case (`dnssec.nsec3_iterations`)
+carry an EDE on an answer. The `dnssec.insecure_*` codes exist on the API but
+are not emitted on answers, and `dnssec.bad_anchor` is an error from building
+trust anchors, not an answer status.
+
+| Code | EDE INFO-CODE | On | Meaning |
+|------|---------------|----|---------|
+| `dnssec.bad_signature` | 6 | Bogus | RRSIG does not verify against the DNSKEY |
+| `dnssec.signature_expired` | 7 | Bogus | RRSIG expiration is in the past |
+| `dnssec.signature_not_yet_valid` | 8 | Bogus | RRSIG inception is more than 300 s in the future |
+| `dnssec.key_tag_mismatch` | 6 | Bogus | RRSIG key tag differs from the DNSKEY's |
+| `dnssec.algorithm_mismatch` | 6 | Bogus | RRSIG and DNSKEY algorithms differ |
+| `dnssec.no_matching_key` | 9 | Bogus | No DNSKEY matches the RRSIG's key tag and algorithm |
+| `dnssec.unsupported_algorithm` | 1 | Bogus | Signature algorithm rejected by policy or not supported by `ring` |
+| `dnssec.labels_mismatch` | 6 | Bogus | RRSIG labels field exceeds the owner's label count |
+| `dnssec.signer_not_zone` | 6 | Bogus | Signer is not the DNSKEY owner or an ancestor of the owner |
+| `dnssec.key_not_zone_key` | 6 | Bogus | DNSKEY lacks the zone flag, has protocol != 3, or is revoked |
+| `dnssec.type_covered_mismatch` | 6 | Bogus | RRSIG covers a different type than the RRset |
+| `dnssec.rrset_mismatch` | 6 | Bogus | RRset is empty or its records disagree on owner, class or type |
+| `dnssec.no_signatures` | 10 | Bogus | No RRSIG covers the RRset |
+| `dnssec.malformed_key` | 6 | Bogus | Key material or record contents cannot be interpreted |
+| `dnssec.validation_budget` | 6 | Bogus | Per-resolution signature budget spent (fail closed) |
+| `dnssec.no_trust_anchor` | 6 | Bogus | Validated forward zone has no trust anchor for it |
+| `dnssec.no_dnskeys` | 9 | Bogus | DNSKEY RRset of a zone contains no keys for it |
+| `dnssec.ds_no_match` | 9 | Bogus | No DNSKEY matches the DS RRset or trust anchor |
+| `dnssec.dnskey_unavailable` | 9 | Bogus | No server delivered the DNSKEY RRset of a zone that has a DS |
+| `dnssec.no_ds_proof` | 12 | Bogus | Referral without DS has no valid proof that none exists |
+| `dnssec.no_denial_proof` | 12 | Bogus | Negative answer or wildcard expansion without NSEC/NSEC3 proof |
+| `dnssec.bad_denial_proof` | 6 | Bogus | NSEC/NSEC3 records do not prove what they must |
+| `dnssec.nsec3_budget` | 6 | Bogus | Per-resolution NSEC3 hash budget spent (fail closed) |
+| `dnssec.rcode_mismatch` | 6 | Bogus | NXDOMAIN although a validated RRset exists for the question |
+| `dnssec.nsec3_iterations` | 27 | Insecure | NSEC3 iteration count above the limit; answer is `Insecure`, not `SERVFAIL` |
+| `dnssec.insecure_unsupported_algorithm` | 1 | API only | DS uses an algorithm this resolver does not support |
+| `dnssec.insecure_unsupported_digest` | 2 | API only | DS uses a digest type this resolver does not support |
+| `dnssec.bad_anchor` | none | Error | A record given as trust anchor is neither DS nor DNSKEY |
+
+## Hardening limits
+
+Fixed safety limits. Each value is a constant in the source named in the last
+column. The configurable limits are in the [Configuration](#configuration) table.
+
+| Limit | Value | Purpose | Source |
+|-------|-------|---------|--------|
+| Signature verifications per resolution | 64 | Caps CPU spent on key and signature floods; spent budget makes the answer Bogus | `MAX_VERIFICATIONS_PER_RESOLVE` in `src/dnssec/budget.rs` |
+| RRSIGs tried per RRset | 8 | Bounds signature attempts on one RRset | `MAX_SIGS_PER_RRSET` in `src/dnssec/budget.rs` |
+| Keys tried per RRSIG (same key tag and algorithm) | 4 | Bounds key-tag collision attempts | `MAX_KEYS_PER_TAG` in `src/dnssec/budget.rs` |
+| NSEC3 hashes per resolution | 128 | Caps closest-encloser walks for long names | `MAX_NSEC3_HASHES_PER_RESOLVE` in `src/dnssec/budget.rs` |
+| NSEC3 max iterations | 100 | Above this the zone is treated as Insecure (EDE 27) | `NSEC3_MAX_ITERATIONS` in `src/dnssec/denial.rs` |
+| RRSIG inception skew | 300 s | Tolerated clock skew for a future inception; expiration is checked strictly | `SIG_INCEPTION_SKEW` in `src/dnssec/verify.rs` |
+| DNSKEY servers asked per zone | 3 | Bounds DNSKEY fetches for one zone | `MAX_DNSKEY_SERVERS` in `src/dnssec/walk.rs` |
+| Hidden-cut nesting | 8 | Bounds intermediate signer-zone lookups | `MAX_CUT_DEPTH` in `src/dnssec/walk.rs` |
+| Hidden-cut DS probes per resolution | 8 | Bounds DS probes for hidden cuts | `MAX_PROBES` in `src/dnssec/walk.rs` |
+| Addresses per referral | 16 | Glue and looked-up addresses together | `MAX_ADDRS_PER_REFERRAL` in `src/iterate.rs` |
+| Glueless name server hosts per zone cut | 4 | Bounds nested name server lookups | `MAX_GLUELESS_PER_CUT` in `src/iterate.rs` |
+| QNAME minimisation: queries per zone | 10 | RFC 9156 section 2.3, final query included | `MAX_MINIMISE_COUNT` in `src/iterate.rs` |
+| QNAME minimisation: single-label steps | 4 | RFC 9156 section 2.3, then several labels per step | `MINIMISE_ONE_LAB` in `src/iterate.rs` |
+| Tracked servers (smoothed RTT) | 4096 | Least recently used address is forgotten past this | `MAX_TRACKED_SERVERS` in `src/server_selection.rs` |
+| Smoothed RTT cap | 8000 ms | Upper bound of any sample | `SRTT_CAP_MS` in `src/server_selection.rs` |
+| Stale answer TTL | 30 s | TTL written into served-stale answers (RFC 8767) | `STALE_ANSWER_TTL` in `src/cache.rs` |
+| Cache bookkeeping per entry | 256 bytes | Added to each entry's size for the cache budget | `ENTRY_OVERHEAD` in `src/cache.rs` |
+| Prefetch popularity | 3 hits | Hits needed before a near-expiry entry is refreshed | `POPULAR_HITS` in `src/prefetch.rs` |
+| Prefetch window floor | 2 s | Window is the larger of TTL / 10 and this | `MIN_WINDOW` in `src/prefetch.rs` |
+| Prefetch backoff after failure | 30 s | Wait before the same key is prefetched again | `PREFETCH_BACKOFF` in `src/lib.rs` |
+| Root re-priming retry after failure | 300 s | Shorter of this and `root_reprime_interval` | `REPRIME_RETRY` in `src/lib.rs` |
+| CNAME chain scrubbed in forwarded answers | 32 | Bounds the chain walk when rebuilding a forwarded answer | `MAX_SCRUB_CHAIN` in `src/forward.rs` |
 
 ## Design choice
 

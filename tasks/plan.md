@@ -112,7 +112,7 @@ workspace (1) ── testkit hierarchy (3)
 
 ### Checkpoint E: Complete
 - [x] All 8 success criteria met, coverage ≥ 80 % (92.78 %; cache-hit p50 ≈ 214 ns)
-- [ ] Ready for review (`/review`) — owner
+- [x] Ready for review (`/review`) — owner approved 2026-10-25 after review fixes
 
 ## Parallelization
 
