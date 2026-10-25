@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 tokio = { workspace = true }
 hickory-proto = { workspace = true, features = ["dnssec-ring"] }
-rustls-pki-types = "1"
+rustls-pki-types = "1.15.1"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

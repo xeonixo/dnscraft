@@ -18,7 +18,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
-regex = "1"
+regex = "1.13.1"
 rustls = { workspace = true }
 
 [features]
@@ -27,7 +27,7 @@ testgen = []
 
 [dev-dependencies]
 criterion = { workspace = true }
-flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 proptest = { workspace = true }
 rcgen = { workspace = true }
 tokio-rustls = { workspace = true }

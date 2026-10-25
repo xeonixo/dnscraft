@@ -159,6 +159,7 @@ dependencies = [
  "idna",
  "regex",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "thiserror",
@@ -660,7 +661,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
