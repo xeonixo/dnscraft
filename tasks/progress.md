@@ -3,7 +3,7 @@
 Resume point for interrupted sessions. Newest entry first.
 Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
-Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for working with Cursor: [cursor-next.md](cursor-next.md).
+Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for working with Cursor: [cursor-next.md](cursor-next.md) (filtering briefs: [archive/cursor-filtering.md](archive/cursor-filtering.md)).
 
 **Workflow:** each task is implemented by a Haiku/Sonnet subagent, reviewed by the lead
 (diff, `fmt`, `clippy`, tests), ticked off in `todo.md`, logged here, and committed.
