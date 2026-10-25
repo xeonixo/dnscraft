@@ -13,11 +13,13 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
-- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)).
+- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1 done** (crate skeleton). Next: L2.
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1 done** (crate skeleton, config, snapshot validation, error codes). Next: P2 selection.
-- Blockers: none. Build order: policy (P2…) and tls (L1…) first, clients last (owner runs O1 before C7). T2 open (any time).
+- Blockers: none. Build order: policy (P2…) and tls (L2…) next, clients last (owner runs O1 before C7). T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — L1 done (Cursor): `crates/dnscraft-tls` skeleton — `TlsConfig` / `AcmeConfig` / `DynDnsConfig` / `CloudflareConfig` with validate (normalise domain via idna, empty `extra_sans`, `proxied = false`, hostname `<label>.dns.<domain>` in `reserved_labels`, ACME email when enabled, HTTPS-only URLs + loopback test hatch); `validate_public_entry` → `tls.dyndns.entry_conflict`; all SPEC error codes; `Clock`/`ManualClock`; `read_secret` + redacted `Secret` (`DNSCRAFT_CLOUDFLARE_API_TOKEN` / `_FILE`). Token check injectable in tests (`validate_with_token`) because `env::set_var` is unsafe and forbidden. DoD green; `cargo tree -i aws-lc-rs` empty.
 
 - 2026-10-25 — Policy P1 done (Cursor): `crates/dnscraft-policy` workspace member. Ids (`ViewId`/`ProfileId`/`ListenerId` `[a-z0-9-]{1,64}`, `ClientId` `{1,63}`), `PolicyConfig` / views / profiles (incl. safesearch + schedules surface), `RequestContext` / `DnsProtocol` / `ClientFlags`, `PolicySnapshot::build` with client-id map + per-length subnet tables, validation for default view, duplicate Client ID, unknown filter set / forward zone (incl. `rebind_check_forward_zones`), CNAME conflict, unsupported types, wildcards. Spec TOML excerpt as Rust values accepted. `PolicyError` codes from the spec + `policy.id.*`. `ipnet` 2 added to workspace deps (approved). DoD green. Next: P2.
 

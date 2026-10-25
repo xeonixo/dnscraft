@@ -35,9 +35,9 @@ Also in this task:
 - `read_secret("DNSCRAFT_CLOUDFLARE_API_TOKEN")`, redacted in `Debug`.
 
 **Acceptance criteria:**
-- [ ] Every error variant has a unique `code()` (enumerating test); public items documented
-- [ ] Config table tests incl. non-empty `extra_sans`, `proxied = true`, hostname outside `dns.<domain>`, missing email, two public entry nodes
-- [ ] Missing token with ACME or DynDNS enabled → `tls.secret.missing`; token never in `Debug`
+- [x] Every error variant has a unique `code()` (enumerating test); public items documented
+- [x] Config table tests incl. non-empty `extra_sans`, `proxied = true`, hostname outside `dns.<domain>`, missing email, two public entry nodes
+- [x] Missing token with ACME or DynDNS enabled → `tls.secret.missing`; token never in `Debug`
 
 **Verification:** `cargo test -p dnscraft-tls config`
 
