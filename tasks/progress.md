@@ -8,7 +8,7 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
 ## Current state
 
-- Module `resolver` COMPLETE (Checkpoint E approved by owner 2026-10-25). Next module: `filtering` (spec phase).
+- Module `resolver` COMPLETE (Checkpoint E approved by owner 2026-10-25). Next module: `filtering` — SPEC-filtering.md drafted, awaiting owner approval.
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)

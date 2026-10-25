@@ -8,7 +8,7 @@ This file is the index of all modules. Module ids are stable and never renamed.
 | Module id | Responsibility | Depends on | Spec |
 |---|---|---|---|
 | `resolver` | Recursive resolution from the root servers, DNSSEC validation, cache | – | [SPEC-resolver.md](SPEC-resolver.md) |
-| `filtering` | AdGuard-compatible filter lists (adblock syntax, hosts), allow/block, rewrites | – | pending |
+| `filtering` | AdGuard-compatible filter lists (adblock syntax, hosts), allow/block, rewrites | – | [SPEC-filtering.md](SPEC-filtering.md) (draft) |
 | `clients` | Client enrichment: IPv4/IPv6 → device, VLAN via the UniFi API (UniFi OS gateway); manual names for IPs/ranges | – | pending |
 | `tls` | ACME DNS-01 via Cloudflare (wildcard for Client IDs), certificate store, hot reload, DynDNS of the public hostname | – | pending |
 | `policy` | Query → profile by source subnet/IP: filter set, split-horizon answers | resolver, filtering | pending |
