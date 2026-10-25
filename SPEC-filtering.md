@@ -37,7 +37,7 @@ Accepted list formats, detected per line:
 | Plain domain | `ads.example` | block the domain and all subdomains |
 | Hosts line | `0.0.0.0 ads.example`, `127.0.0.1 a b c` | **always block**, whatever the IP (owner decision: lists never redirect) |
 | Wildcard pattern | `\|\|ad*.example^` | glob as AdGuard defines it |
-| Regex | `/^ads?[0-9]*\.example\.$/` | linear-time regex engine only |
+| Regex | `/^ads?[0-9]*\.example$/` | linear-time regex engine only; matched against the canonical name (lower-case, no trailing dot) |
 | Comment | `! …`, `# …` | ignored |
 
 Supported modifiers: `$important`, `$badfilter`, `$dnstype=…` (incl. negation `~`),

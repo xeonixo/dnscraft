@@ -334,7 +334,11 @@ mod modifiers {
 ||txt.example^$dnsrewrite=NOERROR;TXT;x
 ";
         let l = parse_list(body, ListSource::List);
-        let names: Vec<_> = l.rules.iter().map(|r| r.domain().as_str()).collect();
+        let names: Vec<_> = l
+            .rules
+            .iter()
+            .map(|r| r.domain().unwrap().as_str())
+            .collect();
         assert_eq!(names, ["rc.example", "nx.example"]);
         assert_eq!(l.skipped.get(SkipReason::RewriteFromList), 5);
         assert_eq!(l.skipped.total(), 5);
@@ -437,7 +441,7 @@ mod modifiers {
             ("||faß.de^", "xn--fa-hia.de"),
         ];
         for (input, expected) in cases {
-            assert_eq!(rule(input).domain().as_str(), expected, "{input}");
+            assert_eq!(rule(input).domain().unwrap().as_str(), expected, "{input}");
         }
     }
 

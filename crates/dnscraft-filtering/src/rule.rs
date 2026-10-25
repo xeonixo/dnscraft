@@ -2,7 +2,8 @@
 //!
 //! ## Memory layout
 //!
-//! A [`Rule`] is 40 bytes plus the heap allocation of its [`DomainName`]. It
+//! A [`Rule`] is 48 bytes plus the heap allocation of its [`DomainName`] (or a
+//! shared [`Glob`]/[`RegexRule`] for the rare pattern rules). It
 //! does **not** own its source text. Instead it stores where the line lives in
 //! the list body: 1-based line number (`u32`), byte offset of the trimmed line
 //! (`u32`) and its length (`u16`, lines are capped at 4 KiB). The caller keeps
@@ -12,9 +13,11 @@
 //! rule.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 pub use crate::modifiers::{DnsRewrite, DnsTypeFilter, Modifiers};
 use crate::name::DomainName;
+use crate::pattern::{Glob, RegexRule};
 
 /// What a matching rule does.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -34,9 +37,9 @@ pub enum MatchKind {
     Subdomains,
     /// Exactly the domain (`|x^`, `|x|`, hosts lines).
     Exact,
-    /// Wildcard pattern (Task F4; never produced yet).
+    /// Wildcard pattern, see [`Rule::glob`]. Rules of this kind have no domain.
     Pattern,
-    /// Regular expression (Task F4; never produced yet).
+    /// Regular expression, see [`Rule::regex`]. Rules of this kind have no domain.
     Regex,
 }
 
@@ -45,14 +48,23 @@ pub enum MatchKind {
 pub struct BadfilterKey {
     action: RuleAction,
     kind: MatchKind,
-    domain: DomainName,
+    /// Canonical domain, glob text, or regex source.
+    text: Box<str>,
     modifiers: Modifiers,
+}
+
+/// What a rule matches against.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Target {
+    Domain(DomainName),
+    Glob(Arc<Glob>),
+    Regex(Arc<RegexRule>),
 }
 
 /// A parsed filter rule.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Rule {
-    domain: DomainName,
+    target: Target,
     action: RuleAction,
     kind: MatchKind,
     modifiers: Option<Box<Modifiers>>,
@@ -65,8 +77,22 @@ impl Rule {
     /// Builds a rule that has no source text (for example for built-in
     /// services). [`Rule::text`] returns `None` for it.
     pub fn new(action: RuleAction, kind: MatchKind, domain: DomainName) -> Self {
+        Self::with_target(action, kind, Target::Domain(domain))
+    }
+
+    /// Builds a wildcard rule ([`MatchKind::Pattern`]).
+    pub fn new_glob(action: RuleAction, glob: Arc<Glob>) -> Self {
+        Self::with_target(action, MatchKind::Pattern, Target::Glob(glob))
+    }
+
+    /// Builds a regex rule ([`MatchKind::Regex`]).
+    pub fn new_regex(action: RuleAction, regex: Arc<RegexRule>) -> Self {
+        Self::with_target(action, MatchKind::Regex, Target::Regex(regex))
+    }
+
+    fn with_target(action: RuleAction, kind: MatchKind, target: Target) -> Self {
         Self {
-            domain,
+            target,
             action,
             kind,
             modifiers: None,
@@ -98,9 +124,54 @@ impl Rule {
         self.kind
     }
 
-    /// The canonical domain.
-    pub fn domain(&self) -> &DomainName {
-        &self.domain
+    /// The canonical domain; `None` for pattern and regex rules.
+    pub fn domain(&self) -> Option<&DomainName> {
+        match &self.target {
+            Target::Domain(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// The wildcard pattern of a [`MatchKind::Pattern`] rule.
+    pub fn glob(&self) -> Option<&Arc<Glob>> {
+        match &self.target {
+            Target::Glob(g) => Some(g),
+            _ => None,
+        }
+    }
+
+    /// The regex of a [`MatchKind::Regex`] rule.
+    pub fn regex(&self) -> Option<&Arc<RegexRule>> {
+        match &self.target {
+            Target::Regex(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// Literal that every name matched by this pattern or regex rule
+    /// contains (lower-case); `None` for domain rules and when unknown.
+    pub fn prefilter(&self) -> Option<&str> {
+        match &self.target {
+            Target::Domain(_) => None,
+            Target::Glob(g) => g.prefilter(),
+            Target::Regex(r) => r.prefilter(),
+        }
+    }
+
+    /// Evaluates a pattern or regex rule against a canonical name (prefilter
+    /// first). Always `false` for domain rules: those go through the index.
+    /// Modifiers (`$dnstype`, `$denyallow`) are not considered here.
+    pub fn pattern_matches(&self, name: &str) -> bool {
+        if let Some(p) = self.prefilter() {
+            if !name.contains(p) {
+                return false;
+            }
+        }
+        match &self.target {
+            Target::Domain(_) => false,
+            Target::Glob(g) => g.matches(name),
+            Target::Regex(r) => r.is_match(name),
+        }
     }
 
     /// The rule's modifiers.
@@ -111,8 +182,8 @@ impl Rule {
     /// Identity used by `$badfilter`: a rule with `$badfilter` disables every
     /// rule whose key equals its own key.
     ///
-    /// The key is the action, match kind, canonical domain and all modifiers
-    /// except `badfilter`. It compares the *parsed* rule, so `||x^` and `||x`
+    /// The key is the action, match kind, canonical domain (or canonical glob
+    /// text, or regex source) and all modifiers except `badfilter`. It compares the *parsed* rule, so `||x^` and `||x`
     /// are identical (AdGuard
     /// compares the raw text minus `$badfilter`; this is a deliberate superset).
     /// The rule carrying `$badfilter` and the rule it disables have equal keys.
@@ -122,7 +193,11 @@ impl Rule {
         BadfilterKey {
             action: self.action,
             kind: self.kind,
-            domain: self.domain.clone(),
+            text: match &self.target {
+                Target::Domain(d) => d.as_str().into(),
+                Target::Glob(g) => g.canonical().into(),
+                Target::Regex(r) => r.as_str().into(),
+            },
             modifiers: m,
         }
     }

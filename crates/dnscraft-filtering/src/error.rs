@@ -40,6 +40,8 @@
 //! | [`RuleError::ClientModifier`] | `filter_rule.client_modifier` |
 //! | [`RuleError::RewriteFromList`] | `filter_rule.rewrite_from_list` |
 //! | [`RuleError::InvalidIdna`] | `filter_rule.invalid_idna` |
+//! | [`RuleError::InvalidRegex`] | `filter_rule.invalid_regex` |
+//! | [`RuleError::RegexTooLarge`] | `filter_rule.regex_too_large` |
 //!
 //! [`FilterError`] delegates to the code of the wrapped error.
 
@@ -125,7 +127,7 @@ impl IdError {
     }
 }
 
-/// Category of rule syntax that is recognised but not supported (yet).
+/// Category of rule syntax that is recognised but not supported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum UnsupportedKind {
@@ -133,10 +135,6 @@ pub enum UnsupportedKind {
     Cosmetic,
     /// Rules that only make sense in a browser (URL paths, `$script`, `$domain=`, ...).
     BrowserOnly,
-    /// A wildcard pattern (implemented in Task F4).
-    Pattern,
-    /// A `/regex/` rule (implemented in Task F4).
-    Regex,
 }
 
 impl UnsupportedKind {
@@ -145,8 +143,6 @@ impl UnsupportedKind {
         match self {
             Self::Cosmetic => "cosmetic",
             Self::BrowserOnly => "browser_only",
-            Self::Pattern => "pattern",
-            Self::Regex => "regex",
         }
     }
 }
@@ -257,6 +253,20 @@ pub enum RuleError {
         /// Span of the domain text.
         span: std::ops::Range<usize>,
     },
+    /// A `/regex/` rule whose regex does not compile.
+    #[error("invalid regular expression: {message}")]
+    InvalidRegex {
+        /// The regex engine's message, whitespace-collapsed and truncated.
+        message: String,
+        /// Span of the regex including the slashes.
+        span: std::ops::Range<usize>,
+    },
+    /// A `/regex/` rule whose compiled program exceeds the size limit.
+    #[error("regular expression is too large")]
+    RegexTooLarge {
+        /// Span of the regex including the slashes.
+        span: std::ops::Range<usize>,
+    },
 }
 
 impl RuleError {
@@ -277,6 +287,8 @@ impl RuleError {
             Self::ClientModifier { .. } => "filter_rule.client_modifier",
             Self::RewriteFromList { .. } => "filter_rule.rewrite_from_list",
             Self::InvalidIdna { .. } => "filter_rule.invalid_idna",
+            Self::InvalidRegex { .. } => "filter_rule.invalid_regex",
+            Self::RegexTooLarge { .. } => "filter_rule.regex_too_large",
         }
     }
 
@@ -296,7 +308,9 @@ impl RuleError {
             | Self::InvalidModifier { span, .. }
             | Self::ClientModifier { span }
             | Self::RewriteFromList { span }
-            | Self::InvalidIdna { span } => span.clone(),
+            | Self::InvalidIdna { span }
+            | Self::InvalidRegex { span, .. }
+            | Self::RegexTooLarge { span } => span.clone(),
         }
     }
 
@@ -314,6 +328,10 @@ impl RuleError {
                 ("detail", (*detail).to_string()),
             ],
             Self::ClientModifier { .. } => vec![("hint", "profiles".to_string())],
+            Self::InvalidRegex { message, .. } => vec![("message", message.clone())],
+            Self::RegexTooLarge { .. } => {
+                vec![("limit", crate::pattern::REGEX_SIZE_LIMIT.to_string())]
+            }
             _ => Vec::new(),
         }
     }
@@ -395,7 +413,7 @@ mod tests {
             (
                 "filter_rule.unsupported_syntax",
                 RuleError::Unsupported {
-                    kind: UnsupportedKind::Regex,
+                    kind: UnsupportedKind::BrowserOnly,
                     span: 0..1,
                 }
                 .into(),
@@ -444,6 +462,18 @@ mod tests {
             (
                 "filter_rule.invalid_idna",
                 RuleError::InvalidIdna { span: 0..1 }.into(),
+            ),
+            (
+                "filter_rule.invalid_regex",
+                RuleError::InvalidRegex {
+                    message: "x".into(),
+                    span: 0..1,
+                }
+                .into(),
+            ),
+            (
+                "filter_rule.regex_too_large",
+                RuleError::RegexTooLarge { span: 0..1 }.into(),
             ),
             ("filter_id.empty", IdError::Empty.into()),
             ("filter_id.too_long", IdError::TooLong { len: 65 }.into()),

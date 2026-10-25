@@ -41,16 +41,22 @@
 //!   (`RewriteFromList`).
 //! - Non-ASCII domains are converted to punycode (UTS 46); failures are
 //!   `InvalidIdna`.
-//! - Wildcards (`*`) and `/regex/` rules are skipped as `Unsupported(Pattern)`
-//!   and `Unsupported(Regex)` until Task F4.
+//! - Wildcard rules (any adblock pattern containing `*`) become
+//!   [`MatchKind::Pattern`] rules and `/regex/` rules [`MatchKind::Regex`]
+//!   rules; see the `pattern` module for their semantics. Invalid or
+//!   oversized regexes are skipped as `InvalidRegex` / `RegexTooLarge`
+//!   (errors `filter_rule.invalid_regex`, `filter_rule.regex_too_large`).
+//!   Regexes containing `\/` are URL-path regexes and skipped as
+//!   `Unsupported(BrowserOnly)`.
 //! - Lines longer than 4 KiB are skipped as `TooLong`.
 
 use std::net::IpAddr;
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::error::{RuleError, UnsupportedKind};
 use crate::modifiers::{Modifiers, parse_domain, parse_modifiers};
-use crate::name::DomainName;
+use crate::pattern::{Glob, GlobStart, RegexFailure, RegexRule};
 use crate::rule::{MatchKind, Rule, RuleAction};
 
 /// Maximum accepted line length in bytes.
@@ -74,8 +80,7 @@ pub enum ListSource {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[non_exhaustive]
 pub enum SkipReason {
-    /// Valid syntax this engine does not implement (cosmetic, browser-only,
-    /// patterns and regexes until F4).
+    /// Valid syntax this engine does not implement (cosmetic, browser-only).
     Unsupported(UnsupportedKind),
     /// Line longer than [`MAX_LINE_LEN`].
     TooLong,
@@ -93,6 +98,10 @@ pub enum SkipReason {
     RewriteFromList,
     /// A non-ASCII domain that cannot be converted to punycode.
     InvalidIdna,
+    /// A `/regex/` rule that does not compile.
+    InvalidRegex,
+    /// A `/regex/` rule over the compiled size limit.
+    RegexTooLarge,
 }
 
 impl SkipReason {
@@ -100,8 +109,6 @@ impl SkipReason {
     pub const ALL: [SkipReason; 12] = [
         SkipReason::Unsupported(UnsupportedKind::Cosmetic),
         SkipReason::Unsupported(UnsupportedKind::BrowserOnly),
-        SkipReason::Unsupported(UnsupportedKind::Pattern),
-        SkipReason::Unsupported(UnsupportedKind::Regex),
         SkipReason::TooLong,
         SkipReason::InvalidDomain,
         SkipReason::InvalidSyntax,
@@ -110,26 +117,28 @@ impl SkipReason {
         SkipReason::ClientModifier,
         SkipReason::RewriteFromList,
         SkipReason::InvalidIdna,
+        SkipReason::InvalidRegex,
+        SkipReason::RegexTooLarge,
     ];
 
     fn index(self) -> usize {
         match self {
             Self::Unsupported(UnsupportedKind::Cosmetic) => 0,
             Self::Unsupported(UnsupportedKind::BrowserOnly) => 1,
-            Self::Unsupported(UnsupportedKind::Pattern) => 2,
-            Self::Unsupported(UnsupportedKind::Regex) => 3,
-            Self::TooLong => 4,
-            Self::InvalidDomain => 5,
-            Self::InvalidSyntax => 6,
-            Self::ReservedHost => 7,
-            Self::UnknownModifier => 8,
-            Self::ClientModifier => 9,
-            Self::RewriteFromList => 10,
-            Self::InvalidIdna => 11,
+            Self::TooLong => 2,
+            Self::InvalidDomain => 3,
+            Self::InvalidSyntax => 4,
+            Self::ReservedHost => 5,
+            Self::UnknownModifier => 6,
+            Self::ClientModifier => 7,
+            Self::RewriteFromList => 8,
+            Self::InvalidIdna => 9,
+            Self::InvalidRegex => 10,
+            Self::RegexTooLarge => 11,
             // `UnsupportedKind` is non-exhaustive for other crates only; new
             // kinds must be added to `ALL` and here.
             #[allow(unreachable_patterns)]
-            Self::Unsupported(_) => 6,
+            Self::Unsupported(_) => 4,
         }
     }
 
@@ -145,6 +154,8 @@ impl SkipReason {
             Self::ClientModifier => "client_modifier",
             Self::RewriteFromList => "rewrite_from_list",
             Self::InvalidIdna => "invalid_idna",
+            Self::InvalidRegex => "invalid_regex",
+            Self::RegexTooLarge => "regex_too_large",
         }
     }
 }
@@ -160,6 +171,8 @@ impl From<&RuleError> for SkipReason {
             RuleError::ClientModifier { .. } => Self::ClientModifier,
             RuleError::RewriteFromList { .. } => Self::RewriteFromList,
             RuleError::InvalidIdna { .. } => Self::InvalidIdna,
+            RuleError::InvalidRegex { .. } => Self::InvalidRegex,
+            RuleError::RegexTooLarge { .. } => Self::RegexTooLarge,
             _ => Self::InvalidSyntax,
         }
     }
@@ -228,9 +241,7 @@ enum Item {
     Blank,
     Comment,
     Rule {
-        action: RuleAction,
-        kind: MatchKind,
-        domain: DomainName,
+        rule: Rule,
         modifiers: Modifiers,
         span: Range<usize>,
     },
@@ -278,9 +289,7 @@ pub fn parse_rule(input: &str) -> Result<Rule, RuleError> {
             err.get_or_insert(e);
         }
         Item::Rule {
-            action,
-            kind,
-            domain,
+            rule: base,
             modifiers,
             span,
         } => {
@@ -289,11 +298,7 @@ pub fn parse_rule(input: &str) -> Result<Rule, RuleError> {
             } else {
                 let len = u16::try_from(t_span.len()).unwrap_or(u16::MAX);
                 let start = u32::try_from(t_span.start).unwrap_or(0);
-                rule = Some(
-                    Rule::new(action, kind, domain)
-                        .with_modifiers(modifiers)
-                        .with_source(1, start, len),
-                );
+                rule = Some(base.with_modifiers(modifiers).with_source(1, start, len));
             }
         }
     });
@@ -341,22 +346,14 @@ pub fn parse_list(body: &str, source: ListSource) -> ParsedList {
             Item::Blank => out.blank_lines += 1,
             Item::Comment => out.comment_lines += 1,
             Item::Rule {
-                action,
-                kind,
-                domain,
-                modifiers,
-                ..
+                rule, modifiers, ..
             } => {
                 let trimmed_len = line.trim_matches(is_ws).len();
-                out.rules.push(
-                    Rule::new(action, kind, domain)
-                        .with_modifiers(modifiers)
-                        .with_source(
-                            line_no,
-                            u32::try_from(line_start + lead).unwrap_or(0),
-                            u16::try_from(trimmed_len).unwrap_or(u16::MAX),
-                        ),
-                );
+                out.rules.push(rule.with_modifiers(modifiers).with_source(
+                    line_no,
+                    u32::try_from(line_start + lead).unwrap_or(0),
+                    u16::try_from(trimmed_len).unwrap_or(u16::MAX),
+                ));
             }
             Item::Skip(e) => record_skip(&mut out, line_no, line, &e),
         });
@@ -499,9 +496,7 @@ fn parse_hosts<F: FnMut(Item)>(line: &str, t: &str, emit: &mut F) -> bool {
         } else {
             match parse_domain(name, span.clone()) {
                 Ok(domain) => emit(Item::Rule {
-                    action: RuleAction::Block,
-                    kind: MatchKind::Exact,
-                    domain,
+                    rule: Rule::new(RuleAction::Block, MatchKind::Exact, domain),
                     modifiers: Modifiers::default(),
                     span,
                 }),
@@ -545,15 +540,13 @@ fn parse_adblock(line: &str, t: &str, source: ListSource) -> Result<Item, RuleEr
         None => (RuleAction::Block, t),
     };
     let (pat, mods) = split_modifiers(rest);
-    let (kind, domain, span) = parse_pattern(line, pat)?;
+    let (rule, span) = parse_pattern(line, pat, action)?;
     let modifiers = match mods {
         Some(m) => parse_modifiers(line, m, action, source)?,
         None => Modifiers::default(),
     };
     Ok(Item::Rule {
-        action,
-        kind,
-        domain,
+        rule,
         modifiers,
         span,
     })
@@ -562,30 +555,40 @@ fn parse_adblock(line: &str, t: &str, source: ListSource) -> Result<Item, RuleEr
 fn parse_pattern(
     line: &str,
     pat: &str,
-) -> Result<(MatchKind, DomainName, Range<usize>), RuleError> {
-    let unsupported = |kind| RuleError::Unsupported {
-        kind,
-        span: span_of(line, pat),
-    };
+    action: RuleAction,
+) -> Result<(Rule, Range<usize>), RuleError> {
     if pat.len() >= 2 && pat.starts_with('/') && pat.ends_with('/') {
-        return Err(unsupported(UnsupportedKind::Regex));
+        return parse_regex(line, pat, action);
     }
     if pat.contains('/') {
-        return Err(unsupported(UnsupportedKind::BrowserOnly));
+        return Err(RuleError::Unsupported {
+            kind: UnsupportedKind::BrowserOnly,
+            span: span_of(line, pat),
+        });
     }
-    if pat.contains('*') {
-        return Err(unsupported(UnsupportedKind::Pattern));
-    }
-    let (kind, body) = if let Some(r) = pat.strip_prefix("||") {
-        (MatchKind::Subdomains, r)
+    let (start, body) = if let Some(r) = pat.strip_prefix("||") {
+        (GlobStart::Boundary, r)
     } else if let Some(r) = pat.strip_prefix('|') {
-        (MatchKind::Exact, r)
+        (GlobStart::Exact, r)
     } else {
-        (MatchKind::Subdomains, pat)
+        (GlobStart::Anywhere, pat)
     };
-    let body = body.strip_suffix('|').unwrap_or(body);
-    let body = body.strip_suffix('^').unwrap_or(body);
+    let (body, end_anchored) = match body.strip_suffix('|') {
+        Some(b) => (b.strip_suffix('^').unwrap_or(b), true),
+        None => match body.strip_suffix('^') {
+            Some(b) => (b, true),
+            None => (body, false),
+        },
+    };
     let span = span_of(line, body);
+    if pat.contains('*') {
+        let glob = Glob::from_body(body, start, end_anchored, span.clone())?;
+        return Ok((Rule::new_glob(action, Arc::new(glob)), span));
+    }
+    let kind = match start {
+        GlobStart::Exact => MatchKind::Exact,
+        _ => MatchKind::Subdomains,
+    };
     if body.is_empty() {
         return Err(RuleError::InvalidSyntax {
             detail: "empty_pattern",
@@ -608,5 +611,32 @@ fn parse_pattern(
             span,
         });
     }
-    parse_domain(body, span.clone()).map(|domain| (kind, domain, span))
+    parse_domain(body, span.clone()).map(|domain| (Rule::new(action, kind, domain), span))
+}
+
+fn parse_regex(
+    line: &str,
+    pat: &str,
+    action: RuleAction,
+) -> Result<(Rule, Range<usize>), RuleError> {
+    let span = span_of(line, pat);
+    let body = pat.get(1..pat.len() - 1).unwrap_or("");
+    if body.is_empty() {
+        return Err(RuleError::InvalidSyntax {
+            detail: "empty_regex",
+            span,
+        });
+    }
+    if body.contains("\\/") {
+        // URL-path regex from a browser list.
+        return Err(RuleError::Unsupported {
+            kind: UnsupportedKind::BrowserOnly,
+            span,
+        });
+    }
+    match RegexRule::compile(body) {
+        Ok(r) => Ok((Rule::new_regex(action, Arc::new(r)), span)),
+        Err(RegexFailure::TooLarge) => Err(RuleError::RegexTooLarge { span }),
+        Err(RegexFailure::Invalid(message)) => Err(RuleError::InvalidRegex { message, span }),
+    }
 }

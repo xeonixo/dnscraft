@@ -78,7 +78,7 @@ F1 skeleton + types ── F2 core rule parser ── F3 modifiers + IDNA ──
 - [x] Task F1: Crate skeleton, core types, error codes
 - [x] Task F2: Core rule parser (adblock domain rules, exceptions, anchors, plain, hosts, comments, skipped categories)
 - [x] Task F3: Modifiers and IDNA
-- [ ] Task F4: Wildcard and regex rules
+- [x] Task F4: Wildcard and regex rules
 - [ ] Task F5: Rule builder, round trip, fuzz target, proptest
 
 ### Checkpoint A: Rules

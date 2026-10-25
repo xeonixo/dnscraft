@@ -11,16 +11,21 @@
 //! validated ids ([`ListId`], [`SetId`]), verdict types, [`BlockMode`], an
 //! injectable [`Clock`], and error types with stable codes.
 
+mod builder;
 mod clock;
 mod error;
 mod fetch;
 mod modifiers;
 mod name;
 mod parser;
+mod pattern;
 mod rule;
 mod store;
 mod types;
 
+pub use builder::{
+    BuildError, MAX_TXT_LEN, RecordTypeSel, RewriteSpec, RuleSpec, build_rule, describe_rule,
+};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use error::{FilterError, IdError, NameError, RuleError, UnsupportedKind};
 pub use fetch::{FetchError, FetchOutcome, Fetcher, FetcherConfig, MAX_REDIRECTS};
@@ -28,6 +33,9 @@ pub use name::{DomainName, Labels, Suffixes};
 pub use parser::{
     ListSource, MAX_LINE_LEN, ParsedList, SKIP_SAMPLE_LIMIT, SkipCounts, SkipReason, SkippedLine,
     parse_list, parse_rule,
+};
+pub use pattern::{
+    Glob, GlobStart, REGEX_DFA_SIZE_LIMIT, REGEX_MESSAGE_MAX, REGEX_SIZE_LIMIT, RegexRule,
 };
 pub use rule::{BadfilterKey, DnsRewrite, DnsTypeFilter, MatchKind, Modifiers, Rule, RuleAction};
 pub use store::{

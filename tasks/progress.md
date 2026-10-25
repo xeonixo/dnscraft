@@ -11,7 +11,7 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks).
 ## Current state
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
-- Module `filtering`: spec approved 2026-10-25; plan + tasks approved 2026-10-25 (deps reqwest+rustls/ring, regex, idna, serde_json; CI fuzz job). In progress: Task F4 (wildcard/regex) and F5 builder part (Sonnet). F1–F3, L1, L2 done.
+- Module `filtering`: spec approved 2026-10-25; plan + tasks approved 2026-10-25 (deps reqwest+rustls/ring, regex, idna, serde_json; CI fuzz job). F1–F4, L1, L2 done; F5 builder done, F5 fuzz target next, then Checkpoint A (real-list run).
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
@@ -27,6 +27,8 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks).
 - Blockers: none
 
 ## Log
+
+- 2026-10-25 — Filtering F4 + F5 builder done (Sonnet, reviewed): globs (`*` spans dots, `||` start/after-dot, `^`/`|` = end, `||*.x^` subdomains only, letter/digit required), O(n·m) matcher; regex via `regex` (case-insensitive, 64 KiB/256 KiB limits, unanchored on canonical name, `\/` → browser-only); literal prefilters checked for no false negatives. Builder: canonical `[@@]||x^$important,dnstype=…,dnsrewrite=…`, describe_rule inverse, proptest round trips; TXT forbids `\ $ / #`. Follow-ups: dedupe TYPE_NAMES (builder vs modifiers) in C1; check at Checkpoint A how many EasyList `/path/` rules become hostname regexes (AdGuard-compatible but may over-block). 112 tests.
 
 - 2026-10-25 — Filtering F3 done (Sonnet, reviewed): $important, $badfilter (key = parsed rule minus badfilter), $dnstype (incl. ~), $denyallow, $dnsrewrite (rcode, A/AAAA/CNAME/TXT; record rewrites from lists skipped as RewriteFromList; @@…$dnsrewrite disables), $client/$ctag rules skipped (not applied globally), unknown/duplicate modifiers, IDNA (UTS 46). Rule 40 B (modifiers boxed only when present). 17 modifier tests.
 

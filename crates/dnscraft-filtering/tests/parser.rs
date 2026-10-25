@@ -10,7 +10,7 @@ use RuleAction::{Allow, Block};
 
 fn ok(s: &str) -> (RuleAction, MatchKind, String) {
     let r = parse_rule(s).unwrap_or_else(|e| panic!("{s:?}: {e} ({})", e.code()));
-    (r.action(), r.kind(), r.domain().to_string())
+    (r.action(), r.kind(), r.domain().unwrap().to_string())
 }
 
 fn err(s: &str) -> RuleError {
@@ -79,7 +79,11 @@ fn hosts_lines_are_exact_blocks() {
 fn hosts_multiple_names() {
     let body = "0.0.0.0 a.example b.example\tc.example # trailing\n";
     let p = parse_list(body, ListSource::List);
-    let names: Vec<_> = p.rules.iter().map(|r| r.domain().to_string()).collect();
+    let names: Vec<_> = p
+        .rules
+        .iter()
+        .map(|r| r.domain().unwrap().to_string())
+        .collect();
     assert_eq!(names, ["a.example", "b.example", "c.example"]);
     assert!(
         p.rules
@@ -110,7 +114,7 @@ fn hosts_reserved_names_are_skipped() {
                 127.0.0.1 LOCALHOST real.example\n";
     let p = parse_list(body, ListSource::List);
     assert_eq!(p.rules.len(), 1);
-    assert_eq!(p.rules[0].domain().as_str(), "real.example");
+    assert_eq!(p.rules[0].domain().unwrap().as_str(), "real.example");
     assert_eq!(p.skipped.get(SkipReason::ReservedHost), 9);
     assert_eq!(code("127.0.0.1 localhost"), "filter_rule.reserved_host");
 }
@@ -208,20 +212,19 @@ fn supported_modifiers_are_accepted() {
     ] {
         let r = parse_rule(c).unwrap();
         assert!(!r.modifiers().is_empty(), "{c}");
-        assert_eq!(r.domain().as_str(), "example.org");
+        assert_eq!(r.domain().unwrap().as_str(), "example.org");
     }
     // Span covers `$` and the modifier list for browser-only modifiers.
     assert_eq!(err("||example.org^$script").span(), 14..21);
 }
 
 #[test]
-fn patterns_and_regex_are_unsupported_until_f4() {
-    for c in ["*", "||ad*.example^", "*.example.org", "ads*", "@@||a*b^"] {
-        assert_eq!(
-            SkipReason::from(&err(c)),
-            kind(UnsupportedKind::Pattern),
-            "{c}"
-        );
+fn patterns_and_regex_parse_into_rules() {
+    for c in ["*a", "||ad*.example^", "*.example.org", "ads*", "@@||a*b^"] {
+        let r = parse_rule(c).unwrap();
+        assert_eq!(r.kind(), MatchKind::Pattern, "{c}");
+        assert!(r.domain().is_none(), "{c}");
+        assert!(r.glob().is_some(), "{c}");
     }
     for c in [
         "/^ads?[0-9]*\\.example\\.$/",
@@ -230,11 +233,9 @@ fn patterns_and_regex_are_unsupported_until_f4() {
         "/a$/",
         "/ads/$important",
     ] {
-        assert_eq!(
-            SkipReason::from(&err(c)),
-            kind(UnsupportedKind::Regex),
-            "{c}"
-        );
+        let r = parse_rule(c).unwrap();
+        assert_eq!(r.kind(), MatchKind::Regex, "{c}");
+        assert!(r.regex().is_some(), "{c}");
     }
 }
 
@@ -362,21 +363,19 @@ garbage here
     assert_eq!(p.total_lines, 20);
     assert_eq!(p.comment_lines, 3);
     assert_eq!(p.blank_lines, 1);
-    assert_eq!(p.rules.len(), 7);
+    assert_eq!(p.rules.len(), 9);
     assert_eq!(p.skipped.get(kind(UnsupportedKind::Cosmetic)), 2);
     assert_eq!(p.skipped.get(kind(UnsupportedKind::BrowserOnly)), 2);
-    assert_eq!(p.skipped.get(kind(UnsupportedKind::Pattern)), 1);
-    assert_eq!(p.skipped.get(kind(UnsupportedKind::Regex)), 1);
     assert_eq!(p.skipped.get(SkipReason::ReservedHost), 1);
     assert_eq!(p.skipped.get(SkipReason::InvalidDomain), 2);
     assert_eq!(p.skipped.get(SkipReason::InvalidSyntax), 1);
     assert_eq!(p.skipped.get(SkipReason::TooLong), 0);
-    assert_eq!(p.skipped.total(), 10);
-    assert_eq!(p.samples.len(), 10);
+    assert_eq!(p.skipped.total(), 8);
+    assert_eq!(p.samples.len(), 8);
     assert_eq!(p.samples[0].line, 10);
     assert_eq!(p.samples[0].text, "127.0.0.1 localhost");
     assert_eq!(p.samples[0].code, "filter_rule.reserved_host");
-    assert_eq!(p.skipped.iter().map(|(_, c)| c).sum::<usize>(), 10);
+    assert_eq!(p.skipped.iter().map(|(_, c)| c).sum::<usize>(), 8);
 }
 
 #[test]

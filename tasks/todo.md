@@ -62,14 +62,14 @@ lists. Non-ASCII domains → punycode via `idna`.
 
 ## Task F4: Wildcard and regex rules
 
-**Description:** Glob patterns as AdGuard defines them for DNS (`*` within labels,
+**Description:** Glob patterns as AdGuard defines them for DNS (`*` matches any sequence including dots, as in AdGuard adblock syntax;
 `||ad*.example^`) and `/regex/` rules via `regex` with a compiled size limit; extract a
 literal prefilter per pattern.
 
 **Acceptance criteria:**
-- [ ] Matching semantics tests for globs and regexes (anchors, case-insensitivity)
-- [ ] Oversized/invalid regex → skip (list) or error (custom) with code
-- [ ] Prefilter never causes a false negative (proptest: prefilter ⊇ match)
+- [x] Matching semantics tests for globs and regexes (anchors, case-insensitivity)
+- [x] Oversized/invalid regex → skip (list) or error (custom) with code
+- [x] Prefilter never causes a false negative (proptest: prefilter ⊇ match)
 
 **Verification:** `cargo test -p dnscraft-filtering patterns`
 
@@ -82,8 +82,8 @@ include subdomains, record types, important); proptest round trip with the parse
 target `rule_parse` (list parser) in `fuzz/` with seeds from real list styles.
 
 **Acceptance criteria:**
-- [ ] `parse_rule(build_rule(spec))` reproduces `spec` for all generated specs
-- [ ] Builder output never contains characters the spec does not need
+- [x] `parse_rule(build_rule(spec))` reproduces `spec` for all generated specs
+- [x] Builder output never contains characters the spec does not need
 - [ ] Fuzz target runs 10 min without findings (CI 60 s job added — CI change approved with this plan)
 
 **Verification:** `cargo test -p dnscraft-filtering builder`; `cargo +nightly fuzz run rule_parse -- -max_total_time=600`
