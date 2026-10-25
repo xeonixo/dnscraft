@@ -18,3 +18,8 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 ipnet = { workspace = true }
+
+[dev-dependencies]
+dnscraft-testkit = { path = "../dnscraft-testkit" }
+hickory-proto = { workspace = true }
+tokio = { workspace = true, features = ["full"] }

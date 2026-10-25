@@ -383,6 +383,8 @@ dependencies = [
  "dnscraft-filtering",
  "dnscraft-proto",
  "dnscraft-resolver",
+ "dnscraft-testkit",
+ "hickory-proto",
  "ipnet",
  "thiserror",
  "tokio",

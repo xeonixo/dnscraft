@@ -83,9 +83,9 @@ any view falls through to subnet matching.
 - `test_query` → `loggable = false`.
 
 **Acceptance criteria:**
-- [ ] Testkit hierarchy: A query resolves through the policy; decision record lists selection + resolve step; message id left to the listener
-- [ ] Profile `forward_zones = Some([..])` passed through: name under a disallowed zone recurses (testkit forward target sees no query)
-- [ ] ANY never reaches the resolver; `test_query` → `loggable == false`; Secure answer keeps AD, Insecure has none
+- [x] Testkit hierarchy: A query resolves through the policy; decision record lists selection + resolve step; message id left to the listener
+- [x] Profile `forward_zones = Some([..])` passed through: name under a disallowed zone recurses (testkit forward target sees no query)
+- [x] ANY never reaches the resolver; `test_query` → `loggable == false`; Secure answer keeps AD, Insecure has none
 
 **Verification:** `cargo test -p dnscraft-policy engine`
 

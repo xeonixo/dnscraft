@@ -128,7 +128,7 @@ P12 golden integration tests, AD/EDE matrix, bench, coverage, README
 ### Phase 1: Skeleton
 - [x] P1: Crate skeleton, config model, validation, errors
 - [x] P2: View selection
-- [ ] P3: Engine skeleton with resolver passthrough and decision record
+- [x] P3: Engine skeleton with resolver passthrough and decision record
 - [ ] P4: View local records
 
 ### Checkpoint A: Skeleton

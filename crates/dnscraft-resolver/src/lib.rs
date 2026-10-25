@@ -173,6 +173,18 @@ impl Resolver {
         })
     }
 
+    /// Ids of every configured forward zone, in config order.
+    ///
+    /// Used by policy to validate profile allow-lists. Pure lookup; no I/O.
+    pub fn forward_zone_ids(&self) -> Vec<ForwardZoneId> {
+        self.shared
+            .config
+            .forward_zones
+            .iter()
+            .map(|z| z.id.clone())
+            .collect()
+    }
+
     /// Resolves `query`.
     ///
     /// Names covered by an allowed forward zone are sent to that zone's
