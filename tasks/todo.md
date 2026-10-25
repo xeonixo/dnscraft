@@ -167,9 +167,9 @@ attempt/success, error code, counts) as JSON, atomic write (temp + rename), loca
 lists (`file://` or path), startup load without network.
 
 **Acceptance criteria:**
-- [ ] Crash-safe write (interrupted write leaves the old file intact — simulated)
-- [ ] Startup with cached lists builds the index without any fetch
-- [ ] Corrupt metadata is recovered (re-fetch scheduled), never a crash
+- [x] Crash-safe write (interrupted write leaves the old file intact — simulated)
+- [ ] Startup with cached lists builds the index without any fetch (store side done; index build verified in L3)
+- [x] Corrupt metadata is recovered (re-fetch scheduled), never a crash
 
 **Verification:** `cargo test -p dnscraft-filtering store`
 

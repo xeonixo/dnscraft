@@ -14,9 +14,14 @@
 mod clock;
 mod error;
 mod name;
+mod store;
 mod types;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use error::{FilterError, IdError, NameError};
 pub use name::{DomainName, Labels, Suffixes};
+pub use store::{
+    DEFAULT_MAX_BODY_BYTES, ListMeta, ListSourceSpec, ListStore, META_VERSION, MetaError,
+    StoreConfig, StoreError,
+};
 pub use types::{BlockMode, ListId, Reason, Rewrite, RuleSource, SetId, Verdict};

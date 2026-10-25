@@ -11,7 +11,7 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks).
 ## Current state
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
-- Module `filtering`: spec approved 2026-10-25; plan + tasks approved 2026-10-25 (deps reqwest+rustls/ring, regex, idna, serde_json; CI fuzz job). In progress: Task F2 (parser) and L1 (list store) in parallel (Sonnet).
+- Module `filtering`: spec approved 2026-10-25; plan + tasks approved 2026-10-25 (deps reqwest+rustls/ring, regex, idna, serde_json; CI fuzz job). In progress: Task F2 (parser, Sonnet). L1 done.
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
@@ -27,6 +27,8 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks).
 - Blockers: none
 
 ## Log
+
+- 2026-10-25 — Filtering L1 done (Sonnet, reviewed): ListStore in <data>/filtering/{lists,services}, 0o700 dirs, atomic temp+fsync+rename writes, versioned ListMeta (corrupt → None + warn), size cap on write and read, https-only sources (test hatch), local file sources. serde/serde_json added. 10 integration tests.
 
 - 2026-10-25 — Filtering F1 done (Sonnet, reviewed): crate skeleton, DomainName (strict length/charset, lenient hyphen position, suffix iteration, reversed form), ids, RuleSource/Reason/Verdict/Rewrite/BlockMode (default Refused), Clock, error codes. No dnscraft-proto dependency yet. 17 tests.
 

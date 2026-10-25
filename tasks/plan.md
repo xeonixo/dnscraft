@@ -96,7 +96,7 @@ F1 skeleton + types ── F2 core rule parser ── F3 modifiers + IDNA ──
 - [ ] Budgets met (criterion 4) or fallback index decided with owner
 
 ### Phase 3: Lists and services
-- [ ] Task L1: List store (data directory, atomic writes, metadata, local file lists)
+- [x] Task L1: List store (data directory, atomic writes, metadata, local file lists)
 - [ ] Task L2: Fetcher (conditional GET, size cap, timeout, redirect policy, last-good fallback)
 - [ ] Task L3: Scheduler, hot reload, `apply_config`, list status and unique contribution
 - [ ] Task L4: Blocked services catalog
