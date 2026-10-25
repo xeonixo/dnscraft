@@ -47,7 +47,8 @@
 //! Each regex is limited to [`REGEX_SIZE_LIMIT`] bytes of compiled program and
 //! [`REGEX_DFA_SIZE_LIMIT`] bytes of lazy-DFA cache. Regexes whose body contains
 //! `\/` are URL-path regexes from browser lists and are skipped as
-//! browser-only.
+//! browser-only. Per index, the number of regex and glob rules and the summed
+//! estimated regex size are capped (see [`crate::MAX_REGEX_RULES`]).
 //!
 //! ## Prefilter
 //!
@@ -64,7 +65,7 @@ use regex::bytes::{Regex, RegexBuilder};
 use crate::error::{NameError, RuleError};
 
 /// Compiled-program size limit per regex rule (bytes).
-pub const REGEX_SIZE_LIMIT: usize = 64 * 1024;
+pub const REGEX_SIZE_LIMIT: usize = 8 * 1024;
 /// Lazy-DFA cache limit per regex rule (bytes).
 pub const REGEX_DFA_SIZE_LIMIT: usize = 256 * 1024;
 /// Maximum length of the regex error message kept in [`RuleError::InvalidRegex`].
@@ -364,6 +365,18 @@ impl RegexRule {
             })?;
         let prefilter = regex_prefilter(source).map(Box::from);
         Ok(Self { regex, prefilter })
+    }
+
+    /// Heuristic estimate of the memory the compiled regex holds (the `regex`
+    /// crate does not report it): `512 + 32 * source length`, capped at
+    /// [`REGEX_SIZE_LIMIT`]. Used for the per-index regex budget.
+    pub fn estimated_bytes(&self) -> usize {
+        self.regex
+            .as_str()
+            .len()
+            .saturating_mul(32)
+            .saturating_add(512)
+            .min(REGEX_SIZE_LIMIT)
     }
 
     /// The regex source without the surrounding slashes.

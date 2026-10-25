@@ -34,21 +34,29 @@
 //! | [`StoreError::InvalidSource`] | `filter_store.invalid_source` |
 //! | [`StoreError::Serialize`] | `filter_store.serialize` |
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::clock::{Clock, SystemClock};
-use crate::set::ListBodies;
+use crate::set::{ListBodies, ListText, OpenedList};
 use crate::types::ListId;
 
-/// Entries kept in the on-disk rule-line LRU.
-const LINE_LRU_CAP: usize = 64;
+/// Spacing of the newline checkpoints of a pinned list body: the line number
+/// of any offset needs at most one block of bytes after a checkpoint.
+const TEXT_BLOCK: usize = 4096;
+
+/// Longest rule text read from disk; longer lines are cut.
+const LINE_TEXT_MAX: usize = 4096;
+
+/// Rule texts cached per pinned list body.
+const TEXT_CACHE_CAP: usize = 4096;
 
 /// Default maximum size of a list body: 64 MiB.
 pub const DEFAULT_MAX_BODY_BYTES: u64 = 64 * 1024 * 1024;
@@ -376,10 +384,13 @@ impl ListStore {
         read_capped(&self.body_path(id), self.config.max_body_bytes)
     }
 
-    /// Seeks to `offset` in the cached body and returns `(1-based line, text)`.
+    /// Reads the line at `offset` in the cached body and returns
+    /// `(1-based line, text)`.
     ///
-    /// Counts newlines from the start of the file up to `offset`. Missing or
-    /// unreadable files yield `None` (never an error).
+    /// Counts newlines from the start of the file up to `offset` (in large
+    /// positional reads), so the cost grows with `offset`; snapshots use the
+    /// pinned, checkpointed reader of [`StoreListBodies::open`] instead.
+    /// Missing or unreadable files yield `None` (never an error).
     pub fn read_rule_at(&self, id: &ListId, offset: u32) -> Option<(u32, Arc<str>)> {
         read_rule_at_path(&self.body_path(id), offset)
     }
@@ -474,15 +485,19 @@ impl ListStore {
     }
 }
 
-/// [`ListBodies`] over a [`ListStore`], with optional local-file fallbacks and
-/// a small LRU of recently read rule lines (seek/pread, never the whole file
-/// for Reasons).
+/// [`ListBodies`] over a [`ListStore`], with optional local-file fallbacks.
+///
+/// [`ListBodies::open`] returns the body together with a reader that keeps the
+/// file handle open and records a newline checkpoint every [`TEXT_BLOCK`]
+/// bytes, so rule text for a `Reason` costs one small positional read no
+/// matter where the rule sits, and always comes from the bytes the snapshot
+/// was built from (an atomic rename of a newer body leaves the old inode
+/// readable through the handle).
 #[derive(Debug)]
 pub struct StoreListBodies {
     store: ListStore,
     /// Local file paths for lists whose body is not yet cached (File sources).
     files: RwLock<HashMap<ListId, PathBuf>>,
-    line_cache: Mutex<LineLru>,
 }
 
 impl StoreListBodies {
@@ -491,7 +506,6 @@ impl StoreListBodies {
         Self {
             store,
             files: RwLock::new(files),
-            line_cache: Mutex::new(LineLru::new(LINE_LRU_CAP)),
         }
     }
 
@@ -547,110 +561,282 @@ impl ListBodies for StoreListBodies {
         }
     }
 
+    fn open(&self, id: &ListId) -> Option<OpenedList> {
+        let max = self.store.config.max_body_bytes;
+        match open_pinned(&self.store.body_path(id), max) {
+            Ok(Some(opened)) => return Some(opened),
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(list = %id, error = %e, "cannot read cached list body");
+            }
+        }
+        let path = {
+            let files = self
+                .files
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            files.get(id).cloned()
+        }?;
+        match open_pinned(&path, max) {
+            Ok(opened) => opened,
+            Err(e) => {
+                tracing::warn!(list = %id, path = %path.display(), error = %e, "cannot read file list");
+                None
+            }
+        }
+    }
+
+    /// Unpinned lookup in whatever body is on disk now (O(offset) scan).
     fn rule_at(&self, id: &ListId, offset: u32) -> Option<(u32, Arc<str>)> {
+        read_rule_at_path(&self.path_for(id)?, offset)
+    }
+}
+
+/// Opens `path`, reads it (capped) and pins a [`ListText`] to the handle.
+fn open_pinned(path: &Path, max: u64) -> Result<Option<OpenedList>, StoreError> {
+    let Some((file, bytes)) = open_capped(path, max)? else {
+        return Ok(None);
+    };
+    let lines = FileLines::pin(file, &bytes);
+    Ok(Some(match String::from_utf8(bytes) {
+        Ok(s) => OpenedList {
+            body: Arc::from(s),
+            text: lines.map(|l| Arc::new(l) as Arc<dyn ListText>),
+        },
+        Err(e) => {
+            // Offsets refer to the lossily converted text, not to the file,
+            // so keep that text for the (rare) invalid-UTF-8 list.
+            let body: Arc<str> = Arc::from(String::from_utf8_lossy(e.as_bytes()).into_owned());
+            OpenedList {
+                text: Some(Arc::new(MemoryLines(Arc::clone(&body)))),
+                body,
+            }
+        }
+    }))
+}
+
+/// Number of newline bytes before each [`TEXT_BLOCK`]-aligned offset.
+fn newline_checkpoints(bytes: &[u8]) -> Vec<u32> {
+    let mut out = Vec::with_capacity(bytes.len() / TEXT_BLOCK + 1);
+    let mut total = 0u32;
+    for chunk in bytes.chunks(TEXT_BLOCK) {
+        out.push(total);
+        total = total.saturating_add(count_newlines(chunk));
+    }
+    if out.is_empty() {
+        out.push(0);
+    }
+    out
+}
+
+fn count_newlines(bytes: &[u8]) -> u32 {
+    u32::try_from(bytes.iter().filter(|&&b| b == b'\n').count()).unwrap_or(u32::MAX)
+}
+
+/// Rule text of an invalid-UTF-8 list, served from memory.
+#[derive(Debug)]
+struct MemoryLines(Arc<str>);
+
+impl ListText for MemoryLines {
+    fn rule_at(&self, offset: u32) -> Option<(u32, Arc<str>)> {
+        crate::index::rule_at_body(&self.0, offset).map(|(line, text)| (line, Arc::from(text)))
+    }
+}
+
+/// A list body on disk, read through an open handle.
+#[derive(Debug)]
+struct FileLines {
+    file: fs::File,
+    /// Length of the body when it was parsed.
+    len: u64,
+    /// Modification time when it was parsed (detects in-place edits).
+    modified: Option<SystemTime>,
+    /// `newlines_before[k]` = newlines before byte `k * TEXT_BLOCK`.
+    newlines_before: Vec<u32>,
+    cache: Mutex<TextCache>,
+    /// Bytes fetched from disk (tests prove reads stay small).
+    #[cfg(test)]
+    bytes_read: AtomicU64,
+}
+
+impl ListText for FileLines {
+    fn rule_at(&self, offset: u32) -> Option<(u32, Arc<str>)> {
         {
             let mut cache = self
-                .line_cache
+                .cache
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(hit) = cache.get(id, offset) {
+            if let Some(hit) = cache.get(offset) {
                 return Some(hit);
             }
         }
-        let path = self.path_for(id)?;
-        let got = read_rule_at_path(&path, offset)?;
-        let mut cache = self
-            .line_cache
+        let got = self.read_line(offset)?;
+        self.cache
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        cache.insert(id.clone(), offset, got.clone());
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(offset, got.clone());
         Some(got)
     }
 }
 
-#[derive(Debug)]
-struct LineLru {
-    cap: usize,
-    order: VecDeque<(ListId, u32)>,
-    map: HashMap<(ListId, u32), (u32, Arc<str>)>,
+impl FileLines {
+    /// Pins `file`, whose content `bytes` was just read from it. `None` if the
+    /// file changed while it was read (its offsets cannot be trusted).
+    fn pin(file: fs::File, bytes: &[u8]) -> Option<Self> {
+        let meta = file.metadata().ok()?;
+        if meta.len() != bytes.len() as u64 {
+            return None;
+        }
+        Some(Self {
+            file,
+            len: bytes.len() as u64,
+            modified: meta.modified().ok(),
+            newlines_before: newline_checkpoints(bytes),
+            cache: Mutex::new(TextCache::new(TEXT_CACHE_CAP)),
+            #[cfg(test)]
+            bytes_read: AtomicU64::new(0),
+        })
+    }
+
+    /// One positional read of the block containing `offset` up to the end of
+    /// the line (at most `TEXT_BLOCK + LINE_TEXT_MAX` bytes).
+    fn read_line(&self, offset: u32) -> Option<(u32, Arc<str>)> {
+        let off = offset as usize;
+        if u64::from(offset) >= self.len {
+            return None;
+        }
+        // An in-place edit invalidates every offset; refuse rather than lie.
+        let meta = self.file.metadata().ok()?;
+        if meta.len() != self.len || meta.modified().ok() != self.modified {
+            return None;
+        }
+        let block = off / TEXT_BLOCK;
+        let base = block * TEXT_BLOCK;
+        let before = *self.newlines_before.get(block)?;
+        let end = off
+            .saturating_add(LINE_TEXT_MAX + 1)
+            .min(usize::try_from(self.len).ok()?);
+        let mut buf = vec![0u8; end.checked_sub(base)?];
+        let n = read_full_at(&self.file, &mut buf, base as u64).ok()?;
+        #[cfg(test)]
+        self.bytes_read.fetch_add(n as u64, Ordering::Relaxed);
+        if n != buf.len() {
+            return None;
+        }
+        let line = before
+            .saturating_add(count_newlines(buf.get(..off - base)?))
+            .saturating_add(1);
+        let rest = buf.get(off - base..)?;
+        let cut = rest
+            .iter()
+            .position(|&b| b == b'\n')
+            .unwrap_or(rest.len())
+            .min(LINE_TEXT_MAX);
+        let text = String::from_utf8_lossy(rest.get(..cut)?);
+        Some((line, Arc::from(text.trim_end_matches(crate::parser::is_ws))))
+    }
 }
 
-impl LineLru {
+/// Bounded least-recently-used cache of rule texts, keyed by byte offset.
+#[derive(Debug)]
+struct TextCache {
+    cap: usize,
+    tick: u64,
+    map: HashMap<u32, (u64, u32, Arc<str>)>,
+}
+
+impl TextCache {
     fn new(cap: usize) -> Self {
         Self {
-            cap: cap.max(1),
-            order: VecDeque::new(),
+            cap: cap.max(8),
+            tick: 0,
             map: HashMap::new(),
         }
     }
 
-    fn get(&mut self, id: &ListId, offset: u32) -> Option<(u32, Arc<str>)> {
-        let key = (id.clone(), offset);
-        let val = self.map.get(&key)?.clone();
-        if let Some(pos) = self.order.iter().position(|k| k == &key) {
-            self.order.remove(pos);
-        }
-        self.order.push_back(key);
-        Some(val)
+    fn get(&mut self, offset: u32) -> Option<(u32, Arc<str>)> {
+        let e = self.map.get_mut(&offset)?;
+        self.tick += 1;
+        e.0 = self.tick;
+        Some((e.1, Arc::clone(&e.2)))
     }
 
-    fn insert(&mut self, id: ListId, offset: u32, val: (u32, Arc<str>)) {
-        let key = (id, offset);
-        if self.map.insert(key.clone(), val).is_some() {
-            if let Some(pos) = self.order.iter().position(|k| k == &key) {
-                self.order.remove(pos);
-            }
+    fn insert(&mut self, offset: u32, val: (u32, Arc<str>)) {
+        if self.map.len() >= self.cap && !self.map.contains_key(&offset) {
+            // Drop the least recently used eighth in one pass (amortised O(1)).
+            let mut stamps: Vec<u64> = self.map.values().map(|e| e.0).collect();
+            let k = (self.cap / 8).clamp(1, stamps.len());
+            let (_, kth, _) = stamps.select_nth_unstable(k - 1);
+            let limit = *kth;
+            self.map.retain(|_, e| e.0 > limit);
         }
-        self.order.push_back(key);
-        while self.order.len() > self.cap {
-            if let Some(old) = self.order.pop_front() {
-                self.map.remove(&old);
-            }
-        }
+        self.tick += 1;
+        self.map.insert(offset, (self.tick, val.0, val.1));
     }
 }
 
-/// Seeks to `offset` in `path`, counts newlines before it, reads one line.
-fn read_rule_at_path(path: &Path, offset: u32) -> Option<(u32, Arc<str>)> {
-    let mut file = fs::File::open(path).ok()?;
-    let mut remaining = offset as u64;
-    let mut newlines: u32 = 0;
-    let mut buf = [0u8; 8192];
-    while remaining > 0 {
-        let chunk = remaining.min(buf.len() as u64) as usize;
-        let n = file.read(&mut buf[..chunk]).ok()?;
+/// Fills `buf` from `offset` with positional reads; returns the bytes read
+/// (less than `buf.len()` only at end of file).
+fn read_full_at(file: &fs::File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    let mut done = 0usize;
+    while done < buf.len() {
+        let rest = buf.get_mut(done..).unwrap_or(&mut []);
+        let n = read_at(file, rest, offset + done as u64)?;
         if n == 0 {
-            return None;
-        }
-        newlines += buf[..n].iter().filter(|&&b| b == b'\n').count() as u32;
-        remaining -= n as u64;
-    }
-    // Position is already at `offset` after the sequential read.
-    let _ = file.seek(SeekFrom::Start(u64::from(offset))).ok()?;
-    let mut line_buf: Vec<u8> = Vec::new();
-    let mut one = [0u8; 1];
-    loop {
-        match file.read(&mut one) {
-            Ok(0) => break,
-            Ok(_) if one[0] == b'\n' => break,
-            Ok(_) => line_buf.push(one[0]),
-            Err(_) => return None,
-        }
-        if line_buf.len() > 4096 {
             break;
         }
+        done += n;
     }
-    let text = match String::from_utf8(line_buf) {
-        Ok(s) => s,
-        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
-    };
-    let text = text.trim_end_matches([' ', '\t', '\r']);
-    Some((newlines.saturating_add(1), Arc::from(text)))
+    Ok(done)
 }
 
-/// Reads `path` as text, refusing more than `max` bytes. `None` if missing.
-/// Invalid UTF-8 is replaced lossily so one stray byte does not lose a list.
-fn read_capped(path: &Path, max: u64) -> Result<Option<String>, StoreError> {
+#[cfg(unix)]
+fn read_at(file: &fs::File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    std::os::unix::fs::FileExt::read_at(file, buf, offset)
+}
+
+#[cfg(windows)]
+fn read_at(file: &fs::File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_read(file, buf, offset)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn read_at(_file: &fs::File, _buf: &mut [u8], _offset: u64) -> io::Result<usize> {
+    Err(io::Error::from(io::ErrorKind::Unsupported))
+}
+
+/// Unpinned lookup: counts newlines before `offset` from the file start in
+/// 64 KiB positional reads, then reads the line.
+fn read_rule_at_path(path: &Path, offset: u32) -> Option<(u32, Arc<str>)> {
+    let file = fs::File::open(path).ok()?;
+    let mut newlines: u32 = 0;
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut pos = 0u64;
+    let target = u64::from(offset);
+    while pos < target {
+        let want = usize::try_from((target - pos).min(buf.len() as u64)).ok()?;
+        let n = read_full_at(&file, buf.get_mut(..want)?, pos).ok()?;
+        if n != want {
+            return None;
+        }
+        newlines = newlines.saturating_add(count_newlines(buf.get(..n)?));
+        pos += n as u64;
+    }
+    let mut line_buf = vec![0u8; LINE_TEXT_MAX];
+    let n = read_full_at(&file, &mut line_buf, target).ok()?;
+    let line_buf = line_buf.get(..n)?;
+    let cut = line_buf.iter().position(|&b| b == b'\n').unwrap_or(n);
+    let text = String::from_utf8_lossy(line_buf.get(..cut)?);
+    Some((
+        newlines.saturating_add(1),
+        Arc::from(text.trim_end_matches(crate::parser::is_ws)),
+    ))
+}
+
+/// Opens `path` and reads it, refusing more than `max` bytes. `None` if
+/// missing. The returned handle stays valid for positional reads even if the
+/// path is later replaced.
+fn open_capped(path: &Path, max: u64) -> Result<Option<(fs::File, Vec<u8>)>, StoreError> {
     let file = match fs::File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -667,23 +853,51 @@ fn read_capped(path: &Path, max: u64) -> Result<Option<String>, StoreError> {
     }
     // The length check above can race with a growing file; cap the read too.
     let mut buf = Vec::new();
-    file.take(max + 1)
+    (&file)
+        .take(max + 1)
         .read_to_end(&mut buf)
         .map_err(|e| StoreError::io("read", path, e))?;
     if buf.len() as u64 > max {
         return Err(too_large());
     }
-    Ok(Some(match String::from_utf8(buf) {
-        Ok(s) => s,
-        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
-    }))
+    Ok(Some((file, buf)))
 }
 
-/// Temporary sibling path used by [`atomic_write`].
+/// Reads `path` as text, refusing more than `max` bytes. `None` if missing.
+/// Invalid UTF-8 is replaced lossily so one stray byte does not lose a list.
+fn read_capped(path: &Path, max: u64) -> Result<Option<String>, StoreError> {
+    Ok(
+        open_capped(path, max)?.map(|(_, buf)| match String::from_utf8(buf) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        }),
+    )
+}
+
+/// Distinguishes concurrent temp files of one process.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Fresh temporary sibling path used by [`atomic_write`]: hidden, and unique
+/// per process and call so it never collides with (or follows a symlink at)
+/// a path an attacker or an earlier crash left behind.
 fn tmp_path(path: &Path) -> PathBuf {
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
+    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
+    name.push(format!(".{}.{n}.tmp", std::process::id()));
     path.with_file_name(name)
+}
+
+/// Creates a new file exclusively (`create_new`), mode 0o600 on unix.
+fn create_private_new(path: &Path) -> io::Result<fs::File> {
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)
 }
 
 /// Writes `data` to a temp file, fsyncs, renames over `path`, fsyncs the dir.
@@ -691,7 +905,7 @@ fn tmp_path(path: &Path) -> PathBuf {
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), StoreError> {
     let tmp = tmp_path(path);
     let result = (|| {
-        let mut file = fs::File::create(&tmp).map_err(|e| StoreError::io("create", &tmp, e))?;
+        let mut file = create_private_new(&tmp).map_err(|e| StoreError::io("create", &tmp, e))?;
         file.write_all(data)
             .map_err(|e| StoreError::io("write", &tmp, e))?;
         file.sync_all()
@@ -741,6 +955,62 @@ fn create_private_dir(dir: &Path) -> Result<(), StoreError> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A rule near the end of a big body is found with reads that are bounded
+    /// by one block plus one line, never by the distance from the file start.
+    #[test]
+    fn rule_text_reads_are_bounded_and_not_from_file_start() {
+        let dir = std::env::temp_dir().join(format!("dnscraft-store-unit-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.txt");
+        let line_len = "||host0000000.example^\n".len();
+        let lines = 300_000usize; // about 6.9 MB
+        let mut body = String::with_capacity(lines * line_len);
+        for i in 0..lines {
+            body.push_str(&format!("||host{i:07}.example^\n"));
+        }
+        fs::write(&path, &body).unwrap();
+        let (file, bytes) = open_capped(&path, u64::MAX / 2).unwrap().unwrap();
+        let pinned = FileLines::pin(file, &bytes).unwrap();
+        assert!(pinned.newlines_before.len() < bytes.len() / TEXT_BLOCK + 2);
+
+        let bound = (TEXT_BLOCK + LINE_TEXT_MAX + 1) as u64;
+        for i in [lines - 1, lines - 2, lines / 2, 1, 0] {
+            let before = pinned.bytes_read.load(Ordering::Relaxed);
+            let (line, text) = pinned.rule_at((i * line_len) as u32).unwrap();
+            let used = pinned.bytes_read.load(Ordering::Relaxed) - before;
+            assert_eq!(line as usize, i + 1);
+            assert_eq!(&*text, format!("||host{i:07}.example^"));
+            assert!(used <= bound, "read {used} bytes for line {i}");
+        }
+        // A repeat is served from the cache without touching the disk.
+        let before = pinned.bytes_read.load(Ordering::Relaxed);
+        pinned.rule_at(((lines - 1) * line_len) as u32).unwrap();
+        assert_eq!(pinned.bytes_read.load(Ordering::Relaxed), before);
+
+        // Offsets outside the body are refused.
+        assert!(
+            pinned
+                .rule_at(u32::try_from(bytes.len()).unwrap())
+                .is_none()
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn text_cache_is_bounded_and_keeps_recent_entries() {
+        let mut c = TextCache::new(64);
+        for i in 0..64u32 {
+            c.insert(i, (i, Arc::from("x")));
+        }
+        assert!(c.get(0).is_some()); // refresh the oldest
+        for i in 64..200u32 {
+            c.insert(i, (i, Arc::from("x")));
+            assert!(c.map.len() <= 64);
+        }
+        assert!(c.get(199).is_some());
+        assert!(c.get(1).is_none());
+    }
 
     #[test]
     fn store_error_codes_are_unique_and_prefixed() {

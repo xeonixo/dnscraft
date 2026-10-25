@@ -108,11 +108,14 @@ pub enum SkipReason {
     InvalidRegex,
     /// A `/regex/` rule over the compiled size limit.
     RegexTooLarge,
+    /// A glob or regex rule dropped because the per-index cap was reached
+    /// (see [`crate::MAX_REGEX_RULES`]). Never produced by the parser itself.
+    PatternBudget,
 }
 
 impl SkipReason {
     /// All reasons, in the order used by [`SkipCounts::iter`].
-    pub const ALL: [SkipReason; 12] = [
+    pub const ALL: [SkipReason; 13] = [
         SkipReason::Unsupported(UnsupportedKind::Cosmetic),
         SkipReason::Unsupported(UnsupportedKind::BrowserOnly),
         SkipReason::TooLong,
@@ -125,6 +128,7 @@ impl SkipReason {
         SkipReason::InvalidIdna,
         SkipReason::InvalidRegex,
         SkipReason::RegexTooLarge,
+        SkipReason::PatternBudget,
     ];
 
     fn index(self) -> usize {
@@ -141,6 +145,7 @@ impl SkipReason {
             Self::InvalidIdna => 9,
             Self::InvalidRegex => 10,
             Self::RegexTooLarge => 11,
+            Self::PatternBudget => 12,
             // `UnsupportedKind` is non-exhaustive for other crates only; new
             // kinds must be added to `ALL` and here.
             #[allow(unreachable_patterns)]
@@ -162,6 +167,7 @@ impl SkipReason {
             Self::InvalidIdna => "invalid_idna",
             Self::InvalidRegex => "invalid_regex",
             Self::RegexTooLarge => "regex_too_large",
+            Self::PatternBudget => "pattern_budget",
         }
     }
 }
@@ -186,7 +192,7 @@ impl From<&RuleError> for SkipReason {
 
 /// Number of skipped items per [`SkipReason`].
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct SkipCounts([usize; 12]);
+pub struct SkipCounts([usize; 13]);
 
 impl SkipCounts {
     /// Count for one reason.
@@ -202,6 +208,13 @@ impl SkipCounts {
     /// `(reason, count)` for every reason, including zero counts.
     pub fn iter(&self) -> impl Iterator<Item = (SkipReason, usize)> + '_ {
         SkipReason::ALL.iter().map(|r| (*r, self.get(*r)))
+    }
+
+    /// Adds `n` skipped items of `reason`.
+    pub(crate) fn add_n(&mut self, reason: SkipReason, n: usize) {
+        if let Some(c) = self.0.get_mut(reason.index()) {
+            *c = c.saturating_add(n);
+        }
     }
 
     fn add(&mut self, reason: SkipReason) {
@@ -277,7 +290,8 @@ enum Item {
     Skip(RuleError),
 }
 
-fn is_ws(c: char) -> bool {
+/// Whitespace the parser trims around rule lines.
+pub(crate) fn is_ws(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c')
 }
 

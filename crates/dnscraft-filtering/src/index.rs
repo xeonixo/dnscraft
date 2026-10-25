@@ -25,8 +25,9 @@
 //!
 //! Rule text and list bodies are never held by the index: [`Reason`]s are
 //! built lazily, only for the winning rule, by asking a [`RuleTextSource`]
-//! for `(source, offset)` (later: a pread from the cached list file; custom
-//! rules keep their small text in memory). [`MemoryTexts`] is the in-memory
+//! for `(source, offset)` (store-backed snapshots use one small positional
+//! read from the list file they were built from; custom rules keep their
+//! small text in memory). [`MemoryTexts`] is the in-memory
 //! implementation. Wildcard and regex rules live in a separate small vector
 //! and are tested with [`Rule::pattern_matches`] (literal prefilter first).
 //!
@@ -63,8 +64,13 @@
 //! * Only one rewrite is returned (the winner); multi-record answers are not
 //!   assembled from several rules.
 //! * `$badfilter` rules are applied at build time. They remove every rule
-//!   with the same [`Rule::badfilter_key`] from all sources of this index and
-//!   are not matching rules themselves.
+//!   with the same [`Rule::badfilter_key`] from the sources of this index
+//!   they may affect and are not matching rules themselves. A `$badfilter`
+//!   (and a `@@…$dnsrewrite` disable) from a list or service never affects a
+//!   [`SourceKind::Custom`] rule; a custom one affects every source.
+//! * Regex and glob rules are capped per index ([`MAX_REGEX_RULES`],
+//!   [`MAX_GLOB_RULES`], [`REGEX_BUDGET_BYTES`]); excess rules are skipped and
+//!   counted ([`Index::pattern_budget_skipped`]).
 //! * Duplicates (same reversed name, kind, action, `$important` and
 //!   modifiers) from different sources collapse into one entry that remembers
 //!   the first source; the dropped ones are counted per source.
@@ -78,6 +84,14 @@ use crate::modifiers::{DnsRewrite, Modifiers};
 use crate::name::DomainName;
 use crate::rule::{BadfilterKey, MatchKind, Rule, RuleAction};
 use crate::types::{ListId, Reason, Rewrite, RuleSource, SetId, Verdict};
+
+/// Maximum number of regex rules in one index; further ones are skipped.
+pub const MAX_REGEX_RULES: usize = 5_000;
+/// Maximum number of glob (wildcard) rules in one index.
+pub const MAX_GLOB_RULES: usize = 20_000;
+/// Budget for the summed estimated compiled size of all regex rules in one
+/// index (see [`crate::RegexRule::estimated_bytes`]).
+pub const REGEX_BUDGET_BYTES: usize = 32 * 1024 * 1024;
 
 const F_ALLOW: u8 = 1;
 const F_EXACT: u8 = 2;
@@ -202,7 +216,7 @@ pub(crate) fn rule_at_body(body: &str, offset: u32) -> Option<(u32, &str)> {
         .saturating_add(1) as u32;
     let rest = body.get(s..)?;
     let end = rest.find('\n').unwrap_or(rest.len());
-    let text = rest.get(..end)?.trim_end_matches([' ', '\t', '\r']);
+    let text = rest.get(..end)?.trim_end_matches(crate::parser::is_ws);
     Some((line, text))
 }
 
@@ -226,6 +240,50 @@ struct PatternEntry {
     source: u32,
 }
 
+/// Per-index caps on regex and glob rules (hostile lists must not exhaust
+/// memory or make the linear pattern scan unbounded).
+#[derive(Default, Debug)]
+struct PatternBudget {
+    regex: usize,
+    glob: usize,
+    regex_bytes: usize,
+    /// Rules refused by the caps, per source.
+    skipped: Vec<u32>,
+}
+
+impl PatternBudget {
+    /// True if `rule` fits the caps (and is then charged); otherwise counts
+    /// it as skipped for `source`.
+    fn admit(&mut self, rule: &Rule, source: u32) -> bool {
+        let fits = if let Some(rx) = rule.regex() {
+            let cost = rx.estimated_bytes();
+            let ok = self.regex < MAX_REGEX_RULES
+                && self.regex_bytes.saturating_add(cost) <= REGEX_BUDGET_BYTES;
+            if ok {
+                self.regex += 1;
+                self.regex_bytes += cost;
+            }
+            ok
+        } else {
+            let ok = self.glob < MAX_GLOB_RULES;
+            if ok {
+                self.glob += 1;
+            }
+            ok
+        };
+        if !fits {
+            let i = source as usize;
+            if self.skipped.len() <= i {
+                self.skipped.resize(i + 1, 0);
+            }
+            if let Some(c) = self.skipped.get_mut(i) {
+                *c = c.saturating_add(1);
+            }
+        }
+        fits
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct PendingIp {
     /// IPv4 as `u32` or IPv6 as the low... we store key separately.
@@ -246,7 +304,9 @@ pub struct IndexBuilder {
     pending_ip: Vec<PendingIp>,
     mods: Vec<Modifiers>,
     patterns: Vec<PatternEntry>,
-    badfilters: Vec<Rule>,
+    /// `$badfilter` rules with the source that contributed them.
+    badfilters: Vec<(Rule, u16)>,
+    pattern_budget: PatternBudget,
 }
 
 impl IndexBuilder {
@@ -280,6 +340,16 @@ impl IndexBuilder {
         Ok(id)
     }
 
+    /// Regex and glob rules of `source` refused by the per-index caps
+    /// ([`MAX_REGEX_RULES`], [`MAX_GLOB_RULES`], [`REGEX_BUDGET_BYTES`]).
+    /// Feed this into the skip counts as `pattern_budget`.
+    pub fn pattern_budget_skipped(&self, source: SourceId) -> usize {
+        self.pattern_budget
+            .skipped
+            .get(source.0 as usize)
+            .map_or(0, |&c| c as usize)
+    }
+
     /// Adds many rules of one source.
     pub fn add_rules<I: IntoIterator<Item = Rule>>(
         &mut self,
@@ -298,14 +368,17 @@ impl IndexBuilder {
             return Err(IndexError::UnknownSource);
         }
         if rule.modifiers().badfilter {
-            self.badfilters.push(rule);
+            let src = u16::try_from(source.0).map_err(|_| IndexError::TooManySources)?;
+            self.badfilters.push((rule, src));
             return Ok(());
         }
         match rule.kind() {
             MatchKind::Subdomains | MatchKind::Exact => self.add_domain(&rule, source),
             MatchKind::Ip => self.add_ip(&rule, source),
             MatchKind::Pattern | MatchKind::Regex => {
-                if rule.glob().is_some() || rule.regex().is_some() {
+                if (rule.glob().is_some() || rule.regex().is_some())
+                    && self.pattern_budget.admit(&rule, source.0)
+                {
                     self.patterns.push(PatternEntry {
                         rule,
                         source: source.0,
@@ -405,6 +478,7 @@ impl IndexBuilder {
             mods,
             patterns,
             badfilters,
+            pattern_budget,
         } = self;
         let nsrc = kinds.len();
         // Sort pending in place (no parallel u32 index array) to cut the peak.
@@ -424,48 +498,67 @@ impl IndexBuilder {
                 .then(a.text_off.cmp(&b.text_off))
         });
 
+        // `$badfilter` scope: a rule from a list or service never removes a
+        // custom rule; a custom `$badfilter` may remove any rule.
+        let is_custom: Vec<bool> = kinds
+            .iter()
+            .map(|k| matches!(k, SourceKind::Custom(_)))
+            .collect();
+        let custom_src = |src: u16| is_custom.get(usize::from(src)).copied().unwrap_or(false);
         let mut badfiltered = 0usize;
-        let mut pat_keys: HashSet<BadfilterKey> = HashSet::new();
-        for bf in &badfilters {
+        let mut keys_from_custom: HashSet<BadfilterKey> = HashSet::new();
+        let mut keys_from_other: HashSet<BadfilterKey> = HashSet::new();
+        for (bf, bf_src) in &badfilters {
+            let bf_custom = custom_src(*bf_src);
             if let Some(d) = bf.domain() {
-                badfiltered += remove_matching(&arena, &mut pending, &mods, bf, d);
+                badfiltered += remove_matching(&arena, &mut pending, &mods, bf, d, |target| {
+                    bf_custom || !custom_src(target)
+                });
             } else if let Some(ip) = bf.ip() {
-                badfiltered += remove_matching_ip(&mut pending_ip, bf, ip);
+                badfiltered += remove_matching_ip(&mut pending_ip, bf, ip, |target| {
+                    bf_custom || !custom_src(target)
+                });
+            } else if bf_custom {
+                keys_from_custom.insert(bf.badfilter_key());
             } else {
-                pat_keys.insert(bf.badfilter_key());
+                keys_from_other.insert(bf.badfilter_key());
             }
         }
-        let patterns: Vec<PatternEntry> = if pat_keys.is_empty() {
-            patterns
-        } else {
-            patterns
-                .into_iter()
-                .filter(|p| {
-                    let hit = pat_keys.contains(&p.rule.badfilter_key());
-                    badfiltered += usize::from(hit);
-                    !hit
-                })
-                .collect()
-        };
+        let patterns: Vec<PatternEntry> =
+            if keys_from_custom.is_empty() && keys_from_other.is_empty() {
+                patterns
+            } else {
+                patterns
+                    .into_iter()
+                    .filter(|p| {
+                        let key = p.rule.badfilter_key();
+                        let target_custom = custom_src(u16::try_from(p.source).unwrap_or(u16::MAX));
+                        let hit = keys_from_custom.contains(&key)
+                            || (!target_custom && keys_from_other.contains(&key));
+                        badfiltered += usize::from(hit);
+                        !hit
+                    })
+                    .collect()
+            };
 
-        // Mark duplicates while pending is name-sorted.
+        // Mark duplicates while pending is name-sorted. Entries removed by
+        // `$badfilter` stay inside their name group (they are skipped, they
+        // do not end it), so later duplicates in the group are still found.
         let mut dup_by_source = vec![0u32; nsrc];
         let mut duplicates = 0usize;
         {
-            let mut i = 0usize;
-            while i < pending.len() {
-                if pending[i].flags & F_REMOVED != 0 {
-                    i += 1;
-                    continue;
+            let mut start = 0usize;
+            while start < pending.len() {
+                let name = pname(&arena, &pending[start]);
+                let mut end = start + 1;
+                while end < pending.len() && pname(&arena, &pending[end]) == name {
+                    end += 1;
                 }
-                let name = pname(&arena, &pending[i]);
-                let group_start = i;
-                i += 1;
-                while i < pending.len()
-                    && pending[i].flags & F_REMOVED == 0
-                    && pname(&arena, &pending[i]) == name
-                {
-                    if is_dup_of_group(&pending, group_start, i, &mods) {
+                for i in start..end {
+                    if pending[i].flags & F_REMOVED != 0 {
+                        continue;
+                    }
+                    if is_dup_of_group(&pending, start, i, &mods) {
                         let src = pending[i].source;
                         if let Some(c) = dup_by_source.get_mut(usize::from(src)) {
                             *c += 1;
@@ -473,8 +566,8 @@ impl IndexBuilder {
                         duplicates += 1;
                         pending[i].flags |= F_REMOVED;
                     }
-                    i += 1;
                 }
+                start = end;
             }
         }
 
@@ -576,6 +669,7 @@ impl IndexBuilder {
             dup_by_source,
             duplicates,
             badfiltered,
+            pattern_budget_skipped: pattern_budget.skipped.iter().map(|&c| c as usize).sum(),
         };
         let mut mods = mods;
         for p in &pending {
@@ -667,7 +761,12 @@ fn same_side_mods(a: &Modifiers, b: &Modifiers) -> bool {
     a.dnstype == b.dnstype && a.denyallow == b.denyallow && a.dnsrewrite == b.dnsrewrite
 }
 
-fn remove_matching_ip(pending_ip: &mut [PendingIp], bf: &Rule, ip: IpAddr) -> usize {
+fn remove_matching_ip(
+    pending_ip: &mut [PendingIp],
+    bf: &Rule,
+    ip: IpAddr,
+    may_remove: impl Fn(u16) -> bool,
+) -> usize {
     let mut flags = 0u8;
     if bf.action() == RuleAction::Allow {
         flags |= F_ALLOW;
@@ -684,7 +783,7 @@ fn remove_matching_ip(pending_ip: &mut [PendingIp], bf: &Rule, ip: IpAddr) -> us
         if p.key_v4 != want4 || p.key_v6 != want6 {
             continue;
         }
-        if p.flags & !F_REMOVED != flags {
+        if p.flags & !F_REMOVED != flags || !may_remove(p.source) {
             continue;
         }
         p.flags |= F_REMOVED;
@@ -700,6 +799,7 @@ fn remove_matching(
     mods: &[Modifiers],
     bf: &Rule,
     d: &DomainName,
+    may_remove: impl Fn(u16) -> bool,
 ) -> usize {
     let mut flags = domain_flags(bf);
     let side = has_side_mods(bf.modifiers());
@@ -714,7 +814,7 @@ fn remove_matching(
         if pname(arena, p) != want {
             break;
         }
-        if p.flags & !F_REMOVED != flags {
+        if p.flags & !F_REMOVED != flags || !may_remove(p.source) {
             continue;
         }
         if side
@@ -778,6 +878,7 @@ pub struct Index {
     dup_by_source: Vec<u32>,
     duplicates: usize,
     badfiltered: usize,
+    pattern_budget_skipped: usize,
 }
 
 type Key = (u8, u32, u32, u32, u8, u32);
@@ -786,6 +887,49 @@ type Key = (u8, u32, u32, u32, u8, u32);
 struct Best<'a> {
     key: Key,
     rewrite: Option<&'a Rewrite>,
+}
+
+/// Rewrite candidates, kept apart by origin so that a `@@…$dnsrewrite` from a
+/// list or service cannot cancel a custom rewrite (a custom one cancels all).
+#[derive(Default)]
+struct Rewrites<'a> {
+    custom: Option<Best<'a>>,
+    other: Option<Best<'a>>,
+    custom_disabled: bool,
+    other_disabled: bool,
+}
+
+impl<'a> Rewrites<'a> {
+    fn disable(&mut self, from_custom: bool) {
+        if from_custom {
+            self.custom_disabled = true;
+        } else {
+            self.other_disabled = true;
+        }
+    }
+
+    fn offer(&mut self, from_custom: bool, cand: Best<'a>) {
+        let slot = if from_custom {
+            &mut self.custom
+        } else {
+            &mut self.other
+        };
+        if slot.as_ref().is_none_or(|b| cand.key < b.key) {
+            *slot = Some(cand);
+        }
+    }
+
+    /// The best rewrite that no disable rule cancels.
+    fn winner(&self) -> Option<Best<'a>> {
+        let custom = self.custom.filter(|_| !self.custom_disabled);
+        let other = self
+            .other
+            .filter(|_| !self.custom_disabled && !self.other_disabled);
+        match (custom, other) {
+            (Some(a), Some(b)) => Some(if a.key <= b.key { a } else { b }),
+            (a, b) => a.or(b),
+        }
+    }
 }
 
 impl Index {
@@ -823,6 +967,11 @@ impl Index {
         self.dup_by_source
             .get(source.0 as usize)
             .map_or(0, |&c| c as usize)
+    }
+
+    /// Regex and glob rules dropped by the per-index caps.
+    pub fn pattern_budget_skipped(&self) -> usize {
+        self.pattern_budget_skipped
     }
 
     /// Rules removed by `$badfilter`.
@@ -969,8 +1118,7 @@ impl Index {
         let rev = rev.get(..n).unwrap_or(&[]);
 
         let mut best: Option<Best<'_>> = None;
-        let mut best_rw: Option<Best<'_>> = None;
-        let mut rw_disabled = false;
+        let mut rewrites = Rewrites::default();
 
         let mut hi = self.flags.len();
         let mut end = n;
@@ -979,16 +1127,7 @@ impl Index {
             let lo = self.lower_bound(p, hi);
             let mut i = lo;
             while i < self.flags.len() && self.name_at(i) == p {
-                self.consider_domain(
-                    i,
-                    end == n,
-                    end,
-                    text,
-                    qtype,
-                    &mut best,
-                    &mut best_rw,
-                    &mut rw_disabled,
-                );
+                self.consider_domain(i, end == n, end, text, qtype, &mut best, &mut rewrites);
                 i += 1;
             }
             hi = lo;
@@ -1012,19 +1151,10 @@ impl Index {
                 1,
                 u32::try_from(idx).unwrap_or(u32::MAX),
             );
-            self.offer(
-                m,
-                action,
-                text,
-                qtype,
-                key,
-                &mut best,
-                &mut best_rw,
-                &mut rw_disabled,
-            );
+            self.offer(m, action, text, qtype, key, &mut best, &mut rewrites);
         }
 
-        let winner = match (best, best_rw.filter(|_| !rw_disabled)) {
+        let winner = match (best, rewrites.winner()) {
             (Some(a), Some(b)) => Some(if a.key <= b.key { a } else { b }),
             (a, b) => a.or(b),
         };
@@ -1062,8 +1192,7 @@ impl Index {
         text: &str,
         qtype: u16,
         best: &mut Option<Best<'a>>,
-        best_rw: &mut Option<Best<'a>>,
-        rw_disabled: &mut bool,
+        rewrites: &mut Rewrites<'a>,
     ) {
         let f = self.flags.get(i).copied().unwrap_or(0);
         if f & F_EXACT != 0 && !full {
@@ -1094,8 +1223,7 @@ impl Index {
             qtype,
             key,
             best,
-            best_rw,
-            rw_disabled,
+            rewrites,
         );
     }
 
@@ -1109,8 +1237,7 @@ impl Index {
         qtype: u16,
         key: Key,
         best: &mut Option<Best<'a>>,
-        best_rw: &mut Option<Best<'a>>,
-        rw_disabled: &mut bool,
+        rewrites: &mut Rewrites<'a>,
     ) {
         if m.dnstype.as_ref().is_some_and(|t| !t.matches(qtype)) {
             return;
@@ -1120,16 +1247,16 @@ impl Index {
                 return;
             }
         }
+        let custom = self.is_custom_source(key.2);
         match &m.dnsrewrite {
-            Some(DnsRewrite::Disable) => *rw_disabled = true,
-            Some(DnsRewrite::Set(rw)) => {
-                if best_rw.as_ref().is_none_or(|b| key < b.key) {
-                    *best_rw = Some(Best {
-                        key,
-                        rewrite: Some(rw),
-                    });
-                }
-            }
+            Some(DnsRewrite::Disable) => rewrites.disable(custom),
+            Some(DnsRewrite::Set(rw)) => rewrites.offer(
+                custom,
+                Best {
+                    key,
+                    rewrite: Some(rw),
+                },
+            ),
             _ => {
                 let _ = action;
                 if best.as_ref().is_none_or(|b| key < b.key) {
@@ -1137,6 +1264,10 @@ impl Index {
                 }
             }
         }
+    }
+
+    fn is_custom_source(&self, source: u32) -> bool {
+        matches!(self.kinds.get(source as usize), Some(SourceKind::Custom(_)))
     }
 
     fn reason(&self, key: Key) -> Reason {

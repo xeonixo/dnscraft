@@ -46,8 +46,8 @@ pub use engine::{FilterEngine, ListSelection, ListStatus, ReloadReport};
 pub use error::{FilterError, IdError, NameError, RuleError, UnsupportedKind};
 pub use fetch::{FetchError, FetchOutcome, Fetcher, FetcherConfig, MAX_REDIRECTS};
 pub use index::{
-    ENTRY_OVERHEAD_BYTES, Index, IndexBuilder, IndexError, IndexMemory, MemoryTexts,
-    RuleTextSource, SourceId, SourceKind,
+    ENTRY_OVERHEAD_BYTES, Index, IndexBuilder, IndexError, IndexMemory, MAX_GLOB_RULES,
+    MAX_REGEX_RULES, MemoryTexts, REGEX_BUDGET_BYTES, RuleTextSource, SourceId, SourceKind,
 };
 pub use name::{DomainName, Labels, Suffixes};
 pub use parser::{
@@ -65,7 +65,8 @@ pub use services::{
     ServicesUpdateReport, ServicesUrls, seed_services_cache, update_services_catalog,
 };
 pub use set::{
-    DEFAULT_UPDATE_INTERVAL, FilterConfig, FilterSetConfig, ListBodies, ListConfig, SnapshotError,
+    DEFAULT_UPDATE_INTERVAL, FilterConfig, FilterSetConfig, ListBodies, ListConfig, ListText,
+    OpenedList, SnapshotError,
 };
 pub use snapshot::{CustomFacts, ListFacts, SharedIndex, Snapshot, SnapshotBuilder};
 pub use stats::{FilterStats, ListStats, SetStats};
