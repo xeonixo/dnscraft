@@ -65,13 +65,16 @@ resolver and small helpers those modules call.
 
 ### Certificate set
 
-- Names (required): `dns.<public_domain>`, `*.dns.<public_domain>` (Client-ID SNIs).
-- Optional extra SANs: configurable list (e.g. bare apex) — see Open Questions.
-- Key type: **ECDSA P-256** default (instant-acme / rustls friendly). RSA-2048 only if
-  owner later requires a fallback for a broken client (off by default).
+- Names (**default and required every order**): exactly
+  `dns.<public_domain>` and `*.dns.<public_domain>` (Client-ID SNIs + node
+  hostnames like `node1.dns.<public_domain>`). No extra SANs unless the owner
+  later adds an explicit allow-list in config (empty by default).
+- Key type: **ECDSA only** — `ecdsa_p256` (default) or `ecdsa_p384`. No RSA.
 - One leaf + chain PEM on disk; private key separate file, never logged, never
   included in config export/backup (SPEC.md).
 - Staging switch: `acme.directory = "staging" | "production" | <url>` for tests.
+- Same certificate set is shared by **all** encrypted listeners (DoT/DoH/DoQ,
+  ports 443 and 853).
 
 ### Issuance and renewal
 
@@ -135,25 +138,36 @@ pub fn accept_public_sni(
 
 - **Who renews:** the **master** only obtains/renews the ACME certificate.
   Sub-nodes never create ACME orders while they know a master exists.
-- **Meanwhile:** sub-nodes serve from their local store copy; when cluster sync
-  exists, the master pushes cert+key (encrypted channel) — details belong in
-  **SPEC-cluster.md**. Until then, each node that enables public DoH/DoT must
-  either be the master or receive the files by an admin-approved out-of-band
-  copy (document as interim).
-- **DynDNS:** each node that has `public_listener = true` may update **its own**
-  configured hostname’s A/AAAA (or the shared hostname if only one node is
-  exposed). Avoid two nodes fighting over the same record — see Open Questions.
+- **Distribution:** the master **pushes the certificate and private key** to
+  sub-nodes over the cluster channel so every node can terminate TLS for
+  `*.dns.<public_domain>`. Protocol, encryption, and conflict rules belong in
+  **SPEC-cluster.md**. Until cluster exists, interim: only the master needs a
+  live ACME path; sub-nodes load whatever was last synced/copied.
+- **DynDNS:** **per-node hostname** under the wildcard, e.g.
+  `node1.dns.<public_domain>`, `node2.dns.<public_domain>` — each public node
+  updates **only its own** A/AAAA. No shared single record contended by peers.
+  Client-ID SNIs (`<id>.dns.<public_domain>`) still work on any node that has
+  the cert; mobile profiles / DDR point at the chosen node hostname.
 - Public DoH/DoT remains **per-node, off by default** (SPEC.md).
 
 ### DynDNS
 
+- Lives **inside this module** (not a separate crate) — same Cloudflare token
+  and zone as ACME.
 - Interval: default **5 minutes**, ±10 % jitter; also on startup and on
   “update now”.
 - Discover public IPv4 and IPv6 **separately** (echo URL configurable; default
   Cloudflare `cdn-cgi/trace`).
 - Compare to the current Cloudflare record content; **PATCH/PUT only on change**.
-- Records: DNS-only (`proxied: false`), TTL automatic or 300.
+- Records: DNS-only (`proxied: false`), TTL automatic or 300; hostname is the
+  **node’s** public name (see Multi-node).
 - Failures set `stale`/error codes without touching the certificate path.
+
+### ACME DNS-01 propagation
+
+- After writing `_acme-challenge` TXT, poll the zone’s Cloudflare authoritative
+  nameservers every **5 s** until the expected TXT appears or **2 minutes**
+  elapse → then `tls.acme.propagation`.
 
 ### Error codes
 
@@ -202,16 +216,18 @@ impl TlsEngine {
 
 ```toml
 [tls]
-public_domain = "example.com"          # → dns.example.com + *.dns.example.com
-extra_sans = []                        # open question
-key_type = "ecdsa_p256"
+public_domain = "example.com"          # cert SANs: dns.example.com + *.dns.example.com
+extra_sans = []                        # empty by default; not used unless explicitly set later
+key_type = "ecdsa_p256"                # or "ecdsa_p384"
 renew_before = "30d"
 expiry_warn = "14d"
 
 [tls.acme]
 directory = "production"               # or "staging"
-# email optional contact for the ACME account
+# contact email: required in the UI / first-run (admin fills it in)
 email = "admin@example.com"
+propagation_timeout = "2m"
+propagation_poll = "5s"
 
 [tls.cloudflare]
 # token from DNSCRAFT_CLOUDFLARE_API_TOKEN / _FILE
@@ -220,7 +236,8 @@ zone_id = ""
 
 [tls.dyndns]
 enabled = true
-hostname = "dns.example.com"           # record to update; usually dns.<public_domain>
+# per-node public hostname under the wildcard (not shared across nodes)
+hostname = "node1.dns.example.com"
 interval = "5m"
 echo_url = "https://cloudflare.com/cdn-cgi/trace"
 ipv4 = true
@@ -242,10 +259,10 @@ proxied = false
 - Always: ring-only crypto features; last-good cert on failure; secrets via env/
   `*_FILE`; private keys never in logs or exports; DNS-only DynDNS records.
 - Ask first: new dependencies beyond `instant-acme` (ring features), `rustls`,
-  existing `reqwest`; RSA fallback; moving DynDNS to a separate crate; changing
-  who renews in a cluster.
-- Never: aws-lc; default insecure TLS to Cloudflare/ACME; real external APIs in
-  automated tests; register Client IDs inside this crate.
+  existing `reqwest`; adding non-empty `extra_sans`; changing master-only renew
+  or per-node DynDNS.
+- Never: aws-lc; RSA keys; default insecure TLS to Cloudflare/ACME; real external
+  APIs in automated tests; register Client IDs inside this crate.
 
 ## Success Criteria
 
@@ -262,20 +279,22 @@ proxied = false
 
 ## Open Questions
 
-1. **Extra SANs** — any names beyond `dns.<domain>` / `*.dns.<domain>` (e.g. apex,
-   `doh.<domain>`)?
-2. **RSA fallback** — ever needed, or ECDSA P-256 only?
-3. **DynDNS module boundary** — keep inside `tls` (as SPEC.md feature table says)
-   or a tiny sibling crate? Propose: **keep in `tls`**.
-4. **Multi-node DynDNS** — single shared `dns.<domain>` A/AAAA (only one public
-   node), vs per-node hostnames (`node1.dns.<domain>`) each with its own record?
-5. **Master-only renewal** — confirm; sub-nodes never talk to ACME while clustered?
-6. **ACME contact email** — required in UI, optional, or omit?
-7. **Propagation timeout** — propose 2 minutes with 5 s polls; OK?
-8. **Wildcard + apex in one order** — confirm both identifiers every time (needed
-   for Client IDs + DDR hostname).
-9. **DoH on 443 vs separate cert** — same cert set for all listeners?
+None — owner decisions locked 2026-10-25.
 
-## Decisions
+## Decisions (owner, 2026-10-25)
 
-None yet — draft for owner review (2026-10-25).
+1. **SANs:** default (and every order) is exactly `dns.<domain>` and
+   `*.dns.<domain>`; `extra_sans` stays empty unless explicitly extended later.
+2. **Keys:** ECDSA only — P-256 (default) and P-384 selectable; **no RSA**.
+3. **DynDNS:** stays **inside `tls`** (not a separate module/crate). Q3 was only
+   “where does the code live?” — answered: same crate as ACME/certs.
+4. **Multi-node DynDNS:** **per-node hostname** (e.g. `node1.dns.<domain>`), each
+   node updates only its own A/AAAA.
+5. **Renewal:** master only; master **pushes cert+key to sub-nodes** (SPEC-cluster
+   for the channel).
+6. **ACME email:** admin **fills it in** (required in UI / first-run).
+7. **Propagation:** 2 minutes timeout, 5 s polls — accepted as sensible.
+8. **Order identifiers:** always apex + wildcard together.
+9. **Listeners:** one cert set for all encrypted listeners (443 and 853).
+10. Spec status: **decisions locked**; formal “approved” for P1 still to be marked
+    by the owner (no code before that).
