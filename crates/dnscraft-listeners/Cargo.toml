@@ -13,12 +13,13 @@ workspace = true
 
 [dependencies]
 dnscraft-policy = { path = "../dnscraft-policy" }
+dnscraft-proto = { path = "../dnscraft-proto" }
+dnscraft-resolver = { path = "../dnscraft-resolver" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 socket2 = { workspace = true }
 
 [dev-dependencies]
 dnscraft-filtering = { path = "../dnscraft-filtering" }
-dnscraft-proto = { path = "../dnscraft-proto" }
-dnscraft-resolver = { path = "../dnscraft-resolver" }
+proptest = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }

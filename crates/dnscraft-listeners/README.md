@@ -9,11 +9,11 @@ Formal requirements: [`SPEC-listeners.md`](../../SPEC-listeners.md).
 
 ## Status
 
-N1: crate skeleton — configuration validation, stable error codes, injectable
-`Clock`, `QueryHandler` trait (with `PolicyEngine` impl and `FakeHandler`), and
-`bind_udp` / `bind_tcp` helpers that set `IPV6_V6ONLY` before bind.
+N1: configuration, errors, clock, handler, sockets.
+N2: transport-independent [`handle_wire`](fn.handle_wire.html) — decode /
+validate / EDNS (ECS strip, OPT echo, EDE, padding) / encode with size limit.
 
-Transports, admission, message core and runtime land in later tasks (N2–N14).
+Admission, transports and runtime land in later tasks (N3–N14).
 
 ## Crate layout (so far)
 
@@ -24,10 +24,13 @@ Transports, admission, message core and runtime land in later tasks (N2–N14).
 | `clock` | `Clock` / `ManualClock` / `SystemClock` |
 | `handler` | `QueryHandler` + `FakeHandler` |
 | `socket` | `bind_udp` / `bind_tcp` via `socket2` |
+| `core` | `handle_wire` / `QueryMeta` / `QueryEvent` |
+| `edns` | ECS strip, OPT echo, padding (block 468) |
 
 ## Tests
 
 ```bash
 cargo test -p dnscraft-listeners config
 cargo test -p dnscraft-listeners socket
+cargo test -p dnscraft-listeners core
 ```

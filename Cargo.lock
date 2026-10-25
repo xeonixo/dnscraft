@@ -489,6 +489,7 @@ dependencies = [
  "dnscraft-policy",
  "dnscraft-proto",
  "dnscraft-resolver",
+ "proptest",
  "socket2",
  "thiserror",
  "tokio",

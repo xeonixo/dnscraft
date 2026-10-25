@@ -21,7 +21,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | N1 done; **next: N2** (Phase 1: N2–N5, STOP at Checkpoint B) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
+| `listeners` | N2 done; **next: N3** (Phase 1: N3–N5, STOP at Checkpoint B) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -34,6 +34,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-25 — **listeners: N2 message core.** `handle_wire(bytes, QueryMeta, handler) -> Option<HandleWireResult>`: header-less / QR=1 → None; FORMERR/NOTIMP/REFUSED/BADVERS before policy; `source.to_canonical()`; ECS stripped; OPT echo `min(client, udp_payload_max)` + EDE only when client sent OPT; id 0 for DoH/DoQ; RD copy, RA set; `encode_with_limit` (TC); pad to multiple of 468 when `pad` + OPT (RFC 8467). Returns `QueryEvent` when the handler ran (N11 sink later). Deps: `dnscraft-proto`, `dnscraft-resolver` (direct); dev `proptest`. Tests: 17 core (+ padding property, IPv4-mapped, proptest 1024). DoD green; `cargo tree -i aws-lc-rs` / `-i openssl-sys` empty; `cargo deny check` ok. Next: N3.
 
 - 2026-10-25 — **listeners: N1 crate skeleton.** New workspace member `crates/dnscraft-listeners`: `ListenersConfig` / `ListenerConfig` / `Limits` / `PublicConfig` / `DdrConfig` + `validate()` (unique ids, public plaintext, public requires `enabled`, h3 only on doh, UDP/TCP bind conflicts, limits > 0, `N/s` rates); `ListenersError` with stable `code()`s + uniqueness test; `Clock` / `ManualClock` / `SystemClock`; `QueryHandler` + `PolicyEngine` impl + `FakeHandler`; `bind_udp` / `bind_tcp` via `socket2` 0.6.5 (default features; IPv6 → `set_only_v6(true)` before bind). Deps added: `dnscraft-policy`, `thiserror`, `tokio`, `socket2` 0.6.5 (workspace). No quinn/hyper/h3 yet. Tests: 20 (3 lib + 14 config + 3 socket). DoD green. Crypto tree:
   ```

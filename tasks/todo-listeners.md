@@ -95,10 +95,10 @@ when the client sent OPT; encode with `size_limit` (TC on truncation); pad to a 
 `pad` and OPT present (RFC 8467). Also returns the `QueryEvent` data for N11 (no sink yet).
 
 **Acceptance criteria:**
-- [ ] Table test per rule above (FORMERR/NOTIMP/REFUSED/BADVERS/TC/RA/RD/id/ECS/EDE/padding)
-- [ ] `::ffff:192.0.2.1` source reaches the handler / `RequestContext` as `192.0.2.1`
-- [ ] Padding length property: padded size % 468 == 0 and ≤ limit
-- [ ] Never panics on arbitrary input (proptest ≥ 1024 cases; fuzz target added in N13)
+- [x] Table test per rule above (FORMERR/NOTIMP/REFUSED/BADVERS/TC/RA/RD/id/ECS/EDE/padding)
+- [x] `::ffff:192.0.2.1` source reaches the handler / `RequestContext` as `192.0.2.1`
+- [x] Padding length property: padded size % 468 == 0 and ≤ limit
+- [x] Never panics on arbitrary input (proptest ≥ 1024 cases; fuzz target added in N13)
 
 **Verification:** `cargo test -p dnscraft-listeners core`
 
