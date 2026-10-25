@@ -29,9 +29,9 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 | 8 | Invented fixtures only; DoD green | mock gateway; `fmt` / `clippy -D warnings` / `cargo test -p dnscraft-clients` |
 
 Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.28 %** lines / **85.49 %** regions.
-- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L11 done**; Checkpoints A and B passed (2026-10-25). Next: **Checkpoint C** (security review + owner staging acceptance).
+- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L11 + L12b done**; Checkpoints A and B passed (2026-10-25). Next: **Checkpoint C** re-review (security review + owner staging acceptance).
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P11 + P10b + P9b done. Checkpoint A/B passed.** Next: P12 (STOP for Claude review of P10b/P9b/P11 first).
-- Blockers: clients Checkpoint B awaiting Lead re-review of C11/C11b. T2 open (bundled with L12).
+- Blockers: clients Checkpoint B awaiting Lead re-review of C11/C11b.
 
 ### tls success criteria (SPEC-tls.md)
 
@@ -48,6 +48,10 @@ Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86
 Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **80.32 %** lines / **79.82 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
 
 ## Log
+
+- 2026-10-25 — tls **L12b** + **cargo-deny** + filtering **T2** done (Cursor, `b7bb423` / `ac07b6d` / `c3c136c`). `tls.store.permissions` for `key.pem` + `account.json` (0644/0640); engine open soft-fails (refuse open key, keep good cert when only account is open); zeroize `Secret`/`KeyPem`; ACME `Retry-After` via `ReqwestHttpClient`; `CloudflareHttp.status`; deleted `retry_after_from_error`. **Mutants killed:** group-readable 0640 key/account; `NODE1.DNS.Example.COM` → `SniKind::NodeHostname` + `accept_public_sni` false. `deny.toml` + CI `EmbarkStudios/cargo-deny-action@v2.1.1`; T2 classifies via `rustls::Error` chain (self-signed / plain HTTP on https / refused). llvm-cov **80.32 %** lines. DoD green for tls+filtering; `cargo deny check` green; `cargo tree -i aws-lc-rs` / `openssl-sys` empty. **STOP for Claude Checkpoint C re-review** (do not tick Independent security review / Owner approval).
+
+- 2026-10-25 — **Claude review policy P10b (628dd28), P9b (4fe12f5), P11 (a9e7bef): accepted with small follow-ups (P11b) before P12.** fmt/clippy/tests green. Mutation probes (9): caught — SVCB hints not stripped, malformed ipv4hint ignored, emptied ipv4hint kept, no pause trace, global reported as profile scope, removed view counters kept, no schedules breadcrumb. **Survived (required):** (1) dropping `strip_address_rrs(&mut message.additionals)` from `rebind::run` fails no test — `additional_section_private_a_stripped` calls the helper directly, the wiring in `run()` is untested; (2) weakening the ipv6hint length check to `% 4` fails no test — a 20-byte ipv6hint would then be truncated silently (chunks_exact drops the tail), i.e. exactly the data loss the malformed rule forbids; only the ipv4 malformed case is tested. **Required (P11):** schedule window validation was deferred from the P1 review to P11 but is missing — `start < end`, `end ≤ 7 d`, unique schedule ids; SafeSearch `providers` unvalidated (unknown / duplicate names accepted) — validate against the spec list (google, bing, youtube, duckduckgo) with stable codes. Nits: empty hint value (len 0) is treated as valid and dropped without counting → record rewritten while AD stays set — treat empty as malformed; ipv4/ipv6 hint branches in `strip_svcb_hints` are duplicates — one helper parameterised by address size; `safesearch::run` takes an unused `ctx` (`let _ = ctx`) and returns a `Flow` that is discarded; `NotApplied { step: &str }` → an enum. Consider (verify RFC 9460 §8 first): if the `mandatory` param (key 0) lists key 4/6 and the hint is dropped, the record becomes invalid for clients — then keep an empty-safe hint or drop the record.
 
 - 2026-10-25 — Policy **P11** done (Cursor, `a9e7bef`): SafeSearch/schedules config surface — steps 5–6 (+ schedules) emit `DecisionStep::NotApplied` when enabled; `PolicyStatus::{safesearch,schedules}_applied = false`; unknown schedule filter set rejected at snapshot build. Tests `tests/safesearch.rs`. DoD green for `dnscraft-policy`. **STOP before P12** for Claude review of P10b / P9b / P11.
 
