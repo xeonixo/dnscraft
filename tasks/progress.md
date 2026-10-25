@@ -15,7 +15,7 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Next: P1 plan.
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Next: P1 plan.
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Next: P1 plan.
-- Blockers: none for coding; next: formal approve → P1 plans, and/or T1 tech debt; filtering Checkpoint D when ready.
+- Blockers: none. Cursor: T1, R2, then P1 (clients → tls → policy). Claude: filtering D1a/D1b, then Checkpoint D re-review.
 
 ## Log
 
