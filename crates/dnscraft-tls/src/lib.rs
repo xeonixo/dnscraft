@@ -9,7 +9,8 @@
 //! Client-ID registry (that is `policy` / `control-api`).
 //!
 //! Phase-1 foundation (this crate so far): [`TlsConfig`], [`TlsError`],
-//! [`Clock`] / [`ManualClock`], and [`read_secret`].
+//! [`Clock`] / [`ManualClock`], [`read_secret`], and SNI helpers
+//! ([`parse_client_id_sni`], [`accept_public_sni`]).
 
 #![deny(missing_docs)]
 
@@ -17,6 +18,7 @@ mod clock;
 mod config;
 mod error;
 mod secret;
+mod sni;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{
@@ -26,3 +28,7 @@ pub use config::{
 };
 pub use error::TlsError;
 pub use secret::{CLOUDFLARE_API_TOKEN_ENV, Secret, read_secret};
+pub use sni::{
+    ClientIdRegistry, FIXED_RESERVED_LABELS, ReservedLabels, SniKind, accept_public_sni,
+    parse_client_id_sni,
+};

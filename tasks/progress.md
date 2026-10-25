@@ -13,11 +13,13 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
-- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1 done** (crate skeleton). Next: L2.
+- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L2 done**. Next: L3 (store + CertResolver).
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1 done** (crate skeleton, config, snapshot validation, error codes). Next: P2 selection.
 - Blockers: none. Build order: policy (P2…) and tls (L2…) next, clients last (owner runs O1 before C7). T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — L2 done (Cursor): SNI helpers — `ReservedLabels` (fixed `dns`/`www`/`api`/`admin`/`ns` + node names), `SniKind`, `parse_client_id_sni` (case-insensitive, trailing dot, exactly one label under `dns.<domain>`), `ClientIdRegistry`, `accept_public_sni` (missing/Apex/NodeHostname/Other → false; ClientId only if registered). Doc: Apex/NodeHostname are not unknown-ID ban strikes. Table + proptest tests. DoD green.
 
 - 2026-10-25 — L1 done (Cursor): `crates/dnscraft-tls` skeleton — `TlsConfig` / `AcmeConfig` / `DynDnsConfig` / `CloudflareConfig` with validate (normalise domain via idna, empty `extra_sans`, `proxied = false`, hostname `<label>.dns.<domain>` in `reserved_labels`, ACME email when enabled, HTTPS-only URLs + loopback test hatch); `validate_public_entry` → `tls.dyndns.entry_conflict`; all SPEC error codes; `Clock`/`ManualClock`; `read_secret` + redacted `Secret` (`DNSCRAFT_CLOUDFLARE_API_TOKEN` / `_FILE`). Token check injectable in tests (`validate_with_token`) because `env::set_var` is unsafe and forbidden. DoD green; `cargo tree -i aws-lc-rs` empty.
 

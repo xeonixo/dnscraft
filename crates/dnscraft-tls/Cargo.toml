@@ -16,3 +16,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 idna = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

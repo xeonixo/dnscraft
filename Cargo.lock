@@ -378,6 +378,7 @@ name = "dnscraft-tls"
 version = "0.1.0"
 dependencies = [
  "idna",
+ "proptest",
  "thiserror",
  "tokio",
  "tracing",

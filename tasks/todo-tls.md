@@ -59,8 +59,8 @@ Also in this task:
 - Doc comment: `NodeHostname`/`Apex` must not count as an unknown-ID strike.
 
 **Acceptance criteria:**
-- [ ] Table tests: registered / unregistered ID, `node1.dns.example.com` → `NodeHostname`, apex, `DNS.Example.COM.`, two-label subdomain, other domain, suffix trick `dns.example.com.evil.net`
-- [ ] Proptest: `parse_client_id_sni` never panics; `ClientId(x)` implies `!reserved.contains(x)`
+- [x] Table tests: registered / unregistered ID, `node1.dns.example.com` → `NodeHostname`, apex, `DNS.Example.COM.`, two-label subdomain, other domain, suffix trick `dns.example.com.evil.net`
+- [x] Proptest: `parse_client_id_sni` never panics; `ClientId(x)` implies `!reserved.contains(x)`
 
 **Verification:** `cargo test -p dnscraft-tls sni`
 
