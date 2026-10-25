@@ -14,10 +14,12 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L3 done**. Next: L4 (instant-acme spike).
-- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P2 done**. Next: P3 engine skeleton.
-- Blockers: none. Build order: policy (P3…) and tls (L4…) next, clients last (owner runs O1 before C7). T2 open (any time).
+- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P3 done**. Next: P4 view local records.
+- Blockers: none. Build order: policy (P4…) and tls (L4…) next, clients last (owner runs O1 before C7). T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — Policy P3 done (Cursor): `PolicyEngine` with `ClientDirectory` / `NoClients`, pipeline `Flow`/`Draft`/`DecisionStep`, `handle` → select + RFC 8482 ANY + resolver passthrough (step 7). `RequestFlags` gets CD/DO/client/`forward_zones` from the profile; AD only for unmodified Secure; EDE kept; message id left 0 for the listener; `test_query` → `loggable = false`; resolver errors → SERVFAIL + `DecisionStep::ResolveFailed` (`policy.resolve`). Added `Resolver::forward_zone_ids()` for config validation (P5 will add `forward_zone_for`). Tests vs testkit (A resolve, empty allow-list skips forward target, ANY, AD matrix). DoD green. Next: P4.
 
 - 2026-10-25 — tls L3 done (Cursor): `CertStore` under `<data>/tls/` (0700, files 0600, atomic writes); load/save/account; leaf `not_after`+SANs via x509-parser; corrupt PEM → `tls.store.corrupt` without deleting last good. `CertResolver` (`RwLock<Arc<CertifiedKey>>`, ring provider) install/import + `ResolvesServerCert`; hot-reload handshake test (cert A→B, open conn kept). `KeyPem` redacted. Deps: rustls/ring, rustls-pki-types, x509-parser; rcgen+tokio-rustls (dev). `cargo tree -i aws-lc-rs` empty. DoD green.
 
