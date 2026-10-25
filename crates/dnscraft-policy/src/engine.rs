@@ -12,8 +12,9 @@ use crate::config::{PolicyConfig, RequestContext};
 use crate::decision::{AnswerOrigin, DecisionStep};
 use crate::directory::ClientDirectory;
 use crate::error::PolicyError;
-use crate::pipeline::{Draft, clear_ad};
+use crate::pipeline::{Draft, Flow, StepCtx, clear_ad};
 use crate::snapshot::PolicySnapshot;
+use crate::steps::local_records;
 use crate::synth::{any_rfc8482, resolve_servfail};
 
 /// Final answer from [`PolicyEngine::handle`].
@@ -70,8 +71,8 @@ impl PolicyEngine {
 
     /// Handles one query: select, run steps, emit.
     ///
-    /// P3 implements selection, RFC 8482 ANY, and resolver passthrough
-    /// (step 7). Later tasks insert steps 1–6 and 8–11 before/after resolve.
+    /// Selection, RFC 8482 ANY, view local records (step 1), then resolver
+    /// passthrough (step 7). Steps 2–6 and 8–11 follow in later tasks.
     ///
     /// ECS is never forwarded: policy calls the resolver with
     /// [`RequestFlags`] only (no client EDNS options).
@@ -87,7 +88,7 @@ impl PolicyEngine {
         let mut draft = Draft::new(selection);
         draft.timings.select_us = select_us;
 
-        // Step: ANY → RFC 8482, never resolve.
+        // ANY → RFC 8482, never resolve (and never view records).
         if ctx.query.qtype == RecordType::ANY {
             let synth = any_rfc8482(&ctx.query);
             draft.steps.push(DecisionStep::AnySynth);
@@ -103,7 +104,23 @@ impl PolicyEngine {
             ));
         }
 
-        // Steps 1–6 / 8–11: later tasks. P3 goes straight to resolve.
+        // Step 1: view local records.
+        let step_ctx = StepCtx {
+            snapshot: snapshot.as_ref(),
+        };
+        if let Flow::Answer(synth) = local_records::run(&ctx, step_ctx, &mut draft) {
+            draft.timings.total_us = elapsed_us(total_start);
+            return Ok(emit(
+                draft,
+                synth,
+                ctx.client_id.clone(),
+                loggable,
+                None,
+                None,
+            ));
+        }
+
+        // Steps 2–6 / 8–11: later tasks. Then resolve.
 
         let profile = snapshot.profile_for_view(draft.selection.view_idx);
         let forward_zones = profile

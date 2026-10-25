@@ -17,7 +17,7 @@ pub enum AnswerOrigin {
     SynthAny,
     /// SERVFAIL synthesised after a resolver failure.
     ResolveError,
-    /// View local records (later tasks).
+    /// View local records.
     LocalView,
     /// ClientDirectory name or PTR (later tasks).
     LocalClient,
@@ -38,6 +38,8 @@ pub enum DecisionStep {
     },
     /// RFC 8482 ANY answer; resolver was not called.
     AnySynth,
+    /// Answered from the selected view's local records.
+    LocalView,
     /// Resolver returned an answer.
     Resolve {
         /// Cache / recursion / stale.

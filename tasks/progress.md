@@ -14,10 +14,12 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L4 done** (Checkpoint A: lead review + local Pebble). Next: L5 after Checkpoint A.
-- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P3 done**. Next: P4 view local records.
-- Blockers: none. **tls Checkpoint A** awaiting lead review (Pebble local). Policy continues (P3…); clients last. T2 open (any time).
+- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P4 done**. **Checkpoint A:** DoD green; lead review pending (step framework, AD).
+- Blockers: none. **tls Checkpoint A** and **policy Checkpoint A** awaiting lead review. Clients last. T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — Policy P4 done (Cursor): step 1 view local records — exact owner, A/AAAA/TXT/SRV/MX/PTR, NODATA when type missing, CNAME follow within view (max 8 hops; external target stops after CNAME), AA set / AD clear / `synthetic` flagged. Split-horizon per selected view. Wired before resolve in `handle`. Tests: all types without resolver traffic, CNAME local/external/loop, split-horizon, NODATA. DoD green. **STOP: Checkpoint A lead review.**
 
 - 2026-10-25 — tls L4 done (Cursor): instant-acme 0.8.5 with `default-features=false`, features `ring,rcgen,time,x509-parser` (no hyper-rustls). **HTTP stack:** reqwest adapter (`ReqwestHttpClient` implements `HttpClient`) — single TLS stack + webpki roots; fallback not used. `AcmeDirectory`/`AcmeOrder` traits; `InstantAcme` account create/load + `account.json` 0600; `FakeAcmeDirectory` unit test. Pebble `#[ignore]` test + README docker recipe (`PEBBLE_VA_ALWAYS_VALID=1`, `PEBBLE_ROOT_CA`). `cargo tree -i aws-lc-rs` / `openssl-sys` empty. **Checkpoint A:** DoD green; HTTP decision recorded; Pebble run + lead review pending.
 

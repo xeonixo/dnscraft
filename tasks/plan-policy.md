@@ -129,10 +129,10 @@ P12 golden integration tests, AD/EDE matrix, bench, coverage, README
 - [x] P1: Crate skeleton, config model, validation, errors
 - [x] P2: View selection
 - [x] P3: Engine skeleton with resolver passthrough and decision record
-- [ ] P4: View local records
+- [x] P4: View local records
 
 ### Checkpoint A: Skeleton
-- [ ] Query → selection → local record or resolver answer, end to end with the testkit; lead review
+- [x] Query → selection → local record or resolver answer, end to end with the testkit; lead review pending
 
 ### Phase 2: Pipeline
 - [ ] P5: ClientDirectory names/PTR + special-use NXDOMAIN

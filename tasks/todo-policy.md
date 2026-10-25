@@ -104,18 +104,18 @@ any view falls through to subnet matching.
 - Synthetic answers are flagged so rebind (P9) skips them.
 
 **Acceptance criteria:**
-- [ ] A / AAAA / TXT / SRV / MX / PTR answered without resolver traffic (testkit server sees 0 queries)
-- [ ] CNAME → local A followed; CNAME → external name returned alone; CNAME loop stops at 8
-- [ ] Same name in two views answers per selected view (split-horizon)
+- [x] A / AAAA / TXT / SRV / MX / PTR answered without resolver traffic (testkit server sees 0 queries)
+- [x] CNAME → local A followed; CNAME → external name returned alone; CNAME loop stops at 8
+- [x] Same name in two views answers per selected view (split-horizon)
 
 **Verification:** `cargo test -p dnscraft-policy local_records`
 
 **Dependencies:** P3 · **Files:** `src/steps/local_records.rs`, `src/synth.rs`, `tests/local_records.rs` · **Scope:** M
 
 ## Checkpoint A: Skeleton
-- [ ] DoD green; selection + local records + passthrough end to end
+- [x] DoD green; selection + local records + passthrough end to end
 - [ ] Lead review (step framework shape, AD handling)
-- [ ] progress.md updated
+- [x] progress.md updated
 
 ## Phase 2: Pipeline
 

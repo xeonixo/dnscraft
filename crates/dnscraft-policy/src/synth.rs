@@ -43,6 +43,37 @@ pub fn resolve_servfail(query: &Query) -> Synth {
     }
 }
 
+/// Authoritative answer from a view's local records. Sets AA, clears AD.
+pub fn local_records_answer(query: &Query, answers: Vec<Record>) -> Synth {
+    let mut message = response_skeleton(query);
+    message.header.aa = true;
+    message.header.ra = true;
+    let _ = message.set_rcode(Rcode::NOERROR);
+    message.answers = answers;
+    clear_ad(&mut message);
+    Synth {
+        message,
+        ede: None,
+        origin: AnswerOrigin::LocalView,
+    }
+}
+
+/// NODATA for a view name that exists but has no records of the queried type.
+///
+/// Sets AA, clears AD, empty answer section.
+pub fn local_nodata(query: &Query) -> Synth {
+    let mut message = response_skeleton(query);
+    message.header.aa = true;
+    message.header.ra = true;
+    let _ = message.set_rcode(Rcode::NOERROR);
+    clear_ad(&mut message);
+    Synth {
+        message,
+        ede: None,
+        origin: AnswerOrigin::LocalView,
+    }
+}
+
 fn response_skeleton(query: &Query) -> Message {
     Message {
         header: Header {

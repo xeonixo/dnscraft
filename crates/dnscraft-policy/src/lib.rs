@@ -6,9 +6,8 @@
 //! the [`ClientDirectory`] contract for device names without depending on
 //! `dnscraft-clients`.
 //!
-//! Phase 1–3: ids, config, snapshot build/select, and
-//! [`PolicyEngine::handle`] with resolver passthrough (ANY, AD, forward-zone
-//! allow-list). Steps 1–6 and 8–11 follow in later tasks.
+//! Phase 1–4: ids, config, snapshot build/select, engine with view local
+//! records (step 1) and resolver passthrough. Steps 2–6 and 8–11 follow later.
 
 mod config;
 mod decision;
@@ -19,6 +18,7 @@ mod ids;
 mod pipeline;
 mod select;
 mod snapshot;
+mod steps;
 mod synth;
 
 pub use config::{
