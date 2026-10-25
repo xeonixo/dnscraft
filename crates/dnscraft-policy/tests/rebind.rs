@@ -142,7 +142,8 @@ fn ctx(name: &str, qtype: RecordType) -> RequestContext {
 }
 
 fn specs_with_rebind_names() -> Vec<ServerSpec> {
-    use hickory_proto::rr::rdata::CNAME;
+    use hickory_proto::rr::rdata::svcb::{IpHint, SvcParamKey, SvcParamValue};
+    use hickory_proto::rr::rdata::{A as HA, AAAA as HAAAA, CNAME, HTTPS, SVCB};
     use hickory_proto::rr::{Name as HName, RData as HRData, Record as HRecord};
 
     let mut specs = default_servers().unwrap();
@@ -152,6 +153,51 @@ fn specs_with_rebind_names() -> Vec<ServerSpec> {
                 HName::from_ascii("alias.example.test.").unwrap(),
                 300,
                 HRData::CNAME(CNAME(HName::from_ascii("private.example.test.").unwrap())),
+            );
+            let https_mixed = HRecord::from_rdata(
+                HName::from_ascii("hints.example.test.").unwrap(),
+                300,
+                HRData::HTTPS(HTTPS(SVCB::new(
+                    1,
+                    HName::from_ascii(".").unwrap(),
+                    vec![(
+                        SvcParamKey::Ipv4Hint,
+                        SvcParamValue::Ipv4Hint(IpHint(vec![
+                            HA::new(10, 0, 0, 1),
+                            HA::new(192, 0, 2, 1),
+                        ])),
+                    )],
+                ))),
+            );
+            let https_all_private = HRecord::from_rdata(
+                HName::from_ascii("privhints.example.test.").unwrap(),
+                300,
+                HRData::HTTPS(HTTPS(SVCB::new(
+                    1,
+                    HName::from_ascii(".").unwrap(),
+                    vec![(
+                        SvcParamKey::Ipv4Hint,
+                        SvcParamValue::Ipv4Hint(IpHint(vec![
+                            HA::new(10, 0, 0, 1),
+                            HA::new(192, 168, 1, 1),
+                        ])),
+                    )],
+                ))),
+            );
+            let https_v6 = HRecord::from_rdata(
+                HName::from_ascii("v6hints.example.test.").unwrap(),
+                300,
+                HRData::HTTPS(HTTPS(SVCB::new(
+                    1,
+                    HName::from_ascii(".").unwrap(),
+                    vec![(
+                        SvcParamKey::Ipv6Hint,
+                        SvcParamValue::Ipv6Hint(IpHint(vec![
+                            HAAAA::new(0xfd12, 0, 0, 0, 0, 0, 0, 1),
+                            HAAAA::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
+                        ])),
+                    )],
+                ))),
             );
             spec.zone = spec
                 .zone
@@ -169,7 +215,10 @@ fn specs_with_rebind_names() -> Vec<ServerSpec> {
                     Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
                 )
                 .unwrap()
-                .with_record(cname);
+                .with_record(cname)
+                .with_record(https_mixed)
+                .with_record(https_all_private)
+                .with_record(https_v6);
         }
     }
     specs
@@ -562,6 +611,99 @@ async fn rebind_cname_to_private_keeps_cname_chain() {
             .any(|r| matches!(&r.rdata, RData::A(_) | RData::AAAA(_))),
         "private A must be stripped; CNAME kept"
     );
+}
+
+#[tokio::test]
+async fn rebind_strips_https_hints_and_honours_exception() {
+    use dnscraft_proto::SvcbData;
+
+    let h = Hierarchy::start_with(specs_with_rebind_names())
+        .await
+        .unwrap();
+    let engine = engine_on(
+        &h,
+        policy_cfg(profile_base(), Vec::new()),
+        empty_filter(),
+        config_for(&h),
+    )
+    .await;
+
+    // Mixed ipv4hint: strip private, keep public (RFC 9460 §7.3).
+    let mixed = engine
+        .handle(ctx("hints.example.test.", RecordType::HTTPS))
+        .await
+        .unwrap();
+    assert!(
+        mixed
+            .record
+            .steps
+            .contains(&DecisionStep::RebindStripped { count: 1 })
+    );
+    assert!(!mixed.message.header.ad);
+    assert!(mixed.ede.is_none());
+    let RData::HTTPS(SvcbData { params, .. }) = &mixed.message.answers[0].rdata else {
+        panic!("expected HTTPS answer");
+    };
+    let hint = params.iter().find(|(k, _)| *k == 4).expect("ipv4hint kept");
+    assert_eq!(hint.1.as_ref(), &Ipv4Addr::new(192, 0, 2, 1).octets()[..]);
+
+    // All-private hint → param dropped, record kept.
+    let all_priv = engine
+        .handle(ctx("privhints.example.test.", RecordType::HTTPS))
+        .await
+        .unwrap();
+    assert!(
+        all_priv
+            .record
+            .steps
+            .contains(&DecisionStep::RebindStripped { count: 2 })
+    );
+    let RData::HTTPS(SvcbData { params: p2, .. }) = &all_priv.message.answers[0].rdata else {
+        panic!("expected HTTPS");
+    };
+    assert!(p2.iter().all(|(k, _)| *k != 4), "empty ipv4hint dropped");
+
+    // ULA in ipv6hint stripped.
+    let v6 = engine
+        .handle(ctx("v6hints.example.test.", RecordType::HTTPS))
+        .await
+        .unwrap();
+    assert!(
+        v6.record
+            .steps
+            .contains(&DecisionStep::RebindStripped { count: 1 })
+    );
+    let RData::HTTPS(SvcbData { params: p6, .. }) = &v6.message.answers[0].rdata else {
+        panic!("expected HTTPS");
+    };
+    let v6hint = p6.iter().find(|(k, _)| *k == 6).expect("ipv6hint kept");
+    assert_eq!(
+        v6hint.1.as_ref(),
+        &Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1).octets()[..]
+    );
+
+    // Exception skips hint stripping entirely.
+    let mut profile = profile_base();
+    profile.rebind_exceptions = vec![Arc::from("*.example.test")];
+    let engine_ex = engine_on(
+        &h,
+        policy_cfg(profile, Vec::new()),
+        empty_filter(),
+        config_for(&h),
+    )
+    .await;
+    let allowed = engine_ex
+        .handle(ctx("hints.example.test.", RecordType::HTTPS))
+        .await
+        .unwrap();
+    assert!(allowed.record.steps.contains(&DecisionStep::RebindSkipped {
+        reason: RebindSkipReason::Exception,
+    }));
+    let RData::HTTPS(SvcbData { params: raw, .. }) = &allowed.message.answers[0].rdata else {
+        panic!("expected HTTPS");
+    };
+    let raw_hint = raw.iter().find(|(k, _)| *k == 4).unwrap();
+    assert_eq!(raw_hint.1.len(), 8, "both addresses kept under exception");
 }
 
 #[tokio::test]

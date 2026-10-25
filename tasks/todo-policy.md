@@ -233,6 +233,22 @@ Step 11: profile `suppress_aaaa` and qtype AAAA → NODATA; other qtypes unchang
 
 **Dependencies:** P8 · **Files:** `src/steps/rebind.rs`, `src/steps/aaaa.rs`, `src/private.rs`, `tests/rebind.rs` · **Scope:** M
 
+## Task P9b: Rebind SVCB/HTTPS hints + additional section
+
+**Description:** Owner decision 2026-10-25 (SPEC-policy.md step 10). Strip private addresses from
+HTTPS/SVCB `ipv4hint` (key 4) / `ipv6hint` (key 6) per RFC 9460 §7.3, and from additional-section
+A/AAAA. Empty hints are dropped; malformed hint lengths leave the record unchanged. Counts feed
+`RebindStripped`; same skip rules as P9.
+
+**Acceptance criteria:**
+- [x] HTTPS mixed public/private ipv4hint keeps public; all-private drops the param; ipv6hint ULA stripped
+- [x] Additional-section private A/AAAA removed; malformed hint length untouched
+- [x] Exception / exempt forward zone / disabled / synthetic still skip; AD cleared and EDE dropped on change
+
+**Verification:** `cargo test -p dnscraft-policy rebind`
+
+**Dependencies:** P9 · **Files:** `src/steps/rebind.rs`, `tests/rebind.rs` · **Scope:** S
+
 ## Checkpoint B: Pipeline
 - [x] Steps 1–12 in spec order (5/6 stubbed); every row of the AD/EDE matrix has a test
 - [x] Lead review; progress.md updated (Claude re-review 2026-10-25: passed)
