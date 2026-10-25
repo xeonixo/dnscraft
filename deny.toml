@@ -7,14 +7,7 @@ no-default-features = false
 
 [advisories]
 # RustSec advisory database (default URL). No ignores without a written reason.
-ignore = [
-    # RUSTSEC-2026-0009: stack exhaustion in time's Rfc2822 parser (< 0.3.47).
-    # Fixed in time ≥ 0.3.47 (needs rustc 1.88); workspace MSRV is 1.88
-    # (owner question: bump rust-version + time). Safe here because nothing in
-    # this workspace calls Rfc2822 — Retry-After uses a fixed IMF-fixdate
-    # format_description; x509-parser / asn1-rs use time without RFC 2822.
-    { id = "RUSTSEC-2026-0009", reason = "Rfc2822 unused in workspace (IMF-fixdate only); MSRV 1.85 blocks time≥0.3.47" },
-]
+ignore = []
 
 [licenses]
 # Permissive licenses compatible with MIT OR Apache-2.0 dual-licensing of this
