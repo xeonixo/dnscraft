@@ -1,0 +1,539 @@
+//! Immutable, validated policy snapshot swapped on hot reload.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use dnscraft_filtering::SetId;
+use dnscraft_proto::{Class, Name, Record, RecordType};
+use dnscraft_resolver::ForwardZoneId;
+use ipnet::IpNet;
+
+use crate::config::{
+    PolicyConfig, ProfileConfig, ViewConfig, ViewRecordConfig, is_allowed_view_rtype,
+    name_has_wildcard_label,
+};
+use crate::error::{ConfigReason, PolicyError};
+use crate::ids::{ClientId, ProfileId, ViewId};
+
+/// Index of a view inside [`PolicySnapshot::views`].
+pub type ViewIdx = u16;
+
+/// Index of a profile inside [`PolicySnapshot::profiles`].
+pub type ProfileIdx = u16;
+
+/// Local records for one owner name inside a view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewRrSets {
+    /// Records at this name (never mixes a CNAME with other types).
+    pub records: Arc<[Record]>,
+}
+
+/// One validated view ready for selection and local answers.
+#[derive(Clone, Debug)]
+pub struct SnapshotView {
+    /// View id.
+    pub id: ViewId,
+    /// Whether this is the catch-all default.
+    pub is_default: bool,
+    /// Profile applied for this view.
+    pub profile_idx: ProfileIdx,
+    /// Exact-name local records.
+    pub records: HashMap<Name, ViewRrSets>,
+}
+
+/// One validated profile.
+#[derive(Clone, Debug)]
+pub struct SnapshotProfile {
+    /// Profile id.
+    pub id: ProfileId,
+    /// Source config (filter set, canaries, rebind, …).
+    pub config: ProfileConfig,
+}
+
+/// Per-prefix-length table: masked address → view index.
+#[derive(Clone, Debug, Default)]
+pub struct PrefixTable<A: Eq + std::hash::Hash> {
+    /// Prefix length → map of masked network address to view.
+    pub by_len: HashMap<u8, HashMap<A, ViewIdx>>,
+    /// Present lengths, sorted descending (longest first).
+    pub lengths_desc: Vec<u8>,
+}
+
+impl<A: Eq + std::hash::Hash + Copy> PrefixTable<A> {
+    fn insert(&mut self, len: u8, addr: A, view: ViewIdx) {
+        self.by_len.entry(len).or_default().insert(addr, view);
+    }
+
+    fn finish(&mut self) {
+        let mut lens: Vec<u8> = self.by_len.keys().copied().collect();
+        lens.sort_unstable_by(|a, b| b.cmp(a));
+        self.lengths_desc = lens;
+    }
+}
+
+/// Validated policy configuration and selection indexes.
+#[derive(Clone, Debug)]
+pub struct PolicySnapshot {
+    /// Top-level settings retained for the pipeline.
+    pub default_rebind: bool,
+    /// Extra PTR prefixes.
+    pub ptr_prefixes: Arc<[IpNet]>,
+    /// Special-use NXDOMAIN suffixes.
+    pub local_nxdomain_suffixes: Arc<[Arc<str>]>,
+    /// Forward zones that still receive rebind checks.
+    pub rebind_check_forward_zones: Arc<[ForwardZoneId]>,
+    /// Views in config order.
+    pub views: Arc<[SnapshotView]>,
+    /// Profiles in config order.
+    pub profiles: Arc<[SnapshotProfile]>,
+    /// Index of the default view.
+    pub default_view: ViewIdx,
+    /// Client ID → view (exact match).
+    pub client_ids: HashMap<ClientId, ViewIdx>,
+    /// IPv4 subnet tables keyed by prefix length.
+    pub v4: PrefixTable<[u8; 4]>,
+    /// IPv6 subnet tables keyed by prefix length.
+    pub v6: PrefixTable<[u8; 16]>,
+}
+
+impl PolicySnapshot {
+    /// Builds and validates a snapshot.
+    ///
+    /// `known_sets` are filter-set ids that exist in the filter engine.
+    /// `known_zones` are forward-zone ids that exist in the resolver.
+    pub fn build(
+        config: PolicyConfig,
+        known_sets: &[SetId],
+        known_zones: &[ForwardZoneId],
+    ) -> Result<Self, PolicyError> {
+        let known_set: HashMap<&str, ()> = known_sets.iter().map(|s| (s.as_str(), ())).collect();
+        let known_zone: HashMap<&str, ()> = known_zones.iter().map(|z| (z.as_str(), ())).collect();
+
+        for zone in &config.rebind_check_forward_zones {
+            if !known_zone.contains_key(zone.as_str()) {
+                return Err(PolicyError::UnknownForwardZone { id: zone.clone() });
+            }
+        }
+
+        let mut profile_by_id: HashMap<ProfileId, ProfileIdx> = HashMap::new();
+        let mut profiles: Vec<SnapshotProfile> = Vec::with_capacity(config.profiles.len());
+        for profile in config.profiles {
+            if profile_by_id.contains_key(&profile.id) {
+                return Err(PolicyError::InvalidConfig {
+                    reason: ConfigReason::DuplicateProfileId {
+                        id: Arc::from(profile.id.as_str()),
+                    },
+                });
+            }
+            if !known_set.contains_key(profile.filter_set.as_str()) {
+                return Err(PolicyError::UnknownFilterSet {
+                    id: profile.filter_set.clone(),
+                });
+            }
+            if let Some(zones) = &profile.forward_zones {
+                for zone in zones {
+                    if !known_zone.contains_key(zone.as_str()) {
+                        return Err(PolicyError::UnknownForwardZone { id: zone.clone() });
+                    }
+                }
+            }
+            for schedule in &profile.schedules {
+                if !known_set.contains_key(schedule.filter_set.as_str()) {
+                    return Err(PolicyError::UnknownFilterSet {
+                        id: schedule.filter_set.clone(),
+                    });
+                }
+            }
+            let idx = ProfileIdx::try_from(profiles.len()).map_err(|_| PolicyError::Internal {
+                message: Arc::from("too many profiles"),
+            })?;
+            profile_by_id.insert(profile.id.clone(), idx);
+            profiles.push(SnapshotProfile {
+                id: profile.id.clone(),
+                config: profile,
+            });
+        }
+
+        let mut view_by_id: HashMap<ViewId, ViewIdx> = HashMap::new();
+        let mut client_ids: HashMap<ClientId, ViewIdx> = HashMap::new();
+        let mut v4 = PrefixTable::default();
+        let mut v6 = PrefixTable::default();
+        let mut views: Vec<SnapshotView> = Vec::with_capacity(config.views.len());
+        let mut default_view: Option<ViewIdx> = None;
+
+        for view in config.views {
+            if view_by_id.contains_key(&view.id) {
+                return Err(PolicyError::InvalidConfig {
+                    reason: ConfigReason::DuplicateViewId {
+                        id: Arc::from(view.id.as_str()),
+                    },
+                });
+            }
+            let Some(&profile_idx) = profile_by_id.get(&view.profile) else {
+                return Err(PolicyError::InvalidConfig {
+                    reason: ConfigReason::UnknownProfile {
+                        id: Arc::from(view.profile.as_str()),
+                    },
+                });
+            };
+
+            let view_idx = ViewIdx::try_from(views.len()).map_err(|_| PolicyError::Internal {
+                message: Arc::from("too many views"),
+            })?;
+
+            if view.is_default {
+                if default_view.is_some() {
+                    return Err(PolicyError::InvalidConfig {
+                        reason: ConfigReason::MultipleDefaultViews,
+                    });
+                }
+                default_view = Some(view_idx);
+            }
+
+            for client_id in &view.client_ids {
+                if client_ids.contains_key(client_id) {
+                    return Err(PolicyError::InvalidConfig {
+                        reason: ConfigReason::DuplicateClientId {
+                            id: Arc::from(client_id.as_str()),
+                        },
+                    });
+                }
+                client_ids.insert(client_id.clone(), view_idx);
+            }
+
+            for net in &view.subnets {
+                match net {
+                    IpNet::V4(n) => {
+                        v4.insert(n.prefix_len(), n.network().octets(), view_idx);
+                    }
+                    IpNet::V6(n) => {
+                        v6.insert(n.prefix_len(), n.network().octets(), view_idx);
+                    }
+                }
+            }
+
+            let records = build_view_records(&view)?;
+            view_by_id.insert(view.id.clone(), view_idx);
+            views.push(SnapshotView {
+                id: view.id,
+                is_default: view.is_default,
+                profile_idx,
+                records,
+            });
+        }
+
+        let Some(default_view) = default_view else {
+            return Err(PolicyError::InvalidConfig {
+                reason: ConfigReason::NoDefaultView,
+            });
+        };
+
+        v4.finish();
+        v6.finish();
+
+        Ok(Self {
+            default_rebind: config.default_rebind,
+            ptr_prefixes: Arc::from(config.ptr_prefixes),
+            local_nxdomain_suffixes: Arc::from(config.local_nxdomain_suffixes),
+            rebind_check_forward_zones: Arc::from(config.rebind_check_forward_zones),
+            views: Arc::from(views),
+            profiles: Arc::from(profiles),
+            default_view,
+            client_ids,
+            v4,
+            v6,
+        })
+    }
+
+    /// Profile for a view index.
+    pub fn profile_for_view(&self, view: ViewIdx) -> &SnapshotProfile {
+        let idx = self.views[usize::from(view)].profile_idx;
+        &self.profiles[usize::from(idx)]
+    }
+}
+
+fn build_view_records(view: &ViewConfig) -> Result<HashMap<Name, ViewRrSets>, PolicyError> {
+    let mut by_name: HashMap<Name, Vec<ViewRecordConfig>> = HashMap::new();
+    for rec in &view.records {
+        if name_has_wildcard_label(&rec.name) {
+            return Err(PolicyError::InvalidConfig {
+                reason: ConfigReason::WildcardOwner,
+            });
+        }
+        if !is_allowed_view_rtype(rec.rtype()) {
+            return Err(PolicyError::InvalidConfig {
+                reason: ConfigReason::UnsupportedRecordType,
+            });
+        }
+        by_name
+            .entry(rec.name.clone())
+            .or_default()
+            .push(rec.clone());
+    }
+
+    let mut out = HashMap::with_capacity(by_name.len());
+    for (name, recs) in by_name {
+        let has_cname = recs.iter().any(|r| r.rtype() == RecordType::CNAME);
+        if has_cname && recs.len() > 1 {
+            return Err(PolicyError::CnameConflict { name });
+        }
+        if has_cname {
+            // A single CNAME is fine; also reject CNAME + same-type duplicates.
+            if recs.len() != 1 {
+                return Err(PolicyError::CnameConflict { name });
+            }
+        }
+        let records: Arc<[Record]> = recs
+            .into_iter()
+            .map(|r| Record::new(r.name, Class::IN, r.ttl, r.rdata))
+            .collect::<Vec<_>>()
+            .into();
+        out.insert(name, ViewRrSets { records });
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        DEFAULT_LOCAL_NXDOMAIN_SUFFIXES, ProfileConfig, SafeSearchConfig, ViewConfig,
+        ViewRecordConfig,
+    };
+    use crate::ids::{ClientId, ProfileId, ViewId};
+    use dnscraft_proto::{Name, RData};
+    use ipnet::IpNet;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::sync::Arc;
+
+    fn doc_v4() -> IpNet {
+        IpNet::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 0)), 24).unwrap()
+    }
+
+    fn doc_v6() -> IpNet {
+        IpNet::new(
+            IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 0)),
+            64,
+        )
+        .unwrap()
+    }
+
+    fn set(id: &str) -> SetId {
+        SetId::new(id).unwrap()
+    }
+
+    fn zone(id: &str) -> ForwardZoneId {
+        ForwardZoneId::new(id).unwrap()
+    }
+
+    fn profile(id: &str, filter_set: &str) -> ProfileConfig {
+        ProfileConfig {
+            id: ProfileId::new(id).unwrap(),
+            filter_set: set(filter_set),
+            suppress_aaaa: false,
+            firefox_canary: true,
+            icloud_private_relay: true,
+            rebind: Some(true),
+            rebind_exceptions: vec![Arc::from("*.example.com")],
+            forward_zones: None,
+            safesearch: SafeSearchConfig::default(),
+            schedules: Vec::new(),
+        }
+    }
+
+    fn default_view(profile: &str) -> ViewConfig {
+        ViewConfig {
+            id: ViewId::new("default").unwrap(),
+            is_default: true,
+            subnets: Vec::new(),
+            client_ids: Vec::new(),
+            records: Vec::new(),
+            profile: ProfileId::new(profile).unwrap(),
+        }
+    }
+
+    fn lan_view(profile: &str) -> ViewConfig {
+        ViewConfig {
+            id: ViewId::new("lan").unwrap(),
+            is_default: false,
+            subnets: vec![doc_v4(), doc_v6()],
+            client_ids: Vec::new(),
+            records: vec![ViewRecordConfig {
+                name: Name::from_ascii("nas.lan.example.com").unwrap(),
+                ttl: 60,
+                rdata: RData::A(Ipv4Addr::new(192, 0, 2, 10)),
+            }],
+            profile: ProfileId::new(profile).unwrap(),
+        }
+    }
+
+    /// Spec TOML excerpt as Rust values — must validate.
+    fn spec_excerpt_config() -> PolicyConfig {
+        PolicyConfig {
+            default_rebind: true,
+            ptr_prefixes: Vec::new(),
+            local_nxdomain_suffixes: DEFAULT_LOCAL_NXDOMAIN_SUFFIXES
+                .iter()
+                .map(|s| Arc::<str>::from(*s))
+                .collect(),
+            rebind_check_forward_zones: Vec::new(),
+            views: vec![lan_view("default"), default_view("default")],
+            profiles: vec![profile("default", "default")],
+        }
+    }
+
+    #[test]
+    fn config_accepts_spec_toml_excerpt() {
+        let snap = PolicySnapshot::build(spec_excerpt_config(), &[set("default")], &[]).unwrap();
+        assert_eq!(snap.views.len(), 2);
+        assert_eq!(snap.default_view, 1);
+        assert_eq!(snap.views[0].id.as_str(), "lan");
+        assert!(
+            snap.views[0]
+                .records
+                .contains_key(&Name::from_ascii("nas.lan.example.com").unwrap())
+        );
+        assert_eq!(snap.v4.lengths_desc, vec![24]);
+        assert_eq!(snap.v6.lengths_desc, vec![64]);
+        assert_eq!(
+            snap.local_nxdomain_suffixes.as_ref(),
+            &[
+                Arc::<str>::from("local"),
+                Arc::from("lan"),
+                Arc::from("internal")
+            ]
+        );
+    }
+
+    #[test]
+    fn config_rejects_no_default_view() {
+        let mut cfg = spec_excerpt_config();
+        cfg.views.retain(|v| !v.is_default);
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.invalid");
+        assert!(matches!(
+            err,
+            PolicyError::InvalidConfig {
+                reason: ConfigReason::NoDefaultView
+            }
+        ));
+    }
+
+    #[test]
+    fn config_rejects_multiple_default_views() {
+        let mut cfg = spec_excerpt_config();
+        cfg.views[0].is_default = true;
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.invalid");
+    }
+
+    #[test]
+    fn config_rejects_client_id_on_two_views() {
+        let mut cfg = spec_excerpt_config();
+        let id = ClientId::new("iphone-k7q2x9").unwrap();
+        cfg.views[0].client_ids.push(id.clone());
+        cfg.views[1].client_ids.push(id);
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.invalid");
+        assert!(matches!(
+            err,
+            PolicyError::InvalidConfig {
+                reason: ConfigReason::DuplicateClientId { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn config_rejects_unknown_filter_set() {
+        let cfg = spec_excerpt_config();
+        let err = PolicySnapshot::build(cfg, &[], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.unknown_filter_set");
+    }
+
+    #[test]
+    fn config_rejects_unknown_forward_zone_on_profile() {
+        let mut cfg = spec_excerpt_config();
+        cfg.profiles[0].forward_zones = Some(vec![zone("vpn-site-a")]);
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.unknown_forward_zone");
+    }
+
+    #[test]
+    fn config_rejects_unknown_rebind_check_forward_zone() {
+        let mut cfg = spec_excerpt_config();
+        cfg.rebind_check_forward_zones = vec![zone("vpn-site-a")];
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.unknown_forward_zone");
+    }
+
+    #[test]
+    fn config_accepts_known_forward_zone_allow_list() {
+        let mut cfg = spec_excerpt_config();
+        cfg.profiles[0].forward_zones = Some(vec![zone("vpn-site-a")]);
+        cfg.rebind_check_forward_zones = vec![zone("vpn-site-a")];
+        PolicySnapshot::build(cfg, &[set("default")], &[zone("vpn-site-a")]).unwrap();
+    }
+
+    #[test]
+    fn config_rejects_cname_beside_other_types() {
+        let mut cfg = spec_excerpt_config();
+        let name = Name::from_ascii("alias.example.com").unwrap();
+        cfg.views[0].records.push(ViewRecordConfig {
+            name: name.clone(),
+            ttl: 60,
+            rdata: RData::CNAME(Name::from_ascii("nas.lan.example.com").unwrap()),
+        });
+        cfg.views[0].records.push(ViewRecordConfig {
+            name,
+            ttl: 60,
+            rdata: RData::A(Ipv4Addr::new(192, 0, 2, 11)),
+        });
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.record.cname_conflict");
+    }
+
+    #[test]
+    fn config_rejects_unsupported_record_type() {
+        let mut cfg = spec_excerpt_config();
+        cfg.views[0].records.push(ViewRecordConfig {
+            name: Name::from_ascii("ns.example.com").unwrap(),
+            ttl: 60,
+            rdata: RData::NS(Name::from_ascii("a.example.com").unwrap()),
+        });
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.invalid");
+        assert!(matches!(
+            err,
+            PolicyError::InvalidConfig {
+                reason: ConfigReason::UnsupportedRecordType
+            }
+        ));
+    }
+
+    #[test]
+    fn config_rejects_wildcard_owner() {
+        let mut cfg = spec_excerpt_config();
+        cfg.views[0].records.push(ViewRecordConfig {
+            name: Name::from_ascii("*.example.com").unwrap(),
+            ttl: 60,
+            rdata: RData::A(Ipv4Addr::new(192, 0, 2, 99)),
+        });
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.invalid");
+        assert!(matches!(
+            err,
+            PolicyError::InvalidConfig {
+                reason: ConfigReason::WildcardOwner
+            }
+        ));
+    }
+
+    #[test]
+    fn config_rejects_unknown_profile() {
+        let mut cfg = spec_excerpt_config();
+        cfg.views[0].profile = ProfileId::new("missing").unwrap();
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.invalid");
+    }
+}

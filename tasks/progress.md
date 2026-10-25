@@ -14,10 +14,12 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)).
-- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)).
-- Blockers: none. Build order: policy (P1…) and tls (L1…) first, clients last (owner runs O1 before C7). T2 open (any time).
+- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1 done** (crate skeleton, config, snapshot validation, error codes). Next: P2 selection.
+- Blockers: none. Build order: policy (P2…) and tls (L1…) first, clients last (owner runs O1 before C7). T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — Policy P1 done (Cursor): `crates/dnscraft-policy` workspace member. Ids (`ViewId`/`ProfileId`/`ListenerId` `[a-z0-9-]{1,64}`, `ClientId` `{1,63}`), `PolicyConfig` / views / profiles (incl. safesearch + schedules surface), `RequestContext` / `DnsProtocol` / `ClientFlags`, `PolicySnapshot::build` with client-id map + per-length subnet tables, validation for default view, duplicate Client ID, unknown filter set / forward zone (incl. `rebind_check_forward_zones`), CNAME conflict, unsupported types, wildcards. Spec TOML excerpt as Rust values accepted. `PolicyError` codes from the spec + `policy.id.*`. `ipnet` 2 added to workspace deps (approved). DoD green. Next: P2.
 
 - 2026-10-25 — **Owner approved the clients/tls/policy plans and the dependency table.** Pebble test stays local only (`#[ignore]`, run at checkpoints; no CI job). Order: policy + tls first, clients last. Building may start (brief B in cursor-next.md).
 

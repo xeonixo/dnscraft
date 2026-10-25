@@ -33,9 +33,9 @@ Contents:
 `PolicyError` with every code from the spec.
 
 **Acceptance criteria:**
-- [ ] Every error variant has a unique `code()` (enumerating test); public items documented
-- [ ] Validation table tests, one per rejection rule, plus the spec's TOML excerpt expressed as Rust values accepted
-- [ ] `ClientId` rejects upper case, `_`, empty, 64 chars
+- [x] Every error variant has a unique `code()` (enumerating test); public items documented
+- [x] Validation table tests, one per rejection rule, plus the spec's TOML excerpt expressed as Rust values accepted
+- [x] `ClientId` rejects upper case, `_`, empty, 64 chars
 
 **Verification:** `cargo test -p dnscraft-policy config`
 

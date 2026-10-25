@@ -324,6 +324,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dnscraft-policy"
+version = "0.1.0"
+dependencies = [
+ "dnscraft-filtering",
+ "dnscraft-proto",
+ "dnscraft-resolver",
+ "ipnet",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "dnscraft-proto"
 version = "0.1.0"
 dependencies = [
@@ -355,6 +368,16 @@ dependencies = [
  "dnscraft-proto",
  "hickory-proto",
  "rustls-pki-types",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dnscraft-tls"
+version = "0.1.0"
+dependencies = [
+ "idna",
  "thiserror",
  "tokio",
  "tracing",
