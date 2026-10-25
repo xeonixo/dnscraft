@@ -28,9 +28,9 @@ commit per task ending with the Co-Authored-By line used in earlier commits. Pus
 
 ## Status when this file was written (2026-10-25)
 
-- Done and committed: F1–F4, F5 builder, F6, R1, L1–L3, M1–M4a/M4b.
-- Checkpoint A complete; Checkpoint B owner: RAM may grow — continue L4→C1.
-  Next Cursor brief: **L4**.
+- Done and committed: F1–F4, F5 builder, F6, R1, L1–L4, M1–M4a/M4b.
+- Checkpoint A complete; Checkpoint B owner: RAM may grow; Checkpoint C (lists/services) met with L4.
+  Next Cursor brief: **C1**.
 
 ## Order
 

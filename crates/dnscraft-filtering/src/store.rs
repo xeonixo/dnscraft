@@ -278,6 +278,76 @@ impl ListStore {
         &self.services_dir
     }
 
+    /// Path of a cached services-catalog body (`{stem}.json`).
+    pub fn services_body_path(&self, stem: &str) -> PathBuf {
+        self.services_dir.join(format!("{stem}.json"))
+    }
+
+    fn services_meta_path(&self, stem: &str) -> PathBuf {
+        self.services_dir.join(format!("{stem}.meta.json"))
+    }
+
+    /// Reads a cached services-catalog body (`None` if absent).
+    pub fn read_services_body(&self, stem: &str) -> Result<Option<String>, StoreError> {
+        crate::services::validate_stem(stem)?;
+        read_capped(&self.services_body_path(stem), self.config.max_body_bytes)
+    }
+
+    /// Atomically replaces a services-catalog body, then its metadata.
+    pub fn write_services_body(
+        &self,
+        stem: &str,
+        body: &str,
+        meta: &ListMeta,
+    ) -> Result<(), StoreError> {
+        crate::services::validate_stem(stem)?;
+        if body.len() as u64 > self.config.max_body_bytes {
+            return Err(StoreError::TooLarge {
+                path: self.services_body_path(stem),
+                max: self.config.max_body_bytes,
+            });
+        }
+        atomic_write(&self.services_body_path(stem), body.as_bytes())?;
+        self.write_services_meta(stem, meta)
+    }
+
+    /// Atomically replaces services-catalog metadata only.
+    pub fn write_services_meta(&self, stem: &str, meta: &ListMeta) -> Result<(), StoreError> {
+        crate::services::validate_stem(stem)?;
+        let json = serde_json::to_vec_pretty(meta)?;
+        atomic_write(&self.services_meta_path(stem), &json)
+    }
+
+    /// Reads services-catalog metadata (corrupt → `Ok(None)` + warn).
+    pub fn read_services_meta(&self, stem: &str) -> Result<Option<ListMeta>, StoreError> {
+        crate::services::validate_stem(stem)?;
+        let path = self.services_meta_path(stem);
+        let text = match read_capped(&path, 1024 * 1024) {
+            Ok(Some(t)) => t,
+            Ok(None) => return Ok(None),
+            Err(StoreError::TooLarge { .. }) => {
+                tracing::warn!(file = stem, "services metadata too large, ignoring");
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
+        };
+        match serde_json::from_str::<ListMeta>(&text) {
+            Ok(meta) if meta.version == META_VERSION => Ok(Some(meta)),
+            Ok(meta) => {
+                tracing::warn!(
+                    file = stem,
+                    version = meta.version,
+                    "unsupported services metadata version, ignoring"
+                );
+                Ok(None)
+            }
+            Err(e) => {
+                tracing::warn!(file = stem, error = %e, "corrupt services metadata, ignoring");
+                Ok(None)
+            }
+        }
+    }
+
     /// The configuration in effect.
     pub fn config(&self) -> &StoreConfig {
         &self.config

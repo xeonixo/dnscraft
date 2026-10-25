@@ -260,6 +260,59 @@ impl Fetcher {
         }
     }
 
+    /// Fetches a URL into the services catalog cache (`services_dir/{stem}.json`).
+    ///
+    /// Same conditional GET, size cap and last-good rules as list bodies. Used
+    /// for `services.json` / `services_i18n.json` (Task L4).
+    pub async fn fetch_and_store_services(
+        &self,
+        store: &ListStore,
+        stem: &str,
+        url: &str,
+    ) -> FetchOutcome {
+        let prev = match store.read_services_meta(stem) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(file = stem, error = %e, "cannot read services metadata");
+                None
+            }
+        };
+        let source = ListSourceSpec::Url(url.to_owned());
+        // Synthetic id for file-fingerprint bookkeeping only (URL path).
+        let id = match ListId::new(&stem.replace('_', "-")) {
+            Ok(id) => id,
+            Err(_) => {
+                let mut meta = prev.unwrap_or_default();
+                meta.last_attempt = Some(store.now_unix());
+                return failed(
+                    meta,
+                    FetchError::Io("invalid services cache stem".into()),
+                    None,
+                );
+            }
+        };
+        let outcome = self.fetch(&id, &source, prev.as_ref()).await;
+        let (result, outcome) = match outcome {
+            FetchOutcome::Updated { body, meta } => {
+                let r = store.write_services_body(stem, &body, &meta);
+                match r {
+                    Ok(()) => (Ok(()), FetchOutcome::Updated { body, meta }),
+                    Err(e) => {
+                        let error = FetchError::from(e);
+                        let mut meta = meta;
+                        meta.last_error = Some(error.to_meta_error());
+                        (Ok(()), FetchOutcome::Failed { meta, error })
+                    }
+                }
+            }
+            other => (store.write_services_meta(stem, other.meta()), other),
+        };
+        if let Err(e) = result {
+            tracing::warn!(file = stem, error = %e, "cannot write services metadata");
+        }
+        outcome
+    }
+
     /// Fetches and persists: body and metadata on `Updated`, metadata only
     /// otherwise (the last good body stays). A store write failure on
     /// `Updated` turns into `Failed` so the caller does not use the new body

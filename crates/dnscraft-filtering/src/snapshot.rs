@@ -44,6 +44,7 @@ use crate::modifiers::DnsRewrite;
 use crate::name::DomainName;
 use crate::parser::{ListSource, ParsedList, SkipCounts, parse_list, parse_list_each};
 use crate::rule::Rule;
+use crate::services::ServiceCatalog;
 use crate::set::{FilterConfig, ListBodies, SnapshotError};
 use crate::types::{BlockMode, ListId, SetId, Verdict};
 
@@ -94,6 +95,8 @@ struct SetEntry {
     lists: Arc<SharedIndex>,
     custom: Option<Index>,
     custom_facts: CustomFacts,
+    /// Service ids listed in the set config but missing from the catalog.
+    unknown_services: Vec<String>,
     block_mode: BlockMode,
     paused_until: Option<SystemTime>,
 }
@@ -123,6 +126,13 @@ impl Snapshot {
     /// Facts about a set's custom rules.
     pub fn custom_facts(&self, set: &SetId) -> Option<&CustomFacts> {
         self.sets.get(set).map(|e| &e.custom_facts)
+    }
+
+    /// Service ids enabled on the set but not present in the catalog.
+    ///
+    /// Unknown ids are ignored when building (not fatal).
+    pub fn unknown_services(&self, set: &SetId) -> Option<&[String]> {
+        self.sets.get(set).map(|e| e.unknown_services.as_slice())
     }
 
     /// The block mode of a set.
@@ -357,16 +367,32 @@ struct CustomParsed {
 #[derive(Debug)]
 pub struct SnapshotBuilder {
     bodies: Arc<dyn ListBodies>,
+    catalog: Option<Arc<ServiceCatalog>>,
 }
 
 impl SnapshotBuilder {
     /// A builder reading list bodies from `bodies`.
     pub fn new(bodies: Arc<dyn ListBodies>) -> Self {
-        Self { bodies }
+        Self {
+            bodies,
+            catalog: None,
+        }
+    }
+
+    /// Injects blocked-service rules from `catalog` into sets that enable them.
+    #[must_use]
+    pub fn with_catalog(mut self, catalog: Option<Arc<ServiceCatalog>>) -> Self {
+        self.catalog = catalog;
+        self
     }
 
     /// Builds the snapshot. Disabled lists are excluded from all sets; lists
     /// without a body contribute nothing (see [`ListFacts::body_available`]).
+    ///
+    /// Enabled [`FilterSetConfig::services`](crate::FilterSetConfig::services)
+    /// whose ids exist in the catalog join each set with
+    /// [`RuleSource::Service`](crate::RuleSource::Service); unknown ids are
+    /// recorded on the snapshot and are not fatal.
     pub fn build(&self, config: &FilterConfig) -> Result<Snapshot, SnapshotError> {
         let mut enabled: HashMap<&ListId, bool> = HashMap::new();
         for l in &config.lists {
@@ -394,29 +420,27 @@ impl SnapshotBuilder {
                 }
             }
             let mut custom = parse_custom(&s.custom_rules);
+            let (service_srcs, unknown_services) =
+                resolve_services(self.catalog.as_deref(), &s.services);
+            let has_services = !service_srcs.is_empty();
             let (lists, custom_index) = if needs_merge(&custom.rules) {
                 custom.facts.merged_into_list_index = true;
-                let idx = self.build_list_index(&combo, Some((&s.id, &mut custom)))?;
+                let idx =
+                    self.build_list_index(&combo, Some((&s.id, &mut custom)), &service_srcs)?;
                 (Arc::new(idx), None)
             } else {
                 let lists = match shared.get(&combo) {
                     Some(a) => Arc::clone(a),
                     None => {
-                        let a = Arc::new(self.build_list_index(&combo, None)?);
+                        let a = Arc::new(self.build_list_index(&combo, None, &[])?);
                         shared.insert(combo, Arc::clone(&a));
                         a
                     }
                 };
-                let ci = if custom.rules.is_empty() {
+                let ci = if custom.rules.is_empty() && !has_services {
                     None
                 } else {
-                    let mut b = IndexBuilder::new();
-                    let src = b.add_source_with_body(
-                        SourceKind::Custom(s.id.clone()),
-                        Arc::clone(&custom.body),
-                    )?;
-                    b.add_rules(src, std::mem::take(&mut custom.rules))?;
-                    Some(b.build_in_memory())
+                    Some(build_side_index(&s.id, &mut custom, &service_srcs)?)
                 };
                 (lists, ci)
             };
@@ -426,6 +450,7 @@ impl SnapshotBuilder {
                     lists,
                     custom: custom_index,
                     custom_facts: custom.facts,
+                    unknown_services,
                     block_mode: s.block_mode,
                     paused_until: s.paused_until,
                 },
@@ -434,15 +459,31 @@ impl SnapshotBuilder {
         Ok(Snapshot { sets })
     }
 
-    /// Builds one index from `combo`, optionally with a set's custom rules as
-    /// the first source (they then win ties and own duplicates).
+    /// Builds one index from `combo`, optionally with a set's custom rules and
+    /// blocked services as leading sources (they then win ties and own duplicates).
     fn build_list_index(
         &self,
         combo: &[ListId],
         custom: Option<(&SetId, &mut CustomParsed)>,
+        services: &[(Arc<str>, Arc<str>)],
     ) -> Result<SharedIndex, SnapshotError> {
-        let mut texts = Vec::with_capacity(combo.len() + 1);
+        let mut texts = Vec::with_capacity(combo.len() + 1 + services.len());
         let mut b = IndexBuilder::new();
+        for (id, body) in services {
+            let src = b.add_source(SourceKind::Service(Arc::clone(id)))?;
+            texts.push(TextEntry::Inline(Arc::clone(body)));
+            let mut add_err = None;
+            parse_list_each(body, ListSource::List, |rule| {
+                if add_err.is_none() {
+                    if let Err(e) = b.add_rule(rule, src) {
+                        add_err = Some(e);
+                    }
+                }
+            });
+            if let Some(e) = add_err {
+                return Err(e.into());
+            }
+        }
         if let Some((set, c)) = custom {
             let src = b.add_source(SourceKind::Custom(set.clone()))?;
             texts.push(TextEntry::Inline(Arc::clone(&c.body)));
@@ -510,6 +551,62 @@ fn parse_custom(text: &str) -> CustomParsed {
         body,
         rules,
     }
+}
+
+/// One enabled service ready to feed into an [`IndexBuilder`].
+type ServiceSource = (Arc<str>, Arc<str>);
+
+/// Resolves enabled service ids against the catalog.
+///
+/// Returns `(id, rules_body)` pairs and the list of unknown ids (not fatal).
+fn resolve_services(
+    catalog: Option<&ServiceCatalog>,
+    ids: &[String],
+) -> (Vec<ServiceSource>, Vec<String>) {
+    let mut found = Vec::new();
+    let mut unknown = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for id in ids {
+        let id = id.trim();
+        if id.is_empty() || !seen.insert(id.to_owned()) {
+            continue;
+        }
+        match catalog.and_then(|c| c.get(id)) {
+            Some(svc) => found.push((Arc::clone(&svc.id), Arc::clone(&svc.rules_body))),
+            None => unknown.push(id.to_owned()),
+        }
+    }
+    (found, unknown)
+}
+
+/// Custom + service rules in a small per-set index (competes with the shared
+/// list index by AdGuard priority; on equal rank this side wins).
+fn build_side_index(
+    set: &SetId,
+    custom: &mut CustomParsed,
+    services: &[(Arc<str>, Arc<str>)],
+) -> Result<Index, SnapshotError> {
+    let mut b = IndexBuilder::new();
+    for (id, body) in services {
+        let src = b.add_source_with_body(SourceKind::Service(Arc::clone(id)), Arc::clone(body))?;
+        let mut add_err = None;
+        parse_list_each(body, ListSource::List, |rule| {
+            if add_err.is_none() {
+                if let Err(e) = b.add_rule(rule, src) {
+                    add_err = Some(e);
+                }
+            }
+        });
+        if let Some(e) = add_err {
+            return Err(e.into());
+        }
+    }
+    if !custom.rules.is_empty() {
+        let src =
+            b.add_source_with_body(SourceKind::Custom(set.clone()), Arc::clone(&custom.body))?;
+        b.add_rules(src, std::mem::take(&mut custom.rules))?;
+    }
+    Ok(b.build_in_memory())
 }
 
 /// Custom rules that must act on list rules.

@@ -37,7 +37,7 @@ pub struct FilterSetConfig {
     pub lists: Vec<ListId>,
     /// Custom rules, one rule per line.
     pub custom_rules: String,
-    /// Blocked service ids (placeholder until the service catalog exists).
+    /// Blocked service ids from the runtime catalog (`services.json`).
     pub services: Vec<String>,
     /// How blocked queries are answered.
     pub block_mode: BlockMode,

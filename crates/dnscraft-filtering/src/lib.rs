@@ -9,8 +9,9 @@
 //!
 //! Currently provided: the canonical matching name [`DomainName`], validated
 //! ids ([`ListId`], [`SetId`]), verdict types, [`BlockMode`], an injectable
-//! [`Clock`], filter sets ([`Snapshot`]), temporary allows, match counters,
-//! hot-reload [`FilterEngine`], and error types with stable codes.
+//! [`Clock`], filter sets ([`Snapshot`]), blocked-services [`ServiceCatalog`],
+//! temporary allows, match counters, hot-reload [`FilterEngine`], and error
+//! types with stable codes.
 
 mod builder;
 mod clock;
@@ -24,6 +25,7 @@ mod parser;
 mod pattern;
 mod rule;
 mod scheduler;
+mod services;
 mod set;
 mod snapshot;
 mod stats;
@@ -58,6 +60,11 @@ pub use pattern::{
 };
 pub use rule::{BadfilterKey, DnsRewrite, DnsTypeFilter, MatchKind, Modifiers, Rule, RuleAction};
 pub use scheduler::UpdateScheduler;
+pub use services::{
+    FetchOutcomeKind as ServicesFetchKind, SERVICES_I18N_STEM, SERVICES_I18N_URL,
+    SERVICES_JSON_URL, SERVICES_STEM, ServiceCatalog, ServiceError, ServiceInfo, ServiceParseStats,
+    ServicesUpdateReport, ServicesUrls, seed_services_cache, update_services_catalog,
+};
 pub use set::{
     DEFAULT_UPDATE_INTERVAL, FilterConfig, FilterSetConfig, ListBodies, ListConfig, SnapshotError,
 };

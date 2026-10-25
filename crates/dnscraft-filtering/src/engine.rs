@@ -17,6 +17,9 @@ use crate::error::FilterError;
 use crate::fetch::{FetchOutcome, Fetcher};
 use crate::name::DomainName;
 use crate::scheduler::UpdateScheduler;
+use crate::services::{
+    ServiceCatalog, ServicesUpdateReport, ServicesUrls, update_services_catalog,
+};
 use crate::set::{FilterConfig, ListBodies, SnapshotError};
 use crate::snapshot::{Snapshot, SnapshotBuilder, resolve_chain};
 use crate::stats::{FilterStats, StatsTable};
@@ -107,6 +110,12 @@ struct EngineInner {
     /// Wakes the scheduler early ("update now").
     kick: Arc<Notify>,
     scheduler: Mutex<Option<UpdateScheduler>>,
+    /// Runtime blocked-services catalog (`None` = feature unavailable).
+    catalog: RwLock<Option<Arc<ServiceCatalog>>>,
+    /// Last services update/parse error code (`filter_services.*`), if any.
+    services_error: RwLock<Option<&'static str>>,
+    /// Catalog download URLs (overridable in tests).
+    services_urls: RwLock<ServicesUrls>,
 }
 
 impl FilterEngine {
@@ -125,40 +134,18 @@ impl FilterEngine {
         }
     }
 
-    /// Builds from cached lists (no network), then starts the update scheduler.
+    /// Builds from cached lists and services catalog (no network), then starts
+    /// the update scheduler.
     ///
     /// Local `File` sources are read if not yet cached. HTTP lists without a
-    /// cache contribute nothing until [`Self::update_lists`].
+    /// cache contribute nothing until [`Self::update_lists`]. Without a cached
+    /// `services.json`, [`Self::services`] returns `None`.
     pub fn open(
         config: FilterConfig,
         store: ListStore,
         clock: Arc<dyn Clock>,
     ) -> Result<Arc<Self>, FilterError> {
-        let files = file_fallbacks(&config);
-        let bodies = Arc::new(StoreListBodies::new(store.clone(), files));
-        let snapshot = build_snapshot(Arc::clone(&bodies) as Arc<dyn ListBodies>, &config)?;
-        let status = status_from_snapshot(&snapshot, &config, &store);
-        let fetcher = Fetcher::new(&store).map_err(|e| FilterError::BuildFailed {
-            message: e.to_string(),
-        })?;
-        let (set_ids, list_ids) = ids_from_snapshot(&snapshot);
-        let kick = Arc::new(Notify::new());
-        let eng = Arc::new(Self {
-            snapshot: RwLock::new(Arc::new(snapshot)),
-            temps: RwLock::new(HashMap::new()),
-            stats: RwLock::new(StatsTable::new(set_ids, list_ids)),
-            inner: Some(EngineInner {
-                store,
-                bodies,
-                fetcher,
-                clock: Arc::clone(&clock),
-                config: RwLock::new(config),
-                list_status: RwLock::new(status),
-                coalesce: Mutex::new(Coalesce::default()),
-                kick: Arc::clone(&kick),
-                scheduler: Mutex::new(None),
-            }),
-        });
+        let eng = Self::open_without_scheduler(config, store, Arc::clone(&clock))?;
         let sched = UpdateScheduler::start(Arc::clone(&eng), clock);
         if let Some(inner) = eng.inner.as_ref() {
             *inner
@@ -166,7 +153,6 @@ impl FilterEngine {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sched);
         }
-        let _ = kick;
         Ok(eng)
     }
 
@@ -180,7 +166,12 @@ impl FilterEngine {
     ) -> Result<Arc<Self>, FilterError> {
         let files = file_fallbacks(&config);
         let bodies = Arc::new(StoreListBodies::new(store.clone(), files));
-        let snapshot = build_snapshot(Arc::clone(&bodies) as Arc<dyn ListBodies>, &config)?;
+        let (catalog, services_error) = load_catalog_offline(&store);
+        let snapshot = build_snapshot(
+            Arc::clone(&bodies) as Arc<dyn ListBodies>,
+            &config,
+            catalog.clone(),
+        )?;
         let status = status_from_snapshot(&snapshot, &config, &store);
         let fetcher = Fetcher::new(&store).map_err(|e| FilterError::BuildFailed {
             message: e.to_string(),
@@ -200,6 +191,9 @@ impl FilterEngine {
                 coalesce: Mutex::new(Coalesce::default()),
                 kick: Arc::new(Notify::new()),
                 scheduler: Mutex::new(None),
+                catalog: RwLock::new(catalog),
+                services_error: RwLock::new(services_error),
+                services_urls: RwLock::new(ServicesUrls::default()),
             }),
         }))
     }
@@ -246,7 +240,8 @@ impl FilterEngine {
         self.enqueue_rebuild(Some(config), None).await
     }
 
-    /// Fetches the selected lists, then rebuilds the snapshot from the store.
+    /// Fetches the selected lists (and the services catalog when `All`), then
+    /// rebuilds the snapshot from the store.
     ///
     /// A failed fetch keeps the last good body; a failed rebuild keeps the
     /// last good snapshot. Returns per-list status either way.
@@ -259,6 +254,9 @@ impl FilterEngine {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        if matches!(which, ListSelection::All) {
+            let _ = self.refresh_services_catalog().await;
+        }
         let targets = select_lists(&config, &which);
         for (id, source) in targets {
             let outcome = inner
@@ -273,6 +271,49 @@ impl FilterEngine {
             Ok(report) => report.lists,
             Err(_) => self.list_status(),
         }
+    }
+
+    /// Downloads/caches the blocked-services catalog and rebuilds if it changed.
+    ///
+    /// On a malformed body the previous catalog is kept and
+    /// [`Self::services_last_error`] reports `filter_services.malformed`.
+    pub async fn update_services(&self) -> ServicesUpdateReport {
+        let report = self.refresh_services_catalog().await;
+        if report.catalog.is_some() {
+            let _ = self.enqueue_rebuild(None, None).await;
+        }
+        report
+    }
+
+    /// Overrides catalog download URLs (tests with a local HTTP server).
+    pub fn set_services_urls(&self, urls: ServicesUrls) -> Result<(), FilterError> {
+        let Some(inner) = self.inner.as_ref() else {
+            return Err(FilterError::NoStore);
+        };
+        *inner
+            .services_urls
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = urls;
+        Ok(())
+    }
+
+    /// The current blocked-services catalog, or `None` when unavailable.
+    pub fn services(&self) -> Option<Arc<ServiceCatalog>> {
+        let inner = self.inner.as_ref()?;
+        inner
+            .catalog
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Stable error code of the last failed services update/parse, if any.
+    pub fn services_last_error(&self) -> Option<&'static str> {
+        let inner = self.inner.as_ref()?;
+        *inner
+            .services_error
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Triggers an immediate list update (wakes the scheduler if running).
@@ -516,9 +557,14 @@ impl FilterEngine {
 
             let bodies = Arc::clone(&inner.bodies);
             let store = inner.store.clone();
+            let catalog = inner
+                .catalog
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let build_result = tokio::task::spawn_blocking(move || {
                 let cfg = cfg_opt;
-                build_snapshot(bodies as Arc<dyn ListBodies>, &cfg).map(|snap| (snap, cfg))
+                build_snapshot(bodies as Arc<dyn ListBodies>, &cfg, catalog).map(|snap| (snap, cfg))
             })
             .await;
 
@@ -625,13 +671,66 @@ impl FilterEngine {
             .find(|a| a.matches(name, now))
             .map(TempAllow::to_verdict)
     }
+
+    /// Fetches the catalog; on success replaces the in-memory catalog and
+    /// clears the error. On failure keeps the previous catalog and records the
+    /// error code.
+    async fn refresh_services_catalog(&self) -> ServicesUpdateReport {
+        let Some(inner) = self.inner.as_ref() else {
+            return ServicesUpdateReport {
+                catalog: None,
+                error_code: Some(FilterError::NoStore.code()),
+                services_fetch: crate::services::FetchOutcomeKind::Failed,
+                i18n_fetch: crate::services::FetchOutcomeKind::Failed,
+            };
+        };
+        let urls = inner
+            .services_urls
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let report = update_services_catalog(&inner.fetcher, &inner.store, &urls).await;
+        if let Some(cat) = &report.catalog {
+            *inner
+                .catalog
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(cat.clone()));
+            *inner
+                .services_error
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        } else if let Some(code) = report.error_code {
+            *inner
+                .services_error
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(code);
+        }
+        report
+    }
+}
+
+fn load_catalog_offline(store: &ListStore) -> (Option<Arc<ServiceCatalog>>, Option<&'static str>) {
+    match ServiceCatalog::load_cached(store) {
+        Ok(Some(c)) => (Some(Arc::new(c)), None),
+        Ok(None) => (None, None),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                code = e.code(),
+                "cached services catalog unusable; feature unavailable until a good update"
+            );
+            (None, Some(e.code()))
+        }
+    }
 }
 
 fn build_snapshot(
     bodies: Arc<dyn ListBodies>,
     config: &FilterConfig,
+    catalog: Option<Arc<ServiceCatalog>>,
 ) -> Result<Snapshot, FilterError> {
     SnapshotBuilder::new(bodies)
+        .with_catalog(catalog)
         .build(config)
         .map_err(|e: SnapshotError| FilterError::BuildFailed {
             message: e.to_string(),

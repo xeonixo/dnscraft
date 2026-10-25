@@ -224,16 +224,18 @@ incl. unique contribution after dedup.
 "service: <id>"; unavailable state when no catalog.
 
 **Acceptance criteria:**
-- [ ] Fixture catalog (small, hand-written, not GPL data) loads; toggling a service per set changes verdicts
-- [ ] Translated names by locale with fallback to English
-- [ ] Malformed catalog keeps the previous one and reports a code
+- [x] Fixture catalog (small, hand-written, not GPL data) loads; toggling a service per set changes verdicts
+- [x] Translated names by locale with fallback to English
+- [x] Malformed catalog keeps the previous one and reports a code
 
 **Verification:** `cargo test -p dnscraft-filtering services`
 
 **Dependencies:** L1, L2, M2 · **Files:** `src/services.rs`, `tests/services.rs` · **Scope:** M
 
 ## Checkpoint C: Lists and services
-- [ ] Criteria 5 and 6 met; reload concurrency test green
+- [x] Criteria 5 and 6 met; reload concurrency test green
+  - Criterion 5: L2/L3 (304, size cap, timeout, HTTPS-downgrade, last-good + codes); reload concurrency green (`tests/reload.rs`)
+  - Criterion 6: L4 fixture catalog, per-set toggle, translated names (`tests/services.rs`)
 
 ## Phase 4: Completion
 

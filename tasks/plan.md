@@ -100,10 +100,10 @@ F1 skeleton + types ── F2 core rule parser ── F3 modifiers + IDNA ──
 - [x] Task L1: List store (data directory, atomic writes, metadata, local file lists)
 - [x] Task L2: Fetcher (conditional GET, size cap, timeout, redirect policy, last-good fallback)
 - [x] Task L3: Scheduler, hot reload, `apply_config`, list status and unique contribution
-- [ ] Task L4: Blocked services catalog
+- [x] Task L4: Blocked services catalog
 
 ### Checkpoint C: Lists and services
-- [ ] Criteria 5 and 6 met; reload never blocks matching (concurrency test)
+- [x] Criteria 5 and 6 met; reload never blocks matching (concurrency test)
 
 ### Phase 4: Completion
 - [ ] Task C1: Engine API polish, stats, README, error-code table, coverage ≥ 80 %, real-list acceptance run
