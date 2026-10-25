@@ -33,7 +33,7 @@ mod store;
 
 pub use acme::{
     AcmeDirectory, AcmeOrder, Dns01Txt, FakeAcmeDirectory, FakeAcmeFail, InstantAcme,
-    challenge_txt_name, default_identifiers,
+    ari_certificate_id, challenge_txt_name, default_identifiers,
 };
 pub use acme_http::ReqwestHttpClient;
 pub use clock::{Clock, ManualClock, SystemClock, wait_until};
@@ -48,11 +48,12 @@ pub use config::{
 pub use error::TlsError;
 pub use issue::issue;
 pub use pem_util::KeyPem;
-pub use propagation::{resolve_nameservers, wait_for_txt};
+pub use propagation::{resolve_nameservers, wait_for_txt, wait_for_txt_with_query_timeout};
 pub use renew::{
     AriWindow, BACKOFF_BASE, BACKOFF_CAP, RenewFn, RenewFut, RenewScheduler, ScheduleFn, StatusFn,
-    apply_cert_flags, backoff_delay, backoff_delay_with_rng, is_transient_renew_error,
-    next_renewal, next_renewal_with_rng, parse_retry_after, retry_after_from_error,
+    apply_cert_flags, backoff_delay, backoff_delay_with_rng, current_ari_window,
+    is_transient_renew_error, next_renewal, next_renewal_with_rng, parse_retry_after, plan_renewal,
+    retry_after_from_error,
 };
 pub use resolver::CertResolver;
 pub use secret::{CLOUDFLARE_API_TOKEN_ENV, Secret, read_secret};
@@ -61,4 +62,4 @@ pub use sni::{
     parse_client_id_sni,
 };
 pub use status::{TlsStatus, cert_flags};
-pub use store::{CertMeta, CertStore, LoadedCert, TLS_DIR_NAME};
+pub use store::{CertMeta, CertStore, IssueState, LoadedCert, TLS_DIR_NAME};

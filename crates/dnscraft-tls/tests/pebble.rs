@@ -17,7 +17,7 @@ use dnscraft_proto::{Class, Message, RData, Record};
 use dnscraft_tls::{
     AcmeConfig, AcmeDirectory, AcmeDirectoryKind, CertResolver, CertStore, CloudflareClient,
     CloudflareConfig, DynDnsConfig, InstantAcme, Secret, SystemClock, TlsConfig,
-    challenge_txt_name, issue,
+    challenge_txt_name, current_ari_window, issue,
 };
 use mock_cloudflare::{MockCloudflare, MockZone};
 use tokio::net::UdpSocket;
@@ -192,6 +192,32 @@ async fn pebble_issue_dns_example_com() {
         mock.txt_contents(&challenge).await.is_empty(),
         "challenge TXT cleaned up"
     );
+
+    // Renewal: a second issue replaces the first cert (ARI `replaces`).
+    let first_chain = loaded.chain_pem.clone();
+    let first_leaf = resolver.leaf_der().expect("leaf installed");
+    assert!(
+        loaded.meta.ari_cert_id.is_some(),
+        "ARI id stored in meta.json"
+    );
+    let window = current_ari_window(&acme, &store, &cfg.acme).await;
+    assert!(window.is_some(), "Pebble advertises renewalInfo");
+
+    issue(&acme, &cf, &store, &resolver, &cfg, &SystemClock)
+        .await
+        .expect("Pebble renew (order with replaces)");
+    let renewed = store.load().unwrap().expect("renewed cert on disk");
+    assert_ne!(
+        renewed.chain_pem, first_chain,
+        "renewal must mint a new cert"
+    );
+    assert_ne!(
+        resolver.leaf_der().expect("leaf installed"),
+        first_leaf,
+        "resolver must serve the renewed cert"
+    );
+    assert_ne!(renewed.meta.ari_cert_id, loaded.meta.ari_cert_id);
+    assert_eq!(store.load_state().last_error, None);
 
     let _ = fs::remove_dir_all(&data);
 }

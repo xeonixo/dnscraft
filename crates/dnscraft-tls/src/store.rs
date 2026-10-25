@@ -7,7 +7,13 @@
 //! cert.pem       leaf + chain PEM (0o600)
 //! key.pem        private key PEM (0o600)
 //! meta.json      cache of identifiers / not_after / ARI id (0o600)
+//! state.json     last issue/renew outcome, independent of any cert (0o600)
 //! ```
+//!
+//! `state.json` (not `meta.json`) carries `last_error` / `last_issue` /
+//! `last_renew_attempt`: it must be writable when the very first issuance
+//! fails and no certificate exists yet, and a failed renewal must not rewrite
+//! the files that describe the last good cert.
 //!
 //! Writes are atomic (temp + fsync + rename), matching filtering's `ListStore`.
 //! [`CertMeta::not_after`] in `meta.json` is a cache; [`CertStore::load`] always
@@ -32,6 +38,7 @@ const CERT_FILE: &str = "cert.pem";
 const KEY_FILE: &str = "key.pem";
 const META_FILE: &str = "meta.json";
 const ACCOUNT_FILE: &str = "account.json";
+const STATE_FILE: &str = "state.json";
 
 /// Cached certificate metadata written next to the PEM files.
 ///
@@ -45,12 +52,26 @@ pub struct CertMeta {
     /// Unix seconds of leaf `notAfter` (cache only).
     #[serde(default)]
     pub not_after_unix: Option<i64>,
-    /// ACME ARI certificate id when known.
+    /// ACME ARI certificate id (`<aki>.<serial>`) of the stored leaf, when known.
     #[serde(default)]
     pub ari_cert_id: Option<String>,
-    /// Last error code from issuance/renewal, if any.
+}
+
+/// Outcome of the most recent issue/renew attempts (`state.json`).
+///
+/// Written even when no certificate exists. `last_error` is always a stable
+/// `tls.*` code ([`TlsError::code`]), never an error message.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueState {
+    /// Stable code of the last failed attempt; cleared on success.
     #[serde(default)]
     pub last_error: Option<String>,
+    /// Unix seconds of the last successful issue/renew.
+    #[serde(default)]
+    pub last_issue_unix: Option<i64>,
+    /// Unix seconds of the last attempt (success or failure).
+    #[serde(default)]
+    pub last_renew_attempt_unix: Option<i64>,
 }
 
 /// Material loaded from the store.
@@ -172,6 +193,22 @@ impl CertStore {
     /// Atomically writes ACME `account.json` (mode 0o600).
     pub fn save_account(&self, data: &[u8]) -> Result<(), TlsError> {
         atomic_write(&self.dir.join(ACCOUNT_FILE), data)
+    }
+
+    /// Reads `state.json`; missing or unparseable → default (no history).
+    pub fn load_state(&self) -> IssueState {
+        fs::read(self.dir.join(STATE_FILE))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    /// Atomically writes `state.json` (mode 0o600). Does not touch cert/key/meta.
+    pub fn save_state(&self, state: &IssueState) -> Result<(), TlsError> {
+        let json = serde_json::to_vec_pretty(state).map_err(|e| TlsError::StoreIo {
+            message: format!("serialize state.json: {e}"),
+        })?;
+        atomic_write(&self.dir.join(STATE_FILE), &json)
     }
 
     fn load_meta_file(&self) -> Option<CertMeta> {

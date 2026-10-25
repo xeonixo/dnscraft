@@ -3,7 +3,7 @@
 use std::time::{Duration, SystemTime};
 
 use crate::config::AcmeDirectoryKind;
-use crate::store::LoadedCert;
+use crate::store::{IssueState, LoadedCert};
 
 /// Snapshot of certificate and DynDNS state (UI / alerts).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -37,9 +37,11 @@ pub struct TlsStatus {
 }
 
 impl TlsStatus {
-    /// Builds status from an optional loaded cert and config knobs.
+    /// Builds status from an optional loaded cert, the persisted issue state
+    /// ([`crate::CertStore::load_state`]) and config knobs.
     pub fn from_cert(
         loaded: Option<&LoadedCert>,
+        state: &IssueState,
         now: SystemTime,
         expiry_warn: Duration,
         directory: &AcmeDirectoryKind,
@@ -48,7 +50,9 @@ impl TlsStatus {
         let mut s = Self {
             acme_directory: directory.url().to_owned(),
             acme_enabled,
-            last_error: loaded.and_then(|c| c.meta.last_error.clone()),
+            last_error: state.last_error.clone(),
+            last_issue: state.last_issue_unix.map(unix_to_system),
+            last_renew_attempt: state.last_renew_attempt_unix.map(unix_to_system),
             ..Self::default()
         };
         let Some(cert) = loaded else {
@@ -74,6 +78,10 @@ pub fn cert_flags(not_after: SystemTime, now: SystemTime, expiry_warn: Duration)
     }
     let remaining = not_after.duration_since(now).unwrap_or(Duration::ZERO);
     (remaining < expiry_warn, false)
+}
+
+fn unix_to_system(secs: i64) -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(secs.max(0) as u64)
 }
 
 fn days_between(now: SystemTime, not_after: SystemTime) -> i64 {

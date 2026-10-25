@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime};
 
 use dnscraft_tls::{
     AcmeDirectoryKind, AriWindow, BACKOFF_CAP, CertMeta, DEFAULT_EXPIRY_WARN, DEFAULT_RENEW_BEFORE,
-    KeyPem, LoadedCert, ManualClock, RenewFn, RenewScheduler, TlsError, TlsStatus,
+    IssueState, KeyPem, LoadedCert, ManualClock, RenewFn, RenewScheduler, TlsError, TlsStatus,
     backoff_delay_with_rng, cert_flags, is_transient_renew_error, next_renewal,
     next_renewal_with_rng, parse_retry_after, retry_after_from_error,
 };
@@ -173,6 +173,7 @@ fn status_from_cert_sets_flags() {
     };
     let status = TlsStatus::from_cert(
         Some(&loaded),
+        &IssueState::default(),
         now,
         DEFAULT_EXPIRY_WARN,
         &AcmeDirectoryKind::Staging,

@@ -338,20 +338,7 @@ impl CloudflareClient {
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
 
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| TlsError::CloudflareHttp {
-                message: redact_token(&format!("read body: {e}"), token),
-            })?;
-        if bytes.len() > MAX_BODY_BYTES {
-            return Err(TlsError::CloudflareHttp {
-                message: format!(
-                    "response body {} bytes exceeds {MAX_BODY_BYTES} cap",
-                    bytes.len()
-                ),
-            });
-        }
+        let bytes = read_capped(response, token).await?;
 
         let envelope: Envelope<T> =
             serde_json::from_slice(&bytes).map_err(|e| TlsError::CloudflareHttp {
@@ -380,6 +367,36 @@ impl CloudflareClient {
 
         Ok(envelope)
     }
+}
+
+/// Reads the body while enforcing [`MAX_BODY_BYTES`]: rejects early on an
+/// oversized `Content-Length` and aborts as soon as streamed chunks exceed the cap.
+async fn read_capped(mut response: reqwest::Response, token: &str) -> Result<Vec<u8>, TlsError> {
+    let too_large = |what: String| TlsError::CloudflareHttp {
+        message: format!("response body {what} exceeds {MAX_BODY_BYTES} cap"),
+    };
+    if let Some(len) = response.content_length()
+        && len > MAX_BODY_BYTES as u64
+    {
+        return Err(too_large(format!("{len} bytes (Content-Length)")));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| TlsError::CloudflareHttp {
+            message: redact_token(&format!("read body: {e}"), token),
+        })?
+    {
+        if body.len() + chunk.len() > MAX_BODY_BYTES {
+            return Err(too_large(format!(
+                "over {} bytes",
+                body.len() + chunk.len()
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 fn redact_token(text: &str, token: &str) -> String {

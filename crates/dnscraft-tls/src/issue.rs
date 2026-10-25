@@ -4,6 +4,8 @@
 //! finalizes the order, stores and installs the certificate, then cleans up
 //! challenge records.
 
+use std::time::SystemTime;
+
 use tracing::{debug, info, warn};
 
 use crate::acme::{AcmeDirectory, AcmeOrder, Dns01Txt, challenge_txt_name, default_identifiers};
@@ -19,6 +21,12 @@ use crate::store::{CertMeta, CertStore};
 ///
 /// On failure the previous certificate on disk and in [`CertResolver`] is left
 /// untouched. Challenge TXT cleanup is best-effort.
+///
+/// When a certificate is already stored, the new order carries its ARI id as
+/// `replaces`. Every attempt is recorded in `state.json` (`last_renew_attempt`;
+/// on failure `last_error` = stable [`TlsError::code`], on success `last_error`
+/// cleared and `last_issue` set); `cert.pem`/`key.pem`/`meta.json` are only
+/// written by a successful save.
 pub async fn issue<A>(
     acme: &A,
     cloudflare: &CloudflareClient,
@@ -33,7 +41,41 @@ where
     if !cfg.acme.enabled {
         return Err(TlsError::config("ACME is disabled"));
     }
+    let attempted = clock.now();
+    let result = issue_inner(acme, cloudflare, store, resolver, cfg, clock).await;
 
+    let mut state = store.load_state();
+    state.last_renew_attempt_unix = Some(unix_secs(attempted));
+    match &result {
+        Ok(()) => {
+            state.last_error = None;
+            state.last_issue_unix = Some(unix_secs(clock.now()));
+        }
+        Err(e) => state.last_error = Some(e.code().to_owned()),
+    }
+    if let Err(e) = store.save_state(&state) {
+        warn!(code = e.code(), "could not persist issue state: {e}");
+    }
+    result
+}
+
+fn unix_secs(t: SystemTime) -> i64 {
+    t.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+async fn issue_inner<A>(
+    acme: &A,
+    cloudflare: &CloudflareClient,
+    store: &CertStore,
+    resolver: &CertResolver,
+    cfg: &TlsConfig,
+    clock: &dyn Clock,
+) -> Result<(), TlsError>
+where
+    A: AcmeDirectory + AcmeOrder + ?Sized,
+{
     acme.ensure_account(store, &cfg.acme).await?;
 
     let identifiers = default_identifiers(&cfg.public_domain);
@@ -45,7 +87,17 @@ where
         cleanup_challenge_txt(cloudflare, &challenge_name).await;
     }
 
-    let txts = match acme.start_dns01_order(store, &cfg.acme, &identifiers).await {
+    // Renewal: tell the CA which certificate this order replaces (ARI).
+    let replaces = store.load().ok().flatten().and_then(|c| {
+        c.meta
+            .ari_cert_id
+            .or_else(|| acme.certificate_id(&c.chain_pem))
+    });
+
+    let txts = match acme
+        .start_dns01_order(store, &cfg.acme, &identifiers, replaces.as_deref())
+        .await
+    {
         Ok(t) => t,
         Err(e) => {
             acme.abort_order().await;
@@ -74,6 +126,7 @@ where
     // previous cert (store.save validates before writing).
     let meta = CertMeta {
         identifiers: identifiers.to_vec(),
+        ari_cert_id: acme.certificate_id(&chain_pem),
         ..CertMeta::default()
     };
     if let Err(e) = store.save(&chain_pem, &key_pem, &meta) {

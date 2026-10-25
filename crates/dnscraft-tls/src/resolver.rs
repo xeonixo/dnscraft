@@ -58,6 +58,16 @@ impl CertResolver {
             .is_some()
     }
 
+    /// DER of the installed leaf certificate, if any (status / diagnostics).
+    pub fn leaf_der(&self) -> Option<Vec<u8>> {
+        self.current
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|k| k.cert.first())
+            .map(|c| c.as_ref().to_vec())
+    }
+
     /// Builds a [`CertifiedKey`] with the ring provider and swaps it in.
     ///
     /// Does not touch the disk store. On parse/key errors the previous cert

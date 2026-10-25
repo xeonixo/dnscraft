@@ -6,7 +6,7 @@
 mod mock_cloudflare;
 
 use dnscraft_tls::{CloudflareClient, CloudflareConfig, Secret, TTL_ACME_TXT, TlsError};
-use mock_cloudflare::{MockCloudflare, MockZone};
+use mock_cloudflare::{MockCloudflare, MockZone, OversizeBody};
 
 const TOKEN: &str = "test-cf-token-do-not-leak";
 const ZONE_ID: &str = "zone-example-com";
@@ -211,4 +211,32 @@ async fn write_lock_is_shared_arc() {
     let b = client.write_lock().clone();
     assert!(std::sync::Arc::ptr_eq(&a, &b));
     let _g = a.lock().await;
+}
+
+async fn assert_body_cap_enforced_promptly(kind: OversizeBody) {
+    let (mock, client) = mock_and_client().await;
+    // Resolve and cache the zone first so only the list request is oversized.
+    client.zone().await.unwrap();
+    mock.force_next_oversize(kind).await;
+    // The mock holds the connection open for 10 s; a client that waits for EOF
+    // before checking the size would blow this timeout.
+    let err = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.list_records(CHALLENGE, "TXT"),
+    )
+    .await
+    .expect("cap must be enforced while reading, not after EOF")
+    .unwrap_err();
+    assert_eq!(err.code(), "tls.cloudflare.http");
+    assert!(err.to_string().contains("cap"), "{err}");
+}
+
+#[tokio::test]
+async fn oversized_content_length_rejected_before_reading_body() {
+    assert_body_cap_enforced_promptly(OversizeBody::DeclaredOnly).await;
+}
+
+#[tokio::test]
+async fn oversized_streamed_body_aborts_while_reading() {
+    assert_body_cap_enforced_promptly(OversizeBody::Streamed).await;
 }

@@ -15,9 +15,12 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
+use crate::acme::AcmeOrder;
 use crate::clock::Clock;
+use crate::config::{AcmeConfig, TlsConfig};
 use crate::error::TlsError;
 use crate::status::{TlsStatus, cert_flags};
+use crate::store::CertStore;
 
 /// Cap for exponential renew backoff (6 hours).
 pub const BACKOFF_CAP: Duration = Duration::from_secs(6 * 3600);
@@ -86,6 +89,48 @@ fn pick_ari(window: AriWindow, now: SystemTime, rng: &mut impl Rng) -> SystemTim
     }
     let offset = rng.random_range(0..=span);
     start + Duration::from_secs(offset)
+}
+
+/// Fetches the CA's ARI window for the certificate currently in `store`.
+///
+/// `None` when there is no (readable) certificate, the CA has no ARI, or the
+/// request fails — ARI never fails renewal.
+pub async fn current_ari_window<A>(
+    acme: &A,
+    store: &CertStore,
+    cfg: &AcmeConfig,
+) -> Option<AriWindow>
+where
+    A: AcmeOrder + ?Sized,
+{
+    let loaded = store.load().ok().flatten()?;
+    acme.renewal_window(store, cfg, &loaded.chain_pem).await
+}
+
+/// Computes when the stored certificate should next be renewed, consulting ARI.
+///
+/// This is the async half of the schedule input: [`ScheduleFn`] is synchronous,
+/// so L10 should call this after startup and after every successful renewal
+/// (and periodically, since the CA may move the window), cache the returned
+/// instant or the window from [`current_ari_window`], and have its `ScheduleFn`
+/// return `next_renewal(not_after, cfg.renew_before, cached_window, now)`.
+/// No certificate → `now`.
+pub async fn plan_renewal<A>(
+    acme: &A,
+    store: &CertStore,
+    cfg: &TlsConfig,
+    now: SystemTime,
+) -> SystemTime
+where
+    A: AcmeOrder + ?Sized,
+{
+    let Some(loaded) = store.load().ok().flatten() else {
+        return now;
+    };
+    let ari = acme
+        .renewal_window(store, &cfg.acme, &loaded.chain_pem)
+        .await;
+    next_renewal(Some(loaded.not_after), cfg.renew_before, ari, now)
 }
 
 /// Delay before the next renew attempt after a transient failure.

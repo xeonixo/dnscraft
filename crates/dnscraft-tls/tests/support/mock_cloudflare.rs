@@ -44,6 +44,18 @@ pub struct MockZone {
     pub name_servers: Vec<String>,
 }
 
+/// Misbehaving response bodies for the client's size-cap tests.
+///
+/// Both variants keep the connection open for a while after writing, so a
+/// client that waits for EOF before checking the size would stall.
+#[derive(Clone, Copy, Debug)]
+pub enum OversizeBody {
+    /// `Content-Length` claims 2 MiB; only a few bytes follow.
+    DeclaredOnly,
+    /// 2 MiB of body with no `Content-Length`.
+    Streamed,
+}
+
 struct State {
     token: String,
     zones: Vec<MockZone>,
@@ -51,6 +63,8 @@ struct State {
     next_id: AtomicU64,
     /// When set, the next matching response is forced (status, optional Retry-After).
     force_http: Option<(u16, Option<String>)>,
+    /// When set, the next response is an oversized body.
+    force_oversize: Option<OversizeBody>,
 }
 
 /// Loopback Cloudflare API mock.
@@ -72,6 +86,7 @@ impl MockCloudflare {
             records: Vec::new(),
             next_id: AtomicU64::new(1),
             force_http: None,
+            force_oversize: None,
         }));
         let log = Arc::new(Mutex::new(Vec::new()));
         let (s, l) = (state.clone(), log.clone());
@@ -109,6 +124,11 @@ impl MockCloudflare {
 
     pub async fn requests(&self) -> Vec<RecordedRequest> {
         self.log.lock().await.clone()
+    }
+
+    /// Make the next API response an oversized body of the given shape.
+    pub async fn force_next_oversize(&self, kind: OversizeBody) {
+        self.state.lock().await.force_oversize = Some(kind);
     }
 
     /// Force the next API response to this HTTP status (and optional Retry-After).
@@ -174,6 +194,35 @@ async fn serve(
     });
 
     let mut st = state.lock().await;
+
+    if let Some(kind) = st.force_oversize.take() {
+        drop(st);
+        let head = match kind {
+            OversizeBody::DeclaredOnly => {
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: 2097152\r\n\r\n"
+            }
+            OversizeBody::Streamed => {
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n"
+            }
+        };
+        let _ = sock.write_all(head.as_bytes()).await;
+        match kind {
+            OversizeBody::DeclaredOnly => {
+                let _ = sock.write_all(b"{\"success\":").await;
+            }
+            OversizeBody::Streamed => {
+                let chunk = vec![b' '; 64 * 1024];
+                for _ in 0..32 {
+                    if sock.write_all(&chunk).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+        let _ = sock.flush().await;
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        return;
+    }
 
     if let Some((status, retry)) = st.force_http.take() {
         let body = format!(
