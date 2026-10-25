@@ -12,10 +12,12 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
 - Module `filtering`: **C1 done** (engine polish, README, coverage, fuzz, real-list acceptance). **Checkpoint D ready for Claude/owner review** — implementer does **not** tick Checkpoint D. Checkpoint B owner: RAM may grow — not blocking. Deep-name p99 miss left for Checkpoint D if revisited.
-- Module `clients`: **SPEC-clients.md drafted** — waiting on owner answers to Open Questions before approval / P1 plan. Specs for `tls` and `policy` not started yet (one spec at a time).
-- Blockers: none for coding; next owner input is SPEC-clients open questions (and filtering Checkpoint D when ready).
+- Module `clients`: **SPEC-clients.md decisions locked** (defaults + full IPv6 via classic `stat/sta`). Formal “approved” for P1 still open. Specs for `tls` / `policy` next (S2/S3).
+- Blockers: none for coding; next owner input is formal SPEC-clients approval and/or S2; filtering Checkpoint D when ready.
 
 ## Log
+
+- 2026-10-25 — SPEC-clients.md owner decisions (Cursor): Accepted proposed defaults (`home.arpa`, 60 s poll, 7 d offline retain, VLAN `name (id)`, site auto-pick, pin/CA bootstrap, `DNSCRAFT_UNIFI_API_KEY`, disk last-good, 429 backoff). Explicit ask: **complete IPv6** → classic client feed on by default (`classic_clients = true`), defensive parse, no link-local index. Open Questions cleared; formal approve still pending for P1.
 
 - 2026-10-25 — Spec draft SPEC-clients.md (Cursor, S1): UniFi Network Integration API research (base `/proxy/network/integration/v1`, `X-API-KEY`, paginated clients/networks; gaps: single `ipAddress`, no client `networkId`, connected-only). Design: Arc lookup `by_ip`/`by_name`/`reverse`, manual > longest CIDR > UniFi, VLAN via network `hostIpAddress`/`prefixLength`, last-good + stale on sync failure, TLS pin/CA (never accept-any by default), `clients.*` codes, mock-server testing. CAPABILITY-MAP link set to draft. **STOP for owner Open Questions.**
 

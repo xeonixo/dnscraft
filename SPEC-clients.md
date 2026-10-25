@@ -58,23 +58,37 @@ offline clients). Community references:
 [ubntwiki controller API](https://ubntwiki.com/products/software/unifi-controller/api),
 [Wachhund unifi-best-practices](https://github.com/Wachhund/unifi-best-practices).
 
-**Decision for this module:** implement against the **Integration API only** in
-v1. Document the gaps (IPv6 multi-address, offline/known clients, direct
-network id). If owner testing shows the gaps block log enrichment or PTR, a
-follow-up may add an **optional**, clearly labelled classic-API reader — never
-as the default, and never required for build/tests. See Open Questions.
+**Decision for this module (owner, 2026-10-25):** use **both** local surfaces
+behind the same gateway TLS + API key where possible:
 
-#### VLAN derivation without `networkId`
+| Role | API | Why |
+|---|---|---|
+| Sites, networks (VLAN id/name, IPv4/IPv6 prefixes) | Integration `/v1/…` | Official, stable schemas |
+| Client inventory with **all addresses including IPv6** | Classic `…/api/s/{site}/stat/sta` (and `rest/user` for known/offline if needed) | Integration clients expose only singular `ipAddress`; owner wants complete IPv6 |
 
-On each sync, fetch network **details** for gateway-managed networks and build
-subnet → `(vlanId, network name)` from `hostIpAddress`/`prefixLength` (and IPv6
-subnets when present). Assign a client's VLAN by longest-prefix match of its
-`ipAddress` against that table. If no prefix matches, VLAN is unknown (`None`).
+Classic JSON is undocumented and version-skewed: parse **defensively** (every
+field optional, skip/log bad rows, never fail the whole sync on one client).
+Map Integration site UUID ↔ classic site key (`default`, …) during sync; if
+mapping fails, record `clients.config.invalid` / `clients.http.body` and keep
+last good. Prefer `X-API-KEY` on the classic path when the console accepts it;
+if a given OS build only accepts session cookies for classic, document that as
+an implementation discovery and ask before adding username/password auth
+(API-key-only remains the product goal).
+
+Build/tests use hand-written mocks for **both** surfaces; never a real gateway.
+
+#### VLAN derivation
+
+Prefer classic `network_id` (or equivalent) joined to Integration/classic
+network metadata when present. Fallback: longest-prefix match of each client
+address against gateway-managed network prefixes from Integration details
+(`hostIpAddress`/`prefixLength`, IPv6 subnets). If neither works, VLAN is
+`None`.
 
 ### Polling and freshness
 
-- Default poll interval: **60 s** (proposed; see Open Questions), with ±10 %
-  jitter like the filtering scheduler.
+- Default poll interval: **60 s**, with ±10 % jitter like the filtering
+  scheduler.
 - Change detection: compare a content hash / generation of the normalised client
   + network snapshot; rebuild lookup indexes only when the generation changes.
 - On gateway unreachable, auth failure, TLS failure, or parse error: **keep the
@@ -159,23 +173,24 @@ For `<device>.<local-domain>`:
 
 ### IPv6 and rotating privacy addresses
 
-- Ingest whatever the Integration API returns in `ipAddress` when it is IPv6.
-- Because the official schema has only one address, a privacy-address rotation
-  may look like a new client IP each poll. Index the latest IP; optionally keep
-  previously seen UniFi IPs for the same `id` until
-  `ipv6_address_ttl` (proposed default **24 h**) after last observation, so PTR
-  / log enrichment still works briefly after rotation.
-- Do not invent extra IPv6 addresses. Multi-address support waits on API growth
-  or an owner-approved classic-API add-on.
+- **Goal:** every IPv4 and IPv6 address UniFi knows for a client is indexed for
+  `by_ip` / `reverse` (link-local may be ignored — see Decisions).
+- Primary source: classic client objects (fields vary by controller version;
+  accept arrays or singular fields defensively). Merge with Integration
+  `ipAddress` when present so a single-address Integration row still works if
+  classic is temporarily failing.
+- Privacy addresses rotate: keep previously observed UniFi addresses for the
+  same client id until `ipv6_address_ttl` (default **24 h**) after last
+  observation, then drop them from the index so PTR/log enrichment survives
+  brief rotations without unbounded growth.
+- Never invent addresses that UniFi did not report.
 
 ### Offline / disconnected clients
 
-Integration *List Connected Clients* is active-only. Proposed default: when a
-UniFi client disappears from a successful sync, **retain** it in the snapshot
-for `offline_retain` (proposed **7 d**) marked `online = false`, so PTR and log
-filters keep working for recently seen devices. Successful sync that omits the
-client starts/continues the retain clock; eviction after the TTL. See Open
-Questions.
+When a UniFi client disappears from a successful sync, **retain** it for
+`offline_retain` (default **7 d**) marked `online = false`, so PTR and log
+filters keep working. Evict after the TTL. Classic `rest/user` may supply
+known-but-offline rows; same retain/evict rules apply.
 
 ### Memory budget
 
@@ -235,7 +250,7 @@ test:
 
 ```toml
 [clients]
-local_domain = "home.arpa"          # open question: default
+local_domain = "home.arpa"
 offline_retain = "7d"
 ipv6_address_ttl = "24h"
 
@@ -245,7 +260,9 @@ base_url = "https://192.0.2.1"     # documentation range; gateway address
 # site_id optional: if omitted, use the sole site or fail with clients.config.invalid
 site_id = "00000000-0000-0000-0000-000000000000"
 poll_interval = "60s"
-# TLS: exactly one of pin / ca_file; insecure_skip_verify = false by default
+# classic client feed on by default (needed for full IPv6); Integration still used for sites/networks
+classic_clients = true
+# TLS: pin or ca_file; insecure_skip_verify = false by default
 tls_pin_sha256 = "sha256:AB:CD:…"   # or ca_file = "/path/to/ca.pem"
 # api_key from env DNSCRAFT_UNIFI_API_KEY or DNSCRAFT_UNIFI_API_KEY_FILE
 
@@ -260,15 +277,18 @@ cidr = "198.51.100.0/24"
 
 ## Testing
 
-- Hand-written local HTTPS mock of the Integration API (sites, paginated
-  clients, network details) — same style as the filtering HTTP test server.
-  Fixtures are invented (`example.com` names, documentation IP ranges); **never**
-  real captures from the owner's network.
+- Hand-written local HTTPS mocks for Integration **and** classic client feeds
+  (sites, networks, `stat/sta`-shaped payloads with multiple IPv6 addresses) —
+  same style as the filtering HTTP test server. Fixtures are invented
+  (`example.com` names, documentation ranges `192.0.2.0/24`, `2001:db8::/32`);
+  **never** real captures from the owner's network.
 - Table tests: precedence (manual IP > longer CIDR > shorter CIDR > UniFi),
-  name normalisation, collision suffixes, VLAN longest-prefix assignment,
-  offline retain / IPv6 TTL with a manual clock.
+  name normalisation, collision suffixes, VLAN join / longest-prefix,
+  offline retain / IPv6 TTL with a manual clock, merge of classic multi-IPv6
+  with Integration singular `ipAddress`.
 - Failure tests: connect refused, bad pin, 401, truncated JSON, empty site list,
-  > max clients; last-good retained and `stale` set.
+  classic parse skew (unknown fields), > max clients; last-good retained and
+  `stale` set.
 - No internet and no real UniFi endpoints in CI (SPEC.md Testing Strategy).
 - Coverage: no hard threshold for this crate in SPEC.md; aim for ≥ 80 % of
   non-HTTP logic anyway.
@@ -276,52 +296,58 @@ cidr = "198.51.100.0/24"
 ## Boundaries
 
 - Always: keep last good snapshot on sync failure; never block DNS on UniFi I/O;
-  secrets only via env / `*_FILE`; treat UniFi JSON as untrusted (size caps per
-  page, timeouts).
-- Ask first: new dependencies; enabling the classic controller API; raising the
-  10 000 client hard cap; default poll interval / local domain changes after
-  approval.
+  secrets only via env / `*_FILE`; treat UniFi JSON as untrusted (size caps,
+  timeouts); defensive classic parsing.
+- Ask first: new dependencies; username/password cookie login if API-key-on-classic
+  fails on real hardware; raising the 10 000 client hard cap; changing approved
+  defaults below.
 - Never: default `insecure_skip_verify`; Docker socket access; real UniFi calls
   in tests; select profiles/views inside this crate.
 
 ## Success Criteria
 
-1. With a mock UniFi server, sync builds indexes; `by_ip` / `by_name` / `reverse`
-   match the precedence and normalisation rules above.
-2. Gateway down: lookups still return the last good data with `stale = true` and
+1. With mock Integration + classic servers, sync builds indexes; `by_ip` /
+   `by_name` / `reverse` match the precedence and normalisation rules above.
+2. A fixture client with several IPv6 addresses is reachable via `by_ip` /
+   `reverse` for **each** of them (complete IPv6).
+3. Gateway down: lookups still return the last good data with `stale = true` and
    a stable error code on status; no await on the lookup path.
-3. Manual single IP overrides UniFi for the same address; longest manual CIDR
+4. Manual single IP overrides UniFi for the same address; longest manual CIDR
    wins among manuals.
-4. TLS: pin mismatch fails closed with `clients.tls.untrusted`; skip-verify is
+5. TLS: pin mismatch fails closed with `clients.tls.untrusted`; skip-verify is
    opt-in only.
-5. VLAN filled via network subnet match when prefixes are available; unknown
-   when not.
-6. Invented fixtures only; DoD gates (`fmt`, `clippy -D warnings`,
+6. VLAN filled via network id join or subnet match when available; unknown when
+   not.
+7. Invented fixtures only; DoD gates (`fmt`, `clippy -D warnings`,
    `test --workspace`) green once implemented.
 
 ## Open Questions
 
-Hand these to the owner before implementation / plan (P1):
+None — owner accepted the proposed defaults (2026-10-25), with the explicit
+preference for complete IPv6 via the classic client feed.
 
-1. **`local_domain` default** — propose `home.arpa` (RFC 8375). Prefer something
-   else (e.g. `lan`, a real split-horizon zone under the public domain)?
-2. **Poll interval** — propose 60 s. Faster (15–30 s) for snappier names, or
-   slower (2–5 min) to be kinder to the gateway?
-3. **Offline retain** — keep disconnected UniFi clients for PTR/log for 7 days?
-   Or drop immediately when they leave *List Connected Clients*?
-4. **IPv6 gap** — accept Integration API’s single `ipAddress` for v1, or approve
-   an optional classic-API (`stat/sta`) reader for multi-address / richer fields?
-5. **VLAN display** — show `name`, `id`, or `name (id)` in logs/UI?
-6. **Site selection** — auto-pick when exactly one site, else require `site_id`?
-7. **TLS bootstrap UX** — first-run: paste SHA-256 pin (from `openssl s_client`)
-   vs upload CA vs temporary insecure (with loud warning) to fetch the pin?
-8. **API key env name** — `DNSCRAFT_UNIFI_API_KEY` / `_FILE` OK?
-9. **Last-good disk cache** — re-sync only on startup (simpler), or persist
-   snapshot under `<data>/clients/` for offline boot before the first successful
-   poll?
-10. **Rate-limit behaviour** — on HTTP 429, backoff and keep last good (proposed).
-    Any owner-measured local limit to honour proactively?
+## Decisions (owner, 2026-10-25)
 
-## Decisions
-
-None yet — draft for owner review (2026-10-25).
+1. **`local_domain` default:** `home.arpa` (RFC 8375).
+2. **Poll interval:** 60 s ±10 % jitter.
+3. **Offline retain:** 7 days (`online = false`), then evict.
+4. **IPv6:** complete — classic `stat/sta` (etc.) is **on by default**
+   (`classic_clients = true`) to index all reported addresses; Integration
+   remains for sites/networks and as a merge/fallback source.
+5. **VLAN display:** `name (id)` in logs/UI (e.g. `IoT (40)`); structured fields
+   stay separate (`vlan.id`, `vlan.name`).
+6. **Site selection:** auto-pick when exactly one site; otherwise require
+   `site_id`.
+7. **TLS bootstrap UX:** first-run offers pin paste and CA file; optional
+   temporary insecure fetch that **only** displays the pin for the admin to
+   confirm (never silently leaves skip-verify on).
+8. **API key env:** `DNSCRAFT_UNIFI_API_KEY` / `DNSCRAFT_UNIFI_API_KEY_FILE`.
+9. **Last-good disk cache:** persist under `<data>/clients/` (atomic write like
+   filtering `ListStore`) so restart serves names before the first successful
+   poll; treat file as untrusted.
+10. **HTTP 429:** exponential backoff, keep last good, surface
+    `clients.http.status`; no proactive local QPS cap until measured.
+11. **Link-local IPv6 (`fe80::/10`):** do **not** index (useless for DNS source
+    identity across the LAN). ULA and GUA are indexed.
+12. Spec status: **draft decisions locked**; formal “approved” for P1/plan still
+    to be marked by the owner when ready (no code before that).
