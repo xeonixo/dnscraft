@@ -19,6 +19,7 @@
 //! | `://*.x^` | subdomains of `x` only (glob `\|\|*.x^`) |
 //! | `x`, `x^`, `x\|` (no start anchor) | domain `x` and all subdomains |
 //! | `.x^`, `.x\|`, `.x` (leading dot, no anchor) | subdomains of `x` only (glob `\|\|*.x^`) |
+//! | `\|\|1.2.3.4^`, `1.2.3.4`, `@@\|\|2001:db8::1^` | answer-IP rule ([`MatchKind::Ip`](crate::MatchKind::Ip)) |
 //! | `@@` + any of the above | allow instead of block |
 //! | `IP name [name...] [# comment]` | each name blocked, **exact** match |
 //!
@@ -564,10 +565,20 @@ fn parse_hosts<F: FnMut(Item)>(line: &str, t: &str, emit: &mut F) -> bool {
         }
     }
     if !any {
-        emit(Item::Skip(RuleError::InvalidSyntax {
-            detail: "ip_without_name",
-            span: span_of(line, first),
-        }));
+        // A bare IP (no hostname) is an AdGuard answer-IP rule, not a
+        // broken hosts line.
+        if let Ok(ip) = first.parse::<IpAddr>() {
+            emit(Item::Rule {
+                rule: Rule::new_ip(RuleAction::Block, ip),
+                modifiers: Modifiers::default(),
+                span: span_of(line, first),
+            });
+        } else {
+            emit(Item::Skip(RuleError::InvalidSyntax {
+                detail: "ip_without_name",
+                span: span_of(line, first),
+            }));
+        }
     }
     true
 }
@@ -678,11 +689,12 @@ fn parse_pattern(
             span,
         });
     }
-    if body.parse::<IpAddr>().is_ok() {
-        return Err(RuleError::InvalidSyntax {
-            detail: "ip_address",
-            span,
-        });
+    if let Ok(ip) = body.parse::<IpAddr>() {
+        // AdGuard DNS filter IP rules match answers, not query names.
+        // Anchor kind (`||` / `|` / bare) is ignored; hosts *names* that are
+        // IPs stay invalid (see [`parse_hosts`]).
+        let _ = kind;
+        return Ok((Rule::new_ip(action, ip), span));
     }
     parse_domain(body, span.clone()).map(|domain| (Rule::new(action, kind, domain), span))
 }

@@ -80,7 +80,7 @@ F1 skeleton + types ── F2 core rule parser ── F3 modifiers + IDNA ──
 - [x] Task F3: Modifiers and IDNA
 - [x] Task F4: Wildcard and regex rules
 - [x] Task F5: Rule builder, round trip, fuzz target, proptest
-- [ ] Task F6: IP rules (answer filtering) — added after Checkpoint A
+- [x] Task F6: IP rules (answer filtering) — added after Checkpoint A
 
 ### Checkpoint A: Rules
 - [x] All syntax/modifier unit tests green; fuzz target 10 min clean

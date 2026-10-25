@@ -11,10 +11,12 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 ## Current state
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
-- Module `filtering`: Checkpoint A done; M4a (index slim + build peak) done — steady state OK, **build peak still over budget** (owner decides at Checkpoint B). Next: R1, F6, M3, M4b.
+- Module `filtering`: Checkpoint A done; M4a/R1/F6 done. M4a build peak still over budget (owner @ Checkpoint B). Next: M3, M4b, L3, L4, C1.
 - Blockers: none for continuing the Cursor brief order; Checkpoint B needs owner review of M4a peak numbers.
 
 ## Log
+
+- 2026-10-25 — Filtering F6 done (Cursor): `MatchKind::Ip` / `Rule::ip`, parser accepts `||1.2.3.4^`, bare `1.2.3.4`, IPv6, `$important`/`$badfilter` (hosts *names* that are IPs stay invalid). Separate sorted IPv4/IPv6 index arrays; `Index::match_answer_ip` / `Snapshot::match_answer_ip` (pause + custom vs list priority). `describe_rule` returns `None` for IP. tests/ip_rules.rs. parse_lists: AdGuard DNS filter **72 IP rules**, `invalid_syntax` for that list gone (total IP across lists 81).
 
 - 2026-10-25 — Filtering R1 done (Cursor): regex compile uses `unicode(false)` + `regex::bytes::Regex` (ASCII hostnames; `\w{2}…` AdGuard rule no longer `regex_too_large`). `://x^` → Exact like `|x^`, `://*.x^` → glob `||*.x^`, path after `://` stays browser_only. parse_lists after fix: 2.241282 M rules (was 2.241279), AdGuard DNS filter skipped `browser_only=6` (was 17 `: //` anchors), `invalid_regex=0`, `regex_too_large=0` (was hitting the weekday `\w` rule); still 72 `invalid_syntax` IP rules → F6.
 

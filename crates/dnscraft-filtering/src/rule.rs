@@ -12,6 +12,7 @@
 //! only line numbers. Modifiers are boxed and absent for the common plain
 //! rule.
 
+use std::net::IpAddr;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -41,6 +42,9 @@ pub enum MatchKind {
     Pattern,
     /// Regular expression, see [`Rule::regex`]. Rules of this kind have no domain.
     Regex,
+    /// An IPv4/IPv6 address matched against DNS **answers** (A/AAAA), see
+    /// [`Rule::ip`]. Not used for query-name matching.
+    Ip,
 }
 
 /// Identity of a rule for `$badfilter`, see [`Rule::badfilter_key`].
@@ -59,6 +63,7 @@ enum Target {
     Domain(DomainName),
     Glob(Arc<Glob>),
     Regex(Arc<RegexRule>),
+    Ip(IpAddr),
 }
 
 /// A parsed filter rule.
@@ -88,6 +93,11 @@ impl Rule {
     /// Builds a regex rule ([`MatchKind::Regex`]).
     pub fn new_regex(action: RuleAction, regex: Arc<RegexRule>) -> Self {
         Self::with_target(action, MatchKind::Regex, Target::Regex(regex))
+    }
+
+    /// Builds an answer-IP rule ([`MatchKind::Ip`]).
+    pub fn new_ip(action: RuleAction, ip: IpAddr) -> Self {
+        Self::with_target(action, MatchKind::Ip, Target::Ip(ip))
     }
 
     fn with_target(action: RuleAction, kind: MatchKind, target: Target) -> Self {
@@ -124,7 +134,7 @@ impl Rule {
         self.kind
     }
 
-    /// The canonical domain; `None` for pattern and regex rules.
+    /// The canonical domain; `None` for pattern, regex and IP rules.
     pub fn domain(&self) -> Option<&DomainName> {
         match &self.target {
             Target::Domain(d) => Some(d),
@@ -148,19 +158,27 @@ impl Rule {
         }
     }
 
+    /// The address of a [`MatchKind::Ip`] rule.
+    pub fn ip(&self) -> Option<IpAddr> {
+        match &self.target {
+            Target::Ip(ip) => Some(*ip),
+            _ => None,
+        }
+    }
+
     /// Literal that every name matched by this pattern or regex rule
-    /// contains (lower-case); `None` for domain rules and when unknown.
+    /// contains (lower-case); `None` for domain/IP rules and when unknown.
     pub fn prefilter(&self) -> Option<&str> {
         match &self.target {
-            Target::Domain(_) => None,
+            Target::Domain(_) | Target::Ip(_) => None,
             Target::Glob(g) => g.prefilter(),
             Target::Regex(r) => r.prefilter(),
         }
     }
 
     /// Evaluates a pattern or regex rule against a canonical name (prefilter
-    /// first). Always `false` for domain rules: those go through the index.
-    /// Modifiers (`$dnstype`, `$denyallow`) are not considered here.
+    /// first). Always `false` for domain and IP rules: those go through the
+    /// index. Modifiers (`$dnstype`, `$denyallow`) are not considered here.
     pub fn pattern_matches(&self, name: &str) -> bool {
         if let Some(p) = self.prefilter() {
             if !name.contains(p) {
@@ -168,7 +186,7 @@ impl Rule {
             }
         }
         match &self.target {
-            Target::Domain(_) => false,
+            Target::Domain(_) | Target::Ip(_) => false,
             Target::Glob(g) => g.matches(name),
             Target::Regex(r) => r.is_match(name),
         }
@@ -197,6 +215,7 @@ impl Rule {
                 Target::Domain(d) => d.as_str().into(),
                 Target::Glob(g) => g.canonical().into(),
                 Target::Regex(r) => r.as_str().into(),
+                Target::Ip(ip) => ip.to_string().into(),
             },
             modifiers: m,
         }

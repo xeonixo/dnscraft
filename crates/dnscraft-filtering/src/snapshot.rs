@@ -34,6 +34,7 @@
 //! `Reason` needs the rule text; custom rules keep their (small) text inline.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -187,6 +188,37 @@ impl Snapshot {
             return Ok(list_v);
         };
         let custom_v = custom.match_name(name, qtype);
+        Ok(match (verdict_rank(&custom_v), verdict_rank(&list_v)) {
+            (None, _) => list_v,
+            (Some(_), None) => custom_v,
+            (Some(c), Some(l)) if c <= l => custom_v,
+            _ => list_v,
+        })
+    }
+
+    /// Matches an answer address against IP rules of `set` at time `now`.
+    ///
+    /// A paused set returns `Pass`. Custom and list IP rules compete by AdGuard
+    /// priority; on equal rank the custom rule wins. Callers (policy) should
+    /// invoke this for every A/AAAA record of a resolved answer.
+    pub fn match_answer_ip(
+        &self,
+        set: &SetId,
+        ip: IpAddr,
+        now: SystemTime,
+    ) -> Result<Verdict, FilterError> {
+        let e = self
+            .sets
+            .get(set)
+            .ok_or_else(|| FilterError::UnknownSet(set.to_string()))?;
+        if e.paused_until.is_some_and(|until| now < until) {
+            return Ok(Verdict::Pass);
+        }
+        let list_v = e.lists.index.match_answer_ip(ip);
+        let Some(custom) = &e.custom else {
+            return Ok(list_v);
+        };
+        let custom_v = custom.match_answer_ip(ip);
         Ok(match (verdict_rank(&custom_v), verdict_rank(&list_v)) {
             (None, _) => list_v,
             (Some(_), None) => custom_v,

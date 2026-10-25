@@ -95,9 +95,9 @@ target `rule_parse` (list parser) in `fuzz/` with seeds from real list styles.
 **Description:** Parse IP rules (`||1.2.3.4^`, `1.2.3.4`, `@@||1.2.3.4^`, IPv6 forms, with `$important`/`$badfilter`) into a separate rule kind; an IP index (sorted IPv4 `u32` and IPv6 `u128` arrays with flags + sources) and `match_answer_ip(ip) -> Verdict` with the same priority rules. Added after Checkpoint A (72 IP rules in AdGuard DNS filter).
 
 **Acceptance criteria:**
-- [ ] IP rules parse (no longer `invalid_syntax`), builder/describe keep returning `None`/reject for them
-- [ ] `match_answer_ip` honours allow/important/badfilter; Reason points to the rule
-- [ ] Real-list run: AdGuard DNS filter IP rules counted as IP rules
+- [x] IP rules parse (no longer `invalid_syntax`), builder/describe keep returning `None`/reject for them
+- [x] `match_answer_ip` honours allow/important/badfilter; Reason points to the rule
+- [x] Real-list run: AdGuard DNS filter IP rules counted as IP rules (72)
 
 **Verification:** `cargo test -p dnscraft-filtering ip_rules`
 

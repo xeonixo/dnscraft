@@ -121,17 +121,17 @@ fn hosts_reserved_names_are_skipped() {
 
 #[test]
 fn hosts_errors() {
-    assert_eq!(code("127.0.0.1"), "filter_rule.invalid_syntax");
+    // A bare IP (hosts line with no name) is an answer-IP rule (Task F6).
+    assert_eq!(parse_rule("127.0.0.1").unwrap().kind(), MatchKind::Ip);
     assert_eq!(
-        code("127.0.0.1 # only comment"),
-        "filter_rule.invalid_syntax"
+        parse_rule("127.0.0.1 # only comment").unwrap().kind(),
+        MatchKind::Ip
     );
     assert_eq!(code("127.0.0.1 bad..name"), "filter_rule.invalid_domain");
     // `@@` with hosts syntax is invalid.
     assert_eq!(code("@@0.0.0.0 ads.example"), "filter_rule.invalid_domain");
-    // A bare IP is not a rule.
-    assert_eq!(code("1.2.3.4"), "filter_rule.invalid_syntax");
-    assert_eq!(code("||1.2.3.4^"), "filter_rule.invalid_syntax");
+    assert_eq!(parse_rule("1.2.3.4").unwrap().kind(), MatchKind::Ip);
+    assert_eq!(parse_rule("||1.2.3.4^").unwrap().kind(), MatchKind::Ip);
 }
 
 #[test]
@@ -363,19 +363,20 @@ garbage here
     assert_eq!(p.total_lines, 20);
     assert_eq!(p.comment_lines, 3);
     assert_eq!(p.blank_lines, 1);
-    assert_eq!(p.rules.len(), 9);
+    // Includes bare `127.0.0.1` as an answer-IP rule.
+    assert_eq!(p.rules.len(), 10);
     assert_eq!(p.skipped.get(kind(UnsupportedKind::Cosmetic)), 2);
     assert_eq!(p.skipped.get(kind(UnsupportedKind::BrowserOnly)), 2);
     assert_eq!(p.skipped.get(SkipReason::ReservedHost), 1);
     assert_eq!(p.skipped.get(SkipReason::InvalidDomain), 2);
-    assert_eq!(p.skipped.get(SkipReason::InvalidSyntax), 1);
+    assert_eq!(p.skipped.get(SkipReason::InvalidSyntax), 0);
     assert_eq!(p.skipped.get(SkipReason::TooLong), 0);
-    assert_eq!(p.skipped.total(), 8);
-    assert_eq!(p.samples.len(), 8);
+    assert_eq!(p.skipped.total(), 7);
+    assert_eq!(p.samples.len(), 7);
     assert_eq!(p.samples[0].line, 10);
     assert_eq!(p.samples[0].text, "127.0.0.1 localhost");
     assert_eq!(p.samples[0].code, "filter_rule.reserved_host");
-    assert_eq!(p.skipped.iter().map(|(_, c)| c).sum::<usize>(), 8);
+    assert_eq!(p.skipped.iter().map(|(_, c)| c).sum::<usize>(), 7);
 }
 
 #[test]
@@ -523,9 +524,9 @@ fn hosts_ip_literal_names_are_not_domains() {
         assert!(p.rules.is_empty(), "{line}");
         assert_eq!(p.skipped.get(SkipReason::InvalidSyntax), 1, "{line}");
     }
-    // Same outcome as the adblock path.
-    assert_eq!(code("||5.0.0.0^"), "filter_rule.invalid_syntax");
-    // The fuzz reproducer.
+    // Adblock IP forms are answer-IP rules, not invalid syntax.
+    assert_eq!(parse_rule("||5.0.0.0^").unwrap().kind(), MatchKind::Ip);
+    // The fuzz reproducer: hosts *names* that are IPs stay invalid.
     let p = parse_list("0.0.0.0 localhost\n0.0.0.0 5.0.0.0\n", ListSource::List);
     assert!(p.rules.is_empty());
     assert_eq!(p.skipped.get(SkipReason::ReservedHost), 1);
@@ -595,7 +596,10 @@ fn url_hostname_anchor_is_exact_or_glob() {
 
 #[test]
 fn real_list_samples() {
-    assert_eq!(code("||194.63.143.96^"), "filter_rule.invalid_syntax");
+    // IP rules are valid (Task F6); they match answers, not names.
+    let r = parse_rule("||194.63.143.96^").unwrap();
+    assert_eq!(r.kind(), MatchKind::Ip);
+    assert_eq!(r.ip(), Some("194.63.143.96".parse().unwrap()));
     let p = parse_list("fe80::1%lo0 localhost\n", ListSource::List);
     assert!(p.rules.is_empty());
     assert_eq!(p.skipped.total(), 1);

@@ -247,6 +247,7 @@ struct Totals {
     exact: usize,
     pattern: usize,
     regex: usize,
+    ip: usize,
     comments: usize,
     blank: usize,
     skipped: usize,
@@ -269,7 +270,7 @@ async fn main() {
     println!("Cache dir: {}", cache.display());
     println!();
     println!(
-        "{:<3} {:<50} {:<8} {:>12} {:>10} {:>10} {:>12} {:>10} {:>9} {:>9} {:>9} {:>9} {:>10} {:>10}",
+        "{:<3} {:<50} {:<8} {:>12} {:>10} {:>10} {:>12} {:>10} {:>9} {:>9} {:>6} {:>9} {:>9} {:>10} {:>10}",
         "#",
         "List",
         "Source",
@@ -280,6 +281,7 @@ async fn main() {
         "Exact",
         "Pattern",
         "Regex",
+        "IP",
         "Comments",
         "Blank",
         "Skipped",
@@ -307,14 +309,15 @@ async fn main() {
         let parsed: ParsedList = parse_list(&body, ListSource::List);
         let parse_ms = t.elapsed().as_secs_f64() * 1000.0;
 
-        let mut counts = [0usize; 4];
+        let mut counts = [0usize; 5];
         for rule in &parsed.rules {
             let slot = match rule.kind() {
                 MatchKind::Subdomains => 0,
                 MatchKind::Exact => 1,
                 MatchKind::Pattern => 2,
                 MatchKind::Regex => 3,
-                _ => 3,
+                MatchKind::Ip => 4,
+                _ => continue, // future kinds
             };
             counts[slot] += 1;
             if let Some(d) = rule.domain() {
@@ -334,7 +337,7 @@ async fn main() {
 
         let skipped = parsed.skipped.total();
         println!(
-            "{:<3} {:<50} {:<8} {:>12} {:>10} {:>10} {:>12} {:>10} {:>9} {:>9} {:>9} {:>9} {:>10} {:>10.1}",
+            "{:<3} {:<50} {:<8} {:>12} {:>10} {:>10} {:>12} {:>10} {:>9} {:>9} {:>6} {:>9} {:>9} {:>10} {:>10.1}",
             idx + 1,
             list.name,
             if cached { "cached" } else { "fetched" },
@@ -345,6 +348,7 @@ async fn main() {
             counts[1],
             counts[2],
             counts[3],
+            counts[4],
             parsed.comment_lines,
             parsed.blank_lines,
             skipped,
@@ -358,6 +362,7 @@ async fn main() {
         totals.exact += counts[1];
         totals.pattern += counts[2];
         totals.regex += counts[3];
+        totals.ip += counts[4];
         totals.comments += parsed.comment_lines;
         totals.blank += parsed.blank_lines;
         totals.skipped += skipped;
@@ -377,7 +382,7 @@ async fn main() {
     }
 
     println!(
-        "{:<3} {:<50} {:<8} {:>12} {:>10} {:>10} {:>12} {:>10} {:>9} {:>9} {:>9} {:>9} {:>10} {:>10.1}",
+        "{:<3} {:<50} {:<8} {:>12} {:>10} {:>10} {:>12} {:>10} {:>9} {:>9} {:>6} {:>9} {:>9} {:>10} {:>10.1}",
         "",
         "TOTAL",
         "",
@@ -388,6 +393,7 @@ async fn main() {
         totals.exact,
         totals.pattern,
         totals.regex,
+        totals.ip,
         totals.comments,
         totals.blank,
         totals.skipped,

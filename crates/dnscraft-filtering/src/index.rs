@@ -71,6 +71,7 @@
 
 use std::collections::HashSet;
 use std::mem::size_of;
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use crate::modifiers::{DnsRewrite, Modifiers};
@@ -225,6 +226,16 @@ struct PatternEntry {
     source: u32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PendingIp {
+    /// IPv4 as `u32` or IPv6 as the low... we store key separately.
+    key_v4: Option<u32>,
+    key_v6: Option<u128>,
+    flags: u8,
+    source: u16,
+    text_off: u32,
+}
+
 /// Collects rules from one or more sources and builds an [`Index`].
 #[derive(Default, Debug)]
 pub struct IndexBuilder {
@@ -232,6 +243,7 @@ pub struct IndexBuilder {
     bodies: Vec<Arc<str>>,
     arena: Vec<u8>,
     pending: Vec<Pending>,
+    pending_ip: Vec<PendingIp>,
     mods: Vec<Modifiers>,
     patterns: Vec<PatternEntry>,
     badfilters: Vec<Rule>,
@@ -291,7 +303,8 @@ impl IndexBuilder {
         }
         match rule.kind() {
             MatchKind::Subdomains | MatchKind::Exact => self.add_domain(&rule, source),
-            _ => {
+            MatchKind::Ip => self.add_ip(&rule, source),
+            MatchKind::Pattern | MatchKind::Regex => {
                 if rule.glob().is_some() || rule.regex().is_some() {
                     self.patterns.push(PatternEntry {
                         rule,
@@ -301,6 +314,37 @@ impl IndexBuilder {
                 Ok(())
             }
         }
+    }
+
+    fn add_ip(&mut self, rule: &Rule, source: SourceId) -> Result<(), IndexError> {
+        let Some(ip) = rule.ip() else {
+            return Ok(());
+        };
+        let source = u16::try_from(source.0).map_err(|_| IndexError::TooManySources)?;
+        let text_off = if rule.line() == 0 {
+            NO_TEXT
+        } else {
+            u32::try_from(rule.span().start).unwrap_or(0)
+        };
+        let mut flags = 0u8;
+        if rule.action() == RuleAction::Allow {
+            flags |= F_ALLOW;
+        }
+        if rule.modifiers().important {
+            flags |= F_IMPORTANT;
+        }
+        let (key_v4, key_v6) = match ip {
+            IpAddr::V4(v) => (Some(u32::from(v)), None),
+            IpAddr::V6(v) => (None, Some(u128::from(v))),
+        };
+        self.pending_ip.push(PendingIp {
+            key_v4,
+            key_v6,
+            flags,
+            source,
+            text_off,
+        });
+        Ok(())
     }
 
     fn add_domain(&mut self, rule: &Rule, source: SourceId) -> Result<(), IndexError> {
@@ -357,6 +401,7 @@ impl IndexBuilder {
             bodies: _,
             mut arena,
             mut pending,
+            mut pending_ip,
             mods,
             patterns,
             badfilters,
@@ -370,12 +415,22 @@ impl IndexBuilder {
                 .then(a.source.cmp(&b.source))
                 .then(a.text_off.cmp(&b.text_off))
         });
+        pending_ip.sort_unstable_by(|a, b| {
+            a.key_v4
+                .cmp(&b.key_v4)
+                .then(a.key_v6.cmp(&b.key_v6))
+                .then(a.flags.cmp(&b.flags))
+                .then(a.source.cmp(&b.source))
+                .then(a.text_off.cmp(&b.text_off))
+        });
 
         let mut badfiltered = 0usize;
         let mut pat_keys: HashSet<BadfilterKey> = HashSet::new();
         for bf in &badfilters {
             if let Some(d) = bf.domain() {
                 badfiltered += remove_matching(&arena, &mut pending, &mods, bf, d);
+            } else if let Some(ip) = bf.ip() {
+                badfiltered += remove_matching_ip(&mut pending_ip, bf, ip);
             } else {
                 pat_keys.insert(bf.badfilter_key());
             }
@@ -464,6 +519,41 @@ impl IndexBuilder {
         offsets.push(u32::try_from(packed.len()).unwrap_or(u32::MAX));
         drop(arena);
 
+        // Dedup IP rules (same address + flags → keep first source).
+        {
+            let mut i = 0usize;
+            while i < pending_ip.len() {
+                if pending_ip[i].flags & F_REMOVED != 0 {
+                    i += 1;
+                    continue;
+                }
+                let key4 = pending_ip[i].key_v4;
+                let key6 = pending_ip[i].key_v6;
+                let group_start = i;
+                i += 1;
+                while i < pending_ip.len()
+                    && pending_ip[i].flags & F_REMOVED == 0
+                    && pending_ip[i].key_v4 == key4
+                    && pending_ip[i].key_v6 == key6
+                {
+                    let same = (group_start..i).any(|j| {
+                        pending_ip[j].flags & F_REMOVED == 0
+                            && pending_ip[j].flags == pending_ip[i].flags
+                    });
+                    if same {
+                        let src = pending_ip[i].source;
+                        if let Some(c) = dup_by_source.get_mut(usize::from(src)) {
+                            *c += 1;
+                        }
+                        duplicates += 1;
+                        pending_ip[i].flags |= F_REMOVED;
+                    }
+                    i += 1;
+                }
+            }
+        }
+        pending_ip.retain(|p| p.flags & F_REMOVED == 0);
+
         let mut out = Index {
             kinds,
             texts,
@@ -475,6 +565,14 @@ impl IndexBuilder {
             mod_ids: Vec::new(),
             mods: Vec::new(),
             patterns: patterns.into_boxed_slice(),
+            v4: Vec::new(),
+            v4_flags: Vec::new(),
+            v4_src: Vec::new(),
+            v4_text_offs: Vec::new(),
+            v6: Vec::new(),
+            v6_flags: Vec::new(),
+            v6_src: Vec::new(),
+            v6_text_offs: Vec::new(),
             dup_by_source,
             duplicates,
             badfiltered,
@@ -492,11 +590,32 @@ impl IndexBuilder {
                 }
             }
         }
+        for p in &pending_ip {
+            if let Some(k) = p.key_v4 {
+                out.v4.push(k);
+                out.v4_flags.push(p.flags & !F_REMOVED);
+                out.v4_src.push(p.source);
+                out.v4_text_offs.push(p.text_off);
+            } else if let Some(k) = p.key_v6 {
+                out.v6.push(k);
+                out.v6_flags.push(p.flags & !F_REMOVED);
+                out.v6_src.push(p.source);
+                out.v6_text_offs.push(p.text_off);
+            }
+        }
         out.arena.shrink_to_fit();
         out.offsets.shrink_to_fit();
         out.flags.shrink_to_fit();
         out.src.shrink_to_fit();
         out.text_offs.shrink_to_fit();
+        out.v4.shrink_to_fit();
+        out.v4_flags.shrink_to_fit();
+        out.v4_src.shrink_to_fit();
+        out.v4_text_offs.shrink_to_fit();
+        out.v6.shrink_to_fit();
+        out.v6_flags.shrink_to_fit();
+        out.v6_src.shrink_to_fit();
+        out.v6_text_offs.shrink_to_fit();
         out
     }
 }
@@ -546,6 +665,32 @@ fn has_side_mods(m: &Modifiers) -> bool {
 
 fn same_side_mods(a: &Modifiers, b: &Modifiers) -> bool {
     a.dnstype == b.dnstype && a.denyallow == b.denyallow && a.dnsrewrite == b.dnsrewrite
+}
+
+fn remove_matching_ip(pending_ip: &mut [PendingIp], bf: &Rule, ip: IpAddr) -> usize {
+    let mut flags = 0u8;
+    if bf.action() == RuleAction::Allow {
+        flags |= F_ALLOW;
+    }
+    if bf.modifiers().important {
+        flags |= F_IMPORTANT;
+    }
+    let (want4, want6) = match ip {
+        IpAddr::V4(v) => (Some(u32::from(v)), None),
+        IpAddr::V6(v) => (None, Some(u128::from(v))),
+    };
+    let mut n = 0;
+    for p in pending_ip.iter_mut() {
+        if p.key_v4 != want4 || p.key_v6 != want6 {
+            continue;
+        }
+        if p.flags & !F_REMOVED != flags {
+            continue;
+        }
+        p.flags |= F_REMOVED;
+        n += 1;
+    }
+    n
 }
 
 /// Marks entries equal to the `$badfilter` rule `bf` as removed.
@@ -622,6 +767,14 @@ pub struct Index {
     mod_ids: Vec<u32>,
     mods: Vec<Modifiers>,
     patterns: Box<[PatternEntry]>,
+    v4: Vec<u32>,
+    v4_flags: Vec<u8>,
+    v4_src: Vec<u16>,
+    v4_text_offs: Vec<u32>,
+    v6: Vec<u128>,
+    v6_flags: Vec<u8>,
+    v6_src: Vec<u16>,
+    v6_text_offs: Vec<u32>,
     dup_by_source: Vec<u32>,
     duplicates: usize,
     badfiltered: usize,
@@ -641,14 +794,22 @@ impl Index {
         self.flags.len()
     }
 
-    /// True when the index has no domain entries and no pattern rules.
+    /// True when the index has no domain, pattern or IP rules.
     pub fn is_empty(&self) -> bool {
-        self.flags.is_empty() && self.patterns.is_empty()
+        self.flags.is_empty()
+            && self.patterns.is_empty()
+            && self.v4.is_empty()
+            && self.v6.is_empty()
     }
 
     /// Number of wildcard and regex rules.
     pub fn pattern_count(&self) -> usize {
         self.patterns.len()
+    }
+
+    /// Number of answer-IP rules (IPv4 + IPv6).
+    pub fn ip_count(&self) -> usize {
+        self.v4.len() + self.v6.len()
     }
 
     /// Entries dropped because an identical rule came from an earlier source.
@@ -696,6 +857,95 @@ impl Index {
     fn mods_at(&self, i: usize) -> Option<&Modifiers> {
         let pos = self.mod_ids.binary_search(&u32::try_from(i).ok()?).ok()?;
         self.mods.get(pos)
+    }
+
+    /// Matches an address from a DNS answer (A/AAAA) against IP rules.
+    ///
+    /// Priority is the same as for names (`$important` allow > `$important`
+    /// block > allow > block). Ties break by lowest source id, then lowest
+    /// text offset. There is no longest-match step.
+    pub fn match_answer_ip(&self, ip: IpAddr) -> Verdict {
+        match ip {
+            IpAddr::V4(v) => self.match_ip4(u32::from(v)),
+            IpAddr::V6(v) => self.match_ip6(u128::from(v)),
+        }
+    }
+
+    fn match_ip4(&self, key: u32) -> Verdict {
+        let start = self.v4.partition_point(|&k| k < key);
+        let mut best: Option<(u8, u32, u32, usize)> = None;
+        let mut i = start;
+        while i < self.v4.len() && self.v4[i] == key {
+            let f = self.v4_flags.get(i).copied().unwrap_or(0);
+            let action = if f & F_ALLOW != 0 {
+                RuleAction::Allow
+            } else {
+                RuleAction::Block
+            };
+            let r = rank(action, f & F_IMPORTANT != 0);
+            let src = u32::from(self.v4_src.get(i).copied().unwrap_or(0));
+            let off = self.v4_text_offs.get(i).copied().unwrap_or(NO_TEXT);
+            let cand = (r, src, off, i);
+            if best.as_ref().is_none_or(|b| cand < *b) {
+                best = Some(cand);
+            }
+            i += 1;
+        }
+        let Some((r, src, off, _)) = best else {
+            return Verdict::Pass;
+        };
+        self.ip_verdict(r, src, off)
+    }
+
+    fn match_ip6(&self, key: u128) -> Verdict {
+        let start = self.v6.partition_point(|&k| k < key);
+        let mut best: Option<(u8, u32, u32, usize)> = None;
+        let mut i = start;
+        while i < self.v6.len() && self.v6[i] == key {
+            let f = self.v6_flags.get(i).copied().unwrap_or(0);
+            let action = if f & F_ALLOW != 0 {
+                RuleAction::Allow
+            } else {
+                RuleAction::Block
+            };
+            let r = rank(action, f & F_IMPORTANT != 0);
+            let src = u32::from(self.v6_src.get(i).copied().unwrap_or(0));
+            let off = self.v6_text_offs.get(i).copied().unwrap_or(NO_TEXT);
+            let cand = (r, src, off, i);
+            if best.as_ref().is_none_or(|b| cand < *b) {
+                best = Some(cand);
+            }
+            i += 1;
+        }
+        let Some((r, src, off, _)) = best else {
+            return Verdict::Pass;
+        };
+        self.ip_verdict(r, src, off)
+    }
+
+    fn ip_verdict(&self, rank: u8, source: u32, text_off: u32) -> Verdict {
+        let important = rank == 0 || rank == 1;
+        let allow = rank == 0 || rank == 2;
+        let (line, text) = if text_off == NO_TEXT {
+            (0, Arc::from(""))
+        } else {
+            self.fetch(source, text_off)
+                .unwrap_or_else(|| (0, Arc::from("")))
+        };
+        let rule_source = self
+            .kinds
+            .get(source as usize)
+            .map_or(RuleSource::TemporaryAllow, |k| k.rule_source(line));
+        let reason = Reason {
+            rule: text,
+            source: rule_source,
+            important,
+        };
+        if allow {
+            Verdict::Allowed(reason)
+        } else {
+            Verdict::Blocked(reason)
+        }
     }
 
     /// Matches a query name and returns the verdict.
