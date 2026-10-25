@@ -119,13 +119,29 @@ pub const SAFESEARCH_PROVIDERS: &[&str] = &["google", "bing", "youtube", "duckdu
 /// Length of one week from Monday 00:00 UTC — upper bound for schedule `end`.
 pub const SCHEDULE_WEEK: Duration = Duration::from_secs(7 * 24 * 3600);
 
-/// SafeSearch settings on a profile (evaluation may be stubbed until later).
+/// YouTube Restricted Mode level used when the `youtube` SafeSearch provider is on.
+///
+/// Maps to Google's DNS CNAME targets (`restrict.youtube.com` vs
+/// `restrictmoderate.youtube.com`). Default is [`Strict`](Self::Strict).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum YoutubeMode {
+    /// Maximum restriction (`restrict.youtube.com`).
+    #[default]
+    Strict,
+    /// Moderate restriction (`restrictmoderate.youtube.com`).
+    Moderate,
+}
+
+/// SafeSearch settings on a profile.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SafeSearchConfig {
-    /// When true, SafeSearch rewrites should run (once evaluation is live).
+    /// When true, rewrite known search/video hosts to their safe endpoints.
     pub enabled: bool,
     /// Provider ids the profile enables (`google`, `bing`, `youtube`, `duckduckgo`).
     pub providers: Vec<Arc<str>>,
+    /// YouTube Restricted Mode when the `youtube` provider is enabled.
+    pub youtube_mode: YoutubeMode,
 }
 
 /// One schedule window that may switch the active filter set.
@@ -182,9 +198,9 @@ pub struct ProfileConfig {
     ///
     /// `None` applies every configured zone; `Some(ids)` restricts to those ids.
     pub forward_zones: Option<Vec<ForwardZoneId>>,
-    /// SafeSearch surface (evaluation may be stubbed).
+    /// SafeSearch rewrite (steps 5–6).
     pub safesearch: SafeSearchConfig,
-    /// Schedule windows (evaluation may be stubbed).
+    /// Schedule windows that may swap the active filter set.
     pub schedules: Vec<ScheduleConfig>,
 }
 

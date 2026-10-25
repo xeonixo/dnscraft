@@ -369,5 +369,106 @@ on data RRs only (ignore RRSIG/NSEC). Test DO=1 full/partial/CNAME/HTTPS; kill D
 
 ## Later (owner go given 2026-10-25 — in progress)
 
-- **P13 SafeSearch evaluation:** provider host table verified against Google/Bing/YouTube/DuckDuckGo docs (URLs cited); steps 5 + 6 live.
-- **P14 Schedule evaluation:** time windows on the policy clock switch the active set.
+## Task P13: SafeSearch evaluation (steps 5 + 6 live)
+
+**Description:** Replace the SafeSearch stubs with live rewrite + re-filter.
+- Provider table (`src/safesearch_table.rs` or similar), one entry per provider id
+  (`google`, `bing`, `youtube`, `duckduckgo`): hostnames rewritten and the safe
+  target host. Verify every name against the provider’s official documentation at
+  implement time and cite the URL next to the constant; mark anything unverifiable
+  as `// unverified` and list it in the progress log. Starting points (verify, do
+  not trust): Google → `forcesafesearch.google.com` for `www.google.com` and the
+  Google country domains (official list:
+  https://www.google.com/supported_domains — embed as a static list, document
+  fetch date); YouTube → `restrict.youtube.com` (strict) /
+  `restrictmoderate.youtube.com` (moderate) for `www.youtube.com`,
+  `m.youtube.com`, `youtubei.googleapis.com`, `youtube.googleapis.com`,
+  `www.youtube-nocookie.com`; Bing → `strict.bing.com` for `www.bing.com`;
+  DuckDuckGo → `safe.duckduckgo.com` for `duckduckgo.com`, `www.duckduckgo.com`,
+  `start.duckduckgo.com`.
+- Config: `SafeSearchConfig` gains `youtube_mode: Strict | Moderate` (default
+  Strict), validated; update SPEC-policy.md “SafeSearch” and the TOML excerpt
+  only (rest of the spec untouched).
+- Step 5 (only if the profile has SafeSearch enabled, the provider is enabled,
+  the query passed step 4, qtype is A, AAAA or HTTPS; ANY already excluded):
+  answer with a CNAME qname → safe host (TTL like other synthetics) and resolve
+  the safe host for the original qtype, appending its answer — reuse
+  `rewrite_cname_follow` from step 4b. Other qtypes pass through unchanged
+  (document it).
+- Step 6: filter the safe host with `match_name` before resolving; Blocked /
+  Rewrite handled exactly like 4a/4b. Blocked on the ORIGINAL name (step 4)
+  always wins — criterion 3a golden test (e.g. youtube blocked via blocked
+  services → block answer, never `restrict.youtube.com`).
+- Pause: follow SPEC “Pause protection” (SafeSearch still runs while paused);
+  test it.
+- AD cleared on rewrite; EDE: none for SafeSearch (not a block); rebind / AAAA /
+  answer-side steps still apply to the resolved target.
+  `DecisionStep::SafeSearchRewrite { provider, target }` replaces the
+  `NotApplied` breadcrumb; `PolicyStatus.safesearch_applied = true`.
+
+**Acceptance criteria:**
+- [x] Each provider rewrites (one host per provider + one Google country domain)
+- [x] YouTube moderate vs strict target hosts
+- [x] Provider disabled → pass-through; SafeSearch disabled → pass-through
+- [x] Safe host blocked in step 6 → block synthesis
+- [x] Original name blocked wins (golden, criterion 3a)
+- [x] qtype MX pass-through; pause keeps SafeSearch running per spec
+- [x] AD cleared; decision record has `SafeSearchRewrite`; status flag true
+- [x] Provider table cites verified URLs; unverified hosts listed in progress.md
+
+**Verification:** `cargo test -p dnscraft-policy safesearch` (+ golden 3a); DoD
+(`fmt`, `clippy -p dnscraft-policy --all-targets -- -D warnings`, tests 5×,
+llvm-cov ≥ 80 %, bench p50 < 1 ms)
+
+**Dependencies:** P11b · Checkpoint C owner go
+
+**Files:** `src/safesearch_table.rs`, `src/steps/safesearch.rs`, `src/config.rs`,
+`src/decision.rs`, `src/status.rs`, `src/synth.rs` (reuse), `tests/safesearch.rs`,
+`tests/golden.rs`, `SPEC-policy.md` (SafeSearch + TOML excerpt), README
+
+**Scope:** M
+
+## Task P14: Schedule evaluation
+
+**Description:** Evaluate profile schedule windows on the policy clock and switch
+the active filter set for steps 4, 6, 8, 9.
+- Semantics (write into SPEC-policy.md “Schedules”): windows are offsets within
+  one week from Monday 00:00 UTC (as validated in P11b). While a window is
+  active, the profile uses the schedule’s `filter_set` instead of
+  `profile.filter_set`. Overlapping windows within one profile are rejected at
+  config validation with a stable `ConfigReason` code (add it + test). No window
+  active → `profile.filter_set`. Evaluated per query on the policy clock; cheap:
+  precompute sorted windows per profile in the snapshot; no allocation on the
+  hot path.
+- Keep evaluation behind `active_schedule(profile, now) -> Option<&Schedule>`
+  that takes time as an offset-in-week, so a later owner decision for local time
+  zones (needs a tz dependency, NOT now) only changes how `now` is converted.
+  Note this as an open question in the spec.
+- Pause still wins (paused → filtering passes regardless of schedule). Hot
+  reload keeps working. A schedule pointing to a set that disappeared at runtime
+  → existing once-logged SERVFAIL path.
+- `DecisionStep::ScheduleActive { id, filter_set }` replaces the `NotApplied`
+  breadcrumb; record the effective set in the `DecisionRecord`;
+  `PolicyStatus.schedules_applied = true` and expose the active schedule id per
+  profile (status only).
+
+**Acceptance criteria:**
+- [ ] Before / inside / after a window (ManualClock)
+- [ ] Window boundaries: start inclusive, end exclusive
+- [ ] Sunday-to-Monday split into two windows
+- [ ] Overlap rejected with stable ConfigReason code
+- [ ] Schedule set blocks a name the default set allows, and vice versa
+- [ ] Pause wins over schedule; reload swaps windows
+- [ ] `active_schedule` takes offset-in-week; status exposes active schedule id
+
+**Verification:** `cargo test -p dnscraft-policy` (schedule / pause / reload);
+DoD as for P13
+
+**Dependencies:** P13 · Checkpoint C owner go
+
+**Files:** `src/schedule.rs` (or similar), `src/snapshot.rs`, `src/steps/filter.rs`,
+`src/steps/safesearch.rs`, `src/steps/answer_side.rs`, `src/decision.rs`,
+`src/status.rs`, `src/error.rs`, `tests/` (schedule + pause + reload),
+`SPEC-policy.md` (Schedules only), README
+
+**Scope:** M

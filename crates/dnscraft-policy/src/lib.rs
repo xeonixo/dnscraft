@@ -6,10 +6,8 @@
 //! the [`ClientDirectory`] contract for device names without depending on
 //! `dnscraft-clients`.
 //!
-//! Phase 1–10: ids, config, snapshot build/select, engine through filter
-//! (step 4), resolve (step 7), answer-side CNAME/IP filtering (steps 8–9),
-//! rebind (step 10), AAAA suppression (step 11), pause, hot reload, and
-//! counters. Steps 5–6 follow later.
+//! Pipeline through SafeSearch (steps 5–6), resolve, answer-side filtering,
+//! rebind, AAAA suppression, pause, and hot reload. Schedule evaluation is P14.
 
 mod config;
 mod decision;
@@ -21,6 +19,7 @@ mod pause;
 mod pipeline;
 mod private;
 mod reverse;
+mod safesearch_table;
 mod select;
 mod snapshot;
 mod stats;
@@ -32,7 +31,7 @@ mod util;
 pub use config::{
     ClientFlags, DEFAULT_LOCAL_NXDOMAIN_SUFFIXES, DEFAULT_RECORD_TTL, DnsProtocol, PolicyConfig,
     ProfileConfig, RequestContext, SAFESEARCH_PROVIDERS, SCHEDULE_WEEK, SafeSearchConfig,
-    ScheduleConfig, ViewConfig, ViewRecordConfig,
+    ScheduleConfig, ViewConfig, ViewRecordConfig, YoutubeMode,
 };
 pub use decision::{
     AnswerOrigin, DecisionRecord, DecisionStep, DecisionTimings, FilterHit, NotAppliedStep,

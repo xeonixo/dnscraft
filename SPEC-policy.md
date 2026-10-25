@@ -213,14 +213,38 @@ Per profile flags:
   evaluation may be a follow-up task before the profile checkpoint — must not
   block the rest of the pipeline. Document “not applied yet” in status if stubbed.
 
-### SafeSearch (low priority)
+### SafeSearch
 
-- Optional per profile; off by default.
-- Rewrite well-known search / video hosts to their safe endpoints (Google, Bing,
-  YouTube, DuckDuckGo). Exact target names verified against provider docs at
-  implement time.
-- **v1:** same as schedules — config surface first, full rewrite behaviour can
-  follow without blocking core pipeline work.
+- Optional per profile; off by default (`safesearch.enabled = false`).
+- When enabled, for qtypes **A**, **AAAA**, and **HTTPS** only (ANY is already
+  answered earlier; other qtypes such as MX pass through unchanged), rewrite
+  well-known search / video hosts to the provider’s safe endpoint:
+  - **Google** → CNAME to `forcesafesearch.google.com` for `www.google.com` and
+    the Google country/region domains from
+    [supported_domains](https://www.google.com/supported_domains) (as `www.` +
+    domain). Docs:
+    [Lock SafeSearch](https://support.google.com/websearch/answer/186669).
+  - **YouTube** → CNAME to `restrict.youtube.com` (strict) or
+    `restrictmoderate.youtube.com` (moderate) for `www.youtube.com`,
+    `m.youtube.com`, `youtubei.googleapis.com`, `youtube.googleapis.com`,
+    `www.youtube-nocookie.com`. Profile field `youtube_mode = "strict" | "moderate"`
+    (default **strict**). Docs:
+    [Control YouTube content](https://support.google.com/a/answer/6214622).
+  - **Bing** → CNAME to `strict.bing.com` for `www.bing.com` and
+    `edgeservices.bing.com`. Docs:
+    [Blocking explicit content with SafeSearch](https://support.microsoft.com/en-us/bing/blocking-explicit-content-with-safesearch).
+  - **DuckDuckGo** → CNAME to `safe.duckduckgo.com` for `duckduckgo.com`
+    (and companion hosts `www.duckduckgo.com` / `start.duckduckgo.com` when
+    listed). Docs:
+    [Safe Search](https://duckduckgo.com/duckduckgo-help-pages/features/safe-search).
+- Providers are selected per profile (`safesearch.providers = ["google", …]`).
+- Pipeline: only after the original qname passed step 4; synthesise
+  CNAME(qname → safe host) + resolve the safe host for the original qtype
+  (TTL like other synthetics). Step 6 filters the safe host before resolve;
+  Blocked/Rewrite handled as 4a/4b. A block on the **original** name always
+  wins (criterion 3a). AD cleared; no EDE for the SafeSearch rewrite itself.
+  Answer-side / rebind / AAAA still apply to the resolved target. While
+  protection is paused, SafeSearch still runs (filtering Passes).
 
 ### Forward zones vs profiles
 
@@ -359,7 +383,10 @@ icloud_private_relay = true
 rebind = true
 rebind_exceptions = ["*.example.com"]
 # forward_zones = ["vpn-site-a"]   # optional allow-list
-# safesearch = false
+# [policy.profiles.safesearch]
+# enabled = true
+# providers = ["google", "bing", "youtube", "duckduckgo"]
+# youtube_mode = "strict"   # or "moderate"
 # schedules = []
 ```
 

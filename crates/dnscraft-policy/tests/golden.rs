@@ -17,7 +17,7 @@ use dnscraft_filtering::{
 use dnscraft_policy::{
     AnswerOrigin, ClientDirectory, ClientFlags, DecisionStep, DnsProtocol, ListenerId, NoClients,
     PolicyConfig, PolicyEngine, ProfileConfig, ProfileId, RebindSkipReason, RequestContext,
-    SafeSearchConfig, ViewConfig, ViewId, ViewRecordConfig,
+    SafeSearchConfig, ViewConfig, ViewId, ViewRecordConfig, YoutubeMode,
 };
 use dnscraft_proto::{Class, Name, RData, Rcode, RecordType};
 use dnscraft_resolver::dnssec::TrustAnchors;
@@ -348,6 +348,49 @@ async fn golden_rebind_matrix_a_and_svcb_hints() {
         reason: RebindSkipReason::Exception,
     }));
     assert!(!allowed.message.answers.is_empty());
+}
+
+/// Criterion 3a: a blocked service is not bypassed by SafeSearch.
+#[tokio::test]
+async fn golden_blocked_service_not_bypassed_by_safesearch() {
+    let h = Hierarchy::start_with(specs_golden()).await.unwrap();
+    let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
+    let mut profile = profile_base();
+    profile.safesearch = SafeSearchConfig {
+        enabled: true,
+        providers: vec![Arc::from("youtube")],
+        youtube_mode: YoutubeMode::Strict,
+    };
+    let eng = PolicyEngine::new(
+        policy_cfg(profile, vec![default_view(Vec::new())]),
+        filter_with("||www.youtube.com^\n"),
+        resolver,
+        Arc::new(NoClients),
+        clock(),
+    )
+    .unwrap();
+
+    let ans = eng
+        .handle(ctx("www.youtube.com.", RecordType::A))
+        .await
+        .unwrap();
+    assert_eq!(ans.message.rcode(), Rcode::NXDOMAIN);
+    assert!(ans.record.steps.contains(&DecisionStep::FilterBlocked));
+    assert!(
+        !ans.record
+            .steps
+            .iter()
+            .any(|s| matches!(s, DecisionStep::SafeSearchRewrite { .. })),
+        "SafeSearch must not run after an original-name block: {:?}",
+        ans.record.steps
+    );
+    assert!(
+        !ans.message.answers.iter().any(|r| matches!(
+            &r.rdata,
+            RData::CNAME(n) if n.to_string().contains("restrict.youtube.com")
+        )),
+        "must never answer restrict.youtube.com for a blocked youtube host"
+    );
 }
 
 /// Criterion 3a: unknown name under a local-looking domain reaches the resolver;

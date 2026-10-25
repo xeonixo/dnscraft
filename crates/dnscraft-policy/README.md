@@ -8,9 +8,9 @@ Formal requirements: [`SPEC-policy.md`](../../SPEC-policy.md).
 ## Status
 
 Library for configuration validation, hot-reloadable snapshots, pause
-protection, and the query pipeline through rebind / AAAA suppression.
-SafeSearch and schedules are accepted in config and exposed as
-“not applied yet” stubs until evaluation lands (P13/P14).
+protection, and the query pipeline through SafeSearch, rebind / AAAA
+suppression. Schedule evaluation lands in P14 (`schedules_applied = false`
+until then).
 
 ## Pipeline
 
@@ -21,8 +21,8 @@ SafeSearch and schedules are accepted in config and exposed as
 | 2 | `ClientDirectory` names / PTR / special-use NXDOMAIN |
 | 3 | Bypass canaries (Firefox DoH, iCloud Private Relay) |
 | 4 | Filter original qname (`FilterEngine::match_name`) |
-| 5 | SafeSearch rewrite (**stub** → `NotApplied`) |
-| 6 | Filter rewritten SafeSearch host (**stub** → `NotApplied`) |
+| 5 | SafeSearch rewrite (A/AAAA/HTTPS → CNAME to provider safe host) |
+| 6 | Filter rewritten SafeSearch host (`match_name`; block/rewrite like 4a/4b) |
 | 7 | Forward zone / recursion (`Resolver::resolve`) |
 | 8 | CNAME-chain uncloaking (`match_chain`) |
 | 9 | Answer-IP rules (`match_answer_ip`) |
@@ -34,9 +34,22 @@ ECS is never forwarded. Synthesised / modified answers always clear AD.
 ## Pause protection
 
 `pause(Global | Profile(id), For(duration) | UntilResumed)` skips filter steps
-4 / 6 / 8 / 9 only. Local records, canaries, rebind, and AAAA still run. A
-paused query records exactly one `DecisionStep::ProtectionPaused { scope }`.
+4 / 6 / 8 / 9 only. Local records, canaries, **SafeSearch**, rebind, and AAAA
+still run. A paused query records exactly one
+`DecisionStep::ProtectionPaused { scope }`.
 `For(Duration::ZERO)` is rejected (`policy.config.invalid`).
+
+## SafeSearch table
+
+| Provider | Rewritten hosts (summary) | Safe target |
+|----------|---------------------------|-------------|
+| `google` | `www.google.com` + country domains from [supported_domains](https://www.google.com/supported_domains) (fetched 2026-10-25) | `forcesafesearch.google.com` |
+| `youtube` | `www.youtube.com`, `m.youtube.com`, `youtubei.googleapis.com`, `youtube.googleapis.com`, `www.youtube-nocookie.com` | `restrict.youtube.com` (strict) / `restrictmoderate.youtube.com` (moderate) |
+| `bing` | `www.bing.com`, `edgeservices.bing.com` | `strict.bing.com` |
+| `duckduckgo` | `duckduckgo.com` (+ `www` / `start`, see progress.md) | `safe.duckduckgo.com` |
+
+Only qtypes A / AAAA / HTTPS are rewritten; a block on the original qname
+always wins. Hosts and citations live in `src/safesearch_table.rs`.
 
 ## Config surface (high level)
 
@@ -48,8 +61,8 @@ paused query records exactly one `DecisionStep::ProtectionPaused { scope }`.
 | `suppress_aaaa` | NODATA on AAAA only |
 | `firefox_canary` / `icloud_private_relay` | Bypass answers |
 | `forward_zones` | Optional allow-list of resolver zone ids |
-| `safesearch.providers` | `google` / `bing` / `youtube` / `duckduckgo` (case-insensitive) |
-| `schedules` | `start < end`, `end ≤ 7d` from Monday 00:00 UTC; unique `[a-z0-9-]{1,64}` ids |
+| `safesearch` | `enabled`, `providers`, `youtube_mode` (`strict` \| `moderate`, default strict) |
+| `schedules` | `start < end`, `end ≤ 7d` from Monday 00:00 UTC; unique `[a-z0-9-]{1,64}` ids (evaluation P14) |
 
 `apply_config` validates then swaps `Arc<PolicySnapshot>` under a short lock
 (never held across `.await`). Counters and pauses survive by id; removed ids

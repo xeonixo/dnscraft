@@ -760,6 +760,7 @@ mod tests {
         cfg.profiles[0].safesearch = SafeSearchConfig {
             enabled: true,
             providers: vec![Arc::from("Google"), Arc::from("BING")],
+            ..SafeSearchConfig::default()
         };
         let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
         assert_eq!(
@@ -827,6 +828,7 @@ mod tests {
         cfg.profiles[0].safesearch = SafeSearchConfig {
             enabled: true,
             providers: vec![Arc::from("yahoo")],
+            ..SafeSearchConfig::default()
         };
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert_eq!(err.code(), "policy.config.unknown_safesearch_provider");
@@ -838,6 +840,7 @@ mod tests {
         cfg.profiles[0].safesearch = SafeSearchConfig {
             enabled: true,
             providers: vec![Arc::from("google"), Arc::from("GOOGLE")],
+            ..SafeSearchConfig::default()
         };
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert_eq!(err.code(), "policy.config.duplicate_safesearch_provider");

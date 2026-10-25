@@ -97,10 +97,9 @@ impl PolicyEngine {
             .snapshot()
     }
 
-    /// Coarse status for the UI (`safesearch_applied` / `schedules_applied` are
-    /// false until evaluation lands).
+    /// Coarse status for the UI (`schedules_applied` stays false until P14).
     pub fn status(&self) -> PolicyStatus {
-        PolicyStatus::stubs()
+        PolicyStatus::current()
     }
 
     /// Rebuilds and swaps the snapshot. On validation failure the previous
@@ -252,8 +251,36 @@ impl PolicyEngine {
             ));
         }
 
-        // Steps 5–6: SafeSearch + re-filter (config surface / NotApplied stubs).
-        safesearch::run(step_ctx, &mut draft);
+        // Steps 5–6: SafeSearch rewrite + re-filter of the safe host.
+        match safesearch::run(&ctx, step_ctx, &mut draft).await {
+            Flow::Answer(synth) if draft.synthetic => {
+                // Step 6 block / rewrite synthesis.
+                return Ok(self.finish_synth(
+                    draft,
+                    synth,
+                    total_start,
+                    ctx.client_id.clone(),
+                    loggable,
+                ));
+            }
+            Flow::Answer(synth) => {
+                // Successful SafeSearch CNAME+follow: answer-side / rebind /
+                // AAAA still apply to the resolved target (no EDE for SafeSearch).
+                return Ok(self.finish_resolved_message(
+                    draft,
+                    synth.message,
+                    synth.ede,
+                    synth.origin,
+                    None,
+                    None,
+                    &ctx,
+                    step_ctx,
+                    total_start,
+                    loggable,
+                ));
+            }
+            Flow::Continue => {}
+        }
 
         let flags = RequestFlags {
             checking_disabled: ctx.flags.checking_disabled,
@@ -294,28 +321,57 @@ impl PolicyEngine {
         // Listener owns the message id.
         message.header.id = 0;
 
-        // Steps 8–9: CNAME uncloaking + answer-IP rules (resolver answers only).
-        match answer_side::run(&ctx, step_ctx, &mut draft, &message) {
+        Ok(self.finish_resolved_message(
+            draft,
+            message,
+            answer.ede,
+            AnswerOrigin::Resolver,
+            answer.forward_zone.clone(),
+            Some(answer.dnssec),
+            &ctx,
+            step_ctx,
+            total_start,
+            loggable,
+        ))
+    }
+
+    /// Steps 8–11 on a message, then emit.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_resolved_message(
+        &self,
+        mut draft: Draft,
+        mut message: dnscraft_proto::Message,
+        mut ede: Option<dnscraft_resolver::ExtendedError>,
+        origin: AnswerOrigin,
+        forward_zone: Option<dnscraft_resolver::ForwardZoneId>,
+        dnssec: Option<DnssecStatus>,
+        ctx: &RequestContext,
+        step_ctx: StepCtx<'_>,
+        total_start: Instant,
+        loggable: bool,
+    ) -> PolicyAnswer {
+        // Steps 8–9: CNAME uncloaking + answer-IP rules.
+        match answer_side::run(ctx, step_ctx, &mut draft, &message) {
             AnswerSide::Replace(synth) => {
-                return Ok(self.finish_synth(
+                return self.finish_synth(
                     draft,
                     synth,
                     total_start,
                     ctx.client_id.clone(),
                     loggable,
-                ));
+                );
             }
             AnswerSide::Keep => {}
         }
 
-        // Step 10: rebind protection (resolver answers only; synthetics skip).
+        // Step 10: rebind protection (skipped when draft.synthetic).
         let steps_before_rebind = draft.steps.len();
         rebind::run(
-            &ctx,
+            ctx,
             step_ctx,
             &mut draft,
             &mut message,
-            answer.forward_zone.as_ref(),
+            forward_zone.as_ref(),
         );
         let rebind_changed = draft.steps.len() > steps_before_rebind
             && matches!(
@@ -324,31 +380,24 @@ impl PolicyEngine {
             );
 
         // Step 11: AAAA suppression.
-        let aaaa_suppressed = aaaa::run(&ctx, step_ctx, &mut draft, &mut message);
-        let mut ede = answer.ede;
+        let aaaa_suppressed = aaaa::run(ctx, step_ctx, &mut draft, &mut message);
         if rebind_changed || aaaa_suppressed {
             ede = None;
         }
 
         draft.timings.total_us = elapsed_us(total_start);
         let rcode = message.rcode();
-        let record = draft.into_record(
-            AnswerOrigin::Resolver,
-            rcode,
-            answer.forward_zone.clone(),
-            Some(answer.dnssec),
-            ctx.client_id,
-        );
+        let record = draft.into_record(origin, rcode, forward_zone, dnssec, ctx.client_id.clone());
         if loggable {
             self.record_stats(&record);
         }
 
-        Ok(PolicyAnswer {
+        PolicyAnswer {
             message,
             ede,
             record,
             loggable,
-        })
+        }
     }
 
     fn active_pause(&self, profile: &ProfileId) -> Option<ProtectionPauseScope> {

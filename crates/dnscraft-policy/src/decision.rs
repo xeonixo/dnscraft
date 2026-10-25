@@ -114,7 +114,14 @@ pub enum DecisionStep {
         /// Nested resolver `code()` when available.
         cause_code: Option<&'static str>,
     },
-    /// A later step is configured but not applied yet (SafeSearch / schedules).
+    /// SafeSearch rewrote the qname to a provider safe host (step 5).
+    SafeSearchRewrite {
+        /// Provider id (`google`, `bing`, `youtube`, `duckduckgo`).
+        provider: std::sync::Arc<str>,
+        /// Safe endpoint hostname (no trailing dot).
+        target: std::sync::Arc<str>,
+    },
+    /// A later step is configured but not applied yet (schedules until P14).
     NotApplied {
         /// Which stubbed pipeline step.
         step: NotAppliedStep,
@@ -125,11 +132,7 @@ pub enum DecisionStep {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum NotAppliedStep {
-    /// Step 5: SafeSearch qname rewrite.
-    SafeSearch,
-    /// Step 6: filter the SafeSearch target host.
-    SafeSearchFilter,
-    /// Schedule windows that would swap the filter set.
+    /// Schedule windows that would swap the filter set (until P14).
     Schedules,
 }
 

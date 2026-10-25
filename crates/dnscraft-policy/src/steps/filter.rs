@@ -111,7 +111,10 @@ pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Dra
     }
 }
 
-async fn follow_cname_rewrite(
+/// Follows a CNAME rewrite: filter the target once more, then resolve.
+///
+/// Shared by step 4b and SafeSearch step 6 when the safe host itself is rewritten.
+pub(crate) async fn follow_cname_rewrite(
     ctx: &RequestContext,
     step: StepCtx<'_>,
     draft: &mut Draft,
