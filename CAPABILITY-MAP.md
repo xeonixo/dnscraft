@@ -10,7 +10,7 @@ This file is the index of all modules. Module ids are stable and never renamed.
 | `resolver` | Recursive resolution from the root servers, DNSSEC validation, cache | – | [SPEC-resolver.md](SPEC-resolver.md) |
 | `filtering` | AdGuard-compatible filter lists (adblock syntax, hosts), allow/block, rewrites | – | [SPEC-filtering.md](SPEC-filtering.md) |
 | `clients` | Client enrichment: IPv4/IPv6 → device, VLAN via the UniFi API (UniFi OS gateway); manual names for IPs/ranges | – | [SPEC-clients.md](SPEC-clients.md) (draft) |
-| `tls` | ACME DNS-01 via Cloudflare (wildcard for Client IDs), certificate store, hot reload, DynDNS of the public hostname | – | pending |
+| `tls` | ACME DNS-01 via Cloudflare (wildcard for Client IDs), certificate store, hot reload, DynDNS of the public hostname | – | [SPEC-tls.md](SPEC-tls.md) (draft) |
 | `policy` | Query → profile by source subnet/IP: filter set, split-horizon answers | resolver, filtering | pending |
 | `listeners` | Do53 UDP/TCP, DoT, DoH (h2/h3), DoQ; multiple NICs/addresses; public listeners for registered Client IDs | policy, tls | pending |
 | `control-api` | REST API, configuration, query log (filterable by device), statistics, OIDC (Authentik) + local break-glass login, locale-neutral error codes | policy, clients | pending |

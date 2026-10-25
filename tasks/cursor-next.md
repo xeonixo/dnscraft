@@ -10,8 +10,8 @@
   Claude/owner review** — Cursor does not touch the filtering crate until that review is logged in
   progress.md (exception: brief T3, which says so explicitly).
 - `clients`: **SPEC-clients.md decisions locked** (incl. full IPv6 via classic API); formal approve for P1 still open; no code until approved.
-- Next specs: `tls` (S2), then `policy` (S3). This project is spec-driven: no module code before
-  its spec is approved by the owner.
+- `tls`: **SPEC-tls.md drafted** — owner Open Questions unanswered.
+- Next spec: `policy` (S3) after tls questions. Spec-driven: no module code before its spec is approved.
 
 ## Order
 

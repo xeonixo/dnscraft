@@ -1,0 +1,281 @@
+# Spec: tls
+
+> Module id `tls` · crate `crates/dnscraft-tls` · depends on: nothing (uses `dnscraft-proto`
+> only for optional DNS-01 propagation queries against Cloudflare nameservers)
+> Project-wide decisions (stack, commands, style, boundaries, i18n): [SPEC.md](SPEC.md)
+
+## Objective
+
+Obtain, store, renew, and hot-reload TLS certificates for encrypted DNS listeners
+(DoT / DoH / DoQ), and keep the public hostname’s A/AAAA records current (DynDNS).
+Certificates cover `dns.<domain>` and `*.dns.<domain>` so Client-ID SNIs work.
+This module does **not** bind sockets (that is `listeners`) and does **not** own
+the Client-ID registry (that is `policy` / `control-api`); it exposes a cert
+resolver and small helpers those modules call.
+
+## Assumptions
+
+1. `tls` is a library: configuration as Rust values; secrets
+   (`DNSCRAFT_CLOUDFLARE_API_TOKEN` / `*_FILE`) from env / Docker secrets only.
+2. Crypto stack matches the rest of the workspace: **rustls + ring**, no aws-lc
+   (same decision as reqwest in filtering — see `tasks/progress.md`).
+3. ACME challenge is **DNS-01** via Cloudflare only (no HTTP-01; the node may
+   not be reachable on 80 from the internet).
+4. DDR (RFC 9462) answers are produced by `listeners`; this module only supplies
+   the hostnames / certificate material those answers advertise.
+5. Alerts (cert expiry, DynDNS failure) are surfaced as status fields;
+   `control-api` / web-ui render them (SPEC.md Alerts — UI only, no push/email).
+
+## Requirements
+
+### Research notes (with sources)
+
+#### instant-acme
+
+| Topic | Finding | Source |
+|---|---|---|
+| Crate | Async pure-Rust ACME (RFC 8555) client | [github.com/djc/instant-acme](https://github.com/djc/instant-acme/) |
+| Version at research | **0.9.0** on main `Cargo.toml` (2026-10-25); docs.rs also lists 0.8.x — **pin the exact semver in the plan** after `cargo search` at implement time | [Cargo.toml](https://raw.githubusercontent.com/djc/instant-acme/main/Cargo.toml) |
+| Default crypto | Feature `aws-lc-rs` is **default** | same |
+| Ring | Feature `ring`; if both `ring` and `aws-lc-rs` are enabled, aws-lc wins — therefore depend with `default-features = false, features = ["hyper-rustls", "ring", …]` | [README features](https://github.com/djc/instant-acme/) |
+| DNS-01 | Select `ChallengeType::Dns01`, use key-authorization DNS value, publish TXT at `_acme-challenge.<name>`, then mark challenge ready | crate docs / examples |
+| Account persistence | Serialize/deserialize `AccountCredentials` (store under data dir, 0o600) | README |
+| ARI (RFC 9773) | Supported via features `time` + `x509-parser`; `account.renewal_info(&cert_id)` → suggested window; ARI renewals are rate-limit exempt at Let’s Encrypt | [RFC 9773](https://www.rfc-editor.org/rfc/rfc9773.html); [LE rate limits — ARI](https://letsencrypt.org/docs/rate-limits/); instant-acme README |
+
+#### Cloudflare DNS API
+
+| Topic | Finding | Source |
+|---|---|---|
+| Auth | API **Token** `Authorization: Bearer …` | [Create API token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) |
+| Scopes | Template **Edit zone DNS** → permission **Zone → DNS → Edit**, resource **Include → Specific zone → \<one zone\>** only | same |
+| Create / update / delete | `POST/PUT/DELETE /zones/{zone_id}/dns_records` (and list/filter by name+type) | [Create DNS Record](https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/create/) |
+| ACME TXT | Create TXT `_acme-challenge.<hostname>` with the challenge value; short TTL (e.g. 120); delete after validation | same + ACME practice |
+| DynDNS | Upsert A and/or AAAA for the public DoH/DoT hostname; **proxied = false** (DNS-only) so DoT/DoQ on 853 and origin DoH are not broken by HTTP proxying | design (Cloudflare orange-cloud is HTTP(S) proxy) |
+| Public IP echo | Default `https://cloudflare.com/cdn-cgi/trace` (or `https://1.1.1.1/cdn-cgi/trace`); parse `ip=` line; IPv4 vs IPv6 via separate force-family fetches | [cdn-cgi endpoint](https://developers.cloudflare.com/fundamentals/reference/cdn-cgi-endpoint/); common DynDNS practice |
+| Propagation check | After writing TXT, query **Cloudflare’s authoritative nameservers for the zone** (from NS records / zone API) for `_acme-challenge.…` TXT using `dnscraft-proto` (or a tiny UDP helper in this crate) — **not** a public recursive resolver | brief requirement; avoids cached negatives |
+
+#### Let’s Encrypt
+
+| Topic | Finding | Source |
+|---|---|---|
+| Production directory | `https://acme-v02.api.letsencrypt.org/directory` | LE docs |
+| Staging directory | `https://acme-staging-v02.api.letsencrypt.org/directory` — separate accounts; untrusted roots | [Staging](https://letsencrypt.org/docs/staging-environment/) |
+| Notable production limits | e.g. 50 certs / registered domain / 7 days; 5 certs / exact identifier set / 7 days; 5 failed authorizations / identifier / hour; ARI renewals exempt from all limits | [Rate limits](https://letsencrypt.org/docs/rate-limits/) (page updated 2026-08-05) |
+| CI / tests | Prefer **Pebble** locally + mock Cloudflare; never hit real LE or Cloudflare in automated tests (SPEC.md) | [Staging — Pebble note](https://letsencrypt.org/docs/staging-environment/); SPEC.md Testing Strategy |
+
+### Certificate set
+
+- Names (required): `dns.<public_domain>`, `*.dns.<public_domain>` (Client-ID SNIs).
+- Optional extra SANs: configurable list (e.g. bare apex) — see Open Questions.
+- Key type: **ECDSA P-256** default (instant-acme / rustls friendly). RSA-2048 only if
+  owner later requires a fallback for a broken client (off by default).
+- One leaf + chain PEM on disk; private key separate file, never logged, never
+  included in config export/backup (SPEC.md).
+- Staging switch: `acme.directory = "staging" | "production" | <url>` for tests.
+
+### Issuance and renewal
+
+1. Ensure ACME account exists (persist credentials under `<data>/tls/account.json`, 0o600).
+2. New order for the identifier set; for each DNS-01 challenge: create Cloudflare
+   TXT → wait until authoritative NS serves the value (timeout + backoff) →
+   ready → finalize → download chain.
+3. Renewal: prefer **ARI** suggested window when the CA supports it; else renew
+   when `not_after - now < renew_before` (default **30 days**).
+4. Retry/backoff on transient errors (HTTP 503/`Retry-After`, Cloudflare 429,
+   propagation timeout): exponential backoff with jitter, cap, and
+   `tls.acme.*` / `tls.cloudflare.*` error codes on status. Never delete the
+   last good cert on a failed renewal.
+5. After success: atomic store write + hot-reload into the shared cert resolver.
+
+### Certificate store
+
+- Directory `<data>/tls/` mode **0o700**; files **0o600**.
+- Layout (illustrative): `account.json`, `cert.pem`, `key.pem`, `meta.json`
+  (not_after, identifiers, ari id, last_error).
+- Writes: temp file + `fsync` + rename (same pattern as filtering `ListStore`).
+- On startup: load last good cert even if ACME/Cloudflare are unreachable so
+  listeners can still serve (possibly with a soon-expiring cert + alert).
+
+### Hot reload and listener integration
+
+```rust
+/// Shared rustls server cert resolver; listeners clone Arc.
+pub struct CertResolver { /* ArcSwap or RwLock<Arc<CertifiedKey>> */ }
+
+impl rustls::server::ResolvesServerCert for CertResolver {
+    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>>;
+}
+
+/// SNI helpers for listeners (Client ID registry is elsewhere).
+pub fn parse_client_id_sni(sni: &str, public_domain: &str) -> Option<&str>;
+// "<id>.dns.<public_domain>" → Some(id); "dns.<public_domain>" → None (apex);
+// anything else → None
+
+pub trait ClientIdRegistry: Send + Sync {
+    fn is_registered(&self, client_id: &str) -> bool;
+}
+
+/// Hook for public listeners: unknown/missing Client ID → reject handshake.
+/// Implemented by combining parse_client_id_sni + ClientIdRegistry.
+pub fn accept_public_sni(
+    sni: Option<&str>,
+    public_domain: &str,
+    registry: &dyn ClientIdRegistry,
+) -> bool;
+```
+
+- Apex `dns.<domain>` may be used for LAN DDR / non–Client-ID DoT; public
+  internet exposure still requires a registered Client ID (SPEC.md Internet
+  exposure) — listeners enforce that policy; `tls` only provides the predicate
+  helper.
+- Reloading swaps the `CertifiedKey` under the resolver without dropping
+  existing connections (new handshakes see the new cert).
+
+### Multi-node
+
+- **Who renews:** the **master** only obtains/renews the ACME certificate.
+  Sub-nodes never create ACME orders while they know a master exists.
+- **Meanwhile:** sub-nodes serve from their local store copy; when cluster sync
+  exists, the master pushes cert+key (encrypted channel) — details belong in
+  **SPEC-cluster.md**. Until then, each node that enables public DoH/DoT must
+  either be the master or receive the files by an admin-approved out-of-band
+  copy (document as interim).
+- **DynDNS:** each node that has `public_listener = true` may update **its own**
+  configured hostname’s A/AAAA (or the shared hostname if only one node is
+  exposed). Avoid two nodes fighting over the same record — see Open Questions.
+- Public DoH/DoT remains **per-node, off by default** (SPEC.md).
+
+### DynDNS
+
+- Interval: default **5 minutes**, ±10 % jitter; also on startup and on
+  “update now”.
+- Discover public IPv4 and IPv6 **separately** (echo URL configurable; default
+  Cloudflare `cdn-cgi/trace`).
+- Compare to the current Cloudflare record content; **PATCH/PUT only on change**.
+- Records: DNS-only (`proxied: false`), TTL automatic or 300.
+- Failures set `stale`/error codes without touching the certificate path.
+
+### Error codes
+
+| Code | When |
+|---|---|
+| `tls.config.invalid` | bad domain, empty SANs, missing pin-equivalent for CF not applicable, etc. |
+| `tls.secret.missing` | Cloudflare token env/`*_FILE` absent when ACME or DynDNS enabled |
+| `tls.acme.account` | account create/load failed |
+| `tls.acme.order` | new-order / finalize failed |
+| `tls.acme.challenge` | DNS-01 ready/validation failed |
+| `tls.acme.rate_limited` | LE rate limit / Retry-After |
+| `tls.acme.propagation` | TXT not visible on authoritative NS before timeout |
+| `tls.cloudflare.http` | Cloudflare API non-success (incl. 401/403/429) |
+| `tls.cloudflare.zone` | zone id / name resolution failed |
+| `tls.store.io` | disk read/write/permissions |
+| `tls.store.corrupt` | PEM/meta unreadable; keep previous if any |
+| `tls.dyndns.echo` | public IP echo failed / unparseable |
+| `tls.dyndns.update` | A/AAAA upsert failed |
+| `tls.cert.expiring` | status flag when days-to-expiry below warn threshold (default 14 d) |
+| `tls.cert.expired` | not_after in the past |
+
+### Observability / alerts surface
+
+`TlsStatus`: cert `not_after`, `days_to_expiry`, identifiers, `last_issue`,
+`last_renew_attempt`, ACME directory (staging/prod), DynDNS last IPv4/IPv6 and
+last change time, `last_error` codes. Metrics: days to expiry (gauge), renew
+success/fail counters. Web UI alert when `tls.cert.expiring` /
+`tls.dyndns.update` / ACME failures are set.
+
+### Interface (sketch)
+
+```rust
+pub struct TlsEngine { /* config, store, CertResolver, tasks */ }
+
+impl TlsEngine {
+    pub fn open(config: TlsConfig, data_dir: &Path, clock: Arc<dyn Clock>) -> Result<Self, TlsError>;
+    pub fn resolver(&self) -> Arc<CertResolver>;
+    pub fn status(&self) -> TlsStatus;
+    pub async fn apply_config(&self, config: TlsConfig) -> Result<(), TlsError>;
+    pub async fn renew_now(&self) -> Result<(), TlsError>;
+    pub async fn dyndns_now(&self) -> Result<(), TlsError>;
+}
+```
+
+## Configuration excerpt (TOML, bootstrap only; normally edited in the UI)
+
+```toml
+[tls]
+public_domain = "example.com"          # → dns.example.com + *.dns.example.com
+extra_sans = []                        # open question
+key_type = "ecdsa_p256"
+renew_before = "30d"
+expiry_warn = "14d"
+
+[tls.acme]
+directory = "production"               # or "staging"
+# email optional contact for the ACME account
+email = "admin@example.com"
+
+[tls.cloudflare]
+# token from DNSCRAFT_CLOUDFLARE_API_TOKEN / _FILE
+# zone_id optional if resolvable by public_domain
+zone_id = ""
+
+[tls.dyndns]
+enabled = true
+hostname = "dns.example.com"           # record to update; usually dns.<public_domain>
+interval = "5m"
+echo_url = "https://cloudflare.com/cdn-cgi/trace"
+ipv4 = true
+ipv6 = true
+proxied = false
+```
+
+## Testing
+
+- **Pebble** as ACME server + **hand-written mock Cloudflare API** (create/list/delete
+  DNS records) + optional mock authoritative DNS for propagation.
+- Unit tests: SNI Client-ID parse / `accept_public_sni`, PEM store atomic replace,
+  DynDNS “only update on change”, ARI window scheduling with manual clock.
+- Never call real Let’s Encrypt, Cloudflare, or `cdn-cgi/trace` in CI (SPEC.md).
+- Staging directory may be used in **manual** acceptance only.
+
+## Boundaries
+
+- Always: ring-only crypto features; last-good cert on failure; secrets via env/
+  `*_FILE`; private keys never in logs or exports; DNS-only DynDNS records.
+- Ask first: new dependencies beyond `instant-acme` (ring features), `rustls`,
+  existing `reqwest`; RSA fallback; moving DynDNS to a separate crate; changing
+  who renews in a cluster.
+- Never: aws-lc; default insecure TLS to Cloudflare/ACME; real external APIs in
+  automated tests; register Client IDs inside this crate.
+
+## Success Criteria
+
+1. Against Pebble + mock Cloudflare, issue a cert for `dns.example.com` and
+   `*.dns.example.com`, persist it, and serve it from `CertResolver`.
+2. Renewal keeps last good cert if ACME fails; status shows a stable error code.
+3. DynDNS updates A/AAAA only when the echo IP differs; failures are isolated
+   from the cert path.
+4. `accept_public_sni` rejects unknown Client IDs and accepts registered ones for
+   `*.dns.<domain>`.
+5. Feature flags on `instant-acme` do not pull aws-lc into the workspace
+   (`cargo tree -i aws-lc-rs` empty).
+6. DoD gates green once implemented.
+
+## Open Questions
+
+1. **Extra SANs** — any names beyond `dns.<domain>` / `*.dns.<domain>` (e.g. apex,
+   `doh.<domain>`)?
+2. **RSA fallback** — ever needed, or ECDSA P-256 only?
+3. **DynDNS module boundary** — keep inside `tls` (as SPEC.md feature table says)
+   or a tiny sibling crate? Propose: **keep in `tls`**.
+4. **Multi-node DynDNS** — single shared `dns.<domain>` A/AAAA (only one public
+   node), vs per-node hostnames (`node1.dns.<domain>`) each with its own record?
+5. **Master-only renewal** — confirm; sub-nodes never talk to ACME while clustered?
+6. **ACME contact email** — required in UI, optional, or omit?
+7. **Propagation timeout** — propose 2 minutes with 5 s polls; OK?
+8. **Wildcard + apex in one order** — confirm both identifiers every time (needed
+   for Client IDs + DDR hostname).
+9. **DoH on 443 vs separate cert** — same cert set for all listeners?
+
+## Decisions
+
+None yet — draft for owner review (2026-10-25).

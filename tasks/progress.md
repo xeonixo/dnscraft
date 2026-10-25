@@ -12,10 +12,13 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
 - Module `filtering`: **C1 done** (engine polish, README, coverage, fuzz, real-list acceptance). **Checkpoint D ready for Claude/owner review** — implementer does **not** tick Checkpoint D. Checkpoint B owner: RAM may grow — not blocking. Deep-name p99 miss left for Checkpoint D if revisited.
-- Module `clients`: **SPEC-clients.md decisions locked** (defaults + full IPv6 via classic `stat/sta` + dynamic local domain from UniFi DHCP). Formal “approved” for P1 still open. Specs for `tls` / `policy` next (S2/S3).
-- Blockers: none for coding; next owner input is formal SPEC-clients approval and/or S2; filtering Checkpoint D when ready.
+- Module `clients`: **SPEC-clients.md decisions locked** (defaults + full IPv6 via classic `stat/sta` + dynamic local domain from UniFi DHCP). Formal “approved” for P1 still open.
+- Module `tls`: **SPEC-tls.md drafted** — waiting on owner Open Questions. `policy` spec next (S3).
+- Blockers: none for coding; next owner input is SPEC-tls open questions (and clients formal approve / filtering Checkpoint D when ready).
 
 ## Log
+
+- 2026-10-25 — Spec draft SPEC-tls.md (Cursor, S2): instant-acme (ring features, no aws-lc; ARI), Cloudflare Zone:DNS:Edit + DNS-01 TXT + DynDNS (cdn-cgi/trace, DNS-only), LE staging/Pebble, CertResolver hot reload, SNI Client-ID helper + registry trait, master-only renew (cluster sync later). CAPABILITY-MAP draft link. **STOP for owner Open Questions.**
 
 - 2026-10-25 — SPEC-clients.md local domain (Cursor): Owner wants domain “as present” — prefer UniFi per-VLAN DHCP `domainName`, config `home.arpa` only as fallback; `local_domain_mode` + optional per-manual `domain` override. FQDN indexes / `local_domains()` for policy.
 
