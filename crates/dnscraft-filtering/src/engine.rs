@@ -7,10 +7,11 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::oneshot;
 
 use crate::clock::{Clock, SystemClock};
 use crate::error::FilterError;
@@ -72,8 +73,11 @@ struct Coalesce {
     pending_config: Option<FilterConfig>,
     pending_lists: Option<ListSelection>,
     /// Waiters for the current (coalesced) rebuild to finish.
-    waiters: Vec<oneshot::Sender<()>>,
+    waiters: Vec<oneshot::Sender<RebuildResult>>,
 }
+
+/// Outcome handed to every caller waiting on a coalesced rebuild.
+type RebuildResult = Result<ReloadReport, FilterError>;
 
 impl std::fmt::Debug for Coalesce {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -99,7 +103,6 @@ pub struct FilterEngine {
 #[derive(Debug)]
 struct EngineInner {
     store: ListStore,
-    bodies: Arc<StoreListBodies>,
     fetcher: Fetcher,
     /// Injected clock (scheduler / [`Self::now`]); matching still takes `now`
     /// explicitly so tests can freeze time without a [`ManualClock`](crate::ManualClock).
@@ -107,9 +110,9 @@ struct EngineInner {
     config: RwLock<FilterConfig>,
     list_status: RwLock<HashMap<ListId, ListStatus>>,
     coalesce: Mutex<Coalesce>,
-    /// Wakes the scheduler early ("update now").
-    kick: Arc<Notify>,
     scheduler: Mutex<Option<UpdateScheduler>>,
+    /// Artificial delay (ms) inside each rebuild; tests only.
+    build_delay_ms: AtomicU64,
     /// Runtime blocked-services catalog (`None` = feature unavailable).
     catalog: RwLock<Option<Arc<ServiceCatalog>>>,
     /// Last services update/parse error code (`filter_services.*`), if any.
@@ -135,7 +138,7 @@ impl FilterEngine {
         clock: Arc<dyn Clock>,
     ) -> Result<Arc<Self>, FilterError> {
         let eng = Self::open_without_scheduler(config, store, Arc::clone(&clock))?;
-        let sched = UpdateScheduler::start(Arc::clone(&eng), clock);
+        let sched = UpdateScheduler::start(&eng, clock);
         if let Some(inner) = eng.inner.as_ref() {
             *inner
                 .scheduler
@@ -176,14 +179,8 @@ impl FilterEngine {
         store: ListStore,
         clock: Arc<dyn Clock>,
     ) -> Result<Arc<Self>, FilterError> {
-        let files = file_fallbacks(&config);
-        let bodies = Arc::new(StoreListBodies::new(store.clone(), files));
         let (catalog, services_error) = load_catalog_offline(&store);
-        let snapshot = build_snapshot(
-            Arc::clone(&bodies) as Arc<dyn ListBodies>,
-            &config,
-            catalog.clone(),
-        )?;
+        let snapshot = build_snapshot(list_bodies(&store, &config), &config, catalog.clone())?;
         let status = status_from_snapshot(&snapshot, &config, &store);
         let fetcher = Fetcher::new(&store).map_err(|e| FilterError::BuildFailed {
             message: e.to_string(),
@@ -195,19 +192,28 @@ impl FilterEngine {
             stats: RwLock::new(StatsTable::new(set_ids, list_ids)),
             inner: Some(EngineInner {
                 store,
-                bodies,
                 fetcher,
                 clock,
                 config: RwLock::new(config),
                 list_status: RwLock::new(status),
                 coalesce: Mutex::new(Coalesce::default()),
-                kick: Arc::new(Notify::new()),
                 scheduler: Mutex::new(None),
+                build_delay_ms: AtomicU64::new(0),
                 catalog: RwLock::new(catalog),
                 services_error: RwLock::new(services_error),
                 services_urls: RwLock::new(ServicesUrls::default()),
             }),
         }))
+    }
+
+    /// Makes every rebuild sleep this long on its blocking thread (tests that
+    /// need to cancel a caller mid-build). No effect on matching-only engines.
+    #[doc(hidden)]
+    pub fn set_build_delay_for_tests(&self, delay: Duration) {
+        if let Some(inner) = self.inner.as_ref() {
+            let ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
+            inner.build_delay_ms.store(ms, Ordering::SeqCst);
+        }
     }
 
     /// Shared handle to the current immutable snapshot.
@@ -250,15 +256,16 @@ impl FilterEngine {
     }
 
     /// Applies a new config: rebuild on a blocking thread, swap atomically.
+    ///
+    /// The config is committed only when the rebuild succeeds. On failure
+    /// (for example a set naming an unknown list, or a duplicate id) this
+    /// returns the error, the previous snapshot keeps serving and later
+    /// rebuilds keep using the last good config. Requests that coalesce with
+    /// a running rebuild share one outcome; the newest config wins.
+    ///
+    /// Dropping the returned future (for example on a timeout) never blocks
+    /// later calls.
     pub async fn apply_config(&self, config: FilterConfig) -> Result<ReloadReport, FilterError> {
-        let Some(inner) = self.inner.as_ref() else {
-            return Err(FilterError::NoStore);
-        };
-        inner.bodies.set_files(file_fallbacks(&config));
-        *inner
-            .config
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = config.clone();
         self.enqueue_rebuild(Some(config), None).await
     }
 
@@ -301,7 +308,7 @@ impl FilterEngine {
     /// [`Self::services_last_error`] reports `filter_services.malformed`.
     pub async fn update_services(&self) -> ServicesUpdateReport {
         let report = self.refresh_services_catalog().await;
-        if report.catalog.is_some() {
+        if report.catalog.is_some() && report.changed {
             let _ = self.enqueue_rebuild(None, None).await;
         }
         report
@@ -338,19 +345,11 @@ impl FilterEngine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Triggers an immediate list update (wakes the scheduler if running).
+    /// Runs one immediate update round of every enabled list.
+    ///
+    /// This fetches directly (exactly once per list) and does not wake the
+    /// scheduler, so "update now" can never cause a second fetch round.
     pub async fn update_now(&self) -> Vec<ListStatus> {
-        if let Some(inner) = self.inner.as_ref() {
-            inner.kick.notify_waiters();
-            if let Some(sched) = inner
-                .scheduler
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-            {
-                sched.kick();
-            }
-        }
         self.update_lists(ListSelection::All).await
     }
 
@@ -444,6 +443,8 @@ impl FilterEngine {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let list = guard.entry(set.clone()).or_default();
+        let now = self.now();
+        list.retain(|a| now < a.until);
         if let Some(pos) = list.iter().position(|a| a.domain == rule.domain) {
             list[pos] = rule;
         } else {
@@ -475,7 +476,8 @@ impl FilterEngine {
         Ok(list.len() != before)
     }
 
-    /// Active temporary allows for `set` at `now` (expired entries omitted).
+    /// Active temporary allows for `set` at `now` (expired entries omitted
+    /// and dropped from memory).
     pub fn list_temporary_allows(
         &self,
         set: &SetId,
@@ -484,17 +486,15 @@ impl FilterEngine {
         if self.snapshot_arc().shared_index(set).is_none() {
             return Err(FilterError::UnknownSet(set.to_string()));
         }
-        let guard = self
+        let mut guard = self
             .temps
-            .read()
+            .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Ok(guard
-            .get(set)
-            .into_iter()
-            .flatten()
-            .filter(|a| now < a.until)
-            .cloned()
-            .collect())
+        let Some(list) = guard.get_mut(set) else {
+            return Ok(Vec::new());
+        };
+        list.retain(|a| now < a.until);
+        Ok(list.clone())
     }
 
     /// Current match counters.
@@ -509,7 +509,7 @@ impl FilterEngine {
         &self,
         config: Option<FilterConfig>,
         lists: Option<ListSelection>,
-    ) -> Result<ReloadReport, FilterError> {
+    ) -> RebuildResult {
         let Some(inner) = self.inner.as_ref() else {
             return Err(FilterError::NoStore);
         };
@@ -519,111 +519,111 @@ impl FilterEngine {
                 .coalesce
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if g.busy {
-                if let Some(c) = config {
-                    g.pending_config = Some(c);
-                }
-                if let Some(l) = lists {
-                    g.pending_lists = Some(merge_selection(g.pending_lists.take(), l));
-                }
-                g.waiters.push(tx);
-                false
-            } else {
-                g.busy = true;
-                if let Some(c) = config {
-                    g.pending_config = Some(c);
-                }
-                if let Some(l) = lists {
-                    g.pending_lists = Some(l);
-                }
-                g.waiters.push(tx);
-                true
+            if let Some(c) = config {
+                g.pending_config = Some(c);
             }
+            if let Some(l) = lists {
+                g.pending_lists = Some(merge_selection(g.pending_lists.take(), l));
+            }
+            g.waiters.push(tx);
+            let run_now = !g.busy;
+            g.busy = true;
+            run_now
         };
         if run_now {
             self.run_coalesced_rebuilds().await;
         }
-        let _ = rx.await;
-        Ok(ReloadReport {
-            lists: self.list_status(),
+        rx.await.unwrap_or_else(|_| {
+            Err(FilterError::BuildFailed {
+                message: "rebuild was cancelled".to_owned(),
+            })
         })
     }
 
+    /// Runs rebuilds until no follow-up work is queued. Every waiter gets the
+    /// build result; the config is committed only after a successful build.
+    ///
+    /// If this future is dropped mid-way, [`BusyGuard`] resets the coalescing
+    /// state and fails the remaining waiters so the next call can run.
     async fn run_coalesced_rebuilds(&self) {
         let Some(inner) = self.inner.as_ref() else {
             return;
         };
+        let mut guard = BusyGuard {
+            coalesce: &inner.coalesce,
+            armed: true,
+        };
         loop {
-            let (cfg_opt, _lists_opt, waiters) = {
+            let (pending_cfg, waiters) = {
                 let mut g = inner
                     .coalesce
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let cfg = g.pending_config.take().unwrap_or_else(|| {
-                    inner
-                        .config
-                        .read()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .clone()
-                });
-                // Apply latest config before build.
-                *inner
-                    .config
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = cfg.clone();
-                inner.bodies.set_files(file_fallbacks(&cfg));
-                let lists = g.pending_lists.take();
-                let waiters = std::mem::take(&mut g.waiters);
-                (cfg, lists, waiters)
+                g.pending_lists = None;
+                (g.pending_config.take(), std::mem::take(&mut g.waiters))
             };
+            let cfg = pending_cfg.unwrap_or_else(|| {
+                inner
+                    .config
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+            });
 
-            let bodies = Arc::clone(&inner.bodies);
+            let bodies = list_bodies(&inner.store, &cfg);
             let store = inner.store.clone();
             let catalog = inner
                 .catalog
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
+            let delay = inner.build_delay_ms.load(Ordering::SeqCst);
             let build_result = tokio::task::spawn_blocking(move || {
-                let cfg = cfg_opt;
-                build_snapshot(bodies as Arc<dyn ListBodies>, &cfg, catalog).map(|snap| (snap, cfg))
+                if delay > 0 {
+                    std::thread::sleep(Duration::from_millis(delay));
+                }
+                build_snapshot(bodies, &cfg, catalog).map(|snap| (snap, cfg))
             })
             .await;
 
-            match build_result {
+            let outcome: RebuildResult = match build_result {
                 Ok(Ok((snap, cfg))) => {
                     let status = status_from_snapshot(&snap, &cfg, &store);
                     let (sets, lists) = ids_from_snapshot(&snap);
-                    {
-                        let mut st = self
-                            .stats
-                            .write()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        st.ensure(sets, lists);
-                    }
-                    {
-                        *inner
-                            .list_status
-                            .write()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = status;
-                    }
-                    {
-                        *self
-                            .snapshot
-                            .write()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(snap);
-                    }
+                    self.stats
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .ensure(sets, lists);
+                    *inner
+                        .list_status
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = status;
+                    *inner
+                        .config
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = cfg;
+                    *self
+                        .snapshot
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(snap);
+                    Ok(ReloadReport {
+                        lists: self.list_status(),
+                    })
                 }
                 Ok(Err(e)) => {
-                    tracing::warn!(error = %e, code = e.code(), "filter rebuild failed; keeping last good snapshot");
+                    tracing::warn!(error = %e, code = e.code(), "filter rebuild failed; keeping last good snapshot and config");
+                    Err(e)
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "filter rebuild task failed; keeping last good snapshot");
+                    tracing::warn!(error = %e, "filter rebuild task failed; keeping last good snapshot and config");
+                    Err(FilterError::BuildFailed {
+                        message: format!("rebuild task failed: {e}"),
+                    })
                 }
-            }
+            };
 
             for w in waiters {
-                let _ = w.send(());
+                let _ = w.send(outcome.clone());
             }
 
             let again = {
@@ -640,6 +640,7 @@ impl FilterEngine {
                 }
             };
             if !again {
+                guard.armed = false;
                 return;
             }
         }
@@ -704,6 +705,7 @@ impl FilterEngine {
                 error_code: Some(FilterError::NoStore.code()),
                 services_fetch: crate::services::FetchOutcomeKind::Failed,
                 i18n_fetch: crate::services::FetchOutcomeKind::Failed,
+                changed: false,
             };
         };
         let urls = inner
@@ -729,6 +731,38 @@ impl FilterEngine {
         }
         report
     }
+}
+
+/// Resets the coalescing state when the rebuild loop is dropped mid-way
+/// (caller cancelled), so the engine never stays `busy` forever. Remaining
+/// waiters are dropped and observe a "cancelled" error.
+struct BusyGuard<'a> {
+    coalesce: &'a Mutex<Coalesce>,
+    armed: bool,
+}
+
+impl Drop for BusyGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let mut g = self
+            .coalesce
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        g.busy = false;
+        g.pending_config = None;
+        g.pending_lists = None;
+        g.waiters.clear();
+    }
+}
+
+/// A fresh body provider for one build, with `config`'s local-file fallbacks.
+///
+/// Each snapshot keeps the provider it was built with, so a failed build
+/// never changes what the serving snapshot reads.
+fn list_bodies(store: &ListStore, config: &FilterConfig) -> Arc<dyn ListBodies> {
+    Arc::new(StoreListBodies::new(store.clone(), file_fallbacks(config)))
 }
 
 fn load_catalog_offline(store: &ListStore) -> (Option<Arc<ServiceCatalog>>, Option<&'static str>) {
@@ -878,4 +912,71 @@ fn update_meta_status(inner: &EngineInner, id: &ListId, outcome: &FetchOutcome) 
     entry.error_code = meta.last_error.as_ref().map(|e: &MetaError| e.code.clone());
     // Keep parse/unique numbers until rebuild refreshes them.
     let _ = meta;
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::clock::ManualClock;
+    use crate::set::FilterSetConfig;
+    use crate::store::StoreConfig;
+
+    fn at(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    fn allow(domain: &str, until: SystemTime) -> TempAllow {
+        TempAllow {
+            domain: domain.parse().unwrap(),
+            include_subdomains: false,
+            until,
+        }
+    }
+
+    fn stored_temps(eng: &FilterEngine, set: &SetId) -> usize {
+        eng.temps
+            .read()
+            .unwrap()
+            .get(set)
+            .map_or(0, std::vec::Vec::len)
+    }
+
+    #[tokio::test]
+    async fn expired_temporary_allows_are_pruned_on_insert_and_list() {
+        let dir = std::env::temp_dir().join(format!("dnscraft-engine-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let clock = Arc::new(ManualClock::new(at(1_000)));
+        let store =
+            ListStore::open_with(&dir, StoreConfig::default(), Arc::clone(&clock) as _).unwrap();
+        let set = SetId::new("s").unwrap();
+        let cfg = FilterConfig {
+            sets: vec![FilterSetConfig::new(set.clone(), "s")],
+            ..FilterConfig::default()
+        };
+        let eng = FilterEngine::open_without_scheduler(cfg, store, clock.clone()).unwrap();
+
+        eng.allow_temporarily(&set, allow("a.example", at(1_010)))
+            .unwrap();
+        eng.allow_temporarily(&set, allow("b.example", at(1_010)))
+            .unwrap();
+        assert_eq!(stored_temps(&eng, &set), 2);
+
+        // Insert after expiry drops the expired entries.
+        clock.advance(Duration::from_secs(20));
+        eng.allow_temporarily(&set, allow("c.example", at(2_000)))
+            .unwrap();
+        assert_eq!(stored_temps(&eng, &set), 1);
+
+        // Listing after expiry drops them too.
+        eng.allow_temporarily(&set, allow("d.example", at(1_030)))
+            .unwrap();
+        assert_eq!(stored_temps(&eng, &set), 2);
+        let listed = eng.list_temporary_allows(&set, at(1_040)).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(stored_temps(&eng, &set), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

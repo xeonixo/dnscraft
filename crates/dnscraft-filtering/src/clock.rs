@@ -86,21 +86,33 @@ impl Clock for ManualClock {
 /// for the remaining real time, also waking early when `extra` is notified
 /// (manual "update now", config changes).
 pub async fn wait_until(clock: &dyn Clock, deadline: SystemTime, extra: &Notify) {
+    let tick = clock.tick_notify();
     loop {
-        let now = clock.now();
-        if now >= deadline {
-            return;
-        }
-        let remaining = deadline.duration_since(now).unwrap_or(Duration::ZERO);
-        if let Some(tick) = clock.tick_notify() {
+        // Register interest *before* reading the clock: a tick that lands
+        // between the `now()` check and the wait would otherwise be lost.
+        let extra_n = extra.notified();
+        tokio::pin!(extra_n);
+        extra_n.as_mut().enable();
+        if let Some(tick) = tick.as_ref() {
+            let tick_n = tick.notified();
+            tokio::pin!(tick_n);
+            tick_n.as_mut().enable();
+            if clock.now() >= deadline {
+                return;
+            }
             tokio::select! {
-                () = tick.notified() => {}
-                () = extra.notified() => {}
+                () = tick_n => {}
+                () = extra_n => {}
             }
         } else {
+            let now = clock.now();
+            if now >= deadline {
+                return;
+            }
+            let remaining = deadline.duration_since(now).unwrap_or(Duration::ZERO);
             tokio::select! {
                 () = tokio::time::sleep(remaining) => {}
-                () = extra.notified() => {}
+                () = extra_n => {}
             }
         }
     }
@@ -120,6 +132,44 @@ mod tests {
         assert_eq!(clock.now(), start + Duration::from_secs(5));
         clock.set(SystemTime::UNIX_EPOCH);
         assert_eq!(clock.now(), SystemTime::UNIX_EPOCH);
+    }
+
+    /// A clock that advances itself the first time it is read, i.e. a tick
+    /// lands between the caller's `now()` check and its wait.
+    #[derive(Debug)]
+    struct RacyClock {
+        inner: ManualClock,
+        fired: std::sync::atomic::AtomicBool,
+    }
+
+    impl Clock for RacyClock {
+        fn now(&self) -> SystemTime {
+            let v = self.inner.now();
+            if !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                self.inner.advance(Duration::from_secs(10));
+            }
+            v
+        }
+
+        fn tick_notify(&self) -> Option<Arc<Notify>> {
+            self.inner.tick_notify()
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_until_does_not_miss_a_tick_between_check_and_wait() {
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let clock = RacyClock {
+            inner: ManualClock::new(start),
+            fired: std::sync::atomic::AtomicBool::new(false),
+        };
+        let extra = Notify::new();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            wait_until(&clock, start + Duration::from_secs(5), &extra),
+        )
+        .await
+        .expect("wait_until missed the tick");
     }
 
     #[test]

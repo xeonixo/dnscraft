@@ -5,8 +5,8 @@
 //! sleep wall time; production uses [`SystemClock`](crate::SystemClock) sleeps
 //! interrupted by [`UpdateScheduler::kick`] for "update now".
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use tokio::sync::Notify;
@@ -16,7 +16,8 @@ use crate::clock::{self, Clock};
 use crate::engine::{FilterEngine, ListSelection};
 use crate::set::DEFAULT_UPDATE_INTERVAL;
 
-/// Runs `update_lists(All)` on a jittered interval until [`UpdateScheduler::stop`].
+/// Runs `update_lists(All)` on a jittered interval until [`UpdateScheduler::stop`],
+/// the scheduler is dropped, or the engine is gone.
 #[derive(Debug)]
 pub struct UpdateScheduler {
     tick: Arc<Notify>,
@@ -24,9 +25,27 @@ pub struct UpdateScheduler {
     handle: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
+impl Drop for UpdateScheduler {
+    fn drop(&mut self) {
+        let handle = self
+            .handle
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(h) = handle {
+            h.abort();
+        }
+    }
+}
+
 impl UpdateScheduler {
     /// Starts the loop on the current Tokio runtime.
-    pub fn start(engine: Arc<FilterEngine>, clock: Arc<dyn Clock>) -> Self {
+    ///
+    /// The task holds only a weak reference to `engine`, so storing the
+    /// scheduler inside the engine creates no reference cycle. Dropping the
+    /// scheduler aborts the task.
+    pub fn start(engine: &Arc<FilterEngine>, clock: Arc<dyn Clock>) -> Self {
+        let engine = Arc::downgrade(engine);
         let tick = Arc::new(Notify::new());
         let stop = Arc::new(AtomicBool::new(false));
         let tick_loop = Arc::clone(&tick);
@@ -41,9 +60,10 @@ impl UpdateScheduler {
         }
     }
 
-    /// Wakes the loop early (manual "update now" or config change).
+    /// Wakes the loop early. A kick that arrives while the loop is busy is
+    /// remembered (one permit) instead of being dropped.
     pub fn kick(&self) {
-        self.tick.notify_waiters();
+        self.tick.notify_one();
     }
 
     /// Asks the loop to exit and waits for it (best-effort).
@@ -61,26 +81,33 @@ impl UpdateScheduler {
     }
 }
 
+/// The loop only holds a [`Weak`] handle while it waits, so it never keeps the
+/// engine alive; it exits as soon as the engine is gone.
 async fn run_loop(
-    engine: Arc<FilterEngine>,
+    engine: Weak<FilterEngine>,
     clock: Arc<dyn Clock>,
     tick: Arc<Notify>,
     stop: Arc<AtomicBool>,
 ) {
     // First scheduled wait happens after one interval; callers that need an
-    // immediate refresh use `update_lists` / `kick` themselves.
+    // immediate refresh use `update_lists` / `update_now` themselves.
     loop {
         if stop.load(Ordering::SeqCst) {
             return;
         }
-        let interval = engine.update_interval();
+        let Some(interval) = engine.upgrade().map(|e| e.update_interval()) else {
+            return;
+        };
         let wait = jittered(interval, clock.now());
         let deadline = clock.now() + wait;
         clock::wait_until(clock.as_ref(), deadline, tick.as_ref()).await;
         if stop.load(Ordering::SeqCst) {
             return;
         }
-        let _ = engine.update_lists(ListSelection::All).await;
+        let Some(eng) = engine.upgrade() else {
+            return;
+        };
+        let _ = eng.update_lists(ListSelection::All).await;
     }
 }
 
