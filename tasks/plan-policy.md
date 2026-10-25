@@ -166,7 +166,7 @@ P12 golden integration tests, AD/EDE matrix, bench, coverage, README
 | Block synthesis details (SOA in NXDOMAIN authority, TTLs) differ from AdGuard behaviour | Med | Follow SPEC-filtering block modes; NXDOMAIN/NODATA synthetic answers carry a synthetic SOA with TTL = the set's blocked-response TTL (or 10 s default); documented in P7. |
 | Canary RDATA (Apple Private Relay) not verifiable | Low | Constant table marked `unverified` with the doc URL in a comment (spec decision 9). |
 
-## Open Questions for the owner
+## Open Questions for the owner (answered 2026-10-25: deps approved, Pebble local only, order policy + tls → clients)
 
 1. **Dependencies:** approve the table above once for all three modules?
 2. **Pebble in CI (tls):** the recommendation is to keep the Pebble test `#[ignore]` and run it

@@ -7,7 +7,7 @@
 ## Status (updated 2026-10-25)
 
 - `resolver` and `filtering`: complete (filtering Checkpoint D approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
-- `clients`, `tls`, `policy`: specs approved. **P1 done by Claude** — plans in `tasks/plan-{clients,tls,policy}.md` + `todo-*.md`, **awaiting owner approval** (dependency table + open questions in plan-policy.md).
+- `clients`, `tls`, `policy`: specs approved. **P1 done by Claude** — plans in `tasks/plan-{clients,tls,policy}.md` + `todo-*.md`, **approved by the owner 2026-10-25** incl. the dependency table; Pebble local only; order policy + tls, then clients.
 - Spec drafts S1–S3: done, archived in [archive/cursor-specs.md](archive/cursor-specs.md).
 - Deep-name p99 ≈ 19 µs accepted by the owner → T3 dropped.
 - **T1 done** (Record derives type from RData).
@@ -18,11 +18,11 @@
 |---|---|---|---|
 | 1 | ~~T1 — `Record` enforces rtype ↔ RDATA~~ | tech debt (proto) | done |
 | 2 | ~~R2 — per-query forward-zone allow-list in the resolver~~ | feature (resolver) | done |
-| 3 | ~~P1 — plan + tasks for clients, then tls, then policy~~ | planning | done (Claude), owner approval pending |
-| 5 | B — build tasks from `tasks/todo-<module>.md` (brief below) | implementation | owner approval of the plan + dependencies |
+| 3 | ~~P1 — plan + tasks for clients, then tls, then policy~~ | planning | done (Claude), approved |
+| 5 | B — build tasks from `tasks/todo-<module>.md` (brief below) | implementation | – (plans approved) |
 | 4 | T2 — fetcher TLS error classification | tech debt (filtering, small) | – |
 
-T2 can run any time. B starts after the owner approves the plans — suggested order: policy (P1→P4) and tls (L1→L4), clients last (C1→…; O1 is a manual owner check before C7).
+T2 can run any time. B may start now — order: policy (P1→P4) and tls (L1→L4), clients last (C1→…; O1 is a manual owner check before C7).
 
 ## Rules for every task (paste once per session)
 

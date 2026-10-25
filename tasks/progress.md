@@ -12,12 +12,14 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
-- Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan written ([plan-clients.md](plan-clients.md)) — **awaiting owner approval**.
-- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan written ([plan-tls.md](plan-tls.md)) — **awaiting owner approval**.
-- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan written ([plan-policy.md](plan-policy.md)) — **awaiting owner approval**.
-- Blockers: owner approval of the three plans + dependency table ([plan-policy.md](plan-policy.md#dependencies-need-approval--all-three-plans)). T1, R2 done; T2 open (any time).
+- Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
+- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)).
+- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)).
+- Blockers: none. Build order: policy (P1…) and tls (L1…) first, clients last (owner runs O1 before C7). T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — **Owner approved the clients/tls/policy plans and the dependency table.** Pebble test stays local only (`#[ignore]`, run at checkpoints; no CI job). Order: policy + tls first, clients last. Building may start (brief B in cursor-next.md).
 
 - 2026-10-25 — P1 done (Claude, at the owner's request instead of Cursor): plans + tasks for `clients` (C1–C10 + O1 owner hardware check, 3 checkpoints), `tls` (L1–L11, instant-acme spike first, 3 checkpoints) and `policy` (P1–P12 + later P13/P14, 3 checkpoints). Cross-module decisions in plan-policy.md: `ClientDirectory` returns policy-owned types (`addresses`/`reverse`/`local_domains`, no `by_ip`; clients stores `Arc<[IpAddr]>`); per-crate `Clock`/secret helpers; Client-ID charset `[a-z0-9-]{1,63}`; suggested order policy + tls before clients. One dependency table for all three (rustls, ipnet, time, instant-acme 0.8.5 ring-only, rcgen, x509-parser, rustls-pki-types; dev tokio-rustls). **STOP: owner approval of plans + dependencies; open questions: Pebble in CI, UniFi check O1, order.**
 
