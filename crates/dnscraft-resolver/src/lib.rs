@@ -41,7 +41,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dnscraft_proto::{Class, Message, Rcode, Record, RecordType};
+use dnscraft_proto::{Class, Message, Name, Rcode, Record, RecordType};
 use dnssec::status::Status;
 use local_zones::LocalZones;
 use server_selection::ServerStats;
@@ -183,6 +183,20 @@ impl Resolver {
             .iter()
             .map(|z| z.id.clone())
             .collect()
+    }
+
+    /// Most specific configured forward zone that covers `name`, if allowed.
+    ///
+    /// `allow` is the same filter as [`RequestFlags::forward_zones`]: `None`
+    /// considers every configured zone, `Some` only the listed ids. Pure
+    /// lookup; no I/O. Used by policy for special-use NXDOMAIN (a covering
+    /// forward zone wins over synthesised NXDOMAIN).
+    pub fn forward_zone_for(
+        &self,
+        name: &Name,
+        allow: Option<&[ForwardZoneId]>,
+    ) -> Option<ForwardZoneId> {
+        forward::covering(&self.shared.config.forward_zones, name, allow).map(|z| z.id.clone())
     }
 
     /// Resolves `query`.

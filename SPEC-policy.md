@@ -234,18 +234,24 @@ Per profile flags:
 
 ### ClientDirectory integration
 
+Trait lives in `dnscraft-policy` and returns policy-owned types (no dependency on
+`dnscraft-clients` / `ClientInfo`). Cross-module decision in
+[tasks/plan-policy.md](tasks/plan-policy.md):
+
 ```rust
 pub trait ClientDirectory: Send + Sync {
-    fn by_ip(&self, ip: IpAddr) -> Option<Arc<ClientInfo>>;     // hot path, no deep clone
-    fn by_name(&self, name: &str) -> Option<Arc<ClientInfo>>;
-    fn reverse(&self, ip: IpAddr) -> Option<String>;
+    fn addresses(&self, fqdn: &Name) -> Option<Arc<[IpAddr]>>; // None = unknown; Some(empty) = NODATA
+    fn reverse(&self, ip: IpAddr) -> Option<Arc<str>>;
     fn local_domains(&self) -> Arc<[String]>;                   // snapshot; cheap clone
 }
 ```
 
-- A/AAAA for `by_name` → addresses from `ClientInfo` of the queried type; none
-  of that type → NODATA. `by_name == None` means “unknown”: fall through (see
-  *Local domains and special-use suffixes*).
+(`by_ip` is not on this trait; query-log enrichment uses `ClientLookup::by_ip`
+in `control-api`.)
+
+- A/AAAA for a known name → addresses of the queried type; none of that type →
+  NODATA. `addresses == None` means “unknown”: fall through (see *Local domains
+  and special-use suffixes*).
 - PTR for `reverse` when the qname is in an in-addr.arpa / ip6.arpa zone for
   **RFC 1918**, **ULA (`fc00::/7`)**, and **loopback** — plus any extra prefixes
   the admin lists under `policy.ptr_prefixes` (default empty).
@@ -435,5 +441,6 @@ None — sensible defaults locked 2026-10-25 (owner asked to decide reasonably).
     NODATA; `home.arpa` handled by the resolver local zone, `local`/`lan`/`internal`
     (`policy.local_nxdomain_suffixes`) by policy NXDOMAIN unless forwarded.
     Forward-zone answers exempt from rebind unless the zone id is in
-    `policy.rebind_check_forward_zones`. `ClientDirectory`: `by_ip`/`by_name` return
-    `Option<Arc<ClientInfo>>`, `local_domains()` returns `Arc<[String]>`.
+    `policy.rebind_check_forward_zones`. `ClientDirectory` (in policy): `addresses` /
+    `reverse` / `local_domains` with policy-owned types (see ClientDirectory
+    integration); `by_ip` stays on `ClientLookup` only.

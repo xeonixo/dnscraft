@@ -14,7 +14,7 @@ use crate::directory::ClientDirectory;
 use crate::error::PolicyError;
 use crate::pipeline::{Draft, Flow, StepCtx, apply_ad_policy};
 use crate::snapshot::PolicySnapshot;
-use crate::steps::local_records;
+use crate::steps::{directory, local_records};
 use crate::synth::{any_rfc8482, resolve_servfail};
 
 /// Final answer from [`PolicyEngine::handle`].
@@ -71,8 +71,9 @@ impl PolicyEngine {
 
     /// Handles one query: select, run steps, emit.
     ///
-    /// Selection, RFC 8482 ANY, view local records (step 1), then resolver
-    /// passthrough (step 7). Steps 2–6 and 8–11 follow in later tasks.
+    /// Selection, RFC 8482 ANY, view local records (step 1), ClientDirectory
+    /// names/PTR and special-use NXDOMAIN (step 2), then resolver passthrough
+    /// (step 7). Steps 3–6 and 8–11 follow in later tasks.
     ///
     /// ECS is never forwarded: policy calls the resolver with
     /// [`RequestFlags`] only (no client EDNS options).
@@ -104,10 +105,21 @@ impl PolicyEngine {
             ));
         }
 
-        // Step 1: view local records.
+        let profile = snapshot.profile_for_view(draft.selection.view_idx);
+        let forward_zones = profile
+            .config
+            .forward_zones
+            .as_ref()
+            .map(|ids| Arc::<[_]>::from(ids.as_slice()));
+
         let step_ctx = StepCtx {
             snapshot: snapshot.as_ref(),
+            clients: self.clients.as_ref(),
+            resolver: self.resolver.as_ref(),
+            forward_zones_allow: forward_zones.as_deref(),
         };
+
+        // Step 1: view local records.
         if let Flow::Answer(synth) = local_records::run(&ctx, step_ctx, &mut draft) {
             draft.timings.total_us = elapsed_us(total_start);
             return Ok(emit(
@@ -120,14 +132,20 @@ impl PolicyEngine {
             ));
         }
 
-        // Steps 2–6 / 8–11: later tasks. Then resolve.
+        // Step 2: ClientDirectory names / PTR / special-use NXDOMAIN.
+        if let Flow::Answer(synth) = directory::run(&ctx, step_ctx, &mut draft) {
+            draft.timings.total_us = elapsed_us(total_start);
+            return Ok(emit(
+                draft,
+                synth,
+                ctx.client_id.clone(),
+                loggable,
+                None,
+                None,
+            ));
+        }
 
-        let profile = snapshot.profile_for_view(draft.selection.view_idx);
-        let forward_zones = profile
-            .config
-            .forward_zones
-            .as_ref()
-            .map(|ids| Arc::<[_]>::from(ids.as_slice()));
+        // Steps 3–6 / 8–11: later tasks. Then resolve.
 
         let flags = RequestFlags {
             checking_disabled: ctx.flags.checking_disabled,

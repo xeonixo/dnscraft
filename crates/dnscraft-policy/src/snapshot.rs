@@ -78,11 +78,9 @@ pub struct PolicySnapshot {
     /// Top-level settings retained for the pipeline.
     #[allow(dead_code)] // read by later pipeline steps
     pub(crate) default_rebind: bool,
-    /// Extra PTR prefixes.
-    #[allow(dead_code)] // read by later pipeline steps
+    /// Extra PTR prefixes (step 2).
     pub(crate) ptr_prefixes: Arc<[IpNet]>,
-    /// Special-use NXDOMAIN suffixes.
-    #[allow(dead_code)] // read by later pipeline steps
+    /// Special-use NXDOMAIN suffixes (step 2).
     pub(crate) local_nxdomain_suffixes: Arc<[Arc<str>]>,
     /// Forward zones that still receive rebind checks.
     #[allow(dead_code)] // read by later pipeline steps

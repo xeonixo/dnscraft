@@ -1,6 +1,6 @@
 //! Synthesised DNS answers (ANY, SERVFAIL, and later block/local answers).
 
-use dnscraft_proto::{Class, Header, Message, Question, RData, Rcode, Record, RecordType};
+use dnscraft_proto::{Class, Header, Message, Name, Question, RData, Rcode, Record, RecordType};
 use dnscraft_resolver::Query;
 
 use crate::decision::AnswerOrigin;
@@ -71,6 +71,71 @@ pub fn local_nodata(query: &Query, rd: bool) -> Synth {
         message,
         ede: None,
         origin: AnswerOrigin::LocalView,
+    }
+}
+
+/// Authoritative answer from the ClientDirectory (A/AAAA/PTR). Sets AA, clears AD.
+pub fn directory_answer(query: &Query, rd: bool, answers: Vec<Record>) -> Synth {
+    let mut message = response_skeleton(query, rd);
+    message.header.aa = true;
+    message.header.ra = true;
+    let _ = message.set_rcode(Rcode::NOERROR);
+    message.answers = answers;
+    clear_ad(&mut message);
+    Synth {
+        message,
+        ede: None,
+        origin: AnswerOrigin::LocalClient,
+    }
+}
+
+/// NODATA for a ClientDirectory name known without the queried type.
+pub fn directory_nodata(query: &Query, rd: bool) -> Synth {
+    let mut message = response_skeleton(query, rd);
+    message.header.aa = true;
+    message.header.ra = true;
+    let _ = message.set_rcode(Rcode::NOERROR);
+    clear_ad(&mut message);
+    Synth {
+        message,
+        ede: None,
+        origin: AnswerOrigin::LocalClient,
+    }
+}
+
+/// Special-use suffix NXDOMAIN with a synthetic SOA in authority. No EDE.
+///
+/// `zone` is the matching `local_nxdomain_suffixes` apex. TTL follows the
+/// RFC 6303 local-zone convention (3 hours).
+pub fn special_use_nxdomain(query: &Query, rd: bool, zone: &Name) -> Synth {
+    const SOA_TTL: u32 = 10_800;
+    let mut message = response_skeleton(query, rd);
+    message.header.aa = true;
+    message.header.ra = true;
+    let _ = message.set_rcode(Rcode::NXDOMAIN);
+    let rname = match Name::from_ascii("nobody.invalid.") {
+        Ok(n) => n,
+        Err(_) => Name::root(),
+    };
+    message.authorities.push(Record::new(
+        zone.clone(),
+        Class::IN,
+        SOA_TTL,
+        RData::SOA {
+            mname: zone.clone(),
+            rname,
+            serial: 1,
+            refresh: 604_800,
+            retry: 86_400,
+            expire: 2_419_200,
+            minimum: SOA_TTL,
+        },
+    ));
+    clear_ad(&mut message);
+    Synth {
+        message,
+        ede: None,
+        origin: AnswerOrigin::LocalClient,
     }
 }
 
@@ -145,6 +210,32 @@ mod tests {
                 rd
             );
             assert_eq!(local_nodata(&q, rd).message.header.rd, rd);
+            assert_eq!(directory_nodata(&q, rd).message.header.rd, rd);
+            assert_eq!(
+                special_use_nxdomain(&q, rd, &Name::from_ascii("lan").unwrap())
+                    .message
+                    .header
+                    .rd,
+                rd
+            );
         }
+    }
+
+    #[test]
+    fn special_use_nxdomain_has_soa_no_ede() {
+        let q = Query {
+            name: Name::from_ascii("printer.lan").unwrap(),
+            qtype: RecordType::A,
+            qclass: Class::IN,
+        };
+        let zone = Name::from_ascii("lan").unwrap();
+        let s = special_use_nxdomain(&q, true, &zone);
+        assert_eq!(s.message.rcode(), Rcode::NXDOMAIN);
+        assert!(s.message.header.aa);
+        assert!(!s.message.header.ad);
+        assert!(s.ede.is_none());
+        assert_eq!(s.message.authorities.len(), 1);
+        assert_eq!(s.message.authorities[0].rtype(), RecordType::SOA);
+        assert_eq!(s.origin, AnswerOrigin::LocalClient);
     }
 }

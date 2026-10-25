@@ -93,11 +93,17 @@ impl Draft {
     }
 }
 
-/// Shared inputs for pipeline steps (later tasks).
+/// Shared inputs for pipeline steps.
 #[derive(Clone, Copy)]
 pub struct StepCtx<'a> {
     /// Validated snapshot for this query.
     pub snapshot: &'a PolicySnapshot,
+    /// Client directory for step 2.
+    pub clients: &'a dyn crate::directory::ClientDirectory,
+    /// Resolver (forward-zone lookups for special-use NXDOMAIN).
+    pub resolver: &'a dnscraft_resolver::Resolver,
+    /// Profile forward-zone allow-list (`None` = all configured zones).
+    pub forward_zones_allow: Option<&'a [dnscraft_resolver::ForwardZoneId]>,
 }
 
 #[cfg(test)]

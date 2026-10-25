@@ -135,7 +135,7 @@ P12 golden integration tests, AD/EDE matrix, bench, coverage, README
 - [x] Query → selection → local record or resolver answer, end to end with the testkit; lead review done
 
 ### Phase 2: Pipeline
-- [ ] P5: ClientDirectory names/PTR + special-use NXDOMAIN
+- [x] P5: ClientDirectory names/PTR + special-use NXDOMAIN
 - [ ] P6: Bypass canaries
 - [ ] P7: Filter the original qname, block/rewrite synthesis
 - [ ] P8: CNAME uncloaking + answer-IP rules

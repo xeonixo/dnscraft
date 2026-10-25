@@ -1124,3 +1124,48 @@ async fn duplicate_forward_zone_id_is_rejected() {
     .unwrap_err();
     assert_eq!(err.code(), "resolver.forward_zone.duplicate_id");
 }
+
+#[tokio::test]
+async fn forward_zone_for_returns_most_specific_allowed_zone() {
+    let h = Hierarchy::start().await.unwrap();
+    let mut config = config_for(&h);
+    let corp = forward("corp.internal.", vec!["192.0.2.1:53".parse().unwrap()]);
+    let deep = forward("deep.corp.internal.", vec!["192.0.2.2:53".parse().unwrap()]);
+    let corp_id = corp.id.clone();
+    let deep_id = deep.id.clone();
+    config.forward_zones = vec![corp, deep];
+    let resolver = Resolver::new(config).await.unwrap();
+
+    assert_eq!(
+        resolver.forward_zone_for(&name("www.deep.corp.internal."), None),
+        Some(deep_id.clone())
+    );
+    assert_eq!(
+        resolver.forward_zone_for(&name("www.corp.internal."), None),
+        Some(corp_id.clone())
+    );
+    assert_eq!(resolver.forward_zone_for(&name("example.com."), None), None);
+    // Only `corp` allowed: deepest zone is skipped, parent still covers.
+    assert_eq!(
+        resolver.forward_zone_for(
+            &name("www.deep.corp.internal."),
+            Some(std::slice::from_ref(&corp_id))
+        ),
+        Some(corp_id)
+    );
+    assert_eq!(
+        resolver.forward_zone_for(
+            &name("www.deep.corp.internal."),
+            Some(std::slice::from_ref(&deep_id))
+        ),
+        Some(deep_id)
+    );
+    let other = ForwardZoneId::new("other").unwrap();
+    assert_eq!(
+        resolver.forward_zone_for(
+            &name("www.corp.internal."),
+            Some(std::slice::from_ref(&other))
+        ),
+        None
+    );
+}

@@ -140,9 +140,9 @@ Also:
   (cross-module decision 1).
 
 **Acceptance criteria:**
-- [ ] Known name with A only: A answered, AAAA → NODATA, unknown name under the same local domain reaches the resolver
-- [ ] PTR for 192.0.2.x listed in `ptr_prefixes` and for `10.x` answered from the mock; public-range PTR goes to the resolver
-- [ ] `printer.lan` unknown → NXDOMAIN without resolver traffic; with a forward zone `lan` allowed → forwarded; with that zone not in the profile allow-list → NXDOMAIN
+- [x] Known name with A only: A answered, AAAA → NODATA, unknown name under the same local domain reaches the resolver
+- [x] PTR for 192.0.2.x listed in `ptr_prefixes` and for `10.x` answered from the mock; public-range PTR goes to the resolver
+- [x] `printer.lan` unknown → NXDOMAIN without resolver traffic; with a forward zone `lan` allowed → forwarded; with that zone not in the profile allow-list → NXDOMAIN
 
 **Verification:** `cargo test -p dnscraft-policy directory && cargo test -p dnscraft-resolver forward`
 

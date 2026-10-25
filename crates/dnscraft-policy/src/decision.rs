@@ -19,7 +19,7 @@ pub enum AnswerOrigin {
     ResolveError,
     /// View local records.
     LocalView,
-    /// ClientDirectory name or PTR (later tasks).
+    /// ClientDirectory name, PTR, or special-use NXDOMAIN.
     LocalClient,
     /// Bypass / canary (later tasks).
     Bypass,
@@ -40,6 +40,10 @@ pub enum DecisionStep {
     AnySynth,
     /// Answered from the selected view's local records.
     LocalView,
+    /// Answered from the ClientDirectory (forward name or PTR).
+    LocalClient,
+    /// Special-use suffix NXDOMAIN (unknown name, no covering forward zone).
+    SpecialUseNxdomain,
     /// Resolver returned an answer.
     Resolve {
         /// Cache / recursion / stale.

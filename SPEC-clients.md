@@ -144,10 +144,12 @@ impl ClientLookup {
 ### Trait boundary (vs `policy`)
 
 `policy` must not depend on this crate ([CAPABILITY-MAP.md](CAPABILITY-MAP.md)).
-`ClientLookup` therefore exposes the same method set as policy’s
-`ClientDirectory` trait; the **binary / `control-api`** adapts
-`Arc<ClientLookup>` → `Arc<dyn ClientDirectory>` (thin wrapper). Do not put the
-trait in a way that creates a `policy → clients` Cargo dependency.
+Policy’s `ClientDirectory` trait uses policy-owned types (`addresses` →
+`Option<Arc<[IpAddr]>>`, `reverse` → `Option<Arc<str>>`, `local_domains` →
+`Arc<[String]>`; no `by_ip` on the trait). The **binary / `control-api`**
+adapts `Arc<ClientLookup>` → `Arc<dyn ClientDirectory>` (thin wrapper that
+maps `by_name` → addresses and clones `Arc`s). Do not put the trait in a way
+that creates a `policy → clients` Cargo dependency.
 
 **Naming:** UniFi/manual devices are `ClientInfo` (enrichment). DoH/DoT
 **Client IDs** (`iphone-k7q2x9`) are a different identifier owned by
@@ -178,11 +180,11 @@ no trailing dot; IDNA/UTS 46 for non-ASCII).
 
 A local domain may be a **real public domain** (the UniFi DHCP domain can equal
 the domain hosting `dns.<domain>`). `policy` therefore answers only names this
-directory actually knows (`by_name`) and lets unknown names under a local domain
-fall through to forwarding/recursion; special-use suffixes (`home.arpa`, `local`,
-`lan`, `internal`) are handled there as NXDOMAIN
-([SPEC-policy.md](SPEC-policy.md) pipeline step 2). `by_name` returns `None` for
-unknown names and never invents one.
+directory actually knows (`addresses` / `by_name`) and lets unknown names under a
+local domain fall through to forwarding/recursion; special-use suffixes
+(`home.arpa`, `local`, `lan`, `internal`) are handled there as NXDOMAIN
+([SPEC-policy.md](SPEC-policy.md) pipeline step 2). `by_name` / `addresses`
+return `None` for unknown names and never invent one.
 
 ### Precedence (IP → client)
 
