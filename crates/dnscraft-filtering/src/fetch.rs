@@ -57,6 +57,21 @@ pub(crate) const MALFORMED_SERVICES_CODE: &str = "filter_services.malformed";
 /// Share of replacement characters above which a body counts as binary.
 const MAX_REPLACEMENT_RATIO: f64 = 0.05;
 
+/// rustls client config with the ring provider and the Mozilla (webpki) roots.
+///
+/// reqwest 0.13 has no webpki-roots feature and defaults to the platform
+/// verifier and aws-lc; this keeps the ring-only, bundled-roots behaviour.
+fn webpki_tls_config() -> Result<rustls::ClientConfig, rustls::Error> {
+    let roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    Ok(rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()?
+        .with_root_certificates(roots)
+        .with_no_client_auth())
+}
+
 /// A fetch attempt failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -224,7 +239,10 @@ impl Fetcher {
     /// Creates a fetcher with explicit settings.
     pub fn with_config(store: &ListStore, config: FetcherConfig) -> Result<Self, FetchError> {
         let allow_http = store.config().allow_http_for_tests;
+        let tls = webpki_tls_config()
+            .map_err(|e| FetchError::Io(format!("cannot build TLS config: {e}")))?;
         let client = reqwest::Client::builder()
+            .use_preconfigured_tls(tls)
             .user_agent(config.user_agent)
             .timeout(config.timeout)
             .connect_timeout(config.connect_timeout)

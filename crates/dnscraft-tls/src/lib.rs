@@ -24,6 +24,7 @@ mod config;
 mod dyndns;
 mod engine;
 mod error;
+mod http_tls;
 mod issue;
 mod pem_util;
 mod propagation;

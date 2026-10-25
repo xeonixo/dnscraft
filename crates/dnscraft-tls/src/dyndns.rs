@@ -103,7 +103,11 @@ impl EchoClient {
 }
 
 fn build_client(local: Option<SocketAddr>) -> Result<Client, TlsError> {
+    let tls = crate::http_tls::client_config(&[]).map_err(|e| TlsError::DyndnsEcho {
+        message: format!("build TLS config: {e}"),
+    })?;
     let mut b = Client::builder()
+        .use_preconfigured_tls(tls)
         .timeout(REQUEST_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT);
     if let Some(addr) = local {

@@ -91,7 +91,10 @@ impl CloudflareClient {
         cfg: &CloudflareConfig,
         base_url: impl Into<String>,
     ) -> Result<Self, TlsError> {
+        let tls = crate::http_tls::client_config(&[])
+            .map_err(|e| TlsError::cloudflare_http(format!("build TLS config: {e}")))?;
         let http = Client::builder()
+            .use_preconfigured_tls(tls)
             .timeout(REQUEST_TIMEOUT)
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
@@ -149,13 +152,8 @@ impl CloudflareClient {
     ) -> Result<Vec<DnsRecord>, TlsError> {
         let zone = self.zone().await?;
         let url = format!("{}/zones/{}/dns_records", self.base_url, zone.id);
-        let envelope: Envelope<Vec<ApiRecord>> = self
-            .request(
-                self.http
-                    .get(&url)
-                    .query(&[("name", name), ("type", record_type)]),
-            )
-            .await?;
+        let url = url_with_query(&url, &[("name", name), ("type", record_type)])?;
+        let envelope: Envelope<Vec<ApiRecord>> = self.request(self.http.get(url)).await?;
         Ok(envelope
             .result
             .unwrap_or_default()
@@ -272,9 +270,8 @@ impl CloudflareClient {
 
     async fn fetch_zone_by_name(&self, name: &str) -> Result<ZoneInfo, TlsError> {
         let url = format!("{}/zones", self.base_url);
-        let envelope: Envelope<Vec<ApiZone>> = self
-            .request(self.http.get(&url).query(&[("name", name)]))
-            .await?;
+        let url = url_with_query(&url, &[("name", name)])?;
+        let envelope: Envelope<Vec<ApiZone>> = self.request(self.http.get(url)).await?;
         let list = envelope.result.unwrap_or_default();
         match list.as_slice() {
             [] => Err(TlsError::CloudflareZone {
@@ -368,6 +365,13 @@ impl CloudflareClient {
 
 /// Reads the body while enforcing [`MAX_BODY_BYTES`]: rejects early on an
 /// oversized `Content-Length` and aborts as soon as streamed chunks exceed the cap.
+/// Appends percent-encoded query parameters (reqwest 0.13 gates
+/// `RequestBuilder::query` behind the `query` feature, which we do not enable).
+fn url_with_query(url: &str, params: &[(&str, &str)]) -> Result<reqwest::Url, TlsError> {
+    reqwest::Url::parse_with_params(url, params)
+        .map_err(|e| TlsError::cloudflare_http(format!("build request URL: {e}")))
+}
+
 async fn read_capped(mut response: reqwest::Response, token: &str) -> Result<Vec<u8>, TlsError> {
     let too_large = |what: String| {
         TlsError::cloudflare_http(format!("response body {what} exceeds {MAX_BODY_BYTES} cap"))

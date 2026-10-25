@@ -32,7 +32,11 @@ pub struct ReqwestHttpClient {
 impl ReqwestHttpClient {
     /// Builds a client that trusts the webpki root set (production / staging).
     pub fn new() -> Result<Self, TlsError> {
+        let tls = crate::http_tls::client_config(&[]).map_err(|e| TlsError::AcmeAccount {
+            message: format!("build TLS config: {e}"),
+        })?;
         let client = Client::builder()
+            .use_preconfigured_tls(tls)
             .timeout(std::time::Duration::from_secs(30))
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()
@@ -50,11 +54,15 @@ impl ReqwestHttpClient {
     /// Used by the ignored Pebble test so the local ACME CA is accepted without
     /// disabling certificate verification globally.
     pub fn with_extra_roots(root_pem: &[u8]) -> Result<Self, TlsError> {
-        let cert = reqwest::Certificate::from_pem(root_pem).map_err(|e| TlsError::AcmeAccount {
-            message: format!("parse ACME test root PEM: {e}"),
+        let certs =
+            crate::pem_util::parse_cert_chain(root_pem).map_err(|e| TlsError::AcmeAccount {
+                message: format!("parse ACME test root PEM: {e}"),
+            })?;
+        let tls = crate::http_tls::client_config(&certs).map_err(|e| TlsError::AcmeAccount {
+            message: format!("build TLS config with test root: {e}"),
         })?;
         let client = Client::builder()
-            .add_root_certificate(cert)
+            .use_preconfigured_tls(tls)
             .timeout(std::time::Duration::from_secs(30))
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()
