@@ -66,8 +66,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`Resolver::new` primes the root server set (RFC 8109). If priming fails, the
-built-in IANA hints are kept — check `resolver.priming_status()` if you care.
+`Resolver::new` primes the root server set (RFC 8109) and primes again every
+`root_reprime_interval` (default 24 h, checked when a resolution starts). With
+trust anchors configured the priming answer must validate against the root
+DNSKEY; a forged or unsigned reply is ignored. If priming fails, the built-in
+IANA hints are kept — check `resolver.priming_status()` if you care.
 
 ### Request flags
 
@@ -104,9 +107,29 @@ servers when needed. Outgoing traffic uses UDP with TCP fallback on the TC bit,
 EDNS(0) with a 1232-byte buffer, randomised ports/ids, and RTT-based server
 selection (IPv4/IPv6 with cool-down after unreachable).
 
+**Answer hygiene.** The message returned to the client is rebuilt from what
+the resolver accepted, whether or not the zone is signed: the RRset for the
+question, the CNAME/DNAME links it followed (each from the response that was
+authoritative for it; a server-made CNAME below a DNAME is replaced by the
+resolver's own), and for negative answers the SOA and NSEC/NSEC3 proof. Records
+for other names and the whole additional section are dropped, so a hostile
+authority cannot plant `www.bank.com` in an answer for `x.evil.com`. Forwarded
+answers get the same treatment. Name server addresses learned from the network
+are filtered (loopback, link-local, multicast, reserved, IPv4-mapped; private
+ranges unless `allow_private_nameservers`) and capped at 16 per referral.
+Documentation ranges are not filtered. Root hints and forward targets are
+operator-configured and never filtered.
+
 **DNSSEC.** Validates against the built-in IANA root trust anchors (KSK-2017 and
 KSK-2024). Negative trust anchors can be configured per domain for broken zones.
-Empty trust anchors turn validation off (`Indeterminate` everywhere).
+Empty trust anchors turn validation off (`Indeterminate` everywhere). Validated
+TTLs are capped by the RRSIG original TTL and by the time left until the
+signature expires, and cache entries never outlive the signatures
+(RFC 4035 section 5.3.3). The rcode is not signed: NXDOMAIN together with a
+validated RRset for the question is `Bogus` (`dnssec.rcode_mismatch`, EDE 6) in
+a secure zone and counts as a broken server elsewhere. The CPU budget for
+signature checks and NSEC3 hashes is per resolution, forwarded validation
+included.
 
 **Cache.** Positive and negative caching (RFC 2308), size-bounded (default 64
 MiB), TTL clamp, optional prefetch of popular near-expiry entries, and
@@ -154,6 +177,9 @@ to `policy` and friends.
 | `max_cname_chain` | `16` | Loop / amplification guard |
 | `max_queries_per_resolve` | `64` | Budget per question |
 | `max_concurrent_resolutions` | `1024` | Cap on parallel upstream resolutions |
+| `resolve_deadline` | 10 s | Upper bound on one upstream resolution; expiry is `resolver.unreachable` (serve-stale may apply) |
+| `root_reprime_interval` | 24 h | Priming again; `Duration::ZERO` primes once |
+| `allow_private_nameservers` | `false` | Accept RFC 1918 / CGNAT / ULA name server addresses from delegations |
 
 The eventual DNScraft TOML shape is sketched in the [spec](../../SPEC-resolver.md#configuration-excerpt-toml);
 this crate still takes a Rust `ResolverConfig` directly.

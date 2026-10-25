@@ -12,7 +12,8 @@ use dnscraft_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
 use crate::config::ResolverConfig;
 use crate::dnssec::nta;
 use crate::dnssec::status::{Status, Trust};
-use crate::dnssec::walk;
+use crate::dnssec::walk::{self, TtlCap, apply_caps, covered_type};
+use crate::dnssec::wildcard_source;
 use crate::error::ResolveError;
 use crate::limits::{Budget, Limits};
 use crate::server_selection::ServerStats;
@@ -33,6 +34,12 @@ pub(crate) struct Outcome {
     pub zone: Name,
     /// Validation result of `message` (`Indeterminate` when validation is off).
     pub status: Status,
+    /// Caps on the TTLs of the RRsets of this response that validated.
+    pub ttl_caps: Vec<TtlCap>,
+    /// Smallest TTL cap applied to a record of the returned message: no
+    /// cache entry made from it may outlive that. Set by
+    /// [`resolve_iterative`]; `None` when nothing was validated.
+    pub sig_cap: Option<u32>,
 }
 
 /// State shared by one resolution and its nested lookups.
@@ -142,6 +149,7 @@ pub(crate) fn candidates_for(
     additionals: &[Record],
 ) -> Vec<Candidate> {
     let mut out = Vec::new();
+    let mut addrs = 0usize;
     for ns in ns_names {
         let glue: Vec<IpAddr> = if responding_zone.zone_of(ns) {
             additionals
@@ -156,18 +164,75 @@ pub(crate) fn candidates_for(
         } else {
             Vec::new()
         };
-        if glue.is_empty() {
+        // The override map is operator (test) configuration, not network
+        // data, so it is not subject to the address filter.
+        if !glue.is_empty()
+            && let Some(addr) = config.nameserver_addr_overrides.get(ns)
+        {
+            if addrs < MAX_ADDRS_PER_REFERRAL {
+                out.push(Candidate::Addr(*addr));
+                addrs += 1;
+            }
+            continue;
+        }
+        let usable: Vec<IpAddr> = glue
+            .into_iter()
+            .filter(|ip| is_usable_server_ip(*ip, config.allow_private_nameservers))
+            .collect();
+        if usable.is_empty() {
             out.push(Candidate::Host(ns.clone()));
-        } else if let Some(addr) = config.nameserver_addr_overrides.get(ns) {
-            out.push(Candidate::Addr(*addr));
-        } else {
-            out.extend(
-                glue.into_iter()
-                    .map(|ip| Candidate::Addr(SocketAddr::new(ip, DNS_PORT))),
-            );
+            continue;
+        }
+        for ip in usable {
+            if addrs >= MAX_ADDRS_PER_REFERRAL {
+                break;
+            }
+            out.push(Candidate::Addr(SocketAddr::new(ip, DNS_PORT)));
+            addrs += 1;
         }
     }
     out
+}
+
+/// Most address candidates taken from one referral (glue and looked-up
+/// addresses together). Real delegations list up to 13 servers with two
+/// addresses each; the cap bounds the work a hostile referral can cause.
+pub(crate) const MAX_ADDRS_PER_REFERRAL: usize = 16;
+
+/// Whether an address learned from the network may be queried as a name
+/// server.
+///
+/// Never usable: `0.0.0.0/8`, loopback `127.0.0.0/8`, link-local
+/// `169.254.0.0/16`, multicast `224.0.0.0/4`, reserved `240.0.0.0/4`
+/// (including the broadcast address), `::`, `::1`, `fe80::/10`, `ff00::/8`,
+/// and IPv4-mapped (`::ffff:0:0/96`) or IPv4-compatible (`::/96`) addresses.
+/// Usable only with `allow_private`: RFC 1918, `100.64.0.0/10` and `fc00::/7`.
+/// Documentation ranges are not filtered.
+pub(crate) fn is_usable_server_ip(ip: IpAddr, allow_private: bool) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            if o[0] == 0 || o[0] == 127 || o[0] >= 224 || (o[0] == 169 && o[1] == 254) {
+                return false;
+            }
+            let private = o[0] == 10
+                || (o[0] == 172 && (o[1] & 0xF0) == 16)
+                || (o[0] == 192 && o[1] == 168)
+                || (o[0] == 100 && (o[1] & 0xC0) == 64);
+            allow_private || !private
+        }
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            // ::/96 (unspecified, loopback, IPv4-compatible) and ::ffff:0:0/96.
+            if s[..5].iter().all(|&x| x == 0) && (s[5] == 0 || s[5] == 0xFFFF) {
+                return false;
+            }
+            if (s[0] & 0xFFC0) == 0xFE80 || (s[0] & 0xFF00) == 0xFF00 {
+                return false;
+            }
+            allow_private || (s[0] & 0xFE00) != 0xFC00
+        }
+    }
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -176,11 +241,24 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 ///
 /// Records of the chain that the answering server is authoritative for
 /// (in bailiwick of the answering zone) are used directly; for a target
-/// outside that zone resolution restarts from the root. The returned message
-/// is the last authoritative response; when links were followed its answer
-/// section holds the chain in order followed by the target RRset, while the
-/// rcode and authority section (SOA of a negative answer) are those of the
-/// final target (RFC 6604). Responses without any link are returned untouched.
+/// outside that zone resolution restarts from the root.
+///
+/// The returned message is rebuilt from material the resolver accepted, not
+/// passed through from the server (a malicious authority can add anything to
+/// any section, validly signed or not):
+/// - the answer section holds the RRset for `name`/`qtype` and the CNAME and
+///   DNAME links actually followed, each taken from the response that was
+///   authoritative for it (a server-sent CNAME below a DNAME is dropped; the
+///   resolver synthesizes its own);
+/// - the authority section holds, for a negative answer, the SOA and the
+///   NSEC/NSEC3 records of the proof (with their RRSIGs), for a
+///   wildcard-expanded answer the NSEC/NSEC3 proof, and is empty otherwise;
+/// - the additional section is empty.
+///
+/// This applies whether or not validation is on. The rcode and the authority
+/// section are those of the final target (RFC 6604). TTLs of validated RRsets
+/// are capped by their RRSIG (RFC 4035 section 5.3.3); the smallest cap is
+/// returned in [`Outcome::sig_cap`].
 ///
 /// Each link is validated in the zone that served it; the returned status is
 /// the weakest over all links (see [`Status::combine`]).
@@ -200,11 +278,13 @@ pub(crate) async fn resolve_iterative(
     let mut link_count: usize = 0;
     let mut seen = vec![name.clone()];
     let mut status = Status::Secure;
+    let mut sig_cap: Option<u32> = None;
     loop {
         let mut outcome =
             resolve_once(ctx, &cur, qtype, depth, chain.clone(), ctx.validate).await?;
         status = status.combine(outcome.status);
-        if !follow || matches!(status, Status::Bogus(_)) {
+        if matches!(status, Status::Bogus(_)) {
+            // The caller replaces a bogus answer by SERVFAIL; nothing is kept.
             return Ok((outcome, status));
         }
         let step = walk_answer(
@@ -212,31 +292,61 @@ pub(crate) async fn resolve_iterative(
             &outcome,
             &cur,
             qtype,
+            follow,
             &mut seen,
             &mut links,
             &mut link_count,
             name,
+            &mut sig_cap,
         )?;
-        match step {
+        let (data, negative) = match step {
             Step::Restart(target) => {
                 tracing::debug!(qname = %name, target = %target, links = link_count, "restarting at CNAME target");
                 cur = target;
+                continue;
             }
-            Step::Done(data) => {
-                if link_count > 0 {
-                    links.extend(data);
-                    outcome.message.answers = links;
-                }
-                return Ok((outcome, status));
-            }
-            Step::End => {
-                if link_count > 0 {
-                    outcome.message.answers = links;
-                }
-                return Ok((outcome, status));
-            }
-        }
+            Step::Done(data) => (data, false),
+            Step::End => (Vec::new(), true),
+        };
+        links.extend(data);
+        let wildcard = links.iter().any(|r| match &r.rdata {
+            RData::RRSIG { labels, .. } => wildcard_source(&r.name, *labels).is_some(),
+            _ => false,
+        });
+        scrub_authority(&mut outcome, &cur, negative, wildcard, &mut sig_cap);
+        outcome.message.answers = links;
+        outcome.message.additionals.clear();
+        outcome.sig_cap = sig_cap;
+        return Ok((outcome, status));
     }
+}
+
+/// Reduces the authority section of the final response to the records that
+/// belong to the answer: for a `negative` answer the SOA of the zone above
+/// `qname` and the NSEC/NSEC3 proof, for a positive `wildcard` answer the
+/// proof only; all of them in bailiwick of the answering zone. RRSIGs are
+/// kept for those types. Validated sets get their TTL capped.
+fn scrub_authority(
+    outcome: &mut Outcome,
+    qname: &Name,
+    negative: bool,
+    wildcard: bool,
+    sig_cap: &mut Option<u32>,
+) {
+    let zone = outcome.zone.clone();
+    let mut authorities = std::mem::take(&mut outcome.message.authorities);
+    authorities.retain(|r| {
+        if !zone.zone_of(&r.name) {
+            return false;
+        }
+        match covered_type(r) {
+            Some(RecordType::SOA) => negative && r.name.zone_of(qname),
+            Some(RecordType::NSEC | RecordType::NSEC3) => negative || wildcard,
+            _ => false,
+        }
+    });
+    apply_caps(&mut authorities, &outcome.ttl_caps, sig_cap);
+    outcome.message.authorities = authorities;
 }
 
 /// What to do after inspecting one authoritative response.
@@ -250,105 +360,150 @@ enum Step {
 }
 
 /// Follows CNAME/DNAME links inside `outcome`, appending them to `links`.
+///
+/// Only in-bailiwick records are used, and only RRsets for the names of the
+/// chain. A DNAME takes precedence over any CNAME at a name below it: such a
+/// CNAME can only be server-synthesized (RFC 6672 section 3.1) and is never
+/// passed on; the resolver synthesizes the CNAME from the (validated) DNAME.
 #[allow(clippy::too_many_arguments)]
 fn walk_answer(
     ctx: &Context<'_>,
     outcome: &Outcome,
     start: &Name,
     qtype: RecordType,
+    follow: bool,
     seen: &mut Vec<Name>,
     links: &mut Vec<Record>,
     link_count: &mut usize,
     origin_name: &Name,
+    sig_cap: &mut Option<u32>,
 ) -> Result<Step, ResolveError> {
     let answers = &outcome.message.answers;
-    let in_bailiwick = |r: &Record| outcome.zone.zone_of(&r.name);
-    let rrsigs_at = |owner: &Name| {
+    let zone = &outcome.zone;
+    let caps = &outcome.ttl_caps;
+    let in_bailiwick = |r: &Record| zone.zone_of(&r.name);
+    // Records of the RRset `rtype` at `owner`, with the RRSIGs covering it.
+    let rrset_with_sigs = |owner: &Name, rtype: RecordType| -> Vec<Record> {
         answers
             .iter()
-            .filter(|r| r.rtype == RecordType::RRSIG && r.name == *owner && in_bailiwick(r))
+            .filter(|r| {
+                r.name == *owner
+                    && in_bailiwick(r)
+                    && (r.rtype == rtype || covered_type(r) == Some(rtype))
+            })
             .cloned()
-            .collect::<Vec<_>>()
+            .collect()
     };
     let mut at = start.clone();
     loop {
-        let data: Vec<Record> = answers
+        if let Some((dname, dtarget)) = dname_above(answers, zone, &at) {
+            let target = substitute(&at, &dname.name, dtarget).map_err(ResolveError::Encode)?;
+            let mut records = rrset_with_sigs(&dname.name, RecordType::DNAME);
+            apply_caps(&mut records, caps, sig_cap);
+            let ttl = records
+                .iter()
+                .find(|r| r.rtype == RecordType::DNAME)
+                .map_or(dname.ttl, |r| r.ttl);
+            records.push(Record {
+                name: at.clone(),
+                rtype: RecordType::CNAME,
+                class: Class::IN,
+                ttl,
+                rdata: RData::CNAME(target.clone()),
+            });
+            if !follow {
+                return Ok(Step::Done(records));
+            }
+            count_link(ctx, link_count, origin_name)?;
+            if seen.contains(&target) {
+                return Err(ResolveError::CnameLoop { name: target });
+            }
+            seen.push(target.clone());
+            links.extend(records);
+            at = target;
+            continue;
+        }
+        let mut data: Vec<Record> = answers
             .iter()
-            .filter(|r| r.name == at && r.rtype == qtype && in_bailiwick(r))
+            .filter(|r| {
+                r.name == at
+                    && in_bailiwick(r)
+                    && (qtype == RecordType::ANY
+                        || r.rtype == qtype
+                        || covered_type(r) == Some(qtype))
+            })
             .cloned()
             .collect();
-        if !data.is_empty() {
-            let mut out = data;
-            out.extend(rrsigs_at(&at));
-            return Ok(Step::Done(out));
+        if data
+            .iter()
+            .any(|r| r.rtype != RecordType::RRSIG || qtype == RecordType::RRSIG)
+        {
+            apply_caps(&mut data, caps, sig_cap);
+            return Ok(Step::Done(data));
         }
-        let Some((records, target)) = next_link(answers, &outcome.zone, &at, &rrsigs_at) else {
+        let cname = follow
+            .then(|| {
+                answers.iter().find_map(|r| match &r.rdata {
+                    RData::CNAME(target) if r.name == at && in_bailiwick(r) => Some(target),
+                    _ => None,
+                })
+            })
+            .flatten();
+        let Some(target) = cname else {
             return Ok(if at == *start {
                 Step::End
             } else {
                 Step::Restart(at)
             });
         };
-        let target = target.map_err(ResolveError::Encode)?;
-        *link_count += 1;
-        if *link_count > usize::from(ctx.limits.max_cname_chain) {
-            return Err(ResolveError::CnameLimitExceeded {
-                name: origin_name.clone(),
-                limit: ctx.limits.max_cname_chain,
+        let mut records = rrset_with_sigs(&at, RecordType::CNAME);
+        apply_caps(&mut records, caps, sig_cap);
+        count_link(ctx, link_count, origin_name)?;
+        if seen.contains(target) {
+            return Err(ResolveError::CnameLoop {
+                name: target.clone(),
             });
-        }
-        if seen.contains(&target) {
-            return Err(ResolveError::CnameLoop { name: target });
         }
         seen.push(target.clone());
         links.extend(records);
-        at = target;
+        at = target.clone();
     }
 }
 
-/// The CNAME or DNAME (with synthesized CNAME) in `answers` that applies to
-/// `at`, restricted to records in bailiwick of `zone`.
-///
-/// Returns the records to append to the chain and the next name.
-fn next_link(
-    answers: &[Record],
+/// Counts one followed link against the chain limit.
+fn count_link(
+    ctx: &Context<'_>,
+    link_count: &mut usize,
+    origin_name: &Name,
+) -> Result<(), ResolveError> {
+    *link_count += 1;
+    if *link_count > usize::from(ctx.limits.max_cname_chain) {
+        return Err(ResolveError::CnameLimitExceeded {
+            name: origin_name.clone(),
+            limit: ctx.limits.max_cname_chain,
+        });
+    }
+    Ok(())
+}
+
+/// The DNAME (RFC 6672) in `answers`, in bailiwick of `zone`, whose owner is
+/// a proper ancestor of `at`, with its target.
+fn dname_above<'a>(
+    answers: &'a [Record],
     zone: &Name,
     at: &Name,
-    rrsigs_at: &dyn Fn(&Name) -> Vec<Record>,
-) -> Option<(Vec<Record>, Result<Name, dnscraft_proto::ProtoError>)> {
-    // DNAME (RFC 6672): owner is a proper ancestor of `at`.
-    for r in answers {
-        if let RData::DNAME(target) = &r.rdata
-            && zone.zone_of(&r.name)
-            && r.name != *at
-            && r.name.zone_of(at)
+) -> Option<(&'a Record, &'a Name)> {
+    answers.iter().find_map(|r| match &r.rdata {
+        RData::DNAME(target)
+            if r.rtype == RecordType::DNAME
+                && zone.zone_of(&r.name)
+                && r.name != *at
+                && r.name.zone_of(at) =>
         {
-            let synthesized = substitute(at, &r.name, target);
-            let mut records = vec![r.clone()];
-            records.extend(rrsigs_at(&r.name));
-            if let Ok(next) = &synthesized {
-                records.push(Record {
-                    name: at.clone(),
-                    rtype: RecordType::CNAME,
-                    class: Class::IN,
-                    ttl: r.ttl,
-                    rdata: RData::CNAME(next.clone()),
-                });
-            }
-            return Some((records, synthesized));
+            Some((r, target))
         }
-    }
-    for r in answers {
-        if let RData::CNAME(target) = &r.rdata
-            && r.name == *at
-            && zone.zone_of(&r.name)
-        {
-            let mut records = vec![r.clone()];
-            records.extend(rrsigs_at(at));
-            return Some((records, Ok(target.clone())));
-        }
-    }
-    None
+        _ => None,
+    })
 }
 
 /// Replaces the `owner` suffix of `name` by `target` (DNAME substitution).
@@ -435,6 +590,23 @@ fn resolve_once<'a>(
                 };
                 match ask_server(ctx, server, &zone, name, qtype, &mut mini).await? {
                     Some((v, message)) => {
+                        // NXDOMAIN next to an RRset for the question: the
+                        // rcode is unsigned. In a secure zone that is Bogus
+                        // (assess_final); elsewhere the server is treated
+                        // as broken and the next one is asked.
+                        if matches!(v, Verdict::Final)
+                            && walk::nxdomain_contradicted(&message, &zone, name, qtype)
+                        {
+                            let settled = if validate {
+                                walk::settle(ctx, &zone, trust.clone(), server, &candidates).await?
+                            } else {
+                                Trust::Off
+                            };
+                            if !matches!(settled, Trust::Secure(_) | Trust::Bogus(_)) {
+                                tracing::debug!(%server, zone = %zone, "NXDOMAIN with data, treating server as lame");
+                                continue;
+                            }
+                        }
                         verdict = Some((v, message, server));
                         break;
                     }
@@ -447,13 +619,24 @@ fn resolve_once<'a>(
                 None => return Err(ResolveError::Unreachable { zone }),
                 Some((Verdict::Final, message, server)) => {
                     let trust = walk::settle(ctx, &zone, trust, server, &candidates).await?;
-                    let status =
-                        walk::assess_final(ctx, &zone, &trust, &message, name, qtype, server)
-                            .await?;
+                    let mut ttl_caps = Vec::new();
+                    let status = walk::assess_final(
+                        ctx,
+                        &zone,
+                        &trust,
+                        &message,
+                        name,
+                        qtype,
+                        server,
+                        &mut ttl_caps,
+                    )
+                    .await?;
                     return Ok(Outcome {
                         message,
                         zone,
                         status,
+                        ttl_caps,
+                        sig_cap: None,
                     });
                 }
                 Some((Verdict::Referral { cut, next }, message, server)) => {
@@ -467,6 +650,8 @@ fn resolve_once<'a>(
                             message,
                             zone,
                             status: Status::Bogus(reason),
+                            ttl_caps: Vec::new(),
+                            sig_cap: None,
                         });
                     }
                     candidates = order_candidates(&ctx.stats, next);
@@ -741,6 +926,8 @@ async fn lookup_host(
     }
     Ok(ips
         .into_iter()
+        .filter(|ip| is_usable_server_ip(*ip, ctx.config.allow_private_nameservers))
+        .take(MAX_ADDRS_PER_REFERRAL)
         .map(|ip| SocketAddr::new(ip, DNS_PORT))
         .collect())
 }
@@ -785,14 +972,14 @@ mod tests {
     #[test]
     fn sibling_glue_in_bailiwick_of_responder_is_used() {
         let cfg = ResolverConfig::default();
-        let sub_ip = Ipv4Addr::new(10, 0, 0, 1);
+        let sub_ip = Ipv4Addr::new(198, 51, 100, 1);
         let out = candidates_for(
             &cfg,
             &n("test."),
             &[n("ns.sub.test."), n("ns.other.example.")],
             &[
                 glue("ns.sub.test.", sub_ip),
-                glue("ns.other.example.", Ipv4Addr::new(10, 0, 0, 2)),
+                glue("ns.other.example.", Ipv4Addr::new(198, 51, 100, 2)),
             ],
         );
         assert!(matches!(
@@ -816,5 +1003,128 @@ mod tests {
             out.as_slice(),
             [Candidate::Host(host)] if *host == n("ns.bank.com.")
         ));
+    }
+
+    fn ip(text: &str) -> IpAddr {
+        text.parse().unwrap()
+    }
+
+    #[test]
+    fn server_address_filter_classes() {
+        for refused in [
+            "0.0.0.0",
+            "0.1.2.3",
+            "127.0.0.1",
+            "127.255.255.254",
+            "169.254.169.254",
+            "224.0.0.251",
+            "239.255.255.255",
+            "240.0.0.1",
+            "255.255.255.255",
+            "::",
+            "::1",
+            "fe80::1",
+            "febf::1",
+            "ff02::1",
+            "::ffff:192.0.2.1",
+            "::192.0.2.1",
+        ] {
+            assert!(!is_usable_server_ip(ip(refused), false), "{refused}");
+            assert!(
+                !is_usable_server_ip(ip(refused), true),
+                "{refused} (allowed)"
+            );
+        }
+        for private in [
+            "10.1.2.3",
+            "172.16.0.1",
+            "172.31.255.254",
+            "192.168.0.1",
+            "100.64.0.1",
+            "100.127.255.254",
+            "fc00::1",
+            "fd12:3456::1",
+        ] {
+            assert!(!is_usable_server_ip(ip(private), false), "{private}");
+            assert!(
+                is_usable_server_ip(ip(private), true),
+                "{private} (allowed)"
+            );
+        }
+        for public in [
+            "198.41.0.4",
+            "172.15.0.1",
+            "172.32.0.1",
+            "100.63.0.1",
+            "100.128.0.1",
+            "192.169.0.1",
+            "2001:503:ba3e::2:30",
+            "2606:4700::1111",
+            "fec0::1",
+            "192.0.2.1",
+            "2001:db8::1",
+        ] {
+            assert!(is_usable_server_ip(ip(public), false), "{public}");
+        }
+    }
+
+    #[test]
+    fn unusable_glue_leaves_the_name_server_glueless() {
+        let ns = [n("ns.example.com.")];
+        let with = |ip: Ipv4Addr| [glue("ns.example.com.", ip)];
+        let cfg = ResolverConfig::default();
+        for bad in [
+            Ipv4Addr::new(127, 0, 0, 1),
+            Ipv4Addr::new(10, 0, 0, 1),
+            Ipv4Addr::new(169, 254, 0, 1),
+        ] {
+            let out = candidates_for(&cfg, &n("com."), &ns, &with(bad));
+            assert!(matches!(out.as_slice(), [Candidate::Host(_)]), "{bad}");
+        }
+        let allow = ResolverConfig {
+            allow_private_nameservers: true,
+            ..ResolverConfig::default()
+        };
+        let out = candidates_for(&allow, &n("com."), &ns, &with(Ipv4Addr::new(10, 0, 0, 1)));
+        assert!(matches!(out.as_slice(), [Candidate::Addr(_)]));
+        let out = candidates_for(&allow, &n("com."), &ns, &with(Ipv4Addr::LOCALHOST));
+        assert!(matches!(out.as_slice(), [Candidate::Host(_)]));
+    }
+
+    #[test]
+    fn override_addresses_are_not_filtered() {
+        let mut cfg = ResolverConfig::default();
+        let operator = SocketAddr::from(([127, 0, 0, 1], 5353));
+        cfg.nameserver_addr_overrides
+            .insert(n("ns.example.com."), operator);
+        let out = candidates_for(
+            &cfg,
+            &n("com."),
+            &[n("ns.example.com.")],
+            &[glue("ns.example.com.", Ipv4Addr::LOCALHOST)],
+        );
+        assert!(matches!(out.as_slice(), [Candidate::Addr(a)] if *a == operator));
+    }
+
+    #[test]
+    fn at_most_sixteen_addresses_are_taken_from_a_referral() {
+        let cfg = ResolverConfig::default();
+        let names: Vec<Name> = (0..10).map(|i| n(&format!("ns{i}.example.com."))).collect();
+        let glue_records: Vec<Record> = (0..10u8)
+            .flat_map(|i| {
+                (0..3u8).map(move |j| {
+                    glue(
+                        &format!("ns{i}.example.com."),
+                        Ipv4Addr::new(198, 51, 100, 10 * i + j),
+                    )
+                })
+            })
+            .collect();
+        let out = candidates_for(&cfg, &n("com."), &names, &glue_records);
+        let addrs = out
+            .iter()
+            .filter(|c| matches!(c, Candidate::Addr(_)))
+            .count();
+        assert_eq!(addrs, MAX_ADDRS_PER_REFERRAL);
     }
 }

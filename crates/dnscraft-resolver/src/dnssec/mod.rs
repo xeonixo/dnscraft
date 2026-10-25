@@ -39,5 +39,5 @@ pub use chain::{
 };
 pub use verify::{
     RrsetValidation, SIG_INCEPTION_SKEW, VerifyFailure, is_supported_algorithm, serial_lt,
-    validity_window, verify_rrsig, wildcard_source,
+    signature_max_ttl, validity_window, verify_rrsig, wildcard_source,
 };

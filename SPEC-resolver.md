@@ -12,7 +12,19 @@ It knows nothing about filters, clients, or listeners; it takes a `Query` and re
 ## Requirements
 
 ### Recursion
-- Starts from built-in root hints (IANA), refreshed via a priming query at startup (RFC 8109).
+- Starts from built-in root hints (IANA), refreshed via a priming query at startup and again every
+  24 h (RFC 8109). With trust anchors configured, the priming answer must validate (`. NS` against the
+  root DNSKEY); otherwise the built-in hints stay in use. Root addresses are taken only for names under
+  `root-servers.net.`.
+- The answer handed to the client is rebuilt from what the resolver accepted: the RRset for the question,
+  the CNAME/DNAME links followed (from the response authoritative for each) and, for negative answers,
+  the SOA and NSEC/NSEC3 proof. Other records of a response (unrelated owners, additional section) are
+  dropped, with or without DNSSEC validation. Forwarded answers are scrubbed the same way.
+- Name server addresses learned from the network (glue, address lookups) must be routable: loopback,
+  unspecified, link-local, multicast, reserved and IPv4-mapped addresses are never used; private-use
+  addresses (RFC 1918, CGNAT, ULA) only with `allow_private_nameservers`. At most 16 addresses are taken
+  per referral. Operator-configured addresses (root hints, forward targets) are not filtered.
+- One upstream resolution is bounded by `resolve_deadline` (default 10 s).
 - QNAME minimisation (RFC 9156).
 - Outgoing over IPv4 and IPv6; prefers the faster address family and falls back to the other.
 - Nameserver selection by smoothed measured RTT; timeouts retry against other servers.
@@ -26,6 +38,11 @@ It knows nothing about filters, clients, or listeners; it takes a `Query` and re
 ### DNSSEC
 - Validation per RFC 4033–4035 including NSEC and NSEC3 (RFC 5155).
 - Built-in root trust anchors (KSK-2017 and KSK-2024); rollover tracking per RFC 5011.
+- Validated TTLs never exceed the RRSIG's original TTL nor outlive its expiration (RFC 4035 section 5.3.3);
+  cache entries expire with the signatures.
+- The rcode is not signed: NXDOMAIN next to a validated RRset for the question is `Bogus` in a secure
+  zone and treated as a broken server elsewhere.
+- Per-resolution work budgets (signature verifications, NSEC3 hashes) also cover forwarded validation.
 - Result per answer: `Secure`, `Insecure`, `Bogus`, `Indeterminate`.
 - `Secure` → AD bit; `Bogus` → `SERVFAIL` with an Extended DNS Error (RFC 8914).
 - The client's CD bit is honoured (answer passed through without validation).

@@ -71,6 +71,8 @@ struct Shared {
     cache: cache::Cache,
     roots: Mutex<Vec<SocketAddr>>,
     priming: Mutex<PrimingStatus>,
+    /// When the root set is primed again (see `root_reprime_interval`).
+    next_prime: Mutex<Instant>,
     counters: Counters,
     stats: ServerStats,
     inflight: inflight::Inflight,
@@ -78,6 +80,28 @@ struct Shared {
     permits: Arc<Semaphore>,
     /// Keys whose last prefetch failed, with the time of that failure.
     prefetch_failed: Mutex<HashMap<inflight::Key, Instant>>,
+}
+
+/// After a failed priming (start-up or refresh) the next attempt waits this
+/// long, or the refresh interval when that is shorter.
+const REPRIME_RETRY: Duration = Duration::from_secs(300);
+
+fn status_ok(status: &PrimingStatus) -> bool {
+    matches!(status, PrimingStatus::Primed { .. })
+}
+
+/// When the root set is due for priming again, counted from now.
+fn next_prime_after(config: &ResolverConfig, primed: bool) -> Instant {
+    let now = config.clock.instant();
+    let wait = if config.root_reprime_interval.is_zero() {
+        // Never again: far in the future, but representable.
+        Duration::from_secs(100 * 365 * 24 * 3600)
+    } else if primed {
+        config.root_reprime_interval
+    } else {
+        config.root_reprime_interval.min(REPRIME_RETRY)
+    };
+    now.checked_add(wait).unwrap_or(now)
 }
 
 /// After a failed prefetch of a key, the next attempt for it waits this long.
@@ -103,6 +127,11 @@ impl Resolver {
                 reason: "query_timeout must be greater than zero",
             });
         }
+        if config.resolve_deadline.is_zero() {
+            return Err(ResolverError::InvalidConfig {
+                reason: "resolve_deadline must be greater than zero",
+            });
+        }
         if config.max_concurrent_resolutions == 0 {
             return Err(ResolverError::InvalidConfig {
                 reason: "max_concurrent_resolutions must be at least 1",
@@ -125,6 +154,7 @@ impl Resolver {
             priming::prime(&ctx).await
         };
         let cache = cache::Cache::new(cache::budget_bytes(&config));
+        let next_prime = Mutex::new(next_prime_after(&config, status_ok(&status)));
         Ok(Self {
             shared: Arc::new(Shared {
                 config,
@@ -132,6 +162,7 @@ impl Resolver {
                 cache,
                 roots: Mutex::new(roots),
                 priming: Mutex::new(status),
+                next_prime,
                 counters,
                 stats,
                 inflight: inflight::Inflight::new(),
@@ -398,6 +429,30 @@ impl Shared {
         query: &Query,
         flags: RequestFlags,
     ) -> Result<Answer, ResolveError> {
+        // Per-query and per-resolution budgets bound the work, but not the
+        // time: a server that dribbles answers can keep a resolution (and its
+        // concurrency permit) alive for a long time. The deadline ends it.
+        match tokio::time::timeout(
+            self.config.resolve_deadline,
+            self.resolve_upstream_inner(query, flags),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                tracing::debug!(qname = %query.name, "resolution deadline exceeded");
+                Err(ResolveError::Unreachable {
+                    zone: query.name.clone(),
+                })
+            }
+        }
+    }
+
+    async fn resolve_upstream_inner(
+        &self,
+        query: &Query,
+        flags: RequestFlags,
+    ) -> Result<Answer, ResolveError> {
         // A flush while this resolution runs must not be undone by storing
         // its (older) result.
         let epoch = self.cache.epoch();
@@ -407,6 +462,7 @@ impl Shared {
             let zone = zone.clone();
             return self.forward_zone(zone, query, flags, epoch).await;
         }
+        self.reprime_if_due().await;
         let roots = lock(&self.roots).clone();
         let mut ctx = iterate::Context::new(
             &self.config,
@@ -425,7 +481,49 @@ impl Shared {
         let (outcome, status) =
             iterate::resolve_iterative(&ctx, &query.name, query.qtype, 0, Vec::new()).await?;
         tracing::debug!(qname = %query.name, zone = %outcome.zone, "resolved");
-        self.finish_answer(query, flags, outcome.message, status, epoch)
+        self.finish_answer(
+            query,
+            flags,
+            outcome.message,
+            status,
+            epoch,
+            outcome.sig_cap,
+        )
+    }
+
+    /// Primes the root set again when `root_reprime_interval` has passed.
+    ///
+    /// The caller that finds the refresh due claims it (later callers go on
+    /// with the current set) and runs it inline. A priming that falls back
+    /// to the hints keeps the set in use and is retried after a short wait,
+    /// so a flaky network does not replace a good set by the built-in hints.
+    async fn reprime_if_due(&self) {
+        if self.config.root_reprime_interval.is_zero() {
+            return;
+        }
+        let now = self.config.clock.instant();
+        {
+            let mut next = lock(&self.next_prime);
+            if now < *next {
+                return;
+            }
+            *next = next_prime_after(&self.config, false);
+        }
+        tracing::debug!("priming the root servers again");
+        let (roots, status) = {
+            let ctx = iterate::Context::new(
+                &self.config,
+                &self.config.root_hints,
+                self.counters.outgoing(),
+                self.stats.clone(),
+            );
+            priming::prime(&ctx).await
+        };
+        if status_ok(&status) {
+            *lock(&self.roots) = roots;
+            *lock(&self.priming) = status;
+            *lock(&self.next_prime) = next_prime_after(&self.config, true);
+        }
     }
 
     /// Sends `query` to `zone`'s targets and caches the answer like a
@@ -446,8 +544,19 @@ impl Shared {
         let message = self
             .exchange_forward(&zone.targets, &zone.zone, &query.name, query.qtype)
             .await?;
-        let status = self.forwarded_status(&zone, flags, &message).await?;
-        self.finish_answer(query, flags, message, status, epoch)
+        let message = forward::scrub(message, &query.name, query.qtype);
+        // One validation budget for the whole forwarded resolution.
+        let budget = dnssec::ValidationBudget::default();
+        let mut caps = Vec::new();
+        let status = self
+            .forwarded_status(&zone, flags, &message, &budget, &mut caps)
+            .await?;
+        let mut message = message;
+        let mut sig_cap = None;
+        for section in [&mut message.answers, &mut message.authorities] {
+            dnssec::walk::apply_caps(section, &caps, &mut sig_cap);
+        }
+        self.finish_answer(query, flags, message, status, epoch, sig_cap)
     }
 
     /// Applies AA/RA/AD, rewrites Bogus to SERVFAIL, and stores a cacheable
@@ -459,6 +568,7 @@ impl Shared {
         mut message: Message,
         status: Status,
         epoch: u64,
+        sig_cap: Option<u32>,
     ) -> Result<Answer, ResolveError> {
         message.header.aa = false;
         message.header.ra = true;
@@ -498,6 +608,7 @@ impl Shared {
                     max: self.config.ttl_max,
                 },
                 Some(epoch),
+                sig_cap,
             )
         } else {
             None

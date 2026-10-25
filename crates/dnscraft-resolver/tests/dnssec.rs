@@ -588,6 +588,9 @@ async fn status_insecure_stops_dnskey_fetches() {
         .await
         .unwrap();
     let r = status_resolver(&h).await;
+    // Priming validates the root NS set and so fetches the root DNSKEY once;
+    // only the fetches of the resolution itself are counted.
+    h.server(".").unwrap().clear_queries();
     status_ask(&r, "www.insecure.test.", DO).await;
     let asked_dnskey = |zone: &str| {
         h.server(zone)

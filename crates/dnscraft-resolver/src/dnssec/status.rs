@@ -34,6 +34,9 @@ pub(crate) enum BogusReason {
     BadDenialProof,
     /// The per-resolution NSEC3 hash budget is spent (fail closed).
     Nsec3Budget,
+    /// NXDOMAIN came with a validated RRset for the queried name and type:
+    /// the rcode is not covered by signatures and was altered.
+    RcodeMismatch,
 }
 
 impl BogusReason {
@@ -47,6 +50,7 @@ impl BogusReason {
             Self::NoDenialProof => "dnssec.no_denial_proof",
             Self::BadDenialProof => "dnssec.bad_denial_proof",
             Self::Nsec3Budget => "dnssec.nsec3_budget",
+            Self::RcodeMismatch => "dnssec.rcode_mismatch",
         }
     }
 
@@ -60,7 +64,7 @@ impl BogusReason {
             // 12 NSEC Missing
             Self::NoDsProof | Self::NoDenialProof => 12,
             // 6 DNSSEC Bogus
-            Self::BadDenialProof | Self::Nsec3Budget => 6,
+            Self::BadDenialProof | Self::Nsec3Budget | Self::RcodeMismatch => 6,
         }
     }
 }

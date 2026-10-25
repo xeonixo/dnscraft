@@ -11,7 +11,8 @@ use dnscraft_proto::{Name, RData, Record, RecordType};
 use super::anchors::{Anchor, TrustAnchors};
 use super::budget::{MAX_KEYS_PER_TAG, MAX_SIGS_PER_RRSET, ValidationBudget};
 use super::verify::{
-    RrsetValidation, VerifyFailure, is_supported_algorithm, verify_rrsig_budgeted, wildcard_source,
+    RrsetValidation, VerifyFailure, is_supported_algorithm, signature_max_ttl,
+    verify_rrsig_budgeted, wildcard_source,
 };
 
 const ZONE_FLAG: u16 = 0x0100;
@@ -458,6 +459,8 @@ pub fn validate_rrset_budgeted(
             algorithm,
             labels,
             signer_name,
+            original_ttl,
+            expiration,
             ..
         } = &sig.rdata
         else {
@@ -480,6 +483,7 @@ pub fn validate_rrset_budgeted(
                         key_tag: *key_tag,
                         signer: signer_name.clone(),
                         wildcard: wildcard_source(&first.name, *labels),
+                        max_ttl: signature_max_ttl(*original_ttl, *expiration, now),
                     });
                 }
                 Err(VerifyFailure::BudgetExhausted) => {

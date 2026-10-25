@@ -8,7 +8,7 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 
 ## Current state
 
-- Phase: 5 done — Task 16 complete. Checkpoint E: criteria met (coverage 92.78 %); awaiting owner `/review`.
+- Phase: 5 done — Task 16 complete. Checkpoint E: review findings fixed (batches A1, B, A2; 390 tests); awaiting owner approval.
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
@@ -20,10 +20,12 @@ Task details: [todo.md](todo.md) · Plan: [plan.md](plan.md)
 - Checkpoint E review (2026-10-25, two Sonnet reviewers, lead-verified) found issues; fixing in batches (uncommitted until reviewed):
   - Batch B (done, committed): private PTR leak via inner forward zone; inflight leader cancellation; O(n) cache eviction + oversize entry; AD-on-hit test; forward failover on SERVFAIL; flush epoch; stale = Indeterminate + TTL 30 s; concurrency cap + prefetch backoff.
   - Batch A1 (done, committed): KeyTrap verification budget + per-RRset caps; NSEC3 hash budget/memo, max iterations 100; inception skew 300 s.
-  - Batch A2 (running; also switch forward validation in lib.rs/forward.rs to validate_*_budgeted with the per-resolution budget): scrub unvalidated/out-of-bailiwick records before answer/cache; positive answer with rcode NXDOMAIN → Bogus; DNAME-synthesized CNAME target check; TTL cap to RRSIG original TTL/expiry; drop private/loopback glue (allow-list) + bound srtt map + cap candidates; validate priming (root NS RRSIG) + periodic re-prime; overall resolve deadline 10 s.
+  - Batch A2 (done, committed; also switch forward validation in lib.rs/forward.rs to validate_*_budgeted with the per-resolution budget): scrub unvalidated/out-of-bailiwick records before answer/cache; positive answer with rcode NXDOMAIN → Bogus; DNAME-synthesized CNAME target check; TTL cap to RRSIG original TTL/expiry; drop private/loopback glue (allow-list) + bound srtt map + cap candidates; validate priming (root NS RRSIG) + periodic re-prime; overall resolve deadline 10 s.
 - Blockers: none
 
 ## Log
+
+- 2026-10-25 — Checkpoint E review: 2 Sonnet reviewers (code + security), lead verified top findings. Fixed in 3 batches with fail-before regression tests: KeyTrap/NSEC3 budgets, inception skew; PTR leak, inflight cancellation, O(log n) LRU, flush epoch, forward failover, stale Indeterminate/30 s, concurrency cap; answer scrubbing, rcode-flip Bogus, DNAME CNAME check, RRSIG TTL cap, private/loopback glue filter, srtt bound, validated priming + 24 h re-prime, 10 s deadline. Live statuses unchanged. 390 tests green.
 
 - 2026-10-24 — Task 16 done: `ResolverStats` (cache hits, stale, DNSSEC outcomes, latency sums); error codes documented (CnameLoop/Limit share `resolver.cname_limit` by design); criterion `cache_hit` p50 ≈ 214 ns; example already live-verified (example.com Secure, dnssec-failed.org SERVFAIL/Bogus); llvm-cov 92.78 % lines. Workspace DoD green.
 

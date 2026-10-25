@@ -11,6 +11,12 @@
 //! response with no in-zone answer RRset stays `Indeterminate` when
 //! validation is on. A signature failure or a missing anchor is `Bogus`.
 //!
+//! The answer a target returns is rebuilt before it is used (see
+//! [`scrub`]): only the RRsets of the CNAME/DNAME chain from the question
+//! and the SOA/NSEC/NSEC3 records of a negative answer are kept, so records a
+//! target (or someone on the path) adds for unrelated names never reach the
+//! client or the cache.
+//!
 //! Loop protection: when the peer that asked this question is itself one of
 //! the zone's forward targets (passed as [`RequestFlags::client`](crate::RequestFlags::client)),
 //! resolution returns [`ResolveError::ForwardLoop`](crate::ResolveError::ForwardLoop)
@@ -28,16 +34,70 @@
 
 use std::net::SocketAddr;
 
-use dnscraft_proto::{Message, Name, Rcode, Record, RecordType};
+use dnscraft_proto::{Message, Name, RData, Rcode, Record, RecordType};
 
 use crate::config::ForwardZone;
 use crate::dnssec::status::{BogusReason, Status, rrsets};
+use crate::dnssec::walk::TtlCap;
 use crate::dnssec::{
-    ChainFailure, DelegationTrust, KeysOutcome, validate_dnskey_rrset, validate_rrset,
+    ChainFailure, DelegationTrust, KeysOutcome, ValidationBudget, validate_dnskey_rrset_budgeted,
+    validate_rrset_budgeted,
 };
 use crate::error::ResolveError;
 use crate::types::RequestFlags;
 use crate::{Shared, transport};
+
+/// Longest CNAME chain followed when scrubbing a forwarded answer.
+const MAX_SCRUB_CHAIN: usize = 32;
+
+/// Reduces a forwarded response to what answers the question
+/// `qname`/`qtype`.
+///
+/// The answer section keeps the records owned by the names of the CNAME
+/// chain that starts at `qname` (RRsets of the queried type and the CNAMEs
+/// themselves, plus their RRSIGs) and the DNAMEs above those names. The
+/// authority section keeps the SOA and NSEC/NSEC3 records (with RRSIGs) of a
+/// negative answer; the additional section is emptied. Everything else,
+/// whatever its owner, is dropped: a forwarder is trusted for the answer to
+/// the question, not for unrelated names.
+pub(crate) fn scrub(mut message: Message, qname: &Name, qtype: RecordType) -> Message {
+    let mut names = vec![qname.clone()];
+    let mut i = 0;
+    while i < names.len() && names.len() < MAX_SCRUB_CHAIN {
+        for r in &message.answers {
+            if let RData::CNAME(target) = &r.rdata
+                && r.rtype == RecordType::CNAME
+                && r.name == names[i]
+                && !names.contains(target)
+            {
+                names.push(target.clone());
+            }
+        }
+        i += 1;
+    }
+    let covered = |r: &Record| match &r.rdata {
+        RData::RRSIG { type_covered, .. } if r.rtype == RecordType::RRSIG => Some(*type_covered),
+        _ if r.rtype == RecordType::RRSIG => None,
+        _ => Some(r.rtype),
+    };
+    message.answers.retain(|r| {
+        let Some(kind) = covered(r) else {
+            return false;
+        };
+        if kind == RecordType::DNAME {
+            return names.iter().any(|n| r.name != *n && r.name.zone_of(n));
+        }
+        names.contains(&r.name)
+            && (qtype == RecordType::ANY || kind == RecordType::CNAME || kind == qtype)
+    });
+    message.authorities.retain(|r| match covered(r) {
+        Some(RecordType::SOA) => names.iter().any(|n| r.name.zone_of(n)),
+        Some(RecordType::NSEC | RecordType::NSEC3) => true,
+        _ => false,
+    });
+    message.additionals.clear();
+    message
+}
 
 /// The most specific configured zone that contains `name`, if any.
 ///
@@ -99,12 +159,15 @@ impl Shared {
     /// trust anchor; DNSKEY is fetched from the same targets and positive
     /// in-zone RRsets are checked against it. A response with nothing to
     /// check stays `Indeterminate` — a stub answer does not carry a denial
-    /// proof this resolver rebuilds.
+    /// proof this resolver rebuilds. The longest TTL of every validated
+    /// RRset (RFC 4035 section 5.3.3) is appended to `caps`.
     pub(crate) async fn forwarded_status(
         &self,
         zone: &ForwardZone,
         flags: RequestFlags,
         message: &Message,
+        budget: &ValidationBudget,
+        caps: &mut Vec<TtlCap>,
     ) -> Result<Status, ResolveError> {
         if !zone.validate {
             return Ok(Status::Insecure);
@@ -130,12 +193,13 @@ impl Shared {
             }
             Err(err) => return Err(err),
         };
-        let keys = match validate_dnskey_rrset(
+        let keys = match validate_dnskey_rrset_budgeted(
             &zone.zone,
             &keys_msg.answers,
             &keys_msg.answers,
             DelegationTrust::Anchors(&self.config.trust_anchors),
             self.config.clock.now(),
+            budget,
         ) {
             Ok(KeysOutcome::Secure(keys)) => keys,
             Ok(KeysOutcome::Insecure(_)) => return Ok(Status::Insecure),
@@ -145,12 +209,27 @@ impl Shared {
         let mut saw = false;
         for set in rrsets(&message.answers, &zone.zone, |_| true) {
             let owned: Vec<Record> = set.into_iter().cloned().collect();
-            if let Err(err) = validate_rrset(&owned, &message.answers, &keys, now) {
-                return Ok(Status::Bogus(BogusReason::Verify(err)));
+            match validate_rrset_budgeted(&owned, &message.answers, &keys, now, budget) {
+                Ok(valid) => {
+                    if let Some(first) = owned.first() {
+                        caps.push(TtlCap {
+                            name: first.name.clone(),
+                            rtype: first.rtype,
+                            max_ttl: valid.max_ttl,
+                        });
+                    }
+                }
+                Err(err) => return Ok(Status::Bogus(BogusReason::Verify(err))),
             }
             saw = true;
         }
-        if saw {
+        // RRsets outside the zone (a CNAME target elsewhere) have no keys
+        // here; the answer is not Secure as a whole.
+        let outside = message
+            .answers
+            .iter()
+            .any(|r| r.rtype != RecordType::RRSIG && !zone.zone.zone_of(&r.name));
+        if saw && !outside {
             Ok(Status::Secure)
         } else {
             Ok(Status::Indeterminate)
@@ -159,7 +238,7 @@ impl Shared {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use std::net::SocketAddr;
 
@@ -197,5 +276,97 @@ mod tests {
         );
         assert!(covering(&zones, &name("example.test.")).is_none());
         assert!(covering(&[], &name("www.corp.internal.")).is_none());
+    }
+
+    #[tokio::test]
+    async fn forwarded_validation_spends_one_shared_budget() {
+        use crate::dnssec::{TrustAnchors, VerifyFailure};
+        use crate::types::RequestFlags;
+        use dnscraft_proto::{Class, RData};
+        use dnscraft_testkit::{
+            Hierarchy, ServerSpec, SigAlgorithm, SigningOptions, Zone, ZoneKey, sign_zone,
+        };
+        use hickory_proto::serialize::binary::BinEncodable;
+
+        let origin = name("fz.test.");
+        let key = ZoneKey::generate(SigAlgorithm::default()).unwrap();
+        let zone = Zone::new("fz.test.")
+            .unwrap()
+            .with_soa("ns1.fz.test.", "hostmaster.fz.test.")
+            .unwrap()
+            .with_ns("fz.test.", "ns1.fz.test.")
+            .unwrap()
+            .with_a("ns1.fz.test.", std::net::Ipv4Addr::LOCALHOST)
+            .unwrap()
+            .with_a("www.fz.test.", std::net::Ipv4Addr::new(192, 0, 2, 7))
+            .unwrap();
+        let signed = sign_zone(zone, &key, &SigningOptions::now()).unwrap();
+        let h = Hierarchy::start_with(vec![ServerSpec::new("ns1.fz.test.", signed).unwrap()])
+            .await
+            .unwrap();
+        let target = h.server("fz.test.").unwrap().addr();
+        let ds = key
+            .ds(&dnscraft_testkit::parse_name("fz.test.").unwrap())
+            .unwrap();
+        let bytes = ds.to_bytes().unwrap();
+        let anchors = TrustAnchors::from_records(&[Record {
+            name: origin.clone(),
+            rtype: RecordType::DS,
+            class: Class::IN,
+            ttl: 3600,
+            rdata: RData::decode(&bytes, RecordType::DS, 0, bytes.len()).unwrap(),
+        }])
+        .unwrap();
+        let fz = ForwardZone {
+            zone: origin.clone(),
+            targets: vec![target],
+            validate: true,
+        };
+        let r = crate::Resolver::new(crate::ResolverConfig {
+            root_hints: vec![target],
+            trust_anchors: anchors,
+            query_timeout: std::time::Duration::from_millis(500),
+            forward_zones: vec![fz.clone()],
+            ..crate::ResolverConfig::default()
+        })
+        .await
+        .unwrap();
+        let message = r
+            .shared
+            .exchange_forward(&fz.targets, &origin, &name("www.fz.test."), RecordType::A)
+            .await
+            .unwrap();
+        let flags = RequestFlags::default();
+        let mut caps = Vec::new();
+        let status = r
+            .shared
+            .forwarded_status(
+                &fz,
+                flags,
+                &message,
+                &ValidationBudget::default(),
+                &mut caps,
+            )
+            .await
+            .unwrap();
+        assert_eq!(status, Status::Secure);
+        assert_eq!(caps.len(), 1);
+        // The DNSKEY RRset and the answer RRset are checked against the same
+        // budget: with room for one verification the second one fails.
+        let status = r
+            .shared
+            .forwarded_status(
+                &fz,
+                flags,
+                &message,
+                &ValidationBudget::with_limits(1, 1),
+                &mut Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            Status::Bogus(BogusReason::Verify(VerifyFailure::BudgetExhausted))
+        );
     }
 }

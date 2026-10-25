@@ -83,6 +83,25 @@ pub struct ResolverConfig {
     /// (`resolver.overloaded`). Prefetch only runs when a slot is free.
     /// Must be at least 1. Default: 1024.
     pub max_concurrent_resolutions: usize,
+    /// Accept private-use addresses (RFC 1918, carrier-grade NAT
+    /// 100.64.0.0/10, unique local fc00::/7) for name servers learned from the
+    /// network (glue and address lookups of NS hosts). Default `false`: such
+    /// an address in a public delegation is an attempt to make the resolver
+    /// query internal hosts. Loopback, unspecified, link-local, multicast,
+    /// broadcast/reserved and IPv4-mapped/compatible addresses are never
+    /// accepted. Operator-configured addresses (root hints, forward targets)
+    /// are not filtered.
+    pub allow_private_nameservers: bool,
+    /// How often the root server set is refreshed by priming again
+    /// (RFC 8109), checked when a resolution starts. [`Duration::ZERO`]
+    /// primes only once at start-up. Default: 24 hours.
+    pub root_reprime_interval: Duration,
+    /// Upper bound on the time of one upstream resolution (everything from
+    /// the first query to the final answer, including nested lookups and
+    /// validation). On expiry the question fails like an unreachable zone
+    /// (SERVFAIL; serve-stale may apply). Must be greater than zero.
+    /// Default: 10 seconds.
+    pub resolve_deadline: Duration,
 }
 
 /// A zone whose queries are sent to recursive targets (stub forwarding).
@@ -141,6 +160,9 @@ impl Default for ResolverConfig {
             ipv6_cooldown: Duration::from_secs(60),
             forward_zones: Vec::new(),
             max_concurrent_resolutions: 1024,
+            allow_private_nameservers: false,
+            root_reprime_interval: Duration::from_secs(24 * 3600),
+            resolve_deadline: Duration::from_secs(10),
         }
     }
 }
@@ -159,5 +181,8 @@ mod tests {
         assert!(config.prefetch);
         assert_eq!(config.cache_capacity_bytes, None);
         assert_eq!(config.max_concurrent_resolutions, 1024);
+        assert!(!config.allow_private_nameservers);
+        assert_eq!(config.root_reprime_interval, Duration::from_secs(86_400));
+        assert_eq!(config.resolve_deadline, Duration::from_secs(10));
     }
 }

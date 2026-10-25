@@ -325,7 +325,7 @@ impl Cache {
         now: Instant,
         clamp: TtlClamp,
     ) -> Option<u32> {
-        self.store_in_epoch(query, message, dnssec, ede, now, clamp, None)
+        self.store_in_epoch(query, message, dnssec, ede, now, clamp, None, None)
     }
 
     /// Like [`Cache::store`], but drops the answer when a flush happened
@@ -334,6 +334,10 @@ impl Cache {
     /// A resolution that was already running when the cache was flushed
     /// carries data from before the flush; storing it would undo the flush.
     /// The TTL is still returned so the client receives a consistent answer.
+    ///
+    /// `sig_cap` is the lifetime of the shortest-lived signature behind the
+    /// answer: the entry never outlives it, even when `clamp.min` would
+    /// raise the TTL (RFC 4035 section 5.3.3).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn store_in_epoch(
         &self,
@@ -344,8 +348,13 @@ impl Cache {
         now: Instant,
         clamp: TtlClamp,
         epoch: Option<u64>,
+        sig_cap: Option<u32>,
     ) -> Option<u32> {
         let ttl = cache_ttl(query, message, clamp.min, clamp.max)?;
+        let ttl = sig_cap.map_or(ttl, |cap| ttl.min(cap));
+        if ttl == 0 {
+            return None;
+        }
         let expires_at = now.checked_add(Duration::from_secs(u64::from(ttl)))?;
         // Measured and copied before taking the lock.
         let size = entry_size(message);
@@ -1392,7 +1401,8 @@ mod tests {
                 None,
                 now,
                 clamp,
-                Some(epoch)
+                Some(epoch),
+                None
             ),
             Some(30)
         );
@@ -1407,6 +1417,7 @@ mod tests {
             now,
             clamp,
             Some(current),
+            None,
         );
         assert!(cache.lookup(&q, now).is_some());
     }

@@ -342,6 +342,8 @@ enum SetOutcome {
         wildcard: Option<Name>,
         /// The zone that signed the RRset.
         signer: Name,
+        /// Longest TTL the RRset may keep (RFC 4035 section 5.3.3).
+        max_ttl: u32,
     },
     Insecure,
     Bogus(BogusReason),
@@ -386,6 +388,7 @@ async fn validate_set(
             Ok(v) => SetOutcome::Valid {
                 wildcard: v.wildcard,
                 signer: v.signer,
+                max_ttl: v.max_ttl,
             },
             Err(e) => SetOutcome::Bogus(BogusReason::Verify(e)),
         },
@@ -419,6 +422,69 @@ fn prove_by_signer(
     result.unwrap_or(Denial::Bogus(BogusReason::NoDenialProof))
 }
 
+/// A cap on the lifetime of a validated RRset: its TTL must not exceed the
+/// original TTL of the validating RRSIG nor outlive that signature
+/// (RFC 4035 section 5.3.3).
+#[derive(Clone, Debug)]
+pub(crate) struct TtlCap {
+    pub name: Name,
+    pub rtype: RecordType,
+    pub max_ttl: u32,
+}
+
+/// The type a record is about: its own, or the covered type of an RRSIG.
+pub(crate) fn covered_type(r: &Record) -> Option<RecordType> {
+    match &r.rdata {
+        RData::RRSIG { type_covered, .. } if r.rtype == RecordType::RRSIG => Some(*type_covered),
+        _ if r.rtype == RecordType::RRSIG => None,
+        _ => Some(r.rtype),
+    }
+}
+
+/// Lowers the TTL of every record that belongs to a validated RRset in
+/// `caps` and notes the smallest cap applied in `min_cap`.
+pub(crate) fn apply_caps(records: &mut [Record], caps: &[TtlCap], min_cap: &mut Option<u32>) {
+    for r in records {
+        let Some(covered) = covered_type(r) else {
+            continue;
+        };
+        let cap = caps
+            .iter()
+            .filter(|c| c.rtype == covered && c.name == r.name)
+            .map(|c| c.max_ttl)
+            .min();
+        if let Some(cap) = cap {
+            r.ttl = r.ttl.min(cap);
+            *min_cap = Some(min_cap.map_or(cap, |m| m.min(cap)));
+        }
+    }
+}
+
+/// Whether an NXDOMAIN response carries a record that proves the name
+/// exists: an RRset for the queried type (or any record at the name for
+/// `ANY`; the CNAME itself for `CNAME`). The rcode is not covered by
+/// signatures, so a validated positive answer can be turned into NXDOMAIN
+/// without breaking any signature. A CNAME/DNAME link whose target is
+/// re-resolved is no such evidence.
+pub(crate) fn nxdomain_contradicted(
+    message: &Message,
+    zone: &Name,
+    qname: &Name,
+    qtype: RecordType,
+) -> bool {
+    message.rcode() == Rcode::NXDOMAIN
+        && message
+            .answers
+            .iter()
+            .filter(|r| zone.zone_of(&r.name) && r.rtype != RecordType::RRSIG)
+            .any(|r| match qtype {
+                RecordType::ANY => r.name == *qname,
+                RecordType::CNAME => r.name == *qname && r.rtype == RecordType::CNAME,
+                // A DNAME above `qname` (synthesis) is a link, not the name itself.
+                _ => r.rtype == qtype && (r.rtype != RecordType::DNAME || r.name == *qname),
+            })
+}
+
 /// Validation result of the final response of `zone` (whose trust is `trust`,
 /// already settled) to `qname`/`qtype`, answered by `server`.
 ///
@@ -427,6 +493,10 @@ fn prove_by_signer(
 /// a complete NSEC/NSEC3 proof. A CNAME chain that leaves the response is
 /// judged link by link: the resolver asks again for the target, and the
 /// denial for it is checked in that response.
+///
+/// For every validated RRset (answers and proof records) the longest TTL it
+/// may keep is appended to `caps`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn assess_final(
     ctx: &Context<'_>,
     zone: &Name,
@@ -435,6 +505,7 @@ pub(crate) async fn assess_final(
     qname: &Name,
     qtype: RecordType,
     server: SocketAddr,
+    caps: &mut Vec<TtlCap>,
 ) -> Result<Status, ResolveError> {
     let zkeys = match trust {
         Trust::Off | Trust::Anchor | Trust::Ds(_) => return Ok(Status::Indeterminate),
@@ -459,8 +530,19 @@ pub(crate) async fn assess_final(
     for set in rrsets(&message.answers, zone, |r| !synthesized(r)) {
         let owned: Vec<Record> = set.into_iter().cloned().collect();
         match validate_set(ctx, zone, zkeys, &owned, &message.answers, server).await? {
-            SetOutcome::Valid { wildcard, signer } => {
+            SetOutcome::Valid {
+                wildcard,
+                signer,
+                max_ttl,
+            } => {
                 proved = true;
+                if let Some(first) = owned.first() {
+                    caps.push(TtlCap {
+                        name: first.name.clone(),
+                        rtype: first.rtype,
+                        max_ttl,
+                    });
+                }
                 if let (Some(source), Some(first)) = (wildcard, owned.first()) {
                     expansions.push((first.name.clone(), source, signer));
                 }
@@ -485,7 +567,15 @@ pub(crate) async fn assess_final(
             SetOutcome::Valid {
                 wildcard: None,
                 signer,
+                max_ttl,
             } => {
+                if let Some(first) = owned.first() {
+                    caps.push(TtlCap {
+                        name: first.name.clone(),
+                        rtype: first.rtype,
+                        max_ttl,
+                    });
+                }
                 proofs.extend(
                     owned
                         .into_iter()
@@ -511,6 +601,11 @@ pub(crate) async fn assess_final(
             Ok(s) => status = s,
             Err(r) => return Ok(Status::Bogus(r)),
         }
+    }
+    // The rcode is not signed: NXDOMAIN next to a validated RRset for the
+    // very question is a forgery.
+    if nxdomain_contradicted(message, zone, qname, qtype) {
+        return Ok(Status::Bogus(BogusReason::RcodeMismatch));
     }
     // Is a denial for `qname` claimed? Not when the response has data for it
     // or a link (CNAME, or a DNAME above) that the resolver follows.

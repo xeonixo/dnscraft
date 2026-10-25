@@ -130,6 +130,10 @@ pub struct RrsetValidation {
     /// wildcard owner it was synthesised from, e.g. `*.example.com.`.
     /// Task 10 must then prove that no closer name exists.
     pub wildcard: Option<Name>,
+    /// Longest lifetime in seconds the validated RRset may be given
+    /// (RFC 4035 section 5.3.3): the smaller of the validating RRSIG's
+    /// original TTL and the time left until its expiration.
+    pub max_ttl: u32,
 }
 
 /// Whether algorithm `alg` can be validated here.
@@ -159,6 +163,21 @@ pub fn validity_window(
     } else {
         Ok(())
     }
+}
+
+/// Longest TTL an RRset may keep when it was validated by an RRSIG with
+/// `original_ttl` and `expiration` at `now` (RFC 4035 section 5.3.3): the
+/// smaller of the original TTL and the seconds left until expiration.
+pub fn signature_max_ttl(original_ttl: u32, expiration: u32, now: SystemTime) -> u32 {
+    let secs = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    // Truncation to 32 bits is the point: serial numbers wrap.
+    let now32 = (secs & 0xFFFF_FFFF) as u32;
+    let left = if serial_lt(expiration, now32) {
+        0
+    } else {
+        expiration.wrapping_sub(now32)
+    };
+    original_ttl.min(left)
 }
 
 /// The wildcard owner (`*.` + the last `labels` labels of `owner`) if an RRSIG

@@ -23,10 +23,49 @@ const DEFAULT_EXPLORATION: f64 = 0.05;
 /// Default time IPv6 stays disabled after a network-unreachable error.
 pub const DEFAULT_IPV6_COOLDOWN: Duration = Duration::from_secs(60);
 
+/// Most servers whose srtt is remembered. Addresses come from delegations,
+/// i.e. from the network, so an unbounded map would let a hostile zone grow
+/// it without limit. Past the bound the least recently used address is
+/// forgotten (it starts over with a random initial srtt if it is seen again).
+pub const MAX_TRACKED_SERVERS: usize = 4096;
+
+#[derive(Debug)]
+struct Entry {
+    ms: f64,
+    /// Value of `Inner::tick` at the last use; the smallest is evicted first.
+    used: u64,
+}
+
 #[derive(Debug)]
 struct Inner {
-    srtt_ms: HashMap<SocketAddr, f64>,
+    srtt_ms: HashMap<SocketAddr, Entry>,
+    tick: u64,
     ipv6_down_until: Option<Instant>,
+}
+
+impl Inner {
+    /// The srtt slot of `server`, created with a random initial value. Marks
+    /// the server as used and keeps the map within [`MAX_TRACKED_SERVERS`].
+    fn slot(&mut self, server: SocketAddr) -> &mut f64 {
+        self.tick = self.tick.saturating_add(1);
+        let tick = self.tick;
+        if !self.srtt_ms.contains_key(&server) && self.srtt_ms.len() >= MAX_TRACKED_SERVERS {
+            let oldest = self
+                .srtt_ms
+                .iter()
+                .min_by_key(|(_, e)| e.used)
+                .map(|(addr, _)| *addr);
+            if let Some(oldest) = oldest {
+                self.srtt_ms.remove(&oldest);
+            }
+        }
+        let entry = self.srtt_ms.entry(server).or_insert_with(|| Entry {
+            ms: rand::rng().random_range(INITIAL_RANGE_MS),
+            used: tick,
+        });
+        entry.used = tick;
+        &mut entry.ms
+    }
 }
 
 /// Shared per-server statistics. Cheap to clone (handles share state).
@@ -48,6 +87,7 @@ impl ServerStats {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 srtt_ms: HashMap::new(),
+                tick: 0,
                 ipv6_down_until: None,
             })),
             exploration: DEFAULT_EXPLORATION,
@@ -71,7 +111,13 @@ impl ServerStats {
         self.lock()
             .srtt_ms
             .get(&server)
-            .map(|ms| Duration::from_secs_f64(ms / 1000.0))
+            .map(|e| Duration::from_secs_f64(e.ms / 1000.0))
+    }
+
+    /// Number of servers whose srtt is remembered (at most
+    /// [`MAX_TRACKED_SERVERS`]).
+    pub fn tracked_servers(&self) -> usize {
+        self.lock().srtt_ms.len()
     }
 
     /// Whether IPv6 is currently considered usable.
@@ -90,25 +136,15 @@ impl ServerStats {
     pub fn record_success(&self, server: SocketAddr, rtt: Duration) {
         let sample = (rtt.as_secs_f64() * 1000.0).min(SRTT_CAP_MS);
         let mut inner = self.lock();
-        let old = *inner
-            .srtt_ms
-            .entry(server)
-            .or_insert_with(|| rand::rng().random_range(INITIAL_RANGE_MS));
-        inner
-            .srtt_ms
-            .insert(server, KEEP * old + (1.0 - KEEP) * sample);
+        let slot = inner.slot(server);
+        *slot = KEEP * *slot + (1.0 - KEEP) * sample;
     }
 
     /// Records a timeout or other failure: doubles the srtt (capped).
     pub fn record_failure(&self, server: SocketAddr) {
         let mut inner = self.lock();
-        let old = *inner
-            .srtt_ms
-            .entry(server)
-            .or_insert_with(|| rand::rng().random_range(INITIAL_RANGE_MS));
-        inner
-            .srtt_ms
-            .insert(server, (old.max(PENALTY_FLOOR_MS) * 2.0).min(SRTT_CAP_MS));
+        let slot = inner.slot(server);
+        *slot = (slot.max(PENALTY_FLOOR_MS) * 2.0).min(SRTT_CAP_MS);
     }
 
     /// Records a socket error: penalises the server and, for IPv6 servers
@@ -131,10 +167,7 @@ impl ServerStats {
             candidates
                 .iter()
                 .map(|&c| {
-                    let srtt = *inner
-                        .srtt_ms
-                        .entry(c)
-                        .or_insert_with(|| rand::rng().random_range(INITIAL_RANGE_MS));
+                    let srtt = *inner.slot(c);
                     (c.is_ipv6() && !v6_ok, srtt, c)
                 })
                 .collect()
@@ -158,4 +191,39 @@ fn is_unreachable(err: &std::io::Error) -> bool {
         err.kind(),
         ErrorKind::NetworkUnreachable | ErrorKind::HostUnreachable | ErrorKind::AddrNotAvailable
     ) || err.raw_os_error() == Some(97) // EAFNOSUPPORT on Linux: IPv6 disabled
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn addr(n: u32) -> SocketAddr {
+        let [a, b, c, d] = (0x0A00_0000 + n).to_be_bytes();
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(a, b, c, d)), 53)
+    }
+
+    #[test]
+    fn srtt_map_is_bounded_and_evicts_the_least_recently_used() {
+        let stats = ServerStats::default();
+        let keep = addr(0);
+        stats.record_success(keep, Duration::from_millis(20));
+        for n in 1..(MAX_TRACKED_SERVERS as u32 * 2) {
+            stats.record_failure(addr(n));
+            // `keep` stays in use, so it must survive the churn.
+            if n % 100 == 0 {
+                stats.record_success(keep, Duration::from_millis(20));
+            }
+            assert!(stats.tracked_servers() <= MAX_TRACKED_SERVERS);
+        }
+        assert_eq!(stats.tracked_servers(), MAX_TRACKED_SERVERS);
+        assert!(stats.srtt(keep).is_some());
+        assert!(stats.srtt(addr(1)).is_none());
+        // order() creates entries too and respects the bound.
+        let many: Vec<SocketAddr> = (50_000..50_000 + 2 * MAX_TRACKED_SERVERS as u32)
+            .map(addr)
+            .collect();
+        let _ = stats.order(&many);
+        assert!(stats.tracked_servers() <= MAX_TRACKED_SERVERS);
+    }
 }
