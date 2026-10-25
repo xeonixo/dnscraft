@@ -143,6 +143,9 @@ pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Dra
     match step.resolver.resolve(&target_query, flags).await {
         Ok(answer) => {
             let rcode = answer.message.rcode();
+            // Carry resolve metadata so rebind exemption / DecisionRecord are correct.
+            draft.follow_forward_zone = answer.forward_zone;
+            draft.follow_dnssec = Some(answer.dnssec);
             // Not marked synthetic: answer-side / rebind / AAAA still apply
             // to the resolved target (SPEC / P13).
             Flow::Answer(rewrite_cname_follow(
@@ -154,8 +157,12 @@ pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Dra
                 rcode,
             ))
         }
-        Err(_) => {
-            // Resolution failed: still return the CNAME so the client can follow.
+        Err(err) => {
+            // Resolution failed: still return the CNAME so the client can follow,
+            // but record why the follow did not complete.
+            draft.steps.push(DecisionStep::ResolveFailed {
+                cause_code: Some(err.code()),
+            });
             let Ok(domain) = DomainName::parse(hit.target) else {
                 return Flow::Continue;
             };

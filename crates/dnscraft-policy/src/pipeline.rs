@@ -2,7 +2,7 @@
 
 use dnscraft_filtering::SetId;
 use dnscraft_proto::Message;
-use dnscraft_resolver::{DnssecStatus, ExtendedError};
+use dnscraft_resolver::{DnssecStatus, ExtendedError, ForwardZoneId};
 
 use crate::decision::{AnswerOrigin, DecisionRecord, DecisionStep, DecisionTimings, FilterHit};
 use crate::select::Selection;
@@ -56,6 +56,10 @@ pub struct Draft {
     pub timings: DecisionTimings,
     /// When true, later answer-side steps (rebind, …) skip this answer.
     pub synthetic: bool,
+    /// Forward zone that produced a SafeSearch (or similar) follow resolve.
+    pub follow_forward_zone: Option<ForwardZoneId>,
+    /// DNSSEC status of a SafeSearch (or similar) follow resolve.
+    pub follow_dnssec: Option<DnssecStatus>,
 }
 
 impl Draft {
@@ -71,6 +75,8 @@ impl Draft {
             filter: None,
             timings: DecisionTimings::default(),
             synthetic: false,
+            follow_forward_zone: None,
+            follow_dnssec: None,
         }
     }
 

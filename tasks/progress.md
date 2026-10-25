@@ -30,8 +30,8 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 
 Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.24 %** lines / **80.27 %** regions.
 - Module `tls`: **COMPLETE** — SPEC + plan approved; L1–L12c done; Checkpoints A/B/C passed (2026-10-25). Owner approved after LE-staging acceptance (node DynDNS only; `public_entry` owner-managed).
-- Module `policy`: v1 COMPLETE (Checkpoint C approved by the owner 2026-10-25). **P13 + P14 done** (SafeSearch + schedules evaluated). Plan + todo ready to archive after Claude review of P13/P14.
-- Blockers: none. Next module: `listeners` (spec pending). Dependency upgrade branch awaiting Claude review.
+- Module `policy`: v1 COMPLETE (Checkpoint C approved by the owner 2026-10-25). **P13 + P14 + P14b done** (SafeSearch + schedules; resolve-detail follow-ups). Plan + todo ready to archive after this lands.
+- Blockers: none. **STOP:** Claude merges the dependency upgrade next; do not start new work until the owner says so — then `git pull --rebase` and rebuild. Next module: `listeners` (spec pending).
 
 ### policy success criteria (SPEC-policy.md)
 
@@ -62,6 +62,8 @@ Coverage (`cargo llvm-cov -p dnscraft-policy --summary-only`, 2026-10-25 P14): *
 Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **80.32 %** lines / **79.82 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
 
 ## Log
+
+- 2026-10-25 — Policy **P14b** done (Cursor): Claude review follow-ups — SafeSearch follow resolve `Err` → CNAME-only + `DecisionStep::ResolveFailed { cause_code }`; successful follow stores `forward_zone`/`dnssec` on the draft and passes them into `finish_resolved_message` (exempt forward-zone safe host keeps private A; record has zone + Insecure). Schedule step 6/8/9 coverage already in `de08ea0`. DoD: fmt/clippy `-D warnings` green; `cargo test -p dnscraft-policy` 5× / 0 failures. **STOP:** Claude merges dependency upgrade (MSRV 1.88, rand 0.10, reqwest 0.13, criterion 0.8); do not start new work until owner says so.
 
 - 2026-10-25 — **Claude review policy P13 (4ba33c1) + P14 (99af681): accepted.** fmt/clippy green; `cargo test -p dnscraft-policy` 3× / 0 failures (working tree incl. uncommitted extra schedule tests). P13: provider table with cited sources (unverified DDG companion names marked), step 6 re-filter on the effective set, original-name block wins (golden criterion 3a), SafeSearch answers go through steps 8–11 via the new `finish_resolved_message` (rebind/AAAA/answer-side still apply). P14: `offset_in_week` (epoch Thursday → +3 d, correct), `active_schedule` start-inclusive/end-exclusive, windows sorted + overlap rejected at build (`policy.config.overlapping_schedules`), adjacent windows allowed, effective set used for steps 4/6/8/9, pause wins. Mutation probes (8) all caught: end inclusive, week starting Sunday, step 6 skipped, provider list ignored, MX rewritten, windows unsorted, adjacent windows rejected, overlap not rejected. Nits (not blocking): SafeSearch target resolve error falls back to a bare CNAME answer without a `ResolveFailed` breadcrumb (client then resolves the target itself — acceptable, but log it); the SafeSearch resolve passes `forward_zone = None` / `dnssec = None` into `finish_resolved_message`, so a safe host under an exempt forward zone would still be rebind-checked and the record lacks its DNSSEC status. Uncommitted schedule test additions in the working tree still need a commit. After that: archive the policy plan/todo.
 

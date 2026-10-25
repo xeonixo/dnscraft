@@ -279,15 +279,19 @@ impl PolicyEngine {
                 ));
             }
             Flow::Answer(synth) => {
-                // Successful SafeSearch CNAME+follow: answer-side / rebind /
-                // AAAA still apply to the resolved target (no EDE for SafeSearch).
+                // Successful SafeSearch CNAME+follow (or CNAME-only after a
+                // failed follow): answer-side / rebind / AAAA still apply.
+                // Forward-zone / DNSSEC come from the safe-host resolve when
+                // it succeeded (draft.follow_*), else stay None.
+                let forward_zone = draft.follow_forward_zone.take();
+                let dnssec = draft.follow_dnssec.take();
                 return Ok(self.finish_resolved_message(
                     draft,
                     synth.message,
                     synth.ede,
                     synth.origin,
-                    None,
-                    None,
+                    forward_zone,
+                    dnssec,
                     &ctx,
                     step_ctx,
                     total_start,

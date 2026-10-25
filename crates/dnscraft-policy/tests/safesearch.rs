@@ -3,8 +3,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use dnscraft_filtering::{
@@ -13,13 +14,16 @@ use dnscraft_filtering::{
 };
 use dnscraft_policy::{
     ClientFlags, DecisionStep, DnsProtocol, ListenerId, NoClients, PauseScope, PauseUntil,
-    PolicyConfig, PolicyEngine, ProfileConfig, ProfileId, RequestContext, SafeSearchConfig,
-    ScheduleConfig, ViewConfig, ViewId, YoutubeMode,
+    PolicyConfig, PolicyEngine, ProfileConfig, ProfileId, RebindSkipReason, RequestContext,
+    SafeSearchConfig, ScheduleConfig, ViewConfig, ViewId, YoutubeMode,
 };
 use dnscraft_proto::{Class, Name, RData, Rcode, RecordType};
 use dnscraft_resolver::dnssec::TrustAnchors;
-use dnscraft_resolver::{Query, Resolver, ResolverConfig};
+use dnscraft_resolver::{
+    DnssecStatus, ForwardZone, ForwardZoneId, Query, Resolver, ResolverConfig,
+};
 use dnscraft_testkit::{Hierarchy, ServerSpec, Zone, default_servers};
+use tokio::net::UdpSocket;
 
 fn clock_at(secs: u64) -> Arc<ManualClock> {
     Arc::new(ManualClock::new(
@@ -521,4 +525,162 @@ fn schedule_unknown_filter_set_rejected() {
     )
     .unwrap_err();
     assert_eq!(err.code(), "policy.config.unknown_filter_set");
+}
+
+/// Safe-host resolve failure: keep CNAME-only, but leave a ResolveFailed breadcrumb.
+#[tokio::test]
+async fn safesearch_resolve_failure_keeps_cname_and_records_resolve_failed() {
+    // Forward google.com to a black hole so the SafeSearch follow times out (Err).
+    let h = Hierarchy::start().await.unwrap();
+    let mut resolver_cfg = config_for(&h);
+    resolver_cfg.query_timeout = Duration::from_millis(50);
+    resolver_cfg.forward_zones = vec![ForwardZone {
+        id: ForwardZoneId::new("google-dead").unwrap(),
+        zone: Name::from_ascii("google.com.").unwrap(),
+        targets: vec!["127.0.0.1:1".parse().unwrap()],
+        validate: false,
+    }];
+    let resolver = Arc::new(Resolver::new(resolver_cfg).await.unwrap());
+    let mut profile = profile_base();
+    profile.safesearch = ss(&["google"], YoutubeMode::Strict);
+    let eng = PolicyEngine::new(
+        PolicyConfig {
+            default_rebind: true,
+            ptr_prefixes: Vec::new(),
+            local_nxdomain_suffixes: Vec::new(),
+            rebind_check_forward_zones: Vec::new(),
+            views: vec![default_view()],
+            profiles: vec![profile],
+        },
+        empty_filter(),
+        resolver,
+        Arc::new(NoClients),
+        clock_at(1_000),
+    )
+    .unwrap();
+
+    let ans = eng
+        .handle(ctx("www.google.com.", RecordType::A))
+        .await
+        .unwrap();
+    assert!(has_rewrite(&ans, "google", "forcesafesearch.google.com"));
+    assert!(
+        ans.record.steps.iter().any(|s| matches!(
+            s,
+            DecisionStep::ResolveFailed {
+                cause_code: Some(_)
+            }
+        )),
+        "expected ResolveFailed breadcrumb: {:?}",
+        ans.record.steps
+    );
+    assert_eq!(cname_target(&ans), "forcesafesearch.google.com");
+    assert_eq!(
+        ans.message.answers.len(),
+        1,
+        "CNAME-only fallback, no follow answers"
+    );
+    assert!(ans.ede.is_none());
+}
+
+struct PrivateTarget {
+    addr: SocketAddr,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl PrivateTarget {
+    async fn spawn(ip: Ipv4Addr) -> Self {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr = socket.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_task = Arc::clone(&hits);
+        let task = tokio::spawn(async move {
+            let mut buf = vec![0u8; 2048];
+            loop {
+                let Ok((len, peer)) = socket.recv_from(&mut buf).await else {
+                    return;
+                };
+                hits_task.fetch_add(1, Ordering::Relaxed);
+                let Ok(req) = dnscraft_proto::Message::decode(&buf[..len]) else {
+                    continue;
+                };
+                let mut resp = dnscraft_proto::Message::response_to(&req);
+                resp.header.ra = true;
+                if let Some(q) = req.questions.first() {
+                    resp.answers.push(dnscraft_proto::Record::new(
+                        q.name.clone(),
+                        Class::IN,
+                        60,
+                        RData::A(ip),
+                    ));
+                }
+                let Ok(out) = resp.encode() else {
+                    continue;
+                };
+                let _ = socket.send_to(&out, peer).await;
+            }
+        });
+        Self { addr, task }
+    }
+}
+
+impl Drop for PrivateTarget {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Safe-host resolve via an exempt forward zone: private A kept; record carries
+/// forward_zone + dnssec from the follow resolve.
+#[tokio::test]
+async fn safesearch_follow_preserves_forward_zone_and_dnssec_for_rebind() {
+    let h = Hierarchy::start().await.unwrap();
+    let target = PrivateTarget::spawn(Ipv4Addr::new(10, 55, 0, 1)).await;
+    let zone_id = ForwardZoneId::new("google-fwd").unwrap();
+    let mut resolver_cfg = config_for(&h);
+    resolver_cfg.forward_zones = vec![ForwardZone {
+        id: zone_id.clone(),
+        zone: Name::from_ascii("google.com.").unwrap(),
+        targets: vec![target.addr],
+        validate: false,
+    }];
+    let resolver = Arc::new(Resolver::new(resolver_cfg).await.unwrap());
+
+    let mut profile = profile_base();
+    profile.safesearch = ss(&["google"], YoutubeMode::Strict);
+    let eng = PolicyEngine::new(
+        PolicyConfig {
+            default_rebind: true,
+            ptr_prefixes: Vec::new(),
+            local_nxdomain_suffixes: Vec::new(),
+            // Not listed → forward-zone answers are rebind-exempt.
+            rebind_check_forward_zones: Vec::new(),
+            views: vec![default_view()],
+            profiles: vec![profile],
+        },
+        empty_filter(),
+        resolver,
+        Arc::new(NoClients),
+        clock_at(1_000),
+    )
+    .unwrap();
+
+    let ans = eng
+        .handle(ctx("www.google.com.", RecordType::A))
+        .await
+        .unwrap();
+    assert!(has_rewrite(&ans, "google", "forcesafesearch.google.com"));
+    assert_eq!(ans.record.forward_zone.as_ref(), Some(&zone_id));
+    assert_eq!(ans.record.dnssec, Some(DnssecStatus::Insecure));
+    assert!(ans.record.steps.contains(&DecisionStep::RebindSkipped {
+        reason: RebindSkipReason::ForwardZoneExempt,
+    }));
+    assert!(
+        ans.message
+            .answers
+            .iter()
+            .any(|r| r.rdata == RData::A(Ipv4Addr::new(10, 55, 0, 1))),
+        "private A from exempt forward zone must survive: {:?}",
+        ans.message.answers
+    );
 }

@@ -472,3 +472,27 @@ DoD as for P13
 `SPEC-policy.md` (Schedules only), README
 
 **Scope:** M
+
+## Task P14b: SafeSearch resolve details (review follow-ups)
+
+**Description:** Claude P13/P14 review nits: (1) SafeSearch target resolve
+error keeps the CNAME-only fallback but pushes `DecisionStep::ResolveFailed
+{ cause_code }`; (2) pass the SafeSearch resolve’s `forward_zone` and `dnssec`
+into `finish_resolved_message` so forward-zone rebind exemption and the
+DecisionRecord DNSSEC field are correct. Finish any pending schedule coverage
+tests; every import used; clippy `-D warnings` green for all targets.
+
+**Acceptance criteria:**
+- [x] ResolveFailed breadcrumb on SafeSearch follow failure (CNAME still returned)
+- [x] Forward-zone-exempt safe host keeps private A; record has forward_zone + dnssec
+- [x] Schedule step 6/8/9 coverage tests committed; clippy clean
+
+**Verification:** `cargo clippy -p dnscraft-policy --all-targets --locked -- -D warnings`;
+`cargo test -p dnscraft-policy` 5×
+
+**Dependencies:** P14 · Claude review
+
+**Files:** `src/steps/safesearch.rs`, `src/pipeline.rs`, `src/engine.rs`,
+`tests/safesearch.rs`, `tests/schedule.rs`
+
+**Scope:** S
