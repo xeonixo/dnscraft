@@ -12,10 +12,12 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
 - Module `filtering`: **C1 done** (engine polish, README, coverage, fuzz, real-list acceptance). **Checkpoint D ready for Claude/owner review** — implementer does **not** tick Checkpoint D. Checkpoint B owner: RAM may grow — not blocking. Deep-name p99 miss left for Checkpoint D if revisited.
-- Module `clients`: **SPEC-clients.md decisions locked** (defaults + full IPv6 via classic `stat/sta`). Formal “approved” for P1 still open. Specs for `tls` / `policy` next (S2/S3).
+- Module `clients`: **SPEC-clients.md decisions locked** (defaults + full IPv6 via classic `stat/sta` + dynamic local domain from UniFi DHCP). Formal “approved” for P1 still open. Specs for `tls` / `policy` next (S2/S3).
 - Blockers: none for coding; next owner input is formal SPEC-clients approval and/or S2; filtering Checkpoint D when ready.
 
 ## Log
+
+- 2026-10-25 — SPEC-clients.md local domain (Cursor): Owner wants domain “as present” — prefer UniFi per-VLAN DHCP `domainName`, config `home.arpa` only as fallback; `local_domain_mode` + optional per-manual `domain` override. FQDN indexes / `local_domains()` for policy.
 
 - 2026-10-25 — SPEC-clients.md owner decisions (Cursor): Accepted proposed defaults (`home.arpa`, 60 s poll, 7 d offline retain, VLAN `name (id)`, site auto-pick, pin/CA bootstrap, `DNSCRAFT_UNIFI_API_KEY`, disk last-good, 429 backoff). Explicit ask: **complete IPv6** → classic client feed on by default (`classic_clients = true`), defensive parse, no link-local index. Open Questions cleared; formal approve still pending for P1.
 

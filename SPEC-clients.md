@@ -109,7 +109,8 @@ pub enum ClientSource {
 pub struct ClientInfo {
     pub id: ClientId,           // stable: manual uuid or UniFi client uuid
     pub display_name: String,   // raw display string (UI / log)
-    pub dns_label: String,      // normalised single label for <label>.<local-domain>
+    pub dns_label: String,      // normalised single label
+    pub local_domain: String,   // parent domain used for this client's FQDN (see below)
     pub source: ClientSource,
     pub macs: Vec<MacAddr>,     // zero or more; UniFi wired/wireless usually one
     pub addresses: Vec<IpAddr>, // all known IPs for this client in the snapshot
@@ -121,6 +122,7 @@ pub struct ClientInfo {
 pub struct VlanInfo {
     pub id: u16,                // 802.1Q vlanId from UniFi networks
     pub name: String,           // network name, e.g. "IoT"
+    pub domain_name: Option<String>, // UniFi DHCP `domainName` for this network, if set
 }
 
 pub struct ClientLookup { /* Arc snapshot + indexes */ }
@@ -128,10 +130,13 @@ pub struct ClientLookup { /* Arc snapshot + indexes */ }
 impl ClientLookup {
     /// Hot path for query-log enrichment. Lock-free read of Arc; O(1) hash.
     pub fn by_ip(&self, ip: IpAddr) -> Option<ClientInfo>;
-    /// Forward local name: exact dns_label match (case-insensitive).
-    pub fn by_name(&self, label: &str) -> Option<ClientInfo>;
-    /// PTR: IP → preferred dns_label (same precedence as by_ip).
+    /// Forward local name: FQDN `<label>.<domain>` (case-insensitive), or bare
+    /// label only when it is unambiguous across all local domains.
+    pub fn by_name(&self, name: &str) -> Option<ClientInfo>;
+    /// PTR: IP → FQDN `<label>.<domain>` (same IP precedence as by_ip).
     pub fn reverse(&self, ip: IpAddr) -> Option<String>;
+    /// Domains currently treated as "local" (for policy to answer).
+    pub fn local_domains(&self) -> &[String];
 }
 ```
 
@@ -140,10 +145,29 @@ impl ClientLookup {
 ```rust
 pub trait ClientDirectory: Send + Sync {
     fn by_ip(&self, ip: IpAddr) -> Option<ClientInfo>;
-    fn by_name(&self, label: &str) -> Option<ClientInfo>;
+    fn by_name(&self, name: &str) -> Option<ClientInfo>;
     fn reverse(&self, ip: IpAddr) -> Option<String>;
+    fn local_domains(&self) -> &[String];
 }
 ```
+
+### Local domain (dynamic)
+
+FQDN = `<dns_label>.<local_domain>`. The parent domain is **not** a single fixed
+string when UniFi already publishes one:
+
+1. **Per-network UniFi DHCP `domainName`** (Integration network details,
+   gateway/switch-managed DHCP server config) — use for clients on that
+   network/VLAN. Different VLANs may have different domains.
+2. Else **config `local_domain`** (default `home.arpa`) — fallback when UniFi
+   omits `domainName`, UniFi is disabled, or the client has no network match.
+3. **DNScraft override** — if the admin sets `local_domain_mode = "config"` (or
+   an explicit per-manual `domain`), that wins over UniFi for the affected
+   names. Default mode is `unifi_then_config` (“use what is there”).
+
+`local_domains()` returns the set of parents currently in use so `policy` knows
+which queries are local-name candidates. Domains are normalised (lower-case,
+no trailing dot; IDNA/UTS 46 for non-ASCII).
 
 ### Precedence (IP → client)
 
@@ -151,16 +175,17 @@ When building the IP index, later lower-priority sources lose collisions:
 
 1. **Manual single IP** (exact host entry)
 2. **Manual CIDR** — **longest prefix wins** among overlapping ranges
-3. **UniFi** (Integration snapshot)
+3. **UniFi** (classic + Integration snapshot)
 
-Name collisions among UniFi devices after normalisation: keep a deterministic
+Name collisions **within the same local_domain** after normalisation: deterministic
 tie-break (lexicographically smaller UniFi `id` wins the dns_label; losers get
-`{label}-{id_suffix8}`). Manual entries that collide with UniFi labels: manual
-wins the label; UniFi loser is renamed as above.
+`{label}-{id_suffix8}`). The same label under **different** domains is fine
+(`phone.iot.example.com` ≠ `phone.lan.example.com`). Manual entries that collide
+with UniFi on the same FQDN: manual wins; UniFi loser is renamed as above.
 
 ### Name normalisation (DNS labels)
 
-For `<device>.<local-domain>`:
+For the **left-most label** of `<device>.<local-domain>`:
 
 1. Unicode NFKC, lower-case.
 2. Spaces and underscores → `-`; strip characters outside `[a-z0-9-]`.
@@ -168,8 +193,8 @@ For `<device>.<local-domain>`:
 4. Empty result → `client` + short id suffix.
 5. Labels longer than 63 octets: truncate on a hyphen boundary when possible,
    then append a short hash suffix to keep uniqueness.
-6. IDNA: the **label** is ASCII after step 2–5; the parent `local_domain` may be
-   Unicode and is converted with UTS 46 when `policy` builds the FQDN.
+6. IDNA: the label is ASCII after step 2–5; the parent domain may be Unicode and
+   is converted with UTS 46 when building the FQDN.
 
 ### IPv6 and rotating privacy addresses
 
@@ -250,7 +275,11 @@ test:
 
 ```toml
 [clients]
+# Fallback parent domain when UniFi has no DHCP domainName for the client's network.
+# Mode "unifi_then_config" (default): use UniFi per-VLAN domain when present.
+# Mode "config": always use local_domain below (admin override).
 local_domain = "home.arpa"
+local_domain_mode = "unifi_then_config"
 offline_retain = "7d"
 ipv6_address_ttl = "24h"
 
@@ -269,6 +298,7 @@ tls_pin_sha256 = "sha256:AB:CD:…"   # or ca_file = "/path/to/ca.pem"
 [[clients.manual]]
 name = "paperless"
 ip = "198.51.100.5"
+# optional domain = "…" overrides UniFi/fallback for this entry only
 
 [[clients.manual]]
 name = "Docker on server1"
@@ -284,6 +314,7 @@ cidr = "198.51.100.0/24"
   **never** real captures from the owner's network.
 - Table tests: precedence (manual IP > longer CIDR > shorter CIDR > UniFi),
   name normalisation, collision suffixes, VLAN join / longest-prefix,
+  per-VLAN UniFi `domainName` vs config fallback vs `local_domain_mode = "config"`,
   offline retain / IPv6 TTL with a manual clock, merge of classic multi-IPv6
   with Integration singular `ipAddress`.
 - Failure tests: connect refused, bad pin, 401, truncated JSON, empty site list,
@@ -310,25 +341,31 @@ cidr = "198.51.100.0/24"
    `by_name` / `reverse` match the precedence and normalisation rules above.
 2. A fixture client with several IPv6 addresses is reachable via `by_ip` /
    `reverse` for **each** of them (complete IPv6).
-3. Gateway down: lookups still return the last good data with `stale = true` and
+3. Two networks with different UniFi DHCP `domainName` values produce different
+   FQDNs; missing `domainName` falls back to config `local_domain`.
+4. Gateway down: lookups still return the last good data with `stale = true` and
    a stable error code on status; no await on the lookup path.
-4. Manual single IP overrides UniFi for the same address; longest manual CIDR
+5. Manual single IP overrides UniFi for the same address; longest manual CIDR
    wins among manuals.
-5. TLS: pin mismatch fails closed with `clients.tls.untrusted`; skip-verify is
+6. TLS: pin mismatch fails closed with `clients.tls.untrusted`; skip-verify is
    opt-in only.
-6. VLAN filled via network id join or subnet match when available; unknown when
+7. VLAN filled via network id join or subnet match when available; unknown when
    not.
-7. Invented fixtures only; DoD gates (`fmt`, `clippy -D warnings`,
+8. Invented fixtures only; DoD gates (`fmt`, `clippy -D warnings`,
    `test --workspace`) green once implemented.
 
 ## Open Questions
 
 None — owner accepted the proposed defaults (2026-10-25), with the explicit
-preference for complete IPv6 via the classic client feed.
+preference for complete IPv6 via the classic client feed, and dynamic local
+domain from UniFi when present.
 
 ## Decisions (owner, 2026-10-25)
 
-1. **`local_domain` default:** `home.arpa` (RFC 8375).
+1. **Local domain:** dynamic — prefer UniFi per-network DHCP `domainName` when
+   present (`local_domain_mode = "unifi_then_config"`); else config
+   `local_domain` default `home.arpa` (RFC 8375). Admin may force config-only
+   or set a per-manual `domain`.
 2. **Poll interval:** 60 s ±10 % jitter.
 3. **Offline retain:** 7 days (`online = false`), then evict.
 4. **IPv6:** complete — classic `stat/sta` (etc.) is **on by default**
