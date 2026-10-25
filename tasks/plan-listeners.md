@@ -1,6 +1,6 @@
 # Implementation Plan: `listeners` module
 
-> Spec: [SPEC-listeners.md](../SPEC-listeners.md) (DRAFT — owner approval first) · Project spec: [SPEC.md](../SPEC.md) ·
+> Spec: [SPEC-listeners.md](../SPEC-listeners.md) (approved 2026-10-25) · Project spec: [SPEC.md](../SPEC.md) ·
 > Tasks: [todo-listeners.md](todo-listeners.md) · Resume log: [progress.md](progress.md) ·
 > Neighbours: [archive/policy-plan.md](archive/policy-plan.md), [archive/tls-plan.md](archive/tls-plan.md)
 > Built by **one Cursor agent**, one task per session (template B in [cursor-next.md](cursor-next.md)); Claude reviews at every checkpoint.
@@ -55,7 +55,7 @@ Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i o
 ## Task List
 
 ### Phase 0: Approval and risk spike
-- [ ] **Owner approves SPEC-listeners.md + the dependency table** (open questions answered in the spec's "Decisions")
+- [x] **Owner approves SPEC-listeners.md + the dependency table** (2026-10-25; decisions in the spec)
 - [ ] L0: Policy accessor for registered Client IDs (cross-module, XS)
 - [ ] N0: Spike — pktinfo reply-source, quinn ring-only, h3/h3-quinn compile, hyper h2 server (spikes/listeners/)
 
@@ -84,11 +84,11 @@ Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i o
 ### Phase 3: Discovery, runtime, HTTP/3
 - [ ] N10: DDR `_dns.resolver.arpa`
 - [ ] N11: `ListenerSet` runtime — start, partial bind failure, `apply_config`, shutdown, status, query events
-- [ ] N12: DoH over HTTP/3 + `Alt-Svc` (skip if the owner defers h3)
+- [ ] N12: DoH over HTTP/3 + `Alt-Svc` (owner: in v1)
 
 ### Phase 4: Polish (+ optional binary)
 - [ ] N13: Fuzz targets, bench, README, coverage, success-criteria table
-- [ ] N14: Minimal `crates/dnscraft` binary (only if the owner says yes to open question 5)
+- [ ] N14: Minimal `crates/dnscraft` binary (owner: yes)
 
 ### Checkpoint D: Complete
 - [ ] All spec success criteria; independent security review (exposure, admission, resource caps); owner approval

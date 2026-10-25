@@ -28,7 +28,7 @@ crate** (policy must not depend on tls). Hot reload: the check always uses the c
 
 **Verification:** `cargo test -p dnscraft-policy client_id`
 
-**Dependencies:** owner approval · **Files:** `crates/dnscraft-policy/src/engine.rs`, `tests/engine.rs`, `README.md` · **Scope:** XS
+**Dependencies:** owner approval ✓ (2026-10-25) · **Files:** `crates/dnscraft-policy/src/engine.rs`, `tests/engine.rs`, `README.md` · **Scope:** XS
 
 ## Task N0: Spike — pktinfo, quinn ring-only, h3, hyper h2
 
@@ -51,7 +51,7 @@ that answer four questions with evidence:
 
 **Verification:** commands listed in the progress entry; `cargo tree -i aws-lc-rs` output pasted
 
-**Dependencies:** owner approval · **Files:** `spikes/listeners/**`, `tasks/progress.md` · **Scope:** M
+**Dependencies:** owner approval ✓ (2026-10-25) · **Files:** `spikes/listeners/**`, `tasks/progress.md` · **Scope:** M
 
 ## Checkpoint A: Approval + spike
 - [ ] Spike findings reviewed by Claude; dependency table final
@@ -271,7 +271,7 @@ shutdown stops accepting and drains in-flight queries up to `grace`. `QueryEvent
 
 **Dependencies:** N4, N5, N7, N8, N9, N10 · **Files:** `src/set.rs`, `src/events.rs`, `src/status.rs`, `tests/runtime.rs` · **Scope:** M
 
-## Task N12: DoH over HTTP/3 (skip if the owner defers h3)
+## Task N12: DoH over HTTP/3 (owner: in v1)
 
 **Description:** When `h3 = true` on a DoH listener, also run a `quinn` endpoint on UDP with ALPN `h3` and
 serve the same DoH routes through `h3` + `h3-quinn`, reusing `doh_request.rs`. HTTP/2 responses carry
@@ -305,7 +305,7 @@ progress.md. Coverage ≥ 80 % lines.
 
 **Dependencies:** N11 (N12 if done) · **Files:** `fuzz/**`, `benches/udp.rs`, `README.md`, `tasks/progress.md` · **Scope:** M
 
-## Task N14: Minimal `dnscraft` binary (only with owner go, open question 5)
+## Task N14: Minimal `dnscraft` binary (owner go 2026-10-25)
 
 **Description:** `crates/dnscraft` binary: reads a small bootstrap TOML (data dir, listeners, resolver
 root/forward zones, filter lists, one default view/profile) + env secrets, builds resolver → filtering →

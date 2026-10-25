@@ -21,12 +21,12 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | **spec + plan DRAFT — awaiting owner approval** | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md) |
+| `listeners` | spec + plan **approved** 2026-10-25; next: L0 + N0 spike | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md) |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
   (2026-10-25); ring-only TLS enforced by `cargo deny` bans; `cargo deny check` runs in CI.
-- Blockers: owner approval of SPEC-listeners.md (open questions 1–6) and the dependency table in plan-listeners.md.
+- Blockers: none.
 - Open owner questions: schedule windows in local time (needs a time-zone dependency; today UTC week
   offsets, see SPEC-policy.md "Schedules").
 - Optional follow-ups noted in reviews (not blocking): clients — record fetch errors only for
@@ -34,6 +34,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-25 — **Owner approved SPEC-listeners.md, the plan and the dependency table** with all six recommendations: deps as listed; HTTP/3 in v1 (late task N12); wildcard binds supported, concrete addresses preferred; public Do53 dropped silently; minimal `dnscraft` binary (N14) in scope; DDR opportunistic only. Next: L0 + N0 (Cursor).
 
 - 2026-10-25 — **listeners: spec draft + plan + tasks** (Claude). SPEC-listeners.md (draft): listener model (id, protocol, address, exposure), admission (source class, public Do53 dropped, Client ID via SNI / DoH path, token buckets, bounded ban table), shared message core, per-transport rules (RFC 1035/6891/7766/7828/7858/8484/9113/9114/9250/8467/9462 to verify and cite at implement time), TLS via `tls::CertResolver`, DDR, query events, runtime/reload, 8 success criteria, 6 open owner questions. Plan: one Cursor agent, 16 tasks (L0 policy accessor, N0 spike for pktinfo/quinn ring-only/h3/hyper, N1–N13, optional N14 minimal binary), checkpoints A–D. Dependencies for approval: quinn 0.11 (ring-only features), quinn-udp 0.6, hyper 1 + hyper-util 0.1, h3 0.0.8 + h3-quinn 0.0.10, base64 (if not in the tree), toml (N14). **STOP: owner approval.**
 

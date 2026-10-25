@@ -1,6 +1,6 @@
 # Spec: `listeners` module
 
-> Status: **DRAFT — awaiting owner approval** (written by Claude, 2026-10-25).
+> Status: **APPROVED by the owner 2026-10-25** (written by Claude; decisions below).
 > Module index: [CAPABILITY-MAP.md](CAPABILITY-MAP.md) · Project spec: [SPEC.md](SPEC.md) ·
 > Neighbours: [SPEC-policy.md](SPEC-policy.md) (query pipeline), [SPEC-tls.md](SPEC-tls.md) (certificates, SNI helpers).
 > Plan / tasks (after approval): [tasks/plan-listeners.md](tasks/plan-listeners.md), [tasks/todo-listeners.md](tasks/todo-listeners.md).
@@ -262,7 +262,7 @@ target = "dns"                     # dns.<public_domain>; or a node hostname lab
 7. Query events are emitted for loggable queries only; a full sink never blocks answering.
 8. Coverage ≥ 80 % lines; fuzz targets 10 min clean; DoD gates green; `cargo deny check` green.
 
-## Open Questions (owner)
+## Open Questions (owner) — answered, see Decisions
 
 1. **Dependencies** (versions checked 2026-10-25): `quinn` 0.11 (features `runtime-tokio`, `rustls-ring`,
    no aws-lc), `quinn-udp` 0.6 (pktinfo), `h3` 0.0.8 + `h3-quinn` 0.0.10 (HTTP/3 — pre-1.0, experimental),
@@ -277,3 +277,17 @@ target = "dns"                     # dns.<public_domain>; or a node hostname lab
    testing before `control-api` exists? Recommendation: yes, as the last phase.
 6. **Verified DDR** needs IP SANs, which Let's Encrypt does not issue for private addresses — accept
    opportunistic discovery only?
+
+## Decisions (owner, 2026-10-25)
+
+1. **Dependencies approved** as listed in [tasks/plan-listeners.md](tasks/plan-listeners.md): `quinn` 0.11
+   (`default-features = false`, `runtime-tokio`, `rustls-ring`), `quinn-udp` 0.6, `hyper` 1 + `hyper-util` 0.1,
+   `h3` 0.0.8 + `h3-quinn` 0.0.10, `base64` (only if not already in the tree), `toml` (N14 only). The spike N0
+   may correct versions/features; any change beyond that needs a new approval.
+2. **HTTP/3 in v1**, as the late task N12 (can still be dropped if h3/h3-quinn prove unstable).
+3. **Wildcard binds supported** (pktinfo via `quinn-udp`); concrete addresses per NIC are the documented default.
+4. **Do53 from public sources is dropped silently** (no `REFUSED`, no amplification).
+5. **Minimal `dnscraft` binary (N14) is part of this module** so DNScraft can run next to AdGuard Home before
+   `control-api` exists.
+6. **DDR: opportunistic discovery only** (no IP-SAN certificates).
+
