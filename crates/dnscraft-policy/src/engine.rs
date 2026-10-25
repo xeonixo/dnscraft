@@ -1,7 +1,7 @@
 //! Policy engine: select a view, run the pipeline, emit an answer.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use dnscraft_filtering::{Clock, FilterEngine};
@@ -12,8 +12,11 @@ use crate::config::{PolicyConfig, RequestContext};
 use crate::decision::{AnswerOrigin, DecisionStep};
 use crate::directory::ClientDirectory;
 use crate::error::PolicyError;
-use crate::pipeline::{Draft, Flow, StepCtx, apply_ad_policy};
+use crate::ids::ProfileId;
+use crate::pause::{PauseScope, PauseTable, PauseUntil};
+use crate::pipeline::{Draft, Flow, StepCtx, Synth, apply_ad_policy};
 use crate::snapshot::PolicySnapshot;
+use crate::stats::{PolicyStats, StatsTable};
 use crate::steps::answer_side::AnswerSide;
 use crate::steps::{aaaa, answer_side, canary, directory, filter, local_records, rebind};
 use crate::synth::{any_rfc8482, resolve_servfail};
@@ -33,11 +36,13 @@ pub struct PolicyAnswer {
 
 /// Pipeline between listeners and the resolver / filter engine.
 pub struct PolicyEngine {
-    snapshot: Arc<PolicySnapshot>,
+    snapshot: RwLock<Arc<PolicySnapshot>>,
     filter: Arc<FilterEngine>,
     resolver: Arc<Resolver>,
     clients: Arc<dyn ClientDirectory>,
     clock: Arc<dyn Clock>,
+    pauses: Mutex<PauseTable>,
+    stats: RwLock<StatsTable>,
 }
 
 impl PolicyEngine {
@@ -55,18 +60,80 @@ impl PolicyEngine {
         let known_sets: Vec<_> = filter.snapshot().set_ids().cloned().collect();
         let known_zones = resolver.forward_zone_ids();
         let snapshot = PolicySnapshot::build(config, &known_sets, &known_zones)?;
+        let (view_ids, profile_ids) = snapshot_ids(&snapshot);
         Ok(Self {
-            snapshot: Arc::new(snapshot),
+            snapshot: RwLock::new(Arc::new(snapshot)),
             filter,
             resolver,
             clients,
             clock,
+            pauses: Mutex::new(PauseTable::default()),
+            stats: RwLock::new(StatsTable::new(view_ids, profile_ids)),
         })
     }
 
-    /// Current snapshot (for tests and status).
+    /// Current snapshot (for tests and status). Cloned under a short lock.
     pub fn snapshot(&self) -> Arc<PolicySnapshot> {
-        Arc::clone(&self.snapshot)
+        Arc::clone(
+            &self
+                .snapshot
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Per-view / per-profile counters.
+    pub fn stats(&self) -> PolicyStats {
+        self.stats
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .snapshot()
+    }
+
+    /// Rebuilds and swaps the snapshot. On validation failure the previous
+    /// snapshot stays in place. Pause state and counters survive by id;
+    /// pauses for removed profiles are dropped.
+    pub async fn apply_config(&self, config: PolicyConfig) -> Result<(), PolicyError> {
+        let known_sets: Vec<_> = self.filter.snapshot().set_ids().cloned().collect();
+        let known_zones = self.resolver.forward_zone_ids();
+        let snapshot = PolicySnapshot::build(config, &known_sets, &known_zones)?;
+        let (view_ids, profile_ids) = snapshot_ids(&snapshot);
+
+        {
+            let mut guard = self
+                .snapshot
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard = Arc::new(snapshot);
+        }
+        self.pauses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain_profiles(&profile_ids);
+        self.stats
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .ensure(view_ids, profile_ids);
+        Ok(())
+    }
+
+    /// Pauses filtering (steps 4 / 6 / 8 / 9) for `scope`.
+    pub fn pause(&self, scope: PauseScope, until: PauseUntil) -> Result<(), PolicyError> {
+        let snapshot = self.snapshot();
+        let known: Vec<ProfileId> = snapshot.profiles.iter().map(|p| p.id.clone()).collect();
+        self.pauses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pause(scope, until, self.clock.now(), &known)
+    }
+
+    /// Clears a previously set pause for `scope`.
+    pub fn resume(&self, scope: PauseScope) -> Result<(), PolicyError> {
+        self.pauses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .resume(scope);
+        Ok(())
     }
 
     /// Handles one query: select, run steps, emit.
@@ -80,7 +147,7 @@ impl PolicyEngine {
     /// [`RequestFlags`] only (no client EDNS options).
     pub async fn handle(&self, ctx: RequestContext) -> Result<PolicyAnswer, PolicyError> {
         let total_start = Instant::now();
-        let snapshot = Arc::clone(&self.snapshot);
+        let snapshot = self.snapshot();
         let loggable = !ctx.test_query;
 
         let select_start = Instant::now();
@@ -90,20 +157,14 @@ impl PolicyEngine {
         let mut draft = Draft::new(selection);
         draft.timings.select_us = select_us;
 
+        let paused = self.is_paused(&draft.selection.profile_id);
+
         // ANY → RFC 8482, never resolve (and never view records).
         if ctx.query.qtype == RecordType::ANY {
             let synth = any_rfc8482(&ctx.query, ctx.flags.recursion_desired);
             draft.steps.push(DecisionStep::AnySynth);
             draft.synthetic = true;
-            draft.timings.total_us = elapsed_us(total_start);
-            return Ok(emit(
-                draft,
-                synth,
-                ctx.client_id.clone(),
-                loggable,
-                None,
-                None,
-            ));
+            return Ok(self.finish_synth(draft, synth, total_start, ctx.client_id, loggable));
         }
 
         let profile = snapshot.profile_for_view(draft.selection.view_idx);
@@ -120,57 +181,50 @@ impl PolicyEngine {
             forward_zones_allow: forward_zones.as_deref(),
             filter: self.filter.as_ref(),
             clock: self.clock.as_ref(),
+            paused,
         };
 
         // Step 1: view local records.
         if let Flow::Answer(synth) = local_records::run(&ctx, step_ctx, &mut draft) {
-            draft.timings.total_us = elapsed_us(total_start);
-            return Ok(emit(
+            return Ok(self.finish_synth(
                 draft,
                 synth,
+                total_start,
                 ctx.client_id.clone(),
                 loggable,
-                None,
-                None,
             ));
         }
 
         // Step 2: ClientDirectory names / PTR / special-use NXDOMAIN.
         if let Flow::Answer(synth) = directory::run(&ctx, step_ctx, &mut draft) {
-            draft.timings.total_us = elapsed_us(total_start);
-            return Ok(emit(
+            return Ok(self.finish_synth(
                 draft,
                 synth,
+                total_start,
                 ctx.client_id.clone(),
                 loggable,
-                None,
-                None,
             ));
         }
 
         // Step 3: bypass canaries (Firefox DoH / iCloud Private Relay).
         if let Flow::Answer(synth) = canary::run(&ctx, step_ctx, &mut draft) {
-            draft.timings.total_us = elapsed_us(total_start);
-            return Ok(emit(
+            return Ok(self.finish_synth(
                 draft,
                 synth,
+                total_start,
                 ctx.client_id.clone(),
                 loggable,
-                None,
-                None,
             ));
         }
 
-        // Step 4: filter original qname (block / rewrite).
+        // Step 4: filter original qname (block / rewrite). Skipped while paused.
         if let Flow::Answer(synth) = filter::run(&ctx, step_ctx, &mut draft).await {
-            draft.timings.total_us = elapsed_us(total_start);
-            return Ok(emit(
+            return Ok(self.finish_synth(
                 draft,
                 synth,
+                total_start,
                 ctx.client_id.clone(),
                 loggable,
-                None,
-                None,
             ));
         }
 
@@ -195,14 +249,12 @@ impl PolicyEngine {
                 });
                 let synth = resolve_servfail(&ctx.query, ctx.flags.recursion_desired);
                 draft.synthetic = true;
-                draft.timings.total_us = elapsed_us(total_start);
-                return Ok(emit(
+                return Ok(self.finish_synth(
                     draft,
                     synth,
+                    total_start,
                     ctx.client_id.clone(),
                     loggable,
-                    None,
-                    None,
                 ));
             }
         };
@@ -220,14 +272,12 @@ impl PolicyEngine {
         // Steps 8–9: CNAME uncloaking + answer-IP rules (resolver answers only).
         match answer_side::run(&ctx, step_ctx, &mut draft, &message) {
             AnswerSide::Replace(synth) => {
-                draft.timings.total_us = elapsed_us(total_start);
-                return Ok(emit(
+                return Ok(self.finish_synth(
                     draft,
                     synth,
+                    total_start,
                     ctx.client_id.clone(),
                     loggable,
-                    None,
-                    None,
                 ));
             }
             AnswerSide::Keep => {}
@@ -264,6 +314,7 @@ impl PolicyEngine {
             Some(answer.dnssec),
             ctx.client_id,
         );
+        self.record_stats(&record);
 
         Ok(PolicyAnswer {
             message,
@@ -272,11 +323,55 @@ impl PolicyEngine {
             loggable,
         })
     }
+
+    fn is_paused(&self, profile: &ProfileId) -> bool {
+        self.pauses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_paused(profile, self.clock.now())
+    }
+
+    fn finish_synth(
+        &self,
+        mut draft: Draft,
+        synth: Synth,
+        total_start: Instant,
+        client_id: Option<crate::ids::ClientId>,
+        loggable: bool,
+    ) -> PolicyAnswer {
+        draft.timings.total_us = elapsed_us(total_start);
+        let answer = emit(draft, synth, client_id, loggable, None, None);
+        self.record_stats(&answer.record);
+        answer
+    }
+
+    fn record_stats(&self, decision: &crate::decision::DecisionRecord) {
+        self.stats
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record(decision);
+    }
+
+    /// Client directory (for later steps and tests).
+    pub fn clients(&self) -> &Arc<dyn ClientDirectory> {
+        &self.clients
+    }
+
+    /// Filter engine (for later steps and tests).
+    pub fn filter(&self) -> &Arc<FilterEngine> {
+        &self.filter
+    }
+}
+
+fn snapshot_ids(snapshot: &PolicySnapshot) -> (Vec<crate::ids::ViewId>, Vec<ProfileId>) {
+    let views = snapshot.views.iter().map(|v| v.id.clone()).collect();
+    let profiles = snapshot.profiles.iter().map(|p| p.id.clone()).collect();
+    (views, profiles)
 }
 
 fn emit(
     draft: Draft,
-    synth: crate::pipeline::Synth,
+    synth: Synth,
     client_id: Option<crate::ids::ClientId>,
     loggable: bool,
     forward_zone: Option<dnscraft_resolver::ForwardZoneId>,
@@ -295,16 +390,4 @@ fn emit(
 
 fn elapsed_us(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
-}
-
-impl PolicyEngine {
-    /// Client directory (for later steps and tests).
-    pub fn clients(&self) -> &Arc<dyn ClientDirectory> {
-        &self.clients
-    }
-
-    /// Filter engine (for later steps and tests).
-    pub fn filter(&self) -> &Arc<FilterEngine> {
-        &self.filter
-    }
 }

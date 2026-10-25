@@ -20,14 +20,15 @@ pub(crate) enum AnswerSide {
     Replace(crate::pipeline::Synth),
 }
 
-/// Runs steps 8 (CNAME chain) and 9 (answer IPs). Skipped when `draft.synthetic`.
+/// Runs steps 8 (CNAME chain) and 9 (answer IPs). Skipped when `draft.synthetic`
+/// or when protection is paused for this profile.
 pub(crate) fn run(
     ctx: &RequestContext,
     step: StepCtx<'_>,
     draft: &mut Draft,
     message: &Message,
 ) -> AnswerSide {
-    if draft.synthetic {
+    if draft.synthetic || step.paused {
         return AnswerSide::Keep;
     }
 

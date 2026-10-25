@@ -234,8 +234,8 @@ Step 11: profile `suppress_aaaa` and qtype AAAA → NODATA; other qtypes unchang
 **Dependencies:** P8 · **Files:** `src/steps/rebind.rs`, `src/steps/aaaa.rs`, `src/private.rs`, `tests/rebind.rs` · **Scope:** M
 
 ## Checkpoint B: Pipeline
-- [ ] Steps 1–12 in spec order (5/6 stubbed); every row of the AD/EDE matrix has a test
-- [ ] Lead review; progress.md updated
+- [x] Steps 1–12 in spec order (5/6 stubbed); every row of the AD/EDE matrix has a test
+- [x] Lead review; progress.md updated (Claude re-review 2026-10-25: passed)
 
 ## Phase 3: Operations
 
@@ -251,9 +251,9 @@ Step 11: profile `suppress_aaaa` and qtype AAAA → NODATA; other qtypes unchang
 - Per-view and per-profile counters (queries, blocked, local hits) with a `stats()` getter.
 
 **Acceptance criteria:**
-- [ ] `ManualClock`: global 5 min pause passes a blocked name, blocks again after expiry; per-profile pause affects only that profile; until-resumed stays until `resume`
-- [ ] `apply_config` with an invalid config keeps the old snapshot and returns the error code; a valid one takes effect on the next query
-- [ ] Counters increment per outcome and survive reload
+- [x] `ManualClock`: global 5 min pause passes a blocked name, blocks again after expiry; per-profile pause affects only that profile; until-resumed stays until `resume`
+- [x] `apply_config` with an invalid config keeps the old snapshot and returns the error code; a valid one takes effect on the next query
+- [x] Counters increment per outcome and survive reload
 
 **Verification:** `cargo test -p dnscraft-policy pause`
 

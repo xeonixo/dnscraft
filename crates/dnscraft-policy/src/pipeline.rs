@@ -108,6 +108,8 @@ pub struct StepCtx<'a> {
     pub filter: &'a dnscraft_filtering::FilterEngine,
     /// Shared clock (pause / temporary allows / match_name `now`).
     pub clock: &'a dyn dnscraft_filtering::Clock,
+    /// When true, filter steps 4 / 6 / 8 / 9 return Pass (user-facing pause).
+    pub paused: bool,
 }
 
 #[cfg(test)]

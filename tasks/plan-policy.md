@@ -145,7 +145,7 @@ P12 golden integration tests, AD/EDE matrix, bench, coverage, README
 - [ ] All twelve steps in order (SafeSearch stubbed); AD/EDE matrix rows covered; lead review
 
 ### Phase 3: Operations
-- [ ] P10: Pause (global + per profile), hot reload, counters
+- [x] P10: Pause (global + per profile), hot reload, counters
 - [ ] P11: SafeSearch + schedules config surface (stub, status "not applied")
 - [ ] P12: Golden integration tests, bench, coverage, README
 

@@ -256,6 +256,7 @@ async fn secure_rebind_strip_clears_ad() {
         "rebind modification must clear AD on a Secure answer"
     );
     assert!(ans.message.answers.is_empty());
+    assert_eq!(ans.message.authorities[0].rtype(), RecordType::SOA);
     assert_eq!(ans.message.rcode(), Rcode::NOERROR);
 }
 
@@ -347,6 +348,7 @@ async fn rebind_strip_drops_stale_ede() {
         "rebind strip must drop resolver EDE (stale code 3)"
     );
     assert!(stale.message.answers.is_empty());
+    assert_eq!(stale.message.authorities[0].rtype(), RecordType::SOA);
 }
 
 #[tokio::test]

@@ -363,7 +363,8 @@ fn filter_nodata(query: &Query, rd: bool, ttl: u32, ede: Option<ExtendedError>) 
     }
 }
 
-fn synthetic_soa(zone: &Name, ttl: u32) -> Record {
+/// Synthetic SOA for NODATA / NXDOMAIN authority (negative caching).
+pub(crate) fn synthetic_soa(zone: &Name, ttl: u32) -> Record {
     let rname = match Name::from_ascii("nobody.invalid.") {
         Ok(n) => n,
         Err(_) => Name::root(),
@@ -382,6 +383,12 @@ fn synthetic_soa(zone: &Name, ttl: u32) -> Record {
             minimum: ttl,
         },
     )
+}
+
+/// Ensures a NODATA answer has a single synthetic SOA in authority.
+pub(crate) fn ensure_nodata_soa(message: &mut Message, owner: &Name, ttl: u32) {
+    message.authorities.clear();
+    message.authorities.push(synthetic_soa(owner, ttl));
 }
 
 fn ede(code: u16, text: Option<String>) -> ExtendedError {

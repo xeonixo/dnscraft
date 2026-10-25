@@ -12,10 +12,26 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
-- Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
+- Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)). **C1–C10 + O1 done**; Checkpoint A passed; **Checkpoint B fixes landed** (awaiting re-review). Next: Checkpoint B re-review → **Checkpoint C**.
+
+### clients success criteria (SPEC-clients.md)
+
+| # | Criterion | Covered by |
+|---|-----------|------------|
+| 1 | Mock Integration + classic sync → indexes; precedence / normalisation | `tests/engine.rs` `sync_builds_indexes_criteria_1_2_3_5_7`; `tests/lookup.rs`; `tests/merge.rs` |
+| 2 | Multi-IPv6 reachable via `by_ip` / `reverse` each | `tests/engine.rs`; `tests/classic_api.rs` `multi_ipv6_*` / `sync_merges_classic_ipv6_*` |
+| 3 | Per-network `domain_name` → distinct FQDNs; missing → config fallback | `tests/engine.rs`; `tests/merge.rs` `vlan_join_and_domain_modes` |
+| 4 | Gateway down: last good + `stale` + stable error; lookup never awaits | `tests/engine.rs` failure matrix; `tests/cache.rs` `restart_with_gateway_down_*` |
+| 4a | Stable labels; IP conflict → online / most recent | `tests/merge.rs` `first_seen_*` / `ip_conflict_*`; `tests/cache.rs` `labels_survive_restart` |
+| 5 | Manual IP / longest CIDR beat UniFi | `tests/engine.rs`; `tests/merge.rs` `manual_beats_*` / `manual_cidr_*` |
+| 6 | Pin mismatch → `clients.tls.untrusted`; insecure opt-in only | `tests/gateway.rs`; `tests/engine.rs` `bad_pin_keeps_snapshot` |
+| 7 | VLAN via `network_id` join or LPM | `tests/engine.rs`; `tests/merge.rs` `vlan_*` |
+| 8 | Invented fixtures only; DoD green | mock gateway; `fmt` / `clippy -D warnings` / `cargo test -p dnscraft-clients` |
+
+Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.28 %** lines / **85.49 %** regions.
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L11 done**; Checkpoints A and B passed (2026-10-25). Next: **Checkpoint C** (security review + owner staging acceptance).
-- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P9 done. Checkpoint A passed** (2026-10-25). Checkpoint B review fixes landed (awaiting Claude re-review). Do **not** start P10 until Checkpoint B boxes are ticked.
-- Blockers: policy Checkpoint B re-review. Clients last. T2 open (any time).
+- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P10 done. Checkpoint A passed** (2026-10-25). **Checkpoint B passed** (Claude re-review 2026-10-25). Next: P9b (HTTPS/SVCB rebind hints) if not yet done, then P11 → P12 (brief in cursor-next.md).
+- Blockers: clients Checkpoint B needs C11 review fixes. T2 open (bundled with L12).
 
 ### tls success criteria (SPEC-tls.md)
 
@@ -32,6 +48,36 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **77.18 %** lines / **76.36 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
 
 ## Log
+
+- 2026-10-25 — Policy P10 done (Cursor): pause (global / per-profile, `For` / `UntilResumed` via `ManualClock`); filter steps 4/8/9 Pass while paused — canary, rebind, AAAA still run; `apply_config` builds then swaps `RwLock<Arc<PolicySnapshot>>` (invalid keeps last-good); counters per view/profile (queries / blocked / local_hits) survive reload by id; pauses for removed profiles dropped. Empty rebind/AAAA NODATA now carries synthetic SOA. `handle()` early-emit folded into `finish_synth`. Tests: `tests/pause.rs`, `tests/reload.rs`. DoD green. Next: P9b (HTTPS/SVCB hints) per cursor-next, then P11.
+
+- 2026-10-25 — **Claude review of the clients/tls/policy checkpoints.** DoD green (fmt, clippy `-D warnings`, tests of all three crates; `cargo tree -i aws-lc-rs` / `openssl-sys` empty). **policy Checkpoint B passed** (fixes in 6c79b68 verified: char-boundary EDE truncate, AAAA only on NOERROR, AD/EDE matrix, CNAME kept after rebind) → P10 may start. **clients Checkpoint A passed** (pin verifier checks leaf SHA-256 + handshake signatures, CA mode via WebPKI, insecure opt-in only with warning, key redacted, redirects off, 8 MiB streamed cap). **clients Checkpoint B not passed:** state dropped on hash-unchanged sync (IPv6 TTL / retain timestamps go stale), random HashMap order of merged observations defeats change detection with ≥ 2 clients (test seeds only one), no single-flight between poll / sync_now / apply_config (stale config can overwrite), apply_config status order, first live sync only after a full poll interval, tautological assertion in tests/engine.rs. **tls:** no blocker for Checkpoint C; hardening list (structured Retry-After, SNI label case, key-file permission check on load, staging checklist, coverage 77 %). Briefs for three parallel Cursor agents: C11, P10–P12, L12 + T2 in cursor-next.md. FYI: secret/clock/atomic-write helpers are duplicated per crate on purpose (plan decision); consolidate only after all three modules pass. Owner questions raised: cargo-deny in CI; `zeroize` for secrets; rebind for HTTPS/SVCB address hints.
+
+- 2026-10-25 — **Owner approved all three:** (1) cargo-deny in CI (licenses, advisories, bans incl. aws-lc-rs/openssl-sys) — Agent 3 / L12; (2) `zeroize` as a direct dependency (already in the tree via rustls 0.23, v1.9.1; no new crate in Cargo.lock) for `Secret` in clients (Agent 1 / C11) and tls (Agent 3 / L12); (3) rebind also strips private addresses from HTTPS/SVCB `ipv4hint`/`ipv6hint` and from additional-section A/AAAA — SPEC-policy.md step 10 amended, Agent 2 implements it as task P9b before P10.
+
+- 2026-10-25 — clients **Checkpoint B review fixes** (Cursor): (1) `install_snapshot` always writes merge `State` even when content hash matches — IPv6 TTL / offline retain no longer freeze. (2) Order-independent content hash (sort obs/nets/clients by id) + `merge_observations` sorted output — ≥2 clients no longer rebuild every poll. (3) `tokio::sync::Mutex` serialises `run_sync` / `apply_config`. (4) `apply_config` installs config before rebuild (status counts); first poll sync runs immediately; weak backoff assert fixed. Regression tests: `two_clients_unchanged_feed_does_not_rebuild`, `unchanged_hash_still_refreshes_ipv6_ttl_state`, `apply_config_refreshes_status_counts`. **Crate still uncommitted.** STOP for Checkpoint B re-review.
+
+- 2026-10-25 — clients **C10 done** (Cursor): README (config, TLS pin bootstrap, API key env, failure table, cache layout); public defensive parsers + `tests/proptest_parsers.rs` (≥ 1024 cases, no panic); success-criteria table above; llvm-cov **86.28 %** lines. DoD green. Next: Checkpoint C (lead security review + owner approval).
+
+- 2026-10-25 — clients **C9 done** (Cursor): last-good cache `<data>/clients/state.json` — versioned JSON (state + observations + networks), atomic write 0600 / dir 0700, 16 MiB cap; corrupt/oversized/wrong-version ignored with warn. Engine boots from cache (`stale` until live sync), persists after successful sync. 3 cache + 3 unit tests. Next: C10.
+
+- 2026-10-25 — clients **C8 + Checkpoint B done** (Cursor): `ClientEngine` — manuals-only boot, `sync_now` / poll ±10 % jitter (`wait_until` + `ManualClock`), change-hash skip rebuild, stale + `last_error` on failure (keep Arc snapshot), 429/5xx exponential backoff (5 s…5 min), `apply_config` from cached obs. Live smoke on gateway: temp API key, classic↔Integration MAC overlap 5/5, key deleted. 10 engine tests (criteria 1/2/3/5/7, failures, poll, drop). Next: C9.
+
+- 2026-10-25 — clients **C7 done** (Cursor): `classic::fetch` / `resolve_site_key` — `stat/sta` + `rest/user` + `networkconf` via `Value` (O1 fields + fallbacks); site UUID↔key via Integration `internalReference` + `/api/self/sites`. `sync_once` merges Integration+classic by MAC/id (keeps Integration UUID, classic IPv6/`network_id`/`domain_name`); classic failure → Integration-only + `classic_error`; `classic_clients=false` skips classic HTTP. Mock classic routes. 4 classic_api tests. DoD green. Next: Checkpoint B / C8.
+
+- 2026-10-25 — clients **O1 done** (Cursor, live gateway): UniFi OS Integration API key (`X-API-KEY`, no cookie) is accepted by classic feeds — `GET /proxy/network/api/s/default/stat/sta` → **200**, `rest/networkconf` → **200**; missing/bogus key → **401**; `Authorization: Bearer` → **401** (not used). Classic client fields: `ip` (string|null), `ipv6_addresses` (string[]|null), `network_id`, `hostname`/`name`, `last_seen`. Networks: `domain_name` present on some rows (also empty). Same key works on Integration (`/integration/v1/sites`, clients need UUID `siteId`, not slug `default`). Temp probe key created+deleted; no captures/secrets committed. Next: C7.
+
+- 2026-10-25 — clients C6 done (Cursor): `fetch_integration` — sites auto-pick / require `site_id`, networks + details (prefix/VLAN), clients paged limit=200 (450→3 pages), `connectedAt` via `time`, bad rows skipped, page-2 failure → `clients.sync.partial`, truncated JSON → `clients.http.body`. Mock extended with Integration routes. 7 tests. DoD green. **STOP for O1** before C7.
+
+- 2026-10-25 — clients C5 done (Cursor): pure `merge::build` — manuals + `UnifiObservation`/`NetworkInfo` → `ClientLookup`+`State`; first-seen labels; manual > CIDR > UniFi; IP conflicts (online > offline > last_seen); offline retain via `last_unifi` inventory; IPv6 TTL; `fe80::` skipped; VLAN join / LPM; domain modes; soft warn 2k / hard 10k. Lookup split `by_manual_ip`/`by_unifi_ip`. 9 merge tests. DoD green. Next: C6.
+
+- 2026-10-25 — clients C4 done (Cursor): `GatewayClient` + `tls::build_client_config` — pin verifier (leaf SHA-256 + `verify_tls12/13_signature` via ring), CA-file `WebPkiServerVerifier`, insecure opt-in with `clients.tls.insecure` warn; reqwest preconfigured rustls, `X-API-KEY`, 30 s / 8 MiB streamed cap, no redirects; transport errors walk source chain → `tls.untrusted` / `tls.handshake` / `connect`. HTTPS mock (`tokio-rustls`+rcgen self-signed / CA-signed). 10 gateway tests (right/wrong pin, CA ok/bad, insecure warn, 401/429, oversize, refused, key redaction). DoD green. **Checkpoint A:** lead review of verifier + index next; then O1 + C5.
+
+- 2026-10-25 — clients C3 done (Cursor): `ClientLookup::build_manual` — exact IP map + CIDRs longest-first, FQDN / unambiguous bare-label `by_name`, `reverse` = by_ip winner, `local_domains` with per-manual override, first-seen label + `suffixed` on collision. `by_ip` returns `Arc` clones; 1000-manual timing (debug ≤20 µs / release ≤1 µs). 9 lookup tests. DoD green. Next: C4.
+
+- 2026-10-25 — clients C2 done (Cursor): `normalise_label` / `fqdn` / `suffixed` — UTS 46 via `domain_to_unicode` (full-width/ligatures; umlauts scrubbed), scrub to `[a-z0-9-]`, empty → `client-<id8>`, long labels truncated at hyphen + content hash; collision `suffixed` stays ≤ 63. Table + proptest (≥ 512). DoD green. Next: C3.
+
+- 2026-10-25 — clients C1 done (Cursor): `crates/dnscraft-clients` skeleton — types (`ClientId`, `MacAddr`, `ClientInfo` with `addresses: Arc<[IpAddr]>`, `VlanInfo`), `ClientsConfig` / `UnifiConfig` / `TlsMode::{Pin,CaFile,Insecure}` / manuals, validate (HTTPS + loopback hatch, pin `sha256:`+32 bytes, IP xor CIDR, ≤1000 manuals, domain via idna), all SPEC `ClientsError` codes, `Clock`/`ManualClock`, `read_secret` (`DNSCRAFT_UNIFI_API_KEY` / `_FILE`, redacted). Spec TOML excerpt as Rust values accepted. 20 tests. DoD green for the crate. Next: C2.
 
 - 2026-10-25 — Policy Checkpoint B review fixes (Cursor): (1) `ede_text`/`name_to_domain` shared in `util.rs`; truncate walks back with `is_char_boundary` — mutant `rule[..200]` panics on multi-byte at byte 200 (`util` unit + `filter_long_rule_ede_text_truncates_on_char_boundary`). (2) AAAA suppress only when rcode is NOERROR — mutant removing the guard fails `aaaa_suppress_leaves_bogus_servfail_with_ede` (BogusExpired SERVFAIL+EDE 7 kept); NXDOMAIN untouched. (3) AD/EDE matrix in `tests/ad_ede.rs`: Secure+rebind / Secure+AAAA clear AD; rebind/AAAA each drop stale EDE 3 separately; Bogus keeps SERVFAIL+AD clear+EDE 6; unmodified stale passes EDE 3 (stale Secure impossible — cache sets Indeterminate). (4) Rebind keeps CNAME when all addresses stripped (`rebind_cname_to_private_keeps_cname_chain`; mutant `answers.clear()` fails). Optional: pre-parsed `RebindException` on snapshot; private adds `::`, broadcast, NAT64. Checkpoint B boxes left unchecked for Claude re-review. **STOP — no P10.**
 

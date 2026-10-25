@@ -5,6 +5,7 @@ use dnscraft_proto::{Message, Rcode, RecordType};
 use crate::config::RequestContext;
 use crate::decision::DecisionStep;
 use crate::pipeline::{Draft, StepCtx, clear_ad};
+use crate::synth::{DEFAULT_BLOCK_TTL, ensure_nodata_soa};
 
 /// When the profile has `suppress_aaaa` and the qtype is AAAA, replace a
 /// **NOERROR** answer with NODATA. Other qtypes (including HTTPS/SVCB) and
@@ -30,8 +31,8 @@ pub(crate) fn run(
     }
 
     message.answers.clear();
-    message.authorities.clear();
     let _ = message.set_rcode(Rcode::NOERROR);
+    ensure_nodata_soa(message, &ctx.query.name, DEFAULT_BLOCK_TTL);
     clear_ad(message);
     draft.steps.push(DecisionStep::AaaaSuppressed);
     true

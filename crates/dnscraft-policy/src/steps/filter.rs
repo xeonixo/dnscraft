@@ -24,6 +24,9 @@ pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Dra
     if ctx.query.qclass != Class::IN {
         return Flow::Continue;
     }
+    if step.paused {
+        return Flow::Continue;
+    }
 
     let profile = step.snapshot.profile_for_view(draft.selection.view_idx);
     let set_id = &profile.config.filter_set;

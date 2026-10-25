@@ -1,0 +1,298 @@
+//! Hot reload: apply_config keeps last-good snapshot; counters survive by id.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
+use dnscraft_filtering::{
+    BlockMode, FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId, ManualClock, SetId,
+    SnapshotBuilder,
+};
+use dnscraft_policy::{
+    ClientFlags, DecisionStep, DnsProtocol, ListenerId, NoClients, PauseScope, PauseUntil,
+    PolicyConfig, PolicyEngine, ProfileConfig, ProfileId, RequestContext, SafeSearchConfig,
+    ViewConfig, ViewId, ViewRecordConfig,
+};
+use dnscraft_proto::{Class, Name, RData, Rcode, RecordType};
+use dnscraft_resolver::dnssec::TrustAnchors;
+use dnscraft_resolver::{Query, Resolver, ResolverConfig};
+use dnscraft_testkit::Hierarchy;
+
+fn clock() -> Arc<ManualClock> {
+    Arc::new(ManualClock::new(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_000),
+    ))
+}
+
+#[derive(Debug, Default)]
+struct EmptyBodies;
+
+impl ListBodies for EmptyBodies {
+    fn body(&self, _id: &ListId) -> Option<Arc<str>> {
+        None
+    }
+}
+
+fn sid(s: &str) -> SetId {
+    SetId::new(s).unwrap()
+}
+
+fn blocking_filter() -> Arc<FilterEngine> {
+    let mut set = FilterSetConfig::new(sid("default"), "default");
+    set.custom_rules = "||ads.example^\n".to_owned();
+    set.block_mode = BlockMode::NxDomain;
+    let cfg = FilterConfig {
+        lists: Vec::new(),
+        sets: vec![set],
+        ..FilterConfig::default()
+    };
+    Arc::new(FilterEngine::from_snapshot(
+        SnapshotBuilder::new(Arc::new(EmptyBodies) as Arc<dyn ListBodies>)
+            .build(&cfg)
+            .unwrap(),
+    ))
+}
+
+fn profile(id: &str) -> ProfileConfig {
+    ProfileConfig {
+        id: ProfileId::new(id).unwrap(),
+        filter_set: sid("default"),
+        suppress_aaaa: false,
+        firefox_canary: false,
+        icloud_private_relay: false,
+        rebind: None,
+        rebind_exceptions: Vec::new(),
+        forward_zones: None,
+        safesearch: SafeSearchConfig::default(),
+        schedules: Vec::new(),
+    }
+}
+
+fn default_view(profile: &str, records: Vec<ViewRecordConfig>) -> ViewConfig {
+    ViewConfig {
+        id: ViewId::new("default").unwrap(),
+        is_default: true,
+        subnets: Vec::new(),
+        client_ids: Vec::new(),
+        records,
+        profile: ProfileId::new(profile).unwrap(),
+    }
+}
+
+fn base_cfg() -> PolicyConfig {
+    PolicyConfig {
+        default_rebind: true,
+        ptr_prefixes: Vec::new(),
+        local_nxdomain_suffixes: Vec::new(),
+        rebind_check_forward_zones: Vec::new(),
+        views: vec![default_view("default", Vec::new())],
+        profiles: vec![profile("default")],
+    }
+}
+
+fn config_for(h: &Hierarchy) -> ResolverConfig {
+    let overrides = h
+        .nameserver_addrs()
+        .iter()
+        .map(|(n, a)| (Name::from_ascii(&n.to_string()).unwrap(), *a))
+        .collect::<HashMap<_, _>>();
+    ResolverConfig {
+        root_hints: h.root_hints(),
+        query_timeout: Duration::from_millis(300),
+        nameserver_addr_overrides: overrides,
+        trust_anchors: TrustAnchors::empty(),
+        prefetch: false,
+        ..ResolverConfig::default()
+    }
+}
+
+fn ctx(name: &str, qtype: RecordType) -> RequestContext {
+    RequestContext {
+        source_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+        protocol: DnsProtocol::Udp53,
+        listener_id: ListenerId::new("udp-53").unwrap(),
+        client_id: None,
+        query: Query {
+            name: Name::from_ascii(name).unwrap(),
+            qtype,
+            qclass: Class::IN,
+        },
+        flags: ClientFlags::default(),
+        test_query: false,
+    }
+}
+
+async fn engine() -> PolicyEngine {
+    let h = Hierarchy::start().await.unwrap();
+    let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
+    PolicyEngine::new(
+        base_cfg(),
+        blocking_filter(),
+        resolver,
+        Arc::new(NoClients),
+        clock(),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn apply_config_invalid_keeps_old_snapshot() {
+    let eng = engine().await;
+
+    // Baseline: blocked name → NXDOMAIN from filter.
+    let before = eng.handle(ctx("ads.example", RecordType::A)).await.unwrap();
+    assert!(before.record.steps.contains(&DecisionStep::FilterBlocked));
+
+    // Invalid: no default view.
+    let mut bad = base_cfg();
+    bad.views[0].is_default = false;
+    let err = eng.apply_config(bad).await.unwrap_err();
+    assert_eq!(err.code(), "policy.config.invalid");
+
+    // Still the old snapshot.
+    let after = eng.handle(ctx("ads.example", RecordType::A)).await.unwrap();
+    assert!(after.record.steps.contains(&DecisionStep::FilterBlocked));
+}
+
+#[tokio::test]
+async fn apply_config_valid_takes_effect_next_query() {
+    let eng = engine().await;
+
+    let mut next = base_cfg();
+    next.views[0].records.push(ViewRecordConfig {
+        name: Name::from_ascii("local.test.").unwrap(),
+        ttl: 60,
+        rdata: RData::A(Ipv4Addr::new(192, 0, 2, 50)),
+    });
+    eng.apply_config(next).await.unwrap();
+
+    let ans = eng.handle(ctx("local.test.", RecordType::A)).await.unwrap();
+    assert_eq!(ans.message.rcode(), Rcode::NOERROR);
+    assert!(ans.record.steps.contains(&DecisionStep::LocalView));
+    assert!(!ans.message.answers.is_empty());
+}
+
+#[tokio::test]
+async fn counters_increment_and_survive_reload() {
+    let eng = engine().await;
+
+    eng.handle(ctx("ads.example", RecordType::A)).await.unwrap();
+    eng.handle(ctx("ads.example", RecordType::A)).await.unwrap();
+
+    let stats = eng.stats();
+    let view = stats
+        .views
+        .iter()
+        .find(|v| v.view.as_str() == "default")
+        .unwrap();
+    assert_eq!(view.queries, 2);
+    assert_eq!(view.blocked, 2);
+    assert_eq!(view.local_hits, 0);
+    let profile = stats
+        .profiles
+        .iter()
+        .find(|p| p.profile.as_str() == "default")
+        .unwrap();
+    assert_eq!(profile.queries, 2);
+    assert_eq!(profile.blocked, 2);
+
+    // Local view hit.
+    let mut with_local = base_cfg();
+    with_local.views[0].records.push(ViewRecordConfig {
+        name: Name::from_ascii("lan.test.").unwrap(),
+        ttl: 60,
+        rdata: RData::A(Ipv4Addr::new(192, 0, 2, 7)),
+    });
+    eng.apply_config(with_local).await.unwrap();
+    eng.handle(ctx("lan.test.", RecordType::A)).await.unwrap();
+
+    let mid = eng.stats();
+    let view = mid
+        .views
+        .iter()
+        .find(|v| v.view.as_str() == "default")
+        .unwrap();
+    assert_eq!(view.queries, 3);
+    assert_eq!(view.blocked, 2);
+    assert_eq!(view.local_hits, 1);
+
+    // Valid reload (same ids) must keep counters.
+    eng.apply_config(base_cfg()).await.unwrap();
+    let after = eng.stats();
+    let view = after
+        .views
+        .iter()
+        .find(|v| v.view.as_str() == "default")
+        .unwrap();
+    assert_eq!(view.queries, 3);
+    assert_eq!(view.blocked, 2);
+    assert_eq!(view.local_hits, 1);
+
+    eng.handle(ctx("ads.example", RecordType::A)).await.unwrap();
+    assert_eq!(
+        eng.stats()
+            .views
+            .iter()
+            .find(|v| v.view.as_str() == "default")
+            .unwrap()
+            .queries,
+        4
+    );
+}
+
+#[tokio::test]
+async fn apply_config_drops_pause_for_removed_profile() {
+    let h = Hierarchy::start().await.unwrap();
+    let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
+    let mut cfg = base_cfg();
+    cfg.profiles.push(profile("kids"));
+    cfg.views.push(ViewConfig {
+        id: ViewId::new("kids").unwrap(),
+        is_default: false,
+        subnets: Vec::new(),
+        client_ids: vec![dnscraft_policy::ClientId::new("kids").unwrap()],
+        records: Vec::new(),
+        profile: ProfileId::new("kids").unwrap(),
+    });
+    let eng = PolicyEngine::new(
+        cfg,
+        blocking_filter(),
+        resolver,
+        Arc::new(NoClients),
+        clock(),
+    )
+    .unwrap();
+
+    eng.pause(
+        PauseScope::Profile(ProfileId::new("kids").unwrap()),
+        PauseUntil::UntilResumed,
+    )
+    .unwrap();
+
+    // Drop kids profile + view.
+    eng.apply_config(base_cfg()).await.unwrap();
+
+    // Re-adding kids must not inherit the old pause (pause was dropped).
+    let mut again = base_cfg();
+    again.profiles.push(profile("kids"));
+    again.views.push(ViewConfig {
+        id: ViewId::new("kids").unwrap(),
+        is_default: false,
+        subnets: Vec::new(),
+        client_ids: vec![dnscraft_policy::ClientId::new("kids").unwrap()],
+        records: Vec::new(),
+        profile: ProfileId::new("kids").unwrap(),
+    });
+    eng.apply_config(again).await.unwrap();
+
+    let mut kids_ctx = ctx("ads.example", RecordType::A);
+    kids_ctx.client_id = Some(dnscraft_policy::ClientId::new("kids").unwrap());
+    let ans = eng.handle(kids_ctx).await.unwrap();
+    assert!(
+        ans.record.steps.contains(&DecisionStep::FilterBlocked),
+        "pause for removed profile must not survive reload"
+    );
+}

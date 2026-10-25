@@ -12,6 +12,7 @@ use crate::decision::{DecisionStep, RebindSkipReason};
 use crate::pipeline::{Draft, StepCtx, clear_ad};
 use crate::private::is_private_for_rebind;
 use crate::snapshot::RebindException;
+use crate::synth::{DEFAULT_BLOCK_TTL, ensure_nodata_soa};
 
 /// Runs rebind stripping on a resolver answer. Skipped when `draft.synthetic`
 /// (defence in depth; synthetic paths return before step 10).
@@ -78,13 +79,17 @@ pub(crate) fn run(
     });
 
     // All addresses gone: keep any CNAME (or other non-address) records and
-    // ensure NOERROR — NODATA-for-alias, not an empty answer section.
+    // ensure NOERROR — NODATA-for-alias when CNAMEs remain; empty answer gets
+    // a synthetic SOA so clients can negatively cache.
     let any_address_left = message
         .answers
         .iter()
         .any(|r| matches!(&r.rdata, RData::A(_) | RData::AAAA(_)));
     if !any_address_left {
         let _ = message.set_rcode(Rcode::NOERROR);
+        if message.answers.is_empty() {
+            ensure_nodata_soa(message, &ctx.query.name, DEFAULT_BLOCK_TTL);
+        }
     }
 }
 

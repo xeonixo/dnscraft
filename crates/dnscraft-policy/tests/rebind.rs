@@ -257,6 +257,12 @@ async fn rebind_strips_private_to_nodata_keeps_public_exception_passes() {
         .unwrap();
     assert_eq!(nodata.message.rcode(), Rcode::NOERROR);
     assert!(nodata.message.answers.is_empty());
+    assert_eq!(
+        nodata.message.authorities.len(),
+        1,
+        "empty rebind NODATA needs SOA for negative caching"
+    );
+    assert_eq!(nodata.message.authorities[0].rtype(), RecordType::SOA);
     assert!(nodata.ede.is_none());
     assert!(!nodata.message.header.ad);
     assert!(
@@ -361,6 +367,7 @@ async fn rebind_forward_zone_exempt_by_default_checked_when_listed() {
         .unwrap();
     assert_eq!(stripped.message.rcode(), Rcode::NOERROR);
     assert!(stripped.message.answers.is_empty());
+    assert_eq!(stripped.message.authorities[0].rtype(), RecordType::SOA);
     assert!(
         stripped
             .record
