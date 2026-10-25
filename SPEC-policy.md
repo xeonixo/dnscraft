@@ -97,21 +97,27 @@ For each query, after selection:
 | Step | Action | Why this order |
 |---|---|---|
 | 1 | **View local records** — exact name in the view’s record table (A/AAAA/CNAME/TXT/SRV/MX/**PTR**). If the owner name has a CNAME and the qtype is not CNAME, return the CNAME (and follow **only** if the target is also a view-local name; otherwise leave following to the recursive path / client — do not half-resolve through filters twice) | Split-horizon must win over public data and filters for names the admin authored |
-| 2 | **ClientDirectory local names / PTR** — FQDN under `local_domains()` or reverse for private/ULA PTR (**skipped** if step 1 already answered) | Same “answer locally” idea; data from UniFi/manuals, not the view editor |
+| 2 | **ClientDirectory local names / PTR** — only names `ClientDirectory` **actually knows** (FQDN match via `by_name`, or reverse for private/ULA PTR) are answered locally (**skipped** if step 1 already answered). A known name with no address of the queried type → **NODATA** (NOERROR empty), not fall-through. An **unknown** name under a local domain is **not** answered here: it continues to step 3 onward (filter → forward/recursion), because the UniFi DHCP `domainName` may be a real public domain (e.g. the one that also hosts `dns.<domain>`). Exception, see *Local domains and special-use suffixes* | Same “answer locally” idea; data from UniFi/manuals, not the view editor |
 | 3 | **Bypass / canary** — per profile: `use-application-dns.net` → NXDOMAIN; `mask.icloud.com` / `mask-h2.icloud.com` → configured answers (block Private Relay or not) | Must not depend on filter lists; fixed product behaviour |
-| 4 | **SafeSearch** (if enabled on profile, low priority) — rewrite qname to the provider’s safe host | Rewrite before filtering so the safe host is what gets checked / resolved |
-| 5 | **Filter qname** — `FilterEngine::match_name(set, name, qtype)` | Block/allow/rewrite before spending recursion budget |
-| 5a | `Blocked` → synthesise via set `BlockMode` + EDE; stop | |
-| 5b | `Rewrite` → synthesise records/rcode from `Rewrite`; if CNAME, may continue chain handling like a local CNAME; stop or follow per rewrite kind | |
-| 5c | `Allowed` / `Pass` → continue | Temporary allows rank as important allows inside filtering |
-| 6 | **Forward zone or recursion** — `Resolver::resolve` (forward zones from resolver config, optionally restricted by profile allow-list) | Only after local/filter decisions |
-| 7 | **CNAME uncloaking** — collect names in the answer chain; `match_chain`; on block, replace answer with block synthesis | Matches AdGuard / SPEC-filtering |
-| 8 | **Answer-IP filtering** — for each A/AAAA in the final answer, `match_answer_ip`; block wins | Malware hosts with rotating names |
-| 9 | **DNS rebind protection** — drop (or refuse) answers whose A/AAAA are private/loopback/ULA **unless** the qname (or a suffix) is on the profile’s exception list; if all addresses removed → NODATA or synthesised empty | After filters so legitimate filter rewrites to private IPs still work if the admin used custom rules / exceptions |
-| 10 | **AAAA suppression** — if profile `suppress_aaaa` and qtype is **AAAA** only → NODATA (NOERROR empty); other qtypes unchanged | IPv4-only clients; keep HTTPS/SVCB/etc. intact |
-| 11 | **Emit** message + `DecisionRecord` | |
+| 4 | **Filter original qname** — `FilterEngine::match_name(set, name, qtype)` | Block/allow/rewrite before spending recursion budget; block wins over SafeSearch (a blocked YouTube service must not be bypassed by the rewrite) |
+| 4a | `Blocked` → synthesise via set `BlockMode` + EDE; stop | |
+| 4b | `Rewrite` → synthesise records/rcode from `Rewrite`; if CNAME, may continue chain handling like a local CNAME; stop or follow per rewrite kind | |
+| 4c | `Allowed` / `Pass` → continue | Temporary allows rank as important allows inside filtering |
+| 5 | **SafeSearch** (if enabled on profile, low priority) — rewrite qname to the provider’s safe host | Only for names that passed step 4 |
+| 6 | **Filter the rewritten safe host** (only if step 5 rewrote) — same `match_name`; `Blocked`/`Rewrite` handled as 4a/4b | The safe host itself may be on a list; checked, not assumed safe |
+| 7 | **Forward zone or recursion** — `Resolver::resolve` (forward zones from resolver config, optionally restricted by profile allow-list) | Only after local/filter decisions |
+| 8 | **CNAME uncloaking** — collect names in the answer chain; `match_chain`; on block, replace answer with block synthesis | Matches AdGuard / SPEC-filtering |
+| 9 | **Answer-IP filtering** — for each A/AAAA in the final answer, `match_answer_ip`; block wins | Malware hosts with rotating names |
+| 10 | **DNS rebind protection** — drop (or refuse) answers whose A/AAAA are private/loopback/ULA **unless** the qname (or a suffix) is on the profile’s exception list **or** the answer came via a forward zone not listed in `rebind_check_forward_zones`; if all addresses removed → NODATA or synthesised empty | After filters so legitimate filter rewrites to private IPs still work if the admin used custom rules / exceptions |
+| 11 | **AAAA suppression** — if profile `suppress_aaaa` and qtype is **AAAA** only → NODATA (NOERROR empty); other qtypes unchanged | IPv4-only clients; keep HTTPS/SVCB/etc. intact |
+| 12 | **Emit** message + `DecisionRecord` | |
 
-Justification summary: **authoritative local data first**, then **policy canaries**, then **cheap filter**, then **expensive resolve**, then **answer hygiene** (chain, IP rules, rebind, AAAA).
+Justification summary: **authoritative local data first**, then **policy canaries**, then **cheap filter on the original name**, then **SafeSearch rewrite and a second filter check on its target**, then **expensive resolve**, then **answer hygiene** (chain, IP rules, rebind, AAAA).
+
+#### Local domains and special-use suffixes
+
+- Unknown names under a `local_domains()` entry fall through the normal pipeline.
+- **Special-use suffixes must never leak** to public DNS: `home.arpa` is an RFC 8375 local zone **owned by the resolver** (it answers NXDOMAIN; policy just falls through to step 7). For other non-public suffixes — default `policy.local_nxdomain_suffixes = ["local", "lan", "internal"]` (`local` is mDNS, RFC 6762, and is *not* in the resolver's RFC 6303 list) — **policy synthesises NXDOMAIN** at step 2 when the name is under such a suffix, is unknown to `ClientDirectory`, and no forward zone covers it (a forward zone for the suffix wins and the query falls through). Synthesised answers follow the usual AD-clear rule; no EDE (not a blocklist hit).
 
 ### DNSSEC, AD bit, and EDE
 
@@ -119,7 +125,7 @@ Sources: [RFC 8914](https://www.rfc-editor.org/rfc/rfc8914.html).
 
 | Answer kind | AD bit | EDE |
 |---|---|---|
-| View record, ClientDirectory name/PTR, bypass, SafeSearch rewrite, filter rewrite, block synthesis | **Clear** (not validated public DNSSEC data) | Block with rcode REFUSED/NXDOMAIN/SERVFAIL: **15 Blocked** (operator policy). Null/custom IP with NOERROR: **4 Forged Answer**. EXTRA-TEXT may carry the stable filter reason code / short English diagnostic for logs — never secrets |
+| View record, ClientDirectory name/PTR (incl. special-use NXDOMAIN), bypass, SafeSearch rewrite, filter rewrite, block synthesis | **Clear** (not validated public DNSSEC data) | Block with rcode REFUSED/NXDOMAIN/SERVFAIL: **15 Blocked** (operator policy). Null/custom IP with NOERROR: **4 Forged Answer**. EXTRA-TEXT may carry the stable filter reason code / short English diagnostic for logs — never secrets |
 | Unmodified resolver answer with `DnssecStatus::Secure` | **Set** (pass through resolver’s AD) | Resolver’s EDE if any (e.g. stale) |
 | Resolver answer then modified (AAAA stripped, rebind address removed, CNAME chain blocked) | **Clear** | Block path → 15; empty after rebind stripped all addresses → **NOERROR/NODATA**, no EDE (not a blocklist hit) |
 | `DnssecStatus::Bogus` | Clear; SERVFAIL already from resolver | Keep resolver DNSSEC EDE |
@@ -175,8 +181,15 @@ pub struct FilterHit {
   loopback, link-local, and **ULA `fc00::/7`** (home IPv6 — SPEC.md uses ULA for
   clients reaching DNScraft).
 - Exceptions: list of domains / `*.suffix` on the profile (e.g. internal CDNs).
+- **Forward-zone answers are exempt by default:** names resolved through a
+  resolver forward zone (VPN site, router zone) legitimately return private
+  addresses, so the check is skipped for them. A forward zone may opt in with
+  `policy.rebind_check_forward_zones = ["<zone id>", …]` (policy config, so the
+  resolver's `ForwardZone` stays unchanged); then the normal rules and exceptions apply. Recursive
+  (non-forwarded) answers are always checked. The decision record notes
+  `forward_zone` so the skip is visible.
 - Filter `$dnsrewrite` / view records that intentionally point at private IPs
-  are not subject to rebind (synthetic answers **skip** step 9).
+  are not subject to rebind (synthetic answers **skip** step 10).
 - Complementary to list-based rebind rules in the reference filter set (e.g.
   HaGeZi DNS Rebind Protection): lists block **qnames**; this step sanitises
   **answer addresses** from public recursion.
@@ -223,14 +236,16 @@ Per profile flags:
 
 ```rust
 pub trait ClientDirectory: Send + Sync {
-    fn by_ip(&self, ip: IpAddr) -> Option<ClientInfo>;
-    fn by_name(&self, name: &str) -> Option<ClientInfo>;
+    fn by_ip(&self, ip: IpAddr) -> Option<Arc<ClientInfo>>;     // hot path, no deep clone
+    fn by_name(&self, name: &str) -> Option<Arc<ClientInfo>>;
     fn reverse(&self, ip: IpAddr) -> Option<String>;
-    fn local_domains(&self) -> &[String];
+    fn local_domains(&self) -> Arc<[String]>;                   // snapshot; cheap clone
 }
 ```
 
-- A/AAAA for `by_name` → addresses from `ClientInfo`.
+- A/AAAA for `by_name` → addresses from `ClientInfo` of the queried type; none
+  of that type → NODATA. `by_name == None` means “unknown”: fall through (see
+  *Local domains and special-use suffixes*).
 - PTR for `reverse` when the qname is in an in-addr.arpa / ip6.arpa zone for
   **RFC 1918**, **ULA (`fc00::/7`)**, and **loopback** — plus any extra prefixes
   the admin lists under `policy.ptr_prefixes` (default empty).
@@ -306,6 +321,11 @@ Per-profile / per-view counters (queries, blocks, local hits) as atomics for
 default_rebind = true
 # extra prefixes for ClientDirectory PTR (RFC 1918 + ULA + loopback always on)
 ptr_prefixes = []
+# non-public suffixes policy answers NXDOMAIN for when unknown and not forwarded
+# (home.arpa is a resolver local zone, not listed here)
+local_nxdomain_suffixes = ["local", "lan", "internal"]
+# forward zones whose answers still get rebind protection (default: none)
+rebind_check_forward_zones = []
 
 [[policy.views]]
 id = "lan"
@@ -340,8 +360,14 @@ rebind_exceptions = ["*.example.com"]
 ## Testing
 
 - Table tests: selection (Client ID > longer prefix > shorter > default),
-  pipeline step order (local beats filter beats recursion), pause scopes,
-  rebind exceptions, AAAA suppression, AD/EDE matrix, test_query does not log
+  pipeline step order (local beats filter beats recursion), filter before
+  SafeSearch (blocked original qname stays blocked; blocked safe host blocked
+  after rewrite), unknown name under a local domain falls through while a known
+  name with no record of the queried type gives NODATA, `local`/`lan`/`internal`
+  unknown → NXDOMAIN (but forwarded when a forward zone covers it), `home.arpa`
+  via resolver local zone, pause scopes, rebind exceptions, forward-zone
+  answers with a private address pass by default and are stripped when listed in
+  `rebind_check_forward_zones`, AAAA suppression, AD/EDE matrix, test_query does not log
   (hook/spy).
 - Integration: `dnscraft-testkit` authoritative hierarchy behind the resolver;
   stub `FilterEngine::from_snapshot`; mock `ClientDirectory`.
@@ -351,7 +377,7 @@ rebind_exceptions = ["*.example.com"]
 
 - Always: Arc snapshot swap; clear AD on synthesised/modified answers; EDE 15 for
   operator blocks; never log test queries.
-- Ask first: new dependencies; changing pipeline order; shipping schedules /
+- Ask first: new dependencies; changing pipeline order (reordered 2026-10-25: filter → SafeSearch → filter); shipping schedules /
   SafeSearch evaluation before the stub is replaced; view-record wildcards.
 - Never: depend on `dnscraft-clients` directly; select profiles inside
   filtering; call the internet from tests.
@@ -361,8 +387,10 @@ rebind_exceptions = ["*.example.com"]
 1. Selection table tests match the Client ID / LPM / default rules.
 2. Pipeline golden tests: view record and ClientDirectory answers never hit the
    resolver; blocked qnames never hit the resolver; CNAME chain block works.
-3. Rebind strips private answers except exceptions; filter/view synthetics skip
-   rebind.
+3. Rebind strips private answers except exceptions and forward-zone answers
+   (unless listed in `rebind_check_forward_zones`); filter/view synthetics skip rebind.
+3a. A blocked service is not bypassed by SafeSearch; unknown names under a
+   public-looking local domain reach the resolver; special-use suffixes never do.
 4. AD/EDE behaviour matches the matrix above.
 5. Cached path stays within the 1 ms p50 guideline when the resolver cache hits
    and the filter misses (criterion bench).
@@ -400,3 +428,13 @@ None — sensible defaults locked 2026-10-25 (owner asked to decide reasonably).
 12. **Review 2026-10-25:** PTR in view records; CNAME follow only within view;
     ANY/ECS notes; rebind vs filter-list complementarity; stale forward-zone
     “open question” wording removed; Client ID vs ClientInfo naming.
+13. **Review 2026-10-25 (Claude):** pipeline reordered to filter original qname →
+    SafeSearch → filter rewritten host (block wins over SafeSearch); steps
+    renumbered (rebind is now step 10). Only names `ClientDirectory` knows are
+    answered locally; unknown names under a local domain fall through (UniFi
+    `domainName` may be a public domain); known name without the queried type →
+    NODATA; `home.arpa` handled by the resolver local zone, `local`/`lan`/`internal`
+    (`policy.local_nxdomain_suffixes`) by policy NXDOMAIN unless forwarded.
+    Forward-zone answers exempt from rebind unless the zone id is in
+    `policy.rebind_check_forward_zones`. `ClientDirectory`: `by_ip`/`by_name` return
+    `Option<Arc<ClientInfo>>`, `local_domains()` returns `Arc<[String]>`.

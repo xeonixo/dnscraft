@@ -66,8 +66,8 @@ resolver and small helpers those modules call.
 ### Certificate set
 
 - Names (**default and required every order**): exactly
-  `dns.<public_domain>` and `*.dns.<public_domain>` (Client-ID SNIs + node
-  hostnames like `node1.dns.<public_domain>`). No extra SANs unless the owner
+  `dns.<public_domain>` and `*.dns.<public_domain>` (Client-ID hostnames/SNIs +
+  node hostnames like `node1.dns.<public_domain>`). No extra SANs unless the owner
   later adds an explicit allow-list in config (empty by default).
 - Key type: **ECDSA only** — `ecdsa_p256` (default) or `ecdsa_p384`. No RSA.
 - One leaf + chain PEM on disk; private key separate file, never logged, never
@@ -107,16 +107,30 @@ resolver and small helpers those modules call.
 
 ```rust
 /// Shared rustls server cert resolver; listeners clone Arc.
-pub struct CertResolver { /* ArcSwap or RwLock<Arc<CertifiedKey>> */ }
+pub struct CertResolver { /* RwLock<Arc<CertifiedKey>> (workspace pattern; no ArcSwap dependency) */ }
 
 impl rustls::server::ResolvesServerCert for CertResolver {
     fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>>;
 }
 
+/// Labels that are never Client IDs: configured node names (`node1`, …) plus a
+/// fixed set (`dns`, `www`, `api`, `admin`, `ns`). Built from config; cheap to clone.
+pub struct ReservedLabels { /* HashSet<String> */ }
+impl ReservedLabels {
+    pub fn new(node_names: impl IntoIterator<Item = String>) -> Self;
+    pub fn contains(&self, label: &str) -> bool;
+}
+
+pub enum SniKind<'a> {
+    ClientId(&'a str), // "<id>.dns.<public_domain>", <id> not reserved
+    NodeHostname,      // "<reserved>.dns.<public_domain>" (e.g. node1)
+    Apex,              // "dns.<public_domain>"
+    Other,             // anything else / not under the domain
+}
+
 /// SNI helpers for listeners (Client ID registry is elsewhere).
-pub fn parse_client_id_sni(sni: &str, public_domain: &str) -> Option<&str>;
-// "<id>.dns.<public_domain>" → Some(id); "dns.<public_domain>" → None (apex);
-// anything else → None
+pub fn parse_client_id_sni<'a>(sni: &'a str, public_domain: &str,
+                               reserved: &ReservedLabels) -> SniKind<'a>;
 
 pub trait ClientIdRegistry: Send + Sync {
     fn is_registered(&self, client_id: &str) -> bool;
@@ -124,9 +138,12 @@ pub trait ClientIdRegistry: Send + Sync {
 
 /// Hook for public listeners: unknown/missing Client ID → reject handshake.
 /// Implemented by combining parse_client_id_sni + ClientIdRegistry.
+/// `NodeHostname` / `Apex` carry no Client ID: a public source is rejected, but
+/// the listener must not count it as an *unknown Client ID* (no ban strike).
 pub fn accept_public_sni(
     sni: Option<&str>,
     public_domain: &str,
+    reserved: &ReservedLabels,
     registry: &dyn ClientIdRegistry,
 ) -> bool;
 ```
@@ -135,12 +152,24 @@ pub fn accept_public_sni(
   internet exposure still requires a registered Client ID (SPEC.md Internet
   exposure) — listeners enforce that policy; `tls` only provides the predicate
   helper.
-- **DoT/DoH addressing vs SNI:** clients connect to the **node hostname**
-  (`node1.dns.<domain>` A/AAAA from DynDNS). The TLS **SNI** (DoT/DoQ) or DoH
-  path carries the **Client ID** (`<id>.dns.<domain>` / `/dns-query/<id>`).
-  SNI and connection hostname therefore differ; the wildcard cert covers both.
-  `ClientIdRegistry` (policy/control-api) is the single source of truth for
-  “registered”.
+- **Addressing vs SNI (differs by protocol):**
+  - **DoH:** the client connects to the **node hostname** (`node1.dns.<domain>`,
+    A/AAAA from DynDNS); the Client ID is in the path (`/dns-query/<id>`). SNI is
+    the node hostname.
+  - **DoT/DoQ** (e.g. Android “Private DNS”): the one configured hostname is both
+    the name the client **resolves** and the TLS **SNI**, so it is
+    `<client-id>.dns.<domain>` and **must have an A/AAAA record**. The
+    wildcard records `*.dns.<domain>` / `dns.<domain>` (see DynDNS) point every
+    Client-ID hostname at the public entry node.
+  The wildcard cert covers all of these. `ClientIdRegistry`
+  (policy/control-api) is the single source of truth for “registered”.
+- **Reserved labels:** node hostnames (`node1.dns.<domain>`, …) share the
+  namespace with Client IDs. Labels equal to a configured node name or to the
+  fixed set `dns`, `www`, `api`, `admin`, `ns` are **reserved** (explicit list,
+  not a `node*` prefix rule, so legitimate IDs are not caught). They parse as
+  `NodeHostname`, never as a Client ID, and Client-ID registration
+  (policy/control-api) must reject IDs that collide with a reserved label
+  (`ReservedLabels` is the shared helper).
 - Reloading swaps the `CertifiedKey` under the resolver without dropping
   existing connections (new handshakes see the new cert).
 - Reuse workspace **reqwest** (rustls+ring) for Cloudflare and the IP echo;
@@ -159,8 +188,14 @@ pub fn accept_public_sni(
 - **DynDNS:** **per-node hostname** under the wildcard, e.g.
   `node1.dns.<public_domain>`, `node2.dns.<public_domain>` — each public node
   updates **only its own** A/AAAA. No shared single record contended by peers.
-  Client-ID SNIs (`<id>.dns.<public_domain>`) still work on any node that has
-  the cert; mobile profiles / DDR point at the chosen node hostname.
+  In addition, exactly one node is the **public entry node**
+  (`dyndns.public_entry = true`, at most one in v1; config validation rejects
+  two) and maintains the wildcard records `*.dns.<public_domain>` and
+  `dns.<public_domain>` (A/AAAA, DNS-only). Every Client-ID hostname therefore
+  resolves to that node (explicit `<node>.dns.…` records take precedence over
+  the wildcard). Client-ID hostnames work on any node that has the cert; DoH
+  profiles / DDR may point at a specific node hostname. Multiple public entry
+  nodes (geo, failover) are out of scope for v1 — future work for SPEC-cluster.
 - Public DoH/DoT remains **per-node, off by default** (SPEC.md).
 
 ### DynDNS
@@ -173,7 +208,10 @@ pub fn accept_public_sni(
   Cloudflare `cdn-cgi/trace`).
 - Compare to the current Cloudflare record content; **PATCH/PUT only on change**.
 - Records: DNS-only (`proxied: false`), TTL automatic or 300; hostname is the
-  **node’s** public name (see Multi-node).
+  **node’s** public name (see Multi-node). On the public entry node, the same
+  discovered IPs also drive the wildcard `*.dns.<public_domain>` and apex
+  `dns.<public_domain>` records (same compare-then-update rule). A node without
+  `public_entry` never touches them.
 - Failures set `stale`/error codes without touching the certificate path.
 
 ### ACME DNS-01 propagation
@@ -198,7 +236,8 @@ pub fn accept_public_sni(
 | `tls.store.io` | disk read/write/permissions |
 | `tls.store.corrupt` | PEM/meta unreadable; keep previous if any |
 | `tls.dyndns.echo` | public IP echo failed / unparseable |
-| `tls.dyndns.update` | A/AAAA upsert failed |
+| `tls.dyndns.update` | A/AAAA upsert failed (node, wildcard, or apex record) |
+| `tls.dyndns.entry_conflict` | more than one node claims `public_entry` (config/cluster validation) |
 | `tls.cert.expiring` | status flag when days-to-expiry below warn threshold (default 14 d) |
 | `tls.cert.expired` | not_after in the past |
 
@@ -249,8 +288,12 @@ zone_id = ""
 
 [tls.dyndns]
 enabled = true
+# reserved (non-Client-ID) labels besides the fixed set; usually the cluster's node names
+reserved_labels = ["node1", "node2"]
 # per-node public hostname under the wildcard (not shared across nodes)
 hostname = "node1.dns.example.com"
+# exactly one node: also maintains *.dns.example.com and dns.example.com
+public_entry = false
 interval = "5m"
 echo_url = "https://cloudflare.com/cdn-cgi/trace"
 ipv4 = true
@@ -262,7 +305,9 @@ proxied = false
 
 - **Pebble** as ACME server + **hand-written mock Cloudflare API** (create/list/delete
   DNS records) + optional mock authoritative DNS for propagation.
-- Unit tests: SNI Client-ID parse / `accept_public_sni`, PEM store atomic replace,
+- Unit tests: SNI Client-ID parse (incl. reserved labels / node hostname /
+  apex) / `accept_public_sni`, wildcard-record upsert only on the
+  `public_entry` node, PEM store atomic replace,
   DynDNS “only update on change”, ARI window scheduling with manual clock.
 - Never call real Let’s Encrypt, Cloudflare, or `cdn-cgi/trace` in CI (SPEC.md).
 - Staging directory may be used in **manual** acceptance only.
@@ -271,7 +316,7 @@ proxied = false
 
 - Always: ring-only crypto features; last-good cert on failure; secrets via env/
   `*_FILE`; private keys never in logs or exports; DNS-only DynDNS records.
-- Ask first: new dependencies beyond `instant-acme` (ring features), `rustls`,
+- Ask first: new dependencies (no ArcSwap — `RwLock<Arc<_>>`) beyond `instant-acme` (ring features), `rustls`,
   existing `reqwest`; adding non-empty `extra_sans`; changing master-only renew
   or per-node DynDNS.
 - Never: aws-lc; RSA keys; default insecure TLS to Cloudflare/ACME; real external
@@ -285,7 +330,12 @@ proxied = false
 3. DynDNS updates A/AAAA only when the echo IP differs; failures are isolated
    from the cert path.
 4. `accept_public_sni` rejects unknown Client IDs and accepts registered ones for
-   `*.dns.<domain>`.
+   `*.dns.<domain>`; a node-hostname SNI (e.g. `node1.dns.example.com`) is
+   classified `NodeHostname`, not as an unknown Client ID.
+4a. With `public_entry = true`, DynDNS creates `*.dns.example.com` and
+   `dns.example.com` A/AAAA on the mock Cloudflare, so a Client-ID hostname
+   resolves to the node; with `public_entry = false` those records are never
+   touched; two entry nodes are rejected (`tls.dyndns.entry_conflict`).
 5. Feature flags on `instant-acme` do not pull aws-lc into the workspace
    (`cargo tree -i aws-lc-rs` empty).
 6. DoD gates green once implemented.
@@ -313,3 +363,11 @@ None — owner decisions locked 2026-10-25.
     by the owner (no code before that).
 11. **Review 2026-10-25:** wildcard DNS-01 at `_acme-challenge.dns.<domain>`;
     node hostname ≠ Client-ID SNI documented; shared reqwest; serialize CF writes.
+12. **Review 2026-10-25 (Claude):** DoT/DoQ hostname == SNI, so Client-ID
+    hostnames must resolve; DoH-only claim of “connect to node hostname, ID in
+    SNI” corrected. DynDNS on the single **public entry node**
+    (`dyndns.public_entry`) maintains `*.dns.<domain>` and `dns.<domain>`;
+    multiple entry nodes deferred to SPEC-cluster. Node names + a fixed set
+    (`dns`, `www`, `api`, `admin`, `ns`) are **reserved labels** (`ReservedLabels`,
+    `SniKind`); Client-ID registration rejects collisions. `CertResolver` uses
+    `RwLock<Arc<CertifiedKey>>`, no ArcSwap.

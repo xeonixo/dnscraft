@@ -122,21 +122,22 @@ pub struct ClientInfo {
 pub struct VlanInfo {
     pub id: u16,                // 802.1Q vlanId from UniFi networks
     pub name: String,           // network name, e.g. "IoT"
-    pub domain_name: Option<String>, // UniFi DHCP `domainName` for this network, if set
+    pub domain_name: Option<String>, // per-network DHCP domain, if set (source UNVERIFIED, see Local domain)
 }
 
 pub struct ClientLookup { /* Arc snapshot + indexes */ }
 
 impl ClientLookup {
     /// Hot path for query-log enrichment. Lock-free read of Arc; O(1) hash.
-    pub fn by_ip(&self, ip: IpAddr) -> Option<ClientInfo>;
+    /// Returns `Arc` (no deep clone on the hot path).
+    pub fn by_ip(&self, ip: IpAddr) -> Option<Arc<ClientInfo>>;
     /// Forward local name: FQDN `<label>.<domain>` (case-insensitive), or bare
     /// label only when it is unambiguous across all local domains.
-    pub fn by_name(&self, name: &str) -> Option<ClientInfo>;
+    pub fn by_name(&self, name: &str) -> Option<Arc<ClientInfo>>;
     /// PTR: IP → FQDN `<label>.<domain>` (same IP precedence as by_ip).
     pub fn reverse(&self, ip: IpAddr) -> Option<String>;
-    /// Domains currently treated as "local" (for policy to answer).
-    pub fn local_domains(&self) -> &[String];
+    /// Domains currently treated as "local" (snapshot; cheap clone).
+    pub fn local_domains(&self) -> Arc<[String]>;
 }
 ```
 
@@ -158,9 +159,13 @@ UUIDs.
 FQDN = `<dns_label>.<local_domain>`. The parent domain is **not** a single fixed
 string when UniFi already publishes one:
 
-1. **Per-network UniFi DHCP `domainName`** (Integration network details,
-   gateway/switch-managed DHCP server config) — use for clients on that
-   network/VLAN. Different VLANs may have different domains.
+1. **Per-network UniFi DHCP domain** — use for clients on that network/VLAN.
+   Different VLANs may have different domains. **Unverified:** a DHCP
+   `domainName` field is **not** in the research table above and may not exist
+   on the Integration network schemas. The likely source is the classic
+   `rest/networkconf` `domain_name` field, also unverified until checked against
+   a real (not mock) response at implementation time; if neither exists, step 1
+   yields nothing and step 2 applies.
 2. Else **config `local_domain`** (default `home.arpa`) — fallback when UniFi
    omits `domainName`, UniFi is disabled, or the client has no network match.
 3. **DNScraft override** — if the admin sets `local_domain_mode = "config"` (or
@@ -171,6 +176,14 @@ string when UniFi already publishes one:
 which queries are local-name candidates. Domains are normalised (lower-case,
 no trailing dot; IDNA/UTS 46 for non-ASCII).
 
+A local domain may be a **real public domain** (the UniFi DHCP domain can equal
+the domain hosting `dns.<domain>`). `policy` therefore answers only names this
+directory actually knows (`by_name`) and lets unknown names under a local domain
+fall through to forwarding/recursion; special-use suffixes (`home.arpa`, `local`,
+`lan`, `internal`) are handled there as NXDOMAIN
+([SPEC-policy.md](SPEC-policy.md) pipeline step 2). `by_name` returns `None` for
+unknown names and never invents one.
+
 ### Precedence (IP → client)
 
 When building the IP index, later lower-priority sources lose collisions:
@@ -179,23 +192,35 @@ When building the IP index, later lower-priority sources lose collisions:
 2. **Manual CIDR** — **longest prefix wins** among overlapping ranges
 3. **UniFi** (classic + Integration snapshot)
 
-Name collisions **within the same local_domain** after normalisation: deterministic
-tie-break (lexicographically smaller UniFi `id` wins the dns_label; losers get
-`{label}-{id_suffix8}`). The same label under **different** domains is fine
-(`phone.iot.example.com` ≠ `phone.lan.example.com`). Manual entries that collide
-with UniFi on the same FQDN: manual wins; UniFi loser is renamed as above.
+Name collisions **within the same local_domain** after normalisation:
+**first-seen wins**. The label assignment (`client id → dns_label`) is persisted
+in the last-good disk cache; an existing client keeps its label across syncs and
+restarts, and a newcomer whose label collides gets `{label}-{id_suffix8}`. Names
+therefore do not flip when a client joins or a UniFi id sorts differently. The
+same label under **different** domains is fine (`phone.iot.example.com` ≠
+`phone.lan.example.com`). Manual entries that collide with UniFi on the same
+FQDN: manual wins; the UniFi client is (re)labelled with the suffix as above.
+Assignments of evicted clients are dropped with the client.
+
+**IP conflicts** (two clients claim the same address, e.g. DHCP reuse while an
+offline client is still retained, or a retained rotating IPv6 address), applied
+after the source precedence above: an **online** client beats a retained-offline
+one; among equals the one with the most recent `last_seen` wins; the loser’s
+stale address is dropped from the IP index (the loser keeps its other
+addresses). `reverse(ip)` follows the same winner.
 
 ### Name normalisation (DNS labels)
 
 For the **left-most label** of `<device>.<local-domain>`:
 
-1. Unicode NFKC, lower-case.
+1. Case-fold and compatibility-map with the `idna` crate’s UTS 46 mapping
+   (already a workspace dependency; no new normalisation crate), then lower-case.
 2. Spaces and underscores → `-`; strip characters outside `[a-z0-9-]`.
 3. Collapse repeated `-`; trim leading/trailing `-`.
 4. Empty result → `client` + short id suffix.
 5. Labels longer than 63 octets: truncate on a hyphen boundary when possible,
    then append a short hash suffix to keep uniqueness.
-6. IDNA: the label is ASCII after step 2–5; the parent domain may be Unicode and
+6. IDNA: the label is ASCII after steps 2–5; the parent domain may be Unicode and
    is converted with UTS 46 when building the FQDN.
 
 ### IPv6 and rotating privacy addresses
@@ -228,10 +253,10 @@ known-but-offline rows; same retain/evict rules apply.
 | Manual entries | ≤ 1 000 | config validation |
 
 Indexes: `HashMap<IpAddr, ClientId>`, `HashMap<Fqdn, ClientId>` (full
-`<label>.<domain>`, not bare label alone), `Arc<[ClientInfo]>`.
+`<label>.<domain>`, not bare label alone), `Arc<[Arc<ClientInfo>]>`.
 **Last-good disk cache** under `<data>/clients/` (atomic write, treat as
 untrusted) so restart serves enrichment before the first successful poll
-(see Decisions).
+(see Decisions); it also stores the persisted label assignments.
 
 ### Interface (sketch)
 
@@ -265,6 +290,7 @@ test:
 | `clients.http.body` | JSON parse / schema mismatch (lenient skip of bad rows preferred; fatal only if page unusable) |
 | `clients.sync.partial` | some pages failed; last good kept |
 | `clients.too_many` | hard client/address cap exceeded |
+| `clients.ip.conflict` | informational: two clients claimed one IP; loser dropped from index (counter, not fatal) |
 | `clients.name.collision` | reserved for validation surfaces that refuse ambiguous manuals (rare; usually auto-suffix) |
 
 ### Observability
@@ -316,7 +342,11 @@ cidr = "198.51.100.0/24"
   (`example.com` names, documentation ranges `192.0.2.0/24`, `2001:db8::/32`);
   **never** real captures from the owner's network.
 - Table tests: precedence (manual IP > longer CIDR > shorter CIDR > UniFi),
-  name normalisation, collision suffixes, VLAN join / longest-prefix,
+  name normalisation (UTS 46 case/compat mapping), first-seen label stability
+  (existing client keeps its label when a colliding newcomer or a smaller id
+  appears; assignment survives restart via the disk cache), collision suffixes,
+  IP conflicts (online beats retained-offline; most recent `last_seen` among
+  equals; loser’s address gone from `by_ip`/`reverse`), VLAN join / longest-prefix,
   per-VLAN UniFi `domainName` vs config fallback vs `local_domain_mode = "config"`,
   offline retain / IPv6 TTL with a manual clock, merge of classic multi-IPv6
   with Integration singular `ipAddress`.
@@ -334,7 +364,8 @@ cidr = "198.51.100.0/24"
   classic parsing. HTTP defaults aligned with filtering: **30 s** timeout per
   request, **response size cap** (propose 8 MiB per page), HTTPS only to the
   gateway URL.
-- Ask first: new dependencies; username/password cookie login if API-key-on-classic
+- Ask first: new dependencies (e.g. `unicode-normalization`, only if UTS 46
+  proves insufficient for label folding); username/password cookie login if API-key-on-classic
   fails on real hardware; raising the 10 000 client hard cap; changing approved
   defaults below.
 - Never: default `insecure_skip_verify`; Docker socket access; real UniFi calls
@@ -350,6 +381,9 @@ cidr = "198.51.100.0/24"
    FQDNs; missing `domainName` falls back to config `local_domain`.
 4. Gateway down: lookups still return the last good data with `stale = true` and
    a stable error code on status; no await on the lookup path.
+4a. Labels are stable: a later client with a colliding label never renames an
+   existing one; two clients claiming one IP resolve to the online / most
+   recently seen one.
 5. Manual single IP overrides UniFi for the same address; longest manual CIDR
    wins among manuals.
 6. TLS: pin mismatch fails closed with `clients.tls.untrusted`; skip-verify is
@@ -367,7 +401,7 @@ domain from UniFi when present.
 
 ## Decisions (owner, 2026-10-25)
 
-1. **Local domain:** dynamic — prefer UniFi per-network DHCP `domainName` when
+1. **Local domain:** dynamic — prefer UniFi per-network DHCP `domainName` (source unverified, see Local domain) when
    present (`local_domain_mode = "unifi_then_config"`); else config
    `local_domain` default `home.arpa` (RFC 8375). Admin may force config-only
    or set a per-manual `domain`.
@@ -395,3 +429,11 @@ domain from UniFi when present.
     to be marked by the owner when ready (no code before that).
 13. **Review 2026-10-25:** FQDN index keys; HTTP 30 s / 8 MiB caps; trait
     adapted by control-api (no `policy → clients` dep); disk last-good confirmed.
+14. **Review 2026-10-25 (Claude):** label collisions are **first-seen wins**
+    (assignment persisted in the disk cache) instead of smaller-id wins; IP
+    conflicts resolved online > retained-offline > most recently seen; label
+    folding uses `idna` UTS 46 (no `unicode-normalization` unless proven
+    necessary); per-network DHCP domain source marked **unverified**
+    (`rest/networkconf` `domain_name` likely); unknown names under a local domain
+    are left to the normal pipeline (policy); `by_ip`/`by_name` return
+    `Option<Arc<ClientInfo>>`, `local_domains()` returns `Arc<[String]>`.
