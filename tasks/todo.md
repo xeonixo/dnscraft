@@ -84,7 +84,7 @@ target `rule_parse` (list parser) in `fuzz/` with seeds from real list styles.
 **Acceptance criteria:**
 - [x] `parse_rule(build_rule(spec))` reproduces `spec` for all generated specs
 - [x] Builder output never contains characters the spec does not need
-- [ ] Fuzz target runs 10 min without findings (CI 60 s job added — CI change approved with this plan)
+- [x] Fuzz target runs 10 min without findings (CI 60 s job added — CI change approved with this plan)
 
 **Verification:** `cargo test -p dnscraft-filtering builder`; `cargo +nightly fuzz run rule_parse -- -max_total_time=600`
 
@@ -104,7 +104,7 @@ target `rule_parse` (list parser) in `fuzz/` with seeds from real list styles.
 **Dependencies:** F4, M1 · **Files:** `src/parser.rs`, `src/rule.rs`, `src/index.rs`, `tests/ip_rules.rs` · **Scope:** S
 
 ## Checkpoint A: Rules
-- [ ] All Phase 1 tests green; fuzz clean (10 min)
+- [x] All Phase 1 tests green; fuzz clean (10 min: 305 944 execs, no crash)
 - [x] Manual: all 19 reference lists downloaded once (manual, not in tests) and parsed; skip report per list reviewed with owner (2026-10-25: 2.24 M rules, 1.87 M unique domains, 0.67 s parse; fixes: IPv4 hosts names, leading-dot rules, samples per reason; IP rules → Task F6)
 
 ## Phase 2: Matching

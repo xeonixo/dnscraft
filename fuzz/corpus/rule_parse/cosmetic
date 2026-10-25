@@ -1,0 +1,4 @@
+example.com##.banner
+example.org#@#.ad
+##.global-ad
+example.net#$#body { color: red }

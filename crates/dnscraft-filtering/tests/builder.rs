@@ -386,3 +386,25 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn fuzz_regression_hosts_ip_literal_round_trip() {
+    // A hosts name that is an IP literal must not become a rule that
+    // describe/build cannot reproduce.
+    let body = "0.0.0.0 localhost\n0.0.0.0 5.0.0.0\n";
+    let list = dnscraft_filtering::parse_list(body, dnscraft_filtering::ListSource::List);
+    assert!(list.rules.is_empty());
+    for line in body.lines() {
+        if let Ok(rule) = parse_rule(line) {
+            let spec = describe_rule(&rule).unwrap();
+            parse_rule(&build_rule(&spec).unwrap()).unwrap();
+        }
+    }
+    assert!(parse_rule("0.0.0.0 5.0.0.0").is_err());
+}
+
+#[test]
+fn leading_dot_rule_is_not_describable() {
+    let rule = parse_rule(".x.example^").unwrap();
+    assert!(describe_rule(&rule).is_none());
+}

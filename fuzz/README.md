@@ -1,7 +1,8 @@
 # Fuzzing
 
 Coverage-guided fuzz targets for the wire decoders in
-[`dnscraft-proto`](../crates/dnscraft-proto/README.md), built with
+[`dnscraft-proto`](../crates/dnscraft-proto/README.md) and the filter-list
+parser in `dnscraft-filtering`, built with
 [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) and libFuzzer. The fuzz
 crate (`dnscraft-proto-fuzz`) is separate from the workspace and has its own
 `Cargo.lock`.
@@ -15,6 +16,7 @@ Defined in `fuzz/Cargo.toml`, sources in `fuzz/fuzz_targets/`:
 | `name_decode` | `name_decode.rs` | `Name::decode` at offset 0 and at an offset taken from the input; a decoded name re-encodes and decodes to itself |
 | `message_decode` | `message_decode.rs` | `Message::decode` never panics on arbitrary bytes |
 | `message_roundtrip` | `message_roundtrip.rs` | Encode, decode and encode again gives identical bytes; the encoding with a 512-octet limit decodes again |
+| `rule_parse` | `rule_parse.rs` | `parse_list` (both sources) and `parse_rule` never panic; every parsed rule has source text; a described rule builds with `build_rule` and parses again |
 
 ## Prerequisites
 
@@ -33,7 +35,7 @@ cd fuzz
 cargo +nightly fuzz run name_decode --target x86_64-unknown-linux-gnu -- -max_total_time=60
 ```
 
-Replace `name_decode` with `message_decode` or `message_roundtrip`. Use the
+Replace `name_decode` with `message_decode`, `message_roundtrip` or `rule_parse`. Use the
 `gnu` target: the `musl` default enables static linking, which does not work
 with the sanitizers that cargo-fuzz uses.
 
@@ -51,7 +53,8 @@ with the sanitizers that cargo-fuzz uses.
 The `fuzz` job in `.github/workflows/ci.yml` runs on every push and pull
 request:
 
-- It is a matrix over `name_decode`, `message_decode` and `message_roundtrip`,
+- It is a matrix over `name_decode`, `message_decode`, `message_roundtrip` and
+  `rule_parse`,
   with `fail-fast: false`, so one failing target does not cancel the others.
 - It sets `RUSTUP_TOOLCHAIN=nightly` for the job, overriding the stable pin.
 - It installs cargo-fuzz with `taiki-e/install-action`.

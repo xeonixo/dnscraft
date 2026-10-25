@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 dnscraft-proto = { path = "../crates/dnscraft-proto" }
+dnscraft-filtering = { path = "../crates/dnscraft-filtering" }
 
 [[bin]]
 name = "name_decode"
@@ -28,6 +29,13 @@ bench = false
 [[bin]]
 name = "message_roundtrip"
 path = "fuzz_targets/message_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rule_parse"
+path = "fuzz_targets/rule_parse.rs"
 test = false
 doc = false
 bench = false

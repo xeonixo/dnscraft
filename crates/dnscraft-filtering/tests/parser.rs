@@ -387,7 +387,7 @@ fn sample_is_capped_and_truncated() {
     body.push_str(&format!("x{}\u{e9}\n", "a".repeat(199)));
     let p = parse_list(&body, ListSource::List);
     assert_eq!(p.skipped.total(), 51);
-    assert_eq!(p.samples.len(), 20);
+    assert_eq!(p.samples.len(), 6); // 5 cosmetic + 1 other reason
     let p = parse_list(&format!("x{}\u{e9}\n", "a".repeat(199)), ListSource::List);
     // 200 bytes would split the two-byte char: truncated before it.
     assert_eq!(p.samples[0].text.len(), 200);
@@ -484,4 +484,92 @@ fn perf_one_million_hosts_lines() {
         dt
     );
     assert_eq!(p.rules.len(), 1_000_000);
+}
+
+#[test]
+fn samples_are_per_reason() {
+    let mut body = String::new();
+    for _ in 0..30 {
+        body.push_str("###bad\n");
+    }
+    body.push_str("||\n||bad..name^\n");
+    let p = parse_list(&body, ListSource::List);
+    assert_eq!(p.skipped.total(), 32);
+    let n = |r: SkipReason| p.samples.iter().filter(|s| s.reason == r).count();
+    assert_eq!(n(kind(UnsupportedKind::Cosmetic)), 5);
+    assert_eq!(n(SkipReason::InvalidSyntax), 1);
+    assert_eq!(n(SkipReason::InvalidDomain), 1);
+    assert_eq!(p.samples.len(), 7);
+
+    // Global cap.
+    let mut body = String::new();
+    for i in 0..200 {
+        body.push_str(&format!("###bad{i}\n"));
+    }
+    let p = parse_list(&body, ListSource::List);
+    assert_eq!(p.samples.len(), 5);
+}
+
+#[test]
+fn hosts_ip_literal_names_are_not_domains() {
+    for line in [
+        "0.0.0.0 5.0.0.0",
+        "127.0.0.1 1.2.3.4",
+        "::1 ::2",
+        "0.0.0.0 fe80::1",
+    ] {
+        assert_eq!(code(line), "filter_rule.invalid_syntax", "{line}");
+        let p = parse_list(line, ListSource::List);
+        assert!(p.rules.is_empty(), "{line}");
+        assert_eq!(p.skipped.get(SkipReason::InvalidSyntax), 1, "{line}");
+    }
+    // Same outcome as the adblock path.
+    assert_eq!(code("||5.0.0.0^"), "filter_rule.invalid_syntax");
+    // The fuzz reproducer.
+    let p = parse_list("0.0.0.0 localhost\n0.0.0.0 5.0.0.0\n", ListSource::List);
+    assert!(p.rules.is_empty());
+    assert_eq!(p.skipped.get(SkipReason::ReservedHost), 1);
+    assert_eq!(p.skipped.get(SkipReason::InvalidSyntax), 1);
+}
+
+#[test]
+fn leading_dot_is_subdomains_only() {
+    for line in [".x.example^", ".x.example", ".x.example|", "@@.x.example^"] {
+        let r = parse_rule(line).unwrap_or_else(|e| panic!("{line}: {e}"));
+        assert_eq!(r.kind(), MatchKind::Pattern, "{line}");
+        assert!(r.pattern_matches("a.x.example"), "{line}");
+        assert!(r.pattern_matches("b.a.x.example"), "{line}");
+        assert!(!r.pattern_matches("x.example"), "{line}");
+        assert!(!r.pattern_matches("ax.example"), "{line}");
+        assert!(!r.pattern_matches("a.x.example.org"), "{line}");
+    }
+    assert_eq!(parse_rule("@@.x.example^").unwrap().action(), Allow);
+    assert_eq!(code("||.x.example^"), "filter_rule.invalid_domain");
+    assert_eq!(code(".x.example."), "filter_rule.invalid_domain");
+    assert_eq!(code(".avito.www.booking."), "filter_rule.invalid_domain");
+    assert_eq!(code("."), "filter_rule.invalid_syntax");
+    assert_eq!(code(".1.2.3.4"), "filter_rule.invalid_syntax");
+    assert_eq!(code(".a..b^"), "filter_rule.invalid_domain");
+    assert!(
+        parse_rule(".b\u{fc}cher.example^")
+            .unwrap()
+            .pattern_matches("a.xn--bcher-kva.example")
+    );
+}
+
+#[test]
+fn real_list_samples() {
+    assert_eq!(code("||194.63.143.96^"), "filter_rule.invalid_syntax");
+    let p = parse_list("fe80::1%lo0 localhost\n", ListSource::List);
+    assert!(p.rules.is_empty());
+    assert_eq!(p.skipped.total(), 1);
+    assert_eq!(
+        parse_list(
+            "-werbebanner.$domain=~merkur-werbebanner.de\n",
+            ListSource::List
+        )
+        .skipped
+        .get(kind(UnsupportedKind::BrowserOnly)),
+        1
+    );
 }

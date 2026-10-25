@@ -54,6 +54,7 @@ jobs:
           - name_decode
           - message_decode
           - message_roundtrip
+          - rule_parse
     # Root rust-toolchain.toml pins stable; cargo-fuzz needs nightly (-Zsanitizer).
     # RUSTUP_TOOLCHAIN overrides that pin for this job only.
     # Use the gnu target: musl defaults to crt-static, which is incompatible with ASAN.

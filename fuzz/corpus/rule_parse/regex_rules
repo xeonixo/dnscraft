@@ -1,0 +1,2 @@
+/^ads?[0-9]*\.example\.com$/
+@@/^safe[0-9]+\.example\.org$/$important

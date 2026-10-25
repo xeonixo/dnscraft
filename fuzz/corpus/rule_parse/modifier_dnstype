@@ -1,0 +1,2 @@
+||dt.example.com^$dnstype=~A|AAAA
+||v6.example.com^$dnstype=AAAA

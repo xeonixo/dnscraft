@@ -79,12 +79,12 @@ F1 skeleton + types ── F2 core rule parser ── F3 modifiers + IDNA ──
 - [x] Task F2: Core rule parser (adblock domain rules, exceptions, anchors, plain, hosts, comments, skipped categories)
 - [x] Task F3: Modifiers and IDNA
 - [x] Task F4: Wildcard and regex rules
-- [ ] Task F5: Rule builder, round trip, fuzz target, proptest (builder done; fuzz target pending clean run)
+- [x] Task F5: Rule builder, round trip, fuzz target, proptest
 - [ ] Task F6: IP rules (answer filtering) — added after Checkpoint A
 
 ### Checkpoint A: Rules
-- [ ] All syntax/modifier unit tests green; fuzz target 10 min clean
-- [ ] All 19 reference lists parse (manual run), skip report reviewed with owner
+- [x] All syntax/modifier unit tests green; fuzz target 10 min clean
+- [x] All 19 reference lists parse (manual run), skip report reviewed with owner
 
 ### Phase 2: Matching
 - [x] Task M1: Domain index and verdicts with reasons

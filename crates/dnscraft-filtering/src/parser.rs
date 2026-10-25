@@ -16,6 +16,7 @@
 //! | `\|\|x^`, `\|\|x^\|`, `\|\|x`, `\|\|x\|` | domain `x` and all subdomains |
 //! | `\|x^`, `\|x\|`, `\|x` | exactly `x` |
 //! | `x`, `x^`, `x\|` (no start anchor) | domain `x` and all subdomains |
+//! | `.x^`, `.x\|`, `.x` (leading dot, no anchor) | subdomains of `x` only (glob `\|\|*.x^`) |
 //! | `@@` + any of the above | allow instead of block |
 //! | `IP name [name...] [# comment]` | each name blocked, **exact** match |
 //!
@@ -61,8 +62,10 @@ use crate::rule::{MatchKind, Rule, RuleAction};
 
 /// Maximum accepted line length in bytes.
 pub const MAX_LINE_LEN: usize = 4096;
-/// Number of skipped lines kept in [`ParsedList::samples`].
-pub const SKIP_SAMPLE_LIMIT: usize = 20;
+/// Maximum number of skipped lines kept in [`ParsedList::samples`].
+pub const SKIP_SAMPLE_LIMIT: usize = 60;
+/// Maximum number of samples kept per [`SkipReason`].
+pub const SKIP_SAMPLES_PER_REASON: usize = 5;
 const SAMPLE_TEXT_MAX: usize = 200;
 
 /// Where a list body came from. `$dnsrewrite` uses this to decide whether record
@@ -233,7 +236,8 @@ pub struct ParsedList {
     pub comment_lines: usize,
     /// Skipped items by reason. A hosts line can contribute several.
     pub skipped: SkipCounts,
-    /// The first [`SKIP_SAMPLE_LIMIT`] skipped items.
+    /// The first [`SKIP_SAMPLES_PER_REASON`] skipped items of each reason, at
+    /// most [`SKIP_SAMPLE_LIMIT`] in total.
     pub samples: Vec<SkippedLine>,
 }
 
@@ -364,7 +368,7 @@ pub fn parse_list(body: &str, source: ListSource) -> ParsedList {
 fn record_skip(out: &mut ParsedList, line_no: u32, line: &str, e: &RuleError) {
     let reason = SkipReason::from(e);
     out.skipped.add(reason);
-    if out.samples.len() < SKIP_SAMPLE_LIMIT {
+    if out.samples.len() < SKIP_SAMPLE_LIMIT && out.skipped.get(reason) <= SKIP_SAMPLES_PER_REASON {
         let t = line.trim_matches(is_ws);
         let mut n = t.len().min(SAMPLE_TEXT_MAX);
         while !t.is_char_boundary(n) {
@@ -493,6 +497,12 @@ fn parse_hosts<F: FnMut(Item)>(line: &str, t: &str, emit: &mut F) -> bool {
         let span = span_of(line, name);
         if is_reserved_host(name) {
             emit(Item::Skip(RuleError::ReservedHost { span }));
+        } else if name.parse::<IpAddr>().is_ok() {
+            // Same verdict as the adblock path: an IP literal is not a domain.
+            emit(Item::Skip(RuleError::InvalidSyntax {
+                detail: "ip_address",
+                span,
+            }));
         } else {
             match parse_domain(name, span.clone()) {
                 Ok(domain) => emit(Item::Rule {
@@ -585,6 +595,9 @@ fn parse_pattern(
         let glob = Glob::from_body(body, start, end_anchored, span.clone())?;
         return Ok((Rule::new_glob(action, Arc::new(glob)), span));
     }
+    if start == GlobStart::Anywhere && body.starts_with('.') {
+        return parse_leading_dot(action, body, span);
+    }
     let kind = match start {
         GlobStart::Exact => MatchKind::Exact,
         _ => MatchKind::Subdomains,
@@ -612,6 +625,45 @@ fn parse_pattern(
         });
     }
     parse_domain(body, span.clone()).map(|domain| (Rule::new(action, kind, domain), span))
+}
+
+/// `.x^`, `.x|`, `.x` (no start anchor): in adblock semantics the name must
+/// contain `.x` followed by the end, i.e. subdomains of `x` but not `x`
+/// itself. Compiled as the glob `||*.x^`.
+fn parse_leading_dot(
+    action: RuleAction,
+    body: &str,
+    span: Range<usize>,
+) -> Result<(Rule, Range<usize>), RuleError> {
+    let rest = body.get(1..).unwrap_or("");
+    if rest.is_empty() {
+        return Err(RuleError::InvalidSyntax {
+            detail: "empty_pattern",
+            span,
+        });
+    }
+    if rest.contains(['|', '^']) {
+        return Err(RuleError::InvalidSyntax {
+            detail: "misplaced_anchor",
+            span,
+        });
+    }
+    if rest.parse::<IpAddr>().is_ok() {
+        return Err(RuleError::InvalidSyntax {
+            detail: "ip_address",
+            span,
+        });
+    }
+    if rest.ends_with('.') {
+        return Err(RuleError::InvalidDomain {
+            source: crate::error::NameError::EmptyLabel,
+            span,
+        });
+    }
+    // Validates the domain (including IDNA).
+    parse_domain(rest, span.clone())?;
+    let glob = Glob::from_body(&format!("*{body}"), GlobStart::Boundary, true, span.clone())?;
+    Ok((Rule::new_glob(action, Arc::new(glob)), span))
 }
 
 fn parse_regex(

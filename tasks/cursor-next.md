@@ -29,21 +29,19 @@ commit per task ending with the Co-Authored-By line used in earlier commits. Pus
 ## Status when this file was written (2026-10-25)
 
 - Done and committed: F1–F4, F5 builder, L1, L2, M1, M2.
-- **In progress with Claude (do not start in parallel):** parser fixes from Checkpoint A (hosts names that
-  are IP literals, leading-dot rules `.x^` → subdomains only, skip samples per reason) and the 10-minute run
-  of the new fuzz target `rule_parse` + CI job + `examples/parse_lists.rs`. Touches `src/parser.rs`,
-  `src/pattern.rs`, `src/builder.rs`, their tests, `fuzz/`, `.github/workflows/ci.yml`. Start with the
-  briefs below only after that commit has landed (check `git log`).
+- Checkpoint A complete (parser fixes, fuzz target `rule_parse` clean for 10 min, CI job, real-list tool).
+  Nothing is running with Claude — Cursor can start with M4a.
 
 ## Order
 
 1. **M4a — build-peak and memory slimming** (most important: decides whether the budget holds)
-2. **F6 — IP rules** (independent of M4a; separate files except `index.rs` → do after M4a or coordinate)
-3. **M3 — chain matching, temporary allows, counters**
-4. **M4b — criterion benchmarks** (Checkpoint B: show numbers to the owner)
-5. **L3 — scheduler, hot reload, status**
-6. **L4 — blocked services catalog**
-7. **C1 — engine polish, README, coverage, acceptance** → Checkpoint D, then review with Claude
+2. **R1 — two small parser fixes** (anytime)
+3. **F6 — IP rules** (independent of M4a; separate files except `index.rs` → do after M4a or coordinate)
+4. **M3 — chain matching, temporary allows, counters**
+5. **M4b — criterion benchmarks** (Checkpoint B: show numbers to the owner)
+6. **L3 — scheduler, hot reload, status**
+7. **L4 — blocked services catalog**
+8. **C1 — engine polish, README, coverage, acceptance** → Checkpoint D, then review with Claude
 
 ---
 
@@ -102,6 +100,20 @@ Do:
   unknown set, paused set.
 - Rerun `cargo run --release -p dnscraft-filtering --example parse_lists` and note in progress.md how many IP
   rules the AdGuard DNS filter now yields (was 72 invalid_syntax).
+```
+
+## R1: Two small parser fixes from the real-list run (do anytime, ~30 min)
+
+```text
+1. Regex rules are compiled with Unicode classes, so a real AdGuard DNS filter rule like
+   /^(mon|tue|wed|thu|fri|sat|sun)\d{1,2}\.\w{2}\d{1,6}\w{4}\.com$/ fails with regex_too_large.
+   Hostnames are ASCII: build regexes with RegexBuilder::unicode(false) (keep case_insensitive and the size
+   limits). If unicode(false) rejects a pattern that only works with Unicode, skip it with invalid_regex.
+   Regression test with that exact rule.
+2. AdGuard DNS filter contains rules like `://jhf.ru^` and `://*.a-akamaihd.com^` (17 skipped as
+   browser_only). In URL syntax `://` marks the start of the hostname: treat `://x^` as an exact-start
+   anchor (same as `|x^` → Exact) and `://*.x^` as the glob `||*.x^`. A `://` followed by a path (`/`)
+   stays browser_only. Tests + rerun examples/parse_lists.rs, note the new numbers in progress.md.
 ```
 
 ## M3: Chain matching, temporary allows, pause, counters

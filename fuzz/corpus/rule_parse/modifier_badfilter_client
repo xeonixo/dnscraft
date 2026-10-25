@@ -1,0 +1,3 @@
+||old.example.com^$badfilter
+||client.example.com^$client=laptop
+||ctag.example.com^$ctag=device
