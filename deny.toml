@@ -9,7 +9,7 @@ no-default-features = false
 # RustSec advisory database (default URL). No ignores without a written reason.
 ignore = [
     # RUSTSEC-2026-0009: stack exhaustion in time's Rfc2822 parser (< 0.3.47).
-    # Fixed in time ≥ 0.3.47 (needs rustc 1.88); workspace MSRV stays 1.85
+    # Fixed in time ≥ 0.3.47 (needs rustc 1.88); workspace MSRV is 1.88
     # (owner question: bump rust-version + time). Safe here because nothing in
     # this workspace calls Rfc2822 — Retry-After uses a fixed IMF-fixdate
     # format_description; x509-parser / asn1-rs use time without RFC 2822.

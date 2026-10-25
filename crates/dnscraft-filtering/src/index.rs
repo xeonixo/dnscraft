@@ -684,11 +684,11 @@ impl IndexBuilder {
             out.flags.push(p.flags & !F_REMOVED);
             out.src.push(p.source);
             out.text_offs.push(p.text_off);
-            if p.flags & F_MODS != 0 {
-                if let Some(m) = mods.get_mut(p.mod_idx as usize) {
-                    out.mod_ids.push(idx);
-                    out.mods.push(std::mem::take(m));
-                }
+            if p.flags & F_MODS != 0
+                && let Some(m) = mods.get_mut(p.mod_idx as usize)
+            {
+                out.mod_ids.push(idx);
+                out.mods.push(std::mem::take(m));
             }
         }
         for p in &pending_ip {
@@ -1249,10 +1249,10 @@ impl Index {
         if m.dnstype.as_ref().is_some_and(|t| !t.matches(qtype)) {
             return;
         }
-        if let Some(deny) = &m.denyallow {
-            if denied(text, deny) {
-                return;
-            }
+        if let Some(deny) = &m.denyallow
+            && denied(text, deny)
+        {
+            return;
         }
         let custom = self.is_custom_source(key.2);
         match &m.dnsrewrite {

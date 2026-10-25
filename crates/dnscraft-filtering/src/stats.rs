@@ -102,10 +102,10 @@ impl StatsTable {
         if let Some(c) = self.sets.get(set) {
             c.record(verdict);
         }
-        if let Some(list) = winning_list(verdict) {
-            if let Some(c) = self.lists.get(list) {
-                c.record(verdict);
-            }
+        if let Some(list) = winning_list(verdict)
+            && let Some(c) = self.lists.get(list)
+        {
+            c.record(verdict);
         }
     }
 

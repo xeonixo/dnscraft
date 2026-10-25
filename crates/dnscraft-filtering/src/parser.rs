@@ -517,11 +517,11 @@ fn is_comment(t: &str) -> bool {
 
 fn find_cosmetic(line: &str, t: &str) -> Option<Range<usize>> {
     for (i, _) in t.match_indices('#') {
-        if let Some(rest) = t.get(i..) {
-            if cosmetic_marker_at(rest) {
-                let s = off(line, t) + i;
-                return Some(s..off(line, t) + t.len());
-            }
+        if let Some(rest) = t.get(i..)
+            && cosmetic_marker_at(rest)
+        {
+            let s = off(line, t) + i;
+            return Some(s..off(line, t) + t.len());
         }
     }
     // HTML filtering rules: `example.org$$script[...]`, `example.org$@$...`.

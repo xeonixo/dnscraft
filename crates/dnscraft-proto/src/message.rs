@@ -267,12 +267,12 @@ impl Message {
                     needed: out.len(),
                 });
             };
-            if let Some(section) = sections.get_mut(idx) {
-                if let Some(last) = section.last().copied() {
-                    section.retain(|r| {
-                        !(r.name == last.name && r.rtype() == last.rtype() && r.class == last.class)
-                    });
-                }
+            if let Some(section) = sections.get_mut(idx)
+                && let Some(last) = section.last().copied()
+            {
+                section.retain(|r| {
+                    !(r.name == last.name && r.rtype() == last.rtype() && r.class == last.class)
+                });
             }
             if idx < 2 {
                 header.tc = true;

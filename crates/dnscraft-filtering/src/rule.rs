@@ -180,10 +180,10 @@ impl Rule {
     /// first). Always `false` for domain and IP rules: those go through the
     /// index. Modifiers (`$dnstype`, `$denyallow`) are not considered here.
     pub fn pattern_matches(&self, name: &str) -> bool {
-        if let Some(p) = self.prefilter() {
-            if !name.contains(p) {
-                return false;
-            }
+        if let Some(p) = self.prefilter()
+            && !name.contains(p)
+        {
+            return false;
         }
         match &self.target {
             Target::Domain(_) | Target::Ip(_) => false,

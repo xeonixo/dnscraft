@@ -29,10 +29,10 @@ pub(super) fn decode(r: &mut Reader<'_>, _rtype: RecordType) -> Result<SvcbData,
         let key = r.u16()?;
         let len = usize::from(r.u16()?);
         let value = r.bytes(len)?;
-        if let Some(&(previous, _)) = params.last() {
-            if key <= previous {
-                return Err(ProtoError::SvcbKeyOrder { previous, key });
-            }
+        if let Some(&(previous, _)) = params.last()
+            && key <= previous
+        {
+            return Err(ProtoError::SvcbKeyOrder { previous, key });
         }
         params.push((key, value.into()));
     }
@@ -52,13 +52,13 @@ pub(super) fn encode(
     data.target.encode(buf, None);
     let mut last: Option<u16> = None;
     for (key, value) in &data.params {
-        if let Some(previous) = last {
-            if *key <= previous {
-                return Err(ProtoError::SvcbKeyOrder {
-                    previous,
-                    key: *key,
-                });
-            }
+        if let Some(previous) = last
+            && *key <= previous
+        {
+            return Err(ProtoError::SvcbKeyOrder {
+                previous,
+                key: *key,
+            });
         }
         last = Some(*key);
         let len = u16::try_from(value.len())

@@ -149,16 +149,15 @@ impl Glob {
             }
         }
         // `^` may only be followed by `*`: anything else can never match.
-        if let Some(i) = core.iter().position(|b| *b == END) {
-            if core
+        if let Some(i) = core.iter().position(|b| *b == END)
+            && core
                 .get(i + 1..)
                 .is_some_and(|t| t.iter().any(|b| *b != STAR))
-            {
-                return Err(RuleError::InvalidSyntax {
-                    detail: "misplaced_anchor",
-                    span,
-                });
-            }
+        {
+            return Err(RuleError::InvalidSyntax {
+                detail: "misplaced_anchor",
+                span,
+            });
         }
         if !core.iter().any(u8::is_ascii_alphanumeric) {
             return Err(RuleError::InvalidSyntax {

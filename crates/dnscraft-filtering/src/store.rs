@@ -846,10 +846,10 @@ fn open_capped(path: &Path, max: u64) -> Result<Option<(fs::File, Vec<u8>)>, Sto
         path: path.to_path_buf(),
         max,
     };
-    if let Ok(md) = file.metadata() {
-        if md.len() > max {
-            return Err(too_large());
-        }
+    if let Ok(md) = file.metadata()
+        && md.len() > max
+    {
+        return Err(too_large());
     }
     // The length check above can race with a growing file; cap the read too.
     let mut buf = Vec::new();

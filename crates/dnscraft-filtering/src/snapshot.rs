@@ -479,10 +479,10 @@ impl SnapshotBuilder {
             texts.push(TextEntry::Inline(Arc::clone(body)));
             let mut add_err = None;
             parse_list_each(body, ListSource::List, |rule| {
-                if add_err.is_none() {
-                    if let Err(e) = b.add_rule(rule, src) {
-                        add_err = Some(e);
-                    }
+                if add_err.is_none()
+                    && let Err(e) = b.add_rule(rule, src)
+                {
+                    add_err = Some(e);
                 }
             });
             if let Some(e) = add_err {
@@ -516,10 +516,10 @@ impl SnapshotBuilder {
                 // another copy — on-disk stores should not).
                 let mut add_err = None;
                 let stats = parse_list_each(&body, ListSource::List, |rule| {
-                    if add_err.is_none() {
-                        if let Err(e) = b.add_rule(rule, src) {
-                            add_err = Some(e);
-                        }
+                    if add_err.is_none()
+                        && let Err(e) = b.add_rule(rule, src)
+                    {
+                        add_err = Some(e);
                     }
                 });
                 if let Some(e) = add_err {
@@ -606,10 +606,10 @@ fn build_side_index(
         let src = b.add_source_with_body(SourceKind::Service(Arc::clone(id)), Arc::clone(body))?;
         let mut add_err = None;
         parse_list_each(body, ListSource::List, |rule| {
-            if add_err.is_none() {
-                if let Err(e) = b.add_rule(rule, src) {
-                    add_err = Some(e);
-                }
+            if add_err.is_none()
+                && let Err(e) = b.add_rule(rule, src)
+            {
+                add_err = Some(e);
             }
         });
         if let Some(e) = add_err {

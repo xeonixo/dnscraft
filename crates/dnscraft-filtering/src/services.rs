@@ -320,10 +320,10 @@ fn pick_translation<'a>(
     let Some(map) = map else {
         return fallback;
     };
-    if let Some(n) = map.get(locale) {
-        if !n.is_empty() {
-            return n;
-        }
+    if let Some(n) = map.get(locale)
+        && !n.is_empty()
+    {
+        return n;
     }
     if locale != "en"
         && let Some(n) = map.get("en")

@@ -356,7 +356,7 @@ fn filter_hint(
     addr_len: usize,
     parse: fn(&[u8]) -> IpAddr,
 ) -> Result<(Box<[u8]>, u32), ()> {
-    if value.is_empty() || value.len() % addr_len != 0 {
+    if value.is_empty() || !value.len().is_multiple_of(addr_len) {
         return Err(());
     }
     let mut kept = Vec::with_capacity(value.len());
@@ -381,12 +381,12 @@ fn parse_mandatory_keys(data: &SvcbData) -> Result<Vec<u16>, ()> {
         return Err(());
     }
     let mut keys = Vec::with_capacity(value.len() / 2);
-    for chunk in value.chunks_exact(2) {
+    for chunk in value.as_chunks::<2>().0 {
         let key = u16::from_be_bytes([chunk[0], chunk[1]]);
-        if let Some(&prev) = keys.last() {
-            if key <= prev {
-                return Err(());
-            }
+        if let Some(&prev) = keys.last()
+            && key <= prev
+        {
+            return Err(());
         }
         keys.push(key);
     }
