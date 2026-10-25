@@ -4,14 +4,14 @@
 > Previous briefs (filtering, all done): [archive/cursor-filtering.md](archive/cursor-filtering.md).
 > Background: [SPEC.md](../SPEC.md) · [CAPABILITY-MAP.md](../CAPABILITY-MAP.md) · [progress.md](progress.md).
 
-## Status when this file was written (2026-10-25)
+## Status (updated 2026-10-25)
 
 - `resolver`: complete (Checkpoint E approved). `filtering`: C1 done, **Checkpoint D waits for the
   Claude/owner review** — Cursor does not touch the filtering crate until that review is logged in
   progress.md (exception: brief T3, which says so explicitly).
-- Next modules by the build order: `clients` and `tls` (independent), then `policy`.
-  All three have **no spec yet** (`pending` in CAPABILITY-MAP.md). This project is spec-driven:
-  no module code before its spec is approved by the owner.
+- `clients`: **SPEC-clients.md drafted** — owner Open Questions unanswered; no code until approved.
+- Next specs: `tls` (S2), then `policy` (S3). This project is spec-driven: no module code before
+  its spec is approved by the owner.
 
 ## Order
 

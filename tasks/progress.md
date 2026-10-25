@@ -12,9 +12,12 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
 - Module `filtering`: **C1 done** (engine polish, README, coverage, fuzz, real-list acceptance). **Checkpoint D ready for Claude/owner review** — implementer does **not** tick Checkpoint D. Checkpoint B owner: RAM may grow — not blocking. Deep-name p99 miss left for Checkpoint D if revisited.
-- Blockers: none.
+- Module `clients`: **SPEC-clients.md drafted** — waiting on owner answers to Open Questions before approval / P1 plan. Specs for `tls` and `policy` not started yet (one spec at a time).
+- Blockers: none for coding; next owner input is SPEC-clients open questions (and filtering Checkpoint D when ready).
 
 ## Log
+
+- 2026-10-25 — Spec draft SPEC-clients.md (Cursor, S1): UniFi Network Integration API research (base `/proxy/network/integration/v1`, `X-API-KEY`, paginated clients/networks; gaps: single `ipAddress`, no client `networkId`, connected-only). Design: Arc lookup `by_ip`/`by_name`/`reverse`, manual > longest CIDR > UniFi, VLAN via network `hostIpAddress`/`prefixLength`, last-good + stale on sync failure, TLS pin/CA (never accept-any by default), `clients.*` codes, mock-server testing. CAPABILITY-MAP link set to draft. **STOP for owner Open Questions.**
 
 - 2026-10-25 — Filtering C1 done (Cursor): Engine API — SPEC primary `FilterEngine::new(config, store, clock)` (+ `open` alias); matching-only `from_snapshot` (documented test helper); `now()` uses injected clock. Deduped `TYPE_NAMES` → `modifiers::TYPE_NAMES` + `type_name_for`. README at `crates/dnscraft-filtering/README.md` (syntax, priority, every `code()`, limits, `parse_lists`). Coverage **91.13 %** lines (`cargo llvm-cov -p dnscraft-filtering`). Fuzz `rule_parse` 10 min clean after fix: **312 106** execs / 601 s, no crash (first run found BOM+IPv4 → domain via IDNA; fixed: strip per-line BOM in parser; builder rejects IP-literal domains; seeds `bom_ip_literal` / `bare_ipv4`). Real lists (cached): parse **2.241363 M** rules / **1.870509 M** unique domains / **18 978** skipped (cosmetic/browser_only dominate; no DNS-relevant supported rule mis-skipped); AdGuard DNS filter **72** IP rules; parse wall **1.13 s** (tool total 3.10 s). Index build (`real_lists_snapshot` release): **1.63 s**, steady VmRSS **58.1 MB**, Index **52.5 MB** (11 B/entry), build peak **ΔVmHWM ≈ 113.3 MB** (M4a cite; owner relaxed at Checkpoint B). Reload never blocks matches (`tests/reload.rs`).
 
