@@ -360,6 +360,17 @@ fn regex_rule_with_dollar_and_modifiers() {
 }
 
 #[test]
+fn ascii_regex_with_word_class_compiles() {
+    // AdGuard DNS filter ships rules like this; with Unicode classes they hit
+    // regex_too_large, with unicode(false) they compile and match hostnames.
+    let src = r"/^(mon|tue|wed|thu|fri|sat|sun)\d{1,2}\.\w{2}\d{1,6}\w{4}\.com$/";
+    let r = rule(src);
+    assert!(hit(&r, "mon1.ab12wxyz.com"));
+    assert!(hit(&r, "SUN99.ZZ999999ABCD.com")); // case-insensitive
+    assert!(!hit(&r, "mon1.ab12wxyz.org"));
+}
+
+#[test]
 fn regex_errors_per_source() {
     for (src, code) in [
         ("/(/", "filter_rule.invalid_regex"),

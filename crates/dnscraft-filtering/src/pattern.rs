@@ -59,7 +59,7 @@
 use std::fmt::Write as _;
 use std::ops::Range;
 
-use regex::{Regex, RegexBuilder};
+use regex::bytes::{Regex, RegexBuilder};
 
 use crate::error::{NameError, RuleError};
 
@@ -344,9 +344,17 @@ impl Eq for RegexRule {}
 
 impl RegexRule {
     /// Compiles `source` case-insensitively within the size limits.
+    ///
+    /// Hostnames are ASCII, so Unicode character classes are disabled
+    /// (`unicode(false)`). That keeps patterns such as `\w{2}` small enough to
+    /// compile. Matching uses [`regex::bytes::Regex`] so that `.` / `\d` / `\w`
+    /// with Unicode disabled are still accepted (they may match invalid UTF-8
+    /// as bytes; our names are always valid ASCII). A pattern that only works
+    /// with Unicode classes is rejected as [`RegexFailure::Invalid`].
     pub(crate) fn compile(source: &str) -> Result<Self, RegexFailure> {
         let regex = RegexBuilder::new(source)
             .case_insensitive(true)
+            .unicode(false)
             .size_limit(REGEX_SIZE_LIMIT)
             .dfa_size_limit(REGEX_DFA_SIZE_LIMIT)
             .build()
@@ -370,7 +378,7 @@ impl RegexRule {
 
     /// Matches a canonical (lower-case, no trailing dot) name.
     pub fn is_match(&self, name: &str) -> bool {
-        self.regex.is_match(name)
+        self.regex.is_match(name.as_bytes())
     }
 }
 

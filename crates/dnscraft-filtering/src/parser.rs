@@ -15,6 +15,8 @@
 //! |---|---|
 //! | `\|\|x^`, `\|\|x^\|`, `\|\|x`, `\|\|x\|` | domain `x` and all subdomains |
 //! | `\|x^`, `\|x\|`, `\|x` | exactly `x` |
+//! | `://x^`, `://x\|`, `://x` | exactly `x` (hostname after a URL scheme) |
+//! | `://*.x^` | subdomains of `x` only (glob `\|\|*.x^`) |
 //! | `x`, `x^`, `x\|` (no start anchor) | domain `x` and all subdomains |
 //! | `.x^`, `.x\|`, `.x` (leading dot, no anchor) | subdomains of `x` only (glob `\|\|*.x^`) |
 //! | `@@` + any of the above | allow instead of block |
@@ -614,13 +616,27 @@ fn parse_pattern(
     if pat.len() >= 2 && pat.starts_with('/') && pat.ends_with('/') {
         return parse_regex(line, pat, action);
     }
-    if pat.contains('/') {
+    // `://host` is a hostname-start anchor in URL syntax (AdGuard DNS filter
+    // ships rules like `://jhf.ru^`). A path after the host stays browser-only.
+    let (start, body) = if let Some(r) = pat.strip_prefix("://") {
+        if r.contains('/') {
+            return Err(RuleError::Unsupported {
+                kind: UnsupportedKind::BrowserOnly,
+                span: span_of(line, pat),
+            });
+        }
+        // `://*.x^` → same as `||*.x^`; plain `://x^` → same as `|x^`.
+        if r.starts_with('*') {
+            (GlobStart::Boundary, r)
+        } else {
+            (GlobStart::Exact, r)
+        }
+    } else if pat.contains('/') {
         return Err(RuleError::Unsupported {
             kind: UnsupportedKind::BrowserOnly,
             span: span_of(line, pat),
         });
-    }
-    let (start, body) = if let Some(r) = pat.strip_prefix("||") {
+    } else if let Some(r) = pat.strip_prefix("||") {
         (GlobStart::Boundary, r)
     } else if let Some(r) = pat.strip_prefix('|') {
         (GlobStart::Exact, r)

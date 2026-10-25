@@ -558,6 +558,42 @@ fn leading_dot_is_subdomains_only() {
 }
 
 #[test]
+fn url_hostname_anchor_is_exact_or_glob() {
+    // `://x^` → exact hostname (same as `|x^`).
+    let r = parse_rule("://jhf.ru^").unwrap();
+    assert_eq!(r.kind(), MatchKind::Exact);
+    assert_eq!(r.action(), Block);
+    assert_eq!(r.domain().unwrap().as_str(), "jhf.ru");
+    assert_eq!(
+        parse_rule("|jhf.ru^").unwrap().domain(),
+        r.domain(),
+        ":// and | anchors must agree"
+    );
+
+    // `://*.x^` → subdomains-only glob (same as `||*.x^`).
+    let r = parse_rule("://*.a-akamaihd.com^").unwrap();
+    assert_eq!(r.kind(), MatchKind::Pattern);
+    assert!(r.pattern_matches("cdn.a-akamaihd.com"));
+    assert!(!r.pattern_matches("a-akamaihd.com"));
+    let via_pipe = parse_rule("||*.a-akamaihd.com^").unwrap();
+    assert_eq!(
+        r.glob().map(|g| g.canonical()),
+        via_pipe.glob().map(|g| g.canonical())
+    );
+
+    assert_eq!(parse_rule("@@://ok.example^").unwrap().action(), Allow);
+    // Path after the host stays browser-only.
+    assert_eq!(
+        code("://example.com/ads.js"),
+        "filter_rule.unsupported_syntax"
+    );
+    assert_eq!(
+        code("://example.com/path^"),
+        "filter_rule.unsupported_syntax"
+    );
+}
+
+#[test]
 fn real_list_samples() {
     assert_eq!(code("||194.63.143.96^"), "filter_rule.invalid_syntax");
     let p = parse_list("fe80::1%lo0 localhost\n", ListSource::List);
