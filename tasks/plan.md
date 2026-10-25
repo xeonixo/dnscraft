@@ -129,4 +129,4 @@ L4 after L1/L2.
 
 ## Decisions
 
-Pending owner approval: this plan and the dependency list above.
+Approved by owner 2026-10-25: this plan, the dependency list above (idna included, not the skip alternative), and the CI fuzz job for the rule parser.

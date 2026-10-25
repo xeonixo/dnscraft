@@ -11,7 +11,7 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks).
 ## Current state
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
-- Module `filtering`: spec approved 2026-10-25; plan + tasks drafted (tasks/plan.md, tasks/todo.md) — awaiting owner approval incl. dependencies (reqwest+rustls, regex, idna, serde_json) and CI fuzz job.
+- Module `filtering`: spec approved 2026-10-25; plan + tasks approved 2026-10-25 (deps reqwest+rustls/ring, regex, idna, serde_json; CI fuzz job). In progress: Task F1 (Sonnet).
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
