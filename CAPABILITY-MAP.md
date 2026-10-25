@@ -15,6 +15,7 @@ This file is the index of all modules. Module ids are stable and never renamed.
 | `listeners` | Do53 UDP/TCP, DoT, DoH (h2/h3), DoQ; multiple NICs/addresses; public listeners for registered Client IDs | policy, tls | pending |
 | `control-api` | REST API, configuration, query log (filterable by device), statistics, OIDC (Authentik) + local break-glass login, locale-neutral error codes | policy, clients | pending |
 | `web-ui` | TypeScript frontend, fully internationalized, embedded into the binary as static assets | control-api | pending |
+| `mcp` | MCP server for AI assistants: query log, "why blocked?", test query, stats (viewer); temporary allow, rules, pause (admin); internal listener only, same tokens/roles/audit as the API | control-api | pending |
 | `cluster` | Master/sub-nodes: config sync, writes from any node (forwarded to master, offline fallback), keep serving without the master, log/stats aggregation on the master | control-api | pending |
 
 ## Build order
@@ -24,7 +25,7 @@ resolver, filtering, clients, tls   (can run in parallel)
         → policy
         → listeners
         → control-api
-        → web-ui, cluster
+        → web-ui, cluster, mcp
 ```
 
 ## Shared crates (not capabilities)

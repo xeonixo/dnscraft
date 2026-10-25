@@ -18,6 +18,7 @@ the familiar AdGuard-compatible filter lists while closing these gaps:
 - **Certificates via ACME DNS-01** using Cloudflare.
 - **Multi-node:** one master, several sub-nodes, for redundancy and central management.
 - **Polished web UI** with SSO via Authentik (OIDC).
+- **AI-assistant ready:** a built-in MCP server lets an assistant (e.g. Claude) search the query log, explain blocks, run test queries, and — with an admin token — change filters, using the same permissions as the API.
 - **Consistently internationalized** (see [Internationalization](#internationalization-i18n)).
 - **Docker-first** and **as lightweight as possible**.
 
@@ -80,6 +81,7 @@ Adopted from AdGuard Home and refined; each item belongs to the listed module sp
 | Manual client names | clients, web-ui | Names for single IPs or whole ranges (e.g. `172.18.0.0/16` = "Docker on server1", `172.18.0.5` = "paperless"); take precedence over UniFi names. Containers on macvlan are named automatically via UniFi |
 | DynDNS | tls | Keeps the public A/AAAA record of the DoH/DoT hostname at Cloudflare up to date; public IP from a configurable echo service (default: Cloudflare `cdn-cgi/trace`, as Cloudflare is already in use) |
 | Alerts | control-api, web-ui | Certificate expiry, failed list updates, node offline, DynDNS failures: shown in the web UI only (no push/e-mail for now) |
+| MCP server | mcp | Model Context Protocol server (Streamable HTTP) on the internal API listener only. Thin layer over `control-api`: same API tokens and roles (`viewer` = read tools: query log search, "why blocked?", test query, statistics, list/node status; `admin` = also write tools: temporary allow, add rule, pause a filter set), every write in the audit log. Query-log content (domain names, client names) is attacker-influenced and returned strictly as structured data, never as instructions; write tools are marked destructive so clients ask for confirmation. Off by default |
 
 ### Later (not specified now, but the API must not prevent it)
 
@@ -210,7 +212,7 @@ DNScraft from anywhere. Exposure is opt-in and follows these rules:
   instantly in the UI, and each maps to a profile (filter set) like a subnet does.
 - **Rate limits and abuse protection** for public sources: per Client ID and per source IP,
   temporary bans after repeated invalid IDs or handshake failures.
-- **The web UI and API are never served on a public listener**, even if DoH shares port 443
+- **The web UI, API and MCP server are never served on a public listener**, even if DoH shares port 443
   on the same address: public listeners route only `/dns-query/<id>`.
 - **DoH on 443** is the recommended path for mobile devices (port 853 is blocked on some
   networks); DoT/DoQ on 853 additionally.
@@ -287,6 +289,7 @@ dnscraft/
 │   ├── dnscraft-listeners/    → module listeners
 │   ├── dnscraft-api/          → module control-api
 │   ├── dnscraft-cluster/      → module cluster
+│   ├── dnscraft-mcp/          → module mcp
 │   └── dnscraft-testkit/      → test helpers: fake DNS hierarchy, DNSSEC test zones (uses hickory as an independent oracle)
 ├── web/                       → module web-ui (SvelteKit)
 │   └── messages/              → i18n catalogs (en.json, de.json, …)
@@ -386,7 +389,7 @@ Coverage: ≥ 80 % lines for `proto`, `resolver`, `filtering`, `policy`; no hard
   - Keys, tokens, or secrets in the repo, including test fixtures and sample configs.
   - Real UniFi/Cloudflare/ACME production endpoints in automated tests.
   - Silently disable or weaken DNSSEC validation.
-  - Expose Do53 or the web UI/API on a public listener by default.
+  - Expose Do53, the web UI/API or the MCP server on a public listener by default.
   - Delete or skip failing tests without asking.
 
 ## Success Criteria (whole project)
@@ -395,6 +398,7 @@ Coverage: ≥ 80 % lines for `proto`, `resolver`, `filtering`, `policy`; no hard
 - One container on the home server replaces AdGuard Home for all clients across multiple VLANs.
 - The lightweight budgets are measured and met.
 - The web UI is fully usable in `en` and `de` with zero missing keys and no hard-coded strings.
+- An MCP client (e.g. Claude) connected with a viewer token can answer "why was X blocked for device Y?" from live data; with an admin token it can grant a temporary allow, which shows up in the audit log.
 
 ## Open Questions
 
