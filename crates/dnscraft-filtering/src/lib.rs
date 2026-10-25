@@ -30,6 +30,12 @@ mod store;
 mod temp_allow;
 mod types;
 
+/// Deterministic reference-shaped rule generator for criterion benches.
+/// Enabled only with `--features testgen`; not part of the stable public API.
+#[cfg(feature = "testgen")]
+#[doc(hidden)]
+pub mod testgen;
+
 pub use builder::{
     BuildError, MAX_TXT_LEN, RecordTypeSel, RewriteSpec, RuleSpec, build_rule, describe_rule,
 };

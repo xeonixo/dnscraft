@@ -90,11 +90,11 @@ F1 skeleton + types ── F2 core rule parser ── F3 modifiers + IDNA ──
 - [x] Task M1: Domain index and verdicts with reasons
 - [x] Task M2: Filter sets (merge, dedup, `$badfilter`, shared indexes, block mode, custom rules)
 - [x] Task M3: CNAME chain matching, temporary allows, pause, counters
-- [ ] Task M4: Benchmark and memory measurement on a generated reference-sized set
+- [x] Task M4: Benchmark and memory measurement on a generated reference-sized set (deep-name p99 and build-peak over budget — see progress.md; Checkpoint B owner)
 
 ### Checkpoint B: Matching
 - [ ] Priority table (success criterion 2) green
-- [ ] Budgets met (criterion 4) or fallback index decided with owner
+- [ ] Budgets met (criterion 4) or fallback index decided with owner — **awaiting owner**
 
 ### Phase 3: Lists and services
 - [x] Task L1: List store (data directory, atomic writes, metadata, local file lists)

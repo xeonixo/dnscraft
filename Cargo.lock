@@ -310,6 +310,7 @@ dependencies = [
 name = "dnscraft-filtering"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "flate2",
  "idna",
  "proptest",

@@ -20,6 +20,16 @@ tokio = { workspace = true }
 reqwest = { workspace = true }
 regex = "1"
 
+[features]
+# Bench-only synthetic reference rule set (`src/testgen.rs`). Not a public API.
+testgen = []
+
 [dev-dependencies]
+criterion = { workspace = true }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 proptest = { workspace = true }
+
+[[bench]]
+name = "matching"
+harness = false
+required-features = ["testgen"]

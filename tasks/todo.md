@@ -161,15 +161,15 @@ overlap, some globs/regexes); `criterion` benches for match (hit/miss, deep name
 build; memory measured with a counting global allocator in a bench/test binary.
 
 **Acceptance criteria:**
-- [ ] Match p99 < 10 µs warm; build < 10 s; filtering memory ≤ 80 MB — numbers recorded in progress.md
-- [ ] If missed: fallback design proposal for the owner (Checkpoint B)
+- [x] Numbers recorded in progress.md (M4b benches + M4a memory): build **1.11 s** (< 10 s ✓); match hit/miss/IP p99 < 10 µs ✓; **deep_10 p99 ≈ 18.9 µs misses** < 10 µs; steady memory from M4a **~58.5 MB RSS / 52.5 MB Index** (≤ 80 MB ✓); build peak still **~112 MB** (M4a miss)
+- [x] Fallback options written for the owner (Checkpoint B): accept deep ~20 µs / hash-of-suffix / cap label walk; peak options still those from M4a
 
-**Verification:** `cargo bench -p dnscraft-filtering`
+**Verification:** `cargo bench -p dnscraft-filtering --features testgen --bench matching`
 
 **Dependencies:** M3 · **Files:** `benches/matching.rs`, `src/testgen.rs` (feature-gated or dev) · **Scope:** S
 
 ## Checkpoint B: Matching
-- [ ] Criteria 2 and 4 met (or fallback approved)
+- [ ] Criteria 2 and 4 met (or fallback approved) — **owner review; not marked by implementer**
 
 ## Phase 3: Lists and services
 

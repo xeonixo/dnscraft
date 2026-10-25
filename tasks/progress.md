@@ -11,10 +11,22 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 ## Current state
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
-- Module `filtering`: Checkpoint A done; M4a/R1/F6/M3 done. M4a build peak still over budget (owner @ Checkpoint B). Next: M4b, L3, L4, C1.
-- Blockers: none for continuing the Cursor brief order; Checkpoint B needs owner review of M4a peak numbers (and M4b benches once landed).
+- Module `filtering`: Checkpoint A done; M4a/R1/F6/M3/M4b done. **Checkpoint B needs owner review** (do not mark): M4a build peak over budget; M4b deep-name match p99 over 10 µs. Next: L3, L4, C1.
+- Blockers: Checkpoint B owner decision on budgets / fallbacks.
 
 ## Log
+
+- 2026-10-25 — Filtering M4b done (Cursor): criterion `benches/matching.rs` + feature-gated `src/testgen.rs` (`--features testgen`, ~2.249 M rules across lists: 1.87 M subdomain + 85 k exact + 500 globs + 30 regexes + 100 IP + 15 % cross-list dups). Measured release (`--sample-size 50`), raw p50/p99 n=1000 warm:
+
+  | Path | p50 | p99 | vs < 10 µs |
+  |---|---|---|---|
+  | match_hit | 3.875 µs | **4.000 µs** | meet |
+  | match_miss | 2.916 µs | 2.959 µs | meet |
+  | match_deep_10 (10 labels) | 16.249 µs | **18.916 µs** | **miss** |
+  | match_chain_3 (3 lookups) | 22.249 µs | 24.624 µs | n/a (3×; ~8 µs/lookup) |
+  | match_ip | 42 ns | 84 ns | meet |
+
+  Criterion estimates: hit 3.87 µs, miss 2.88 µs, deep 16.3 µs, chain 22.3 µs, ip 22.2 ns. **Build** `reference_set` **1.11 s** (one-shot wall incl. generation 1.16 s) — **< 10 s meet**. Index::memory after synthetic build: 1.955 M entries, names 34.3 MB + overhead 20.5 MB. **Memory (M4a real lists, cite):** steady VmRSS **~58.5 MB** / Index::memory **52.5 MB** (≤ 80 MB meet); build peak **ΔVmHWM ~112 MB** (target ≤ +60 MB — still miss from M4a). Deep-name miss: suffix walk ≈ one binary search per label. Fallback options for Checkpoint B: (1) accept deep p99 ~20 µs as rare, (2) hash-of-suffix / bloom prefilter, (3) cap label walk. Owner reviews Checkpoint B — **not marked here**.
 
 - 2026-10-25 — Filtering M3 done (Cursor): `Snapshot::match_chain` (CNAME uncloaking: first block wins; non-important allow on qname does not unblock CNAME; `$important` allow on qname or target does). Thin `FilterEngine` over immutable snapshot: `TempAllow` in per-set `RwLock` map (ranks as important allow, expires at `until` via injected `now`, list/remove, `RuleSource::TemporaryAllow`, no snapshot rebuild). Per-set and per-list Relaxed atomics (`matches`/`blocks`/`allows`), `stats()` plain struct; one increment per `match_*` call. Pause via existing `paused_until` (temps do not override). 16 tests in tests/engine.rs. Open for L3: swap `Arc<Snapshot>`, scheduler, coalesce rebuilds; Checkpoint B still needs M4b numbers.
 
