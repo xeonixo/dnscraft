@@ -11,7 +11,7 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks).
 ## Current state
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
-- Module `filtering`: spec approved 2026-10-25; plan + tasks approved 2026-10-25 (deps reqwest+rustls/ring, regex, idna, serde_json; CI fuzz job). In progress: Task L2 (fetcher, Sonnet), Task F3 next. F1, F2, L1 done.
+- Module `filtering`: spec approved 2026-10-25; plan + tasks approved 2026-10-25 (deps reqwest+rustls/ring, regex, idna, serde_json; CI fuzz job). In progress: Task F3 (modifiers + IDNA, Sonnet). F1, F2, L1, L2 done.
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
@@ -27,6 +27,8 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks).
 - Blockers: none
 
 ## Log
+
+- 2026-10-25 — Filtering L2 done (Sonnet, reviewed): reqwest 0.12.28 (rustls+ring+webpki roots, gzip; 0.13 rejected: defaults to aws-lc/platform verifier); no aws-lc/openssl in tree. Conditional GET, streaming size cap incl. gzip bombs, https-only redirects (max 5), not_text detection, last-good body kept. 16 tests vs hand-written local HTTP server. Known gaps: TLS error code by message match (untested), file-change detection in memory only.
 
 - 2026-10-25 — Filtering F2 done (Sonnet, reviewed): strict parse_rule + lenient parse_list; Rule 32 B, text recovered from list body by offset; bare/unanchored domain → ||x^ (subdomains), |x^ → exact, hosts lines → exact block (reserved names skipped); cosmetic/browser-only/modifier/pattern/regex skipped with reasons + 20 samples; 1 M hosts lines parse in ~159 ms (release).
 

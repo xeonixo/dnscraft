@@ -13,6 +13,7 @@
 
 mod clock;
 mod error;
+mod fetch;
 mod name;
 mod parser;
 mod rule;
@@ -21,6 +22,7 @@ mod types;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use error::{FilterError, IdError, NameError, RuleError, UnsupportedKind};
+pub use fetch::{FetchError, FetchOutcome, Fetcher, FetcherConfig, MAX_REDIRECTS};
 pub use name::{DomainName, Labels, Suffixes};
 pub use parser::{
     ListSource, MAX_LINE_LEN, ParsedList, SKIP_SAMPLE_LIMIT, SkipCounts, SkipReason, SkippedLine,

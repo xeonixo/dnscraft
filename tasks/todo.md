@@ -182,8 +182,8 @@ lists (`file://` or path), startup load without network.
 HTTP/1.1 test server in tests.
 
 **Acceptance criteria:**
-- [ ] 200, 304, 404, oversize (aborted mid-stream), slow (timeout), redirect to http, garbage body, gzip — each tested with the expected status/code
-- [ ] Last-good list stays active after any failure
+- [x] 200, 304, 404, oversize (aborted mid-stream), slow (timeout), redirect to http, garbage body, gzip — each tested with the expected status/code
+- [x] Last-good list stays active after any failure
 
 **Verification:** `cargo test -p dnscraft-filtering fetch`
 
