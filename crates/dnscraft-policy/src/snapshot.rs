@@ -25,38 +25,39 @@ pub type ProfileIdx = u16;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewRrSets {
     /// Records at this name (never mixes a CNAME with other types).
-    pub records: Arc<[Record]>,
+    pub(crate) records: Arc<[Record]>,
 }
 
 /// One validated view ready for selection and local answers.
 #[derive(Clone, Debug)]
 pub struct SnapshotView {
     /// View id.
-    pub id: ViewId,
+    pub(crate) id: ViewId,
     /// Whether this is the catch-all default.
-    pub is_default: bool,
+    #[allow(dead_code)] // read by later pipeline steps
+    pub(crate) is_default: bool,
     /// Profile applied for this view.
-    pub profile_idx: ProfileIdx,
+    pub(crate) profile_idx: ProfileIdx,
     /// Exact-name local records.
-    pub records: HashMap<Name, ViewRrSets>,
+    pub(crate) records: HashMap<Name, ViewRrSets>,
 }
 
 /// One validated profile.
 #[derive(Clone, Debug)]
 pub struct SnapshotProfile {
     /// Profile id.
-    pub id: ProfileId,
+    pub(crate) id: ProfileId,
     /// Source config (filter set, canaries, rebind, …).
-    pub config: ProfileConfig,
+    pub(crate) config: ProfileConfig,
 }
 
 /// Per-prefix-length table: masked address → view index.
 #[derive(Clone, Debug, Default)]
 pub struct PrefixTable<A: Eq + std::hash::Hash> {
     /// Prefix length → map of masked network address to view.
-    pub by_len: HashMap<u8, HashMap<A, ViewIdx>>,
+    pub(crate) by_len: HashMap<u8, HashMap<A, ViewIdx>>,
     /// Present lengths, sorted descending (longest first).
-    pub lengths_desc: Vec<u8>,
+    pub(crate) lengths_desc: Vec<u8>,
 }
 
 impl<A: Eq + std::hash::Hash + Copy> PrefixTable<A> {
@@ -75,25 +76,29 @@ impl<A: Eq + std::hash::Hash + Copy> PrefixTable<A> {
 #[derive(Clone, Debug)]
 pub struct PolicySnapshot {
     /// Top-level settings retained for the pipeline.
-    pub default_rebind: bool,
+    #[allow(dead_code)] // read by later pipeline steps
+    pub(crate) default_rebind: bool,
     /// Extra PTR prefixes.
-    pub ptr_prefixes: Arc<[IpNet]>,
+    #[allow(dead_code)] // read by later pipeline steps
+    pub(crate) ptr_prefixes: Arc<[IpNet]>,
     /// Special-use NXDOMAIN suffixes.
-    pub local_nxdomain_suffixes: Arc<[Arc<str>]>,
+    #[allow(dead_code)] // read by later pipeline steps
+    pub(crate) local_nxdomain_suffixes: Arc<[Arc<str>]>,
     /// Forward zones that still receive rebind checks.
-    pub rebind_check_forward_zones: Arc<[ForwardZoneId]>,
+    #[allow(dead_code)] // read by later pipeline steps
+    pub(crate) rebind_check_forward_zones: Arc<[ForwardZoneId]>,
     /// Views in config order.
-    pub views: Arc<[SnapshotView]>,
+    pub(crate) views: Arc<[SnapshotView]>,
     /// Profiles in config order.
-    pub profiles: Arc<[SnapshotProfile]>,
+    pub(crate) profiles: Arc<[SnapshotProfile]>,
     /// Index of the default view.
-    pub default_view: ViewIdx,
+    pub(crate) default_view: ViewIdx,
     /// Client ID → view (exact match).
-    pub client_ids: HashMap<ClientId, ViewIdx>,
+    pub(crate) client_ids: HashMap<ClientId, ViewIdx>,
     /// IPv4 subnet tables keyed by prefix length.
-    pub v4: PrefixTable<[u8; 4]>,
+    pub(crate) v4: PrefixTable<[u8; 4]>,
     /// IPv6 subnet tables keyed by prefix length.
-    pub v6: PrefixTable<[u8; 16]>,
+    pub(crate) v6: PrefixTable<[u8; 16]>,
 }
 
 impl PolicySnapshot {

@@ -22,7 +22,7 @@ use dnscraft_resolver::dnssec::TrustAnchors;
 use dnscraft_resolver::{
     DnssecStatus, ForwardZone, ForwardZoneId, Query, Resolver, ResolverConfig,
 };
-use dnscraft_testkit::{ChildVariant, Hierarchy};
+use dnscraft_testkit::{ChildVariant, DnssecScenario, Hierarchy};
 use hickory_proto::serialize::binary::BinEncodable;
 use tokio::net::UdpSocket;
 
@@ -355,4 +355,101 @@ async fn engine_secure_keeps_ad_insecure_clears() {
         .unwrap();
     assert_eq!(insecure.record.dnssec, Some(DnssecStatus::Insecure));
     assert!(!insecure.message.header.ad);
+}
+
+async fn signed_engine(variants: &[ChildVariant]) -> (Hierarchy, PolicyEngine) {
+    let h = Hierarchy::start_scenario(&DnssecScenario::new(variants))
+        .await
+        .unwrap();
+    let mut rcfg = config_for(&h);
+    rcfg.trust_anchors = anchors_of(&h);
+    let resolver = Arc::new(Resolver::new(rcfg).await.unwrap());
+    let engine = PolicyEngine::new(
+        policy_config(vec![profile("default", None)]),
+        empty_filter(),
+        resolver,
+        Arc::new(NoClients),
+        clock(),
+    )
+    .unwrap();
+    (h, engine)
+}
+
+#[tokio::test]
+async fn engine_forwards_client_cd_to_resolver() {
+    let (_h, engine) = signed_engine(&[ChildVariant::BogusSig]).await;
+
+    let strict = engine
+        .handle(ctx("www.bogus-sig.test.", RecordType::A, false))
+        .await
+        .unwrap();
+    assert_eq!(strict.message.rcode(), Rcode::SERVFAIL);
+    assert_eq!(strict.record.dnssec, Some(DnssecStatus::Bogus));
+
+    let mut cd = ctx("www.bogus-sig.test.", RecordType::A, false);
+    cd.flags.checking_disabled = true;
+    let answer = engine.handle(cd).await.unwrap();
+    assert_eq!(answer.message.rcode(), Rcode::NOERROR);
+    assert!(!answer.message.answers.is_empty());
+    assert!(!answer.message.header.ad);
+}
+
+#[tokio::test]
+async fn engine_forwards_client_do_to_resolver() {
+    let (_h, engine) = signed_engine(&[ChildVariant::Secure]).await;
+    let has_rrsig = |a: &dnscraft_policy::PolicyAnswer| {
+        a.message
+            .answers
+            .iter()
+            .any(|r| r.rtype() == RecordType::RRSIG)
+    };
+
+    let plain = engine
+        .handle(ctx("www.secure.test.", RecordType::A, false))
+        .await
+        .unwrap();
+    assert!(!plain.message.answers.is_empty());
+    assert!(!has_rrsig(&plain), "DO clear must strip RRSIG");
+
+    let mut with_do = ctx("www.secure.test.", RecordType::A, false);
+    with_do.flags.dnssec_ok = true;
+    let signed = engine.handle(with_do).await.unwrap();
+    assert!(has_rrsig(&signed), "DO set must keep RRSIG");
+}
+
+#[tokio::test]
+async fn engine_forward_loop_yields_servfail_with_cause() {
+    let h = Hierarchy::start().await.unwrap();
+    let target = CountingTarget::spawn().await;
+    let mut rcfg = config_for(&h);
+    rcfg.forward_zones = vec![ForwardZone {
+        id: ForwardZoneId::new("corp-internal").unwrap(),
+        zone: Name::from_ascii("corp.internal.").unwrap(),
+        targets: vec![target.addr],
+        validate: false,
+    }];
+    let resolver = Arc::new(Resolver::new(rcfg).await.unwrap());
+    let engine = PolicyEngine::new(
+        policy_config(vec![profile("default", None)]),
+        empty_filter(),
+        resolver,
+        Arc::new(NoClients),
+        clock(),
+    )
+    .unwrap();
+
+    // The query comes from the forward target's own IP (it forwarded back).
+    let mut looped = ctx("www.corp.internal.", RecordType::A, false);
+    looped.source_ip = target.addr.ip();
+    let answer = engine.handle(looped).await.unwrap();
+
+    assert_eq!(answer.message.rcode(), Rcode::SERVFAIL);
+    assert_eq!(answer.record.answer_source, AnswerOrigin::ResolveError);
+    assert!(answer.record.steps.iter().any(|s| matches!(
+        s,
+        DecisionStep::ResolveFailed {
+            cause_code: Some("resolver.forward_loop")
+        }
+    )));
+    assert_eq!(target.hits(), 0, "a loop must not be forwarded");
 }

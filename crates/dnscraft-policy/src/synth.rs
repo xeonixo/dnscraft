@@ -12,8 +12,8 @@ const HINFO: RecordType = RecordType(13);
 /// Minimal RFC 8482 answer: NOERROR with one HINFO (`CPU=RFC8482`, empty OS).
 ///
 /// Does not recurse and clears AD.
-pub fn any_rfc8482(query: &Query) -> Synth {
-    let mut message = response_skeleton(query);
+pub fn any_rfc8482(query: &Query, rd: bool) -> Synth {
+    let mut message = response_skeleton(query, rd);
     message.header.ra = true;
     let _ = message.set_rcode(Rcode::NOERROR);
     message.answers.push(Record::new(
@@ -31,8 +31,8 @@ pub fn any_rfc8482(query: &Query) -> Synth {
 }
 
 /// SERVFAIL for a resolver failure. Clears AD; no EDE (not a filter block).
-pub fn resolve_servfail(query: &Query) -> Synth {
-    let mut message = response_skeleton(query);
+pub fn resolve_servfail(query: &Query, rd: bool) -> Synth {
+    let mut message = response_skeleton(query, rd);
     message.header.ra = true;
     let _ = message.set_rcode(Rcode::SERVFAIL);
     clear_ad(&mut message);
@@ -44,8 +44,8 @@ pub fn resolve_servfail(query: &Query) -> Synth {
 }
 
 /// Authoritative answer from a view's local records. Sets AA, clears AD.
-pub fn local_records_answer(query: &Query, answers: Vec<Record>) -> Synth {
-    let mut message = response_skeleton(query);
+pub fn local_records_answer(query: &Query, rd: bool, answers: Vec<Record>) -> Synth {
+    let mut message = response_skeleton(query, rd);
     message.header.aa = true;
     message.header.ra = true;
     let _ = message.set_rcode(Rcode::NOERROR);
@@ -61,8 +61,8 @@ pub fn local_records_answer(query: &Query, answers: Vec<Record>) -> Synth {
 /// NODATA for a view name that exists but has no records of the queried type.
 ///
 /// Sets AA, clears AD, empty answer section.
-pub fn local_nodata(query: &Query) -> Synth {
-    let mut message = response_skeleton(query);
+pub fn local_nodata(query: &Query, rd: bool) -> Synth {
+    let mut message = response_skeleton(query, rd);
     message.header.aa = true;
     message.header.ra = true;
     let _ = message.set_rcode(Rcode::NOERROR);
@@ -74,12 +74,13 @@ pub fn local_nodata(query: &Query) -> Synth {
     }
 }
 
-fn response_skeleton(query: &Query) -> Message {
+/// Response header and question; `rd` mirrors the client's RD bit.
+fn response_skeleton(query: &Query, rd: bool) -> Message {
     Message {
         header: Header {
             id: 0,
             qr: true,
-            rd: true,
+            rd,
             ..Header::default()
         },
         questions: vec![Question {
@@ -120,12 +121,30 @@ mod tests {
             qtype: RecordType::ANY,
             qclass: Class::IN,
         };
-        let s = any_rfc8482(&q);
+        let s = any_rfc8482(&q, true);
         assert_eq!(s.message.rcode(), Rcode::NOERROR);
         assert!(!s.message.header.ad);
         assert_eq!(s.message.header.id, 0);
         assert_eq!(s.message.answers.len(), 1);
         assert_eq!(s.message.answers[0].rtype(), HINFO);
         assert_eq!(s.origin, AnswerOrigin::SynthAny);
+    }
+
+    #[test]
+    fn synth_mirrors_client_rd() {
+        let q = Query {
+            name: Name::from_ascii("example.com").unwrap(),
+            qtype: RecordType::A,
+            qclass: Class::IN,
+        };
+        for rd in [true, false] {
+            assert_eq!(any_rfc8482(&q, rd).message.header.rd, rd);
+            assert_eq!(resolve_servfail(&q, rd).message.header.rd, rd);
+            assert_eq!(
+                local_records_answer(&q, rd, Vec::new()).message.header.rd,
+                rd
+            );
+            assert_eq!(local_nodata(&q, rd).message.header.rd, rd);
+        }
     }
 }

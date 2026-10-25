@@ -1,7 +1,7 @@
 //! Pipeline step framework: draft answer and control flow.
 
 use dnscraft_proto::Message;
-use dnscraft_resolver::ExtendedError;
+use dnscraft_resolver::{DnssecStatus, ExtendedError};
 
 use crate::decision::{AnswerOrigin, DecisionRecord, DecisionStep, DecisionTimings, FilterHit};
 use crate::select::Selection;
@@ -31,6 +31,13 @@ pub struct Synth {
 #[inline]
 pub fn clear_ad(message: &mut Message) {
     message.header.ad = false;
+}
+
+/// AD only for unmodified Secure answers; every other status clears it.
+pub(crate) fn apply_ad_policy(message: &mut Message, status: DnssecStatus) {
+    if status != DnssecStatus::Secure {
+        clear_ad(message);
+    }
 }
 
 /// Mutable state accumulated while handling one query.
@@ -91,4 +98,41 @@ impl Draft {
 pub struct StepCtx<'a> {
     /// Validated snapshot for this query.
     pub snapshot: &'a PolicySnapshot,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dnscraft_proto::Header;
+
+    fn message_with_ad() -> Message {
+        Message {
+            header: Header {
+                ad: true,
+                ..Header::default()
+            },
+            questions: Vec::new(),
+            answers: Vec::new(),
+            authorities: Vec::new(),
+            additionals: Vec::new(),
+            edns: None,
+        }
+    }
+
+    #[test]
+    fn ad_policy_keeps_ad_only_for_secure() {
+        let mut secure = message_with_ad();
+        apply_ad_policy(&mut secure, DnssecStatus::Secure);
+        assert!(secure.header.ad);
+
+        for status in [
+            DnssecStatus::Insecure,
+            DnssecStatus::Bogus,
+            DnssecStatus::Indeterminate,
+        ] {
+            let mut message = message_with_ad();
+            apply_ad_policy(&mut message, status);
+            assert!(!message.header.ad, "{status:?}");
+        }
+    }
 }

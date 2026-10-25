@@ -386,3 +386,55 @@ async fn local_records_nodata_when_type_missing() {
     assert!(answer.message.answers.is_empty());
     assert_eq!(answer.message.rcode(), Rcode::NOERROR);
 }
+
+fn default_view_with_a() -> Vec<ViewConfig> {
+    vec![ViewConfig {
+        id: ViewId::new("default").unwrap(),
+        is_default: true,
+        subnets: Vec::new(),
+        client_ids: Vec::new(),
+        records: vec![rec(
+            "nas.example.com",
+            RData::A(Ipv4Addr::new(192, 0, 2, 10)),
+        )],
+        profile: ProfileId::new("default").unwrap(),
+    }]
+}
+
+#[tokio::test]
+async fn synthetic_answers_mirror_client_rd() {
+    let (_h, engine) = engine_with(default_view_with_a()).await;
+    let src = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1));
+    for rd in [true, false] {
+        for (qtype, origin) in [
+            (RecordType::A, AnswerOrigin::LocalView),
+            (RecordType::ANY, AnswerOrigin::SynthAny),
+        ] {
+            let mut c = ctx(src, "nas.example.com", qtype);
+            c.flags.recursion_desired = rd;
+            let answer = engine.handle(c).await.unwrap();
+            assert_eq!(answer.record.answer_source, origin);
+            assert_eq!(answer.message.header.rd, rd, "{qtype:?} rd={rd}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn local_records_ignore_non_in_class() {
+    let (_h, engine) = engine_with(default_view_with_a()).await;
+    let mut c = ctx(
+        IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
+        "nas.example.com",
+        RecordType::A,
+    );
+    c.query.qclass = Class::CH;
+    let answer = engine.handle(c).await.unwrap();
+    assert_ne!(answer.record.answer_source, AnswerOrigin::LocalView);
+    assert!(
+        !answer
+            .record
+            .steps
+            .iter()
+            .any(|s| matches!(s, DecisionStep::LocalView))
+    );
+}

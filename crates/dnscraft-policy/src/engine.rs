@@ -12,7 +12,7 @@ use crate::config::{PolicyConfig, RequestContext};
 use crate::decision::{AnswerOrigin, DecisionStep};
 use crate::directory::ClientDirectory;
 use crate::error::PolicyError;
-use crate::pipeline::{Draft, Flow, StepCtx, clear_ad};
+use crate::pipeline::{Draft, Flow, StepCtx, apply_ad_policy};
 use crate::snapshot::PolicySnapshot;
 use crate::steps::local_records;
 use crate::synth::{any_rfc8482, resolve_servfail};
@@ -90,7 +90,7 @@ impl PolicyEngine {
 
         // ANY → RFC 8482, never resolve (and never view records).
         if ctx.query.qtype == RecordType::ANY {
-            let synth = any_rfc8482(&ctx.query);
+            let synth = any_rfc8482(&ctx.query, ctx.flags.recursion_desired);
             draft.steps.push(DecisionStep::AnySynth);
             draft.synthetic = true;
             draft.timings.total_us = elapsed_us(total_start);
@@ -146,7 +146,7 @@ impl PolicyEngine {
                 draft.steps.push(DecisionStep::ResolveFailed {
                     cause_code: Some(err.code()),
                 });
-                let synth = resolve_servfail(&ctx.query);
+                let synth = resolve_servfail(&ctx.query, ctx.flags.recursion_desired);
                 draft.synthetic = true;
                 draft.timings.total_us = elapsed_us(total_start);
                 return Ok(emit(
@@ -166,10 +166,7 @@ impl PolicyEngine {
         });
 
         let mut message = answer.message;
-        // AD only for unmodified Secure answers.
-        if answer.dnssec != DnssecStatus::Secure {
-            clear_ad(&mut message);
-        }
+        apply_ad_policy(&mut message, answer.dnssec);
         // Listener owns the message id.
         message.header.id = 0;
 

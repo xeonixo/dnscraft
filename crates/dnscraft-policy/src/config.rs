@@ -34,12 +34,24 @@ pub enum DnsProtocol {
 }
 
 /// Client message flags that influence policy and the resolver.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ClientFlags {
     /// Checking Disabled (CD): skip DNSSEC validation downstream.
     pub checking_disabled: bool,
     /// DNSSEC OK (DO): the client wants DNSSEC records in the answer.
     pub dnssec_ok: bool,
+    /// Recursion Desired (RD): mirrored into synthetic answers. Default true.
+    pub recursion_desired: bool,
+}
+
+impl Default for ClientFlags {
+    fn default() -> Self {
+        Self {
+            checking_disabled: false,
+            dnssec_ok: false,
+            recursion_desired: true,
+        }
+    }
 }
 
 /// Everything the listener knows about one incoming query.
@@ -55,7 +67,7 @@ pub struct RequestContext {
     pub client_id: Option<ClientId>,
     /// The DNS question.
     pub query: Query,
-    /// CD / DO from the client message.
+    /// CD / DO / RD from the client message.
     pub flags: ClientFlags,
     /// When true, return a full decision record and never write the query log.
     pub test_query: bool,

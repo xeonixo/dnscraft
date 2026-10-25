@@ -1,6 +1,6 @@
 //! Step 1: answer from the selected view's local records.
 
-use dnscraft_proto::{Name, RData, Record, RecordType};
+use dnscraft_proto::{Class, Name, RData, Record, RecordType};
 use dnscraft_resolver::Query;
 
 use crate::config::RequestContext;
@@ -14,18 +14,23 @@ pub const MAX_CNAME_HOPS: u8 = 8;
 
 /// Runs step 1. Continues when the qname is unknown in this view.
 pub(crate) fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Draft) -> Flow {
+    // View records are class IN; other classes (CH, …) are not ours to answer.
+    if ctx.query.qclass != Class::IN {
+        return Flow::Continue;
+    }
+    let rd = ctx.flags.recursion_desired;
     let view = &step.snapshot.views[usize::from(draft.selection.view_idx)];
     match answer_from_view(view, &ctx.query) {
         None => Flow::Continue,
         Some(Outcome::Records(records)) => {
             draft.steps.push(DecisionStep::LocalView);
             draft.synthetic = true;
-            Flow::Answer(local_records_answer(&ctx.query, records))
+            Flow::Answer(local_records_answer(&ctx.query, rd, records))
         }
         Some(Outcome::Nodata) => {
             draft.steps.push(DecisionStep::LocalView);
             draft.synthetic = true;
-            Flow::Answer(local_nodata(&ctx.query))
+            Flow::Answer(local_nodata(&ctx.query, rd))
         }
     }
 }
