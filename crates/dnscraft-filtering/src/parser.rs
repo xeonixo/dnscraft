@@ -221,6 +221,28 @@ pub struct SkippedLine {
     pub text: String,
 }
 
+/// Counts and samples from a lenient list parse (no rule vector).
+///
+/// Produced by [`parse_list_each`]; [`parse_list`] wraps the same stats with
+/// the collected [`Rule`]s.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+#[non_exhaustive]
+pub struct ListParseStats {
+    /// Number of lines in the body.
+    pub total_lines: usize,
+    /// Blank lines.
+    pub blank_lines: usize,
+    /// Comment lines (`!`, `#`, `[Adblock ...]` headers).
+    pub comment_lines: usize,
+    /// Rules handed to the callback (or collected by [`parse_list`]).
+    pub rules_parsed: usize,
+    /// Skipped items by reason. A hosts line can contribute several.
+    pub skipped: SkipCounts,
+    /// The first [`SKIP_SAMPLES_PER_REASON`] skipped items of each reason, at
+    /// most [`SKIP_SAMPLE_LIMIT`] in total.
+    pub samples: Vec<SkippedLine>,
+}
+
 /// Result of [`parse_list`].
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 #[non_exhaustive]
@@ -317,13 +339,17 @@ pub fn parse_rule(input: &str) -> Result<Rule, RuleError> {
     })
 }
 
-/// Parses a whole list body (lenient). Never fails.
+/// Parses a whole list body (lenient), calling `on_rule` for each rule.
 ///
-/// A leading UTF-8 BOM is ignored; `\n` and `\r\n` end lines. Rule offsets
-/// refer to `body` as given (including the BOM), so [`Rule::text`] works with
-/// the same `body`.
-pub fn parse_list(body: &str, source: ListSource) -> ParsedList {
-    let mut out = ParsedList::default();
+/// Never fails and never builds a [`Vec`] of rules — use this when feeding an
+/// [`IndexBuilder`](crate::IndexBuilder) so the peak stays at one rule at a
+/// time. A leading UTF-8 BOM is ignored; `\n` and `\r\n` end lines. Rule
+/// offsets refer to `body` as given (including the BOM).
+pub fn parse_list_each<F>(body: &str, source: ListSource, mut on_rule: F) -> ListParseStats
+where
+    F: FnMut(Rule),
+{
+    let mut out = ListParseStats::default();
     let start = if body.starts_with('\u{feff}') { 3 } else { 0 };
     let mut offset = start;
     let mut line_no: u32 = 0;
@@ -353,11 +379,12 @@ pub fn parse_list(body: &str, source: ListSource) -> ParsedList {
                 rule, modifiers, ..
             } => {
                 let trimmed_len = line.trim_matches(is_ws).len();
-                out.rules.push(rule.with_modifiers(modifiers).with_source(
+                on_rule(rule.with_modifiers(modifiers).with_source(
                     line_no,
                     u32::try_from(line_start + lead).unwrap_or(0),
                     u16::try_from(trimmed_len).unwrap_or(u16::MAX),
                 ));
+                out.rules_parsed = out.rules_parsed.saturating_add(1);
             }
             Item::Skip(e) => record_skip(&mut out, line_no, line, &e),
         });
@@ -365,7 +392,24 @@ pub fn parse_list(body: &str, source: ListSource) -> ParsedList {
     out
 }
 
-fn record_skip(out: &mut ParsedList, line_no: u32, line: &str, e: &RuleError) {
+/// Parses a whole list body (lenient). Never fails.
+///
+/// Collects every rule into a [`Vec`]. Prefer [`parse_list_each`] when the
+/// rules are only fed into an index builder.
+pub fn parse_list(body: &str, source: ListSource) -> ParsedList {
+    let mut rules = Vec::new();
+    let stats = parse_list_each(body, source, |r| rules.push(r));
+    ParsedList {
+        rules,
+        total_lines: stats.total_lines,
+        blank_lines: stats.blank_lines,
+        comment_lines: stats.comment_lines,
+        skipped: stats.skipped,
+        samples: stats.samples,
+    }
+}
+
+fn record_skip(out: &mut ListParseStats, line_no: u32, line: &str, e: &RuleError) {
     let reason = SkipReason::from(e);
     out.skipped.add(reason);
     if out.samples.len() < SKIP_SAMPLE_LIMIT && out.skipped.get(reason) <= SKIP_SAMPLES_PER_REASON {

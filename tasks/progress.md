@@ -11,22 +11,12 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 ## Current state
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
-- Module `filtering`: spec approved 2026-10-25; plan + tasks approved 2026-10-25 (deps reqwest+rustls/ring, regex, idna, serde_json; CI fuzz job). F1–F4, L1, L2 done; F5 builder done, F5 fuzz target next, then Checkpoint A (real-list run).
-- Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
-- Checkpoint A passed (plan + new deps approved).
-- Checkpoint W complete (coverage 96 %, fuzzing clean)
-- Real-internet resolution works (example.com 4 queries / ~90 ms incl. priming; www.microsoft.com 13 with minimisation).
-- Checkpoint B passed (owner approved 2026-10-24).
-- Checkpoint C passed (owner approved 2026-10-24): testkit DNSSEC green; live example.com Secure + dnssec-failed.org SERVFAIL match delv/kdig.
-- Checkpoint D passed (owner approved 2026-10-24): criteria 4–6 (cache hit p50 ≪ 1 ms informal; no traffic on 2nd query; stale; dedup×50).
-- Phase 3 DNSSEC tasks 8–10 done. Dev Do53 server deferred by owner.
-- Checkpoint E review (2026-10-25, two Sonnet reviewers, lead-verified) found issues; fixing in batches (uncommitted until reviewed):
-  - Batch B (done, committed): private PTR leak via inner forward zone; inflight leader cancellation; O(n) cache eviction + oversize entry; AD-on-hit test; forward failover on SERVFAIL; flush epoch; stale = Indeterminate + TTL 30 s; concurrency cap + prefetch backoff.
-  - Batch A1 (done, committed): KeyTrap verification budget + per-RRset caps; NSEC3 hash budget/memo, max iterations 100; inception skew 300 s.
-  - Batch A2 (done, committed; also switch forward validation in lib.rs/forward.rs to validate_*_budgeted with the per-resolution budget): scrub unvalidated/out-of-bailiwick records before answer/cache; positive answer with rcode NXDOMAIN → Bogus; DNAME-synthesized CNAME target check; TTL cap to RRSIG original TTL/expiry; drop private/loopback glue (allow-list) + bound srtt map + cap candidates; validate priming (root NS RRSIG) + periodic re-prime; overall resolve deadline 10 s.
-- Blockers: none
+- Module `filtering`: Checkpoint A done; M4a (index slim + build peak) done — steady state OK, **build peak still over budget** (owner decides at Checkpoint B). Next: R1, F6, M3, M4b.
+- Blockers: none for continuing the Cursor brief order; Checkpoint B needs owner review of M4a peak numbers.
 
 ## Log
+
+- 2026-10-25 — Filtering M4a done (Cursor): slimmed domain entries to **11.00 B/entry** (drop `lines` + `text_lens`; `source` as `u16`; `RuleTextSource::rule_at(source, offset)` derives line + scans to newline). Streaming `parse_list_each` (no `Vec<Rule>` per list). Build: in-place pending sort, in-place arena compact among survivors, then pack. Real lists (DiskBodies, bodies not held): build **1.58 s**, Index::memory **52.5 MB** (names 31.7 + overhead 20.9), VmRSS after **58.5 MB** (≤80 MB ✓). Build peak **ΔVmHWM ≈ 112 MB** (target ≤ +60 MB — **missed**). Why: pending (~2.24 M × 16 B) + name arena must coexist before compact/pack; largest list body (~15 MB) adds on top while streaming. Next options for Checkpoint B: (1) chunked per-list sorted runs + merge, (2) hash-of-suffix table (no sorted pending), (3) accept reload that drops the old index before rebuild (brief outage / Pass during rebuild). Hot-reload peak today ≈ old 58 MB + build 112 MB ≫ 150 MB RSS budget.
 
 - 2026-10-25 — Checkpoint A complete: parser fixes (hosts names that are IP literals → invalid_syntax/ip_address; leading-dot `.x^` → glob `||*.x^`; skip samples 5 per reason, cap 60); fuzz target `rule_parse` + CI matrix entry + 17 seeds; 10 min fuzz clean (305 944 execs). examples/parse_lists.rs committed (manual real-list tool, cache in target/reference-lists). Open small items for Cursor briefs: regex rule `\w{2}…` hits regex_too_large (compile with unicode(false)); `://x^` rules in AdGuard DNS filter treated as browser_only (should be domain-start anchor). Cursor can start with tasks/cursor-next.md.
 

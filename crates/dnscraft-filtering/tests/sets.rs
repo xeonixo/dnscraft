@@ -444,6 +444,26 @@ fn vm_kib(key: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// List bodies read from `target/reference-lists/` on each request — never
+/// keeps all list bodies in memory at once (matches the on-disk store).
+#[derive(Debug)]
+struct DiskBodies {
+    dir: PathBuf,
+    /// `ListId` display → file name under `dir`.
+    files: HashMap<ListId, String>,
+    calls: AtomicUsize,
+}
+
+impl ListBodies for DiskBodies {
+    fn body(&self, id: &ListId) -> Option<Arc<str>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let name = self.files.get(id)?;
+        std::fs::read_to_string(self.dir.join(name))
+            .ok()
+            .map(Arc::<str>::from)
+    }
+}
+
 #[test]
 #[ignore = "needs target/reference-lists/ (see examples/parse_lists.rs)"]
 fn real_lists_snapshot() {
@@ -452,47 +472,56 @@ fn real_lists_snapshot() {
         eprintln!("skipped: {} does not exist", dir.display());
         return;
     }
-    let mut map = HashMap::new();
+    let mut files = HashMap::new();
     let mut ids = Vec::new();
-    let mut body_bytes = 0usize;
+    let mut on_disk_bytes = 0usize;
     for (i, f) in REAL_FILES.iter().enumerate() {
         let id = format!("ref-{i:02}");
-        match std::fs::read_to_string(dir.join(f)) {
-            Ok(s) => {
-                body_bytes += s.len();
-                map.insert(lid(&id), Arc::<str>::from(s));
-            }
+        let path = dir.join(f);
+        match std::fs::metadata(&path) {
+            Ok(m) => on_disk_bytes += m.len() as usize,
             Err(e) => eprintln!("missing {f}: {e}"),
         }
+        files.insert(lid(&id), (*f).to_owned());
         ids.push(id);
     }
-    let bodies = Arc::new(MapBodies {
-        map,
+    let bodies = Arc::new(DiskBodies {
+        dir,
+        files,
         calls: AtomicUsize::new(0),
     });
     let lists: Vec<(&str, bool)> = ids.iter().map(|i| (i.as_str(), true)).collect();
     let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
     let cfg = config(&lists, vec![set_cfg("all", &id_refs, "")]);
 
-    // Bodies are held by the test's map (as the on-disk store would not);
-    // the baseline therefore includes them.
-    let before = vm_kib("VmHWM:");
+    // Baseline without list bodies in RSS (DiskBodies reads per list).
+    let hwm_before = vm_kib("VmHWM:");
     let rss_before = vm_kib("VmRSS:");
     let start = Instant::now();
-    let snap = SnapshotBuilder::new(bodies).build(&cfg).unwrap();
+    let snap = SnapshotBuilder::new(Arc::clone(&bodies) as Arc<dyn ListBodies>)
+        .build(&cfg)
+        .unwrap();
     let took = start.elapsed();
-    let after = vm_kib("VmHWM:");
+    let hwm_after = vm_kib("VmHWM:");
     let rss_after = vm_kib("VmRSS:");
     let shared = snap.shared_index(&sid("all")).unwrap();
     let m = shared.index.memory();
-    println!("bodies in test map: {:.1} MB", body_bytes as f64 / 1e6);
+    let hwm_delta = hwm_after.saturating_sub(hwm_before);
+    println!(
+        "on-disk list bodies: {:.1} MB (not held during build)",
+        on_disk_bytes as f64 / 1e6
+    );
     println!("build time: {took:?}");
     println!(
-        "VmHWM before {:.1} MB, after {:.1} MB; VmRSS before {:.1} MB, after {:.1} MB",
-        before as f64 / 1024.0,
-        after as f64 / 1024.0,
+        "VmRSS before {:.1} MB, after {:.1} MB (steady ≈ index)",
         rss_before as f64 / 1024.0,
         rss_after as f64 / 1024.0
+    );
+    println!(
+        "VmHWM before {:.1} MB, after {:.1} MB; build peak ΔHWM ≈ {:.1} MB",
+        hwm_before as f64 / 1024.0,
+        hwm_after as f64 / 1024.0,
+        hwm_delta as f64 / 1024.0
     );
     println!(
         "index: entries {}, patterns {}, duplicates {}, badfiltered {}",
@@ -502,11 +531,16 @@ fn real_lists_snapshot() {
         shared.index.badfiltered()
     );
     println!(
-        "index bytes: names {:.1} MB + overhead {:.1} MB + side {:.1} MB = {:.1} MB",
+        "Index::memory: names {:.1} MB + overhead {:.1} MB ({:.2} B/entry) + side {:.1} MB = {:.1} MB",
         m.name_bytes as f64 / 1e6,
         m.overhead_bytes as f64 / 1e6,
+        m.overhead_per_entry(),
         m.side_bytes as f64 / 1e6,
         (m.name_bytes + m.overhead_bytes + m.side_bytes) as f64 / 1e6
+    );
+    println!(
+        "body() calls during build: {}",
+        bodies.calls.load(Ordering::SeqCst)
     );
     for f in &shared.lists {
         println!(
@@ -518,4 +552,9 @@ fn real_lists_snapshot() {
         );
     }
     assert!(m.entries > 0);
+    assert!(
+        m.overhead_per_entry() <= 11.5,
+        "overhead {:.2} B/entry",
+        m.overhead_per_entry()
+    );
 }

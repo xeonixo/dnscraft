@@ -41,7 +41,7 @@ use crate::error::FilterError;
 use crate::index::{Index, IndexBuilder, IndexMemory, RuleTextSource, SourceId, SourceKind};
 use crate::modifiers::DnsRewrite;
 use crate::name::DomainName;
-use crate::parser::{ListSource, ParsedList, SkipCounts, parse_list};
+use crate::parser::{ListSource, ParsedList, SkipCounts, parse_list, parse_list_each};
 use crate::rule::Rule;
 use crate::set::{FilterConfig, ListBodies, SnapshotError};
 use crate::types::{BlockMode, ListId, SetId, Verdict};
@@ -219,13 +219,12 @@ struct SnapshotTexts {
 }
 
 impl RuleTextSource for SnapshotTexts {
-    fn rule_text(&self, source: u32, _line: u32, offset: u32, len: u16) -> Option<Arc<str>> {
-        let s = offset as usize;
-        let range = s..s + usize::from(len);
-        match self.entries.get(source as usize)? {
-            TextEntry::Inline(body) => body.get(range).map(Arc::from),
-            TextEntry::List(id) => self.bodies.body(id)?.get(range).map(Arc::from),
-        }
+    fn rule_at(&self, source: u32, offset: u32) -> Option<(u32, Arc<str>)> {
+        let body = match self.entries.get(source as usize)? {
+            TextEntry::Inline(body) => Arc::clone(body),
+            TextEntry::List(id) => self.bodies.body(id)?,
+        };
+        crate::index::rule_at_body(&body, offset).map(|(line, text)| (line, Arc::from(text)))
     }
 }
 
@@ -296,7 +295,7 @@ impl SnapshotBuilder {
                     let src = b.add_source_with_body(
                         SourceKind::Custom(s.id.clone()),
                         Arc::clone(&custom.body),
-                    );
+                    )?;
                     b.add_rules(src, std::mem::take(&mut custom.rules))?;
                     Some(b.build_in_memory())
                 };
@@ -326,13 +325,13 @@ impl SnapshotBuilder {
         let mut texts = Vec::with_capacity(combo.len() + 1);
         let mut b = IndexBuilder::new();
         if let Some((set, c)) = custom {
-            let src = b.add_source(SourceKind::Custom(set.clone()));
+            let src = b.add_source(SourceKind::Custom(set.clone()))?;
             texts.push(TextEntry::Inline(Arc::clone(&c.body)));
             b.add_rules(src, std::mem::take(&mut c.rules))?;
         }
         let mut sources: Vec<(SourceId, ListFacts)> = Vec::with_capacity(combo.len());
         for id in combo {
-            let src = b.add_source(SourceKind::List(id.clone()));
+            let src = b.add_source(SourceKind::List(id.clone()))?;
             texts.push(TextEntry::List(id.clone()));
             let mut facts = ListFacts {
                 list: id.clone(),
@@ -343,18 +342,25 @@ impl SnapshotBuilder {
                 unique_contribution: 0,
             };
             if let Some(body) = self.bodies.body(id) {
-                // Parse, hand the rules over, drop the rules and the body.
-                let ParsedList {
-                    rules,
-                    total_lines,
-                    skipped,
-                    ..
-                } = parse_list(&body, ListSource::List);
+                // Stream rules into the builder; drop each Rule immediately and
+                // drop the body Arc when this block ends (ListBodies may keep
+                // another copy — on-disk stores should not).
+                let mut add_err = None;
+                let stats = parse_list_each(&body, ListSource::List, |rule| {
+                    if add_err.is_none() {
+                        if let Err(e) = b.add_rule(rule, src) {
+                            add_err = Some(e);
+                        }
+                    }
+                });
+                if let Some(e) = add_err {
+                    return Err(e.into());
+                }
                 facts.body_available = true;
-                facts.total_lines = total_lines;
-                facts.rules_parsed = rules.len();
-                facts.skipped = skipped;
-                b.add_rules(src, rules)?;
+                facts.total_lines = stats.total_lines;
+                facts.rules_parsed = stats.rules_parsed;
+                facts.skipped = stats.skipped;
+                drop(body);
             }
             sources.push((src, facts));
         }

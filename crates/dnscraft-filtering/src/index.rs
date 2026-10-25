@@ -13,29 +13,32 @@
 //! | `arena` | name length | all reversed names, back to back, no separators |
 //! | `offsets` | 4 B | start of the name in `arena` (plus one end sentinel) |
 //! | `flags` | 1 B | allow, exact, important, has-modifiers |
-//! | `sources` | 4 B | [`SourceId`] of the first list that contributed the rule |
-//! | `lines` | 4 B | 1-based line in that source (0: no text) |
+//! | `sources` | 2 B | [`SourceId`] of the first list that contributed the rule |
 //! | `text_offs` | 4 B | byte offset of the trimmed line in the source body |
-//! | `text_lens` | 2 B | byte length of the trimmed line |
 //!
-//! That is 19 bytes of overhead per entry beyond the name bytes. The rare
-//! rules with `$dnstype`, `$denyallow` or `$dnsrewrite` keep their
-//! [`Modifiers`] in a small side table keyed by entry index.
+//! That is 11 bytes of overhead per entry beyond the name bytes. The line
+//! number and the trimmed length are **not** stored: [`RuleTextSource`]
+//! derives the line by counting newlines before the offset and reads text up
+//! to the next newline (then trims trailing whitespace). The rare rules with
+//! `$dnstype`, `$denyallow` or `$dnsrewrite` keep their [`Modifiers`] in a
+//! small side table keyed by entry index.
 //!
 //! Rule text and list bodies are never held by the index: [`Reason`]s are
 //! built lazily, only for the winning rule, by asking a [`RuleTextSource`]
-//! for the line at `(source, line, offset, len)` (later: a pread from the
-//! cached list file; custom rules keep their small text in memory).
-//! [`MemoryTexts`] is the in-memory implementation. Wildcard and regex rules live in a separate small vector
+//! for `(source, offset)` (later: a pread from the cached list file; custom
+//! rules keep their small text in memory). [`MemoryTexts`] is the in-memory
+//! implementation. Wildcard and regex rules live in a separate small vector
 //! and are tested with [`Rule::pattern_matches`] (literal prefilter first).
 //!
 //! ## Build
 //!
 //! [`IndexBuilder::add_rule`] appends the reversed name to the arena and one
-//! 24-byte pending record (no per-rule heap allocation). [`IndexBuilder::build`]
-//! sorts the records (O(n log n)), applies `$badfilter`, de-duplicates and
-//! compacts into the final arrays. Output depends only on the order of
-//! `add_source`/`add_rule` calls.
+//! 16-byte pending record (no per-rule heap allocation; feed rules via
+//! [`crate::parse_list_each`] so list bodies never become a `Vec<Rule>`).
+//! [`IndexBuilder::build`] sorts a `u32` index into the pending records
+//! (O(n log n)), applies `$badfilter`, de-duplicates and compacts into the
+//! final arrays. Output depends only on the order of `add_source`/`add_rule`
+//! calls.
 //!
 //! ## Semantics
 //!
@@ -54,8 +57,9 @@
 //! * Ties between equal-priority candidates are broken deterministically:
 //!   the longest matching name wins (`||a.example.com^` beats
 //!   `||example.com^`; pattern and regex rules count as length 0), then the
-//!   lowest [`SourceId`] (source order), then the lowest line, then the
-//!   position in the index. The [`Reason`] points at that rule.
+//!   lowest [`SourceId`] (source order), then the lowest text offset in the
+//!   source body (earlier lines win), then the position in the index. The
+//!   [`Reason`] points at that rule.
 //! * Only one rewrite is returned (the winner); multi-record answers are not
 //!   assembled from several rules.
 //! * `$badfilter` rules are applied at build time. They remove every rule
@@ -78,11 +82,14 @@ const F_ALLOW: u8 = 1;
 const F_EXACT: u8 = 2;
 const F_IMPORTANT: u8 = 4;
 const F_MODS: u8 = 8;
-const F_REMOVED: u8 = 0x80;
 
-/// Per-entry bytes beyond the name: offset 4 + flags 1 + source 4 + line 4 +
-/// text offset 4 + text length 2.
-pub const ENTRY_OVERHEAD_BYTES: usize = 19;
+/// Per-entry bytes beyond the name: offset 4 + flags 1 + source 2 + text
+/// offset 4.
+pub const ENTRY_OVERHEAD_BYTES: usize = 11;
+
+/// Sentinel [`Index::text_offs`] value: the rule has no source text (for
+/// example a built-in service rule). Line 0 and a synthesised text are used.
+const NO_TEXT: u32 = u32::MAX;
 
 /// Errors from [`IndexBuilder`].
 #[derive(Debug, thiserror::Error)]
@@ -94,6 +101,9 @@ pub enum IndexError {
     /// The name arena would exceed 4 GiB.
     #[error("index too large")]
     TooLarge,
+    /// More than 65 535 sources were registered (source ids are `u16`).
+    #[error("too many rule sources")]
+    TooManySources,
 }
 
 impl IndexError {
@@ -102,6 +112,7 @@ impl IndexError {
         match self {
             Self::UnknownSource => "filter_index.unknown_source",
             Self::TooLarge => "filter_index.too_large",
+            Self::TooManySources => "filter_index.too_many_sources",
         }
     }
 }
@@ -147,12 +158,13 @@ impl SourceKind {
 
 /// Resolves the text of a rule line on demand (only when a match happens).
 ///
-/// Arguments are exactly what the index stored: the source id, the 1-based
-/// line number, the byte offset of the trimmed line in the source body and its
-/// length. Implementations may read from memory or from a cached file.
+/// The index stores only `(source, offset)`. Implementations read from
+/// `offset` up to the next newline (trimming trailing whitespace) and derive
+/// the 1-based line number by counting `\n` bytes before `offset`. Suitable
+/// for an on-disk cache (pread/seek at `offset`) as well as in-memory bodies.
 pub trait RuleTextSource: Send + Sync + std::fmt::Debug {
-    /// The trimmed rule line, or `None` if it cannot be read.
-    fn rule_text(&self, source: u32, line: u32, offset: u32, len: u16) -> Option<Arc<str>>;
+    /// `(1-based line, trimmed rule text)`, or `None` if it cannot be read.
+    fn rule_at(&self, source: u32, offset: u32) -> Option<(u32, Arc<str>)>;
 }
 
 /// In-memory [`RuleTextSource`]: one body per source id.
@@ -169,21 +181,38 @@ impl MemoryTexts {
 }
 
 impl RuleTextSource for MemoryTexts {
-    fn rule_text(&self, source: u32, _line: u32, offset: u32, len: u16) -> Option<Arc<str>> {
+    fn rule_at(&self, source: u32, offset: u32) -> Option<(u32, Arc<str>)> {
         let body = self.bodies.get(source as usize)?;
-        let s = offset as usize;
-        body.get(s..s + usize::from(len)).map(Arc::from)
+        rule_at_body(body, offset).map(|(line, text)| (line, Arc::from(text)))
     }
 }
+
+/// Reads the trimmed rule line at `offset` in `body` and its 1-based line no.
+pub(crate) fn rule_at_body(body: &str, offset: u32) -> Option<(u32, &str)> {
+    let s = offset as usize;
+    if s > body.len() {
+        return None;
+    }
+    let line = body
+        .get(..s)?
+        .bytes()
+        .filter(|&b| b == b'\n')
+        .count()
+        .saturating_add(1) as u32;
+    let rest = body.get(s..)?;
+    let end = rest.find('\n').unwrap_or(rest.len());
+    let text = rest.get(..end)?.trim_end_matches([' ', '\t', '\r']);
+    Some((line, text))
+}
+
+const F_REMOVED: u8 = 0x80;
 
 #[derive(Clone, Copy, Debug)]
 struct Pending {
     off: u32,
     len: u8,
     flags: u8,
-    text_len: u16,
-    source: u32,
-    line: u32,
+    source: u16,
     text_off: u32,
     mod_idx: u32,
 }
@@ -215,21 +244,28 @@ impl IndexBuilder {
     }
 
     /// Registers a source. Sources added first win ties.
-    pub fn add_source(&mut self, kind: SourceKind) -> SourceId {
-        let id = u32::try_from(self.kinds.len()).unwrap_or(u32::MAX);
+    ///
+    /// Fails with [`IndexError::TooManySources`] after 65 535 sources (ids are
+    /// stored as `u16` in the index).
+    pub fn add_source(&mut self, kind: SourceKind) -> Result<SourceId, IndexError> {
+        let id = u16::try_from(self.kinds.len()).map_err(|_| IndexError::TooManySources)?;
         self.kinds.push(kind);
         self.bodies.push(Arc::from(""));
-        SourceId(id)
+        Ok(SourceId(u32::from(id)))
     }
 
     /// Registers a source together with its body, for
     /// [`IndexBuilder::build_in_memory`].
-    pub fn add_source_with_body(&mut self, kind: SourceKind, body: Arc<str>) -> SourceId {
-        let id = self.add_source(kind);
+    pub fn add_source_with_body(
+        &mut self,
+        kind: SourceKind,
+        body: Arc<str>,
+    ) -> Result<SourceId, IndexError> {
+        let id = self.add_source(kind)?;
         if let Some(b) = self.bodies.get_mut(id.0 as usize) {
             *b = body;
         }
-        id
+        Ok(id)
     }
 
     /// Adds many rules of one source.
@@ -290,14 +326,18 @@ impl IndexBuilder {
             mod_idx = u32::try_from(self.mods.len()).map_err(|_| IndexError::TooLarge)?;
             self.mods.push(rule.modifiers().clone());
         }
+        let text_off = if rule.line() == 0 {
+            NO_TEXT
+        } else {
+            u32::try_from(rule.span().start).unwrap_or(0)
+        };
+        let source = u16::try_from(source.0).map_err(|_| IndexError::TooManySources)?;
         self.pending.push(Pending {
             off,
             len,
             flags,
-            text_len: u16::try_from(rule.span().len()).unwrap_or(0),
-            source: source.0,
-            line: rule.line(),
-            text_off: u32::try_from(rule.span().start).unwrap_or(0),
+            source,
+            text_off,
             mod_idx,
         });
         Ok(())
@@ -315,24 +355,21 @@ impl IndexBuilder {
         let Self {
             kinds,
             bodies: _,
-            arena,
+            mut arena,
             mut pending,
             mods,
             patterns,
             badfilters,
         } = self;
         let nsrc = kinds.len();
-        {
-            let arena = &arena;
-            pending.sort_unstable_by(|a, b| {
-                pname(arena, a)
-                    .cmp(pname(arena, b))
-                    .then(a.flags.cmp(&b.flags))
-                    .then(a.source.cmp(&b.source))
-                    .then(a.line.cmp(&b.line))
-                    .then(a.text_off.cmp(&b.text_off))
-            });
-        }
+        // Sort pending in place (no parallel u32 index array) to cut the peak.
+        pending.sort_unstable_by(|a, b| {
+            pname(&arena, a)
+                .cmp(pname(&arena, b))
+                .then(a.flags.cmp(&b.flags))
+                .then(a.source.cmp(&b.source))
+                .then(a.text_off.cmp(&b.text_off))
+        });
 
         let mut badfiltered = 0usize;
         let mut pat_keys: HashSet<BadfilterKey> = HashSet::new();
@@ -356,51 +393,98 @@ impl IndexBuilder {
                 .collect()
         };
 
+        // Mark duplicates while pending is name-sorted.
+        let mut dup_by_source = vec![0u32; nsrc];
+        let mut duplicates = 0usize;
+        {
+            let mut i = 0usize;
+            while i < pending.len() {
+                if pending[i].flags & F_REMOVED != 0 {
+                    i += 1;
+                    continue;
+                }
+                let name = pname(&arena, &pending[i]);
+                let group_start = i;
+                i += 1;
+                while i < pending.len()
+                    && pending[i].flags & F_REMOVED == 0
+                    && pname(&arena, &pending[i]) == name
+                {
+                    if is_dup_of_group(&pending, group_start, i, &mods) {
+                        let src = pending[i].source;
+                        if let Some(c) = dup_by_source.get_mut(usize::from(src)) {
+                            *c += 1;
+                        }
+                        duplicates += 1;
+                        pending[i].flags |= F_REMOVED;
+                    }
+                    i += 1;
+                }
+            }
+        }
+
+        pending.retain(|p| p.flags & F_REMOVED == 0);
+        pending.shrink_to_fit();
+
+        // Compact name bytes in ascending `off` order (write ≤ read), then
+        // re-sort by name for the final layout. No parallel index array.
+        pending.sort_unstable_by_key(|p| p.off);
+        {
+            let mut write = 0usize;
+            for p in &mut pending {
+                let len = usize::from(p.len);
+                let old = p.off as usize;
+                if old != write {
+                    arena.copy_within(old..old + len, write);
+                }
+                p.off = write as u32;
+                write += len;
+            }
+            arena.truncate(write);
+            arena.shrink_to_fit();
+        }
+        pending.sort_unstable_by(|a, b| {
+            pname(&arena, a)
+                .cmp(pname(&arena, b))
+                .then(a.flags.cmp(&b.flags))
+                .then(a.source.cmp(&b.source))
+                .then(a.text_off.cmp(&b.text_off))
+        });
+
+        // Repack names in name-sorted entry order so `offsets[i+1] - offsets[i]`
+        // is the length (binary search layout). Source arena is already free of
+        // removed-name bytes, so the copy is ~steady-state size.
+        let n = pending.len();
+        let mut packed = Vec::with_capacity(arena.len());
+        let mut offsets = Vec::with_capacity(n + 1);
+        for p in &pending {
+            offsets.push(u32::try_from(packed.len()).unwrap_or(u32::MAX));
+            packed.extend_from_slice(pname(&arena, p));
+        }
+        offsets.push(u32::try_from(packed.len()).unwrap_or(u32::MAX));
+        drop(arena);
+
         let mut out = Index {
             kinds,
             texts,
-            arena: Vec::with_capacity(arena.len()),
-            offsets: Vec::with_capacity(pending.len() + 1),
-            flags: Vec::with_capacity(pending.len()),
-            src: Vec::with_capacity(pending.len()),
-            lines: Vec::with_capacity(pending.len()),
-            text_offs: Vec::with_capacity(pending.len()),
-            text_lens: Vec::with_capacity(pending.len()),
+            arena: packed,
+            offsets,
+            flags: Vec::with_capacity(n),
+            src: Vec::with_capacity(n),
+            text_offs: Vec::with_capacity(n),
             mod_ids: Vec::new(),
             mods: Vec::new(),
             patterns: patterns.into_boxed_slice(),
-            dup_by_source: vec![0; nsrc],
-            duplicates: 0,
+            dup_by_source,
+            duplicates,
             badfiltered,
         };
-        let mut group_start = 0usize;
-        let mut group_name: &[u8] = &[];
         let mut mods = mods;
         for p in &pending {
-            if p.flags & F_REMOVED != 0 {
-                continue;
-            }
-            let name = pname(&arena, p);
-            if name != group_name || out.flags.is_empty() {
-                group_name = name;
-                group_start = out.flags.len();
-            }
-            if out.is_duplicate(group_start, p, &mods) {
-                if let Some(c) = out.dup_by_source.get_mut(p.source as usize) {
-                    *c += 1;
-                }
-                out.duplicates += 1;
-                continue;
-            }
             let idx = u32::try_from(out.flags.len()).unwrap_or(u32::MAX);
-            out.offsets
-                .push(u32::try_from(out.arena.len()).unwrap_or(u32::MAX));
-            out.arena.extend_from_slice(name);
-            out.flags.push(p.flags);
+            out.flags.push(p.flags & !F_REMOVED);
             out.src.push(p.source);
-            out.lines.push(p.line);
             out.text_offs.push(p.text_off);
-            out.text_lens.push(p.text_len);
             if p.flags & F_MODS != 0 {
                 if let Some(m) = mods.get_mut(p.mod_idx as usize) {
                     out.mod_ids.push(idx);
@@ -408,17 +492,33 @@ impl IndexBuilder {
                 }
             }
         }
-        out.offsets
-            .push(u32::try_from(out.arena.len()).unwrap_or(u32::MAX));
         out.arena.shrink_to_fit();
         out.offsets.shrink_to_fit();
         out.flags.shrink_to_fit();
         out.src.shrink_to_fit();
-        out.lines.shrink_to_fit();
         out.text_offs.shrink_to_fit();
-        out.text_lens.shrink_to_fit();
         out
     }
+}
+
+/// True when `pending[i]` matches an earlier kept entry in `[group_start, i)`.
+fn is_dup_of_group(pending: &[Pending], group_start: usize, i: usize, mods: &[Modifiers]) -> bool {
+    let p = &pending[i];
+    (group_start..i).any(|j| {
+        if pending[j].flags & F_REMOVED != 0 || pending[j].flags != p.flags {
+            return false;
+        }
+        if p.flags & F_MODS == 0 {
+            return true;
+        }
+        match (
+            mods.get(pending[j].mod_idx as usize),
+            mods.get(p.mod_idx as usize),
+        ) {
+            (Some(a), Some(b)) => same_side_mods(a, b),
+            _ => false,
+        }
+    })
 }
 
 fn pname<'a>(arena: &'a [u8], p: &Pending) -> &'a [u8] {
@@ -469,7 +569,7 @@ fn remove_matching(
         if pname(arena, p) != want {
             break;
         }
-        if p.flags != flags {
+        if p.flags & !F_REMOVED != flags {
             continue;
         }
         if side
@@ -492,7 +592,7 @@ pub struct IndexMemory {
     pub entries: usize,
     /// Bytes of reversed names.
     pub name_bytes: usize,
-    /// Bytes of offsets, flags, sources, lines and text offsets.
+    /// Bytes of offsets, flags, sources and text offsets.
     pub overhead_bytes: usize,
     /// Bytes of the modifier side table (shallow: `size_of`, no heap).
     pub side_bytes: usize,
@@ -517,10 +617,8 @@ pub struct Index {
     arena: Vec<u8>,
     offsets: Vec<u32>,
     flags: Vec<u8>,
-    src: Vec<u32>,
-    lines: Vec<u32>,
+    src: Vec<u16>,
     text_offs: Vec<u32>,
-    text_lens: Vec<u16>,
     mod_ids: Vec<u32>,
     mods: Vec<Modifiers>,
     patterns: Box<[PatternEntry]>,
@@ -583,7 +681,7 @@ impl Index {
             entries: n,
             name_bytes: self.arena.len(),
             overhead_bytes: self.offsets.len() * size_of::<u32>()
-                + n * (size_of::<u8>() + 3 * size_of::<u32>() + size_of::<u16>()),
+                + n * (size_of::<u8>() + size_of::<u16>() + size_of::<u32>()),
             side_bytes: self.mod_ids.len() * size_of::<u32>()
                 + self.mods.len() * size_of::<Modifiers>(),
         }
@@ -598,21 +696,6 @@ impl Index {
     fn mods_at(&self, i: usize) -> Option<&Modifiers> {
         let pos = self.mod_ids.binary_search(&u32::try_from(i).ok()?).ok()?;
         self.mods.get(pos)
-    }
-
-    fn is_duplicate(&self, group_start: usize, p: &Pending, mods: &[Modifiers]) -> bool {
-        (group_start..self.flags.len()).any(|j| {
-            if self.flags.get(j) != Some(&p.flags) {
-                return false;
-            }
-            if p.flags & F_MODS == 0 {
-                return true;
-            }
-            match (self.mods_at(j), mods.get(p.mod_idx as usize)) {
-                (Some(a), Some(b)) => same_side_mods(a, b),
-                _ => false,
-            }
-        })
     }
 
     /// Matches a query name and returns the verdict.
@@ -675,7 +758,7 @@ impl Index {
                 rank(action, m.important),
                 u32::MAX,
                 pe.source,
-                pe.rule.line(),
+                u32::try_from(pe.rule.span().start).unwrap_or(0),
                 1,
                 u32::try_from(idx).unwrap_or(u32::MAX),
             );
@@ -744,8 +827,8 @@ impl Index {
         let key = (
             rank(action, f & F_IMPORTANT != 0),
             u32::MAX - u32::try_from(matched_len).unwrap_or(0),
-            self.src.get(i).copied().unwrap_or(0),
-            self.lines.get(i).copied().unwrap_or(0),
+            u32::from(self.src.get(i).copied().unwrap_or(0)),
+            self.text_offs.get(i).copied().unwrap_or(NO_TEXT),
             0,
             u32::try_from(i).unwrap_or(u32::MAX),
         );
@@ -807,38 +890,41 @@ impl Index {
     }
 
     fn reason(&self, key: Key) -> Reason {
-        let (rank, _, source, line, tag, idx) = key;
+        let (rank, _, source, text_off, tag, idx) = key;
         let idx = idx as usize;
-        let rule_source = self
-            .kinds
-            .get(source as usize)
-            .map_or(RuleSource::TemporaryAllow, |k| k.rule_source(line));
         let important = rank == 0 || rank == 1;
         let allow = rank == 0 || rank == 2;
-        let text: Arc<str> = if tag == 1 {
+        let (line, text): (u32, Arc<str>) = if tag == 1 {
             self.patterns.get(idx).map_or_else(
-                || Arc::from(""),
+                || (0, Arc::from("")),
                 |pe| {
-                    let span = pe.rule.span();
-                    let len = u16::try_from(span.len()).unwrap_or(0);
-                    let off = u32::try_from(span.start).unwrap_or(0);
-                    self.fetch(source, line, off, len)
-                        .unwrap_or_else(|| Arc::from(pattern_text(&pe.rule)))
+                    let off = u32::try_from(pe.rule.span().start).unwrap_or(0);
+                    match self.fetch(source, off) {
+                        Some((line, text)) => (line, text),
+                        None => (pe.rule.line(), Arc::from(pattern_text(&pe.rule))),
+                    }
                 },
             )
         } else {
             let f = self.flags.get(idx).copied().unwrap_or(0);
-            let off = self.text_offs.get(idx).copied().unwrap_or(0);
-            let len = self.text_lens.get(idx).copied().unwrap_or(0);
-            self.fetch(source, line, off, len).unwrap_or_else(|| {
+            let synth = || {
                 Arc::from(synth_text(
                     allow,
                     f & F_EXACT != 0,
                     self.name_at(idx),
                     important,
                 ))
-            })
+            };
+            if text_off == NO_TEXT {
+                (0, synth())
+            } else {
+                self.fetch(source, text_off).unwrap_or_else(|| (0, synth()))
+            }
         };
+        let rule_source = self
+            .kinds
+            .get(source as usize)
+            .map_or(RuleSource::TemporaryAllow, |k| k.rule_source(line));
         Reason {
             rule: text,
             source: rule_source,
@@ -846,11 +932,11 @@ impl Index {
         }
     }
 
-    fn fetch(&self, source: u32, line: u32, off: u32, len: u16) -> Option<Arc<str>> {
-        if line == 0 {
+    fn fetch(&self, source: u32, off: u32) -> Option<(u32, Arc<str>)> {
+        if off == NO_TEXT {
             return None;
         }
-        self.texts.rule_text(source, line, off, len)
+        self.texts.rule_at(source, off)
     }
 }
 
@@ -921,7 +1007,9 @@ mod tests {
     #[test]
     fn index_memory_per_entry() {
         let mut b = IndexBuilder::new();
-        let s = b.add_source(SourceKind::List(ListId::new("synthetic").unwrap()));
+        let s = b
+            .add_source(SourceKind::List(ListId::new("synthetic").unwrap()))
+            .unwrap();
         let mut name_total = 0usize;
         for i in 0..100_000u32 {
             let n = format!("host{i}.zone{}.example.com", i % 997);

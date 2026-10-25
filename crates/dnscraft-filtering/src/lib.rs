@@ -38,8 +38,8 @@ pub use index::{
 };
 pub use name::{DomainName, Labels, Suffixes};
 pub use parser::{
-    ListSource, MAX_LINE_LEN, ParsedList, SKIP_SAMPLE_LIMIT, SkipCounts, SkipReason, SkippedLine,
-    parse_list, parse_rule,
+    ListParseStats, ListSource, MAX_LINE_LEN, ParsedList, SKIP_SAMPLE_LIMIT, SkipCounts,
+    SkipReason, SkippedLine, parse_list, parse_list_each, parse_rule,
 };
 pub use pattern::{
     Glob, GlobStart, REGEX_DFA_SIZE_LIMIT, REGEX_MESSAGE_MAX, REGEX_SIZE_LIMIT, RegexRule,

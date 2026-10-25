@@ -28,7 +28,9 @@ fn build(sources: &[(SourceKind, &str)]) -> Index {
         } else {
             ListSource::List
         };
-        let id = b.add_source_with_body(kind.clone(), Arc::from(*body));
+        let id = b
+            .add_source_with_body(kind.clone(), Arc::from(*body))
+            .unwrap();
         b.add_rules(id, parse_list(body, ls).rules).unwrap();
     }
     b.build_in_memory()
@@ -377,7 +379,7 @@ fn reason_points_at_list_and_custom_lines() {
 #[test]
 fn reason_for_rule_without_source_text_is_synthesised() {
     let mut b = IndexBuilder::new();
-    let s = b.add_source(SourceKind::Service("tiktok".into()));
+    let s = b.add_source(SourceKind::Service("tiktok".into())).unwrap();
     b.add_rule(
         Rule::new(RuleAction::Block, MatchKind::Subdomains, dn("tiktok.com")),
         s,
@@ -458,8 +460,12 @@ fn dedup_keeps_first_source_and_counts_duplicates() {
 #[test]
 fn dedup_counts_per_source() {
     let mut b = IndexBuilder::new();
-    let s0 = b.add_source_with_body(list("a"), Arc::from("||x.com^\n"));
-    let s1 = b.add_source_with_body(list("b"), Arc::from("||x.com^\n||y.com^\n"));
+    let s0 = b
+        .add_source_with_body(list("a"), Arc::from("||x.com^\n"))
+        .unwrap();
+    let s1 = b
+        .add_source_with_body(list("b"), Arc::from("||x.com^\n||y.com^\n"))
+        .unwrap();
     b.add_rules(s0, parse_list("||x.com^\n", ListSource::List).rules)
         .unwrap();
     b.add_rules(
@@ -519,7 +525,7 @@ fn deep_and_long_names_do_not_panic() {
 #[test]
 fn unknown_source_is_rejected() {
     let mut b = IndexBuilder::new();
-    let other = IndexBuilder::new().add_source(list("x"));
+    let other = IndexBuilder::new().add_source(list("x")).unwrap();
     let r = Rule::new(RuleAction::Block, MatchKind::Subdomains, dn("a.com"));
     assert_eq!(
         b.add_rule(r, other).unwrap_err().code(),
@@ -543,7 +549,7 @@ fn timing_one_million_rules() {
     let rules = synthetic(1_000_000);
     let t = Instant::now();
     let mut b = IndexBuilder::new();
-    let s = b.add_source(list("synthetic"));
+    let s = b.add_source(list("synthetic")).unwrap();
     b.add_rules(s, rules).unwrap();
     let idx = b.build_in_memory();
     let build = t.elapsed();
