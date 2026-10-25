@@ -7,17 +7,23 @@
 //!
 //! N1: configuration, errors, clock, handler, sockets.
 //! N2: transport-independent [`handle_wire`] (validation, EDNS, padding).
+//! N3: [`Admission`] (source class, rate limits, bans).
 
 #![deny(missing_docs)]
 
+mod admission;
+mod bans;
 mod clock;
 mod config;
 mod core;
 mod edns;
 mod error;
 mod handler;
+mod ratelimit;
 mod socket;
 
+pub use admission::{Admission, AdmitDecision, ClientIdState, SourceClass};
+pub use bans::StrikeReason;
 pub use clock::{Clock, ManualClock, SystemClock, wait_until};
 pub use config::{
     DEFAULT_BAN_DURATION, DEFAULT_BAN_STRIKES, DEFAULT_BAN_WINDOW, DEFAULT_MAX_CONNECTIONS,

@@ -114,12 +114,12 @@ source within `ban_window` → ban for `ban_duration`; `strike(source, reason)` 
 tables LRU-bounded by `max_tracked_sources` (evict oldest; never allocate per packet beyond that).
 
 **Acceptance criteria:**
-- [ ] Source-class table test (each range + mapped forms + public examples from documentation ranges treated as public)
-- [ ] Admission matrix test: protocol × exposure × source class × Client ID state
-- [ ] `ManualClock`: bucket refill, ban after N strikes, ban expiry, strike window expiry
-- [ ] Flood test: 10 × `max_tracked_sources` distinct sources keep both tables at the cap
+- [x] Source-class table test (each range + mapped forms + public examples from documentation ranges treated as public)
+- [x] Admission matrix test: protocol × exposure × source class × Client ID state
+- [x] `ManualClock`: bucket refill, ban after N strikes, ban expiry, strike window expiry
+- [x] Flood test: 10 × `max_tracked_sources` distinct sources keep both tables at the cap
 
-**Verification:** `cargo test -p dnscraft-listeners admission`
+**Verification:** `cargo test -p dnscraft-listeners --test admission`
 
 **Dependencies:** N1 · **Files:** `src/admission.rs`, `src/ratelimit.rs`, `src/bans.rs`, `tests/admission.rs` · **Scope:** M
 

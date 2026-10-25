@@ -21,7 +21,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | N2 done; **next: N3** (Phase 1: N3–N5, STOP at Checkpoint B) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
+| `listeners` | N3 done; **next: N4** (Phase 1: N4–N5, STOP at Checkpoint B) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -34,6 +34,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-25 — **listeners: N3 admission.** `SourceClass::of` (RFC 1918 / loopback / link-local / ULA / CGNAT + IPv4-mapped; documentation ranges public). `Admission::check` → Admit | Drop(code) | Refuse(code): ban → public Do53 drop → public-listener Client ID → per-source token bucket → per-Client-ID bucket (public sources). UDP rate/ban → Drop; TCP/DoT/DoH/DoQ rate → Refuse; banned → Drop (close). `strike` for transports (private no-op). LRU tables capped by `max_tracked_sources`. Tests: source-class table, admission matrix, ManualClock refill/ban/expiry/window, flood 10×cap. DoD green; crypto trees empty; `cargo deny check` ok. Next: N4.
 
 - 2026-10-25 — **listeners: N2 message core.** `handle_wire(bytes, QueryMeta, handler) -> Option<HandleWireResult>`: header-less / QR=1 → None; FORMERR/NOTIMP/REFUSED/BADVERS before policy; `source.to_canonical()`; ECS stripped; OPT echo `min(client, udp_payload_max)` + EDE only when client sent OPT; id 0 for DoH/DoQ; RD copy, RA set; `encode_with_limit` (TC); pad to multiple of 468 when `pad` + OPT (RFC 8467). Returns `QueryEvent` when the handler ran (N11 sink later). Deps: `dnscraft-proto`, `dnscraft-resolver` (direct); dev `proptest`. Tests: 17 core (+ padding property, IPv4-mapped, proptest 1024). DoD green; `cargo tree -i aws-lc-rs` / `-i openssl-sys` empty; `cargo deny check` ok. Next: N3.
 

@@ -12,8 +12,9 @@ Formal requirements: [`SPEC-listeners.md`](../../SPEC-listeners.md).
 N1: configuration, errors, clock, handler, sockets.
 N2: transport-independent [`handle_wire`](fn.handle_wire.html) — decode /
 validate / EDNS (ECS strip, OPT echo, EDE, padding) / encode with size limit.
+N3: [`Admission`](struct.Admission.html) — source class, token buckets, bans.
 
-Admission, transports and runtime land in later tasks (N3–N14).
+Transports and runtime land in later tasks (N4–N14).
 
 ## Crate layout (so far)
 
@@ -26,6 +27,9 @@ Admission, transports and runtime land in later tasks (N3–N14).
 | `socket` | `bind_udp` / `bind_tcp` via `socket2` |
 | `core` | `handle_wire` / `QueryMeta` / `QueryEvent` |
 | `edns` | ECS strip, OPT echo, padding (block 468) |
+| `admission` | `SourceClass` / `Admission` / `AdmitDecision` |
+| `ratelimit` | token buckets + LRU map (internal) |
+| `bans` | strike / ban table (internal) |
 
 ## Tests
 
@@ -33,4 +37,5 @@ Admission, transports and runtime land in later tasks (N3–N14).
 cargo test -p dnscraft-listeners config
 cargo test -p dnscraft-listeners socket
 cargo test -p dnscraft-listeners core
+cargo test -p dnscraft-listeners --test admission
 ```
