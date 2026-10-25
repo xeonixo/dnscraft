@@ -40,7 +40,7 @@ async fn acme_fake_credentials_persisted_0600_and_reloaded() {
     let data = temp_data_dir("fake");
     let store = CertStore::open(&data).unwrap();
     let fake = FakeAcmeDirectory {
-        create_payload: br#"{"id":"acct-test","fake":true}"#.to_vec(),
+        account_id: "acct-test".into(),
     };
     let cfg = acme_cfg();
 
@@ -55,15 +55,57 @@ async fn acme_fake_credentials_persisted_0600_and_reloaded() {
         assert_eq!(mode, 0o600);
     }
     let first = store.load_account().unwrap().unwrap();
-    assert_eq!(first, br#"{"id":"acct-test","fake":true}"#);
+    let v: serde_json::Value = serde_json::from_slice(&first).unwrap();
+    assert_eq!(v["id"], "acct-test");
+    assert_eq!(v["directory"], AcmeDirectoryKind::Staging.url());
 
     // Second call must not overwrite (reload path).
     let fake2 = FakeAcmeDirectory {
-        create_payload: br#"{"id":"should-not-write"}"#.to_vec(),
+        account_id: "should-not-write".into(),
     };
     fake2.ensure_account(&store, &cfg).await.unwrap();
     let second = store.load_account().unwrap().unwrap();
     assert_eq!(second, first);
+
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+async fn acme_fake_rewrites_account_when_directory_changes() {
+    let data = temp_data_dir("dirchange");
+    let store = CertStore::open(&data).unwrap();
+    let mut cfg = acme_cfg();
+
+    FakeAcmeDirectory {
+        account_id: "staging-acct".into(),
+    }
+    .ensure_account(&store, &cfg)
+    .await
+    .unwrap();
+    let staging = store.load_account().unwrap().unwrap();
+
+    cfg.directory = AcmeDirectoryKind::Production;
+    FakeAcmeDirectory {
+        account_id: "prod-acct".into(),
+    }
+    .ensure_account(&store, &cfg)
+    .await
+    .unwrap();
+    let prod = store.load_account().unwrap().unwrap();
+    assert_ne!(prod, staging);
+    let v: serde_json::Value = serde_json::from_slice(&prod).unwrap();
+    assert_eq!(v["id"], "prod-acct");
+    assert_eq!(v["directory"], AcmeDirectoryKind::Production.url());
+
+    // A legacy file without a directory field is also replaced.
+    store.save_account(br#"{"id":"legacy"}"#).unwrap();
+    FakeAcmeDirectory::default()
+        .ensure_account(&store, &cfg)
+        .await
+        .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_slice(&store.load_account().unwrap().unwrap()).unwrap();
+    assert_eq!(v["id"], "fake");
 
     let _ = fs::remove_dir_all(&data);
 }

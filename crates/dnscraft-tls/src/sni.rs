@@ -159,7 +159,10 @@ fn eq_ignore_ascii_case(sni: &str, prefix: &str, domain: &str) -> bool {
     if sni.len() != prefix.len() + domain.len() {
         return false;
     }
-    let (head, tail) = sni.split_at(prefix.len());
+    // `get` (not `split_at`): non-ASCII input may not split on a char boundary.
+    let (Some(head), Some(tail)) = (sni.get(..prefix.len()), sni.get(prefix.len()..)) else {
+        return false;
+    };
     head.eq_ignore_ascii_case(prefix) && tail.eq_ignore_ascii_case(domain)
 }
 

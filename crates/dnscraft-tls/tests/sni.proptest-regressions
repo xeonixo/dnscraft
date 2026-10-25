@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7ee6a66e19b83399d4c70b26f143a232b0a9f851dc72ddf9e9028c95f3e00e46 # shrinks to sni = "aaa🌀A\u{10a0c}\u{10eab}a ൊ𖠀 ዘ", domain = "--aa0a0000a---aa--00-00-a"

@@ -177,3 +177,49 @@ fn store_empty_load_is_none() {
     assert!(store.load().unwrap().is_none());
     let _ = fs::remove_dir_all(&data);
 }
+
+#[test]
+fn store_save_rejects_mismatched_key_without_touching_disk() {
+    let data = temp_data_dir("save-mismatch");
+    let store = CertStore::open(&data).unwrap();
+    let (chain_a, key_a) = self_signed(&["dns.example.com"]);
+    let (_chain_b, key_b) = self_signed(&["dns.example.com"]);
+    store.save(&chain_a, &key_a, &CertMeta::default()).unwrap();
+    let cert_before = fs::read(store.dir().join("cert.pem")).unwrap();
+    let key_before = fs::read(store.dir().join("key.pem")).unwrap();
+    let meta_before = fs::read(store.dir().join("meta.json")).unwrap();
+
+    let err = store
+        .save(&chain_a, &key_b, &CertMeta::default())
+        .expect_err("mismatched key");
+    assert_eq!(err.code(), "tls.store.corrupt");
+    assert!(!format!("{err} {err:?}").contains("PRIVATE"));
+
+    assert_eq!(fs::read(store.dir().join("cert.pem")).unwrap(), cert_before);
+    assert_eq!(fs::read(store.dir().join("key.pem")).unwrap(), key_before);
+    assert_eq!(
+        fs::read(store.dir().join("meta.json")).unwrap(),
+        meta_before
+    );
+
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[test]
+fn store_load_rejects_mismatched_pair_and_keeps_files() {
+    let data = temp_data_dir("load-mismatch");
+    let store = CertStore::open(&data).unwrap();
+    let (chain_a, _key_a) = self_signed(&["dns.example.com"]);
+    let (_chain_b, key_b) = self_signed(&["dns.example.com"]);
+    // Simulates a crash between the cert and key writes of a save.
+    fs::write(store.dir().join("cert.pem"), &chain_a).unwrap();
+    fs::write(store.dir().join("key.pem"), &key_b).unwrap();
+
+    let err = store.load().expect_err("mismatched pair");
+    assert_eq!(err.code(), "tls.store.corrupt");
+    assert!(!format!("{err} {err:?}").contains("PRIVATE"));
+    assert!(store.dir().join("cert.pem").exists());
+    assert!(store.dir().join("key.pem").exists());
+
+    let _ = fs::remove_dir_all(&data);
+}

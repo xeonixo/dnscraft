@@ -75,6 +75,8 @@ async fn pebble_account_create_and_reload() {
         .expect("reload account from store against Pebble");
     let second = store.load_account().unwrap().unwrap();
     assert_eq!(second, first, "reload must not rewrite credentials");
+    let stored: serde_json::Value = serde_json::from_slice(&second).unwrap();
+    assert_eq!(stored["directory"], cfg.directory.url());
 
     let _ = fs::remove_dir_all(&data);
 }

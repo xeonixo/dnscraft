@@ -68,9 +68,13 @@ impl AcmeDirectory for InstantAcme {
         }
         let directory_url = cfg.directory.url().to_owned();
 
-        if let Some(bytes) = store.load_account()? {
+        let stored = store.load_account()?;
+        if let Some(bytes) = stored
+            .as_deref()
+            .filter(|b| stored_directory_matches(b, &directory_url))
+        {
             let creds: AccountCredentials =
-                serde_json::from_slice(&bytes).map_err(|e| TlsError::AcmeAccount {
+                serde_json::from_slice(bytes).map_err(|e| TlsError::AcmeAccount {
                     message: format!("deserialize account.json: {e}"),
                 })?;
             self.builder()
@@ -83,6 +87,9 @@ impl AcmeDirectory for InstantAcme {
             return Ok(());
         }
 
+        if stored.is_some() {
+            info!(%directory_url, "stored ACME account is for another directory; creating a new one");
+        }
         let mailto = format!("mailto:{}", cfg.email.trim());
         let new_account = NewAccount {
             contact: &[mailto.as_str()],
@@ -109,14 +116,27 @@ impl AcmeDirectory for InstantAcme {
 #[async_trait]
 impl AcmeOrder for InstantAcme {}
 
-/// Test helper ACME directory that never contacts a CA.
+/// True when the stored `account.json` was created for `directory_url`.
 ///
-/// Persists a stand-in JSON blob so account file modes and reload can be tested
-/// without Pebble or Let's Encrypt.
+/// instant-acme credentials carry a `"directory"` field; a missing field,
+/// a different URL or unparsable JSON counts as a mismatch.
+fn stored_directory_matches(account_json: &[u8], directory_url: &str) -> bool {
+    serde_json::from_slice::<serde_json::Value>(account_json)
+        .ok()
+        .and_then(|v| v.get("directory")?.as_str().map(|d| d == directory_url))
+        .unwrap_or(false)
+}
+
+/// Test helper ACME directory that never contacts a CA (not part of the API).
+///
+/// Persists a stand-in JSON blob (with the `"directory"` field, like
+/// instant-acme) so account file modes, reload and directory changes can be
+/// tested without Pebble or Let's Encrypt.
+#[doc(hidden)]
 #[derive(Debug, Default)]
 pub struct FakeAcmeDirectory {
-    /// Payload written on first [`AcmeDirectory::ensure_account`].
-    pub create_payload: Vec<u8>,
+    /// Account id written on creation; empty means `"fake"`.
+    pub account_id: String,
 }
 
 #[async_trait]
@@ -125,14 +145,25 @@ impl AcmeDirectory for FakeAcmeDirectory {
         if !cfg.enabled {
             return Ok(());
         }
-        if store.load_account()?.is_some() {
+        let url = cfg.directory.url();
+        if let Some(bytes) = store.load_account()?
+            && stored_directory_matches(&bytes, url)
+        {
             return Ok(());
         }
-        let payload = if self.create_payload.is_empty() {
-            br#"{"id":"fake","fake":true}"#.to_vec()
+        let id = if self.account_id.is_empty() {
+            "fake"
         } else {
-            self.create_payload.clone()
+            self.account_id.as_str()
         };
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "id": id,
+            "directory": url,
+            "fake": true,
+        }))
+        .map_err(|e| TlsError::AcmeAccount {
+            message: format!("serialize fake account: {e}"),
+        })?;
         store.save_account(&payload)?;
         Ok(())
     }

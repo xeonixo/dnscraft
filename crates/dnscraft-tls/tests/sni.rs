@@ -176,3 +176,15 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn sni_table_second_label_must_be_dns() {
+    let reserved = reserved_nodes(&["node1"]);
+    for name in ["x.foo.example.com", "x.www.example.com"] {
+        assert_eq!(
+            parse_client_id_sni(name, DOMAIN, &reserved),
+            SniKind::Other,
+            "{name}"
+        );
+    }
+}

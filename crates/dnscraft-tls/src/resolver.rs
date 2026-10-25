@@ -8,12 +8,11 @@
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
-use rustls::crypto::ring::default_provider;
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 
 use crate::error::TlsError;
-use crate::pem_util::{parse_cert_chain, parse_private_key};
+use crate::pem_util::certified_key_from_pem;
 use crate::store::{CertMeta, CertStore};
 
 /// Shared rustls server cert resolver; listeners clone [`Arc`].
@@ -64,7 +63,8 @@ impl CertResolver {
     /// Does not touch the disk store. On parse/key errors the previous cert
     /// (if any) remains installed.
     pub fn install(&self, chain_pem: &[u8], key_pem: &[u8]) -> Result<(), TlsError> {
-        let key = certified_key_from_pem(chain_pem, key_pem)?;
+        let key = certified_key_from_pem(chain_pem, key_pem)
+            .map_err(|message| TlsError::StoreCorrupt { message })?;
         *self
             .current
             .write()
@@ -83,7 +83,8 @@ impl CertResolver {
         key_pem: &[u8],
     ) -> Result<(), TlsError> {
         // Validate first so we never write or swap on bad input.
-        let _ = certified_key_from_pem(chain_pem, key_pem)?;
+        let _ = certified_key_from_pem(chain_pem, key_pem)
+            .map_err(|message| TlsError::StoreCorrupt { message })?;
         let meta = CertMeta::default();
         store.save(chain_pem, key_pem, &meta)?;
         self.install(chain_pem, key_pem)
@@ -102,13 +103,4 @@ impl ResolvesServerCert for CertResolver {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
-}
-
-fn certified_key_from_pem(chain_pem: &[u8], key_pem: &[u8]) -> Result<CertifiedKey, TlsError> {
-    let certs =
-        parse_cert_chain(chain_pem).map_err(|message| TlsError::StoreCorrupt { message })?;
-    let key = parse_private_key(key_pem).map_err(|message| TlsError::StoreCorrupt { message })?;
-    CertifiedKey::from_der(certs, key, &default_provider()).map_err(|e| TlsError::StoreCorrupt {
-        message: format!("cannot build CertifiedKey: {e}"),
-    })
 }

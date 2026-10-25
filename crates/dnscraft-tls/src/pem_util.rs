@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use rustls::crypto::ring::default_provider;
+use rustls::sign::CertifiedKey;
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 
@@ -60,4 +62,13 @@ pub fn parse_private_key(pem: &[u8]) -> Result<PrivateKeyDer<'static>, String> {
 pub fn parse_leaf_info(chain_pem: &[u8]) -> Result<LeafInfo, String> {
     let certs = parse_cert_chain(chain_pem)?;
     leaf_info_from_der(certs[0].as_ref())
+}
+
+/// Builds a ring-backed [`CertifiedKey`] from PEM, verifying the key matches
+/// the leaf certificate. Errors never contain key material.
+pub fn certified_key_from_pem(chain_pem: &[u8], key_pem: &[u8]) -> Result<CertifiedKey, String> {
+    let certs = parse_cert_chain(chain_pem)?;
+    let key = parse_private_key(key_pem)?;
+    CertifiedKey::from_der(certs, key, &default_provider())
+        .map_err(|e| format!("cannot build CertifiedKey: {e}"))
 }

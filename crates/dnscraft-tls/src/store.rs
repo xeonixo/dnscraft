@@ -19,12 +19,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rustls_pki_types::CertificateDer;
 use serde::{Deserialize, Serialize};
 use x509_parser::prelude::*;
 
 use crate::error::TlsError;
-use crate::pem_util::{KeyPem, parse_cert_chain, parse_leaf_info};
+use crate::pem_util::{KeyPem, certified_key_from_pem, parse_leaf_info};
 
 /// Directory name under the data directory.
 pub const TLS_DIR_NAME: &str = "tls";
@@ -124,10 +123,9 @@ impl CertStore {
 
         let leaf_info =
             parse_leaf_info(&chain_pem).map_err(|message| TlsError::StoreCorrupt { message })?;
-        // Validate the key parses as PEM (without installing).
-        let _ =
-            parse_cert_chain(&chain_pem).map_err(|message| TlsError::StoreCorrupt { message })?;
-        KeyPem::parse(&key_bytes).map_err(|message| TlsError::StoreCorrupt { message })?;
+        // Key must parse and match the leaf (a crash mid-save can leave a mismatched pair).
+        certified_key_from_pem(&chain_pem, &key_bytes)
+            .map_err(|message| TlsError::StoreCorrupt { message })?;
 
         let meta = self.load_meta_file().unwrap_or_default();
         Ok(Some(LoadedCert {
@@ -144,9 +142,8 @@ impl CertStore {
         // Validate before touching disk so a bad import cannot wipe a good cert.
         let leaf =
             parse_leaf_info(chain_pem).map_err(|message| TlsError::StoreCorrupt { message })?;
-        let _ =
-            parse_cert_chain(chain_pem).map_err(|message| TlsError::StoreCorrupt { message })?;
-        KeyPem::parse(key_pem).map_err(|message| TlsError::StoreCorrupt { message })?;
+        certified_key_from_pem(chain_pem, key_pem)
+            .map_err(|message| TlsError::StoreCorrupt { message })?;
 
         let mut meta = meta.clone();
         meta.identifiers = leaf.identifiers;
@@ -225,8 +222,6 @@ pub(crate) fn leaf_info_from_der(der: &[u8]) -> Result<LeafInfo, String> {
         }
     }
 
-    // Also confirm rustls can see at least one cert DER.
-    let _ = CertificateDer::from(der.to_vec());
     Ok(LeafInfo {
         not_after,
         identifiers,
