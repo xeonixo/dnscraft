@@ -418,12 +418,15 @@ dependencies = [
  "flate2",
  "idna",
  "proptest",
+ "rcgen",
  "regex",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 

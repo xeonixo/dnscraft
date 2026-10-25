@@ -387,3 +387,111 @@ async fn http_url_rejected_without_test_hatch() {
     let (_, error) = failed(fetcher.fetch(&id(), &src, None).await);
     assert_eq!(error.code(), "filter_fetch.io");
 }
+
+/// Self-signed TLS server on loopback; returns the listen address.
+async fn start_self_signed_tls_server() -> std::net::SocketAddr {
+    use std::sync::Arc;
+
+    use rcgen::generate_simple_self_signed;
+    use rustls::ServerConfig;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio_rustls::TlsAcceptor;
+
+    let certified = generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert_der = CertificateDer::from(certified.cert);
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+        certified.signing_key.serialize_der(),
+    ));
+    let mut cfg =
+        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], key_der)
+            .unwrap();
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let acceptor = TlsAcceptor::from(Arc::new(cfg));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((sock, _)) = listener.accept().await else {
+                return;
+            };
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(sock).await else {
+                    return;
+                };
+                let mut buf = [0u8; 1024];
+                let _ = tls.read(&mut buf).await;
+                let body = b"||tls.example^\n";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    std::str::from_utf8(body).unwrap()
+                );
+                let _ = tls.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+    addr
+}
+
+#[tokio::test]
+async fn self_signed_https_is_tls_error() {
+    let e = env();
+    let addr = start_self_signed_tls_server().await;
+    let src = ListSourceSpec::Url(format!("https://{addr}/list.txt"));
+    let (_, error) = failed(e.fetcher.fetch(&id(), &src, None).await);
+    assert_eq!(
+        error.code(),
+        "filter_fetch.tls",
+        "self-signed peer must classify as TLS, got {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn plain_http_on_https_url_is_tls_error() {
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+
+    let e = env_with(1024 * 1024, Duration::from_secs(3));
+    // Accept TCP, write a plain HTTP response (not TLS), then close — forces
+    // a TLS protocol / decode failure rather than a hang waiting for a request.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let _ = sock
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+            .await;
+    });
+    let src = ListSourceSpec::Url(format!("https://{addr}/x"));
+    let (_, error) = failed(e.fetcher.fetch(&id(), &src, None).await);
+    assert_eq!(
+        error.code(),
+        "filter_fetch.tls",
+        "HTTP peer on https URL must be TLS, got {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn https_connection_refused_is_connect() {
+    let e = env();
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    drop(l);
+    let src = ListSourceSpec::Url(format!("https://{addr}/x"));
+    let (_, error) = failed(e.fetcher.fetch(&id(), &src, None).await);
+    assert_eq!(
+        error.code(),
+        "filter_fetch.connect",
+        "refused must stay connect, got {error:?}"
+    );
+}

@@ -582,7 +582,29 @@ fn is_loopback_host(url: &Url) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
+/// True when `err` or any of its sources is a [`rustls::Error`], including when
+/// nested inside [`std::io::Error::get_ref`].
+fn chain_contains_rustls(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut source = Some(err);
+    while let Some(e) = source {
+        if e.downcast_ref::<rustls::Error>().is_some() {
+            return true;
+        }
+        if let Some(io) = e.downcast_ref::<std::io::Error>()
+            && let Some(inner) = io.get_ref()
+            && (inner.downcast_ref::<rustls::Error>().is_some() || chain_contains_rustls(inner))
+        {
+            return true;
+        }
+        source = e.source();
+    }
+    false
+}
+
 /// Maps a reqwest error to a stable [`FetchError`].
+///
+/// Walks [`std::error::Error::source`] and downcasts to [`rustls::Error`] /
+/// I/O kinds instead of matching message text.
 fn classify(err: &reqwest::Error) -> FetchError {
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);
     let mut chain = String::new();
@@ -602,12 +624,7 @@ fn classify(err: &reqwest::Error) -> FetchError {
     if err.is_timeout() {
         return FetchError::Timeout;
     }
-    let lower = chain.to_ascii_lowercase();
-    if lower.contains("certificate")
-        || lower.contains("tls")
-        || lower.contains("handshake")
-        || lower.contains("invalid peer")
-    {
+    if chain_contains_rustls(err) {
         return FetchError::Tls(chain);
     }
     if err.is_connect() {
