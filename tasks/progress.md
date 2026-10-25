@@ -11,7 +11,7 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks).
 ## Current state
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
-- Module `filtering`: spec approved 2026-10-25; plan + tasks approved 2026-10-25 (deps reqwest+rustls/ring, regex, idna, serde_json; CI fuzz job). In progress: Task F3 (modifiers + IDNA, Sonnet). F1, F2, L1, L2 done.
+- Module `filtering`: spec approved 2026-10-25; plan + tasks approved 2026-10-25 (deps reqwest+rustls/ring, regex, idna, serde_json; CI fuzz job). In progress: Task F4 (wildcard/regex) and F5 builder part (Sonnet). F1–F3, L1, L2 done.
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
@@ -27,6 +27,8 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks).
 - Blockers: none
 
 ## Log
+
+- 2026-10-25 — Filtering F3 done (Sonnet, reviewed): $important, $badfilter (key = parsed rule minus badfilter), $dnstype (incl. ~), $denyallow, $dnsrewrite (rcode, A/AAAA/CNAME/TXT; record rewrites from lists skipped as RewriteFromList; @@…$dnsrewrite disables), $client/$ctag rules skipped (not applied globally), unknown/duplicate modifiers, IDNA (UTS 46). Rule 40 B (modifiers boxed only when present). 17 modifier tests.
 
 - 2026-10-25 — Filtering L2 done (Sonnet, reviewed): reqwest 0.12.28 (rustls+ring+webpki roots, gzip; 0.13 rejected: defaults to aws-lc/platform verifier); no aws-lc/openssl in tree. Conditional GET, streaming size cap incl. gzip bombs, https-only redirects (max 5), not_text detection, last-good body kept. 16 tests vs hand-written local HTTP server. Known gaps: TLS error code by message match (untested), file-change detection in memory only.
 

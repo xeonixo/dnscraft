@@ -196,27 +196,22 @@ fn browser_only_rules() {
 }
 
 #[test]
-fn modifiers_are_skipped_until_f3() {
+fn supported_modifiers_are_accepted() {
     for c in [
         "||example.org^$important",
         "@@||example.org^$important",
         "||example.org^$badfilter",
-        "||example.org^$dnstype=A,AAAA",
+        "||example.org^$dnstype=A|AAAA",
         "||example.org^$dnstype=~A",
         "||example.org^$denyallow=a.com|b.com",
         "||example.org^$dnsrewrite=NXDOMAIN",
-        "||example.org^$client=1.2.3.4",
-        "||example.org^$unknownmodifier",
     ] {
-        let e = err(c);
-        assert_eq!(
-            SkipReason::from(&e),
-            kind(UnsupportedKind::Modifiers),
-            "{c}"
-        );
+        let r = parse_rule(c).unwrap();
+        assert!(!r.modifiers().is_empty(), "{c}");
+        assert_eq!(r.domain().as_str(), "example.org");
     }
-    // Span covers `$` and the modifier list.
-    assert_eq!(err("||example.org^$important").span(), 14..24);
+    // Span covers `$` and the modifier list for browser-only modifiers.
+    assert_eq!(err("||example.org^$script").span(), 14..21);
 }
 
 #[test]
@@ -264,7 +259,7 @@ fn invalid_rules_with_spans() {
     assert_eq!(code("||a.example^^"), "filter_rule.invalid_syntax");
     assert_eq!(code("||a.example^b"), "filter_rule.invalid_syntax");
     assert_eq!(code("||a b.example^"), "filter_rule.invalid_domain");
-    assert_eq!(code("||münchen.de^"), "filter_rule.invalid_domain");
+    assert_eq!(code("||münchen!.de^"), "filter_rule.invalid_domain");
     assert_eq!(code("just some words"), "filter_rule.invalid_domain");
     assert_eq!(err("||a.example^b").span(), 2..13);
     assert_eq!(code("@@@@a.example"), "filter_rule.invalid_domain");
@@ -367,22 +362,21 @@ garbage here
     assert_eq!(p.total_lines, 20);
     assert_eq!(p.comment_lines, 3);
     assert_eq!(p.blank_lines, 1);
-    assert_eq!(p.rules.len(), 6);
+    assert_eq!(p.rules.len(), 7);
     assert_eq!(p.skipped.get(kind(UnsupportedKind::Cosmetic)), 2);
     assert_eq!(p.skipped.get(kind(UnsupportedKind::BrowserOnly)), 2);
-    assert_eq!(p.skipped.get(kind(UnsupportedKind::Modifiers)), 1);
     assert_eq!(p.skipped.get(kind(UnsupportedKind::Pattern)), 1);
     assert_eq!(p.skipped.get(kind(UnsupportedKind::Regex)), 1);
     assert_eq!(p.skipped.get(SkipReason::ReservedHost), 1);
     assert_eq!(p.skipped.get(SkipReason::InvalidDomain), 2);
     assert_eq!(p.skipped.get(SkipReason::InvalidSyntax), 1);
     assert_eq!(p.skipped.get(SkipReason::TooLong), 0);
-    assert_eq!(p.skipped.total(), 11);
-    assert_eq!(p.samples.len(), 11);
+    assert_eq!(p.skipped.total(), 10);
+    assert_eq!(p.samples.len(), 10);
     assert_eq!(p.samples[0].line, 10);
     assert_eq!(p.samples[0].text, "127.0.0.1 localhost");
     assert_eq!(p.samples[0].code, "filter_rule.reserved_host");
-    assert_eq!(p.skipped.iter().map(|(_, c)| c).sum::<usize>(), 11);
+    assert_eq!(p.skipped.iter().map(|(_, c)| c).sum::<usize>(), 10);
 }
 
 #[test]

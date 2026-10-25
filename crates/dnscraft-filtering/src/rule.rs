@@ -2,16 +2,18 @@
 //!
 //! ## Memory layout
 //!
-//! A [`Rule`] is 32 bytes plus the heap allocation of its [`DomainName`]. It
+//! A [`Rule`] is 40 bytes plus the heap allocation of its [`DomainName`]. It
 //! does **not** own its source text. Instead it stores where the line lives in
 //! the list body: 1-based line number (`u32`), byte offset of the trimmed line
 //! (`u32`) and its length (`u16`, lines are capped at 4 KiB). The caller keeps
 //! the list body once and recovers the text on demand with [`Rule::text`]. The
 //! match index (Task M1) is expected to consume rules into an arena and keep
-//! only line numbers.
+//! only line numbers. Modifiers are boxed and absent for the common plain
+//! rule.
 
 use std::ops::Range;
 
+pub use crate::modifiers::{DnsRewrite, DnsTypeFilter, Modifiers};
 use crate::name::DomainName;
 
 /// What a matching rule does.
@@ -38,17 +40,13 @@ pub enum MatchKind {
     Regex,
 }
 
-/// Rule modifiers (`$important`, `$badfilter`, `$dnstype`, `$denyallow`,
-/// `$dnsrewrite`). Filled in by Task F3; currently empty.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-#[non_exhaustive]
-pub struct Modifiers {}
-
-impl Modifiers {
-    /// True when no modifier is set.
-    pub fn is_empty(&self) -> bool {
-        true
-    }
+/// Identity of a rule for `$badfilter`, see [`Rule::badfilter_key`].
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct BadfilterKey {
+    action: RuleAction,
+    kind: MatchKind,
+    domain: DomainName,
+    modifiers: Modifiers,
 }
 
 /// A parsed filter rule.
@@ -57,7 +55,7 @@ pub struct Rule {
     domain: DomainName,
     action: RuleAction,
     kind: MatchKind,
-    modifiers: Modifiers,
+    modifiers: Option<Box<Modifiers>>,
     line: u32,
     offset: u32,
     len: u16,
@@ -71,7 +69,7 @@ impl Rule {
             domain,
             action,
             kind,
-            modifiers: Modifiers::default(),
+            modifiers: None,
             line: 0,
             offset: 0,
             len: 0,
@@ -82,6 +80,11 @@ impl Rule {
         self.line = line;
         self.offset = offset;
         self.len = len;
+        self
+    }
+
+    pub(crate) fn with_modifiers(mut self, modifiers: Modifiers) -> Self {
+        self.modifiers = (!modifiers.is_empty()).then(|| Box::new(modifiers));
         self
     }
 
@@ -102,7 +105,26 @@ impl Rule {
 
     /// The rule's modifiers.
     pub fn modifiers(&self) -> &Modifiers {
-        &self.modifiers
+        self.modifiers.as_deref().unwrap_or(&Modifiers::NONE)
+    }
+
+    /// Identity used by `$badfilter`: a rule with `$badfilter` disables every
+    /// rule whose key equals its own key.
+    ///
+    /// The key is the action, match kind, canonical domain and all modifiers
+    /// except `badfilter`. It compares the *parsed* rule, so `||x^` and `||x`
+    /// are identical (AdGuard
+    /// compares the raw text minus `$badfilter`; this is a deliberate superset).
+    /// The rule carrying `$badfilter` and the rule it disables have equal keys.
+    pub fn badfilter_key(&self) -> BadfilterKey {
+        let mut m = self.modifiers().clone();
+        m.badfilter = false;
+        BadfilterKey {
+            action: self.action,
+            kind: self.kind,
+            domain: self.domain.clone(),
+            modifiers: m,
+        }
     }
 
     /// 1-based line number in the source, 0 when the rule has no source.

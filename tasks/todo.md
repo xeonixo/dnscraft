@@ -52,9 +52,9 @@ block, multiple names per line), comments (`!`, `#`), blank lines. Browser-only 
 lists. Non-ASCII domains → punycode via `idna`.
 
 **Acceptance criteria:**
-- [ ] Table tests per modifier incl. invalid values with precise error codes/spans
-- [ ] `$dnsrewrite` record rewrites from a list source are marked ignored (with warning count); from custom rules accepted
-- [ ] IDNA conversion tested (umlaut domain, invalid IDNA skipped with reason)
+- [x] Table tests per modifier incl. invalid values with precise error codes/spans
+- [x] `$dnsrewrite` record rewrites from a list source are marked ignored (with warning count); from custom rules accepted
+- [x] IDNA conversion tested (umlaut domain, invalid IDNA skipped with reason)
 
 **Verification:** `cargo test -p dnscraft-filtering modifiers`
 

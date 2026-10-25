@@ -22,6 +22,7 @@ tokio = { version = "1.54", features = ["net", "rt", "macros", "time", "io-util"
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "gzip"] }
 hickory-proto = { version = "=0.26.3", default-features = false, features = ["std"] }
 thiserror = "2.0"
+idna = "1.1"
 ring = "0.17"
 tracing = "0.1"
 serde = { version = "1.0", features = ["derive"] }

@@ -14,6 +14,7 @@
 mod clock;
 mod error;
 mod fetch;
+mod modifiers;
 mod name;
 mod parser;
 mod rule;
@@ -28,7 +29,7 @@ pub use parser::{
     ListSource, MAX_LINE_LEN, ParsedList, SKIP_SAMPLE_LIMIT, SkipCounts, SkipReason, SkippedLine,
     parse_list, parse_rule,
 };
-pub use rule::{MatchKind, Modifiers, Rule, RuleAction};
+pub use rule::{BadfilterKey, DnsRewrite, DnsTypeFilter, MatchKind, Modifiers, Rule, RuleAction};
 pub use store::{
     DEFAULT_MAX_BODY_BYTES, ListMeta, ListSourceSpec, ListStore, META_VERSION, MetaError,
     StoreConfig, StoreError,

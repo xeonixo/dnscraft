@@ -311,6 +311,7 @@ name = "dnscraft-filtering"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "idna",
  "reqwest",
  "serde",
  "serde_json",

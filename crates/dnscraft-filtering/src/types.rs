@@ -111,7 +111,7 @@ pub struct Reason {
 }
 
 /// A response modification chosen by a rule or by the block mode.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 #[non_exhaustive]
 pub enum Rewrite {
     /// Answer with RCODE REFUSED.

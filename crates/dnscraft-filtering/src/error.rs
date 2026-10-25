@@ -34,6 +34,12 @@
 //! | [`RuleError::InvalidSyntax`] | `filter_rule.invalid_syntax` |
 //! | [`RuleError::MultipleNames`] | `filter_rule.multiple_names` |
 //! | [`RuleError::ReservedHost`] | `filter_rule.reserved_host` |
+//! | [`RuleError::UnknownModifier`] | `filter_rule.unknown_modifier` |
+//! | [`RuleError::DuplicateModifier`] | `filter_rule.duplicate_modifier` |
+//! | [`RuleError::InvalidModifier`] | `filter_rule.invalid_modifier` |
+//! | [`RuleError::ClientModifier`] | `filter_rule.client_modifier` |
+//! | [`RuleError::RewriteFromList`] | `filter_rule.rewrite_from_list` |
+//! | [`RuleError::InvalidIdna`] | `filter_rule.invalid_idna` |
 //!
 //! [`FilterError`] delegates to the code of the wrapped error.
 
@@ -127,8 +133,6 @@ pub enum UnsupportedKind {
     Cosmetic,
     /// Rules that only make sense in a browser (URL paths, `$script`, `$domain=`, ...).
     BrowserOnly,
-    /// A rule with a `$` modifier list (implemented in Task F3).
-    Modifiers,
     /// A wildcard pattern (implemented in Task F4).
     Pattern,
     /// A `/regex/` rule (implemented in Task F4).
@@ -141,7 +145,6 @@ impl UnsupportedKind {
         match self {
             Self::Cosmetic => "cosmetic",
             Self::BrowserOnly => "browser_only",
-            Self::Modifiers => "modifiers",
             Self::Pattern => "pattern",
             Self::Regex => "regex",
         }
@@ -213,6 +216,47 @@ pub enum RuleError {
         /// Span of the name.
         span: std::ops::Range<usize>,
     },
+    /// A modifier this engine does not know.
+    #[error("unknown modifier")]
+    UnknownModifier {
+        /// Span of the modifier (`name` or `name=value`).
+        span: std::ops::Range<usize>,
+    },
+    /// The same modifier appears twice.
+    #[error("duplicate modifier")]
+    DuplicateModifier {
+        /// Span of the second occurrence.
+        span: std::ops::Range<usize>,
+    },
+    /// A known modifier with a bad or missing value, or used where it is
+    /// not allowed.
+    #[error("invalid ${modifier} modifier: {detail}")]
+    InvalidModifier {
+        /// The modifier name, lower-case.
+        modifier: &'static str,
+        /// Stable identifier of the problem (for example `mixed_negation`).
+        detail: &'static str,
+        /// Span of the offending part (the value if there is one).
+        span: std::ops::Range<usize>,
+    },
+    /// `$client` / `$ctag`: per-client scoping is done by profiles, not rules.
+    #[error("$client and $ctag are not supported; use profiles")]
+    ClientModifier {
+        /// Span of the modifier.
+        span: std::ops::Range<usize>,
+    },
+    /// A `$dnsrewrite` record rewrite in a downloaded list.
+    #[error("record rewrites are only honoured in custom rules")]
+    RewriteFromList {
+        /// Span of the `$dnsrewrite` value.
+        span: std::ops::Range<usize>,
+    },
+    /// A non-ASCII domain that cannot be converted to punycode.
+    #[error("domain cannot be converted with IDNA")]
+    InvalidIdna {
+        /// Span of the domain text.
+        span: std::ops::Range<usize>,
+    },
 }
 
 impl RuleError {
@@ -227,6 +271,12 @@ impl RuleError {
             Self::InvalidSyntax { .. } => "filter_rule.invalid_syntax",
             Self::MultipleNames { .. } => "filter_rule.multiple_names",
             Self::ReservedHost { .. } => "filter_rule.reserved_host",
+            Self::UnknownModifier { .. } => "filter_rule.unknown_modifier",
+            Self::DuplicateModifier { .. } => "filter_rule.duplicate_modifier",
+            Self::InvalidModifier { .. } => "filter_rule.invalid_modifier",
+            Self::ClientModifier { .. } => "filter_rule.client_modifier",
+            Self::RewriteFromList { .. } => "filter_rule.rewrite_from_list",
+            Self::InvalidIdna { .. } => "filter_rule.invalid_idna",
         }
     }
 
@@ -240,7 +290,13 @@ impl RuleError {
             | Self::Unsupported { span, .. }
             | Self::InvalidSyntax { span, .. }
             | Self::MultipleNames { span }
-            | Self::ReservedHost { span } => span.clone(),
+            | Self::ReservedHost { span }
+            | Self::UnknownModifier { span }
+            | Self::DuplicateModifier { span }
+            | Self::InvalidModifier { span, .. }
+            | Self::ClientModifier { span }
+            | Self::RewriteFromList { span }
+            | Self::InvalidIdna { span } => span.clone(),
         }
     }
 
@@ -251,6 +307,13 @@ impl RuleError {
             Self::InvalidDomain { source, .. } => vec![("reason", source.code().to_string())],
             Self::Unsupported { kind, .. } => vec![("kind", kind.as_str().to_string())],
             Self::InvalidSyntax { detail, .. } => vec![("detail", (*detail).to_string())],
+            Self::InvalidModifier {
+                modifier, detail, ..
+            } => vec![
+                ("modifier", (*modifier).to_string()),
+                ("detail", (*detail).to_string()),
+            ],
+            Self::ClientModifier { .. } => vec![("hint", "profiles".to_string())],
             _ => Vec::new(),
         }
     }
@@ -352,6 +415,35 @@ mod tests {
             (
                 "filter_rule.reserved_host",
                 RuleError::ReservedHost { span: 0..1 }.into(),
+            ),
+            (
+                "filter_rule.unknown_modifier",
+                RuleError::UnknownModifier { span: 0..1 }.into(),
+            ),
+            (
+                "filter_rule.duplicate_modifier",
+                RuleError::DuplicateModifier { span: 0..1 }.into(),
+            ),
+            (
+                "filter_rule.invalid_modifier",
+                RuleError::InvalidModifier {
+                    modifier: "dnstype",
+                    detail: "x",
+                    span: 0..1,
+                }
+                .into(),
+            ),
+            (
+                "filter_rule.client_modifier",
+                RuleError::ClientModifier { span: 0..1 }.into(),
+            ),
+            (
+                "filter_rule.rewrite_from_list",
+                RuleError::RewriteFromList { span: 0..1 }.into(),
+            ),
+            (
+                "filter_rule.invalid_idna",
+                RuleError::InvalidIdna { span: 0..1 }.into(),
             ),
             ("filter_id.empty", IdError::Empty.into()),
             ("filter_id.too_long", IdError::TooLong { len: 65 }.into()),
