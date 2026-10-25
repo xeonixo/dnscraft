@@ -1,0 +1,440 @@
+//! Cloudflare DNS API client (zones + DNS records).
+//!
+//! Writers for ACME TXT and DynDNS A/AAAA share [`CloudflareClient::write_lock`]
+//! so DynDNS never mutates records while a challenge is in flight (L7 / L9).
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use reqwest::Client;
+use reqwest::header::{CONTENT_TYPE, HeaderValue};
+use serde::Deserialize;
+use serde_json::json;
+use tokio::sync::{Mutex, MutexGuard};
+
+const JSON: HeaderValue = HeaderValue::from_static("application/json");
+
+use crate::config::CloudflareConfig;
+use crate::error::TlsError;
+use crate::secret::Secret;
+
+/// Production Cloudflare API root (v4).
+pub const CLOUDFLARE_API_BASE: &str = "https://api.cloudflare.com/client/v4";
+
+/// Cloudflare "automatic" TTL.
+pub const TTL_AUTO: u32 = 1;
+
+/// Short TTL used for ACME DNS-01 TXT records.
+pub const TTL_ACME_TXT: u32 = 120;
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_BODY_BYTES: usize = 1024 * 1024;
+
+/// Zone id and authoritative nameservers from Cloudflare.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZoneInfo {
+    /// Zone identifier.
+    pub id: String,
+    /// Apex name (e.g. `example.com`).
+    pub name: String,
+    /// Cloudflare-assigned authoritative nameserver hostnames.
+    pub name_servers: Vec<String>,
+}
+
+/// One DNS record as returned by the API.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DnsRecord {
+    /// Cloudflare record id.
+    pub id: String,
+    /// Fully-qualified owner name.
+    pub name: String,
+    /// Record type (`A`, `AAAA`, `TXT`, …).
+    pub record_type: String,
+    /// RDATA (IP or TXT string).
+    pub content: String,
+    /// TTL in seconds (`1` = automatic).
+    pub ttl: u32,
+    /// Orange-cloud flag; must be `false` for DoT/DoQ.
+    pub proxied: bool,
+}
+
+/// Cloudflare DNS client with a shared writer mutex.
+#[derive(Clone, Debug)]
+pub struct CloudflareClient {
+    http: Client,
+    token: Secret,
+    base_url: String,
+    configured_zone_id: Option<String>,
+    public_domain: String,
+    write_lock: Arc<Mutex<()>>,
+    cached_zone: Arc<Mutex<Option<ZoneInfo>>>,
+}
+
+impl CloudflareClient {
+    /// Builds a client against the production API base.
+    pub fn new(
+        token: Secret,
+        public_domain: impl Into<String>,
+        cfg: &CloudflareConfig,
+    ) -> Result<Self, TlsError> {
+        Self::with_base_url(token, public_domain, cfg, CLOUDFLARE_API_BASE)
+    }
+
+    /// Builds a client against an alternate base URL (mock / tests).
+    ///
+    /// `base_url` should look like `https://api.cloudflare.com/client/v4` or
+    /// `http://127.0.0.1:PORT/client/v4`.
+    pub fn with_base_url(
+        token: Secret,
+        public_domain: impl Into<String>,
+        cfg: &CloudflareConfig,
+        base_url: impl Into<String>,
+    ) -> Result<Self, TlsError> {
+        let http = Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .map_err(|e| TlsError::CloudflareHttp {
+                message: format!("build HTTP client: {e}"),
+            })?;
+        Ok(Self {
+            http,
+            token,
+            base_url: base_url.into().trim_end_matches('/').to_owned(),
+            configured_zone_id: cfg.zone_id.clone(),
+            public_domain: public_domain.into(),
+            write_lock: Arc::new(Mutex::new(())),
+            cached_zone: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    /// Shared mutex for record writers (issuance + DynDNS).
+    ///
+    /// Callers that perform a multi-step mutation (e.g. create two TXT values)
+    /// must hold this lock across the whole sequence. Individual methods do
+    /// **not** take it themselves, to avoid deadlocks with a non-reentrant mutex.
+    pub fn write_lock(&self) -> &Arc<Mutex<()>> {
+        &self.write_lock
+    }
+
+    /// Convenience: lock the writer mutex.
+    pub async fn write_guard(&self) -> MutexGuard<'_, ()> {
+        self.write_lock.lock().await
+    }
+
+    /// Resolves (and caches) the zone id + nameservers.
+    ///
+    /// Uses `cfg.zone_id` when set; otherwise `GET /zones?name=<public_domain>`.
+    /// Empty / missing zone → [`TlsError::CloudflareZone`].
+    pub async fn zone(&self) -> Result<ZoneInfo, TlsError> {
+        {
+            let guard = self.cached_zone.lock().await;
+            if let Some(z) = guard.as_ref() {
+                return Ok(z.clone());
+            }
+        }
+        let info = if let Some(id) = &self.configured_zone_id {
+            self.fetch_zone_by_id(id).await?
+        } else {
+            self.fetch_zone_by_name(&self.public_domain).await?
+        };
+        *self.cached_zone.lock().await = Some(info.clone());
+        Ok(info)
+    }
+
+    /// Lists records filtered by owner name and type.
+    pub async fn list_records(
+        &self,
+        name: &str,
+        record_type: &str,
+    ) -> Result<Vec<DnsRecord>, TlsError> {
+        let zone = self.zone().await?;
+        let url = format!("{}/zones/{}/dns_records", self.base_url, zone.id);
+        let envelope: Envelope<Vec<ApiRecord>> = self
+            .request(
+                self.http
+                    .get(&url)
+                    .query(&[("name", name), ("type", record_type)]),
+            )
+            .await?;
+        Ok(envelope
+            .result
+            .unwrap_or_default()
+            .into_iter()
+            .map(DnsRecord::from)
+            .collect())
+    }
+
+    /// Creates a TXT record (**add**, never upsert) so multiple values can
+    /// coexist at one name.
+    pub async fn create_txt(
+        &self,
+        name: &str,
+        content: &str,
+        ttl: u32,
+    ) -> Result<DnsRecord, TlsError> {
+        let zone = self.zone().await?;
+        let url = format!("{}/zones/{}/dns_records", self.base_url, zone.id);
+        let body = json!({
+            "type": "TXT",
+            "name": name,
+            "content": content,
+            "ttl": ttl,
+        });
+        let envelope: Envelope<ApiRecord> = self
+            .request(
+                self.http
+                    .post(&url)
+                    .header(CONTENT_TYPE, JSON)
+                    .body(body.to_string()),
+            )
+            .await?;
+        envelope
+            .result
+            .map(DnsRecord::from)
+            .ok_or_else(|| TlsError::CloudflareHttp {
+                message: "create TXT: empty result".into(),
+            })
+    }
+
+    /// Deletes a record by id.
+    pub async fn delete_record(&self, record_id: &str) -> Result<(), TlsError> {
+        let zone = self.zone().await?;
+        let url = format!(
+            "{}/zones/{}/dns_records/{record_id}",
+            self.base_url, zone.id
+        );
+        let _: Envelope<serde_json::Value> = self.request(self.http.delete(&url)).await?;
+        Ok(())
+    }
+
+    /// Upserts an A or AAAA record with `proxied: false` and automatic TTL.
+    ///
+    /// If a record of that type already exists at `name`, it is updated (PUT);
+    /// otherwise a new one is created.
+    pub async fn upsert_address(
+        &self,
+        name: &str,
+        record_type: &str,
+        content: &str,
+    ) -> Result<DnsRecord, TlsError> {
+        if record_type != "A" && record_type != "AAAA" {
+            return Err(TlsError::CloudflareHttp {
+                message: format!("upsert_address: unsupported type {record_type}"),
+            });
+        }
+        let existing = self.list_records(name, record_type).await?;
+        let zone = self.zone().await?;
+        if let Some(prev) = existing.into_iter().next() {
+            let url = format!(
+                "{}/zones/{}/dns_records/{}",
+                self.base_url, zone.id, prev.id
+            );
+            let body = json!({
+                "type": record_type,
+                "name": name,
+                "content": content,
+                "ttl": TTL_AUTO,
+                "proxied": false,
+            });
+            let envelope: Envelope<ApiRecord> = self
+                .request(
+                    self.http
+                        .put(&url)
+                        .header(CONTENT_TYPE, JSON)
+                        .body(body.to_string()),
+                )
+                .await?;
+            envelope
+                .result
+                .map(DnsRecord::from)
+                .ok_or_else(|| TlsError::CloudflareHttp {
+                    message: "upsert: empty result".into(),
+                })
+        } else {
+            let url = format!("{}/zones/{}/dns_records", self.base_url, zone.id);
+            let body = json!({
+                "type": record_type,
+                "name": name,
+                "content": content,
+                "ttl": TTL_AUTO,
+                "proxied": false,
+            });
+            let envelope: Envelope<ApiRecord> = self
+                .request(
+                    self.http
+                        .post(&url)
+                        .header(CONTENT_TYPE, JSON)
+                        .body(body.to_string()),
+                )
+                .await?;
+            envelope
+                .result
+                .map(DnsRecord::from)
+                .ok_or_else(|| TlsError::CloudflareHttp {
+                    message: "create address: empty result".into(),
+                })
+        }
+    }
+
+    async fn fetch_zone_by_name(&self, name: &str) -> Result<ZoneInfo, TlsError> {
+        let url = format!("{}/zones", self.base_url);
+        let envelope: Envelope<Vec<ApiZone>> = self
+            .request(self.http.get(&url).query(&[("name", name)]))
+            .await?;
+        let list = envelope.result.unwrap_or_default();
+        match list.as_slice() {
+            [] => Err(TlsError::CloudflareZone {
+                message: format!("no zone named {name}"),
+            }),
+            [z, ..] => Ok(ZoneInfo {
+                id: z.id.clone(),
+                name: z.name.clone(),
+                name_servers: z.name_servers.clone(),
+            }),
+        }
+    }
+
+    async fn fetch_zone_by_id(&self, id: &str) -> Result<ZoneInfo, TlsError> {
+        let url = format!("{}/zones/{id}", self.base_url);
+        match self.request::<ApiZone>(self.http.get(&url)).await {
+            Ok(envelope) => {
+                let z = envelope.result.ok_or_else(|| TlsError::CloudflareZone {
+                    message: format!("zone id {id} not found"),
+                })?;
+                Ok(ZoneInfo {
+                    id: z.id,
+                    name: z.name,
+                    name_servers: z.name_servers,
+                })
+            }
+            Err(TlsError::CloudflareHttp { message }) if message.contains("404") => {
+                Err(TlsError::CloudflareZone {
+                    message: format!("zone id {id} not found ({message})"),
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn request<T: for<'de> Deserialize<'de>>(
+        &self,
+        builder: reqwest::RequestBuilder,
+    ) -> Result<Envelope<T>, TlsError> {
+        let token = self.token.expose();
+        let response = builder
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .map_err(|e| TlsError::CloudflareHttp {
+                message: redact_token(&format!("transport: {e}"), token),
+            })?;
+
+        let status = response.status();
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| TlsError::CloudflareHttp {
+                message: redact_token(&format!("read body: {e}"), token),
+            })?;
+        if bytes.len() > MAX_BODY_BYTES {
+            return Err(TlsError::CloudflareHttp {
+                message: format!(
+                    "response body {} bytes exceeds {MAX_BODY_BYTES} cap",
+                    bytes.len()
+                ),
+            });
+        }
+
+        let envelope: Envelope<T> =
+            serde_json::from_slice(&bytes).map_err(|e| TlsError::CloudflareHttp {
+                message: redact_token(&format!("HTTP {status}: unparseable body ({e})"), token),
+            })?;
+
+        if !envelope.success || !status.is_success() {
+            let detail = envelope
+                .errors
+                .iter()
+                .map(|e| format!("{}: {}", e.code, e.message))
+                .collect::<Vec<_>>()
+                .join("; ");
+            let mut message = if detail.is_empty() {
+                format!("HTTP {status}")
+            } else {
+                format!("HTTP {status}: {detail}")
+            };
+            if let Some(ra) = retry_after {
+                message.push_str(&format!("; Retry-After: {ra}"));
+            }
+            return Err(TlsError::CloudflareHttp {
+                message: redact_token(&message, token),
+            });
+        }
+
+        Ok(envelope)
+    }
+}
+
+fn redact_token(text: &str, token: &str) -> String {
+    if token.is_empty() {
+        return text.to_owned();
+    }
+    text.replace(token, "[redacted]")
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(bound(deserialize = "T: Deserialize<'de>"))]
+struct Envelope<T> {
+    success: bool,
+    #[serde(default)]
+    errors: Vec<ApiError>,
+    #[serde(default)]
+    result: Option<T>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiError {
+    code: u32,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiZone {
+    id: String,
+    name: String,
+    #[serde(default)]
+    name_servers: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiRecord {
+    id: String,
+    name: String,
+    #[serde(rename = "type")]
+    record_type: String,
+    content: String,
+    #[serde(default)]
+    ttl: u32,
+    #[serde(default)]
+    proxied: bool,
+}
+
+impl From<ApiRecord> for DnsRecord {
+    fn from(r: ApiRecord) -> Self {
+        Self {
+            id: r.id,
+            name: r.name,
+            record_type: r.record_type,
+            content: r.content,
+            ttl: r.ttl,
+            proxied: r.proxied,
+        }
+    }
+}

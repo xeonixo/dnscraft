@@ -138,11 +138,11 @@ Also in this task:
   records in memory and records the requests.
 
 **Acceptance criteria:**
-- [ ] Mock: two TXT values at `_acme-challenge.dns.example.com` coexist; delete removes only the one asked for
-- [ ] Zone by name; unknown zone → `tls.cloudflare.zone`; 429 → `tls.cloudflare.http` with retry hint
-- [ ] Token sent as `Authorization: Bearer`; token absent from errors
+- [x] Mock: two TXT values at `_acme-challenge.dns.example.com` coexist; delete removes only the one asked for
+- [x] Zone by name; unknown zone → `tls.cloudflare.zone`; 429 → `tls.cloudflare.http` with retry hint
+- [x] Token sent as `Authorization: Bearer`; token absent from errors
 
-**Verification:** `cargo test -p dnscraft-tls cloudflare`
+**Verification:** `cargo test -p dnscraft-tls --test cloudflare`
 
 **Dependencies:** L1 · **Files:** `src/cloudflare.rs`, `tests/support/mock_cloudflare.rs`, `tests/cloudflare.rs` · **Scope:** M
 

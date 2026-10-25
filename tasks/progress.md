@@ -13,11 +13,13 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
-- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L4 done. Checkpoint A passed** (2026-10-25). Next: L5.
+- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L5 done**; Checkpoint A passed (2026-10-25). Next: **L6** (propagation check).
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P4 done. Checkpoint A passed** (2026-10-25). Next: P5.
 - Blockers: none. Clients last. T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — tls L5 done (Cursor): `CloudflareClient` (Bearer token, zone by name/id + `name_servers`, list/create/delete, TXT add-not-upsert, A/AAAA upsert `proxied: false` TTL auto, envelope → `tls.cloudflare.http` with `Retry-After`, unknown zone → `tls.cloudflare.zone`, 30 s / 1 MiB, shared writer `Arc<Mutex>`). Hand-written mock Cloudflare on loopback; 9 tests. DoD green; `cargo tree -i aws-lc-rs` / `openssl-sys` empty. Next: L6.
 
 - 2026-10-25 — **Checkpoint A passed for tls and policy** (Claude review, fixes by two Sonnet agents, lead-verified; workspace 749 tests green, fmt/clippy clean).
   - tls: gates ok (`cargo tree -i aws-lc-rs` / `openssl-sys` empty); Pebble account test green locally (podman); HTTP stack = reqwest adapter, no fallback. Fixes (23c0714): stored `account.json` for another ACME directory (staging → production) is no longer reused, a new account is created; `CertStore::save`/`load` verify the key matches the leaf (crash mid-save left a mismatched pair that loaded but could not be installed); SNI `eq_ignore_ascii_case` panicked on non-ASCII SNI (remote-triggerable, found by the proptest); test that the second label must be `dns`; store nits.

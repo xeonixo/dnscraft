@@ -110,7 +110,7 @@ L9 DynDNS (needs L5) ── L10 TlsEngine ── L11 polish
 - [x] `cargo tree -i aws-lc-rs` empty; Pebble account test passes locally; HTTP-stack decision recorded; lead review
 
 ### Phase 2: Issuance
-- [ ] L5: Cloudflare DNS client + mock
+- [x] L5: Cloudflare DNS client + mock
 - [ ] L6: Propagation check against the authoritative NS
 - [ ] L7: Issuance flow (apex + wildcard, two TXT values, finalize, store, reload)
 - [ ] L8: Renewal scheduler (ARI / `renew_before`, backoff, expiry status)
