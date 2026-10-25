@@ -346,6 +346,22 @@ enum; RFC 9460 §8 mandatory drop; safesearch stub API cleanup.
 
 **Dependencies:** P11 · **Files:** `tests/golden.rs`, `benches/pipeline.rs`, `crates/dnscraft-policy/README.md` · **Scope:** M
 
+## Task P12b: Drop stale RRSIGs on rebind
+
+**Description:** Checkpoint C follow-up: when rebind removes or rewrites an RRset of type
+`T`, also drop RRSIGs with `type_covered == T` (RFC 4035 §3.1.1 / §5). Decide NODATA SOA
+on data RRs only (ignore RRSIG/NSEC). Test DO=1 full/partial/CNAME/HTTPS; kill DropRecord
+`remove` → `i += 1` mutant via `strip_svcb_rrs`.
+
+**Acceptance criteria:**
+- [x] Full strip DO=1 → no RRSIG(A), synthetic SOA, AD clear
+- [x] Partial / CNAME / HTTPS rewrite drop covering RRSIGs; DO=0 unchanged
+- [x] `strip_svcb_rrs` DropRecord removes HTTPS + RRSIG(HTTPS) with correct count
+
+**Verification:** `cargo test -p dnscraft-policy`
+
+**Dependencies:** P12 · **Files:** `src/steps/rebind.rs`, `tests/ad_ede.rs`, README · **Scope:** S
+
 ## Checkpoint C: Complete
 - [x] Spec success criteria 1–6
 - [ ] Independent review (DNSSEC/AD honesty, rebind, synthesis correctness)

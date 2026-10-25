@@ -30,7 +30,7 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 
 Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86.24 %** lines / **80.27 %** regions.
 - Module `tls`: **COMPLETE** — SPEC + plan approved; L1–L12c done; Checkpoints A/B/C passed (2026-10-25). Owner approved after LE-staging acceptance (node DynDNS only; `public_entry` owner-managed).
-- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P12 + P10b/P9b/P11b done. Checkpoint A/B passed.** Next: **Checkpoint C** (Claude independent review + owner approval).
+- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P12b + P10b/P9b/P11b done. Checkpoint A/B passed.** Next: **Checkpoint C** re-review (do not tick Independent review / Owner approval).
 - Blockers: clients Checkpoint C awaiting Lead re-review of C13.
 
 ### policy success criteria (SPEC-policy.md)
@@ -39,13 +39,13 @@ Coverage (`cargo llvm-cov -p dnscraft-clients --summary-only`, 2026-10-25): **86
 |---|-----------|------------|
 | 1 | Selection: Client ID > LPM > default | `tests/select.rs` |
 | 2 | View/directory never hit resolver; blocked never hits; CNAME chain block | `tests/golden.rs`; also `local_records` / `directory` / `filter` / `answer_side` |
-| 3 | Rebind strips private A/AAAA (+ SVCB hints / additional); exceptions & forward exempt | `tests/golden.rs`; `tests/rebind.rs`; `rebind::unit` |
+| 3 | Rebind strips private A/AAAA (+ SVCB hints / additional); stale RRSIGs dropped | `tests/golden.rs`; `tests/rebind.rs`; `tests/ad_ede.rs` DO=1; `rebind::unit` |
 | 3a | Special-use NXDOMAIN; unknown under public-looking domain reaches resolver | `tests/golden.rs`; `tests/directory.rs` |
 | 4 | AD/EDE matrix | `tests/ad_ede.rs` |
 | 5 | Cached resolve + filter miss p50 < 1 ms | `benches/pipeline.rs` (p50 ≈ 7.4 µs, 2026-10-25) |
-| 6 | Coverage ≥ 80 %; DoD green | llvm-cov **93.25 %** lines; fmt / clippy / `cargo test -p dnscraft-policy` 5× |
+| 6 | Coverage ≥ 80 %; DoD green | llvm-cov **92.53 %** lines; fmt / clippy / `cargo test -p dnscraft-policy` 5× |
 
-Coverage (`cargo llvm-cov -p dnscraft-policy --summary-only`, 2026-10-25): **93.25 %** lines / **92.64 %** regions.
+Coverage (`cargo llvm-cov -p dnscraft-policy --summary-only`, 2026-10-25): **92.53 %** lines / **93.18 %** regions.
 
 ### tls success criteria (SPEC-tls.md)
 
@@ -62,6 +62,8 @@ Coverage (`cargo llvm-cov -p dnscraft-policy --summary-only`, 2026-10-25): **93.
 Coverage (`cargo llvm-cov -p dnscraft-tls --summary-only`, 2026-10-25): **80.32 %** lines / **79.82 %** regions (Pebble/`InstantAcme` paths largely `#[ignore]` / production-only).
 
 ## Log
+
+- 2026-10-25 — Policy **P12b** done (Cursor): drop stale RRSIGs when rebind removes/rewrites type `T` (RFC 4035 §3.1.1 / §5); NODATA SOA decided on data RRs only (ignore RRSIG/NSEC). **Probe killed:** `signed_private_secure()` + DO=1 on `www.secure.test.` A no longer leaves orphan `answers=[RRSIG(A)]` — full strip → empty + synthetic SOA + AD clear; also DO=1 partial / CNAME→private / HTTPS hint rewrite. **Mutant killed:** `strip_svcb_rrs` DropRecord `rrs.remove(i)` → `i += 1` (mandatory+all-private ipv4hint leaves HTTPS+RRSIG). README updated. DoD: clippy green; `cargo test -p dnscraft-policy` **5× / 0 failures**; llvm-cov **92.53 %** lines. **STOP for Claude Checkpoint C re-review** (do not tick Independent review / Owner approval).
 
 - 2026-10-25 — clients **C13** done (Cursor): discard stale UniFi fetches on config change. (1) `apply_config(enabled=false)` builds manuals-only (empty obs/nets, clear cache; keep first-seen labels, drop retain/last_unifi). (2) `run_sync` remembers `UnifiConfig` used for the fetch; under the lock discards if disabled / `unifi` changed / older seq (`SyncReport.superseded`, no stale). (3) Monotonic fetch seq so overlapping poll/`sync_now` cannot install older data last. Tests reproduce Claude's probe (`disable_unifi_during_slow_sync_discards_stale_fetch`: delay 400 ms → UniFi 1→0→0), plus base_url switch and newer-wins. Kept `sync_once` for classic_api tests. `cargo test -p dnscraft-clients` **10× / 0 failures**; llvm-cov **86.24 %** lines. STOP for Checkpoint C Lead re-review.
 

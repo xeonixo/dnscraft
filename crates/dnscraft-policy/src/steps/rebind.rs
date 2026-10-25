@@ -8,6 +8,12 @@
 //! HTTPS/SVCB `ipv4hint` / `ipv6hint` (RFC 9460 §7.3) and private A/AAAA in the
 //! additional section are also scrubbed — see [`strip_svcb_hints`].
 //!
+//! Whenever an RRset of type `T` is removed or rewritten, covering RRSIG
+//! records (`type_covered == T`) in that section are removed too: the
+//! remaining octets no longer match the signature (RFC 4035 §3.1.1 / §5).
+//! Validating stubs then see an unsigned, modified answer and AD is never
+//! set for it.
+//!
 //! Note: [`dnscraft_resolver`] clears the additional section on recursive and
 //! forwarded answers before policy sees them, so additional-section stripping
 //! is exercised by calling [`run`] with a constructed [`Message`] (see unit
@@ -15,7 +21,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use dnscraft_proto::{Message, Name, RData, Rcode, Record, SvcbData};
+use dnscraft_proto::{Message, Name, RData, Rcode, Record, RecordType, SvcbData};
 use dnscraft_resolver::ForwardZoneId;
 
 use crate::config::RequestContext;
@@ -96,33 +102,73 @@ pub(crate) fn run(
         .push(DecisionStep::RebindStripped { count: stripped });
 
     // All addresses gone from the answer section: keep any CNAME / HTTPS /
-    // other non-address records and ensure NOERROR — NODATA-for-alias when
-    // CNAMEs remain; empty answer gets a synthetic SOA so clients can
-    // negatively cache.
+    // other non-address *data* records and ensure NOERROR — NODATA-for-alias
+    // when CNAMEs remain. Emptiness for the synthetic SOA ignores RRSIG/NSEC
+    // (DNSSEC proof RRs are not "data"); leftover proofs are cleared so the
+    // answer section is truly empty before `ensure_nodata_soa`.
     let any_address_left = message
         .answers
         .iter()
         .any(|r| matches!(&r.rdata, RData::A(_) | RData::AAAA(_)));
     if !any_address_left {
         let _ = message.set_rcode(Rcode::NOERROR);
-        if message.answers.is_empty() {
+        let any_data_left = message.answers.iter().any(|r| !is_dnssec_proof(r));
+        if !any_data_left {
+            message.answers.retain(|r| !is_dnssec_proof(r));
             ensure_nodata_soa(message, &ctx.query.name, DEFAULT_BLOCK_TTL);
         }
     }
 }
 
+/// RRSIG / NSEC / NSEC3 are DNSSEC proof material, not answer data.
+fn is_dnssec_proof(r: &Record) -> bool {
+    matches!(
+        r.rtype(),
+        RecordType::RRSIG | RecordType::NSEC | RecordType::NSEC3
+    )
+}
+
+/// Drops RRSIGs whose `type_covered` equals `covered` (RFC 4035 §3.1.1 / §5:
+/// a signature must cover the RRset as transmitted).
+fn strip_rrsigs_covering(rrs: &mut Vec<Record>, covered: RecordType) {
+    rrs.retain(|r| {
+        !matches!(
+            &r.rdata,
+            RData::RRSIG { type_covered, .. } if *type_covered == covered
+        )
+    });
+}
+
 fn strip_address_rrs(rrs: &mut Vec<Record>) -> u32 {
+    let mut touched_a = false;
+    let mut touched_aaaa = false;
     let before = rrs.len();
     rrs.retain(|rec| match &rec.rdata {
-        RData::A(v4) => !is_private_for_rebind((*v4).into()),
-        RData::AAAA(v6) => !is_private_for_rebind((*v6).into()),
+        RData::A(v4) if is_private_for_rebind((*v4).into()) => {
+            touched_a = true;
+            false
+        }
+        RData::AAAA(v6) if is_private_for_rebind((*v6).into()) => {
+            touched_aaaa = true;
+            false
+        }
         _ => true,
     });
-    u32::try_from(before.saturating_sub(rrs.len())).unwrap_or(u32::MAX)
+    let count = u32::try_from(before.saturating_sub(rrs.len())).unwrap_or(u32::MAX);
+    // RRset changed → covering RRSIGs are stale (RFC 4035 §3.1.1 / §5).
+    if touched_a {
+        strip_rrsigs_covering(rrs, RecordType::A);
+    }
+    if touched_aaaa {
+        strip_rrsigs_covering(rrs, RecordType::AAAA);
+    }
+    count
 }
 
 fn strip_svcb_rrs(rrs: &mut Vec<Record>) -> u32 {
     let mut total = 0u32;
+    let mut touched_https = false;
+    let mut touched_svcb = false;
     let mut i = 0;
     while i < rrs.len() {
         let (is_https, data) = match &rrs[i].rdata {
@@ -143,8 +189,10 @@ fn strip_svcb_rrs(rrs: &mut Vec<Record>) -> u32 {
             } => {
                 total = total.saturating_add(stripped);
                 rrs[i].rdata = if is_https {
+                    touched_https = true;
                     RData::HTTPS(new_data)
                 } else {
+                    touched_svcb = true;
                     RData::SVCB(new_data)
                 };
                 i += 1;
@@ -154,9 +202,20 @@ fn strip_svcb_rrs(rrs: &mut Vec<Record>) -> u32 {
                 // `mandatory` is missing. Dropping a mandatory hint would leave
                 // an invalid record — remove the whole RR instead.
                 total = total.saturating_add(stripped);
+                if is_https {
+                    touched_https = true;
+                } else {
+                    touched_svcb = true;
+                }
                 rrs.remove(i);
             }
         }
+    }
+    if touched_https {
+        strip_rrsigs_covering(rrs, RecordType::HTTPS);
+    }
+    if touched_svcb {
+        strip_rrsigs_covering(rrs, RecordType::SVCB);
     }
     total
 }
@@ -571,6 +630,48 @@ mod unit {
             HintRewrite::DropRecord { stripped } => assert_eq!(stripped, 1),
             other => panic!("expected DropRecord, got {other:?}"),
         }
+    }
+
+    /// Kills the mutant that replaces `rrs.remove(i)` with `i += 1` in the
+    /// `DropRecord` arm of [`strip_svcb_rrs`] (only `strip_svcb_hints` was
+    /// unit-tested before). Also asserts the covering RRSIG is dropped.
+    #[test]
+    fn strip_svcb_rrs_drop_record_removes_https_and_rrsig() {
+        let owner = Name::from_ascii("svc.example.test.").unwrap();
+        let data = SvcbData {
+            priority: 1,
+            target: Name::from_ascii(".").unwrap(),
+            params: vec![
+                (MANDATORY, vec![0, 4].into()),
+                (IPV4HINT, ipv4_bytes(&[Ipv4Addr::new(10, 0, 0, 1)])),
+            ],
+        };
+        let mut rrs = vec![
+            Record::new(owner.clone(), Class::IN, 60, RData::HTTPS(data)),
+            Record::new(
+                owner,
+                Class::IN,
+                60,
+                RData::RRSIG {
+                    type_covered: RecordType::HTTPS,
+                    algorithm: 13,
+                    labels: 3,
+                    original_ttl: 60,
+                    expiration: 0,
+                    inception: 0,
+                    key_tag: 0,
+                    signer_name: Name::from_ascii("example.test.").unwrap(),
+                    signature: Box::new([0u8; 8]),
+                },
+            ),
+        ];
+
+        let stripped = strip_svcb_rrs(&mut rrs);
+        assert_eq!(stripped, 1, "one private hint address counted");
+        assert!(
+            rrs.is_empty(),
+            "HTTPS DropRecord + RRSIG(HTTPS) must both be gone: {rrs:?}"
+        );
     }
 
     async fn harness() -> (

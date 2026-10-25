@@ -26,7 +26,7 @@ SafeSearch and schedules are accepted in config and exposed as
 | 7 | Forward zone / recursion (`Resolver::resolve`) |
 | 8 | CNAME-chain uncloaking (`match_chain`) |
 | 9 | Answer-IP rules (`match_answer_ip`) |
-| 10 | Rebind: strip private A/AAAA from answers **and** additional section; scrub HTTPS/SVCB `ipv4hint`/`ipv6hint` (RFC 9460 §7.3); if `mandatory` listed a dropped hint, drop the whole RR (§8) |
+| 10 | Rebind: strip private A/AAAA from answers **and** additional section; scrub HTTPS/SVCB `ipv4hint`/`ipv6hint` (RFC 9460 §7.3); if `mandatory` listed a dropped hint, drop the whole RR (§8). When an RRset of type `T` is removed or rewritten, covering RRSIGs (`type_covered == T`) in that section are dropped too (RFC 4035 §3.1.1 / §5) so validating stubs see an unsigned, modified answer — AD is never set for it |
 | 11 | AAAA suppression (`suppress_aaaa` + qtype AAAA → NODATA + SOA) |
 
 ECS is never forwarded. Synthesised / modified answers always clear AD.
@@ -79,7 +79,7 @@ with no address of the queried type yield NODATA.
 | Insecure / Bogus / Indeterminate | clear | DNSSEC EDE kept when present |
 | View / directory / bypass / filter synth | clear | Block → 15; forged IP → 4 |
 | Rebind / AAAA modification | clear | drop resolver EDE |
-| Empty after rebind strip | clear | none (NODATA + SOA) |
+| Empty after rebind strip (data RRs only; RRSIGs of stripped types removed) | clear | none (NODATA + SOA) |
 
 ## Test query
 

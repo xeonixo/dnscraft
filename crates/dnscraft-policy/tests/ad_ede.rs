@@ -124,6 +124,33 @@ fn ctx(name: &str, qtype: RecordType) -> RequestContext {
     }
 }
 
+fn ctx_do(name: &str, qtype: RecordType) -> RequestContext {
+    let mut c = ctx(name, qtype);
+    c.flags.dnssec_ok = true;
+    c
+}
+
+fn rrsig_covers(answers: &[Record], covered: RecordType) -> bool {
+    answers.iter().any(|r| {
+        matches!(
+            &r.rdata,
+            RData::RRSIG { type_covered, .. } if *type_covered == covered
+        )
+    })
+}
+
+fn data_answers(answers: &[Record]) -> Vec<&Record> {
+    answers
+        .iter()
+        .filter(|r| {
+            !matches!(
+                r.rtype(),
+                RecordType::RRSIG | RecordType::NSEC | RecordType::NSEC3
+            )
+        })
+        .collect()
+}
+
 fn trust_from_anchor(anchor: &TrustAnchor) -> TrustAnchors {
     let bytes = anchor.ds.to_bytes().unwrap();
     let ds = Record {
@@ -139,9 +166,16 @@ fn anchors_of(h: &Hierarchy) -> TrustAnchors {
     trust_from_anchor(h.trust_anchor().unwrap())
 }
 
-/// Signed hierarchy where `www.secure.test.` is `10.0.0.1` (private) so rebind
-/// can strip a Secure answer and clear AD.
+/// Signed hierarchy for rebind + DNSSEC tests:
+/// - `www.secure.test.` A → 10.0.0.1 (full strip)
+/// - `mixed.secure.test.` A → 10.0.0.1 + 192.0.2.99 (partial strip)
+/// - `alias.secure.test.` CNAME → `private.secure.test.` A → 10.0.0.1
+/// - `hints.secure.test.` HTTPS with private+public ipv4hint
 fn signed_private_secure() -> (Vec<ServerSpec>, TrustAnchor) {
+    use hickory_proto::rr::rdata::svcb::{IpHint, SvcParamKey, SvcParamValue};
+    use hickory_proto::rr::rdata::{A as HA, CNAME, HTTPS, SVCB};
+    use hickory_proto::rr::{Name as HName, RData as HRData, Record as HRecord};
+
     let lo = Ipv4Addr::LOCALHOST;
     let alg = Default::default();
     let now = unix_now();
@@ -166,6 +200,24 @@ fn signed_private_secure() -> (Vec<ServerSpec>, TrustAnchor) {
         .with_record(child_key.ds_record(&secure_name).unwrap());
     let test = sign_zone(test, &test_key, &options).unwrap();
 
+    let cname = HRecord::from_rdata(
+        HName::from_ascii("alias.secure.test.").unwrap(),
+        300,
+        HRData::CNAME(CNAME(HName::from_ascii("private.secure.test.").unwrap())),
+    );
+    let https_mixed = HRecord::from_rdata(
+        HName::from_ascii("hints.secure.test.").unwrap(),
+        300,
+        HRData::HTTPS(HTTPS(SVCB::new(
+            1,
+            HName::from_ascii(".").unwrap(),
+            vec![(
+                SvcParamKey::Ipv4Hint,
+                SvcParamValue::Ipv4Hint(IpHint(vec![HA::new(10, 0, 0, 1), HA::new(192, 0, 2, 1)])),
+            )],
+        ))),
+    );
+
     let secure = Zone::new("secure.test.")
         .unwrap()
         .with_soa("ns1.secure.test.", "hostmaster.secure.test.")
@@ -180,7 +232,15 @@ fn signed_private_secure() -> (Vec<ServerSpec>, TrustAnchor) {
             "www.secure.test.",
             Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
         )
-        .unwrap();
+        .unwrap()
+        .with_a("mixed.secure.test.", Ipv4Addr::new(10, 0, 0, 1))
+        .unwrap()
+        .with_a("mixed.secure.test.", Ipv4Addr::new(192, 0, 2, 99))
+        .unwrap()
+        .with_a("private.secure.test.", Ipv4Addr::new(10, 0, 0, 1))
+        .unwrap()
+        .with_record(cname)
+        .with_record(https_mixed);
     let secure = sign_zone(secure, &child_key, &options).unwrap();
 
     let root = Zone::new(".")
@@ -258,6 +318,183 @@ async fn secure_rebind_strip_clears_ad() {
     assert!(ans.message.answers.is_empty());
     assert_eq!(ans.message.authorities[0].rtype(), RecordType::SOA);
     assert_eq!(ans.message.rcode(), Rcode::NOERROR);
+}
+
+/// P12b (a): DO=1 full strip — no orphan RRSIG(A); synthetic SOA; AD clear.
+#[tokio::test]
+async fn do1_full_strip_drops_rrsig_a_and_adds_soa() {
+    let (specs, anchor) = signed_private_secure();
+    let h = Hierarchy::start_with(specs).await.unwrap();
+    let eng = engine(
+        &h,
+        profile_base(),
+        trust_from_anchor(&anchor),
+        config_for(&h),
+    )
+    .await;
+
+    let ans = eng
+        .handle(ctx_do("www.secure.test.", RecordType::A))
+        .await
+        .unwrap();
+    assert!(
+        ans.record
+            .steps
+            .contains(&DecisionStep::RebindStripped { count: 1 })
+    );
+    assert!(!ans.message.header.ad);
+    assert!(
+        !rrsig_covers(&ans.message.answers, RecordType::A),
+        "orphan RRSIG(A) must not remain after strip: {:?}",
+        ans.message.answers
+    );
+    assert!(
+        data_answers(&ans.message.answers).is_empty(),
+        "no data RRs after full strip: {:?}",
+        ans.message.answers
+    );
+    assert_eq!(ans.message.authorities[0].rtype(), RecordType::SOA);
+    assert_eq!(ans.message.rcode(), Rcode::NOERROR);
+}
+
+/// P12b (b): DO=1 partial strip — public A kept, RRSIG(A) removed, AD clear.
+#[tokio::test]
+async fn do1_partial_strip_keeps_public_a_drops_rrsig() {
+    let (specs, anchor) = signed_private_secure();
+    let h = Hierarchy::start_with(specs).await.unwrap();
+    let eng = engine(
+        &h,
+        profile_base(),
+        trust_from_anchor(&anchor),
+        config_for(&h),
+    )
+    .await;
+
+    let ans = eng
+        .handle(ctx_do("mixed.secure.test.", RecordType::A))
+        .await
+        .unwrap();
+    assert!(
+        ans.record
+            .steps
+            .contains(&DecisionStep::RebindStripped { count: 1 })
+    );
+    assert!(!ans.message.header.ad);
+    let as_ = data_answers(&ans.message.answers);
+    assert_eq!(as_.len(), 1);
+    assert_eq!(as_[0].rdata, RData::A(Ipv4Addr::new(192, 0, 2, 99)));
+    assert!(
+        !rrsig_covers(&ans.message.answers, RecordType::A),
+        "RRSIG(A) must go when the A RRset was modified"
+    );
+}
+
+/// P12b (c): CNAME → private A: keep CNAME + RRSIG(CNAME); drop A + RRSIG(A).
+#[tokio::test]
+async fn do1_cname_to_private_keeps_cname_rrsig() {
+    let (specs, anchor) = signed_private_secure();
+    let h = Hierarchy::start_with(specs).await.unwrap();
+    let eng = engine(
+        &h,
+        profile_base(),
+        trust_from_anchor(&anchor),
+        config_for(&h),
+    )
+    .await;
+
+    let ans = eng
+        .handle(ctx_do("alias.secure.test.", RecordType::A))
+        .await
+        .unwrap();
+    assert!(
+        ans.record
+            .steps
+            .iter()
+            .any(|s| matches!(s, DecisionStep::RebindStripped { .. }))
+    );
+    assert!(!ans.message.header.ad);
+    assert!(
+        ans.message
+            .answers
+            .iter()
+            .any(|r| matches!(&r.rdata, RData::CNAME(_))),
+        "CNAME must remain"
+    );
+    assert!(
+        rrsig_covers(&ans.message.answers, RecordType::CNAME),
+        "RRSIG(CNAME) must remain (untouched type)"
+    );
+    assert!(
+        !ans.message
+            .answers
+            .iter()
+            .any(|r| matches!(&r.rdata, RData::A(_))),
+        "private A must be stripped"
+    );
+    assert!(
+        !rrsig_covers(&ans.message.answers, RecordType::A),
+        "RRSIG(A) must be removed with the A RRset"
+    );
+}
+
+/// P12b (d): HTTPS hint rewrite removes RRSIG(HTTPS).
+#[tokio::test]
+async fn do1_https_hint_rewrite_drops_rrsig_https() {
+    let (specs, anchor) = signed_private_secure();
+    let h = Hierarchy::start_with(specs).await.unwrap();
+    let eng = engine(
+        &h,
+        profile_base(),
+        trust_from_anchor(&anchor),
+        config_for(&h),
+    )
+    .await;
+
+    let ans = eng
+        .handle(ctx_do("hints.secure.test.", RecordType::HTTPS))
+        .await
+        .unwrap();
+    assert!(
+        ans.record
+            .steps
+            .iter()
+            .any(|s| matches!(s, DecisionStep::RebindStripped { .. }))
+    );
+    assert!(!ans.message.header.ad);
+    assert!(
+        ans.message
+            .answers
+            .iter()
+            .any(|r| matches!(&r.rdata, RData::HTTPS(_))),
+        "HTTPS RR kept after hint scrub"
+    );
+    assert!(
+        !rrsig_covers(&ans.message.answers, RecordType::HTTPS),
+        "RRSIG(HTTPS) must be removed when hints are rewritten"
+    );
+}
+
+/// DO=0 full strip stays empty NODATA + SOA (no RRSIG path).
+#[tokio::test]
+async fn do0_full_strip_still_nodata_soa() {
+    let (specs, anchor) = signed_private_secure();
+    let h = Hierarchy::start_with(specs).await.unwrap();
+    let eng = engine(
+        &h,
+        profile_base(),
+        trust_from_anchor(&anchor),
+        config_for(&h),
+    )
+    .await;
+
+    let ans = eng
+        .handle(ctx("www.secure.test.", RecordType::A))
+        .await
+        .unwrap();
+    assert!(ans.message.answers.is_empty());
+    assert_eq!(ans.message.authorities[0].rtype(), RecordType::SOA);
+    assert!(!ans.message.header.ad);
+    assert!(!rrsig_covers(&ans.message.answers, RecordType::A));
 }
 
 #[tokio::test]
