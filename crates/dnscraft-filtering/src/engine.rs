@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{Notify, oneshot};
 
-use crate::clock::Clock;
+use crate::clock::{Clock, SystemClock};
 use crate::error::FilterError;
 use crate::fetch::{FetchOutcome, Fetcher};
 use crate::name::DomainName;
@@ -101,8 +101,8 @@ struct EngineInner {
     store: ListStore,
     bodies: Arc<StoreListBodies>,
     fetcher: Fetcher,
-    /// Injected clock (scheduler / tests); matching takes `now` explicitly.
-    #[allow(dead_code)]
+    /// Injected clock (scheduler / [`Self::now`]); matching still takes `now`
+    /// explicitly so tests can freeze time without a [`ManualClock`](crate::ManualClock).
     clock: Arc<dyn Clock>,
     config: RwLock<FilterConfig>,
     list_status: RwLock<HashMap<ListId, ListStatus>>,
@@ -119,28 +119,17 @@ struct EngineInner {
 }
 
 impl FilterEngine {
-    /// Matching-only engine over a pre-built snapshot (no store, no scheduler).
-    ///
-    /// Used by unit tests and callers that build snapshots themselves.
-    /// [`Self::apply_config`] / [`Self::update_lists`] return
-    /// [`FilterError::NoStore`].
-    pub fn new(snapshot: Snapshot) -> Self {
-        let (set_ids, list_ids) = ids_from_snapshot(&snapshot);
-        Self {
-            snapshot: RwLock::new(Arc::new(snapshot)),
-            temps: RwLock::new(HashMap::new()),
-            stats: RwLock::new(StatsTable::new(set_ids, list_ids)),
-            inner: None,
-        }
-    }
-
     /// Builds from cached lists and services catalog (no network), then starts
     /// the update scheduler.
     ///
+    /// This is the SPEC primary constructor (`new(config, store, clock)`).
     /// Local `File` sources are read if not yet cached. HTTP lists without a
     /// cache contribute nothing until [`Self::update_lists`]. Without a cached
     /// `services.json`, [`Self::services`] returns `None`.
-    pub fn open(
+    ///
+    /// Matching methods take an explicit `now` so callers (and tests) can pass
+    /// a frozen time; use [`Self::now`] for the injected clock.
+    pub fn new(
         config: FilterConfig,
         store: ListStore,
         clock: Arc<dyn Clock>,
@@ -156,9 +145,32 @@ impl FilterEngine {
         Ok(eng)
     }
 
-    /// Same as [`Self::open`] but does not start the background scheduler.
+    /// Alias for [`Self::new`] (name used since L3).
+    pub fn open(
+        config: FilterConfig,
+        store: ListStore,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Arc<Self>, FilterError> {
+        Self::new(config, store, clock)
+    }
+
+    /// Matching-only engine over a pre-built snapshot (no store, no scheduler).
     ///
-    /// Tests that drive updates manually use this.
+    /// Test helper and callers that build snapshots themselves. Prefer
+    /// [`Self::new`] for production. [`Self::apply_config`] /
+    /// [`Self::update_lists`] return [`FilterError::NoStore`].
+    pub fn from_snapshot(snapshot: Snapshot) -> Self {
+        let (set_ids, list_ids) = ids_from_snapshot(&snapshot);
+        Self {
+            snapshot: RwLock::new(Arc::new(snapshot)),
+            temps: RwLock::new(HashMap::new()),
+            stats: RwLock::new(StatsTable::new(set_ids, list_ids)),
+            inner: None,
+        }
+    }
+
+    /// Same as [`Self::new`] / [`Self::open`] but does not start the background
+    /// scheduler. Tests that drive updates manually use this.
     pub fn open_without_scheduler(
         config: FilterConfig,
         store: ListStore,
@@ -200,8 +212,9 @@ impl FilterEngine {
 
     /// Shared handle to the current immutable snapshot.
     ///
-    /// The lock is held only for the `Arc` clone.
-    pub fn snapshot_arc(&self) -> Arc<Snapshot> {
+    /// The lock is held only for the `Arc` clone so matching never waits on a
+    /// rebuild.
+    pub fn snapshot(&self) -> Arc<Snapshot> {
         let guard = self
             .snapshot
             .read()
@@ -209,9 +222,18 @@ impl FilterEngine {
         Arc::clone(&*guard)
     }
 
-    /// Alias for [`Self::snapshot_arc`].
-    pub fn snapshot(&self) -> Arc<Snapshot> {
-        self.snapshot_arc()
+    /// Alias for [`Self::snapshot`].
+    pub fn snapshot_arc(&self) -> Arc<Snapshot> {
+        self.snapshot()
+    }
+
+    /// Current time from the injected clock, or the system clock when this
+    /// engine is matching-only ([`Self::from_snapshot`]).
+    pub fn now(&self) -> SystemTime {
+        match self.inner.as_ref() {
+            Some(inner) => inner.clock.now(),
+            None => SystemClock.now(),
+        }
     }
 
     /// Configured update interval (default 24 h when matching-only).

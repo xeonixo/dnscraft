@@ -106,10 +106,11 @@ F1 skeleton + types ── F2 core rule parser ── F3 modifiers + IDNA ──
 - [x] Criteria 5 and 6 met; reload never blocks matching (concurrency test)
 
 ### Phase 4: Completion
-- [ ] Task C1: Engine API polish, stats, README, error-code table, coverage ≥ 80 %, real-list acceptance run
+- [x] Task C1: Engine API polish, stats, README, error-code table, coverage ≥ 80 %, real-list acceptance run
 
 ### Checkpoint D: Complete
 - [ ] All 8 success criteria met; review (`/agent-skills:code-review-and-quality`) passed
+  - **Ready for Claude/owner** — not marked by implementer
 
 ## Parallelization
 

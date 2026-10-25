@@ -7,11 +7,10 @@
 //! What it is not: it speaks no DNS on the wire, opens no sockets, and has no
 //! notion of clients. Callers hand in a name and get a [`Verdict`] back.
 //!
-//! Currently provided: the canonical matching name [`DomainName`], validated
-//! ids ([`ListId`], [`SetId`]), verdict types, [`BlockMode`], an injectable
-//! [`Clock`], filter sets ([`Snapshot`]), blocked-services [`ServiceCatalog`],
-//! temporary allows, match counters, hot-reload [`FilterEngine`], and error
-//! types with stable codes.
+//! Primary entry point: [`FilterEngine::new`] (config + [`ListStore`] +
+//! [`Clock`]). Matching-only tests may use [`FilterEngine::from_snapshot`].
+//! Also provided: [`DomainName`], [`parse_rule`] / [`build_rule`],
+//! [`ServiceCatalog`], and error types with stable `code()`.
 
 mod builder;
 mod clock;

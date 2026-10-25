@@ -408,3 +408,24 @@ fn leading_dot_rule_is_not_describable() {
     let rule = parse_rule(".x.example^").unwrap();
     assert!(describe_rule(&rule).is_none());
 }
+
+#[test]
+fn fuzz_regression_bom_prefixed_ip_is_ip_rule() {
+    // libFuzzer: UTF-8 BOM + IPv4. BOM must not route through IDNA into a
+    // domain rule that describe/build cannot round-trip.
+    let s = "\u{feff}0.0.1.0";
+    let rule = parse_rule(s).expect("parse");
+    assert_eq!(rule.kind(), MatchKind::Ip);
+    assert!(describe_rule(&rule).is_none());
+    assert!(matches!(
+        build_rule(&RuleSpec {
+            action: RuleAction::Block,
+            domain: "0.0.1.0".into(),
+            include_subdomains: true,
+            record_types: RecordTypeSel::default(),
+            important: false,
+            rewrite: None,
+        }),
+        Err(BuildError::PatternNotAllowed)
+    ));
+}

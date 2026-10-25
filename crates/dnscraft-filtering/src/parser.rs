@@ -281,6 +281,16 @@ fn is_ws(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c')
 }
 
+/// Trims ASCII whitespace and a leading UTF-8 BOM (U+FEFF).
+///
+/// A BOM on a single rule line (or after spaces) must not turn an IP literal
+/// into a domain via IDNA; `parse_list` already skips a file-level BOM.
+fn trim_rule_line(line: &str) -> &str {
+    line.trim_matches(is_ws)
+        .trim_start_matches('\u{feff}')
+        .trim_matches(is_ws)
+}
+
 /// Byte offset of `sub` within `base`; `sub` must be a sub-slice of `base`.
 pub(crate) fn off(base: &str, sub: &str) -> usize {
     (sub.as_ptr() as usize).saturating_sub(base.as_ptr() as usize)
@@ -298,7 +308,7 @@ pub(crate) fn span_of(base: &str, sub: &str) -> Range<usize> {
 /// (`filter_rule.multiple_names`) or any skipped name. The resulting
 /// [`Rule`] refers to line 1 of `input`.
 pub fn parse_rule(input: &str) -> Result<Rule, RuleError> {
-    let t = input.trim_matches(is_ws);
+    let t = trim_rule_line(input);
     let t_span = span_of(input, t);
     let mut err: Option<RuleError> = None;
     let mut rule: Option<Rule> = None;
@@ -374,14 +384,15 @@ where
             record_skip(&mut out, line_no, line, &e);
             continue;
         }
-        let lead = line.len() - line.trim_start_matches(is_ws).len();
+        let trimmed = trim_rule_line(line);
+        let lead = off(line, trimmed);
         parse_line(line, source, &mut |item| match item {
             Item::Blank => out.blank_lines += 1,
             Item::Comment => out.comment_lines += 1,
             Item::Rule {
                 rule, modifiers, ..
             } => {
-                let trimmed_len = line.trim_matches(is_ws).len();
+                let trimmed_len = trimmed.len();
                 on_rule(rule.with_modifiers(modifiers).with_source(
                     line_no,
                     u32::try_from(line_start + lead).unwrap_or(0),
@@ -416,7 +427,7 @@ fn record_skip(out: &mut ListParseStats, line_no: u32, line: &str, e: &RuleError
     let reason = SkipReason::from(e);
     out.skipped.add(reason);
     if out.samples.len() < SKIP_SAMPLE_LIMIT && out.skipped.get(reason) <= SKIP_SAMPLES_PER_REASON {
-        let t = line.trim_matches(is_ws);
+        let t = trim_rule_line(line);
         let mut n = t.len().min(SAMPLE_TEXT_MAX);
         while !t.is_char_boundary(n) {
             n -= 1;
@@ -438,7 +449,7 @@ fn parse_line<F: FnMut(Item)>(line: &str, source: ListSource, emit: &mut F) {
         }));
         return;
     }
-    let t = line.trim_matches(is_ws);
+    let t = trim_rule_line(line);
     if t.is_empty() {
         emit(Item::Blank);
         return;

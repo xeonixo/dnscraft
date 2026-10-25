@@ -246,8 +246,8 @@ table, error codes, limits), coverage run, 10 min fuzz, manual acceptance agains
 real lists (load time, memory, skip report).
 
 **Acceptance criteria:**
-- [ ] Coverage ≥ 80 % lines (`cargo llvm-cov -p dnscraft-filtering`)
-- [ ] All 8 success criteria in SPEC-filtering.md ticked with evidence in progress.md
+- [x] Coverage ≥ 80 % lines (`cargo llvm-cov -p dnscraft-filtering`)
+- [x] All 8 success criteria in SPEC-filtering.md ticked with evidence in progress.md
 
 **Verification:** `cargo llvm-cov -p dnscraft-filtering`; manual run
 
@@ -255,3 +255,4 @@ real lists (load time, memory, skip report).
 
 ## Checkpoint D: Complete
 - [ ] All success criteria met; review passed; owner approval
+  - **Ready for Claude/owner review** (implementer does not tick this checkpoint)

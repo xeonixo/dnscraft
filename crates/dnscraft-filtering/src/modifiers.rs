@@ -172,7 +172,10 @@ const BROWSER_MODIFIERS: &[&str] = &[
     "referrerpolicy",
 ];
 
-const TYPE_NAMES: &[(&str, u16)] = &[
+/// Well-known RR type names for `$dnstype` and the guided builder.
+///
+/// Shared with [`crate::builder`] so the two tables cannot drift.
+pub(crate) const TYPE_NAMES: &[(&str, u16)] = &[
     ("A", 1),
     ("NS", 2),
     ("CNAME", 5),
@@ -187,6 +190,11 @@ const TYPE_NAMES: &[(&str, u16)] = &[
     ("ANY", 255),
     ("CAA", 257),
 ];
+
+/// Canonical name for a well-known RR type code, if any.
+pub(crate) fn type_name_for(code: u16) -> Option<&'static str> {
+    TYPE_NAMES.iter().find(|(_, c)| *c == code).map(|(n, _)| *n)
+}
 
 /// Parses a domain from rule text, converting non-ASCII input to punycode
 /// with UTS 46 non-transitional processing (as browsers and AdGuard do).

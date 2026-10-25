@@ -42,22 +42,6 @@ use crate::types::Rewrite;
 /// Longest TXT text accepted (one DNS character-string).
 pub const MAX_TXT_LEN: usize = 255;
 
-const TYPE_NAMES: &[(&str, u16)] = &[
-    ("A", 1),
-    ("NS", 2),
-    ("CNAME", 5),
-    ("SOA", 6),
-    ("PTR", 12),
-    ("MX", 15),
-    ("TXT", 16),
-    ("AAAA", 28),
-    ("SRV", 33),
-    ("SVCB", 64),
-    ("HTTPS", 65),
-    ("ANY", 255),
-    ("CAA", 257),
-];
-
 /// Answer rewrite of a custom block rule.
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
@@ -213,16 +197,16 @@ fn canonical_domain(input: &str) -> Result<String, BuildError> {
         })?;
         &ascii
     };
-    DomainName::parse(candidate)
-        .map(|d| d.as_str().to_string())
-        .map_err(|e| name_err(&e))
+    let domain = DomainName::parse(candidate).map_err(|e| name_err(&e))?;
+    // Bare IP literals are answer-IP rules, not guided-builder domains.
+    if domain.as_str().parse::<std::net::IpAddr>().is_ok() {
+        return Err(BuildError::PatternNotAllowed);
+    }
+    Ok(domain.as_str().to_string())
 }
 
 fn type_token(code: u16) -> String {
-    TYPE_NAMES
-        .iter()
-        .find(|(_, c)| *c == code)
-        .map_or_else(|| format!("TYPE{code}"), |(n, _)| (*n).to_string())
+    crate::modifiers::type_name_for(code).map_or_else(|| format!("TYPE{code}"), str::to_owned)
 }
 
 fn check_txt(text: &str) -> Result<(), BuildError> {

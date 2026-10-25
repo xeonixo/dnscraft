@@ -11,10 +11,24 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 ## Current state
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
-- Module `filtering`: **L4 done** (blocked services catalog); Checkpoint C criteria 5–6 met. Next: **C1** (engine polish, README, coverage, acceptance) → Checkpoint D review. Checkpoint B owner: RAM may grow — not blocking. Deep-name p99 miss left for Checkpoint D if revisited.
+- Module `filtering`: **C1 done** (engine polish, README, coverage, fuzz, real-list acceptance). **Checkpoint D ready for Claude/owner review** — implementer does **not** tick Checkpoint D. Checkpoint B owner: RAM may grow — not blocking. Deep-name p99 miss left for Checkpoint D if revisited.
 - Blockers: none.
 
 ## Log
+
+- 2026-10-25 — Filtering C1 done (Cursor): Engine API — SPEC primary `FilterEngine::new(config, store, clock)` (+ `open` alias); matching-only `from_snapshot` (documented test helper); `now()` uses injected clock. Deduped `TYPE_NAMES` → `modifiers::TYPE_NAMES` + `type_name_for`. README at `crates/dnscraft-filtering/README.md` (syntax, priority, every `code()`, limits, `parse_lists`). Coverage **91.13 %** lines (`cargo llvm-cov -p dnscraft-filtering`). Fuzz `rule_parse` 10 min clean after fix: **312 106** execs / 601 s, no crash (first run found BOM+IPv4 → domain via IDNA; fixed: strip per-line BOM in parser; builder rejects IP-literal domains; seeds `bom_ip_literal` / `bare_ipv4`). Real lists (cached): parse **2.241363 M** rules / **1.870509 M** unique domains / **18 978** skipped (cosmetic/browser_only dominate; no DNS-relevant supported rule mis-skipped); AdGuard DNS filter **72** IP rules; parse wall **1.13 s** (tool total 3.10 s). Index build (`real_lists_snapshot` release): **1.63 s**, steady VmRSS **58.1 MB**, Index **52.5 MB** (11 B/entry), build peak **ΔVmHWM ≈ 113.3 MB** (M4a cite; owner relaxed at Checkpoint B). Reload never blocks matches (`tests/reload.rs`).
+
+  **SPEC-filtering.md success criteria (evidence):**
+  1. ✓ 19 lists parse; skip report by reason (parse_lists + Checkpoint A/C1) — no claimed DNS rule in skips
+  2. ✓ Priority / CNAME / modifiers — `tests/matching.rs`, `tests/engine.rs`, `tests/modifiers.rs`
+  3. ✓ Reason text+source; builder↔parser — matching + builder tests; IP/`describe` None
+  4. ✓ Budgets — match hit/miss/IP p99 < 10 µs (M4b); deep-10 miss ~19 µs (noted); reload < 10 s; steady ≤ 80 MB; peak miss (Checkpoint B)
+  5. ✓ List updates — L2/L3 tests (304, size, timeout, HTTPS-downgrade, last-good + codes); reload concurrency
+  6. ✓ Blocked services — L4 `tests/services.rs`
+  7. ✓ Temporary allows — `tests/engine.rs` (manual clock, important rank)
+  8. ✓ Coverage ≥ 80 % (91.13 %); fuzz 10 min clean (312 106 execs)
+
+  **Checkpoint D:** hand back for Claude/owner — do not mark.
 
 - 2026-10-25 — Filtering L4 done (Cursor): Blocked-services catalog from HostlistsRegistry URLs (runtime download only; GPL data never committed/embedded). `ServiceCatalog` parses `services.json` + optional `services_i18n.json` (lenient: unknown fields ignored, bad entries skipped+counted); `translated_name` / `translated_group` with locale → `en` → default fallback. Cache under `ListStore::services_dir()` via `Fetcher::fetch_and_store_services` (conditional GET / size cap / last-good). `FilterSetConfig.services` → rules join set as `RuleSource::Service{id}`; unknown ids on `Snapshot::unknown_services` (not fatal). `FilterEngine::services()` / `update_services` / `services_last_error`; malformed update keeps previous + `filter_services.malformed`. Codes: `filter_services.malformed`, `filter_services.io`. tests/services.rs: fixture load+toggle verdicts, i18n fallback, malformed keep-previous, offline cache, unavailable without catalog. Checkpoint C: criterion 5 (L2/L3 + reload concurrency) + criterion 6 (L4) — ticked. Left for C1: SPEC `new(config,store,clock)` naming polish, README, coverage ≥ 80 %, fuzz 10 min, real-list acceptance evidence for all 8 criteria.
 

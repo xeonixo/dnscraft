@@ -58,7 +58,7 @@ fn engine(lists: &[(&str, &str)], custom: &str) -> FilterEngine {
         sets: vec![set],
         ..FilterConfig::default()
     };
-    FilterEngine::new(SnapshotBuilder::new(bodies).build(&cfg).unwrap())
+    FilterEngine::from_snapshot(SnapshotBuilder::new(bodies).build(&cfg).unwrap())
 }
 
 fn chain(eng: &FilterEngine, names: &[&str], now: SystemTime) -> Verdict {
@@ -349,7 +349,7 @@ fn pause_returns_pass_until_deadline() {
         sets: vec![set],
         ..FilterConfig::default()
     };
-    let eng = FilterEngine::new(SnapshotBuilder::new(bodies).build(&cfg).unwrap());
+    let eng = FilterEngine::from_snapshot(SnapshotBuilder::new(bodies).build(&cfg).unwrap());
     assert_eq!(
         eng.match_name(&sid("s"), &dn("ads.example"), 1, t(999))
             .unwrap(),
