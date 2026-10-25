@@ -39,9 +39,7 @@ fn acme_cfg() -> AcmeConfig {
 async fn acme_fake_credentials_persisted_0600_and_reloaded() {
     let data = temp_data_dir("fake");
     let store = CertStore::open(&data).unwrap();
-    let fake = FakeAcmeDirectory {
-        account_id: "acct-test".into(),
-    };
+    let fake = FakeAcmeDirectory::with_account_id("acct-test");
     let cfg = acme_cfg();
 
     assert!(store.load_account().unwrap().is_none());
@@ -60,9 +58,7 @@ async fn acme_fake_credentials_persisted_0600_and_reloaded() {
     assert_eq!(v["directory"], AcmeDirectoryKind::Staging.url());
 
     // Second call must not overwrite (reload path).
-    let fake2 = FakeAcmeDirectory {
-        account_id: "should-not-write".into(),
-    };
+    let fake2 = FakeAcmeDirectory::with_account_id("should-not-write");
     fake2.ensure_account(&store, &cfg).await.unwrap();
     let second = store.load_account().unwrap().unwrap();
     assert_eq!(second, first);
@@ -76,21 +72,17 @@ async fn acme_fake_rewrites_account_when_directory_changes() {
     let store = CertStore::open(&data).unwrap();
     let mut cfg = acme_cfg();
 
-    FakeAcmeDirectory {
-        account_id: "staging-acct".into(),
-    }
-    .ensure_account(&store, &cfg)
-    .await
-    .unwrap();
+    FakeAcmeDirectory::with_account_id("staging-acct")
+        .ensure_account(&store, &cfg)
+        .await
+        .unwrap();
     let staging = store.load_account().unwrap().unwrap();
 
     cfg.directory = AcmeDirectoryKind::Production;
-    FakeAcmeDirectory {
-        account_id: "prod-acct".into(),
-    }
-    .ensure_account(&store, &cfg)
-    .await
-    .unwrap();
+    FakeAcmeDirectory::with_account_id("prod-acct")
+        .ensure_account(&store, &cfg)
+        .await
+        .unwrap();
     let prod = store.load_account().unwrap().unwrap();
     assert_ne!(prod, staging);
     let v: serde_json::Value = serde_json::from_slice(&prod).unwrap();

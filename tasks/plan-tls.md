@@ -112,7 +112,7 @@ L9 DynDNS (needs L5) ── L10 TlsEngine ── L11 polish
 ### Phase 2: Issuance
 - [x] L5: Cloudflare DNS client + mock
 - [x] L6: Propagation check against the authoritative NS
-- [ ] L7: Issuance flow (apex + wildcard, two TXT values, finalize, store, reload)
+- [x] L7: Issuance flow (apex + wildcard, two TXT values, finalize, store, reload)
 - [ ] L8: Renewal scheduler (ARI / `renew_before`, backoff, expiry status)
 
 ### Checkpoint B: Issuance

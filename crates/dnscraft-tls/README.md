@@ -18,9 +18,10 @@ Use **staging** for manual acceptance before production.
 
 ## Local Pebble (ignored test)
 
-The account-wiring spike includes an ignored integration test that talks to a
-local [Pebble](https://github.com/letsencrypt/pebble) server. CI does **not**
-run it; the lead runs it at Checkpoint A.
+Ignored integration tests talk to a local
+[Pebble](https://github.com/letsencrypt/pebble) server (account create/reload
+and full DNS-01 issuance with a mock Cloudflare). CI does **not** run them;
+the lead runs them at checkpoints.
 
 ```bash
 # Terminal 1 — Pebble with challenges always valid (no real DNS needed for account tests)

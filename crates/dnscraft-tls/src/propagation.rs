@@ -21,10 +21,16 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(3);
 /// Resolves nameserver hostnames to UDP addresses on port 53.
 ///
 /// Used once per issuance with the zone's `name_servers` from Cloudflare.
+/// A value that already parses as [`SocketAddr`] (e.g. `127.0.0.1:5353` in
+/// tests) is used as-is.
 pub async fn resolve_nameservers(names: &[String]) -> Result<Vec<SocketAddr>, TlsError> {
     let mut out = Vec::new();
     for name in names {
         let host = name.trim_end_matches('.');
+        if let Ok(addr) = host.parse::<SocketAddr>() {
+            out.push(addr);
+            continue;
+        }
         let mut any = false;
         let addrs =
             tokio::net::lookup_host((host, 53))

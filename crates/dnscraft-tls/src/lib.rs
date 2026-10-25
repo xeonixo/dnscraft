@@ -10,8 +10,8 @@
 //!
 //! So far: [`TlsConfig`], [`TlsError`], [`Clock`] / [`ManualClock`],
 //! [`read_secret`], SNI helpers, [`CertStore`], [`CertResolver`], ACME
-//! account wiring ([`InstantAcme`], [`AcmeDirectory`]), [`CloudflareClient`],
-//! and DNS-01 [`wait_for_txt`].
+//! ([`InstantAcme`], [`AcmeDirectory`], [`AcmeOrder`]), [`CloudflareClient`],
+//! DNS-01 [`wait_for_txt`], and [`issue`].
 
 #![deny(missing_docs)]
 
@@ -21,6 +21,7 @@ mod clock;
 mod cloudflare;
 mod config;
 mod error;
+mod issue;
 mod pem_util;
 mod propagation;
 mod resolver;
@@ -28,7 +29,10 @@ mod secret;
 mod sni;
 mod store;
 
-pub use acme::{AcmeDirectory, AcmeOrder, FakeAcmeDirectory, InstantAcme};
+pub use acme::{
+    AcmeDirectory, AcmeOrder, Dns01Txt, FakeAcmeDirectory, FakeAcmeFail, InstantAcme,
+    challenge_txt_name, default_identifiers,
+};
 pub use acme_http::ReqwestHttpClient;
 pub use clock::{Clock, ManualClock, SystemClock, wait_until};
 pub use cloudflare::{
@@ -40,6 +44,7 @@ pub use config::{
     DEFAULT_RENEW_BEFORE, DynDnsConfig, KeyType, NodeEntry, TlsConfig, validate_public_entry,
 };
 pub use error::TlsError;
+pub use issue::issue;
 pub use pem_util::KeyPem;
 pub use propagation::{resolve_nameservers, wait_for_txt};
 pub use resolver::CertResolver;

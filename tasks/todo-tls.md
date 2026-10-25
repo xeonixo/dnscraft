@@ -183,11 +183,11 @@ Also in this task:
 Then implement the remaining instant-acme order methods behind the trait.
 
 **Acceptance criteria:**
-- [ ] Fake-ACME test: the whole flow issues, stores and installs; TXT records deleted afterwards; key type P-384 honoured
-- [ ] Failure at challenge / finalize / propagation → stable code, previous cert still installed and on disk
-- [ ] Pebble `#[ignore]` test issues a cert for `dns.example.com` + `*.dns.example.com` (`PEBBLE_VA_ALWAYS_VALID=1`) and `CertResolver` serves it
+- [x] Fake-ACME test: the whole flow issues, stores and installs; TXT records deleted afterwards; key type P-384 honoured
+- [x] Failure at challenge / finalize / propagation → stable code, previous cert still installed and on disk
+- [x] Pebble `#[ignore]` test issues a cert for `dns.example.com` + `*.dns.example.com` (`PEBBLE_VA_ALWAYS_VALID=1`) and `CertResolver` serves it
 
-**Verification:** `cargo test -p dnscraft-tls issue` (+ ignored Pebble test locally)
+**Verification:** `cargo test -p dnscraft-tls --test issue` (+ ignored Pebble test locally)
 
 **Dependencies:** L4, L5, L6 · **Files:** `src/issue.rs`, `src/acme.rs`, `tests/issue.rs`, `tests/pebble.rs` · **Scope:** M
 

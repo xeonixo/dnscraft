@@ -54,6 +54,7 @@ struct State {
 }
 
 /// Loopback Cloudflare API mock.
+#[derive(Clone)]
 pub struct MockCloudflare {
     addr: SocketAddr,
     state: Arc<Mutex<State>>,
@@ -92,6 +93,18 @@ impl MockCloudflare {
 
     pub async fn records(&self) -> Vec<MockRecord> {
         self.state.lock().await.records.clone()
+    }
+
+    /// TXT RDATA currently stored for `name`.
+    pub async fn txt_contents(&self, name: &str) -> Vec<String> {
+        self.state
+            .lock()
+            .await
+            .records
+            .iter()
+            .filter(|r| r.record_type == "TXT" && r.name == name)
+            .map(|r| r.content.clone())
+            .collect()
     }
 
     pub async fn requests(&self) -> Vec<RecordedRequest> {
