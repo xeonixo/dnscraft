@@ -15,9 +15,9 @@ trailing dot, validated length/labels), `SetId`, `ListId`, `RuleSource`, `Verdic
 manual clocks, and the error types with stable `code()`.
 
 **Acceptance criteria:**
-- [ ] Crate builds in the workspace; public types documented (no `missing_docs` warnings)
-- [ ] Domain name canonicalisation rejects empty labels, labels > 63, names > 253, invalid characters
-- [ ] Every error variant has a unique documented `code()` (test enumerates them)
+- [x] Crate builds in the workspace; public types documented (no `missing_docs` warnings)
+- [x] Domain name canonicalisation rejects empty labels, labels > 63, names > 253, invalid characters
+- [x] Every error variant has a unique documented `code()` (test enumerates them)
 
 **Verification:** `cargo test -p dnscraft-filtering`
 

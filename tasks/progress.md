@@ -11,7 +11,7 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks).
 ## Current state
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
-- Module `filtering`: spec approved 2026-10-25; plan + tasks approved 2026-10-25 (deps reqwest+rustls/ring, regex, idna, serde_json; CI fuzz job). In progress: Task F1 (Sonnet).
+- Module `filtering`: spec approved 2026-10-25; plan + tasks approved 2026-10-25 (deps reqwest+rustls/ring, regex, idna, serde_json; CI fuzz job). In progress: Task F2 (parser) and L1 (list store) in parallel (Sonnet).
 - Phase 1 done. ADR-0001 accepted as **Option D** (in-house wire format + DNSSEC logic, `ring` for crypto).
 - Checkpoint A passed (plan + new deps approved).
 - Checkpoint W complete (coverage 96 %, fuzzing clean)
@@ -27,6 +27,8 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks).
 - Blockers: none
 
 ## Log
+
+- 2026-10-25 — Filtering F1 done (Sonnet, reviewed): crate skeleton, DomainName (strict length/charset, lenient hyphen position, suffix iteration, reversed form), ids, RuleSource/Reason/Verdict/Rewrite/BlockMode (default Refused), Clock, error codes. No dnscraft-proto dependency yet. 17 tests.
 
 - 2026-10-25 — Docs completed (Haiku, lead-verified constants): resolver README config/forward zones/DNSSEC codes/hardening limits; READMEs for dnscraft-proto, dnscraft-testkit, fuzz. Checkpoint E approved. Filtering spec started; owner decisions: AdGuard DNS subset syntax ($important,$badfilter,$dnstype,$denyallow,$dnsrewrite, regex; $client/$ctag ignored with warning), block mode selectable with default REFUSED, list updates every 24 h, hosts-file lines in lists always block (never redirect).
 

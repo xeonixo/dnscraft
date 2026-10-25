@@ -233,6 +233,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dnscraft-filtering"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "dnscraft-proto"
 version = "0.1.0"
 dependencies = [
