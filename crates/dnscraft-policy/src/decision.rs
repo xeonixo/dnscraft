@@ -116,9 +116,21 @@ pub enum DecisionStep {
     },
     /// A later step is configured but not applied yet (SafeSearch / schedules).
     NotApplied {
-        /// Short step name for the UI.
-        step: &'static str,
+        /// Which stubbed pipeline step.
+        step: NotAppliedStep,
     },
+}
+
+/// Identifies a pipeline step that is configured but not evaluated yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum NotAppliedStep {
+    /// Step 5: SafeSearch qname rewrite.
+    SafeSearch,
+    /// Step 6: filter the SafeSearch target host.
+    SafeSearchFilter,
+    /// Schedule windows that would swap the filter set.
+    Schedules,
 }
 
 /// Filter hit attached to the decision record when a list/custom rule matched.

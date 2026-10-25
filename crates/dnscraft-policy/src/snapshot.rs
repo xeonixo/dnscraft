@@ -9,8 +9,8 @@ use dnscraft_resolver::ForwardZoneId;
 use ipnet::IpNet;
 
 use crate::config::{
-    PolicyConfig, ProfileConfig, ViewConfig, ViewRecordConfig, is_allowed_view_rtype,
-    name_has_wildcard_label,
+    PolicyConfig, ProfileConfig, SAFESEARCH_PROVIDERS, SCHEDULE_WEEK, SafeSearchConfig,
+    ScheduleConfig, ViewConfig, ViewRecordConfig, is_allowed_view_rtype, name_has_wildcard_label,
 };
 use crate::error::{ConfigReason, PolicyError};
 use crate::ids::{ClientId, ProfileId, ViewId};
@@ -152,13 +152,10 @@ impl PolicySnapshot {
                 }
             }
             let rebind_exceptions = parse_rebind_exceptions(&profile.rebind_exceptions)?;
-            for schedule in &profile.schedules {
-                if !known_set.contains(schedule.filter_set.as_str()) {
-                    return Err(PolicyError::UnknownFilterSet {
-                        id: schedule.filter_set.clone(),
-                    });
-                }
-            }
+            validate_schedules(&profile.schedules, &known_set)?;
+            let mut profile = profile;
+            let safesearch = std::mem::take(&mut profile.safesearch);
+            profile.safesearch = validate_safesearch(safesearch)?;
             let idx = ProfileIdx::try_from(profiles.len()).map_err(|_| PolicyError::Internal {
                 message: Arc::from("too many profiles"),
             })?;
@@ -310,6 +307,73 @@ fn parse_rebind_exceptions(patterns: &[Arc<str>]) -> Result<Arc<[RebindException
     Ok(Arc::from(out))
 }
 
+fn validate_schedules(
+    schedules: &[ScheduleConfig],
+    known_set: &HashSet<&str>,
+) -> Result<(), PolicyError> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    for schedule in schedules {
+        // Same charset as profile/view ids: `[a-z0-9-]{1,64}`.
+        if ProfileId::new(schedule.id.as_ref()).is_err() {
+            return Err(PolicyError::InvalidConfig {
+                reason: ConfigReason::InvalidScheduleId {
+                    id: schedule.id.clone(),
+                },
+            });
+        }
+        if !seen.insert(schedule.id.as_ref()) {
+            return Err(PolicyError::InvalidConfig {
+                reason: ConfigReason::DuplicateScheduleId {
+                    id: schedule.id.clone(),
+                },
+            });
+        }
+        if !known_set.contains(schedule.filter_set.as_str()) {
+            return Err(PolicyError::UnknownFilterSet {
+                id: schedule.filter_set.clone(),
+            });
+        }
+        if schedule.start >= schedule.end {
+            return Err(PolicyError::InvalidConfig {
+                reason: ConfigReason::ScheduleWindowOrder {
+                    id: schedule.id.clone(),
+                },
+            });
+        }
+        if schedule.end > SCHEDULE_WEEK {
+            return Err(PolicyError::InvalidConfig {
+                reason: ConfigReason::ScheduleWindowTooLong {
+                    id: schedule.id.clone(),
+                },
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_safesearch(mut cfg: SafeSearchConfig) -> Result<SafeSearchConfig, PolicyError> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut normalised = Vec::with_capacity(cfg.providers.len());
+    for raw in cfg.providers.drain(..) {
+        let lower = raw.to_ascii_lowercase();
+        if !SAFESEARCH_PROVIDERS.contains(&lower.as_str()) {
+            return Err(PolicyError::InvalidConfig {
+                reason: ConfigReason::UnknownSafeSearchProvider { name: raw },
+            });
+        }
+        if !seen.insert(lower.clone()) {
+            return Err(PolicyError::InvalidConfig {
+                reason: ConfigReason::DuplicateSafeSearchProvider {
+                    name: Arc::from(lower),
+                },
+            });
+        }
+        normalised.push(Arc::<str>::from(lower));
+    }
+    cfg.providers = normalised;
+    Ok(cfg)
+}
+
 fn build_view_records(view: &ViewConfig) -> Result<HashMap<Name, ViewRrSets>, PolicyError> {
     let mut by_name: HashMap<Name, Vec<ViewRecordConfig>> = HashMap::new();
     for rec in &view.records {
@@ -364,8 +428,8 @@ fn build_view_records(view: &ViewConfig) -> Result<HashMap<Name, ViewRrSets>, Po
 mod tests {
     use super::*;
     use crate::config::{
-        DEFAULT_LOCAL_NXDOMAIN_SUFFIXES, ProfileConfig, SafeSearchConfig, ViewConfig,
-        ViewRecordConfig,
+        DEFAULT_LOCAL_NXDOMAIN_SUFFIXES, ProfileConfig, SCHEDULE_WEEK, SafeSearchConfig,
+        ViewConfig, ViewRecordConfig,
     };
     use crate::ids::{ClientId, ProfileId, ViewId};
     use dnscraft_proto::{Name, RData};
@@ -682,6 +746,101 @@ mod tests {
         }];
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert_eq!(err.code(), "policy.config.unknown_filter_set");
+    }
+
+    #[test]
+    fn config_accepts_valid_schedule_and_safesearch() {
+        let mut cfg = spec_excerpt_config();
+        cfg.profiles[0].schedules = vec![crate::config::ScheduleConfig {
+            id: Arc::from("evening"),
+            filter_set: set("default"),
+            start: std::time::Duration::from_secs(18 * 3600),
+            end: std::time::Duration::from_secs(22 * 3600),
+        }];
+        cfg.profiles[0].safesearch = SafeSearchConfig {
+            enabled: true,
+            providers: vec![Arc::from("Google"), Arc::from("BING")],
+        };
+        let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
+        assert_eq!(
+            snap.profiles[0].config.safesearch.providers.as_slice(),
+            &[Arc::from("google"), Arc::from("bing")]
+        );
+    }
+
+    #[test]
+    fn config_rejects_schedule_window_order() {
+        let mut cfg = spec_excerpt_config();
+        cfg.profiles[0].schedules = vec![crate::config::ScheduleConfig {
+            id: Arc::from("bad"),
+            filter_set: set("default"),
+            start: std::time::Duration::from_secs(10),
+            end: std::time::Duration::from_secs(10),
+        }];
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.schedule_window");
+    }
+
+    #[test]
+    fn config_rejects_schedule_window_too_long() {
+        let mut cfg = spec_excerpt_config();
+        cfg.profiles[0].schedules = vec![crate::config::ScheduleConfig {
+            id: Arc::from("week"),
+            filter_set: set("default"),
+            start: std::time::Duration::ZERO,
+            end: SCHEDULE_WEEK + std::time::Duration::from_secs(1),
+        }];
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.schedule_window");
+    }
+
+    #[test]
+    fn config_rejects_duplicate_schedule_id() {
+        let mut cfg = spec_excerpt_config();
+        let s = |id: &str| crate::config::ScheduleConfig {
+            id: Arc::from(id),
+            filter_set: set("default"),
+            start: std::time::Duration::ZERO,
+            end: std::time::Duration::from_secs(60),
+        };
+        cfg.profiles[0].schedules = vec![s("dup"), s("dup")];
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.duplicate_schedule_id");
+    }
+
+    #[test]
+    fn config_rejects_invalid_schedule_id() {
+        let mut cfg = spec_excerpt_config();
+        cfg.profiles[0].schedules = vec![crate::config::ScheduleConfig {
+            id: Arc::from("Bad_Id"),
+            filter_set: set("default"),
+            start: std::time::Duration::ZERO,
+            end: std::time::Duration::from_secs(60),
+        }];
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.invalid_schedule_id");
+    }
+
+    #[test]
+    fn config_rejects_unknown_safesearch_provider() {
+        let mut cfg = spec_excerpt_config();
+        cfg.profiles[0].safesearch = SafeSearchConfig {
+            enabled: true,
+            providers: vec![Arc::from("yahoo")],
+        };
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.unknown_safesearch_provider");
+    }
+
+    #[test]
+    fn config_rejects_duplicate_safesearch_provider() {
+        let mut cfg = spec_excerpt_config();
+        cfg.profiles[0].safesearch = SafeSearchConfig {
+            enabled: true,
+            providers: vec![Arc::from("google"), Arc::from("GOOGLE")],
+        };
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert_eq!(err.code(), "policy.config.duplicate_safesearch_provider");
     }
 
     #[test]

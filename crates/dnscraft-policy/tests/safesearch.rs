@@ -12,8 +12,9 @@ use dnscraft_filtering::{
     SnapshotBuilder,
 };
 use dnscraft_policy::{
-    ClientFlags, DecisionStep, DnsProtocol, ListenerId, NoClients, PolicyConfig, PolicyEngine,
-    ProfileConfig, ProfileId, RequestContext, SafeSearchConfig, ScheduleConfig, ViewConfig, ViewId,
+    ClientFlags, DecisionStep, DnsProtocol, ListenerId, NoClients, NotAppliedStep, PolicyConfig,
+    PolicyEngine, ProfileConfig, ProfileId, RequestContext, SafeSearchConfig, ScheduleConfig,
+    ViewConfig, ViewId,
 };
 use dnscraft_proto::{Class, Name, RecordType};
 use dnscraft_resolver::dnssec::TrustAnchors;
@@ -141,15 +142,15 @@ async fn safesearch_enabled_records_not_applied_and_status_false() {
 
     let ans = eng.handle(ctx("www.example.test.")).await.unwrap();
     assert!(
-        ans.record
-            .steps
-            .contains(&DecisionStep::NotApplied { step: "safesearch" }),
+        ans.record.steps.contains(&DecisionStep::NotApplied {
+            step: NotAppliedStep::SafeSearch,
+        }),
         "step 5 stub missing: {:?}",
         ans.record.steps
     );
     assert!(
         ans.record.steps.contains(&DecisionStep::NotApplied {
-            step: "safesearch-filter",
+            step: NotAppliedStep::SafeSearchFilter,
         }),
         "step 6 stub missing: {:?}",
         ans.record.steps
@@ -169,11 +170,9 @@ async fn schedules_config_validates_and_records_not_applied() {
     assert!(!eng.status().schedules_applied);
 
     let ans = eng.handle(ctx("www.example.test.")).await.unwrap();
-    assert!(
-        ans.record
-            .steps
-            .contains(&DecisionStep::NotApplied { step: "schedules" })
-    );
+    assert!(ans.record.steps.contains(&DecisionStep::NotApplied {
+        step: NotAppliedStep::Schedules,
+    }));
 }
 
 #[tokio::test]

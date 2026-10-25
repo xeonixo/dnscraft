@@ -306,6 +306,21 @@ windows → set id) profile fields. Steps 5 and 6 exist as no-ops that add a
 
 **Dependencies:** P10 · **Files:** `src/config.rs`, `src/steps/safesearch.rs`, `src/status.rs`, `tests/safesearch.rs` · **Scope:** S
 
+## Task P11b: Schedule/SafeSearch validation + rebind test gaps
+
+**Description:** Claude review follow-ups: `rebind::run` additional-section wiring test; ipv6/empty
+hint malformed; schedule window/id validation; SafeSearch provider list; DRY hints; `NotApplied`
+enum; RFC 9460 §8 mandatory drop; safesearch stub API cleanup.
+
+**Acceptance criteria:**
+- [x] `run()` strips private additional A/AAAA (resolver clears additionals — tested via constructed Message)
+- [x] Malformed ipv6hint (non-multiple of 16) and empty hint → unchanged; mandatory+dropped hint → DropRecord
+- [x] Schedule `start < end`, `end ≤ 7d`, unique/valid ids; SafeSearch providers validated + lower-cased
+
+**Verification:** `cargo test -p dnscraft-policy`
+
+**Dependencies:** P11 · **Files:** `src/steps/rebind.rs`, `src/snapshot.rs`, `src/decision.rs`, `src/error.rs`, `tests/safesearch.rs` · **Scope:** S
+
 ## Task P12: Golden integration tests, bench, coverage, README
 
 **Description:**

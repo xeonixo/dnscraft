@@ -31,11 +31,12 @@ mod util;
 
 pub use config::{
     ClientFlags, DEFAULT_LOCAL_NXDOMAIN_SUFFIXES, DEFAULT_RECORD_TTL, DnsProtocol, PolicyConfig,
-    ProfileConfig, RequestContext, SafeSearchConfig, ScheduleConfig, ViewConfig, ViewRecordConfig,
+    ProfileConfig, RequestContext, SAFESEARCH_PROVIDERS, SCHEDULE_WEEK, SafeSearchConfig,
+    ScheduleConfig, ViewConfig, ViewRecordConfig,
 };
 pub use decision::{
-    AnswerOrigin, DecisionRecord, DecisionStep, DecisionTimings, FilterHit, ProtectionPauseScope,
-    RebindSkipReason,
+    AnswerOrigin, DecisionRecord, DecisionStep, DecisionTimings, FilterHit, NotAppliedStep,
+    ProtectionPauseScope, RebindSkipReason,
 };
 pub use directory::{ClientDirectory, NoClients};
 pub use engine::{PolicyAnswer, PolicyEngine};

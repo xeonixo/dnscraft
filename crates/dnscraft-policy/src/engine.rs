@@ -253,7 +253,7 @@ impl PolicyEngine {
         }
 
         // Steps 5–6: SafeSearch + re-filter (config surface / NotApplied stubs).
-        let _ = safesearch::run(&ctx, step_ctx, &mut draft);
+        safesearch::run(step_ctx, &mut draft);
 
         let flags = RequestFlags {
             checking_disabled: ctx.flags.checking_disabled,

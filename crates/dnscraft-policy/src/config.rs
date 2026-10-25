@@ -112,12 +112,19 @@ pub(crate) fn name_has_wildcard_label(name: &Name) -> bool {
     name.labels().any(|label| label == b"*")
 }
 
+/// Known SafeSearch provider ids (SPEC-policy.md). Matched case-insensitively
+/// and stored lower-cased at snapshot build.
+pub const SAFESEARCH_PROVIDERS: &[&str] = &["google", "bing", "youtube", "duckduckgo"];
+
+/// Length of one week from Monday 00:00 UTC — upper bound for schedule `end`.
+pub const SCHEDULE_WEEK: Duration = Duration::from_secs(7 * 24 * 3600);
+
 /// SafeSearch settings on a profile (evaluation may be stubbed until later).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SafeSearchConfig {
     /// When true, SafeSearch rewrites should run (once evaluation is live).
     pub enabled: bool,
-    /// Provider ids the profile enables (e.g. `google`, `bing`).
+    /// Provider ids the profile enables (`google`, `bing`, `youtube`, `duckduckgo`).
     pub providers: Vec<Arc<str>>,
 }
 

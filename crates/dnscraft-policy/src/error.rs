@@ -124,12 +124,59 @@ pub enum ConfigReason {
     /// [`PauseUntil::For`](crate::PauseUntil::For) was called with a zero duration.
     #[error("pause duration must be greater than zero")]
     ZeroPauseDuration,
+    /// A schedule window has `start >= end`.
+    #[error("schedule {id} has start >= end")]
+    ScheduleWindowOrder {
+        /// Schedule id.
+        id: Arc<str>,
+    },
+    /// A schedule window ends after seven days from Monday 00:00 UTC.
+    #[error("schedule {id} ends after 7 days")]
+    ScheduleWindowTooLong {
+        /// Schedule id.
+        id: Arc<str>,
+    },
+    /// Two schedules on one profile share an id.
+    #[error("duplicate schedule id {id}")]
+    DuplicateScheduleId {
+        /// The duplicated schedule id.
+        id: Arc<str>,
+    },
+    /// A schedule id failed the `[a-z0-9-]{1,64}` charset check.
+    #[error("invalid schedule id {id}")]
+    InvalidScheduleId {
+        /// The rejected schedule id.
+        id: Arc<str>,
+    },
+    /// A SafeSearch provider is not in the known list.
+    #[error("unknown SafeSearch provider {name}")]
+    UnknownSafeSearchProvider {
+        /// The rejected provider name.
+        name: Arc<str>,
+    },
+    /// The same SafeSearch provider appears twice on one profile.
+    #[error("duplicate SafeSearch provider {name}")]
+    DuplicateSafeSearchProvider {
+        /// The duplicated provider.
+        name: Arc<str>,
+    },
 }
 
 impl ConfigReason {
-    /// Stable code shared by every [`PolicyError::InvalidConfig`].
+    /// Stable, locale-neutral code for APIs / i18n.
     pub fn code(&self) -> &'static str {
-        "policy.config.invalid"
+        match self {
+            Self::ZeroPauseDuration => "policy.config.invalid",
+            Self::ScheduleWindowOrder { .. } => "policy.config.schedule_window",
+            Self::ScheduleWindowTooLong { .. } => "policy.config.schedule_window",
+            Self::DuplicateScheduleId { .. } => "policy.config.duplicate_schedule_id",
+            Self::InvalidScheduleId { .. } => "policy.config.invalid_schedule_id",
+            Self::UnknownSafeSearchProvider { .. } => "policy.config.unknown_safesearch_provider",
+            Self::DuplicateSafeSearchProvider { .. } => {
+                "policy.config.duplicate_safesearch_provider"
+            }
+            _ => "policy.config.invalid",
+        }
     }
 }
 
