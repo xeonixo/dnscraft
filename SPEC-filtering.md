@@ -38,6 +38,7 @@ Accepted list formats, detected per line:
 | Hosts line | `0.0.0.0 ads.example`, `127.0.0.1 a b c` | **always block**, whatever the IP (owner decision: lists never redirect) |
 | Wildcard pattern | `\|\|ad*.example^` | glob as AdGuard defines it |
 | Regex | `/^ads?[0-9]*\.example$/` | linear-time regex engine only; matched against the canonical name (lower-case, no trailing dot) |
+| IP rule | `\|\|194.0.2.10^`, `@@\|\|2001:db8::1^` | matches DNS **answers** containing that IPv4/IPv6 address (A/AAAA); `policy` applies it to the resolved answer (AdGuard behaviour against malware hosts with changing names) |
 | Comment | `! …`, `# …` | ignored |
 
 Supported modifiers: `$important`, `$badfilter`, `$dnstype=…` (incl. negation `~`),
@@ -113,6 +114,7 @@ Supported modifiers: `$important`, `$badfilter`, `$dnstype=…` (incl. negation 
 - CNAME uncloaking support: `match_chain(set, &[names], qtype)` returns the first
   blocking verdict along the chain (an allow on the queried name does not unblock a
   blocked CNAME target unless it is `$important`, matching AdGuard).
+- `match_answer_ip(set, ip) -> Verdict`: IP rules against an address from the answer; `policy` calls it for every A/AAAA record of a resolved answer and blocks the whole answer on a block verdict.
 - Counters per list and per set (matches, blocks) as atomics, read by `control-api`.
 
 ### Interface (sketch)
@@ -214,6 +216,7 @@ custom_rules = ["@@||example.org^"]
 - Hosts lines in lists always block, never redirect.
 - `$dnsrewrite` record rewrites are honoured only in custom rules; from downloaded lists
   only rcode/blocking forms apply.
+- IP rules (`||1.2.3.4^`) are supported and match answer addresses (owner, 2026-10-25, after Checkpoint A).
 - Spec approved 2026-10-25. Dependencies are proposed in the plan for approval.
 
 ## Open Questions

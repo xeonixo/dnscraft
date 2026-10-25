@@ -28,6 +28,8 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks).
 
 ## Log
 
+- 2026-10-25 — Checkpoint A run (Haiku tool examples/parse_lists.rs, uncommitted until fuzz clean): 19 lists, 2.28 M lines, 2.24 M rules, 1.87 M unique domains, 19 129 skipped (≈18.8 k browser/cosmetic from EasyList DE/EasyPrivacy), parse 0.67 s, no path rule became a regex. Fuzz found hosts-name-is-IPv4 inconsistency; fixes running (IPv4 hosts names, leading-dot rules → subdomains-only, samples per reason). Owner: IP rules wanted → Task F6. M1 told to keep list bodies on disk (48 MB) and resolve rule text on demand.
+
 - 2026-10-25 — Filtering F4 + F5 builder done (Sonnet, reviewed): globs (`*` spans dots, `||` start/after-dot, `^`/`|` = end, `||*.x^` subdomains only, letter/digit required), O(n·m) matcher; regex via `regex` (case-insensitive, 64 KiB/256 KiB limits, unanchored on canonical name, `\/` → browser-only); literal prefilters checked for no false negatives. Builder: canonical `[@@]||x^$important,dnstype=…,dnsrewrite=…`, describe_rule inverse, proptest round trips; TXT forbids `\ $ / #`. Follow-ups: dedupe TYPE_NAMES (builder vs modifiers) in C1; check at Checkpoint A how many EasyList `/path/` rules become hostname regexes (AdGuard-compatible but may over-block). 112 tests.
 
 - 2026-10-25 — Filtering F3 done (Sonnet, reviewed): $important, $badfilter (key = parsed rule minus badfilter), $dnstype (incl. ~), $denyallow, $dnsrewrite (rcode, A/AAAA/CNAME/TXT; record rewrites from lists skipped as RewriteFromList; @@…$dnsrewrite disables), $client/$ctag rules skipped (not applied globally), unknown/duplicate modifiers, IDNA (UTS 46). Rule 40 B (modifiers boxed only when present). 17 modifier tests.

@@ -90,9 +90,22 @@ target `rule_parse` (list parser) in `fuzz/` with seeds from real list styles.
 
 **Dependencies:** F2 (builder), F4 (fuzz seeds) · **Files:** `src/builder.rs`, `tests/builder.rs`, `fuzz/fuzz_targets/rule_parse.rs`, `fuzz/Cargo.toml`, `.github/workflows/ci.yml` · **Scope:** S
 
+## Task F6: IP rules (answer filtering)
+
+**Description:** Parse IP rules (`||1.2.3.4^`, `1.2.3.4`, `@@||1.2.3.4^`, IPv6 forms, with `$important`/`$badfilter`) into a separate rule kind; an IP index (sorted IPv4 `u32` and IPv6 `u128` arrays with flags + sources) and `match_answer_ip(ip) -> Verdict` with the same priority rules. Added after Checkpoint A (72 IP rules in AdGuard DNS filter).
+
+**Acceptance criteria:**
+- [ ] IP rules parse (no longer `invalid_syntax`), builder/describe keep returning `None`/reject for them
+- [ ] `match_answer_ip` honours allow/important/badfilter; Reason points to the rule
+- [ ] Real-list run: AdGuard DNS filter IP rules counted as IP rules
+
+**Verification:** `cargo test -p dnscraft-filtering ip_rules`
+
+**Dependencies:** F4, M1 · **Files:** `src/parser.rs`, `src/rule.rs`, `src/index.rs`, `tests/ip_rules.rs` · **Scope:** S
+
 ## Checkpoint A: Rules
-- [ ] All Phase 1 tests green; fuzz clean
-- [ ] Manual: all 19 reference lists downloaded once (manual, not in tests) and parsed; skip report per list reviewed with owner
+- [ ] All Phase 1 tests green; fuzz clean (10 min)
+- [x] Manual: all 19 reference lists downloaded once (manual, not in tests) and parsed; skip report per list reviewed with owner (2026-10-25: 2.24 M rules, 1.87 M unique domains, 0.67 s parse; fixes: IPv4 hosts names, leading-dot rules, samples per reason; IP rules → Task F6)
 
 ## Phase 2: Matching
 
