@@ -107,8 +107,8 @@ Also in this task:
   test CA via a test-only root option.
 
 **Acceptance criteria:**
-- [ ] `cargo tree -i aws-lc-rs` and `cargo tree -i openssl-sys` empty; output pasted into the commit message
-- [ ] Unit test: credentials persisted 0600 and reloaded (fake directory)
+- [x] `cargo tree -i aws-lc-rs` and `cargo tree -i openssl-sys` empty; output pasted into the commit message
+- [x] Unit test: credentials persisted 0600 and reloaded (fake directory)
 - [ ] `cargo test -p dnscraft-tls -- --ignored pebble` passes locally against Pebble (lead runs it at Checkpoint A)
 
 **Verification:** `cargo test -p dnscraft-tls acme` (+ ignored Pebble test locally)

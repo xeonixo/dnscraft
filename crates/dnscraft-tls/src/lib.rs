@@ -9,10 +9,13 @@
 //! Client-ID registry (that is `policy` / `control-api`).
 //!
 //! So far: [`TlsConfig`], [`TlsError`], [`Clock`] / [`ManualClock`],
-//! [`read_secret`], SNI helpers, [`CertStore`], and [`CertResolver`].
+//! [`read_secret`], SNI helpers, [`CertStore`], [`CertResolver`], and ACME
+//! account wiring ([`InstantAcme`], [`AcmeDirectory`]).
 
 #![deny(missing_docs)]
 
+mod acme;
+mod acme_http;
 mod clock;
 mod config;
 mod error;
@@ -22,6 +25,8 @@ mod secret;
 mod sni;
 mod store;
 
+pub use acme::{AcmeDirectory, AcmeOrder, FakeAcmeDirectory, InstantAcme};
+pub use acme_http::ReqwestHttpClient;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{
     AcmeConfig, AcmeDirectoryKind, CloudflareConfig, DEFAULT_DYNDNS_INTERVAL, DEFAULT_ECHO_URL,

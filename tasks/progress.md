@@ -13,11 +13,13 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
-- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L3 done**. Next: L4 (instant-acme spike).
+- Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L4 done** (Checkpoint A: lead review + local Pebble). Next: L5 after Checkpoint A.
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P3 done**. Next: P4 view local records.
-- Blockers: none. Build order: policy (P4…) and tls (L4…) next, clients last (owner runs O1 before C7). T2 open (any time).
+- Blockers: none. **tls Checkpoint A** awaiting lead review (Pebble local). Policy continues (P3…); clients last. T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — tls L4 done (Cursor): instant-acme 0.8.5 with `default-features=false`, features `ring,rcgen,time,x509-parser` (no hyper-rustls). **HTTP stack:** reqwest adapter (`ReqwestHttpClient` implements `HttpClient`) — single TLS stack + webpki roots; fallback not used. `AcmeDirectory`/`AcmeOrder` traits; `InstantAcme` account create/load + `account.json` 0600; `FakeAcmeDirectory` unit test. Pebble `#[ignore]` test + README docker recipe (`PEBBLE_VA_ALWAYS_VALID=1`, `PEBBLE_ROOT_CA`). `cargo tree -i aws-lc-rs` / `openssl-sys` empty. **Checkpoint A:** DoD green; HTTP decision recorded; Pebble run + lead review pending.
 
 - 2026-10-25 — Policy P3 done (Cursor): `PolicyEngine` with `ClientDirectory` / `NoClients`, pipeline `Flow`/`Draft`/`DecisionStep`, `handle` → select + RFC 8482 ANY + resolver passthrough (step 7). `RequestFlags` gets CD/DO/client/`forward_zones` from the profile; AD only for unmodified Secure; EDE kept; message id left 0 for the listener; `test_query` → `loggable = false`; resolver errors → SERVFAIL + `DecisionStep::ResolveFailed` (`policy.resolve`). Added `Resolver::forward_zone_ids()` for config validation (P5 will add `forward_zone_for`). Tests vs testkit (A resolve, empty allow-list skips forward target, ANY, AD matrix). DoD green. Next: P4.
 

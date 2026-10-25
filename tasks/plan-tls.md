@@ -104,7 +104,7 @@ L9 DynDNS (needs L5) ── L10 TlsEngine ── L11 polish
 - [x] L1: Crate skeleton, config, errors, secrets
 - [x] L2: SNI helpers
 - [x] L3: Certificate store and `CertResolver`
-- [ ] L4: instant-acme wiring spike (ring, reqwest `HttpClient`, account persistence)
+- [x] L4: instant-acme wiring spike (ring, reqwest `HttpClient`, account persistence)
 
 ### Checkpoint A: Foundation
 - [ ] `cargo tree -i aws-lc-rs` empty; Pebble account test passes locally; HTTP-stack decision recorded; lead review
