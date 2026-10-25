@@ -15,7 +15,7 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L2 done**. Next: L3 (store + CertResolver).
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1 done** (crate skeleton, config, snapshot validation, error codes). Next: P2 selection.
-- Blockers: none. Build order: policy (P2…) and tls (L2…) next, clients last (owner runs O1 before C7). T2 open (any time).
+- Blockers: none. Build order: policy (P2…) and tls (L3…) next, clients last (owner runs O1 before C7). T2 open (any time).
 
 ## Log
 
