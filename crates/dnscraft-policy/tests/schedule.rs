@@ -224,7 +224,8 @@ async fn window_boundaries_inclusive_start_exclusive_end() {
 
 #[tokio::test]
 async fn sunday_to_monday_split_windows() {
-    let sun_start = 6 * 24 * 3600 + 22 * 3600;
+    // Sunday 23:00 → Monday 01:00 as two windows (week wraps at Monday 00:00).
+    let sun_start = 6 * 24 * 3600 + 23 * 3600;
     let schedules = vec![
         ScheduleConfig {
             id: Arc::from("sun-late"),
@@ -236,7 +237,7 @@ async fn sunday_to_monday_split_windows() {
             id: Arc::from("mon-early"),
             filter_set: sid("evening"),
             start: Duration::ZERO,
-            end: Duration::from_secs(2 * 3600),
+            end: Duration::from_secs(3600),
         },
     ];
 
@@ -254,7 +255,7 @@ async fn sunday_to_monday_split_windows() {
         DecisionStep::ScheduleActive { id, .. } if id.as_ref() == "sun-late"
     )));
 
-    let (_h, mon) = engine_at(schedules, BLOCK, "", Duration::from_secs(3600)).await;
+    let (_h, mon) = engine_at(schedules, BLOCK, "", Duration::from_secs(30 * 60)).await;
     let ans = mon.handle(ctx(NAME)).await.unwrap();
     assert_eq!(ans.record.filter_set, sid("evening"));
     assert!(ans.record.steps.iter().any(|s| matches!(
@@ -368,4 +369,221 @@ fn active_schedule_api_takes_offset_in_week() {
         offset_in_week(monday + Duration::from_secs(18 * 3600)),
         Duration::from_secs(18 * 3600)
     );
+}
+
+fn cname_rec(owner: &str, target: &str) -> HRecord {
+    HRecord::from_rdata(
+        HName::from_ascii(owner).unwrap(),
+        300,
+        HRData::CNAME(CNAME(HName::from_ascii(target).unwrap())),
+    )
+}
+
+fn specs_with_cname_chain() -> Vec<ServerSpec> {
+    let mut specs = default_servers().unwrap();
+    for spec in &mut specs {
+        if spec.zone.origin().to_string() == "example.test." {
+            spec.zone = spec
+                .zone
+                .clone()
+                .with_record(cname_rec("a.example.test.", "tracker.example.test."))
+                .with_record(cname_rec("tracker.example.test.", "www.example.test."));
+        }
+    }
+    specs
+}
+
+fn safesearch_google_specs() -> Vec<ServerSpec> {
+    let lo = Ipv4Addr::LOCALHOST;
+    let mut specs = default_servers().unwrap();
+    for spec in &mut specs {
+        if spec.zone.origin().to_string() == "." {
+            spec.zone = spec
+                .zone
+                .clone()
+                .with_ns("google.com.", "ns1.google.com.")
+                .unwrap()
+                .with_a("ns1.google.com.", lo)
+                .unwrap();
+        }
+    }
+    let google = Zone::new("google.com.")
+        .unwrap()
+        .with_soa("ns1.google.com.", "hostmaster.google.com.")
+        .unwrap()
+        .with_ns("google.com.", "ns1.google.com.")
+        .unwrap()
+        .with_a("ns1.google.com.", lo)
+        .unwrap()
+        .with_a("forcesafesearch.google.com.", Ipv4Addr::new(192, 0, 2, 100))
+        .unwrap()
+        .with_a("www.google.com.", Ipv4Addr::new(192, 0, 2, 101))
+        .unwrap();
+    specs.push(ServerSpec::new("ns1.google.com.", google).unwrap());
+    specs
+}
+
+async fn engine_on_hierarchy(
+    h: &Hierarchy,
+    schedules: Vec<ScheduleConfig>,
+    default_rules: &str,
+    evening_rules: &str,
+    offset: Duration,
+    mut profile: ProfileConfig,
+) -> PolicyEngine {
+    profile.schedules = schedules;
+    let resolver = Arc::new(Resolver::new(config_for(h)).await.unwrap());
+    let cfg = PolicyConfig {
+        default_rebind: true,
+        ptr_prefixes: Vec::new(),
+        local_nxdomain_suffixes: Vec::new(),
+        rebind_check_forward_zones: Vec::new(),
+        views: vec![default_view()],
+        profiles: vec![profile],
+    };
+    PolicyEngine::new(
+        cfg,
+        filter_sets(default_rules, evening_rules),
+        resolver,
+        Arc::new(NoClients),
+        clock_at_week_offset(offset),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn schedule_applies_to_cname_chain_and_answer_ip() {
+    let schedules = vec![evening_window()];
+    let h = Hierarchy::start_with(specs_with_cname_chain())
+        .await
+        .unwrap();
+
+    // Outside window: default set empty → chain passes.
+    let outside = engine_on_hierarchy(
+        &h,
+        schedules.clone(),
+        "",
+        "||tracker.example.test^\n",
+        Duration::from_secs(12 * 3600),
+        profile_with(Vec::new()),
+    )
+    .await;
+    let ans = outside.handle(ctx("a.example.test.")).await.unwrap();
+    assert_eq!(ans.message.rcode(), Rcode::NOERROR);
+    assert!(
+        !ans.record
+            .steps
+            .iter()
+            .any(|s| matches!(s, DecisionStep::AnswerChainBlocked))
+    );
+
+    // Inside window: evening set blocks the chain target (step 8).
+    let inside = engine_on_hierarchy(
+        &h,
+        schedules.clone(),
+        "",
+        "||tracker.example.test^\n",
+        Duration::from_secs(19 * 3600),
+        profile_with(Vec::new()),
+    )
+    .await;
+    let ans = inside.handle(ctx("a.example.test.")).await.unwrap();
+    assert_eq!(ans.message.rcode(), Rcode::NXDOMAIN);
+    assert!(ans.record.steps.contains(&DecisionStep::AnswerChainBlocked));
+    assert!(ans.record.steps.contains(&DecisionStep::ScheduleActive {
+        id: Arc::from("evening"),
+        filter_set: sid("evening"),
+    }));
+
+    // Answer-IP (step 9): evening set blocks 192.0.2.1; default allows.
+    let h2 = Hierarchy::start().await.unwrap();
+    let outside_ip = engine_on_hierarchy(
+        &h2,
+        schedules.clone(),
+        "",
+        "||192.0.2.1^\n",
+        Duration::from_secs(12 * 3600),
+        profile_with(Vec::new()),
+    )
+    .await;
+    assert_eq!(
+        outside_ip
+            .handle(ctx("www.example.test."))
+            .await
+            .unwrap()
+            .message
+            .rcode(),
+        Rcode::NOERROR
+    );
+    let inside_ip = engine_on_hierarchy(
+        &h2,
+        schedules,
+        "",
+        "||192.0.2.1^\n",
+        Duration::from_secs(19 * 3600),
+        profile_with(Vec::new()),
+    )
+    .await;
+    let ans = inside_ip.handle(ctx("www.example.test.")).await.unwrap();
+    assert_eq!(ans.message.rcode(), Rcode::NXDOMAIN);
+    assert!(ans.record.steps.contains(&DecisionStep::AnswerIpBlocked));
+}
+
+#[tokio::test]
+async fn schedule_applies_to_safesearch_refilter() {
+    let schedules = vec![evening_window()];
+    let h = Hierarchy::start_with(safesearch_google_specs())
+        .await
+        .unwrap();
+    let mut profile = profile_with(Vec::new());
+    profile.safesearch = SafeSearchConfig {
+        enabled: true,
+        providers: vec![Arc::from("google")],
+        youtube_mode: YoutubeMode::Strict,
+    };
+
+    // Outside: default empty → SafeSearch rewrite resolves.
+    let outside = engine_on_hierarchy(
+        &h,
+        schedules.clone(),
+        "",
+        "||forcesafesearch.google.com^\n",
+        Duration::from_secs(12 * 3600),
+        profile.clone(),
+    )
+    .await;
+    let ans = outside.handle(ctx("www.google.com.")).await.unwrap();
+    assert!(ans.record.steps.iter().any(|s| matches!(
+        s,
+        DecisionStep::SafeSearchRewrite { provider, .. } if provider.as_ref() == "google"
+    )));
+    assert!(!ans.record.steps.contains(&DecisionStep::FilterBlocked));
+    assert_eq!(ans.message.rcode(), Rcode::NOERROR);
+
+    // Inside: evening set blocks the safe host at step 6.
+    let inside = engine_on_hierarchy(
+        &h,
+        schedules,
+        "",
+        "||forcesafesearch.google.com^\n",
+        Duration::from_secs(19 * 3600),
+        profile,
+    )
+    .await;
+    let ans = inside.handle(ctx("www.google.com.")).await.unwrap();
+    assert!(
+        ans.record.steps.iter().any(|s| matches!(
+            s,
+            DecisionStep::SafeSearchRewrite { provider, .. } if provider.as_ref() == "google"
+        )),
+        "expected SafeSearchRewrite: {:?}",
+        ans.record.steps
+    );
+    assert!(
+        ans.record.steps.contains(&DecisionStep::FilterBlocked),
+        "schedule evening set must block safe host at step 6: {:?}",
+        ans.record.steps
+    );
+    assert_eq!(ans.message.rcode(), Rcode::NXDOMAIN);
+    assert_eq!(ans.record.filter_set, sid("evening"));
 }

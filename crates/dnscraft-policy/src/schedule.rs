@@ -85,9 +85,9 @@ mod tests {
 
     #[test]
     fn sunday_and_monday_are_separate_windows() {
-        // Sunday 22:00–24:00 and Monday 00:00–02:00 as two windows.
-        let sun_start = 6 * 24 * 3600 + 22 * 3600;
-        let mon_end = 2 * 3600;
+        // Sunday 23:00–24:00 and Monday 00:00–01:00 as two windows.
+        let sun_start = 6 * 24 * 3600 + 23 * 3600;
+        let mon_end = 3600;
         let windows = [
             ScheduleConfig {
                 id: Arc::from("sun"),
@@ -113,12 +113,12 @@ mod tests {
             "sun"
         );
         assert_eq!(
-            active_schedule(&sorted, Duration::from_secs(3600))
+            active_schedule(&sorted, Duration::from_secs(30 * 60))
                 .unwrap()
                 .id
                 .as_ref(),
             "mon"
         );
-        assert!(active_schedule(&sorted, Duration::from_secs(3 * 3600)).is_none());
+        assert!(active_schedule(&sorted, Duration::from_secs(mon_end)).is_none());
     }
 }
