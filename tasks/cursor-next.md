@@ -7,7 +7,7 @@
 ## Status (updated 2026-10-25)
 
 - `resolver` and `filtering`: complete (filtering Checkpoint D approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
-- `clients`, `tls`, `policy`: specs approved in progress.md — P1 planning may start (clients → tls → policy).
+- `clients`, `tls`, `policy`: specs approved. **P1 done by Claude** — plans in `tasks/plan-{clients,tls,policy}.md` + `todo-*.md`, **awaiting owner approval** (dependency table + open questions in plan-policy.md).
 - Spec drafts S1–S3: done, archived in [archive/cursor-specs.md](archive/cursor-specs.md).
 - Deep-name p99 ≈ 19 µs accepted by the owner → T3 dropped.
 - **T1 done** (Record derives type from RData).
@@ -18,10 +18,11 @@
 |---|---|---|---|
 | 1 | ~~T1 — `Record` enforces rtype ↔ RDATA~~ | tech debt (proto) | done |
 | 2 | ~~R2 — per-query forward-zone allow-list in the resolver~~ | feature (resolver) | done |
-| 3 | P1 — plan + tasks for clients, then tls, then policy | planning | spec approved in progress.md |
+| 3 | ~~P1 — plan + tasks for clients, then tls, then policy~~ | planning | done (Claude), owner approval pending |
+| 5 | B — build tasks from `tasks/todo-<module>.md` (brief below) | implementation | owner approval of the plan + dependencies |
 | 4 | T2 — fetcher TLS error classification | tech debt (filtering, small) | – |
 
-R2 done. P1 next: one module at a time, STOP after each plan for owner approval.
+T2 can run any time. B starts after the owner approves the plans — suggested order: policy (P1→P4) and tls (L1→L4), clients last (C1→…; O1 is a manual owner check before C7).
 
 ## Rules for every task (paste once per session)
 
@@ -110,6 +111,23 @@ Do:
   ClientDirectory trait lives in policy, control-api adapts clients).
 - Add ready-to-paste briefs for the first 3–5 tasks to this file.
 - Commit "plan: <module> plan and tasks". STOP for owner approval of the plan before any code.
+```
+
+## B: Build one task from a module todo (template)
+
+```text
+Precondition: the owner approved tasks/plan-<module>.md (logged in progress.md) and the dependency table in
+tasks/plan-policy.md. Work on exactly ONE task id (e.g. P1, L2, C3) from tasks/todo-<module>.md.
+
+Do:
+- Read the task's Description, Acceptance criteria, Dependencies and Files, the plan's Architecture Decisions
+  and "Cross-module decisions" in tasks/plan-policy.md, and the spec sections the task touches.
+- Check the task's Dependencies are ticked; if not, STOP and say which is missing.
+- Implement with tests first where practical. Stay inside the listed files; if you must touch more, say why in
+  the commit message. Dependencies only from the approved table, with the listed features; for tls run
+  `cargo tree -i aws-lc-rs` (must be empty).
+- Tick the task's acceptance boxes and its entry in the plan's Task List, add a Log entry in progress.md.
+- One commit "<module>: <task id> <short title>". At a checkpoint line: STOP for review.
 ```
 
 ## T2: Fetcher TLS error classification (filtering)
