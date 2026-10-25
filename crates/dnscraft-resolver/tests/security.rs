@@ -12,8 +12,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use dnscraft_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
 use dnscraft_resolver::dnssec::TrustAnchors;
 use dnscraft_resolver::{
-    Answer, AnswerSource, DnssecStatus, ForwardZone, ManualClock, PrimingStatus, Query,
-    RequestFlags, ResolveError, Resolver, ResolverConfig,
+    Answer, AnswerSource, DnssecStatus, ForwardZone, ForwardZoneId, ManualClock, PrimingStatus,
+    Query, RequestFlags, ResolveError, Resolver, ResolverConfig,
 };
 use dnscraft_testkit::{
     ChildVariant, DnssecScenario, Hierarchy, ServerSpec, SigningOptions, Zone, ZoneKey,
@@ -30,6 +30,7 @@ const DO: RequestFlags = RequestFlags {
     checking_disabled: false,
     dnssec_ok: true,
     client: None,
+    forward_zones: None,
 };
 
 fn name(text: &str) -> Name {
@@ -321,6 +322,7 @@ async fn forwarded_answers_are_scrubbed() {
     let target = injecting_target().await;
     let config = ResolverConfig {
         forward_zones: vec![ForwardZone {
+            id: ForwardZoneId::new("corp-test").unwrap(),
             zone: name("corp.test."),
             targets: vec![target],
             validate: false,

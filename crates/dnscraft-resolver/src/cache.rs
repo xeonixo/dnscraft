@@ -1,7 +1,10 @@
 //! Positive and negative answer cache (RFC 2308).
 //!
-//! The key is the question: owner name, type and class. The client's DO bit
-//! is not part of the key. The stored message keeps its DNSSEC records, and
+//! The key is the question (owner name, type and class) plus the
+//! [`Route`](crate::Route): a forward zone id, or recursive resolution. A
+//! forwarded answer and a recursive answer for the same name are different
+//! entries. The client's DO bit is not part of the key. The stored message
+//! keeps its DNSSEC records, and
 //! the resolver strips them on the way out when DO is clear (RFC 4035
 //! section 3.2.1), the same as a fresh answer.
 //!
@@ -51,7 +54,7 @@ use std::time::{Duration, Instant};
 use dnscraft_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
 
 use crate::config::ResolverConfig;
-use crate::types::{Answer, AnswerSource, DnssecStatus, ExtendedError, FlushScope, Query};
+use crate::types::{Answer, AnswerSource, DnssecStatus, ExtendedError, FlushScope, Query, Route};
 
 /// Bytes added to the wire length for the key, status and map node.
 ///
@@ -71,20 +74,22 @@ pub(crate) const STALE_ANSWER_TTL: u32 = 30;
 /// One mebibyte, the unit of [`ResolverConfig::cache_size_mb`].
 const MIB: u64 = 1024 * 1024;
 
-/// Question that identifies a cache entry. Name equality ignores case.
+/// Question and route that identify a cache entry. Name equality ignores case.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Key {
     name: Name,
     qtype: RecordType,
     qclass: Class,
+    route: Route,
 }
 
-impl From<&Query> for Key {
-    fn from(query: &Query) -> Self {
+impl Key {
+    fn new(query: &Query, route: &Route) -> Self {
         Self {
             name: query.name.clone(),
             qtype: query.qtype,
             qclass: query.qclass,
+            route: route.clone(),
         }
     }
 }
@@ -194,11 +199,13 @@ impl Cache {
     }
 
     /// Fresh hit, with record TTLs rewritten to the remaining lifetime.
-    /// `None` when the question is absent or expired.
+    /// `None` when the question is absent or expired for `route`.
+    ///
+    /// [`Answer::forward_zone`] is taken from `route`.
     #[doc(hidden)]
-    pub fn lookup(&self, query: &Query, now: Instant) -> Option<Answer> {
+    pub fn lookup(&self, query: &Query, route: &Route, now: Instant) -> Option<Answer> {
         let mut inner = lock(&self.inner);
-        let key = Key::from(query);
+        let key = Key::new(query, route);
         let (shared, dnssec, ede, ttl) = {
             let entry = inner.map.get(&key)?;
             if now >= entry.expires_at {
@@ -226,6 +233,7 @@ impl Cache {
             dnssec,
             source: AnswerSource::Cache,
             ede,
+            forward_zone: route.forward_zone(),
         })
     }
 
@@ -246,6 +254,7 @@ impl Cache {
     pub(crate) fn lookup_stale(
         &self,
         query: &Query,
+        route: &Route,
         now: Instant,
         window: Duration,
     ) -> Option<Answer> {
@@ -253,7 +262,7 @@ impl Cache {
             return None;
         }
         let mut inner = lock(&self.inner);
-        let key = Key::from(query);
+        let key = Key::new(query, route);
         let shared = {
             let entry = inner.map.get(&key)?;
             if now < entry.expires_at {
@@ -285,6 +294,7 @@ impl Cache {
                 code: EDE_STALE_ANSWER,
                 text: Some("Stale Answer".to_owned()),
             }),
+            forward_zone: route.forward_zone(),
         })
     }
 
@@ -292,9 +302,14 @@ impl Cache {
     ///
     /// Does not count another hit. `None` when the question is absent or
     /// expired, matching [`Cache::lookup`].
-    pub(crate) fn fresh_stats(&self, query: &Query, now: Instant) -> Option<FreshStats> {
+    pub(crate) fn fresh_stats(
+        &self,
+        query: &Query,
+        route: &Route,
+        now: Instant,
+    ) -> Option<FreshStats> {
         let inner = lock(&self.inner);
-        let entry = inner.map.get(&Key::from(query))?;
+        let entry = inner.map.get(&Key::new(query, route))?;
         if now >= entry.expires_at {
             return None;
         }
@@ -316,16 +331,18 @@ impl Cache {
     /// for the same question is removed (it is superseded). Nothing else is
     /// evicted for it.
     #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
     pub fn store(
         &self,
         query: &Query,
+        route: &Route,
         message: &Message,
         dnssec: DnssecStatus,
         ede: Option<ExtendedError>,
         now: Instant,
         clamp: TtlClamp,
     ) -> Option<u32> {
-        self.store_in_epoch(query, message, dnssec, ede, now, clamp, None, None)
+        self.store_in_epoch(query, route, message, dnssec, ede, now, clamp, None, None)
     }
 
     /// Like [`Cache::store`], but drops the answer when a flush happened
@@ -342,6 +359,7 @@ impl Cache {
     pub(crate) fn store_in_epoch(
         &self,
         query: &Query,
+        route: &Route,
         message: &Message,
         dnssec: DnssecStatus,
         ede: Option<ExtendedError>,
@@ -359,7 +377,7 @@ impl Cache {
         // Measured and copied before taking the lock.
         let size = entry_size(message);
         let stored = Arc::new(message.clone());
-        let key = Key::from(query);
+        let key = Key::new(query, route);
         let mut inner = lock(&self.inner);
         if epoch.is_some_and(|seen| seen != inner.epoch) {
             tracing::debug!(qname = %query.name, "dropping answer resolved before a flush");
@@ -667,6 +685,7 @@ mod tests {
     ) -> Option<u32> {
         cache.store(
             query,
+            &Route::Recursive,
             message,
             DnssecStatus::Indeterminate,
             None,
@@ -696,10 +715,12 @@ mod tests {
         assert_eq!(put(&cache, &q, &msg, now, 0, 30), Some(30));
         assert_eq!(put(&cache, &q, &msg, now, 150, 86_400), Some(150));
 
-        let hit = cache.lookup(&q, now).unwrap();
+        let hit = cache.lookup(&q, &Route::Recursive, now).unwrap();
         assert_eq!(hit.source, AnswerSource::Cache);
         assert_eq!(hit.message.answers[0].ttl, 150);
-        let later = cache.lookup(&q, now + Duration::from_secs(40)).unwrap();
+        let later = cache
+            .lookup(&q, &Route::Recursive, now + Duration::from_secs(40))
+            .unwrap();
         assert_eq!(later.message.answers[0].ttl, 110);
     }
 
@@ -808,8 +829,16 @@ mod tests {
         );
         assert_eq!(put(&cache, &q, &msg, now, 0, 86_400), Some(30));
         let used = cache.bytes_used();
-        assert!(cache.lookup(&q, now + Duration::from_secs(29)).is_some());
-        assert!(cache.lookup(&q, now + Duration::from_secs(30)).is_none());
+        assert!(
+            cache
+                .lookup(&q, &Route::Recursive, now + Duration::from_secs(29))
+                .is_some()
+        );
+        assert!(
+            cache
+                .lookup(&q, &Route::Recursive, now + Duration::from_secs(30))
+                .is_none()
+        );
         assert_eq!(cache.bytes_used(), used);
     }
 
@@ -832,17 +861,17 @@ mod tests {
         let cache = Cache::new(one * 2);
         put(&cache, &items[0].0, &items[0].1, now, 0, 86_400);
         put(&cache, &items[1].0, &items[1].1, now, 0, 86_400);
-        assert!(cache.lookup(&items[0].0, now).is_some());
+        assert!(cache.lookup(&items[0].0, &Route::Recursive, now).is_some());
         put(&cache, &items[2].0, &items[2].1, now, 0, 86_400);
-        assert!(cache.lookup(&items[1].0, now).is_none());
-        assert!(cache.lookup(&items[0].0, now).is_some());
-        assert!(cache.lookup(&items[2].0, now).is_some());
+        assert!(cache.lookup(&items[1].0, &Route::Recursive, now).is_none());
+        assert!(cache.lookup(&items[0].0, &Route::Recursive, now).is_some());
+        assert!(cache.lookup(&items[2].0, &Route::Recursive, now).is_some());
         assert_eq!(cache.bytes_used(), one * 2);
 
         let tiny = Cache::new(one - 1);
         assert!(put(&tiny, &items[0].0, &items[0].1, now, 0, 86_400).is_some());
         assert_eq!(tiny.bytes_used(), 0);
-        assert!(tiny.lookup(&items[0].0, now).is_none());
+        assert!(tiny.lookup(&items[0].0, &Route::Recursive, now).is_none());
     }
 
     #[test]
@@ -861,17 +890,29 @@ mod tests {
         cache.flush(&FlushScope::Domain(name("WWW.EXAMPLE.TEST.")));
         assert!(
             cache
-                .lookup(&query("www.example.test.", RecordType::A), now)
+                .lookup(
+                    &query("www.example.test.", RecordType::A),
+                    &Route::Recursive,
+                    now
+                )
                 .is_none()
         );
         assert!(
             cache
-                .lookup(&query("sub.www.example.test.", RecordType::A), now)
+                .lookup(
+                    &query("sub.www.example.test.", RecordType::A),
+                    &Route::Recursive,
+                    now
+                )
                 .is_none()
         );
         assert!(
             cache
-                .lookup(&query("mail.example.test.", RecordType::A), now)
+                .lookup(
+                    &query("mail.example.test.", RecordType::A),
+                    &Route::Recursive,
+                    now
+                )
                 .is_some()
         );
 
@@ -879,7 +920,11 @@ mod tests {
         assert_eq!(cache.bytes_used(), 0);
         assert!(
             cache
-                .lookup(&query("mail.example.test.", RecordType::A), now)
+                .lookup(
+                    &query("mail.example.test.", RecordType::A),
+                    &Route::Recursive,
+                    now
+                )
                 .is_none()
         );
     }
@@ -904,12 +949,20 @@ mod tests {
         );
         assert!(
             cache
-                .lookup(&query("WWW.EXAMPLE.TEST.", RecordType::A), now)
+                .lookup(
+                    &query("WWW.EXAMPLE.TEST.", RecordType::A),
+                    &Route::Recursive,
+                    now
+                )
                 .is_some()
         );
         assert!(
             cache
-                .lookup(&query("www.example.test.", RecordType::AAAA), now)
+                .lookup(
+                    &query("www.example.test.", RecordType::AAAA),
+                    &Route::Recursive,
+                    now
+                )
                 .is_none()
         );
     }
@@ -931,6 +984,7 @@ mod tests {
         };
         cache.store(
             &q,
+            &Route::Recursive,
             &msg,
             DnssecStatus::Insecure,
             Some(ede.clone()),
@@ -940,13 +994,14 @@ mod tests {
                 max: 86_400,
             },
         );
-        let hit = cache.lookup(&q, now).unwrap();
+        let hit = cache.lookup(&q, &Route::Recursive, now).unwrap();
         assert_eq!(hit.dnssec, DnssecStatus::Insecure);
         assert_eq!(hit.ede, Some(ede));
         assert!(!hit.message.header.ad);
 
         cache.store(
             &q,
+            &Route::Recursive,
             &msg,
             DnssecStatus::Secure,
             None,
@@ -956,7 +1011,7 @@ mod tests {
                 max: 86_400,
             },
         );
-        let secure = cache.lookup(&q, now).unwrap();
+        let secure = cache.lookup(&q, &Route::Recursive, now).unwrap();
         assert_eq!(secure.dnssec, DnssecStatus::Secure);
         assert!(secure.message.header.ad);
         assert_eq!(secure.ede, None);
@@ -991,27 +1046,33 @@ mod tests {
             vec![],
         );
         put(&cache, &q, &msg, now, 0, 86_400);
-        assert_eq!(cache.fresh_stats(&q, now).unwrap().hits, 0);
+        assert_eq!(
+            cache.fresh_stats(&q, &Route::Recursive, now).unwrap().hits,
+            0
+        );
 
-        cache.lookup(&q, now).unwrap();
-        cache.lookup(&q, now).unwrap();
-        let stats = cache.fresh_stats(&q, now).unwrap();
+        cache.lookup(&q, &Route::Recursive, now).unwrap();
+        cache.lookup(&q, &Route::Recursive, now).unwrap();
+        let stats = cache.fresh_stats(&q, &Route::Recursive, now).unwrap();
         assert_eq!(stats.hits, 2);
         assert_eq!(stats.ttl, Duration::from_secs(30));
         assert!(stats.remaining > Duration::from_secs(29));
 
         assert!(
             cache
-                .fresh_stats(&q, now + Duration::from_secs(30))
+                .fresh_stats(&q, &Route::Recursive, now + Duration::from_secs(30))
                 .is_none()
         );
         put(&cache, &q, &msg, now, 0, 86_400);
-        assert_eq!(cache.fresh_stats(&q, now).unwrap().hits, 0);
+        assert_eq!(
+            cache.fresh_stats(&q, &Route::Recursive, now).unwrap().hits,
+            0
+        );
     }
 
     fn bookkeeping(cache: &Cache, query: &Query) -> (u64, u64, Instant) {
         let inner = lock(&cache.inner);
-        let entry = inner.map.get(&Key::from(query)).unwrap();
+        let entry = inner.map.get(&Key::new(query, &Route::Recursive)).unwrap();
         (entry.hits, entry.last_used, entry.expires_at)
     }
 
@@ -1029,21 +1090,34 @@ mod tests {
         assert_eq!(put(&cache, &q, &msg, now, 0, 86_400), Some(30));
         let day = Duration::from_secs(86_400);
 
-        assert!(cache.lookup_stale(&q, now, day).is_none());
         assert!(
             cache
-                .lookup_stale(&q, now + Duration::from_secs(29), day)
+                .lookup_stale(&q, &Route::Recursive, now, day)
+                .is_none()
+        );
+        assert!(
+            cache
+                .lookup_stale(&q, &Route::Recursive, now + Duration::from_secs(29), day)
                 .is_none()
         );
 
         let expired = now + Duration::from_secs(30);
-        assert!(cache.lookup_stale(&q, expired, Duration::ZERO).is_none());
-        assert!(cache.lookup_stale(&q, expired, day).is_some());
+        assert!(
+            cache
+                .lookup_stale(&q, &Route::Recursive, expired, Duration::ZERO)
+                .is_none()
+        );
+        assert!(
+            cache
+                .lookup_stale(&q, &Route::Recursive, expired, day)
+                .is_some()
+        );
         // The end of the window is exclusive.
         assert!(
             cache
                 .lookup_stale(
                     &q,
+                    &Route::Recursive,
                     expired + Duration::from_secs(10),
                     Duration::from_secs(10)
                 )
@@ -1053,6 +1127,7 @@ mod tests {
             cache
                 .lookup_stale(
                     &q,
+                    &Route::Recursive,
                     expired + Duration::from_secs(9),
                     Duration::from_secs(10)
                 )
@@ -1060,11 +1135,16 @@ mod tests {
         );
         assert!(
             cache
-                .lookup_stale(&query("other.example.", RecordType::A), expired, day)
+                .lookup_stale(
+                    &query("other.example.", RecordType::A),
+                    &Route::Recursive,
+                    expired,
+                    day
+                )
                 .is_none()
         );
-        assert!(cache.lookup(&q, expired).is_none());
-        assert!(cache.fresh_stats(&q, expired).is_none());
+        assert!(cache.lookup(&q, &Route::Recursive, expired).is_none());
+        assert!(cache.fresh_stats(&q, &Route::Recursive, expired).is_none());
     }
 
     #[test]
@@ -1086,6 +1166,7 @@ mod tests {
         };
         cache.store(
             &q,
+            &Route::Recursive,
             &msg,
             DnssecStatus::Secure,
             Some(stored_ede.clone()),
@@ -1095,13 +1176,13 @@ mod tests {
                 max: 86_400,
             },
         );
-        cache.lookup(&q, now).unwrap();
+        cache.lookup(&q, &Route::Recursive, now).unwrap();
         let (hits, last_used, expires_at) = bookkeeping(&cache, &q);
         assert_eq!(hits, 1);
 
         let expired = now + Duration::from_secs(30);
         let stale = cache
-            .lookup_stale(&q, expired, Duration::from_secs(86_400))
+            .lookup_stale(&q, &Route::Recursive, expired, Duration::from_secs(86_400))
             .unwrap();
         assert_eq!(stale.source, AnswerSource::Stale);
         // Stored as Secure, but a stale serve cannot re-check signature
@@ -1126,13 +1207,13 @@ mod tests {
         assert_eq!(expires_after, expires_at);
         {
             let inner = lock(&cache.inner);
-            let entry = inner.map.get(&Key::from(&q)).unwrap();
+            let entry = inner.map.get(&Key::new(&q, &Route::Recursive)).unwrap();
             assert_eq!(entry.message.answers[0].ttl, 30);
             assert_eq!(entry.message.authorities[0].ttl, 300);
             assert_eq!(entry.message.additionals[0].ttl, 50);
             assert_eq!(entry.ede, Some(stored_ede));
         }
-        assert!(cache.lookup(&q, expired).is_none());
+        assert!(cache.lookup(&q, &Route::Recursive, expired).is_none());
     }
 
     #[test]
@@ -1157,18 +1238,30 @@ mod tests {
         put(&cache, &items[1].0, &items[1].1, now, 0, 86_400);
 
         let expired = now + Duration::from_secs(30);
-        assert!(cache.lookup_stale(&items[0].0, expired, window).is_some());
+        assert!(
+            cache
+                .lookup_stale(&items[0].0, &Route::Recursive, expired, window)
+                .is_some()
+        );
         put(&cache, &items[2].0, &items[2].1, expired, 0, 86_400);
 
         assert!(
-            cache.lookup_stale(&items[1].0, expired, window).is_none(),
+            cache
+                .lookup_stale(&items[1].0, &Route::Recursive, expired, window)
+                .is_none(),
             "the expired entry that was not served is evicted"
         );
         assert!(
-            cache.lookup_stale(&items[0].0, expired, window).is_some(),
+            cache
+                .lookup_stale(&items[0].0, &Route::Recursive, expired, window)
+                .is_some(),
             "serving stale keeps the entry ahead of unused ones"
         );
-        assert!(cache.lookup(&items[2].0, expired).is_some());
+        assert!(
+            cache
+                .lookup(&items[2].0, &Route::Recursive, expired)
+                .is_some()
+        );
     }
 
     fn simple(owner: &str, ttl: u32) -> (Query, Message) {
@@ -1210,12 +1303,20 @@ mod tests {
         // The ten newest survive, the oldest are gone.
         assert!(
             cache
-                .lookup(&query("n199.example.", RecordType::A), now)
+                .lookup(
+                    &query("n199.example.", RecordType::A),
+                    &Route::Recursive,
+                    now
+                )
                 .is_some()
         );
         assert!(
             cache
-                .lookup(&query("n000.example.", RecordType::A), now)
+                .lookup(
+                    &query("n000.example.", RecordType::A),
+                    &Route::Recursive,
+                    now
+                )
                 .is_none()
         );
         assert_consistent(&cache);
@@ -1240,9 +1341,9 @@ mod tests {
         assert!(entry_size(&big) > one * 2);
         assert_eq!(put(&cache, &qbig, &big, now, 0, 86_400), Some(30));
 
-        assert!(cache.lookup(&qbig, now).is_none());
-        assert!(cache.lookup(&qa, now).is_some());
-        assert!(cache.lookup(&qb, now).is_some());
+        assert!(cache.lookup(&qbig, &Route::Recursive, now).is_none());
+        assert!(cache.lookup(&qa, &Route::Recursive, now).is_some());
+        assert!(cache.lookup(&qb, &Route::Recursive, now).is_some());
         assert_eq!(cache.bytes_used(), one * 2);
         assert_consistent(&cache);
     }
@@ -1259,7 +1360,7 @@ mod tests {
         let records: Vec<Record> = (0..200).map(|_| a_record("a.example.", 30)).collect();
         let big = message("a.example.", Rcode::NOERROR, records, vec![]);
         put(&cache, &qa, &big, now, 0, 86_400);
-        assert!(cache.lookup(&qa, now).is_none());
+        assert!(cache.lookup(&qa, &Route::Recursive, now).is_none());
         assert_eq!(cache.bytes_used(), 0);
         assert_consistent(&cache);
     }
@@ -1302,12 +1403,20 @@ mod tests {
         put(&cache, &q, &m, now, 0, 86_400);
         assert!(
             cache
-                .lookup(&query("example.com.", RecordType::A), now)
+                .lookup(
+                    &query("example.com.", RecordType::A),
+                    &Route::Recursive,
+                    now
+                )
                 .is_some()
         );
         assert!(
             cache
-                .lookup(&query("ExAmPlE.CoM.", RecordType::A), now)
+                .lookup(
+                    &query("ExAmPlE.CoM.", RecordType::A),
+                    &Route::Recursive,
+                    now
+                )
                 .is_some()
         );
         // Overwriting with another case replaces the same entry.
@@ -1332,7 +1441,7 @@ mod tests {
         );
         let ttl_at = |clock: &crate::clock::ManualClock| {
             cache
-                .lookup(&q, crate::clock::Clock::instant(clock))
+                .lookup(&q, &Route::Recursive, crate::clock::Clock::instant(clock))
                 .unwrap()
                 .message
                 .answers[0]
@@ -1346,7 +1455,7 @@ mod tests {
         clock.advance(Duration::from_secs(1));
         assert!(
             cache
-                .lookup(&q, crate::clock::Clock::instant(&clock))
+                .lookup(&q, &Route::Recursive, crate::clock::Clock::instant(&clock))
                 .is_none()
         );
     }
@@ -1362,17 +1471,29 @@ mod tests {
         cache.flush(&FlushScope::Domain(name("example.com.")));
         assert!(
             cache
-                .lookup(&query("example.com.", RecordType::A), now)
+                .lookup(
+                    &query("example.com.", RecordType::A),
+                    &Route::Recursive,
+                    now
+                )
                 .is_none()
         );
         assert!(
             cache
-                .lookup(&query("www.example.com.", RecordType::A), now)
+                .lookup(
+                    &query("www.example.com.", RecordType::A),
+                    &Route::Recursive,
+                    now
+                )
                 .is_none()
         );
         assert!(
             cache
-                .lookup(&query("badexample.com.", RecordType::A), now)
+                .lookup(
+                    &query("badexample.com.", RecordType::A),
+                    &Route::Recursive,
+                    now
+                )
                 .is_some()
         );
         assert_consistent(&cache);
@@ -1393,6 +1514,7 @@ mod tests {
         assert_eq!(
             cache.store_in_epoch(
                 &q,
+                &Route::Recursive,
                 &m,
                 DnssecStatus::Indeterminate,
                 None,
@@ -1403,11 +1525,12 @@ mod tests {
             ),
             Some(30)
         );
-        assert!(cache.lookup(&q, now).is_none());
+        assert!(cache.lookup(&q, &Route::Recursive, now).is_none());
         assert_eq!(cache.bytes_used(), 0);
         let current = cache.epoch();
         cache.store_in_epoch(
             &q,
+            &Route::Recursive,
             &m,
             DnssecStatus::Indeterminate,
             None,
@@ -1416,6 +1539,71 @@ mod tests {
             Some(current),
             None,
         );
-        assert!(cache.lookup(&q, now).is_some());
+        assert!(cache.lookup(&q, &Route::Recursive, now).is_some());
+    }
+
+    #[test]
+    fn routes_do_not_share_a_cache_entry() {
+        use crate::config::ForwardZoneId;
+
+        let now = Instant::now();
+        let cache = Cache::new(usize::MAX);
+        let q = query("www.corp.internal.", RecordType::A);
+        let msg = message(
+            "www.corp.internal.",
+            Rcode::NOERROR,
+            vec![a_record("www.corp.internal.", 30)],
+            vec![],
+        );
+        let forward = Route::Forward(ForwardZoneId::new("corp").unwrap());
+        let clamp = TtlClamp {
+            min: 0,
+            max: 86_400,
+        };
+        cache.store(&q, &forward, &msg, DnssecStatus::Insecure, None, now, clamp);
+        assert!(cache.lookup(&q, &Route::Recursive, now).is_none());
+        let hit = cache.lookup(&q, &forward, now).unwrap();
+        assert_eq!(
+            hit.forward_zone.as_ref().map(ForwardZoneId::as_str),
+            Some("corp")
+        );
+        assert_eq!(hit.source, AnswerSource::Cache);
+
+        let expired = now + Duration::from_secs(30);
+        let stale = cache
+            .lookup_stale(&q, &forward, expired, Duration::from_secs(86_400))
+            .unwrap();
+        assert_eq!(
+            stale.forward_zone.as_ref().map(ForwardZoneId::as_str),
+            Some("corp")
+        );
+        assert!(
+            cache
+                .lookup_stale(&q, &Route::Recursive, expired, Duration::from_secs(86_400))
+                .is_none()
+        );
+
+        cache.store(
+            &q,
+            &Route::Recursive,
+            &msg,
+            DnssecStatus::Indeterminate,
+            None,
+            expired,
+            clamp,
+        );
+        let recursive = cache.lookup(&q, &Route::Recursive, expired).unwrap();
+        assert!(recursive.forward_zone.is_none());
+        assert!(cache.lookup(&q, &forward, expired).is_none());
+        let still_forward = cache
+            .lookup_stale(&q, &forward, expired, Duration::from_secs(86_400))
+            .unwrap();
+        assert_eq!(
+            still_forward
+                .forward_zone
+                .as_ref()
+                .map(ForwardZoneId::as_str),
+            Some("corp")
+        );
     }
 }

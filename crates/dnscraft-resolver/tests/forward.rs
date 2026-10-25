@@ -9,8 +9,8 @@ use std::time::Duration;
 use dnscraft_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
 use dnscraft_resolver::dnssec::TrustAnchors;
 use dnscraft_resolver::{
-    AnswerSource, DnssecStatus, ForwardZone, ManualClock, Query, RequestFlags, ResolveError,
-    Resolver, ResolverConfig,
+    AnswerSource, DnssecStatus, ForwardZone, ForwardZoneId, ManualClock, Query, RequestFlags,
+    ResolveError, Resolver, ResolverConfig,
 };
 use dnscraft_testkit::Hierarchy;
 use tokio::net::UdpSocket;
@@ -155,11 +155,25 @@ impl Drop for Target {
 }
 
 fn forward(zone: &str, targets: Vec<SocketAddr>) -> ForwardZone {
+    let id = zone.trim_end_matches('.').replace('.', "-");
     ForwardZone {
+        id: ForwardZoneId::new(&id).unwrap(),
         zone: name(zone),
         targets,
         validate: false,
     }
+}
+
+fn flags_allowing(ids: impl IntoIterator<Item = ForwardZoneId>) -> RequestFlags {
+    let list: Vec<ForwardZoneId> = ids.into_iter().collect();
+    RequestFlags {
+        forward_zones: Some(Arc::from(list)),
+        ..RequestFlags::default()
+    }
+}
+
+fn flags_denying_forward() -> RequestFlags {
+    flags_allowing(Vec::<ForwardZoneId>::new())
 }
 
 #[tokio::test]
@@ -180,6 +194,10 @@ async fn forward_zone_is_answered_by_targets_not_the_root() {
     assert!(!answer.message.header.ad);
     assert_eq!(answer.message.rcode(), Rcode::NOERROR);
     assert_eq!(
+        answer.forward_zone.as_ref().map(ForwardZoneId::as_str),
+        Some("corp-internal")
+    );
+    assert_eq!(
         answer.message.answers[0].rdata,
         RData::A(Ipv4Addr::new(192, 0, 2, 10))
     );
@@ -197,6 +215,7 @@ async fn forward_zone_is_answered_by_targets_not_the_root() {
         )
         .await
         .unwrap();
+    assert!(outside.forward_zone.is_none());
     assert_eq!(
         outside.message.answers[0].rdata,
         RData::A(Ipv4Addr::new(192, 0, 2, 1))
@@ -216,6 +235,10 @@ async fn forward_zone_is_answered_by_targets_not_the_root() {
     let before = resolver.stats().outgoing_queries;
     let cached = resolver.resolve(&q, RequestFlags::default()).await.unwrap();
     assert_eq!(cached.source, AnswerSource::Cache);
+    assert_eq!(
+        cached.forward_zone.as_ref().map(ForwardZoneId::as_str),
+        Some("corp-internal")
+    );
     assert_eq!(cached.dnssec, DnssecStatus::Insecure);
     assert_eq!(
         cached.message.answers[0].rdata,
@@ -754,4 +777,301 @@ async fn failed_prefetch_is_not_retried_for_thirty_seconds() {
     resolver.resolve(&q, RequestFlags::default()).await.unwrap();
     resolver.wait_idle().await;
     assert_eq!(pop.hits(), 3);
+}
+
+fn saw_root(h: &Hierarchy, qname: &str) -> bool {
+    root_queries(h)
+        .iter()
+        .any(|(name, qtype)| name == qname && *qtype == RecordType::A)
+}
+
+#[tokio::test]
+async fn allowed_zone_forwards_and_reports_its_id() {
+    let h = Hierarchy::start().await.unwrap();
+    let target = Target::spawn(Ipv4Addr::new(192, 0, 2, 10)).await;
+    let zone = forward("corp.internal.", vec![target.addr]);
+    let id = zone.id.clone();
+    let mut config = config_for(&h);
+    config.forward_zones = vec![zone];
+    let resolver = Resolver::new(config).await.unwrap();
+    h.server(".").unwrap().clear_queries();
+
+    let answer = resolver
+        .resolve(
+            &query("www.corp.internal.", RecordType::A),
+            flags_allowing([id.clone()]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(answer.source, AnswerSource::Recursion);
+    assert_eq!(answer.forward_zone.as_ref(), Some(&id));
+    assert_eq!(a_rdata(&answer), RData::A(Ipv4Addr::new(192, 0, 2, 10)));
+    assert_eq!(target.hits(), 1);
+    assert!(root_queries(&h).is_empty());
+}
+
+#[tokio::test]
+async fn disallowed_zone_is_resolved_from_the_root() {
+    let h = Hierarchy::start().await.unwrap();
+    let target = Target::spawn(Ipv4Addr::new(192, 0, 2, 10)).await;
+    let mut config = config_for(&h);
+    config.qname_minimisation = false;
+    config.forward_zones = vec![forward("corp.internal.", vec![target.addr])];
+    let resolver = Resolver::new(config).await.unwrap();
+    h.server(".").unwrap().clear_queries();
+
+    let answer = resolver
+        .resolve(
+            &query("www.corp.internal.", RecordType::A),
+            flags_denying_forward(),
+        )
+        .await
+        .unwrap();
+    assert!(answer.forward_zone.is_none());
+    assert_eq!(answer.message.rcode(), Rcode::NXDOMAIN);
+    assert_eq!(target.hits(), 0);
+    assert!(saw_root(&h, "www.corp.internal."));
+}
+
+#[tokio::test]
+async fn none_allow_list_applies_every_configured_zone() {
+    let h = Hierarchy::start().await.unwrap();
+    let corp = Target::spawn(Ipv4Addr::new(192, 0, 2, 11)).await;
+    let other = Target::spawn(Ipv4Addr::new(192, 0, 2, 12)).await;
+    let mut config = config_for(&h);
+    config.forward_zones = vec![
+        forward("corp.internal.", vec![corp.addr]),
+        forward("other.internal.", vec![other.addr]),
+    ];
+    let resolver = Resolver::new(config).await.unwrap();
+    let flags = RequestFlags {
+        forward_zones: None,
+        ..RequestFlags::default()
+    };
+    let corp_answer = resolver
+        .resolve(&query("www.corp.internal.", RecordType::A), flags.clone())
+        .await
+        .unwrap();
+    let other_answer = resolver
+        .resolve(&query("www.other.internal.", RecordType::A), flags)
+        .await
+        .unwrap();
+    assert_eq!(
+        corp_answer.forward_zone.as_ref().map(ForwardZoneId::as_str),
+        Some("corp-internal")
+    );
+    assert_eq!(
+        other_answer
+            .forward_zone
+            .as_ref()
+            .map(ForwardZoneId::as_str),
+        Some("other-internal")
+    );
+    assert_eq!(
+        a_rdata(&corp_answer),
+        RData::A(Ipv4Addr::new(192, 0, 2, 11))
+    );
+    assert_eq!(
+        a_rdata(&other_answer),
+        RData::A(Ipv4Addr::new(192, 0, 2, 12))
+    );
+    assert_eq!(corp.hits(), 1);
+    assert_eq!(other.hits(), 1);
+}
+
+#[tokio::test]
+async fn forward_and_recursive_answers_do_not_share_a_cache_entry() {
+    let h = Hierarchy::start().await.unwrap();
+    let target = Target::spawn(Ipv4Addr::new(192, 0, 2, 13)).await;
+    let zone = forward("corp.internal.", vec![target.addr]);
+    let id = zone.id.clone();
+    let mut config = config_for(&h);
+    config.qname_minimisation = false;
+    config.forward_zones = vec![zone];
+    let resolver = Resolver::new(config).await.unwrap();
+    let q = query("www.corp.internal.", RecordType::A);
+    let allow = flags_allowing([id.clone()]);
+    let deny = flags_denying_forward();
+
+    let forwarded = resolver.resolve(&q, allow.clone()).await.unwrap();
+    assert_eq!(a_rdata(&forwarded), RData::A(Ipv4Addr::new(192, 0, 2, 13)));
+    assert_eq!(forwarded.forward_zone.as_ref(), Some(&id));
+    h.server(".").unwrap().clear_queries();
+
+    let recursive = resolver.resolve(&q, deny.clone()).await.unwrap();
+    assert_eq!(recursive.source, AnswerSource::Recursion);
+    assert!(recursive.forward_zone.is_none());
+    assert_eq!(recursive.message.rcode(), Rcode::NXDOMAIN);
+    assert_eq!(
+        target.hits(),
+        1,
+        "the forwarded answer must not satisfy the recursive query"
+    );
+    assert!(saw_root(&h, "www.corp.internal."));
+
+    let again = resolver.resolve(&q, allow).await.unwrap();
+    assert_eq!(again.source, AnswerSource::Cache);
+    assert_eq!(again.forward_zone.as_ref(), Some(&id));
+    assert_eq!(a_rdata(&again), RData::A(Ipv4Addr::new(192, 0, 2, 13)));
+    assert_eq!(target.hits(), 1);
+
+    let cached_recursive = resolver.resolve(&q, deny).await.unwrap();
+    assert_eq!(cached_recursive.source, AnswerSource::Cache);
+    assert!(cached_recursive.forward_zone.is_none());
+    assert_eq!(cached_recursive.message.rcode(), Rcode::NXDOMAIN);
+}
+
+#[tokio::test]
+async fn recursive_cache_entry_does_not_satisfy_a_forwarded_query() {
+    let h = Hierarchy::start().await.unwrap();
+    let target = Target::spawn(Ipv4Addr::new(192, 0, 2, 14)).await;
+    let zone = forward("corp.internal.", vec![target.addr]);
+    let id = zone.id.clone();
+    let mut config = config_for(&h);
+    config.qname_minimisation = false;
+    config.forward_zones = vec![zone];
+    let resolver = Resolver::new(config).await.unwrap();
+    let q = query("mail.corp.internal.", RecordType::A);
+    let deny = flags_denying_forward();
+
+    let recursive = resolver.resolve(&q, deny.clone()).await.unwrap();
+    assert!(recursive.forward_zone.is_none());
+    assert_eq!(target.hits(), 0);
+
+    let forwarded = resolver
+        .resolve(&q, flags_allowing([id.clone()]))
+        .await
+        .unwrap();
+    assert_eq!(forwarded.source, AnswerSource::Recursion);
+    assert_eq!(forwarded.forward_zone.as_ref(), Some(&id));
+    assert_eq!(a_rdata(&forwarded), RData::A(Ipv4Addr::new(192, 0, 2, 14)));
+    assert_eq!(target.hits(), 1);
+
+    let cached_recursive = resolver.resolve(&q, deny).await.unwrap();
+    assert_eq!(cached_recursive.source, AnswerSource::Cache);
+    assert!(cached_recursive.forward_zone.is_none());
+    assert_eq!(target.hits(), 1);
+}
+
+#[tokio::test]
+async fn different_allow_lists_do_not_share_one_flight() {
+    let h = Hierarchy::start().await.unwrap();
+    let slow = Target::spawn_with(
+        Ipv4Addr::new(192, 0, 2, 15),
+        120,
+        Duration::from_millis(400),
+        Rcode::NOERROR,
+    )
+    .await;
+    let zone = forward("corp.internal.", vec![slow.addr]);
+    let id = zone.id.clone();
+    let mut config = config_for(&h);
+    config.qname_minimisation = false;
+    config.query_timeout = Duration::from_secs(2);
+    config.forward_zones = vec![zone];
+    let resolver = Arc::new(Resolver::new(config).await.unwrap());
+    h.server(".").unwrap().clear_queries();
+    let q = query("www.corp.internal.", RecordType::A);
+
+    let allowed = {
+        let r = Arc::clone(&resolver);
+        let q = q.clone();
+        let flags = flags_allowing([id.clone()]);
+        tokio::spawn(async move { r.resolve(&q, flags).await })
+    };
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let started = std::time::Instant::now();
+    let denied = resolver.resolve(&q, flags_denying_forward()).await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(300),
+        "a disallowed query joined the slow forward flight"
+    );
+    assert!(denied.forward_zone.is_none());
+    assert_eq!(denied.message.rcode(), Rcode::NXDOMAIN);
+    assert!(saw_root(&h, "www.corp.internal."));
+
+    let forwarded = allowed.await.unwrap().unwrap();
+    assert_eq!(forwarded.forward_zone.as_ref(), Some(&id));
+    assert_eq!(a_rdata(&forwarded), RData::A(Ipv4Addr::new(192, 0, 2, 15)));
+    assert_eq!(slow.hits(), 1);
+}
+
+#[tokio::test]
+async fn disallowed_forward_zone_does_not_suppress_the_local_zone() {
+    let h = Hierarchy::start().await.unwrap();
+    let target = Target::spawn(Ipv4Addr::new(192, 0, 2, 16)).await;
+    let mut config = config_for(&h);
+    config.forward_zones = vec![forward("10.in-addr.arpa.", vec![target.addr])];
+    let resolver = Resolver::new(config).await.unwrap();
+    h.server(".").unwrap().clear_queries();
+
+    let answer = resolver
+        .resolve(
+            &query("1.0.0.10.in-addr.arpa.", RecordType::PTR),
+            flags_denying_forward(),
+        )
+        .await
+        .unwrap();
+    assert!(answer.message.header.aa);
+    assert!(!answer.message.header.ra);
+    assert!(answer.forward_zone.is_none());
+    assert_eq!(target.hits(), 0);
+    assert!(root_queries(&h).is_empty());
+}
+
+#[tokio::test]
+async fn prefetch_follows_the_query_route() {
+    let h = Hierarchy::start().await.unwrap();
+    let target = Target::spawn(Ipv4Addr::new(192, 0, 2, 17)).await;
+    let clock = manual_clock();
+    let mut config = prefetch_config(&h, &clock);
+    config.qname_minimisation = false;
+    config.forward_zones = vec![forward("corp.internal.", vec![target.addr])];
+    let resolver = Resolver::new(config).await.unwrap();
+    let q = query("www.corp.internal.", RecordType::A);
+    let deny = flags_denying_forward();
+
+    let first = resolver.resolve(&q, deny.clone()).await.unwrap();
+    assert!(first.forward_zone.is_none());
+    let ttl = first
+        .message
+        .authorities
+        .iter()
+        .chain(first.message.answers.iter())
+        .map(|record| record.ttl)
+        .min()
+        .unwrap();
+    for _ in 0..3 {
+        let hit = resolver.resolve(&q, deny.clone()).await.unwrap();
+        assert_eq!(hit.source, AnswerSource::Cache);
+    }
+    resolver.wait_idle().await;
+    let window = (ttl / 10).max(2);
+    clock.advance(Duration::from_secs(u64::from(ttl.saturating_sub(window))));
+    h.server(".").unwrap().clear_queries();
+
+    let hit = resolver.resolve(&q, deny).await.unwrap();
+    assert_eq!(hit.source, AnswerSource::Cache);
+    resolver.wait_idle().await;
+    assert!(
+        saw_root(&h, "www.corp.internal."),
+        "prefetch must refresh the recursive route"
+    );
+    assert_eq!(target.hits(), 0);
+}
+
+#[tokio::test]
+async fn duplicate_forward_zone_id_is_rejected() {
+    let mut first = forward("a.internal.", vec!["192.0.2.1:53".parse().unwrap()]);
+    let second = forward("b.internal.", vec!["192.0.2.2:53".parse().unwrap()]);
+    first.id = second.id.clone();
+    let err = Resolver::new(ResolverConfig {
+        root_hints: vec!["127.0.0.1:9".parse().unwrap()],
+        query_timeout: Duration::from_millis(50),
+        forward_zones: vec![first, second],
+        ..ResolverConfig::default()
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(err.code(), "resolver.forward_zone.duplicate_id");
 }

@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use dnscraft_proto::{Class, Header, Message, Name, Question, RData, Rcode, Record, RecordType};
-use dnscraft_resolver::{__BenchCache, __BenchTtlClamp, DnssecStatus, Query};
+use dnscraft_resolver::{__BenchCache, __BenchTtlClamp, DnssecStatus, Query, Route};
 
 fn positive_a(name: &Name) -> Message {
     Message {
@@ -52,6 +52,7 @@ fn cache_hit(c: &mut Criterion) {
         cache
             .store(
                 &query,
+                &Route::Recursive,
                 &message,
                 DnssecStatus::Secure,
                 None,
@@ -67,7 +68,7 @@ fn cache_hit(c: &mut Criterion) {
     c.bench_function("cache_hit", |b| {
         b.iter(|| {
             let answer = cache
-                .lookup(black_box(&query), black_box(now))
+                .lookup(black_box(&query), &Route::Recursive, black_box(now))
                 .expect("fresh hit");
             black_box(answer);
         });

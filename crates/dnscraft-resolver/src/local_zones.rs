@@ -92,8 +92,11 @@ impl LocalZones {
     }
 
     /// Answers `query` locally, or returns `None` if the query is not in a
-    /// local zone, a forward zone covers the query name, or the class is
-    /// not IN.
+    /// local zone, a forward zone in `forward_zones` covers the query name,
+    /// or the class is not IN.
+    ///
+    /// `forward_zones` are the zones that apply to this query. A zone the
+    /// caller left out does not suppress the local answer.
     ///
     /// Local answers carry the AA bit, use `DnssecStatus::Insecure` and
     /// `AnswerSource::Recursion` (there is no dedicated local source). The
@@ -158,6 +161,7 @@ impl LocalZones {
             dnssec: DnssecStatus::Insecure,
             source: AnswerSource::Recursion,
             ede: None,
+            forward_zone: None,
         })
     }
 }

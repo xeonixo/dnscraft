@@ -140,24 +140,31 @@ re-checked. Memory only — cold start after every process restart. A flush wins
 over resolutions already running: their results are not stored.
 
 **Local zones.** RFC 6303 private reverse zones are answered locally so those
-PTRs never hit the public internet. A configured forward zone opts out only for
-names it covers (equal to the zone or below it). A forward zone inside a local
-zone, such as `corp.10.in-addr.arpa.`, leaves the rest of `10.in-addr.arpa.`
-local.
+PTRs never hit the public internet. A forward zone the query is allowed to use
+opts out only for names it covers (equal to the zone or below it). A forward
+zone inside a local zone, such as `corp.10.in-addr.arpa.`, leaves the rest of
+`10.in-addr.arpa.` local. A zone omitted from the query's allow-list does not
+opt out.
 
 **Forwarding.** A target that times out or answers SERVFAIL, REFUSED, FORMERR or
 NOTIMP is skipped and the next one is tried. Loop protection compares
-`RequestFlags::client` with the zone's targets, so listeners must pass the real
-peer address; a loop through NAT is bounded by `query_timeout` instead.
+`RequestFlags::client` with the targets of the zone the query is allowed to
+use, so listeners must pass the real peer address; a loop through NAT is
+bounded by `query_timeout` instead. `RequestFlags::forward_zones` is `None`
+when every configured zone may forward, and `Some(ids)` when only those ids
+may. A name with no allowed covering zone is resolved from the root. The cache
+and in-flight keys include that route, so a forwarded answer and a recursive
+answer for the same name stay separate. `Answer.forward_zone` reports the zone
+that produced the answer, including a later cache hit.
 
 **Load.** At most `max_concurrent_resolutions` upstream resolutions run at once.
 Cache hits never wait. A miss that gets no slot within `query_timeout` fails
 with `resolver.overloaded`. Prefetch only runs when a slot is free and backs off
 for 30 s after a failure.
 
-**Not in this crate.** Filters, split-horizon, ACLs, listeners (Do53/DoT/DoH/DoQ),
-client query logs, or which profile may use which forward zone — that belongs
-to `policy` and friends.
+**Not in this crate.** Filters, split-horizon, ACLs, listeners (Do53/DoT/DoH/DoQ)
+and client query logs. A profile chooses the allow-list and passes it as
+`RequestFlags::forward_zones`; selecting the profile belongs to `policy`.
 
 ## Configuration
 
@@ -194,26 +201,51 @@ to `policy` and friends.
 
 A `ForwardZone` sends queries for `zone` and every name below it to `targets`
 with the recursion-desired bit set, instead of walking the delegation chain. A
-name goes to the most specific zone that covers it.
+name goes to the most specific zone that covers it and that the query is
+allowed to use.
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
+| `id` | `ForwardZoneId` | none, required | Stable id, `[a-z0-9-]{1,64}`. Unique among `forward_zones`. Profiles name this id |
 | `zone` | `Name` | none, required | Apex of the forwarded zone |
 | `targets` | `Vec<SocketAddr>` | none, required | Recursive servers, tried in smoothed-RTT order |
 | `validate` | `bool` | `false` | `false` is an implicit negative trust anchor: status `Insecure`, no AD bit, records not checked. `true` validates against a trust anchor for `zone`, with DNSKEYs fetched from `targets` |
 
+Per query, `RequestFlags::forward_zones` (`Option<Arc<[ForwardZoneId]>>`)
+selects which configured zones may forward:
+
+| Value | Effect |
+|-------|--------|
+| `None` (default) | Every configured zone may forward |
+| `Some(ids)` | Only those ids may forward. A name under a zone that is not listed is resolved from the root, and that zone does not suppress a local answer |
+
+Duplicate ids fail `Resolver::new` with `resolver.forward_zone.duplicate_id`.
+An id outside `[a-z0-9-]{1,64}` fails `ForwardZoneId::new` with
+`resolver.forward_zone.empty`, `resolver.forward_zone.too_long` or
+`resolver.forward_zone.invalid_char`.
+
 ```rust
+use std::sync::Arc;
+
 use dnscraft_proto::Name;
-use dnscraft_resolver::{ForwardZone, ResolverConfig};
+use dnscraft_resolver::{ForwardZone, ForwardZoneId, RequestFlags, ResolverConfig};
 
 fn forwarding_config() -> Result<ResolverConfig, Box<dyn std::error::Error>> {
     Ok(ResolverConfig {
         forward_zones: vec![ForwardZone {
+            id: ForwardZoneId::new("corp")?,
             zone: Name::from_ascii("corp.example.")?,
             targets: vec!["192.0.2.53:53".parse()?],
             validate: false,
         }],
         ..ResolverConfig::default()
+    })
+}
+
+fn only_corp() -> Result<RequestFlags, Box<dyn std::error::Error>> {
+    Ok(RequestFlags {
+        forward_zones: Some(Arc::from(vec![ForwardZoneId::new("corp")?])),
+        ..RequestFlags::default()
     })
 }
 ```
@@ -234,6 +266,10 @@ error is for logs, not for end users.
 |-------|------|
 | `ResolverError::NoRootHints` | `resolver.no_root_hints` |
 | `ResolverError::InvalidConfig` | `resolver.invalid_config` |
+| `ResolverError::DuplicateForwardZone` | `resolver.forward_zone.duplicate_id` |
+| `ForwardZoneIdError::Empty` | `resolver.forward_zone.empty` |
+| `ForwardZoneIdError::TooLong` | `resolver.forward_zone.too_long` |
+| `ForwardZoneIdError::InvalidChar` | `resolver.forward_zone.invalid_char` |
 | `ResolveError::Unreachable` | `resolver.unreachable` |
 | `ResolveError::QueryBudgetExceeded` | `resolver.query_budget` |
 | `ResolveError::ReferralDepthExceeded` | `resolver.referral_depth` |

@@ -6,7 +6,7 @@
 
 ## Status (updated 2026-10-25)
 
-- `resolver` and `filtering`: complete (filtering Checkpoint D approved 2026-10-25).
+- `resolver` and `filtering`: complete (filtering Checkpoint D approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - `clients`, `tls`, `policy`: specs approved in progress.md — P1 planning may start (clients → tls → policy).
 - Spec drafts S1–S3: done, archived in [archive/cursor-specs.md](archive/cursor-specs.md).
 - Deep-name p99 ≈ 19 µs accepted by the owner → T3 dropped.
@@ -17,11 +17,11 @@
 | # | Brief | Kind | Blocks |
 |---|---|---|---|
 | 1 | ~~T1 — `Record` enforces rtype ↔ RDATA~~ | tech debt (proto) | done |
-| 2 | R2 — per-query forward-zone allow-list in the resolver | feature (resolver) | – (needed by policy) |
+| 2 | ~~R2 — per-query forward-zone allow-list in the resolver~~ | feature (resolver) | done |
 | 3 | P1 — plan + tasks for clients, then tls, then policy | planning | spec approved in progress.md |
 | 4 | T2 — fetcher TLS error classification | tech debt (filtering, small) | – |
 
-R2 next. P1: one module at a time, STOP after each plan for owner approval.
+R2 done. P1 next: one module at a time, STOP after each plan for owner approval.
 
 ## Rules for every task (paste once per session)
 

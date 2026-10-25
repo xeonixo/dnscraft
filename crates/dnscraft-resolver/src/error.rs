@@ -9,6 +9,15 @@
 //! |---|---|
 //! | [`ResolverError::NoRootHints`] | `resolver.no_root_hints` |
 //! | [`ResolverError::InvalidConfig`] | `resolver.invalid_config` |
+//! | [`ResolverError::DuplicateForwardZone`] | `resolver.forward_zone.duplicate_id` |
+//!
+//! ## `ForwardZoneIdError` codes
+//!
+//! | Variant | Code |
+//! |---|---|
+//! | [`ForwardZoneIdError::Empty`] | `resolver.forward_zone.empty` |
+//! | [`ForwardZoneIdError::TooLong`] | `resolver.forward_zone.too_long` |
+//! | [`ForwardZoneIdError::InvalidChar`] | `resolver.forward_zone.invalid_char` |
 //!
 //! ## `ResolveError` codes
 //!
@@ -31,6 +40,8 @@
 
 use dnscraft_proto::{Name, ProtoError};
 
+use crate::config::ForwardZoneId;
+
 /// Failure to construct a [`Resolver`](crate::Resolver).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -44,6 +55,46 @@ pub enum ResolverError {
         /// What is wrong.
         reason: &'static str,
     },
+    /// Two forward zones were configured with the same id.
+    #[error("duplicate forward zone id {id}")]
+    DuplicateForwardZone {
+        /// The id that appeared more than once.
+        id: ForwardZoneId,
+    },
+}
+
+/// A [`ForwardZoneId`](crate::ForwardZoneId) was rejected.
+///
+/// Ids match `[a-z0-9-]{1,64}`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ForwardZoneIdError {
+    /// The id is empty.
+    #[error("forward zone id is empty")]
+    Empty,
+    /// The id is longer than 64 characters.
+    #[error("forward zone id is {len} characters long, maximum is 64")]
+    TooLong {
+        /// Length of the rejected id.
+        len: usize,
+    },
+    /// A character outside `a-z`, `0-9` and `-`.
+    #[error("invalid character {ch:?} in forward zone id")]
+    InvalidChar {
+        /// The offending character.
+        ch: char,
+    },
+}
+
+impl ForwardZoneIdError {
+    /// Stable, locale-neutral code exposed through the API.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Empty => "resolver.forward_zone.empty",
+            Self::TooLong { .. } => "resolver.forward_zone.too_long",
+            Self::InvalidChar { .. } => "resolver.forward_zone.invalid_char",
+        }
+    }
 }
 
 impl ResolverError {
@@ -52,6 +103,7 @@ impl ResolverError {
         match self {
             Self::NoRootHints => "resolver.no_root_hints",
             Self::InvalidConfig { .. } => "resolver.invalid_config",
+            Self::DuplicateForwardZone { .. } => "resolver.forward_zone.duplicate_id",
         }
     }
 }
@@ -132,6 +184,7 @@ impl ResolveError {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -145,6 +198,48 @@ mod tests {
             .code(),
             "resolver.invalid_config"
         );
+        assert_eq!(
+            ResolverError::DuplicateForwardZone {
+                id: ForwardZoneId::new("vpn").unwrap(),
+            }
+            .code(),
+            "resolver.forward_zone.duplicate_id"
+        );
+    }
+
+    #[test]
+    fn forward_zone_id_errors_have_documented_codes() {
+        assert_eq!(
+            ForwardZoneIdError::Empty.code(),
+            "resolver.forward_zone.empty"
+        );
+        assert_eq!(
+            ForwardZoneIdError::TooLong { len: 65 }.code(),
+            "resolver.forward_zone.too_long"
+        );
+        assert_eq!(
+            ForwardZoneIdError::InvalidChar { ch: '_' }.code(),
+            "resolver.forward_zone.invalid_char"
+        );
+    }
+
+    #[test]
+    fn construction_error_codes_are_unique() {
+        let codes = [
+            ResolverError::NoRootHints.code(),
+            ResolverError::InvalidConfig { reason: "x" }.code(),
+            ResolverError::DuplicateForwardZone {
+                id: ForwardZoneId::new("vpn").unwrap(),
+            }
+            .code(),
+            ForwardZoneIdError::Empty.code(),
+            ForwardZoneIdError::TooLong { len: 65 }.code(),
+            ForwardZoneIdError::InvalidChar { ch: 'A' }.code(),
+        ];
+        let mut sorted = codes.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), codes.len());
     }
 
     #[test]

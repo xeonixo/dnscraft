@@ -1,8 +1,11 @@
 //! Request and response types of the resolver boundary.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use dnscraft_proto::{Class, Message, Name, RecordType};
+
+use crate::config::ForwardZoneId;
 
 /// A question to resolve.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,7 +19,9 @@ pub struct Query {
 }
 
 /// Flags of the client request that influence resolution.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// `Clone` is cheap: [`Self::forward_zones`] shares its id list.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RequestFlags {
     /// The client's CD bit: skip DNSSEC validation (effective from Task 9).
     pub checking_disabled: bool,
@@ -30,6 +35,35 @@ pub struct RequestFlags {
     /// real peer address: behind NAT the address no longer matches a target,
     /// the loop is not detected, and it only ends at `query_timeout`.
     pub client: Option<SocketAddr>,
+    /// Forward zones this query may use.
+    ///
+    /// `None` applies every zone in the resolver configuration. `Some(ids)`
+    /// forwards only through those ids. A name whose most specific covering
+    /// zone is missing from the list is resolved from the root, and that zone
+    /// does not suppress a local answer.
+    pub forward_zones: Option<Arc<[ForwardZoneId]>>,
+}
+
+/// How a question is routed.
+///
+/// Cache entries and in-flight coalescing include this so a forwarded answer
+/// and a recursive answer for the same name stay separate.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Route {
+    /// Iterative resolution from the root. No forward zone applied.
+    Recursive,
+    /// Stub-forwarded through the zone with this id.
+    Forward(ForwardZoneId),
+}
+
+impl Route {
+    /// Zone id when this route forwards, otherwise `None`.
+    pub fn forward_zone(&self) -> Option<ForwardZoneId> {
+        match self {
+            Self::Forward(id) => Some(id.clone()),
+            Self::Recursive => None,
+        }
+    }
 }
 
 /// DNSSEC validation outcome of an answer.
@@ -82,6 +116,9 @@ pub struct Answer {
     pub source: AnswerSource,
     /// Extended error to attach for the client, if any.
     pub ede: Option<ExtendedError>,
+    /// Forward zone that produced this answer, including a cache or stale hit
+    /// of a forwarded answer. `None` for a recursive or local answer.
+    pub forward_zone: Option<ForwardZoneId>,
 }
 
 /// What to remove from the cache (implemented in Task 11).

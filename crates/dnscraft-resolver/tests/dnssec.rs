@@ -515,6 +515,7 @@ const DO: RequestFlags = RequestFlags {
     checking_disabled: false,
     dnssec_ok: true,
     client: None,
+    forward_zones: None,
 };
 
 async fn status_secure(alg: Option<SigAlgorithm>) {
@@ -753,9 +754,10 @@ async fn status_cd_returns_bogus_answer_unvalidated() {
         checking_disabled: true,
         dnssec_ok: true,
         client: None,
+        forward_zones: None,
     };
     for qname in ["www.bogus-sig.test.", "www.bogus-nokey.test."] {
-        let ans = status_ask(&r, qname, cd).await;
+        let ans = status_ask(&r, qname, cd.clone()).await;
         assert_eq!(ans.dnssec, DnssecStatus::Indeterminate);
         assert_eq!(ans.message.rcode(), dnscraft_proto::Rcode::NOERROR);
         assert!(!ans.message.header.ad);

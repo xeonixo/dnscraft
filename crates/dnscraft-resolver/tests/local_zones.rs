@@ -7,7 +7,8 @@ use dnscraft_proto::{Class, Edns, EdnsOption, Message, Name, RData, Rcode, Recor
 use dnscraft_resolver::dnssec::TrustAnchors;
 use dnscraft_resolver::local_zones::{LocalZones, strip_client_subnet};
 use dnscraft_resolver::{
-    AnswerSource, DnssecStatus, ForwardZone, Query, RequestFlags, Resolver, ResolverConfig,
+    AnswerSource, DnssecStatus, ForwardZone, ForwardZoneId, Query, RequestFlags, Resolver,
+    ResolverConfig,
 };
 use dnscraft_testkit::Hierarchy;
 
@@ -301,6 +302,7 @@ async fn forward_zone_disables_local_answer_for_its_subtree() {
     // The fake root is the forward target, so the query leaves the host as a
     // stub query instead of being synthesized locally.
     config.forward_zones = vec![ForwardZone {
+        id: ForwardZoneId::new("rfc1918-10").unwrap(),
         zone: name("10.in-addr.arpa."),
         targets: h.root_hints(),
         validate: false,
@@ -332,6 +334,7 @@ async fn sibling_of_an_inner_forward_zone_stays_local_and_never_reaches_the_root
     let h = Hierarchy::start().await.unwrap();
     let mut config = config_for(&h);
     config.forward_zones = vec![ForwardZone {
+        id: ForwardZoneId::new("corp-10").unwrap(),
         zone: name("corp.10.in-addr.arpa."),
         targets: h.root_hints(),
         validate: false,

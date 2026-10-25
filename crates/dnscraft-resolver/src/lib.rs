@@ -36,7 +36,7 @@ mod stats;
 pub mod transport;
 mod types;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -49,13 +49,13 @@ use stats::Counters;
 use tokio::sync::Semaphore;
 
 pub use clock::{Clock, ManualClock, SystemClock};
-pub use config::{ForwardZone, ResolverConfig};
-pub use error::{ResolveError, ResolverError};
+pub use config::{ForwardZone, ForwardZoneId, ResolverConfig};
+pub use error::{ForwardZoneIdError, ResolveError, ResolverError};
 pub use hints::default_root_hints;
 pub use stats::ResolverStats;
 pub use types::{
     Answer, AnswerSource, DnssecStatus, ExtendedError, FlushScope, PrimingStatus, Query,
-    RequestFlags,
+    RequestFlags, Route,
 };
 
 /// In-memory answer cache, exposed only for the criterion microbench.
@@ -137,6 +137,7 @@ impl Resolver {
                 reason: "max_concurrent_resolutions must be at least 1",
             });
         }
+        reject_duplicate_forward_zones(&config.forward_zones)?;
         let permits = Arc::new(Semaphore::new(
             config
                 .max_concurrent_resolutions
@@ -174,9 +175,12 @@ impl Resolver {
 
     /// Resolves `query`.
     ///
-    /// Names covered by a configured forward zone are sent to that zone's
-    /// targets. Every other name is resolved iteratively from the root
-    /// servers.
+    /// Names covered by an allowed forward zone are sent to that zone's
+    /// targets. [`RequestFlags::forward_zones`] chooses the zones that may
+    /// forward: `None` allows every configured zone, and `Some` allows only
+    /// the listed ids. Every other name is resolved iteratively from the root
+    /// servers. A forward zone the query may not use does not suppress a
+    /// local answer.
     pub async fn resolve(
         &self,
         query: &Query,
@@ -184,11 +188,10 @@ impl Resolver {
     ) -> Result<Answer, ResolveError> {
         if let Some(answer) = self.shared.local_zones.answer(
             query,
-            self.shared
-                .config
-                .forward_zones
-                .iter()
-                .map(|zone| &zone.zone),
+            forward::allowed_names(
+                &self.shared.config.forward_zones,
+                flags.forward_zones.as_deref(),
+            ),
         ) {
             return Ok(answer);
         }
@@ -210,21 +213,32 @@ impl Resolver {
         query: &Query,
         flags: RequestFlags,
     ) -> Result<Answer, ResolveError> {
+        let route = forward::route_for(
+            &self.shared.config.forward_zones,
+            query,
+            flags.forward_zones.as_deref(),
+        );
         let now = self.shared.config.clock.instant();
         let hit_started = Instant::now();
-        if let Some(answer) = self.shared.cache.lookup(query, now) {
+        if let Some(answer) = self.shared.cache.lookup(query, &route, now) {
             tracing::debug!(qname = %query.name, qtype = %query.qtype, "cache hit");
             self.shared.counters.record_cache_hit(hit_started.elapsed());
-            self.maybe_prefetch(query, flags, now);
+            self.maybe_prefetch(query, &flags, &route, now);
             return Ok(present(answer, flags, query.qtype));
         }
         // Forward loop: peer is a configured target of the matching zone.
         // Checked before dedup so we do not join a flight that is waiting on
         // that same peer (deadlock). Ordinary clients are not targets, so
-        // they still coalesce on the in-flight forward.
-        if query.qclass == Class::IN
+        // they still coalesce on the in-flight forward. A zone the query is
+        // not allowed to use is not a forward, so it is not a loop either.
+        if let types::Route::Forward(id) = &route
             && let Some(client) = flags.client
-            && let Some(zone) = forward::covering(&self.shared.config.forward_zones, &query.name)
+            && let Some(zone) = self
+                .shared
+                .config
+                .forward_zones
+                .iter()
+                .find(|zone| &zone.id == id)
             && zone.targets.contains(&client)
         {
             tracing::debug!(qname = %query.name, zone = %zone.zone, peer = %client, "forward loop");
@@ -232,18 +246,19 @@ impl Resolver {
                 zone: zone.zone.clone(),
             });
         }
-        // Misses for the same question share one upstream resolution. DO is
-        // applied per waiter afterwards, because it is not part of the key.
-        let key = inflight::Key::new(query, flags.checking_disabled);
+        // Misses for the same question and route share one upstream
+        // resolution. DO is applied per waiter afterwards, because it is not
+        // part of the key.
+        let key = inflight::Key::new(query, flags.checking_disabled, route.clone());
         let shared = Arc::clone(&self.shared);
         let owned = query.clone();
+        let task_flags = flags.clone();
         let upstream = self
             .shared
             .inflight
-            .dedup(
-                key,
-                async move { shared.resolve_limited(&owned, flags).await },
-            )
+            .dedup(key, async move {
+                shared.resolve_limited(&owned, task_flags).await
+            })
             .await;
         match upstream {
             Ok(answer) => Ok(present(answer, flags, query.qtype)),
@@ -255,11 +270,12 @@ impl Resolver {
             // original error is returned; it is not rewritten to SERVFAIL.
             Err(err @ ResolveError::Unreachable { .. }) => {
                 let now = self.shared.config.clock.instant();
-                if let Some(answer) =
-                    self.shared
-                        .cache
-                        .lookup_stale(query, now, self.shared.config.serve_stale)
-                {
+                if let Some(answer) = self.shared.cache.lookup_stale(
+                    query,
+                    &route,
+                    now,
+                    self.shared.config.serve_stale,
+                ) {
                     tracing::debug!(
                         qname = %query.name,
                         qtype = %query.qtype,
@@ -276,20 +292,26 @@ impl Resolver {
 
     /// Starts a background refresh when the cached answer is popular and
     /// close to expiry. The caller already has that answer and does not wait.
-    fn maybe_prefetch(&self, query: &Query, flags: RequestFlags, now: Instant) {
+    fn maybe_prefetch(
+        &self,
+        query: &Query,
+        flags: &RequestFlags,
+        route: &types::Route,
+        now: Instant,
+    ) {
         // CD would store an unvalidated replacement, which is the same reason
         // CD answers are not cached. Bogus entries are never stored, so a hit
         // is already something prefetch is allowed to refresh.
         if !self.shared.config.prefetch || flags.checking_disabled {
             return;
         }
-        let Some(stats) = self.shared.cache.fresh_stats(query, now) else {
+        let Some(stats) = self.shared.cache.fresh_stats(query, route, now) else {
             return;
         };
         if !prefetch::should_refresh(stats) {
             return;
         }
-        let key = inflight::Key::new(query, false);
+        let key = inflight::Key::new(query, false, route.clone());
         if self.shared.prefetch_backed_off(&key, now) {
             return;
         }
@@ -301,8 +323,9 @@ impl Resolver {
             return;
         };
         // CD is clear on the refresh itself, so it coalesces with validating
-        // misses and the result stays cacheable. A second hit finds this
-        // flight and does not start another.
+        // misses and the result stays cacheable. The allow-list is the one
+        // from the hit, so the refresh follows the same route. A second hit
+        // finds this flight and does not start another.
         let Some(leader) = self.shared.inflight.try_lead(key.clone()) else {
             return;
         };
@@ -314,10 +337,14 @@ impl Resolver {
         );
         let shared = Arc::clone(&self.shared);
         let query = query.clone();
+        let refresh_flags = RequestFlags {
+            checking_disabled: false,
+            dnssec_ok: flags.dnssec_ok,
+            client: None,
+            forward_zones: flags.forward_zones.clone(),
+        };
         let task = tokio::spawn(async move {
-            let result = shared
-                .resolve_upstream(&query, RequestFlags::default())
-                .await;
+            let result = shared.resolve_upstream(&query, refresh_flags).await;
             drop(permit);
             // The refresh only counts when it produced a cacheable outcome. A
             // forwarded SERVFAIL or REFUSED arrives as `Ok` but left the old
@@ -457,7 +484,11 @@ impl Shared {
         // its (older) result.
         let epoch = self.cache.epoch();
         if query.qclass == Class::IN
-            && let Some(zone) = forward::covering(&self.config.forward_zones, &query.name)
+            && let Some(zone) = forward::covering(
+                &self.config.forward_zones,
+                &query.name,
+                flags.forward_zones.as_deref(),
+            )
         {
             let zone = zone.clone();
             return self.forward_zone(zone, query, flags, epoch).await;
@@ -488,6 +519,7 @@ impl Shared {
             status,
             epoch,
             outcome.sig_cap,
+            &types::Route::Recursive,
         )
     }
 
@@ -549,18 +581,20 @@ impl Shared {
         let budget = dnssec::ValidationBudget::default();
         let mut caps = Vec::new();
         let status = self
-            .forwarded_status(&zone, flags, &message, &budget, &mut caps)
+            .forwarded_status(&zone, &flags, &message, &budget, &mut caps)
             .await?;
         let mut message = message;
         let mut sig_cap = None;
         for section in [&mut message.answers, &mut message.authorities] {
             dnssec::walk::apply_caps(section, &caps, &mut sig_cap);
         }
-        self.finish_answer(query, flags, message, status, epoch, sig_cap)
+        let route = types::Route::Forward(zone.id.clone());
+        self.finish_answer(query, flags, message, status, epoch, sig_cap, &route)
     }
 
     /// Applies AA/RA/AD, rewrites Bogus to SERVFAIL, and stores a cacheable
     /// answer. Shared by iterative and forwarded resolutions.
+    #[allow(clippy::too_many_arguments)]
     fn finish_answer(
         &self,
         query: &Query,
@@ -569,6 +603,7 @@ impl Shared {
         status: Status,
         epoch: u64,
         sig_cap: Option<u32>,
+        route: &types::Route,
     ) -> Result<Answer, ResolveError> {
         message.header.aa = false;
         message.header.ra = true;
@@ -599,6 +634,7 @@ impl Shared {
         let published_ttl = if cacheable {
             self.cache.store_in_epoch(
                 query,
+                route,
                 &message,
                 dnssec,
                 ede.clone(),
@@ -621,8 +657,22 @@ impl Shared {
             dnssec,
             source: AnswerSource::Recursion,
             ede,
+            forward_zone: route.forward_zone(),
         })
     }
+}
+
+/// Two forward zones with the same id cannot be told apart on a query.
+fn reject_duplicate_forward_zones(zones: &[config::ForwardZone]) -> Result<(), ResolverError> {
+    let mut seen = HashSet::with_capacity(zones.len());
+    for zone in zones {
+        if !seen.insert(&zone.id) {
+            return Err(ResolverError::DuplicateForwardZone {
+                id: zone.id.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Applies the caller's DO bit. Shared by a cache hit and every in-flight waiter.

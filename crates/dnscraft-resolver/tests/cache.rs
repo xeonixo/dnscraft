@@ -533,6 +533,7 @@ async fn cached_secure_answer_keeps_dnssec_status_and_records() {
             checking_disabled: false,
             dnssec_ok: true,
             client: None,
+            forward_zones: None,
         },
     )
     .await;
@@ -565,6 +566,7 @@ async fn cached_secure_answer_keeps_dnssec_status_and_records() {
             checking_disabled: false,
             dnssec_ok: true,
             client: None,
+            forward_zones: None,
         },
     )
     .await;
@@ -615,8 +617,9 @@ async fn checking_disabled_answers_are_not_stored() {
         checking_disabled: true,
         dnssec_ok: false,
         client: None,
+        forward_zones: None,
     };
-    let first = resolve(&r, "www.example.test.", RecordType::A, cd).await;
+    let first = resolve(&r, "www.example.test.", RecordType::A, cd.clone()).await;
     assert_eq!(first.source, AnswerSource::Recursion);
 
     clear(&h, ZONES);
@@ -646,6 +649,7 @@ async fn validated_cache_entry_is_served_to_a_cd_query() {
             checking_disabled: true,
             dnssec_ok: false,
             client: None,
+            forward_zones: None,
         },
     )
     .await;

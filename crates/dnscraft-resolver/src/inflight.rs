@@ -2,7 +2,9 @@
 //!
 //! A cache miss joins a resolution that is already running for the same
 //! question instead of starting another one. The key is the cache key
-//! (name, type, class) plus the CD bit. CD skips validation, so a CD lookup
+//! (name, type, class, route) plus the CD bit. The route is a forward zone
+//! id or recursive resolution, so two allow-lists that resolve the name
+//! differently do not share a flight. CD skips validation, so a CD lookup
 //! must not satisfy a waiter that asked to be validated, and a validated
 //! answer must not be thrown away for a CD caller that shares its flight.
 //! The DO bit is not part of the key: every waiter receives the full answer
@@ -27,23 +29,25 @@ use dnscraft_proto::{Class, Name, RecordType};
 use tokio::sync::{Notify, oneshot};
 
 use crate::error::ResolveError;
-use crate::types::{Answer, Query};
+use crate::types::{Answer, Query, Route};
 
-/// Question plus CD, the unit of coalescing.
+/// Question, route and CD: the unit of coalescing.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Key {
     name: Name,
     qtype: RecordType,
     qclass: Class,
+    route: Route,
     checking_disabled: bool,
 }
 
 impl Key {
-    pub(crate) fn new(query: &Query, checking_disabled: bool) -> Self {
+    pub(crate) fn new(query: &Query, checking_disabled: bool, route: Route) -> Self {
         Self {
             name: query.name.clone(),
             qtype: query.qtype,
             qclass: query.qclass,
+            route,
             checking_disabled,
         }
     }
@@ -284,6 +288,10 @@ mod tests {
     use crate::types::{AnswerSource, DnssecStatus};
 
     fn key(checking_disabled: bool) -> Key {
+        key_on(checking_disabled, Route::Recursive)
+    }
+
+    fn key_on(checking_disabled: bool, route: Route) -> Key {
         Key::new(
             &Query {
                 name: Name::from_ascii("www.example.test.").unwrap(),
@@ -291,6 +299,7 @@ mod tests {
                 qclass: Class::IN,
             },
             checking_disabled,
+            route,
         )
     }
 
@@ -310,6 +319,7 @@ mod tests {
             dnssec: DnssecStatus::Indeterminate,
             source: AnswerSource::Recursion,
             ede: Some(crate::types::ExtendedError { code, text: None }),
+            forward_zone: None,
         }
     }
 
@@ -425,6 +435,43 @@ mod tests {
         })
         .await
         .expect("CD and non-CD queries must each run");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn different_routes_do_not_share_a_flight() {
+        use crate::config::ForwardZoneId;
+
+        let inflight = Inflight::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let routes = [
+            Route::Recursive,
+            Route::Forward(ForwardZoneId::new("corp").unwrap()),
+        ];
+        let mut joins = Vec::new();
+        for route in routes {
+            let inflight = inflight.clone();
+            let calls = Arc::clone(&calls);
+            let barrier = Arc::clone(&barrier);
+            joins.push(tokio::spawn(async move {
+                inflight
+                    .dedup(key_on(false, route), async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        barrier.wait().await;
+                        Ok(sample(1))
+                    })
+                    .await
+                    .unwrap()
+            }));
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            for join in joins {
+                join.await.unwrap();
+            }
+        })
+        .await
+        .expect("different routes must each run");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 

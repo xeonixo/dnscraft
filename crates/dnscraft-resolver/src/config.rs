@@ -1,7 +1,9 @@
 //! Resolver configuration.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,7 +11,55 @@ use dnscraft_proto::Name;
 
 use crate::clock::{Clock, SystemClock};
 use crate::dnssec::TrustAnchors;
+use crate::error::ForwardZoneIdError;
 use crate::hints::default_root_hints;
+
+const MAX_FORWARD_ZONE_ID: usize = 64;
+
+/// Identifier of a [`ForwardZone`].
+///
+/// Matches `[a-z0-9-]{1,64}`. [`Resolver::new`](crate::Resolver::new) rejects
+/// two zones that share an id.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct ForwardZoneId(Arc<str>);
+
+impl ForwardZoneId {
+    /// Validates `s` (`[a-z0-9-]{1,64}`) and wraps it.
+    pub fn new(s: &str) -> Result<Self, ForwardZoneIdError> {
+        if s.is_empty() {
+            return Err(ForwardZoneIdError::Empty);
+        }
+        if s.len() > MAX_FORWARD_ZONE_ID {
+            return Err(ForwardZoneIdError::TooLong { len: s.len() });
+        }
+        if let Some(ch) = s
+            .chars()
+            .find(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-'))
+        {
+            return Err(ForwardZoneIdError::InvalidChar { ch });
+        }
+        Ok(Self(Arc::from(s)))
+    }
+
+    /// The id as text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ForwardZoneId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for ForwardZoneId {
+    type Err = ForwardZoneIdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::new(s)
+    }
+}
 
 /// Configuration of a [`Resolver`](crate::Resolver).
 #[derive(Clone, Debug)]
@@ -128,6 +178,11 @@ pub struct ResolverConfig {
 /// address; it ends at `query_timeout`, so it is bounded but slow.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForwardZone {
+    /// Stable id (`[a-z0-9-]{1,64}`). Unique among the configured zones.
+    ///
+    /// Profiles name this id in [`RequestFlags::forward_zones`](crate::RequestFlags::forward_zones).
+    /// The cache and in-flight keys use it as the forward route.
+    pub id: ForwardZoneId,
     /// Apex of the forwarded zone.
     pub zone: Name,
     /// Recursive servers that answer this zone.
@@ -168,6 +223,7 @@ impl Default for ResolverConfig {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -184,5 +240,34 @@ mod tests {
         assert!(!config.allow_private_nameservers);
         assert_eq!(config.root_reprime_interval, Duration::from_secs(86_400));
         assert_eq!(config.resolve_deadline, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn forward_zone_id_accepts_the_list_charset() {
+        assert_eq!(
+            ForwardZoneId::new("vpn-site-1").unwrap().as_str(),
+            "vpn-site-1"
+        );
+        assert_eq!("x".parse::<ForwardZoneId>().unwrap().to_string(), "x");
+        assert!(ForwardZoneId::new(&"a".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn forward_zone_id_rejects_empty_long_and_other_characters() {
+        assert_eq!(
+            ForwardZoneId::new("").unwrap_err().code(),
+            "resolver.forward_zone.empty"
+        );
+        assert_eq!(
+            ForwardZoneId::new(&"a".repeat(65)).unwrap_err().code(),
+            "resolver.forward_zone.too_long"
+        );
+        for bad in ["Upper", "under_score", "sp ace", "dot.ted", "ü"] {
+            assert_eq!(
+                ForwardZoneId::new(bad).unwrap_err().code(),
+                "resolver.forward_zone.invalid_char",
+                "{bad}"
+            );
+        }
     }
 }

@@ -10,14 +10,16 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 
 ## Current state
 
-- Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
+- Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25). R2 (per-query forward-zone allow-list) done.
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Next: P1 plan.
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Next: P1 plan.
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Next: P1 plan.
-- Blockers: none. Cursor: R2, then P1 (clients → tls → policy).  T1 done.
+- Blockers: none. Cursor: P1 (clients → tls → policy). T1 done. R2 done.
 
 ## Log
+
+- 2026-10-25 — R2 done (Cursor): per-query forward-zone allow-list. `ForwardZone` has a validated `ForwardZoneId` (`[a-z0-9-]{1,64}`; duplicate ids → `resolver.forward_zone.duplicate_id`). `RequestFlags::forward_zones`: `None` keeps every configured zone, `Some(ids)` forwards only those ids and resolves the rest from the root (a disallowed zone also leaves RFC 6303 local answers in place). Cache and in-flight keys include the route (zone id or recursive) so the two answers never mix; `Answer.forward_zone` reports the zone, including cache and stale hits. Prefetch repeats the query's allow-list. DoD green.
 
 - 2026-10-25 — **Checkpoint D approved by the owner: module `filtering` COMPLETE.** Plan and tasks archived to tasks/archive/filtering-plan.md and filtering-todo.md. T2 (fetcher TLS classification) unblocked for Cursor.
 

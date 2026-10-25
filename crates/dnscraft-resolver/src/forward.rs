@@ -3,6 +3,10 @@
 //! A query covered by a [`ForwardZone`](crate::ForwardZone) is sent to that
 //! zone's targets with RD set, in smoothed-RTT order, instead of being
 //! resolved from the root. The most specific configured zone wins.
+//! [`RequestFlags::forward_zones`](crate::RequestFlags::forward_zones)
+//! restricts that choice per query: `None` allows every configured zone, and
+//! `Some` allows only the listed ids. A name with no allowed covering zone is
+//! resolved from the root.
 //! `validate = false` is an implicit negative trust anchor: the answer is
 //! `Insecure`, the AD bit stays clear, and the records are not checked.
 //! `validate = true` checks positive RRsets in the zone against DNSKEY
@@ -36,7 +40,7 @@ use std::net::SocketAddr;
 
 use dnscraft_proto::{Message, Name, RData, Rcode, Record, RecordType};
 
-use crate::config::ForwardZone;
+use crate::config::{ForwardZone, ForwardZoneId};
 use crate::dnssec::status::{BogusReason, Status, rrsets};
 use crate::dnssec::walk::TtlCap;
 use crate::dnssec::{
@@ -44,7 +48,7 @@ use crate::dnssec::{
     validate_rrset_budgeted,
 };
 use crate::error::ResolveError;
-use crate::types::RequestFlags;
+use crate::types::{Query, RequestFlags, Route};
 use crate::{Shared, transport};
 
 /// Longest CNAME chain followed when scrubbing a forwarded answer.
@@ -99,15 +103,64 @@ pub(crate) fn scrub(mut message: Message, qname: &Name, qtype: RecordType) -> Me
     message
 }
 
-/// The most specific configured zone that contains `name`, if any.
+/// Whether `allow` permits `zone` to forward.
+///
+/// `None` permits every zone. `Some` permits a zone only when its id is listed.
+fn is_allowed(zone: &ForwardZone, allow: Option<&[ForwardZoneId]>) -> bool {
+    match allow {
+        None => true,
+        Some(ids) => ids.iter().any(|id| id == &zone.id),
+    }
+}
+
+/// Forward zones that apply to a query with this allow-list.
+///
+/// Passed to local-zone synthesis so a zone the query may not use does not
+/// suppress a local answer.
+pub(crate) fn allowed_names<'a>(
+    zones: &'a [ForwardZone],
+    allow: Option<&[ForwardZoneId]>,
+) -> impl Iterator<Item = &'a Name> {
+    zones
+        .iter()
+        .filter(move |zone| is_allowed(zone, allow))
+        .map(|zone| &zone.zone)
+}
+
+/// The most specific allowed zone that contains `name`, if any.
+///
+/// `allow` is [`RequestFlags::forward_zones`](crate::RequestFlags::forward_zones):
+/// `None` considers every configured zone, `Some` only the listed ids. When no
+/// allowed zone covers `name`, the caller resolves from the root.
 ///
 /// When two zones share the same label count (unusual), the later entry in
 /// `zones` wins (`Iterator::max_by_key` keeps the last maximum).
-pub(crate) fn covering<'a>(zones: &'a [ForwardZone], name: &Name) -> Option<&'a ForwardZone> {
+pub(crate) fn covering<'a>(
+    zones: &'a [ForwardZone],
+    name: &Name,
+    allow: Option<&[ForwardZoneId]>,
+) -> Option<&'a ForwardZone> {
     zones
         .iter()
-        .filter(|zone| zone.zone.zone_of(name))
+        .filter(|zone| zone.zone.zone_of(name) && is_allowed(zone, allow))
         .max_by_key(|zone| zone.zone.label_count())
+}
+
+/// Route of `query`: the most specific allowed forward zone, or recursion.
+///
+/// A class other than IN is always recursive. Forwarding is defined for IN.
+pub(crate) fn route_for(
+    zones: &[ForwardZone],
+    query: &Query,
+    allow: Option<&[ForwardZoneId]>,
+) -> Route {
+    if query.qclass != dnscraft_proto::Class::IN {
+        return Route::Recursive;
+    }
+    match covering(zones, &query.name, allow) {
+        Some(zone) => Route::Forward(zone.id.clone()),
+        None => Route::Recursive,
+    }
 }
 
 impl Shared {
@@ -164,7 +217,7 @@ impl Shared {
     pub(crate) async fn forwarded_status(
         &self,
         zone: &ForwardZone,
-        flags: RequestFlags,
+        flags: &RequestFlags,
         message: &Message,
         budget: &ValidationBudget,
         caps: &mut Vec<TtlCap>,
@@ -250,7 +303,9 @@ mod tests {
     }
 
     fn zone(text: &str) -> ForwardZone {
+        let id = text.trim_end_matches('.').replace('.', "-");
         ForwardZone {
+            id: ForwardZoneId::new(&id).unwrap(),
             zone: name(text),
             targets: vec![SocketAddr::from(([127, 0, 0, 1], 53))],
             validate: false,
@@ -264,18 +319,47 @@ mod tests {
             zone("corp.internal."),
             zone("other.internal."),
         ];
-        let hit = covering(&zones, &name("www.corp.internal.")).unwrap();
+        let hit = covering(&zones, &name("www.corp.internal."), None).unwrap();
         assert_eq!(hit.zone, name("corp.internal."));
         assert_eq!(
-            covering(&zones, &name("corp.internal.")).unwrap().zone,
+            covering(&zones, &name("corp.internal."), None)
+                .unwrap()
+                .zone,
             name("corp.internal.")
         );
         assert_eq!(
-            covering(&zones, &name("internal.")).unwrap().zone,
+            covering(&zones, &name("internal."), None).unwrap().zone,
             name("internal.")
         );
-        assert!(covering(&zones, &name("example.test.")).is_none());
-        assert!(covering(&[], &name("www.corp.internal.")).is_none());
+        assert!(covering(&zones, &name("example.test."), None).is_none());
+        assert!(covering(&[], &name("www.corp.internal."), None).is_none());
+    }
+
+    #[test]
+    fn allow_list_keeps_the_most_specific_permitted_zone() {
+        let zones = vec![zone("internal."), zone("corp.internal.")];
+        let parent = [ForwardZoneId::new("internal").unwrap()];
+        let hit = covering(&zones, &name("www.corp.internal."), Some(&parent)).unwrap();
+        assert_eq!(hit.id.as_str(), "internal");
+        assert!(covering(&zones, &name("www.corp.internal."), Some(&[])).is_none());
+        let child = [ForwardZoneId::new("corp-internal").unwrap()];
+        assert_eq!(
+            covering(&zones, &name("www.corp.internal."), Some(&child))
+                .unwrap()
+                .id
+                .as_str(),
+            "corp-internal"
+        );
+        let q = Query {
+            name: name("www.corp.internal."),
+            qtype: RecordType::A,
+            qclass: dnscraft_proto::Class::IN,
+        };
+        assert_eq!(route_for(&zones, &q, Some(&[])), Route::Recursive);
+        assert_eq!(
+            route_for(&zones, &q, None),
+            Route::Forward(ForwardZoneId::new("corp-internal").unwrap())
+        );
     }
 
     #[tokio::test]
@@ -317,6 +401,7 @@ mod tests {
         }])
         .unwrap();
         let fz = ForwardZone {
+            id: ForwardZoneId::new("fz-test").unwrap(),
             zone: origin.clone(),
             targets: vec![target],
             validate: true,
@@ -341,7 +426,7 @@ mod tests {
             .shared
             .forwarded_status(
                 &fz,
-                flags,
+                &flags,
                 &message,
                 &ValidationBudget::default(),
                 &mut caps,
@@ -356,7 +441,7 @@ mod tests {
             .shared
             .forwarded_status(
                 &fz,
-                flags,
+                &flags,
                 &message,
                 &ValidationBudget::with_limits(1, 1),
                 &mut Vec::new(),
