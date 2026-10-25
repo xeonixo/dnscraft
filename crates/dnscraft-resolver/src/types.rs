@@ -30,10 +30,11 @@ pub struct RequestFlags {
     /// Peer address of the client that asked this question, when known.
     ///
     /// Listeners should set this to the UDP/TCP peer. Forward-zone loop
-    /// protection refuses to forward when the peer is itself one of the
-    /// zone's targets (the remote side forwarded back here). It must be the
-    /// real peer address: behind NAT the address no longer matches a target,
-    /// the loop is not detected, and it only ends at `query_timeout`.
+    /// protection refuses to forward when the peer's IP is the IP of one of
+    /// the zone's targets (the remote side forwarded back here). Only the IP
+    /// is compared; the port is ignored, so port 0 is fine. It must be the
+    /// real peer IP: behind NAT it no longer matches a target, the loop is
+    /// not detected, and it only ends at `query_timeout`.
     pub client: Option<SocketAddr>,
     /// Forward zones this query may use.
     ///

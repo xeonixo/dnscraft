@@ -341,6 +341,55 @@ async fn forward_loop_returns_servfail_without_hanging() {
 }
 
 #[tokio::test]
+async fn forward_loop_ignores_client_port() {
+    let h = Hierarchy::start().await.unwrap();
+    let target = Target::spawn(Ipv4Addr::new(192, 0, 2, 30)).await;
+    let mut config = config_for(&h);
+    config.forward_zones = vec![forward("corp.internal.", vec![target.addr])];
+    let resolver = Resolver::new(config).await.unwrap();
+    let q = query("www.corp.internal.", RecordType::A);
+
+    // Same IP as the target, ephemeral port (and port 0 as policy sends it).
+    for port in [40000, 0] {
+        let flags = RequestFlags {
+            client: Some(SocketAddr::new(target.addr.ip(), port)),
+            ..RequestFlags::default()
+        };
+        let err = resolver.resolve(&q, flags).await.unwrap_err();
+        assert_eq!(err.code(), "resolver.forward_loop", "port {port}");
+    }
+    // IPv4-mapped IPv6 peer equals the IPv4 target.
+    let mapped = match target.addr.ip() {
+        std::net::IpAddr::V4(v4) => std::net::IpAddr::V6(v4.to_ipv6_mapped()),
+        other => other,
+    };
+    let flags = RequestFlags {
+        client: Some(SocketAddr::new(mapped, 40000)),
+        ..RequestFlags::default()
+    };
+    let err = resolver.resolve(&q, flags).await.unwrap_err();
+    assert_eq!(err.code(), "resolver.forward_loop");
+}
+
+#[tokio::test]
+async fn forward_with_non_target_client_ip_still_forwards() {
+    let h = Hierarchy::start().await.unwrap();
+    let target = Target::spawn(Ipv4Addr::new(192, 0, 2, 30)).await;
+    let mut config = config_for(&h);
+    config.forward_zones = vec![forward("corp.internal.", vec![target.addr])];
+    let resolver = Resolver::new(config).await.unwrap();
+    let q = query("www.corp.internal.", RecordType::A);
+
+    let flags = RequestFlags {
+        client: Some(SocketAddr::new(Ipv4Addr::new(192, 0, 2, 10).into(), 40000)),
+        ..RequestFlags::default()
+    };
+    let answer = resolver.resolve(&q, flags).await.unwrap();
+    assert_eq!(answer.message.rcode(), Rcode::NOERROR);
+    assert_eq!(target.hits(), 1);
+}
+
+#[tokio::test]
 async fn concurrent_forwards_coalesce_on_one_target_query() {
     let h = Hierarchy::start().await.unwrap();
     let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();

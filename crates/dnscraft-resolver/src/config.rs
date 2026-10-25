@@ -172,10 +172,12 @@ pub struct ResolverConfig {
 /// If every target fails with an error rcode, the last such response is
 /// passed on.
 ///
-/// Loop protection needs [`RequestFlags::client`](crate::RequestFlags::client)
-/// to be the real peer address of the client. A loop that crosses NAT (the
-/// peer address seen here is not a configured target) is not detected by
-/// address; it ends at `query_timeout`, so it is bounded but slow.
+/// Loop protection compares only the IP of
+/// [`RequestFlags::client`](crate::RequestFlags::client) with the IPs of the
+/// targets; ports are ignored (a forwarder queries back from an ephemeral
+/// port), and IPv4-mapped IPv6 equals the plain IPv4 address. A loop that
+/// crosses NAT (the source IP seen here is not a configured target) is not
+/// detected by address; it ends at `query_timeout`, so it is bounded but slow.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForwardZone {
     /// Stable id (`[a-z0-9-]{1,64}`). Unique among the configured zones.

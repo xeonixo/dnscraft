@@ -239,6 +239,8 @@ impl Resolver {
             return Ok(present(answer, flags, query.qtype));
         }
         // Forward loop: peer is a configured target of the matching zone.
+        // Only the IP is compared: a forwarder that queries us back uses an
+        // ephemeral source port, and policy passes port 0.
         // Checked before dedup so we do not join a flight that is waiting on
         // that same peer (deadlock). Ordinary clients are not targets, so
         // they still coalesce on the in-flight forward. A zone the query is
@@ -251,7 +253,10 @@ impl Resolver {
                 .forward_zones
                 .iter()
                 .find(|zone| &zone.id == id)
-            && zone.targets.contains(&client)
+            && zone
+                .targets
+                .iter()
+                .any(|target| target.ip().to_canonical() == client.ip().to_canonical())
         {
             tracing::debug!(qname = %query.name, zone = %zone.zone, peer = %client, "forward loop");
             return Err(ResolveError::ForwardLoop {
