@@ -80,7 +80,8 @@ Blocked services and custom rules live on the **filter set** ([SPEC-filtering.md
 ### Pause protection
 
 - Durations: **5 minutes**, **1 hour**, or **until resumed**.
-- Scope: **global** (all profiles) or **per profile**.
+- Scope: **global** (all profiles) **and** **per profile** — both required for
+  MVP (phone “pause everything” vs “pause kids’ profile”).
 - While paused: filtering for that scope returns as if the filter set were
   paused (`Pass` on qname / chain / answer-IP). Local records, bypass,
   SafeSearch, rebind, and recursion still run.
@@ -106,7 +107,7 @@ For each query, after selection:
 | 7 | **CNAME uncloaking** — collect names in the answer chain; `match_chain`; on block, replace answer with block synthesis | Matches AdGuard / SPEC-filtering |
 | 8 | **Answer-IP filtering** — for each A/AAAA in the final answer, `match_answer_ip`; block wins | Malware hosts with rotating names |
 | 9 | **DNS rebind protection** — drop (or refuse) answers whose A/AAAA are private/loopback/ULA **unless** the qname (or a suffix) is on the profile’s exception list; if all addresses removed → NODATA or synthesised empty | After filters so legitimate filter rewrites to private IPs still work if the admin used custom rules / exceptions |
-| 10 | **AAAA suppression** — if profile `suppress_aaaa` and qtype was AAAA (or remove AAAA from mixed answers when applicable — see Open Questions) | IPv4-only clients |
+| 10 | **AAAA suppression** — if profile `suppress_aaaa` and qtype is **AAAA** only → NODATA (NOERROR empty); other qtypes unchanged | IPv4-only clients; keep HTTPS/SVCB/etc. intact |
 | 11 | **Emit** message + `DecisionRecord` | |
 
 Justification summary: **authoritative local data first**, then **policy canaries**, then **cheap filter**, then **expensive resolve**, then **answer hygiene** (chain, IP rules, rebind, AAAA).
@@ -119,7 +120,7 @@ Sources: [RFC 8914](https://www.rfc-editor.org/rfc/rfc8914.html).
 |---|---|---|
 | View record, ClientDirectory name/PTR, bypass, SafeSearch rewrite, filter rewrite, block synthesis | **Clear** (not validated public DNSSEC data) | Block with rcode REFUSED/NXDOMAIN/SERVFAIL: **15 Blocked** (operator policy). Null/custom IP with NOERROR: **4 Forged Answer**. EXTRA-TEXT may carry the stable filter reason code / short English diagnostic for logs — never secrets |
 | Unmodified resolver answer with `DnssecStatus::Secure` | **Set** (pass through resolver’s AD) | Resolver’s EDE if any (e.g. stale) |
-| Resolver answer then modified (AAAA stripped, rebind address removed, CNAME chain blocked) | **Clear** | Block path → 15; empty after rebind → optional 15 or no EDE (Open Questions) |
+| Resolver answer then modified (AAAA stripped, rebind address removed, CNAME chain blocked) | **Clear** | Block path → 15; empty after rebind stripped all addresses → **NOERROR/NODATA**, no EDE (not a blocklist hit) |
 | `DnssecStatus::Bogus` | Clear; SERVFAIL already from resolver | Keep resolver DNSSEC EDE |
 
 Do **not** use EDE 17 Filtered for normal profile filtering (17 means the *client* asked to be filtered). Operator-configured lists → **15 Blocked**.
@@ -156,7 +157,7 @@ pub struct FilterHit {
 - Per view: map of owner name → RR sets for types A, AAAA, CNAME, TXT, SRV, MX.
 - TTL configurable per record (default 60 s).
 - CNAME at a node means no other types at that node (RFC 1034); validate on apply.
-- Wildcards: not required in v1 (Open Questions).
+- Wildcards: **exact names only in v1** (no `*.example` view records). Revisit if the UI needs them.
 
 ### DNS rebind protection
 
@@ -177,16 +178,17 @@ Per profile flags:
 - `firefox_canary`: if true, `use-application-dns.net` → NXDOMAIN (discourage
   DoH bypass).
 - `icloud_private_relay`: if true, answer `mask.icloud.com` /
-  `mask-h2.icloud.com` so Private Relay is blocked (exact record content: follow
-  Apple’s documented canary behaviour — cite at implement time; mark unverified
-  until checked against current Apple docs).
+  `mask-h2.icloud.com` so Private Relay is blocked. Exact RDATA must be checked
+  against current Apple documentation at implement time (cite URL in the PR);
+  until verified, mark the constant table `unverified` in code comments.
 
 ### Schedules (low priority)
 
 - Optional time windows on a profile that switch `filter_set` and/or enabled
   blocked services.
-- Off by default; v1 may stub the config surface and defer evaluation to a
-  follow-up task (must not block the rest of the pipeline).
+- Off by default. **v1:** accept/store config and expose in the model, but
+  evaluation may be a follow-up task before the profile checkpoint — must not
+  block the rest of the pipeline. Document “not applied yet” in status if stubbed.
 
 ### SafeSearch (low priority)
 
@@ -194,7 +196,8 @@ Per profile flags:
 - Rewrite well-known search / video hosts to their safe endpoints (Google, Bing,
   YouTube, DuckDuckGo). Exact target names verified against provider docs at
   implement time.
-- Same deferral option as schedules if needed.
+- **v1:** same as schedules — config surface first, full rewrite behaviour can
+  follow without blocking core pipeline work.
 
 ### Forward zones vs profiles
 
@@ -202,8 +205,9 @@ Per profile flags:
 - Profile field `forward_zones: Option<Vec<ForwardZoneId>>`:
   - `None` — all configured forward zones apply (resolver default).
   - `Some(ids)` — only those zones may forward; other names recurse.
-- Implementation may require a small resolver API extension (per-query filter);
-  until then, document as a hard requirement in the plan.
+- **Approved:** extend `Resolver` / `RequestFlags` with an optional per-query
+  forward-zone allow-list so profiles can restrict forwarding without multiple
+  resolver instances.
 
 ### ClientDirectory integration
 
@@ -217,20 +221,22 @@ pub trait ClientDirectory: Send + Sync {
 ```
 
 - A/AAAA for `by_name` → addresses from `ClientInfo`.
-- PTR for `reverse` when the qname is in an in-addr.arpa / ip6.arpa zone under
-  private/ULA space (and not already answered by a view record).
-- Optional: inject `None` directory when clients is disabled.
+- PTR for `reverse` when the qname is in an in-addr.arpa / ip6.arpa zone for
+  **RFC 1918**, **ULA (`fc00::/7`)**, and **loopback** — plus any extra prefixes
+  the admin lists under `policy.ptr_prefixes` (default empty).
+- Optional: inject a no-op directory when clients is disabled.
 
 ### RFC 6724 / ULA source address
 
 SPEC.md Platforms: clients are expected to use a **ULA source** when querying a
 ULA DNScraft address. Policy selection by IPv6 subnet depends on that.
 
-- Document as an **assumption to verify** on real clients (iOS, Android, Linux,
-  Windows) during acceptance.
-- If violated (GUA source to ULA server), the query may hit the wrong view —
-  mitigation ideas (Open Questions): warn in UI, optional “associate GUA with
-  view via clients,” or require host/macvlan networking docs only.
+- **Decision:** treat as a documented assumption; module success criteria do
+  **not** require a full OS verification matrix. Add a short note to the
+  operator docs / first-run networking section.
+- Manual acceptance: spot-check on the owner’s main devices when IPv6 views are
+  configured. If GUA-sourced queries to a ULA listener are observed, follow up
+  (UI warning or doc tweak) — not a v1 blocker.
 
 ### Hot path and budgets
 
@@ -288,6 +294,8 @@ Per-profile / per-view counters (queries, blocks, local hits) as atomics for
 [policy]
 # rebind defaults apply unless overridden per profile
 default_rebind = true
+# extra prefixes for ClientDirectory PTR (RFC 1918 + ULA + loopback always on)
+ptr_prefixes = []
 
 [[policy.views]]
 id = "lan"
@@ -333,8 +341,8 @@ rebind_exceptions = ["*.example.com"]
 
 - Always: Arc snapshot swap; clear AD on synthesised/modified answers; EDE 15 for
   operator blocks; never log test queries.
-- Ask first: new dependencies; changing pipeline order; enabling schedules /
-  SafeSearch as non-stub; resolver API changes for per-profile forward zones.
+- Ask first: new dependencies; changing pipeline order; shipping schedules /
+  SafeSearch evaluation before the stub is replaced; view-record wildcards.
 - Never: depend on `dnscraft-clients` directly; select profiles inside
   filtering; call the internet from tests.
 
@@ -352,27 +360,30 @@ rebind_exceptions = ["*.example.com"]
 
 ## Open Questions
 
-1. **AAAA suppression** — only for qtype AAAA (NODATA/empty), or also strip AAAA
-   from answers when the client queried ALL/`HTTPS`/etc.? Propose: **AAAA qtype
-   only** in v1.
-2. **Rebind after partial strip** — if some addresses remain public, return them;
-   if none remain, NODATA vs NXDOMAIN vs REFUSED? Propose: **NODATA (NOERROR
-   empty)**.
-3. **Wildcard view records** — needed in v1 or exact names only?
-4. **Schedules / SafeSearch** — stub config in v1 and implement later, or full
-   behaviour before Checkpoint?
-5. **Forward-zone allow-list** — OK to extend `Resolver` / `RequestFlags` for a
-   per-query filter?
-6. **Global vs per-profile pause** UX — both required for MVP?
-7. **PTR scope** — answer ClientDirectory PTRs only for RFC 1918 + ULA, or also
-   other local ranges the admin lists?
-8. **RFC 6724** — accept the assumption and document, or require a verification
-   matrix before marking the module done?
-9. **iCloud / Firefox canary exact answers** — confirm against current Apple /
-   Mozilla docs at implement time (mark any leftover as unverified).
-10. **Default view records for `dns.<domain>` DDR** — owned by listeners/policy
-    jointly; who authors the SVCB — listeners with policy local records?
+None — sensible defaults locked 2026-10-25 (owner asked to decide reasonably).
 
-## Decisions
+## Decisions (2026-10-25)
 
-None yet — draft for owner review (2026-10-25).
+1. **AAAA suppression:** only when qtype is AAAA → NODATA; do not strip AAAA
+   from other types’ answers in v1.
+2. **Rebind empty:** if every address was private and removed → **NOERROR /
+   NODATA**; if any public address remains, return those. No EDE for pure rebind
+   stripping.
+3. **View records:** **exact names only** in v1 (no wildcards).
+4. **Schedules / SafeSearch:** config surface in v1; evaluation may follow as a
+   low-priority task — core pipeline must not wait on them.
+5. **Forward-zone allow-list:** **yes** — extend resolver `RequestFlags` (or
+   equivalent) for a per-query allow-list.
+6. **Pause:** **both** global and per-profile in MVP.
+7. **PTR:** RFC 1918 + ULA + loopback by default; optional extra
+   `policy.ptr_prefixes`.
+8. **RFC 6724:** document the assumption; spot-check on real devices later —
+   **not** a module gate.
+9. **Canaries:** implement against current Apple/Mozilla docs at coding time;
+   cite URLs; mark unverified until checked.
+10. **DDR / SVCB for `_dns.resolver.arpa`:** **listeners** synthesise DDR answers
+    using hostnames/ports from tls + listener config. Policy view records are
+    **not** required for DDR. (Listeners may still call policy for the client’s
+    normal queries on the LAN.)
+11. Spec status: **decisions locked**; formal “approved” for P1 still to be
+    marked by the owner (no code before that).

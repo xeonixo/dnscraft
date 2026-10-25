@@ -14,10 +14,12 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 - Module `filtering`: **C1 done** (engine polish, README, coverage, fuzz, real-list acceptance). **Checkpoint D ready for Claude/owner review** — implementer does **not** tick Checkpoint D. Checkpoint B owner: RAM may grow — not blocking. Deep-name p99 miss left for Checkpoint D if revisited.
 - Module `clients`: **SPEC-clients.md decisions locked** (defaults + full IPv6 via classic `stat/sta` + dynamic local domain from UniFi DHCP). Formal “approved” for P1 still open.
 - Module `tls`: **SPEC-tls.md decisions locked**. Formal “approved” for P1 still open.
-- Module `policy`: **SPEC-policy.md drafted** — waiting on owner Open Questions.
-- Blockers: none for coding; next owner input is SPEC-policy open questions / formal approve of clients+tls; filtering Checkpoint D when ready.
+- Module `policy`: **SPEC-policy.md decisions locked** (sensible defaults). Formal “approved” for P1 still open for clients/tls/policy.
+- Blockers: none for coding; next: formal approve → P1 plans, and/or T1 tech debt; filtering Checkpoint D when ready.
 
 ## Log
+
+- 2026-10-25 — SPEC-policy.md decisions (Cursor): AAAA suppress only on AAAA qtype; rebind-empty → NODATA; exact view names only; schedules/SafeSearch config-first; resolver forward allow-list OK; pause global+per-profile; PTR RFC1918+ULA+loopback(+optional); RFC 6724 documented not gated; DDR owned by listeners; canaries cite docs at implement time.
 
 - 2026-10-25 — Spec draft SPEC-policy.md (Cursor, S3): View/profile selection (Client ID > LPM > default); pipeline local→bypass→SafeSearch→filter→resolve→chain/IP→rebind→AAAA; DecisionRecord; AD/EDE 15/4; ClientDirectory trait; pause; budgets. CAPABILITY-MAP draft link. **STOP for owner Open Questions.**
 
