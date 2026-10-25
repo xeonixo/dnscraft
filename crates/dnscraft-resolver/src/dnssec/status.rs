@@ -11,7 +11,10 @@ use std::time::SystemTime;
 use dnscraft_proto::{Name, Record, RecordType};
 
 use super::denial::{Denial, InsecureWhy, prove_no_ds};
-use super::{ChainFailure, DsStatus, ValidatedKeys, VerifyFailure, ds_status, validate_rrset};
+use super::{
+    ChainFailure, DsStatus, ValidatedKeys, ValidationBudget, VerifyFailure, ds_status,
+    validate_rrset_budgeted,
+};
 use crate::types::DnssecStatus;
 
 /// Why an answer is bogus.
@@ -29,6 +32,8 @@ pub(crate) enum BogusReason {
     NoDenialProof,
     /// The NSEC/NSEC3 records do not prove what they must.
     BadDenialProof,
+    /// The per-resolution NSEC3 hash budget is spent (fail closed).
+    Nsec3Budget,
 }
 
 impl BogusReason {
@@ -41,6 +46,7 @@ impl BogusReason {
             Self::NoDsProof => "dnssec.no_ds_proof",
             Self::NoDenialProof => "dnssec.no_denial_proof",
             Self::BadDenialProof => "dnssec.bad_denial_proof",
+            Self::Nsec3Budget => "dnssec.nsec3_budget",
         }
     }
 
@@ -54,7 +60,7 @@ impl BogusReason {
             // 12 NSEC Missing
             Self::NoDsProof | Self::NoDenialProof => 12,
             // 6 DNSSEC Bogus
-            Self::BadDenialProof => 6,
+            Self::BadDenialProof | Self::Nsec3Budget => 6,
         }
     }
 }
@@ -152,6 +158,7 @@ pub(crate) fn child_trust(
     authorities: &[Record],
     parent: &ValidatedKeys,
     now: SystemTime,
+    budget: &ValidationBudget,
 ) -> Trust {
     let ds: Vec<Record> = authorities
         .iter()
@@ -159,12 +166,12 @@ pub(crate) fn child_trust(
         .cloned()
         .collect();
     if ds.is_empty() {
-        return match check_no_ds(cut, authorities, parent, now) {
+        return match check_no_ds(cut, authorities, parent, now, budget) {
             Ok(()) => Trust::Insecure,
             Err(e) => Trust::Bogus(e),
         };
     }
-    if let Err(e) = validate_rrset(&ds, authorities, parent, now) {
+    if let Err(e) = validate_rrset_budgeted(&ds, authorities, parent, now, budget) {
         return Trust::Bogus(BogusReason::Verify(e));
     }
     match ds_status(&ds) {
@@ -185,6 +192,7 @@ pub(crate) fn check_no_ds(
     authorities: &[Record],
     parent: &ValidatedKeys,
     now: SystemTime,
+    budget: &ValidationBudget,
 ) -> Result<(), BogusReason> {
     let mut failure: Option<VerifyFailure> = None;
     let mut valid: Vec<Record> = Vec::new();
@@ -192,7 +200,7 @@ pub(crate) fn check_no_ds(
         matches!(r.rtype, RecordType::NSEC | RecordType::NSEC3)
     }) {
         let owned: Vec<Record> = set.into_iter().cloned().collect();
-        match validate_rrset(&owned, authorities, parent, now) {
+        match validate_rrset_budgeted(&owned, authorities, parent, now, budget) {
             // An expanded NSEC/NSEC3 is a replay, not a proof.
             Ok(v) if v.wildcard.is_none() => valid.extend(owned),
             Ok(_) => {}
@@ -207,8 +215,9 @@ pub(crate) fn check_no_ds(
             }
         }
     }
-    match prove_no_ds(parent.zone(), cut, &valid) {
+    match prove_no_ds(parent.zone(), cut, &valid, budget) {
         Denial::Secure | Denial::Insecure(_) => Ok(()),
+        Denial::Bogus(BogusReason::Nsec3Budget) => Err(BogusReason::Nsec3Budget),
         Denial::Bogus(_) => Err(failure.map_or(BogusReason::NoDsProof, BogusReason::Verify)),
     }
 }

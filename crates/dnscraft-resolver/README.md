@@ -111,11 +111,26 @@ Empty trust anchors turn validation off (`Indeterminate` everywhere).
 **Cache.** Positive and negative caching (RFC 2308), size-bounded (default 64
 MiB), TTL clamp, optional prefetch of popular near-expiry entries, and
 serve-stale (RFC 8767) for up to one day when authoritative servers are
-unreachable. Memory only — cold start after every process restart.
+unreachable. A stale answer carries a 30 s TTL (RFC 8767 section 5.11), a clear
+AD bit, and is reported as `Indeterminate`, because signature validity is not
+re-checked. Memory only — cold start after every process restart. A flush wins
+over resolutions already running: their results are not stored.
 
 **Local zones.** RFC 6303 private reverse zones are answered locally so those
-PTRs never hit the public internet. A configured forward zone that covers the
-same name opts out of the local answer; a covering forward zone wins.
+PTRs never hit the public internet. A configured forward zone opts out only for
+names it covers (equal to the zone or below it). A forward zone inside a local
+zone, such as `corp.10.in-addr.arpa.`, leaves the rest of `10.in-addr.arpa.`
+local.
+
+**Forwarding.** A target that times out or answers SERVFAIL, REFUSED, FORMERR or
+NOTIMP is skipped and the next one is tried. Loop protection compares
+`RequestFlags::client` with the zone's targets, so listeners must pass the real
+peer address; a loop through NAT is bounded by `query_timeout` instead.
+
+**Load.** At most `max_concurrent_resolutions` upstream resolutions run at once.
+Cache hits never wait. A miss that gets no slot within `query_timeout` fails
+with `resolver.overloaded`. Prefetch only runs when a slot is free and backs off
+for 30 s after a failure.
 
 **Not in this crate.** Filters, split-horizon, ACLs, listeners (Do53/DoT/DoH/DoQ),
 client query logs, or which profile may use which forward zone — that belongs
@@ -138,6 +153,7 @@ to `policy` and friends.
 | `prefetch` | `true` | Background refresh |
 | `max_cname_chain` | `16` | Loop / amplification guard |
 | `max_queries_per_resolve` | `64` | Budget per question |
+| `max_concurrent_resolutions` | `1024` | Cap on parallel upstream resolutions |
 
 The eventual DNScraft TOML shape is sketched in the [spec](../../SPEC-resolver.md#configuration-excerpt-toml);
 this crate still takes a Rust `ResolverConfig` directly.
@@ -158,6 +174,7 @@ error is for logs, not for end users.
 | `ResolveError::CnameLimitExceeded` | `resolver.cname_limit` |
 | `ResolveError::CnameLoop` | `resolver.cname_limit` |
 | `ResolveError::ForwardLoop` | `resolver.forward_loop` |
+| `ResolveError::Overloaded` | `resolver.overloaded` |
 | `ResolveError::Encode` | `resolver.encode` |
 
 DNSSEC failures are not `ResolveError`s: they return an `Answer` with

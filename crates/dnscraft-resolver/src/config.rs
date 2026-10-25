@@ -76,6 +76,13 @@ pub struct ResolverConfig {
     /// Empty by default. A name is forwarded to the most specific zone that
     /// covers it. See [`ForwardZone`].
     pub forward_zones: Vec<ForwardZone>,
+    /// Upper bound on upstream resolutions running at the same time.
+    /// Cache hits do not count and never wait. A miss that cannot get a slot
+    /// within [`Self::query_timeout`] fails with
+    /// [`ResolveError::Overloaded`](crate::ResolveError::Overloaded)
+    /// (`resolver.overloaded`). Prefetch only runs when a slot is free.
+    /// Must be at least 1. Default: 1024.
+    pub max_concurrent_resolutions: usize,
 }
 
 /// A zone whose queries are sent to recursive targets (stub forwarding).
@@ -89,6 +96,17 @@ pub struct ResolverConfig {
 /// anchor (status `Insecure`, no AD bit, records not checked). `true`
 /// validates positive RRsets against that zone's DNSKEY, fetched from the
 /// same targets.
+///
+/// A target that answers SERVFAIL, REFUSED, FORMERR or NOTIMP counts as
+/// failed like one that does not answer, and the next target is tried. Only
+/// NOERROR and NXDOMAIN are accepted from the first target that gives them.
+/// If every target fails with an error rcode, the last such response is
+/// passed on.
+///
+/// Loop protection needs [`RequestFlags::client`](crate::RequestFlags::client)
+/// to be the real peer address of the client. A loop that crosses NAT (the
+/// peer address seen here is not a configured target) is not detected by
+/// address; it ends at `query_timeout`, so it is bounded but slow.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForwardZone {
     /// Apex of the forwarded zone.
@@ -122,6 +140,7 @@ impl Default for ResolverConfig {
             cache_capacity_bytes: None,
             ipv6_cooldown: Duration::from_secs(60),
             forward_zones: Vec::new(),
+            max_concurrent_resolutions: 1024,
         }
     }
 }
@@ -139,5 +158,6 @@ mod tests {
         assert_eq!(config.serve_stale, Duration::from_secs(86_400));
         assert!(config.prefetch);
         assert_eq!(config.cache_capacity_bytes, None);
+        assert_eq!(config.max_concurrent_resolutions, 1024);
     }
 }

@@ -36,16 +36,17 @@ mod stats;
 pub mod transport;
 mod types;
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use dnscraft_proto::{Class, Message, Name, Rcode, Record, RecordType};
-use dnssec::status::{BogusReason, Status, rrsets};
-use dnssec::{ChainFailure, DelegationTrust, KeysOutcome, validate_dnskey_rrset, validate_rrset};
+use dnscraft_proto::{Class, Message, Rcode, Record, RecordType};
+use dnssec::status::Status;
 use local_zones::LocalZones;
 use server_selection::ServerStats;
 use stats::Counters;
+use tokio::sync::Semaphore;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{ForwardZone, ResolverConfig};
@@ -73,7 +74,14 @@ struct Shared {
     counters: Counters,
     stats: ServerStats,
     inflight: inflight::Inflight,
+    /// One permit per upstream resolution (`max_concurrent_resolutions`).
+    permits: Arc<Semaphore>,
+    /// Keys whose last prefetch failed, with the time of that failure.
+    prefetch_failed: Mutex<HashMap<inflight::Key, Instant>>,
 }
+
+/// After a failed prefetch of a key, the next attempt for it waits this long.
+const PREFETCH_BACKOFF: Duration = Duration::from_secs(30);
 
 /// A recursive resolver.
 #[derive(Debug)]
@@ -95,6 +103,16 @@ impl Resolver {
                 reason: "query_timeout must be greater than zero",
             });
         }
+        if config.max_concurrent_resolutions == 0 {
+            return Err(ResolverError::InvalidConfig {
+                reason: "max_concurrent_resolutions must be at least 1",
+            });
+        }
+        let permits = Arc::new(Semaphore::new(
+            config
+                .max_concurrent_resolutions
+                .min(Semaphore::MAX_PERMITS),
+        ));
         let counters = Counters::new();
         let stats = ServerStats::new(config.ipv6_cooldown);
         let (roots, status) = {
@@ -117,6 +135,8 @@ impl Resolver {
                 counters,
                 stats,
                 inflight: inflight::Inflight::new(),
+                permits,
+                prefetch_failed: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -191,7 +211,7 @@ impl Resolver {
             .inflight
             .dedup(
                 key,
-                async move { shared.resolve_upstream(&owned, flags).await },
+                async move { shared.resolve_limited(&owned, flags).await },
             )
             .await;
         match upstream {
@@ -238,14 +258,21 @@ impl Resolver {
         if !prefetch::should_refresh(stats) {
             return;
         }
+        let key = inflight::Key::new(query, false);
+        if self.shared.prefetch_backed_off(&key, now) {
+            return;
+        }
+        // Prefetch is best effort: with no free slot it is skipped rather than
+        // queued behind (or in front of) client resolutions. The permit is
+        // taken before the flight so a skipped prefetch leaves no trace.
+        let Ok(permit) = Arc::clone(&self.shared.permits).try_acquire_owned() else {
+            tracing::debug!(qname = %query.name, "prefetch skipped: no free resolution slot");
+            return;
+        };
         // CD is clear on the refresh itself, so it coalesces with validating
         // misses and the result stays cacheable. A second hit finds this
         // flight and does not start another.
-        let Some(leader) = self
-            .shared
-            .inflight
-            .try_lead(inflight::Key::new(query, false))
-        else {
+        let Some(leader) = self.shared.inflight.try_lead(key.clone()) else {
             return;
         };
         tracing::debug!(
@@ -260,10 +287,21 @@ impl Resolver {
             let result = shared
                 .resolve_upstream(&query, RequestFlags::default())
                 .await;
-            if let Err(err) = &result {
+            drop(permit);
+            // The refresh only counts when it produced a cacheable outcome. A
+            // forwarded SERVFAIL or REFUSED arrives as `Ok` but left the old
+            // entry in place, so it is a failure too.
+            let refreshed = result.as_ref().is_ok_and(|answer| {
+                matches!(answer.message.rcode(), Rcode::NOERROR | Rcode::NXDOMAIN)
+            });
+            if refreshed {
+                shared.clear_prefetch_failure(&key);
+            } else {
                 // The client already received the cached answer. A failed
-                // refresh leaves that entry in place.
-                tracing::debug!(qname = %query.name, error = %err, "prefetch failed");
+                // refresh leaves that entry in place, and the key is not
+                // retried for a while.
+                tracing::debug!(qname = %query.name, "prefetch failed");
+                shared.note_prefetch_failure(key);
             }
             leader.complete(result);
         });
@@ -303,6 +341,52 @@ impl Resolver {
 }
 
 impl Shared {
+    /// True while `key` is inside the backoff window of a failed prefetch.
+    fn prefetch_backed_off(&self, key: &inflight::Key, now: Instant) -> bool {
+        lock(&self.prefetch_failed)
+            .get(key)
+            .is_some_and(|failed_at| now.saturating_duration_since(*failed_at) < PREFETCH_BACKOFF)
+    }
+
+    fn note_prefetch_failure(&self, key: inflight::Key) {
+        let now = self.config.clock.instant();
+        let mut failed = lock(&self.prefetch_failed);
+        // Entries past their window carry no information; dropping them here
+        // keeps the map small.
+        failed.retain(|_, at| now.saturating_duration_since(*at) < PREFETCH_BACKOFF);
+        failed.insert(key, now);
+    }
+
+    fn clear_prefetch_failure(&self, key: &inflight::Key) {
+        lock(&self.prefetch_failed).remove(key);
+    }
+
+    /// [`Shared::resolve_upstream`] under the concurrency cap.
+    ///
+    /// Waits up to `query_timeout` for a slot. The permit is held for the
+    /// whole resolution.
+    async fn resolve_limited(
+        &self,
+        query: &Query,
+        flags: RequestFlags,
+    ) -> Result<Answer, ResolveError> {
+        let permit = match tokio::time::timeout(
+            self.config.query_timeout,
+            Arc::clone(&self.permits).acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) | Err(_) => {
+                tracing::debug!(qname = %query.name, "resolution refused: too many in flight");
+                return Err(ResolveError::Overloaded);
+            }
+        };
+        let result = self.resolve_upstream(query, flags).await;
+        drop(permit);
+        result
+    }
+
     /// One upstream resolution, stored when the answer is cacheable.
     ///
     /// A name covered by a forward zone is stub-forwarded. Everything else
@@ -314,11 +398,14 @@ impl Shared {
         query: &Query,
         flags: RequestFlags,
     ) -> Result<Answer, ResolveError> {
+        // A flush while this resolution runs must not be undone by storing
+        // its (older) result.
+        let epoch = self.cache.epoch();
         if query.qclass == Class::IN
             && let Some(zone) = forward::covering(&self.config.forward_zones, &query.name)
         {
             let zone = zone.clone();
-            return self.forward_zone(zone, query, flags).await;
+            return self.forward_zone(zone, query, flags, epoch).await;
         }
         let roots = lock(&self.roots).clone();
         let mut ctx = iterate::Context::new(
@@ -338,7 +425,7 @@ impl Shared {
         let (outcome, status) =
             iterate::resolve_iterative(&ctx, &query.name, query.qtype, 0, Vec::new()).await?;
         tracing::debug!(qname = %query.name, zone = %outcome.zone, "resolved");
-        self.finish_answer(query, flags, outcome.message, status)
+        self.finish_answer(query, flags, outcome.message, status, epoch)
     }
 
     /// Sends `query` to `zone`'s targets and caches the answer like a
@@ -348,6 +435,7 @@ impl Shared {
         zone: ForwardZone,
         query: &Query,
         flags: RequestFlags,
+        epoch: u64,
     ) -> Result<Answer, ResolveError> {
         tracing::debug!(
             qname = %query.name,
@@ -359,101 +447,7 @@ impl Shared {
             .exchange_forward(&zone.targets, &zone.zone, &query.name, query.qtype)
             .await?;
         let status = self.forwarded_status(&zone, flags, &message).await?;
-        self.finish_answer(query, flags, message, status)
-    }
-
-    /// One stub query to `targets`. An empty list or no usable answer is
-    /// [`ResolveError::Unreachable`] for `zone`.
-    async fn exchange_forward(
-        &self,
-        targets: &[SocketAddr],
-        zone: &Name,
-        name: &Name,
-        qtype: RecordType,
-    ) -> Result<Message, ResolveError> {
-        if targets.is_empty() {
-            return Err(ResolveError::Unreachable { zone: zone.clone() });
-        }
-        self.counters
-            .outgoing()
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let query = transport::build_forward_query(name, qtype);
-        match transport::query_servers(targets, &query, self.config.query_timeout, &self.stats)
-            .await
-        {
-            Ok(resp) => Ok(resp.message),
-            Err(transport::TransportError::Encode(err)) => Err(ResolveError::Encode(err)),
-            Err(err) => {
-                tracing::debug!(qname = %name, qtype = %qtype, zone = %zone, error = %err, "forward failed");
-                Err(ResolveError::Unreachable { zone: zone.clone() })
-            }
-        }
-    }
-
-    /// DNSSEC status of a stub answer.
-    ///
-    /// `validate == false` is always `Insecure`. Otherwise CD, or no trust
-    /// anchors at all, yields `Indeterminate` (validation is off), matching
-    /// a recursive answer. With validation on, the zone apex must have a
-    /// trust anchor; DNSKEY is fetched from the same targets and positive
-    /// in-zone RRsets are checked against it. A response with nothing to
-    /// check stays `Indeterminate` — a stub answer does not carry a denial
-    /// proof this resolver rebuilds.
-    async fn forwarded_status(
-        &self,
-        zone: &ForwardZone,
-        flags: RequestFlags,
-        message: &Message,
-    ) -> Result<Status, ResolveError> {
-        if !zone.validate {
-            return Ok(Status::Insecure);
-        }
-        let validating =
-            !flags.checking_disabled && !self.config.trust_anchors.anchors().is_empty();
-        if !validating {
-            return Ok(Status::Indeterminate);
-        }
-        if !self.config.trust_anchors.has_zone(&zone.zone) {
-            return Ok(Status::Bogus(BogusReason::Chain(
-                ChainFailure::NoTrustAnchor,
-            )));
-        }
-        tracing::debug!(zone = %zone.zone, "validating forwarded answer");
-        let keys_msg = match self
-            .exchange_forward(&zone.targets, &zone.zone, &zone.zone, RecordType::DNSKEY)
-            .await
-        {
-            Ok(message) => message,
-            Err(ResolveError::Unreachable { .. }) => {
-                return Ok(Status::Bogus(BogusReason::DnskeyUnavailable));
-            }
-            Err(err) => return Err(err),
-        };
-        let keys = match validate_dnskey_rrset(
-            &zone.zone,
-            &keys_msg.answers,
-            &keys_msg.answers,
-            DelegationTrust::Anchors(&self.config.trust_anchors),
-            self.config.clock.now(),
-        ) {
-            Ok(KeysOutcome::Secure(keys)) => keys,
-            Ok(KeysOutcome::Insecure(_)) => return Ok(Status::Insecure),
-            Err(err) => return Ok(Status::Bogus(BogusReason::Chain(err))),
-        };
-        let now = self.config.clock.now();
-        let mut saw = false;
-        for set in rrsets(&message.answers, &zone.zone, |_| true) {
-            let owned: Vec<Record> = set.into_iter().cloned().collect();
-            if let Err(err) = validate_rrset(&owned, &message.answers, &keys, now) {
-                return Ok(Status::Bogus(BogusReason::Verify(err)));
-            }
-            saw = true;
-        }
-        if saw {
-            Ok(Status::Secure)
-        } else {
-            Ok(Status::Indeterminate)
-        }
+        self.finish_answer(query, flags, message, status, epoch)
     }
 
     /// Applies AA/RA/AD, rewrites Bogus to SERVFAIL, and stores a cacheable
@@ -464,6 +458,7 @@ impl Shared {
         flags: RequestFlags,
         mut message: Message,
         status: Status,
+        epoch: u64,
     ) -> Result<Answer, ResolveError> {
         message.header.aa = false;
         message.header.ra = true;
@@ -492,7 +487,7 @@ impl Shared {
         // DNSSEC records. The TTL window starts when the answer is stored.
         let stored_at = self.config.clock.instant();
         let published_ttl = if cacheable {
-            self.cache.store(
+            self.cache.store_in_epoch(
                 query,
                 &message,
                 dnssec,
@@ -502,6 +497,7 @@ impl Shared {
                     min: self.config.ttl_min,
                     max: self.config.ttl_max,
                 },
+                Some(epoch),
             )
         } else {
             None

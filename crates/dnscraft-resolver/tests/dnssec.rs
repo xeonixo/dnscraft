@@ -8,8 +8,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use dnscraft_proto::dnssec::key_tag;
 use dnscraft_proto::{Class, Edns, Message, Name, RData, Record, RecordType};
 use dnscraft_resolver::dnssec::{
-    ChainFailure, DelegationTrust, DsStatus, InsecureReason, KeysOutcome, TrustAnchors,
-    ValidatedKeys, VerifyFailure, ds_status, validate_dnskey_rrset, validate_rrset, verify_rrsig,
+    ChainFailure, DelegationTrust, DsStatus, InsecureReason, KeysOutcome, MAX_KEYS_PER_TAG,
+    MAX_SIGS_PER_RRSET, TrustAnchors, ValidatedKeys, ValidationBudget, VerifyFailure, ds_status,
+    validate_dnskey_rrset, validate_dnskey_rrset_budgeted, validate_rrset, validate_rrset_budgeted,
+    verify_rrsig,
 };
 use dnscraft_resolver::{DnssecStatus, ManualClock, Query, RequestFlags, Resolver, ResolverConfig};
 use dnscraft_testkit::{ChildVariant, DnssecScenario, Hierarchy, SigAlgorithm};
@@ -1678,4 +1680,272 @@ async fn status_referral_signed_by_hidden_zone() {
     assert_eq!(r, both(DnssecStatus::Insecure, false));
     let r = cohost_status(&chain(true), true, "www.c.s.i.test.").await;
     assert_eq!(r, both(DnssecStatus::Bogus, false));
+}
+
+// ---------------------------------------------------------------------------
+// CPU-exhaustion hardening: KeyTrap, NSEC3 hashing, inception skew
+// ---------------------------------------------------------------------------
+
+mod keytrap {
+    use super::*;
+    use dnscraft_proto::dnssec::{key_tag, rrsig_signing_input};
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    const ALG_ED25519: u8 = 15;
+    const ZONE: &str = "kt.test.";
+
+    fn pair() -> Ed25519KeyPair {
+        Ed25519KeyPair::from_seed_unchecked(&[7u8; 32]).unwrap()
+    }
+
+    /// `n` distinct 32-byte public keys with the same key tag as `base`:
+    /// the tag is a 16-bit word sum, so shifting value between two aligned
+    /// words keeps it. Only the tag matters for the attempt count; the extra
+    /// keys are not valid points.
+    fn colliding_keys(base: &[u8], n: usize) -> Vec<Vec<u8>> {
+        let w = |k: &[u8], i: usize| u32::from(u16::from_be_bytes([k[i], k[i + 1]]));
+        let sum = w(base, 0) + w(base, 2);
+        let lo = sum.saturating_sub(0xFFFF);
+        let mut out = vec![base.to_vec()];
+        for i in 1..=n as u32 {
+            let a = lo + i;
+            let b = sum - a;
+            let mut k = base.to_vec();
+            k[0..2].copy_from_slice(&(a as u16).to_be_bytes());
+            k[2..4].copy_from_slice(&(b as u16).to_be_bytes());
+            if !out.contains(&k) {
+                out.push(k);
+            }
+        }
+        let tag = key_tag(257, 3, ALG_ED25519, base);
+        for k in &out {
+            assert_eq!(key_tag(257, 3, ALG_ED25519, k), tag, "tag collision setup");
+        }
+        out
+    }
+
+    fn secs(t: SystemTime) -> u32 {
+        t.duration_since(UNIX_EPOCH).unwrap().as_secs() as u32
+    }
+
+    fn rrsig(
+        rrset: &[Record],
+        kp: &Ed25519KeyPair,
+        tag: u16,
+        now: SystemTime,
+        sign: bool,
+    ) -> Record {
+        let first = &rrset[0];
+        let mut rdata = RData::RRSIG {
+            type_covered: first.rtype,
+            algorithm: ALG_ED25519,
+            labels: first.name.label_count() as u8,
+            original_ttl: 300,
+            expiration: secs(now) + 86_400,
+            inception: secs(now) - 3600,
+            key_tag: tag,
+            signer_name: name(ZONE),
+            signature: Vec::new().into(),
+        };
+        let sig = if sign {
+            kp.sign(&rrsig_signing_input(&rdata, rrset).unwrap())
+                .as_ref()
+                .to_vec()
+        } else {
+            vec![0x5a; 64]
+        };
+        if let RData::RRSIG { signature, .. } = &mut rdata {
+            *signature = sig.into();
+        }
+        Record {
+            name: first.name.clone(),
+            rtype: RecordType::RRSIG,
+            class: Class::IN,
+            ttl: 300,
+            rdata,
+        }
+    }
+
+    fn anchors(keys: &[Vec<u8>]) -> TrustAnchors {
+        let recs: Vec<Record> = keys
+            .iter()
+            .map(|k| dnskey_rec(ZONE, ALG_ED25519, k.clone()))
+            .collect();
+        TrustAnchors::from_records(&recs).unwrap()
+    }
+
+    #[test]
+    fn dnskey_validation_attempts_are_bounded() {
+        let kp = pair();
+        let keys = colliding_keys(kp.public_key().as_ref(), 50);
+        let tag = key_tag(257, 3, ALG_ED25519, &keys[0]);
+        let dnskeys: Vec<Record> = keys
+            .iter()
+            .map(|k| dnskey_rec(ZONE, ALG_ED25519, k.clone()))
+            .collect();
+        // 200 bogus RRSIGs, all naming the colliding tag; 51 anchored keys.
+        let junk: Vec<Record> = (0..200)
+            .map(|_| rrsig(&dnskeys, &kp, tag, SystemTime::now(), false))
+            .collect();
+        let anchors = anchors(&keys);
+        let budget = ValidationBudget::unlimited();
+        let t = std::time::Instant::now();
+        let e = validate_dnskey_rrset_budgeted(
+            &name(ZONE),
+            &dnskeys,
+            &junk,
+            DelegationTrust::Anchors(&anchors),
+            SystemTime::now(),
+            &budget,
+        )
+        .unwrap_err();
+        assert_eq!(e, ChainFailure::Verify(VerifyFailure::BadSignature));
+        // Before the fix: 200 sigs x 51 keys = 10200 verifications.
+        assert!(
+            budget.verifications_used() as usize <= MAX_SIGS_PER_RRSET * MAX_KEYS_PER_TAG,
+            "{} verifications",
+            budget.verifications_used()
+        );
+        assert!(t.elapsed() < Duration::from_secs(1));
+
+        // A tight per-resolution budget fails closed with its own reason.
+        let tight = ValidationBudget::with_limits(5, 128);
+        let e = validate_dnskey_rrset_budgeted(
+            &name(ZONE),
+            &dnskeys,
+            &junk,
+            DelegationTrust::Anchors(&anchors),
+            SystemTime::now(),
+            &tight,
+        )
+        .unwrap_err();
+        assert_eq!(e, ChainFailure::Verify(VerifyFailure::BudgetExhausted));
+        assert_eq!(e.code(), "dnssec.validation_budget");
+        assert_eq!(e.ede_code(), 6);
+        assert_eq!(tight.verifications_used(), 5);
+    }
+
+    /// DNSKEY RRset (signer first, then colliding decoys) validated through a
+    /// single anchored key.
+    fn validated_keys(kp: &Ed25519KeyPair, decoys: usize, now: SystemTime) -> ValidatedKeys {
+        let keys = colliding_keys(kp.public_key().as_ref(), decoys);
+        let tag = key_tag(257, 3, ALG_ED25519, &keys[0]);
+        let dnskeys: Vec<Record> = keys
+            .iter()
+            .map(|k| dnskey_rec(ZONE, ALG_ED25519, k.clone()))
+            .collect();
+        let sig = rrsig(&dnskeys, kp, tag, now, true);
+        let anchors = anchors(&keys[..1]);
+        secure(
+            validate_dnskey_rrset(
+                &name(ZONE),
+                &dnskeys,
+                &[sig],
+                DelegationTrust::Anchors(&anchors),
+                now,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn a_record() -> Record {
+        Record {
+            name: name("www.kt.test."),
+            rtype: RecordType::A,
+            class: Class::IN,
+            ttl: 300,
+            rdata: RData::A("192.0.2.7".parse().unwrap()),
+        }
+    }
+
+    #[test]
+    fn rrset_validation_attempts_are_bounded_and_valid_sig_still_works() {
+        let now = SystemTime::now();
+        let kp = pair();
+        let vk = validated_keys(&kp, 50, now);
+        assert_eq!(vk.keys().len(), 51);
+        let tag = key_tag(257, 3, ALG_ED25519, kp.public_key().as_ref());
+        let a = [a_record()];
+
+        // Control: one valid RRSIG validates with a single verification.
+        let good = rrsig(&a, &kp, tag, now, true);
+        let budget = ValidationBudget::default();
+        validate_rrset_budgeted(&a, std::slice::from_ref(&good), &vk, now, &budget).unwrap();
+        assert_eq!(budget.verifications_used(), 1);
+
+        // 200 bogus RRSIGs against 51 same-tag keys.
+        let junk: Vec<Record> = (0..200).map(|_| rrsig(&a, &kp, tag, now, false)).collect();
+        let budget = ValidationBudget::unlimited();
+        let t = std::time::Instant::now();
+        let e = validate_rrset_budgeted(&a, &junk, &vk, now, &budget).unwrap_err();
+        assert_eq!(e, VerifyFailure::BadSignature);
+        // Before the fix: 200 x 51 = 10200 verifications.
+        assert!(
+            budget.verifications_used() as usize <= MAX_SIGS_PER_RRSET * MAX_KEYS_PER_TAG,
+            "{} verifications",
+            budget.verifications_used()
+        );
+        assert!(t.elapsed() < Duration::from_secs(1));
+
+        // The per-resolution budget is shared across calls.
+        let shared = ValidationBudget::with_limits(40, 128);
+        let mut seen_exhausted = false;
+        for _ in 0..4 {
+            match validate_rrset_budgeted(&a, &junk, &vk, now, &shared) {
+                Err(VerifyFailure::BudgetExhausted) => seen_exhausted = true,
+                Err(VerifyFailure::BadSignature) => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert!(seen_exhausted);
+        assert_eq!(shared.verifications_used(), 40);
+        // Once spent, even a genuine signature is refused (fail closed).
+        let e = validate_rrset_budgeted(&a, std::slice::from_ref(&good), &vk, now, &shared)
+            .unwrap_err();
+        assert_eq!(e, VerifyFailure::BudgetExhausted);
+        assert_eq!(e.code(), "dnssec.validation_budget");
+    }
+}
+
+#[tokio::test]
+async fn inception_skew_is_tolerated_up_to_300_seconds() {
+    const SIGNED_AT: u32 = 1_900_000_000;
+    let inception = u64::from(SIGNED_AT) - 3600;
+    for (early, bogus) in [(60, false), (600, true)] {
+        let h = Hierarchy::start_scenario(
+            &DnssecScenario::new(&[ChildVariant::Secure]).with_now(SIGNED_AT),
+        )
+        .await
+        .unwrap();
+        let clock = Arc::new(ManualClock::new(at(inception - early)));
+        let mut config = status_config(&h);
+        config.clock = clock.clone();
+        let r = Resolver::new(config).await.unwrap();
+        let ans = status_ask(&r, "www.secure.test.", DO).await;
+        if bogus {
+            assert_eq!(ans.dnssec, DnssecStatus::Bogus, "{early}s early");
+            assert_eq!(ans.ede.unwrap().code, 8);
+        } else {
+            assert_eq!(
+                ans.dnssec,
+                DnssecStatus::Secure,
+                "{early}s early: {:?}",
+                ans.ede
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn nsec3_nxdomain_for_a_100_label_name_completes_within_budget() {
+    let h = Hierarchy::start_signed(&[ChildVariant::Nsec3])
+        .await
+        .unwrap();
+    let r = status_resolver(&h).await;
+    let qname = format!("{}nsec3.test.", "a.".repeat(100));
+    let t = std::time::Instant::now();
+    let ans = ask_type(&r, &qname, RecordType::A, DO).await;
+    assert!(t.elapsed() < Duration::from_secs(5));
+    // 100 labels need about 100 hashes, within the per-resolution budget.
+    assert_secure(&ans, dnscraft_proto::Rcode::NXDOMAIN);
 }

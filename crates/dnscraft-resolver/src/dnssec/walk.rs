@@ -16,7 +16,7 @@ use super::denial::{Denial, prove_nodata, prove_nxdomain, prove_wildcard_answer}
 use super::status::{BogusReason, Status, Trust, check_no_ds, child_trust, rrsets};
 use super::{
     DelegationTrust, DsStatus, KeysOutcome, ValidatedKeys, VerifyFailure, ds_status,
-    validate_dnskey_rrset, validate_rrset,
+    validate_dnskey_rrset_budgeted, validate_rrset_budgeted,
 };
 use crate::error::ResolveError;
 use crate::iterate::{Candidate, Context};
@@ -74,12 +74,13 @@ pub(crate) async fn settle(
                 Trust::Ds(ds) => DelegationTrust::Ds(ds),
                 _ => DelegationTrust::Anchors(&ctx.config.trust_anchors),
             };
-            match validate_dnskey_rrset(
+            match validate_dnskey_rrset_budgeted(
                 zone,
                 &msg.answers,
                 &msg.answers,
                 delegation,
                 ctx.config.clock.now(),
+                &ctx.dnssec_budget,
             ) {
                 Ok(KeysOutcome::Secure(keys)) => Trust::Secure(Arc::new(keys)),
                 Ok(KeysOutcome::Insecure(_)) => Trust::Insecure,
@@ -170,11 +171,17 @@ fn cut_at<'a>(
             .cloned()
             .collect();
         let cut = if ds.is_empty() {
-            match check_no_ds(s, &all, &keys, ctx.config.clock.now()) {
+            match check_no_ds(s, &all, &keys, ctx.config.clock.now(), &ctx.dnssec_budget) {
                 Ok(()) => Cut::Zone(Trust::Insecure),
                 Err(e) => Cut::NotCut(e),
             }
-        } else if let Err(e) = validate_rrset(&ds, &msg.answers, &keys, ctx.config.clock.now()) {
+        } else if let Err(e) = validate_rrset_budgeted(
+            &ds,
+            &msg.answers,
+            &keys,
+            ctx.config.clock.now(),
+            &ctx.dnssec_budget,
+        ) {
             Cut::Zone(Trust::Bogus(BogusReason::Verify(e)))
         } else {
             match ds_status(&ds) {
@@ -317,7 +324,7 @@ pub(crate) async fn descend(
         },
         None => keys.clone(),
     };
-    let t = child_trust(cut, &referral.authorities, &eff, now);
+    let t = child_trust(cut, &referral.authorities, &eff, now, &ctx.dnssec_budget);
     if let Trust::Bogus(BogusReason::NoDsProof | BogusReason::Verify(VerifyFailure::NoSignatures)) =
         t
     {
@@ -374,7 +381,8 @@ async fn validate_set(
         None => zkeys.clone(),
     };
     Ok(
-        match validate_rrset(set, sigs, &keys, ctx.config.clock.now()) {
+        match validate_rrset_budgeted(set, sigs, &keys, ctx.config.clock.now(), &ctx.dnssec_budget)
+        {
             Ok(v) => SetOutcome::Valid {
                 wildcard: v.wildcard,
                 signer: v.signer,
@@ -497,7 +505,7 @@ pub(crate) async fn assess_final(
     };
     for (owner, source, signer) in &expansions {
         let d = prove_by_signer(&proofs, Some(signer), |z, recs| {
-            prove_wildcard_answer(z, owner, source, recs)
+            prove_wildcard_answer(z, owner, source, recs, &ctx.dnssec_budget)
         });
         match note(d, status) {
             Ok(s) => status = s,
@@ -518,14 +526,14 @@ pub(crate) async fn assess_final(
         let claim = match message.rcode() {
             Rcode::NXDOMAIN => Some(prove_by_signer(&proofs, None, |z, recs| {
                 if z.zone_of(qname) {
-                    prove_nxdomain(z, qname, recs)
+                    prove_nxdomain(z, qname, recs, &ctx.dnssec_budget)
                 } else {
                     Denial::Bogus(BogusReason::BadDenialProof)
                 }
             })),
             Rcode::NOERROR => Some(prove_by_signer(&proofs, None, |z, recs| {
                 if z.zone_of(qname) {
-                    prove_nodata(z, qname, qtype, recs)
+                    prove_nodata(z, qname, qtype, recs, &ctx.dnssec_budget)
                 } else {
                     Denial::Bogus(BogusReason::BadDenialProof)
                 }

@@ -8,9 +8,15 @@
 //! The DO bit is not part of the key: every waiter receives the full answer
 //! and strips DNSSEC records itself when its own DO bit is clear.
 //!
+//! The resolution runs in its own spawned task, not inline in the first
+//! caller's future. Every caller, the first included, waits for the published
+//! outcome like a follower, so cancelling any one caller (a client that gave
+//! up) never disturbs the others and never fabricates an error for them.
+//!
 //! The entry is removed when the resolution finishes, so a later miss starts
-//! a new one. Waiters all observe that same outcome. Dropping the leader
-//! (task cancelled) still unblocks them and frees the key.
+//! a new one. Waiters all observe that same outcome. If the spawned task
+//! itself is lost (panic, runtime shutdown), dropping its [`Leader`] still
+//! unblocks the waiters and frees the key.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -54,9 +60,8 @@ struct Inner {
     flights: Mutex<HashMap<Key, Arc<Flight>>>,
     /// Flights currently in the map.
     active: AtomicUsize,
-    /// Signalled when `active` drops to zero. `notify_one` stores a permit,
-    /// so a waiter that checks the counter and then sleeps cannot miss the
-    /// transition.
+    /// Signalled with `notify_waiters` when `active` drops to zero. Waiters
+    /// must enable their `notified()` future before checking the counter.
     idle: Notify,
 }
 
@@ -96,25 +101,32 @@ impl Inflight {
         }
     }
 
-    /// Runs `fut` when `key` is not already in flight; otherwise waits for
-    /// that resolution and returns its outcome.
+    /// Spawns `fut` when `key` is not already in flight, and waits for the
+    /// outcome of the resolution for `key` either way.
+    ///
+    /// The spawned task owns the [`Leader`] and always publishes the real
+    /// result, even when the caller that started it is dropped.
     pub(crate) async fn dedup<Fut>(&self, key: Key, fut: Fut) -> Result<Answer, ResolveError>
     where
-        Fut: Future<Output = Result<Answer, ResolveError>>,
+        Fut: Future<Output = Result<Answer, ResolveError>> + Send + 'static,
     {
         let name = key.name.clone();
-        match self.admit(key) {
+        let flight = match self.admit(key) {
             Admission::Lead(leader) => {
-                let result = fut.await;
-                let shared = result.clone();
-                leader.complete(result);
-                shared
+                let flight = Arc::clone(&leader.flight);
+                let task = tokio::spawn(async move {
+                    let result = fut.await;
+                    leader.complete(result);
+                });
+                drop(task);
+                flight
             }
             Admission::Follow(flight) => {
                 tracing::debug!(qname = %name, "joining in-flight resolution");
-                flight.recv(name).await
+                flight
             }
-        }
+        };
+        flight.recv(name).await
     }
 
     /// Starts a flight for `key` when none exists.
@@ -132,10 +144,16 @@ impl Inflight {
     /// Resolves once no flight is left. Returns immediately when already idle.
     pub(crate) async fn wait_idle(&self) {
         loop {
+            // Register for the wake-up before re-checking the counter, so a
+            // flight that finishes between the check and the await still
+            // wakes this task (`notify_waiters` stores no permit).
+            let notified = self.inner.idle.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if self.inner.active.load(Ordering::Acquire) == 0 {
                 return;
             }
-            self.inner.idle.notified().await;
+            notified.await;
         }
     }
 
@@ -450,5 +468,66 @@ mod tests {
         .await
         .expect("wait_idle should return after the flight finishes");
         assert_eq!(inflight.inner.active.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_first_caller_does_not_fail_the_followers() {
+        let inflight = Inflight::new();
+        let (tx, rx) = oneshot::channel::<()>();
+        let first = {
+            let inflight = inflight.clone();
+            tokio::spawn(async move {
+                inflight
+                    .dedup(key(false), async move {
+                        rx.await.unwrap();
+                        Ok(sample(7))
+                    })
+                    .await
+            })
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while inflight.inner.active.load(Ordering::Acquire) == 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "leader did not register"
+            );
+            tokio::task::yield_now().await;
+        }
+        let mut followers = Vec::new();
+        for _ in 0..4 {
+            let inflight = inflight.clone();
+            followers.push(tokio::spawn(async move {
+                inflight
+                    .dedup(key(false), async {
+                        Err(ResolveError::CnameLoop { name: Name::root() })
+                    })
+                    .await
+            }));
+        }
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        // The client behind the first caller gives up.
+        first.abort();
+        let _ = first.await;
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            followers.iter().all(|f| !f.is_finished()),
+            "followers must keep waiting for the real result"
+        );
+        tx.send(()).unwrap();
+        for follower in followers {
+            let answer = tokio::time::timeout(Duration::from_secs(2), follower)
+                .await
+                .unwrap()
+                .unwrap()
+                .expect("followers get the real answer, not a fabricated error");
+            assert_eq!(answer.ede.as_ref().unwrap().code, 7);
+        }
+        tokio::time::timeout(Duration::from_secs(2), inflight.wait_idle())
+            .await
+            .unwrap();
     }
 }

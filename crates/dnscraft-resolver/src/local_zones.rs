@@ -2,8 +2,10 @@
 //!
 //! Queries below these zones never leave the host. They are answered locally
 //! with NXDOMAIN (NODATA at the apex) and a synthesized SOA (RFC 6303
-//! section 3), unless a forward zone is equal to, inside, or covers the local
-//! zone, in which case the query takes the normal resolution path.
+//! section 3), unless a forward zone covers the query name (is equal to it or
+//! an ancestor of it), in which case the query takes the normal resolution
+//! path. A forward zone strictly inside a local zone only affects names at or
+//! below that forward zone.
 
 use dnscraft_proto::{
     Class, EdnsOption, Header, Message, Name, Question, RData, Rcode, Record, RecordType,
@@ -67,15 +69,18 @@ impl LocalZones {
         self.zones.retain(|z| !(z.zone_of(zone) || zone.zone_of(z)));
     }
 
-    /// True if a forward zone is equal to or inside `local`, or covers it.
+    /// True if a forward zone covers `qname`, i.e. is equal to it or an
+    /// ancestor of it.
+    ///
+    /// A forward zone strictly inside a local zone does not disable that
+    /// local zone for names outside the forward zone: those names must still
+    /// be answered locally, or private reverse lookups would leak upstream.
     pub fn is_overridden_by<'a>(
         &self,
-        local: &Name,
+        qname: &Name,
         forward_zones: impl IntoIterator<Item = &'a Name>,
     ) -> bool {
-        forward_zones
-            .into_iter()
-            .any(|f| local.zone_of(f) || f.zone_of(local))
+        forward_zones.into_iter().any(|f| f.zone_of(qname))
     }
 
     /// The most specific local zone containing `name`, if any.
@@ -87,7 +92,7 @@ impl LocalZones {
     }
 
     /// Answers `query` locally, or returns `None` if the query is not in a
-    /// local zone, the zone is overridden by a forward zone, or the class is
+    /// local zone, a forward zone covers the query name, or the class is
     /// not IN.
     ///
     /// Local answers carry the AA bit, use `DnssecStatus::Insecure` and
@@ -102,7 +107,7 @@ impl LocalZones {
             return None;
         }
         let zone = self.zone_for(&query.name)?;
-        if self.is_overridden_by(zone, forward_zones) {
+        if self.is_overridden_by(&query.name, forward_zones) {
             return None;
         }
         let rname = Name::from_ascii("nobody.invalid.").ok()?;

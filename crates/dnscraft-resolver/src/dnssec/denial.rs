@@ -20,21 +20,27 @@
 //! - NSEC/NSEC3 records at a delegation point (NS without SOA) or below a
 //!   DNAME never prove anything about names below them.
 
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 use dnscraft_proto::dnssec::{NSEC3_HASH_SHA1, base32hex_decode, nsec3_hash};
 use dnscraft_proto::{Name, RData, Record, RecordType, TypeBitmap};
 
+use super::ValidationBudget;
 use super::status::BogusReason;
 
 /// NSEC3 opt-out flag (RFC 5155 section 3.1.2).
 const NSEC3_OPT_OUT: u8 = 0x01;
 
 /// Above this many additional NSEC3 iterations a zone is treated as insecure
-/// (RFC 9276 section 3.2: validators MAY, above their limit SHOULD). 150 is
-/// the cap of `dnscraft_proto::dnssec::MAX_ITERATIONS_DEFAULT`, which is
-/// passed to the hash function as its own safety net.
-pub(crate) const NSEC3_MAX_ITERATIONS: u16 = 150;
+/// (RFC 9276 section 3.2: validators MAY, above their limit SHOULD). RFC 9276
+/// asks zones for 0 iterations; BIND treats more than 50 as insecure, Unbound's
+/// default cap is 150. 100 sits between them: it bounds one hash at 101 SHA-1
+/// rounds while tolerating the few legacy zones that still use dozens. It is
+/// also passed to the hash function as its own safety net, together with the
+/// per-resolution hash count budget (`MAX_NSEC3_HASHES_PER_RESOLVE`).
+pub(crate) const NSEC3_MAX_ITERATIONS: u16 = 100;
 
 /// Why a proof leads to `Insecure` instead of `Secure`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,12 +93,17 @@ impl Denial {
 // ---------------------------------------------------------------------------
 
 /// Proof that `qname` does not exist in `zone` (NXDOMAIN).
-pub(crate) fn prove_nxdomain(zone: &Name, qname: &Name, records: &[Record]) -> Denial {
+pub(crate) fn prove_nxdomain(
+    zone: &Name,
+    qname: &Name,
+    records: &[Record],
+    budget: &ValidationBudget,
+) -> Denial {
     both(
         zone,
         records,
         |z, r| nsec_nxdomain(z, qname, r),
-        |z, r| nsec3_nxdomain(z, qname, r),
+        |z, r| nsec3_nxdomain(z, qname, r, budget),
     )
 }
 
@@ -103,12 +114,13 @@ pub(crate) fn prove_nodata(
     qname: &Name,
     qtype: RecordType,
     records: &[Record],
+    budget: &ValidationBudget,
 ) -> Denial {
     both(
         zone,
         records,
         |z, r| nsec_nodata(z, qname, qtype, r),
-        |z, r| nsec3_nodata(z, qname, qtype, r),
+        |z, r| nsec3_nodata(z, qname, qtype, r, budget),
     )
 }
 
@@ -119,12 +131,13 @@ pub(crate) fn prove_wildcard_answer(
     qname: &Name,
     source: &Name,
     records: &[Record],
+    budget: &ValidationBudget,
 ) -> Denial {
     both(
         zone,
         records,
         |z, r| nsec_wildcard_answer(z, qname, source, r),
-        |z, r| nsec3_wildcard_answer(z, qname, source, r),
+        |z, r| nsec3_wildcard_answer(z, qname, source, r, budget),
     )
 }
 
@@ -132,12 +145,17 @@ pub(crate) fn prove_wildcard_answer(
 /// RFC 5155 section 8.9): a matching NSEC/NSEC3 with NS but neither DS nor
 /// SOA, or (NSEC3 only) an opt-out span covering the cut with a proven
 /// closest encloser, which is `Insecure`.
-pub(crate) fn prove_no_ds(zone: &Name, cut: &Name, records: &[Record]) -> Denial {
+pub(crate) fn prove_no_ds(
+    zone: &Name,
+    cut: &Name,
+    records: &[Record],
+    budget: &ValidationBudget,
+) -> Denial {
     both(
         zone,
         records,
         |_, r| nsec_no_ds(cut, r),
-        |z, r| nsec3_no_ds(z, cut, r),
+        |z, r| nsec3_no_ds(z, cut, r, budget),
     )
 }
 
@@ -399,11 +417,21 @@ struct Chain<'a> {
     iterations: u16,
     salt: &'a [u8],
     items: Vec<Nsec3<'a>>,
+    /// Hashes computed during this proof evaluation, so that each name is
+    /// hashed at most once however often it is matched or covered.
+    memo: RefCell<HashMap<Name, [u8; 20]>>,
+    budget: &'a ValidationBudget,
+    /// A hash was refused because the budget is spent.
+    exhausted: Cell<bool>,
 }
 
 /// The NSEC3 records directly below `zone` sharing the parameters of the
 /// first usable one; records with other parameters are ignored.
-fn nsec3_chain<'a>(zone: &Name, records: &[&'a Record]) -> Option<Chain<'a>> {
+fn nsec3_chain<'a>(
+    zone: &Name,
+    records: &[&'a Record],
+    budget: &'a ValidationBudget,
+) -> Option<Chain<'a>> {
     let mut chain: Option<Chain<'a>> = None;
     for r in records {
         let RData::NSEC3 {
@@ -442,6 +470,9 @@ fn nsec3_chain<'a>(zone: &Name, records: &[&'a Record]) -> Option<Chain<'a>> {
                     iterations: *iterations,
                     salt,
                     items: vec![item],
+                    memo: RefCell::new(HashMap::new()),
+                    budget,
+                    exhausted: Cell::new(false),
                 });
             }
             Some(c) => {
@@ -469,15 +500,27 @@ impl Chain<'_> {
         }
     }
 
+    /// The NSEC3 hash of `name`, memoised; `None` when the hash cannot be
+    /// computed or the budget is spent (then `exhausted` is set and the proof
+    /// result is replaced by a budget failure in [`with_chain`]).
     fn hash(&self, name: &Name) -> Option<[u8; 20]> {
-        nsec3_hash(
+        if let Some(h) = self.memo.borrow().get(name) {
+            return Some(*h);
+        }
+        if !self.budget.charge_nsec3_hash() {
+            self.exhausted.set(true);
+            return None;
+        }
+        let h = nsec3_hash(
             self.algorithm,
             name,
             self.salt,
             self.iterations,
             NSEC3_MAX_ITERATIONS,
         )
-        .ok()
+        .ok()?;
+        self.memo.borrow_mut().insert(name.clone(), h);
+        Some(h)
     }
 
     fn matching(&self, name: &Name) -> Option<&Nsec3<'_>> {
@@ -523,17 +566,45 @@ fn encloser_proof(zone: &Name, qname: &Name, chain: &Chain<'_>) -> Result<Enclos
     Err(Denial::bad())
 }
 
-fn nsec3_nxdomain(zone: &Name, qname: &Name, records: &[&Record]) -> Denial {
-    let Some(chain) = nsec3_chain(zone, records) else {
+/// Builds the NSEC3 chain of `records`, runs `prove` on it and turns an
+/// exhausted hash budget into a fail-closed `Bogus` (a refused hash would
+/// otherwise look like "no matching record").
+fn with_chain(
+    zone: &Name,
+    records: &[&Record],
+    budget: &ValidationBudget,
+    prove: impl FnOnce(&Chain<'_>) -> Denial,
+) -> Denial {
+    let Some(chain) = nsec3_chain(zone, records, budget) else {
         return Denial::Bogus(BogusReason::NoDenialProof);
     };
     if let Some(why) = chain.unsupported() {
         return Denial::Insecure(why);
     }
+    let result = prove(&chain);
+    if chain.exhausted.get() {
+        Denial::Bogus(BogusReason::Nsec3Budget)
+    } else {
+        result
+    }
+}
+
+fn nsec3_nxdomain(
+    zone: &Name,
+    qname: &Name,
+    records: &[&Record],
+    budget: &ValidationBudget,
+) -> Denial {
+    with_chain(zone, records, budget, |chain| {
+        nxdomain_in_chain(zone, qname, chain)
+    })
+}
+
+fn nxdomain_in_chain(zone: &Name, qname: &Name, chain: &Chain<'_>) -> Denial {
     if chain.matching(qname).is_some() {
         return Denial::bad();
     }
-    let proof = match encloser_proof(zone, qname, &chain) {
+    let proof = match encloser_proof(zone, qname, chain) {
         Ok(p) => p,
         Err(d) => return d,
     };
@@ -550,6 +621,18 @@ fn nsec3_nxdomain(zone: &Name, qname: &Name, records: &[&Record]) -> Denial {
         // Unbound and BIND do (delv validates NXDOMAIN under .de and .com):
         // the server shows that neither the name nor its wildcard is in the
         // signed chain, and a delegation in the span would have got a referral.
+        //
+        // AD-bit trade-off (deliberate): inside an opt-out span, unsigned
+        // delegations may exist without any NSEC3 record, so the proof cannot
+        // distinguish "name does not exist" from "name is an unsigned
+        // delegation". An attacker who replays a genuine, still-valid
+        // opt-out NXDOMAIN proof for a span can therefore make a resolver
+        // deny an existing unsigned delegation inside that span with AD=1.
+        // Impact is limited: such a zone is unauthenticated anyway (an
+        // on-path attacker could equally strip its DS-less referral, and its
+        // data would never be Secure), the replay only works within the proof's
+        // RRSIG validity and the span, and rejecting opt-out NXDOMAIN would
+        // make most of .com/.de/.net names fail validation.
         Denial::Secure
     } else if proof.opt_out {
         // Without the wildcard proof an opt-out span only shows that the name
@@ -560,13 +643,19 @@ fn nsec3_nxdomain(zone: &Name, qname: &Name, records: &[&Record]) -> Denial {
     }
 }
 
-fn nsec3_nodata(zone: &Name, qname: &Name, qtype: RecordType, records: &[&Record]) -> Denial {
-    let Some(chain) = nsec3_chain(zone, records) else {
-        return Denial::Bogus(BogusReason::NoDenialProof);
-    };
-    if let Some(why) = chain.unsupported() {
-        return Denial::Insecure(why);
-    }
+fn nsec3_nodata(
+    zone: &Name,
+    qname: &Name,
+    qtype: RecordType,
+    records: &[&Record],
+    budget: &ValidationBudget,
+) -> Denial {
+    with_chain(zone, records, budget, |chain| {
+        nodata_in_chain(zone, qname, qtype, chain)
+    })
+}
+
+fn nodata_in_chain(zone: &Name, qname: &Name, qtype: RecordType, chain: &Chain<'_>) -> Denial {
     if let Some(m) = chain.matching(qname) {
         return if bitmap_denies(m.types, qtype) {
             Denial::Secure
@@ -574,7 +663,7 @@ fn nsec3_nodata(zone: &Name, qname: &Name, qtype: RecordType, records: &[&Record
             Denial::bad()
         };
     }
-    let proof = match encloser_proof(zone, qname, &chain) {
+    let proof = match encloser_proof(zone, qname, chain) {
         Ok(p) => p,
         Err(d) => return d,
     };
@@ -593,13 +682,19 @@ fn nsec3_nodata(zone: &Name, qname: &Name, qtype: RecordType, records: &[&Record
     }
 }
 
-fn nsec3_wildcard_answer(zone: &Name, qname: &Name, source: &Name, records: &[&Record]) -> Denial {
-    let Some(chain) = nsec3_chain(zone, records) else {
-        return Denial::Bogus(BogusReason::NoDenialProof);
-    };
-    if let Some(why) = chain.unsupported() {
-        return Denial::Insecure(why);
-    }
+fn nsec3_wildcard_answer(
+    zone: &Name,
+    qname: &Name,
+    source: &Name,
+    records: &[&Record],
+    budget: &ValidationBudget,
+) -> Denial {
+    with_chain(zone, records, budget, |chain| {
+        wildcard_answer_in_chain(qname, source, chain)
+    })
+}
+
+fn wildcard_answer_in_chain(qname: &Name, source: &Name, chain: &Chain<'_>) -> Denial {
     let Some(encloser) = source
         .parent()
         .filter(|ce| ce.zone_of(qname) && ce != qname)
@@ -619,13 +714,13 @@ fn nsec3_wildcard_answer(zone: &Name, qname: &Name, source: &Name, records: &[&R
     }
 }
 
-fn nsec3_no_ds(zone: &Name, cut: &Name, records: &[&Record]) -> Denial {
-    let Some(chain) = nsec3_chain(zone, records) else {
-        return Denial::Bogus(BogusReason::NoDenialProof);
-    };
-    if let Some(why) = chain.unsupported() {
-        return Denial::Insecure(why);
-    }
+fn nsec3_no_ds(zone: &Name, cut: &Name, records: &[&Record], budget: &ValidationBudget) -> Denial {
+    with_chain(zone, records, budget, |chain| {
+        no_ds_in_chain(zone, cut, chain)
+    })
+}
+
+fn no_ds_in_chain(zone: &Name, cut: &Name, chain: &Chain<'_>) -> Denial {
     if let Some(m) = chain.matching(cut) {
         return if m.types.contains(RecordType::NS)
             && !m.types.contains(RecordType::DS)
@@ -639,7 +734,7 @@ fn nsec3_no_ds(zone: &Name, cut: &Name, records: &[&Record]) -> Denial {
     // RFC 5155 section 8.9: an opt-out span covering the next closer name
     // (the cut itself, as a delegation is a name) with a proven closest
     // encloser.
-    match encloser_proof(zone, cut, &chain) {
+    match encloser_proof(zone, cut, chain) {
         Ok(p) if p.opt_out => Denial::Insecure(InsecureWhy::OptOut),
         Ok(_) => Denial::bad(),
         Err(d) => d,
@@ -652,6 +747,25 @@ mod tests {
     use super::*;
     use dnscraft_proto::Class;
     use dnscraft_proto::dnssec::base32hex_encode;
+
+    // Test shims: the pure proof logic runs with an unlimited budget.
+    fn prove_nxdomain_t(zone: &Name, qname: &Name, records: &[Record]) -> Denial {
+        prove_nxdomain(zone, qname, records, &ValidationBudget::unlimited())
+    }
+    fn prove_nodata_t(zone: &Name, qname: &Name, qtype: RecordType, records: &[Record]) -> Denial {
+        prove_nodata(zone, qname, qtype, records, &ValidationBudget::unlimited())
+    }
+    fn prove_wildcard_answer_t(
+        zone: &Name,
+        qname: &Name,
+        source: &Name,
+        records: &[Record],
+    ) -> Denial {
+        prove_wildcard_answer(zone, qname, source, records, &ValidationBudget::unlimited())
+    }
+    fn prove_no_ds_t(zone: &Name, cut: &Name, records: &[Record]) -> Denial {
+        prove_no_ds(zone, cut, records, &ValidationBudget::unlimited())
+    }
 
     fn n(s: &str) -> Name {
         Name::from_ascii(s).unwrap()
@@ -768,24 +882,24 @@ mod tests {
         let last = nsec("m.example.", "example.", &[RecordType::A]);
         let both_covered = [first.clone(), last.clone()];
         assert_eq!(
-            prove_nxdomain(&zone, &n("b.example."), &both_covered),
+            prove_nxdomain_t(&zone, &n("b.example."), &both_covered),
             Denial::Secure
         );
         // Without any proof.
         assert_eq!(
-            prove_nxdomain(&zone, &n("b.example."), &[]),
+            prove_nxdomain_t(&zone, &n("b.example."), &[]),
             Denial::Bogus(BogusReason::NoDenialProof)
         );
         // The name exists.
         assert_eq!(
-            prove_nxdomain(&zone, &n("m.example."), &both_covered),
+            prove_nxdomain_t(&zone, &n("m.example."), &both_covered),
             Denial::bad()
         );
         // Covers the name but not the wildcard: *.example. sorts after
         // example. so a chain a -> z would cover both; build one that skips it.
         let only_name = [nsec("b.example.", "c.example.", &[RecordType::A])];
         assert_eq!(
-            prove_nxdomain(&zone, &n("bb.example."), &only_name),
+            prove_nxdomain_t(&zone, &n("bb.example."), &only_name),
             Denial::bad()
         );
     }
@@ -797,11 +911,11 @@ mod tests {
         let r = nsec("ns1.example.", "*.wild.example.", &[RecordType::A]);
         let recs = [r];
         assert_eq!(
-            prove_nodata(&zone, &n("wild.example."), RecordType::A, &recs),
+            prove_nodata_t(&zone, &n("wild.example."), RecordType::A, &recs),
             Denial::Secure
         );
         assert_eq!(
-            prove_nxdomain(&zone, &n("wild.example."), &recs),
+            prove_nxdomain_t(&zone, &n("wild.example."), &recs),
             Denial::bad()
         );
     }
@@ -811,16 +925,16 @@ mod tests {
         let zone = n("example.");
         let a_only = [nsec("www.example.", "example.", &[RecordType::A])];
         assert_eq!(
-            prove_nodata(&zone, &n("www.example."), RecordType::AAAA, &a_only),
+            prove_nodata_t(&zone, &n("www.example."), RecordType::AAAA, &a_only),
             Denial::Secure
         );
         assert_eq!(
-            prove_nodata(&zone, &n("www.example."), RecordType::A, &a_only),
+            prove_nodata_t(&zone, &n("www.example."), RecordType::A, &a_only),
             Denial::bad()
         );
         let cname = [nsec("www.example.", "example.", &[RecordType::CNAME])];
         assert_eq!(
-            prove_nodata(&zone, &n("www.example."), RecordType::AAAA, &cname),
+            prove_nodata_t(&zone, &n("www.example."), RecordType::AAAA, &cname),
             Denial::bad()
         );
     }
@@ -834,16 +948,16 @@ mod tests {
             &[RecordType::SOA, RecordType::NS],
         )];
         assert_eq!(
-            prove_nodata(&zone, &n("child.example."), RecordType::DS, &apex),
+            prove_nodata_t(&zone, &n("child.example."), RecordType::DS, &apex),
             Denial::bad()
         );
         let cut = [nsec("child.example.", "z.example.", &[RecordType::NS])];
         assert_eq!(
-            prove_nodata(&zone, &n("child.example."), RecordType::DS, &cut),
+            prove_nodata_t(&zone, &n("child.example."), RecordType::DS, &cut),
             Denial::Secure
         );
         assert_eq!(
-            prove_nodata(&zone, &n("child.example."), RecordType::A, &cut),
+            prove_nodata_t(&zone, &n("child.example."), RecordType::A, &cut),
             Denial::bad()
         );
     }
@@ -853,16 +967,16 @@ mod tests {
         let zone = n("example.");
         let cover = [nsec("a.example.", "z.example.", &[RecordType::A])];
         assert_eq!(
-            prove_wildcard_answer(&zone, &n("m.example."), &n("*.example."), &cover),
+            prove_wildcard_answer_t(&zone, &n("m.example."), &n("*.example."), &cover),
             Denial::Secure
         );
         assert_eq!(
-            prove_wildcard_answer(&zone, &n("m.example."), &n("*.example."), &[]),
+            prove_wildcard_answer_t(&zone, &n("m.example."), &n("*.example."), &[]),
             Denial::Bogus(BogusReason::NoDenialProof)
         );
         let wrong = [nsec("n.example.", "z.example.", &[RecordType::A])];
         assert_eq!(
-            prove_wildcard_answer(&zone, &n("m.example."), &n("*.example."), &wrong),
+            prove_wildcard_answer_t(&zone, &n("m.example."), &n("*.example."), &wrong),
             Denial::bad()
         );
     }
@@ -884,12 +998,12 @@ mod tests {
             Some(n("a.example."))
         );
         assert_eq!(
-            prove_wildcard_answer(&zone, &n("x.a.example."), &n("*.example."), &cover),
+            prove_wildcard_answer_t(&zone, &n("x.a.example."), &n("*.example."), &cover),
             Denial::bad()
         );
         // Same NSEC is fine when the wildcard matches that CE.
         assert_eq!(
-            prove_wildcard_answer(&zone, &n("x.a.example."), &n("*.a.example."), &cover),
+            prove_wildcard_answer_t(&zone, &n("x.a.example."), &n("*.a.example."), &cover),
             Denial::Secure
         );
     }
@@ -899,7 +1013,7 @@ mod tests {
         let zone = n("example.");
         let cut = [nsec("child.example.", "z.example.", &[RecordType::NS])];
         assert_eq!(
-            prove_nxdomain(&zone, &n("www.child.example."), &cut),
+            prove_nxdomain_t(&zone, &n("www.child.example."), &cut),
             Denial::bad()
         );
     }
@@ -945,7 +1059,7 @@ mod tests {
             &[RecordType::SOA, RecordType::NS, RecordType::RRSIG],
         );
         assert_eq!(
-            prove_nodata(
+            prove_nodata_t(
                 &zone,
                 &n("example."),
                 RecordType::A,
@@ -954,7 +1068,7 @@ mod tests {
             Denial::Secure
         );
         assert_eq!(
-            prove_nodata(&zone, &n("example."), RecordType::NS, &[r]),
+            prove_nodata_t(&zone, &n("example."), RecordType::NS, &[r]),
             Denial::bad()
         );
     }
@@ -972,11 +1086,11 @@ mod tests {
         );
         let expected = Denial::Insecure(InsecureWhy::Nsec3Iterations);
         assert_eq!(
-            prove_nxdomain(&zone, &n("x.example."), std::slice::from_ref(&r)),
+            prove_nxdomain_t(&zone, &n("x.example."), std::slice::from_ref(&r)),
             expected
         );
         assert_eq!(
-            prove_nodata(
+            prove_nodata_t(
                 &zone,
                 &n("x.example."),
                 RecordType::A,
@@ -985,7 +1099,7 @@ mod tests {
             expected
         );
         assert_eq!(
-            prove_wildcard_answer(
+            prove_wildcard_answer_t(
                 &zone,
                 &n("x.example."),
                 &n("*.example."),
@@ -993,11 +1107,11 @@ mod tests {
             ),
             expected
         );
-        assert_eq!(prove_no_ds(&zone, &n("x.example."), &[r]), expected);
+        assert_eq!(prove_no_ds_t(&zone, &n("x.example."), &[r]), expected);
         // The limit itself is still usable.
         let (ok, z) = tiny_chain(false, NSEC3_MAX_ITERATIONS);
         assert!(!matches!(
-            prove_nxdomain(&z, &n("nope.example."), &ok),
+            prove_nxdomain_t(&z, &n("nope.example."), &ok),
             Denial::Insecure(InsecureWhy::Nsec3Iterations)
         ));
     }
@@ -1010,7 +1124,7 @@ mod tests {
             *hash_algorithm = 7;
         }
         assert_eq!(
-            prove_nodata(&zone, &n("x.example."), RecordType::A, &[r]),
+            prove_nodata_t(&zone, &n("x.example."), RecordType::A, &[r]),
             Denial::Insecure(InsecureWhy::Nsec3Algorithm)
         );
     }
@@ -1022,7 +1136,7 @@ mod tests {
         // intervals; the closest encloser is the apex (matching) and both
         // the next closer and the wildcard fall into some interval.
         let q = n("nope.example.");
-        assert_eq!(prove_nxdomain(&zone, &q, &recs), Denial::Secure);
+        assert_eq!(prove_nxdomain_t(&zone, &q, &recs), Denial::Secure);
         // Opt-out span over the next closer: without the wildcard proof the
         // answer is Insecure, with it Secure (as Unbound and BIND).
         let apex = h("example.", 0);
@@ -1038,11 +1152,11 @@ mod tests {
         let nc = nsec3("example.", &minus_one(hn.clone()), &plus_one(hn), 1, 0, &[]);
         let wc = nsec3("example.", &minus_one(hw.clone()), &plus_one(hw), 1, 0, &[]);
         assert_eq!(
-            prove_nxdomain(&zone, &q, &[apex_rec.clone(), nc.clone()]),
+            prove_nxdomain_t(&zone, &q, &[apex_rec.clone(), nc.clone()]),
             Denial::Insecure(InsecureWhy::OptOut)
         );
         assert_eq!(
-            prove_nxdomain(&zone, &q, &[apex_rec.clone(), nc.clone(), wc.clone()]),
+            prove_nxdomain_t(&zone, &q, &[apex_rec.clone(), nc.clone(), wc.clone()]),
             Denial::Secure
         );
         // Without opt-out the missing wildcard proof is fatal.
@@ -1050,7 +1164,10 @@ mod tests {
         if let RData::NSEC3 { flags, .. } = &mut plain.rdata {
             *flags = 0;
         }
-        assert_eq!(prove_nxdomain(&zone, &q, &[apex_rec, plain]), Denial::bad());
+        assert_eq!(
+            prove_nxdomain_t(&zone, &q, &[apex_rec, plain]),
+            Denial::bad()
+        );
         // Missing encloser match: only a non-matching record.
         let apex = h("example.", 0);
         let lone = nsec3(
@@ -1061,7 +1178,7 @@ mod tests {
             0,
             &[RecordType::A],
         );
-        assert_eq!(prove_nxdomain(&zone, &q, &[lone]), Denial::bad());
+        assert_eq!(prove_nxdomain_t(&zone, &q, &[lone]), Denial::bad());
     }
 
     #[test]
@@ -1081,12 +1198,12 @@ mod tests {
         );
         let cover = nsec3("example.", &minus_one(hc.clone()), &plus_one(hc), 1, 0, &[]);
         assert_eq!(
-            prove_no_ds(&zone, &cut, &[apex_rec.clone(), cover.clone()]),
+            prove_no_ds_t(&zone, &cut, &[apex_rec.clone(), cover.clone()]),
             Denial::Insecure(InsecureWhy::OptOut)
         );
         // Without the closest-encloser match the cover alone is not enough.
         assert_eq!(
-            prove_no_ds(&zone, &cut, std::slice::from_ref(&cover)),
+            prove_no_ds_t(&zone, &cut, std::slice::from_ref(&cover)),
             Denial::bad()
         );
         // A cover without opt-out proves non-existence, not a DS-less cut.
@@ -1094,7 +1211,10 @@ mod tests {
         if let RData::NSEC3 { flags, .. } = &mut plain.rdata {
             *flags = 0;
         }
-        assert_eq!(prove_no_ds(&zone, &cut, &[apex_rec, plain]), Denial::bad());
+        assert_eq!(
+            prove_no_ds_t(&zone, &cut, &[apex_rec, plain]),
+            Denial::bad()
+        );
     }
 
     #[test]
@@ -1111,7 +1231,7 @@ mod tests {
             &[],
         );
         assert_eq!(
-            prove_wildcard_answer(&zone, &q, &n("*.example."), std::slice::from_ref(&cover)),
+            prove_wildcard_answer_t(&zone, &q, &n("*.example."), std::slice::from_ref(&cover)),
             Denial::Secure
         );
         let opt = nsec3(
@@ -1123,7 +1243,7 @@ mod tests {
             &[],
         );
         assert_eq!(
-            prove_wildcard_answer(&zone, &q, &n("*.example."), &[opt]),
+            prove_wildcard_answer_t(&zone, &q, &n("*.example."), &[opt]),
             Denial::Insecure(InsecureWhy::OptOut)
         );
         let matching = nsec3(
@@ -1135,12 +1255,63 @@ mod tests {
             &[RecordType::A],
         );
         assert_eq!(
-            prove_wildcard_answer(&zone, &q, &n("*.example."), &[matching]),
+            prove_wildcard_answer_t(&zone, &q, &n("*.example."), &[matching]),
             Denial::bad()
         );
         assert_eq!(
-            prove_wildcard_answer(&zone, &q, &n("*.example."), &[]),
+            prove_wildcard_answer_t(&zone, &q, &n("*.example."), &[]),
             Denial::Bogus(BogusReason::NoDenialProof)
         );
+    }
+
+    #[test]
+    fn nsec3_hashes_are_memoised_per_proof() {
+        let (recs, zone) = tiny_chain(false, 0);
+        let budget = ValidationBudget::unlimited();
+        // Distinct names hashed: a.b.example. (matching), b.example. (walk,
+        // reused as next closer), example. (encloser), *.example. (wildcard).
+        // Without the memo the next closer b.example. is hashed twice.
+        let _ = prove_nxdomain(&zone, &n("a.b.example."), &recs, &budget);
+        assert_eq!(budget.nsec3_hashes_used(), 4);
+    }
+
+    #[test]
+    fn nsec3_hash_budget_is_enforced_and_fails_closed() {
+        let (recs, zone) = tiny_chain(false, 0);
+        let qname = n(&format!("{}example.", "l.".repeat(100)));
+        // The walk over 100 labels is cut off at the limit
+        // instead of hashing every ancestor (before: unbounded, 100+ hashes
+        // per proof and per call).
+        let budget = ValidationBudget::with_limits(u32::MAX, 20);
+        assert_eq!(
+            prove_nxdomain(&zone, &qname, &recs, &budget),
+            Denial::Bogus(BogusReason::Nsec3Budget)
+        );
+        assert_eq!(budget.nsec3_hashes_used(), 20);
+        assert_eq!(BogusReason::Nsec3Budget.code(), "dnssec.nsec3_budget");
+        assert_eq!(BogusReason::Nsec3Budget.ede_code(), 6);
+        // The budget is per resolution: a spent budget refuses the next proof.
+        assert_eq!(
+            prove_nodata(&zone, &n("www.example."), RecordType::AAAA, &recs, &budget),
+            Denial::Bogus(BogusReason::Nsec3Budget)
+        );
+        // Whatever the default budget does, it never hashes more than its cap.
+        let default = ValidationBudget::default();
+        for _ in 0..3 {
+            let _ = prove_nxdomain(&zone, &qname, &recs, &default);
+        }
+        assert!(default.nsec3_hashes_used() <= crate::dnssec::MAX_NSEC3_HASHES_PER_RESOLVE);
+    }
+
+    #[test]
+    fn nsec3_iteration_limit_is_100() {
+        assert_eq!(NSEC3_MAX_ITERATIONS, 100);
+        let (recs, zone) = tiny_chain(false, 101);
+        let budget = ValidationBudget::default();
+        assert_eq!(
+            prove_nxdomain(&zone, &n("nope.example."), &recs, &budget),
+            Denial::Insecure(InsecureWhy::Nsec3Iterations)
+        );
+        assert_eq!(budget.nsec3_hashes_used(), 0);
     }
 }

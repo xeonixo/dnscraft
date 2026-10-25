@@ -4,6 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use dnscraft_proto::dnssec::rrsig_signing_input;
 use dnscraft_proto::{Name, RData, Record};
+
+use super::budget::ValidationBudget;
 use ring::signature::{
     self, ECDSA_P256_SHA256_FIXED, ECDSA_P384_SHA384_FIXED, ED25519, RsaParameters,
     RsaPublicKeyComponents, UnparsedPublicKey,
@@ -11,6 +13,11 @@ use ring::signature::{
 
 const ZONE_FLAG: u16 = 0x0100;
 const REVOKE_FLAG: u16 = 0x0080;
+
+/// Seconds an RRSIG's inception may lie in the future and still be accepted
+/// (clock skew between the signer and this resolver). Applies only to the
+/// inception; expiration is checked strictly.
+pub const SIG_INCEPTION_SKEW: u32 = 300;
 
 /// Why one RRSIG did not validate an RRset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +52,9 @@ pub enum VerifyFailure {
     NoSignatures,
     /// Key material or record contents cannot be interpreted.
     MalformedKey,
+    /// The per-resolution signature verification budget is spent
+    /// (KeyTrap protection); fail closed.
+    BudgetExhausted,
 }
 
 impl VerifyFailure {
@@ -65,6 +75,7 @@ impl VerifyFailure {
             Self::RrsetMismatch => "dnssec.rrset_mismatch",
             Self::NoSignatures => "dnssec.no_signatures",
             Self::MalformedKey => "dnssec.malformed_key",
+            Self::BudgetExhausted => "dnssec.validation_budget",
         }
     }
 
@@ -84,6 +95,7 @@ impl VerifyFailure {
     /// (higher is more specific).
     pub(crate) fn specificity(&self) -> u8 {
         match self {
+            Self::BudgetExhausted => 10,
             Self::Expired | Self::NotYetValid => 9,
             Self::BadSignature => 8,
             Self::UnsupportedAlgorithm(_) => 7,
@@ -130,8 +142,8 @@ pub fn serial_lt(a: u32, b: u32) -> bool {
     a != b && b.wrapping_sub(a) < 0x8000_0000
 }
 
-/// Checks `inception <= now <= expiration` using serial arithmetic
-/// (RFC 4034 section 3.1.5); `now` is reduced modulo 2^32.
+/// Checks `inception - SIG_INCEPTION_SKEW <= now <= expiration` using serial
+/// arithmetic (RFC 4034 section 3.1.5); `now` is reduced modulo 2^32.
 pub fn validity_window(
     inception: u32,
     expiration: u32,
@@ -140,7 +152,7 @@ pub fn validity_window(
     let secs = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
     // Truncation to 32 bits is the point: serial numbers wrap.
     let now32 = (secs & 0xFFFF_FFFF) as u32;
-    if serial_lt(now32, inception) {
+    if serial_lt(now32.wrapping_add(SIG_INCEPTION_SKEW), inception) {
         Err(VerifyFailure::NotYetValid)
     } else if serial_lt(expiration, now32) {
         Err(VerifyFailure::Expired)
@@ -178,6 +190,27 @@ pub fn verify_rrsig(
     rrsig: &Record,
     dnskey: &Record,
     now: SystemTime,
+) -> Result<(), VerifyFailure> {
+    verify_rrsig_budgeted(
+        rrset,
+        rrsig,
+        dnskey,
+        now,
+        &ValidationBudget::unlimited(),
+        &mut None,
+    )
+}
+
+/// [`verify_rrsig`] that charges one verification to `budget` right before
+/// the cryptographic check (cheap structural rejections are free), and reuses
+/// the RRSIG signing input cached in `input` across keys.
+pub(crate) fn verify_rrsig_budgeted(
+    rrset: &[Record],
+    rrsig: &Record,
+    dnskey: &Record,
+    now: SystemTime,
+    budget: &ValidationBudget,
+    input: &mut Option<Vec<u8>>,
 ) -> Result<(), VerifyFailure> {
     let RData::RRSIG {
         type_covered,
@@ -235,9 +268,16 @@ pub fn verify_rrsig(
     }
     validity_window(*inception, *expiration, now)?;
 
-    let input =
-        rrsig_signing_input(&rrsig.rdata, rrset).map_err(|_| VerifyFailure::MalformedKey)?;
-    verify_signature(*algorithm, public_key, &input, sig)
+    let msg = match input {
+        Some(m) => m,
+        None => input.insert(
+            rrsig_signing_input(&rrsig.rdata, rrset).map_err(|_| VerifyFailure::MalformedKey)?,
+        ),
+    };
+    if !budget.charge_verification() {
+        return Err(VerifyFailure::BudgetExhausted);
+    }
+    verify_signature(*algorithm, public_key, msg, sig)
 }
 
 fn verify_signature(alg: u8, key: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), VerifyFailure> {
@@ -342,15 +382,18 @@ mod tests {
 
     #[test]
     fn window_plain() {
-        assert_eq!(validity_window(100, 200, at(100)), Ok(()));
-        assert_eq!(validity_window(100, 200, at(150)), Ok(()));
-        assert_eq!(validity_window(100, 200, at(200)), Ok(()));
+        assert_eq!(validity_window(1000, 2000, at(1000)), Ok(()));
+        assert_eq!(validity_window(1000, 2000, at(1500)), Ok(()));
+        assert_eq!(validity_window(1000, 2000, at(2000)), Ok(()));
+        // Inception skew: up to SIG_INCEPTION_SKEW seconds early is fine.
+        assert_eq!(validity_window(1000, 2000, at(1000 - 300)), Ok(()));
         assert_eq!(
-            validity_window(100, 200, at(99)),
+            validity_window(1000, 2000, at(1000 - 301)),
             Err(VerifyFailure::NotYetValid)
         );
+        // Expiration gets no skew.
         assert_eq!(
-            validity_window(100, 200, at(201)),
+            validity_window(1000, 2000, at(2001)),
             Err(VerifyFailure::Expired)
         );
     }
@@ -365,8 +408,9 @@ mod tests {
         assert_eq!(validity_window(inc, exp, at(0xFFFF_FFFF)), Ok(()));
         assert_eq!(validity_window(inc, exp, at(wrap)), Ok(()));
         assert_eq!(validity_window(inc, exp, at(wrap + 0x100)), Ok(()));
+        assert_eq!(validity_window(inc, exp, at(0xFFFF_FDD4)), Ok(()));
         assert_eq!(
-            validity_window(inc, exp, at(0xFFFF_FEFF)),
+            validity_window(inc, exp, at(0xFFFF_FDD3)),
             Err(VerifyFailure::NotYetValid)
         );
         assert_eq!(

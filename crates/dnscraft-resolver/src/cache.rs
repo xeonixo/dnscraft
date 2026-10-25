@@ -25,7 +25,11 @@
 //! expired entry does not mark it recently used and does not count as a hit.
 //! Serving it stale does mark it recently used, so an entry clients are still
 //! reading is not dropped ahead of ones nobody asked for, but it does not
-//! count as a hit and does not move the expiry.
+//! count as a hit and does not move the expiry. A stale answer carries
+//! [`STALE_ANSWER_TTL`], clear AD, and status `Indeterminate`.
+//!
+//! A flush bumps an epoch. A resolution that started before the flush does
+//! not store its result ([`Cache::store_in_epoch`]).
 //!
 //! Each fresh hit increments a counter on the entry. Prefetch treats that
 //! counter as popularity. Replacing the entry starts the count again. A
@@ -34,10 +38,13 @@
 //! Each entry is charged the compressed wire length of the stored message
 //! plus [`ENTRY_OVERHEAD`] bytes for the key, DNSSEC status and bookkeeping.
 //! That estimates retained memory; it is not an allocator measurement.
-//! Least-recently-used entries are dropped until the total fits the budget.
-//! An entry larger than the budget is not kept.
+//! Least-recently-used entries are dropped until the total fits the budget; an
+//! ordered index keeps each eviction O(log n). An entry larger than the budget
+//! is not kept and evicts nothing. Entries hold an `Arc<Message>`, so a hit
+//! copies the message outside the lock.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -53,6 +60,13 @@ const ENTRY_OVERHEAD: usize = 256;
 
 /// RFC 8914 INFO-CODE 3: the resolver served a stale answer (RFC 8767).
 const EDE_STALE_ANSWER: u16 = 3;
+
+/// TTL written into a stale answer (RFC 8767 section 5.11 recommends 30 s).
+///
+/// Zero would make a client re-ask at once, which only repeats the failing
+/// upstream lookup. A short positive TTL lets the client keep the answer
+/// while the authoritative servers are unreachable.
+pub(crate) const STALE_ANSWER_TTL: u32 = 30;
 
 /// One mebibyte, the unit of [`ResolverConfig::cache_size_mb`].
 const MIB: u64 = 1024 * 1024;
@@ -79,7 +93,9 @@ impl From<&Query> for Key {
 /// rewrites them to the time left on `expires_at`.
 #[derive(Debug)]
 struct Entry {
-    message: Message,
+    /// Shared so a hit clones a pointer under the lock and the message
+    /// itself outside it.
+    message: Arc<Message>,
     dnssec: DnssecStatus,
     ede: Option<ExtendedError>,
     /// Clamped lifetime, in seconds.
@@ -96,10 +112,41 @@ struct Entry {
 #[derive(Debug)]
 struct Inner {
     map: HashMap<Key, Entry>,
+    /// Entries ordered by [`Entry::last_used`]; the first item is the least
+    /// recently used. Maintained on insert, use and removal, so eviction is
+    /// O(log n) instead of a scan of the whole map.
+    order: BTreeMap<u64, Key>,
     /// Next [`Entry::last_used`] stamp. Stamps are unique.
     clock: u64,
     used: usize,
     budget: usize,
+    /// Incremented by every flush. See [`Cache::epoch`].
+    epoch: u64,
+}
+
+impl Inner {
+    fn next_stamp(&mut self) -> u64 {
+        self.clock = self.clock.saturating_add(1);
+        self.clock
+    }
+
+    /// Marks `key` as most recently used.
+    fn touch(&mut self, key: &Key) {
+        let stamp = self.next_stamp();
+        if let Some(entry) = self.map.get_mut(key) {
+            self.order.remove(&entry.last_used);
+            entry.last_used = stamp;
+            self.order.insert(stamp, key.clone());
+        }
+    }
+
+    /// Removes `key` from the map, the order index and the byte count.
+    fn remove(&mut self, key: &Key) -> Option<Entry> {
+        let entry = self.map.remove(key)?;
+        self.order.remove(&entry.last_used);
+        self.used = self.used.saturating_sub(entry.size);
+        Some(entry)
+    }
 }
 
 /// Popularity and lifetime of a fresh cache entry, for prefetch.
@@ -137,9 +184,11 @@ impl Cache {
         Self {
             inner: Mutex::new(Inner {
                 map: HashMap::new(),
+                order: BTreeMap::new(),
                 clock: 0,
                 used: 0,
                 budget,
+                epoch: 0,
             }),
         }
     }
@@ -150,21 +199,26 @@ impl Cache {
     pub fn lookup(&self, query: &Query, now: Instant) -> Option<Answer> {
         let mut inner = lock(&self.inner);
         let key = Key::from(query);
-        let (mut message, dnssec, ede, ttl) = {
+        let (shared, dnssec, ede, ttl) = {
             let entry = inner.map.get(&key)?;
             if now >= entry.expires_at {
                 return None;
             }
             let ttl = remaining_ttl(entry.expires_at, now, entry.ttl);
-            (entry.message.clone(), entry.dnssec, entry.ede.clone(), ttl)
+            (
+                Arc::clone(&entry.message),
+                entry.dnssec,
+                entry.ede.clone(),
+                ttl,
+            )
         };
-        inner.clock = inner.clock.saturating_add(1);
-        let stamp = inner.clock;
+        inner.touch(&key);
         if let Some(entry) = inner.map.get_mut(&key) {
-            entry.last_used = stamp;
             entry.hits = entry.hits.saturating_add(1);
         }
         drop(inner);
+        // The deep copy happens outside the global lock.
+        let mut message = Message::clone(&shared);
         set_ttls(&mut message, ttl);
         message.header.ad = dnssec == DnssecStatus::Secure;
         Some(Answer {
@@ -179,9 +233,10 @@ impl Cache {
     ///
     /// `None` when the question is absent, still fresh, `window` is zero, or
     /// `now` is at or past `expires_at + window`. Record TTLs in the returned
-    /// message are 0, so a client does not cache the stale answer. The AD bit
-    /// is clear: this path does not revalidate. The stored DNSSEC status is
-    /// kept. The Extended DNS Error is INFO-CODE 3, "Stale Answer" (RFC 8914),
+    /// message are [`STALE_ANSWER_TTL`] (RFC 8767 section 5.11). The AD bit
+    /// is clear and the status is [`DnssecStatus::Indeterminate`]: this path
+    /// does not revalidate, whatever status the entry was stored with. The
+    /// Extended DNS Error is INFO-CODE 3, "Stale Answer" (RFC 8914),
     /// on this response only; the error stored with the entry is left as it was.
     ///
     /// `last_used` moves forward so an entry clients are still reading is not
@@ -199,7 +254,7 @@ impl Cache {
         }
         let mut inner = lock(&self.inner);
         let key = Key::from(query);
-        let (mut message, dnssec) = {
+        let shared = {
             let entry = inner.map.get(&key)?;
             if now < entry.expires_at {
                 return None;
@@ -212,19 +267,19 @@ impl Cache {
             if !inside {
                 return None;
             }
-            (entry.message.clone(), entry.dnssec)
+            Arc::clone(&entry.message)
         };
-        inner.clock = inner.clock.saturating_add(1);
-        let stamp = inner.clock;
-        if let Some(entry) = inner.map.get_mut(&key) {
-            entry.last_used = stamp;
-        }
+        inner.touch(&key);
         drop(inner);
-        set_ttls(&mut message, 0);
+        let mut message = Message::clone(&shared);
+        set_ttls(&mut message, STALE_ANSWER_TTL);
         message.header.ad = false;
         Some(Answer {
             message,
-            dnssec,
+            // The signatures were checked when the entry was stored, but this
+            // path cannot check their validity period again, so the answer is
+            // reported as not validated. AD stays clear to match.
+            dnssec: DnssecStatus::Indeterminate,
             source: AnswerSource::Stale,
             ede: Some(ExtendedError {
                 code: EDE_STALE_ANSWER,
@@ -252,10 +307,14 @@ impl Cache {
 
     /// Stores `message` when it is a cacheable positive or negative answer.
     ///
-    /// Returns the clamped TTL, including when the new entry was immediately
-    /// evicted for being over budget, so the caller can publish that TTL.
-    /// `None` means the answer is not cached and its TTLs should be left
-    /// alone.
+    /// Returns the clamped TTL, including when the answer was not kept
+    /// because it is larger than the whole budget, so the caller can publish
+    /// that TTL. `None` means the answer is not cacheable and its TTLs should
+    /// be left alone.
+    ///
+    /// An entry larger than the budget is not inserted, and an older entry
+    /// for the same question is removed (it is superseded). Nothing else is
+    /// evicted for it.
     #[doc(hidden)]
     pub fn store(
         &self,
@@ -266,10 +325,47 @@ impl Cache {
         now: Instant,
         clamp: TtlClamp,
     ) -> Option<u32> {
+        self.store_in_epoch(query, message, dnssec, ede, now, clamp, None)
+    }
+
+    /// Like [`Cache::store`], but drops the answer when a flush happened
+    /// after `epoch` was read from [`Cache::epoch`].
+    ///
+    /// A resolution that was already running when the cache was flushed
+    /// carries data from before the flush; storing it would undo the flush.
+    /// The TTL is still returned so the client receives a consistent answer.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn store_in_epoch(
+        &self,
+        query: &Query,
+        message: &Message,
+        dnssec: DnssecStatus,
+        ede: Option<ExtendedError>,
+        now: Instant,
+        clamp: TtlClamp,
+        epoch: Option<u64>,
+    ) -> Option<u32> {
         let ttl = cache_ttl(query, message, clamp.min, clamp.max)?;
         let expires_at = now.checked_add(Duration::from_secs(u64::from(ttl)))?;
-        let stored = message.clone();
-        let size = entry_size(&stored);
+        // Measured and copied before taking the lock.
+        let size = entry_size(message);
+        let stored = Arc::new(message.clone());
+        let key = Key::from(query);
+        let mut inner = lock(&self.inner);
+        if epoch.is_some_and(|seen| seen != inner.epoch) {
+            tracing::debug!(qname = %query.name, "dropping answer resolved before a flush");
+            return Some(ttl);
+        }
+        inner.remove(&key);
+        if size > inner.budget {
+            tracing::debug!(
+                qname = %query.name,
+                size,
+                budget = inner.budget,
+                "answer larger than the cache budget, not stored"
+            );
+            return Some(ttl);
+        }
         tracing::debug!(
             qname = %query.name,
             qtype = %query.qtype,
@@ -277,14 +373,9 @@ impl Cache {
             size,
             "caching answer"
         );
-        let key = Key::from(query);
-        let mut inner = lock(&self.inner);
-        if let Some(old) = inner.map.remove(&key) {
-            inner.used = inner.used.saturating_sub(old.size);
-        }
-        inner.clock = inner.clock.saturating_add(1);
-        let last_used = inner.clock;
+        let last_used = inner.next_stamp();
         inner.used = inner.used.saturating_add(size);
+        inner.order.insert(last_used, key.clone());
         inner.map.insert(
             key,
             Entry {
@@ -302,11 +393,19 @@ impl Cache {
         Some(ttl)
     }
 
+    /// Flush generation. Read it when a resolution starts and pass it to
+    /// [`Cache::store_in_epoch`] when the result is stored.
+    pub(crate) fn epoch(&self) -> u64 {
+        lock(&self.inner).epoch
+    }
+
     pub(crate) fn flush(&self, scope: &FlushScope) {
         let mut inner = lock(&self.inner);
+        inner.epoch = inner.epoch.wrapping_add(1);
         match scope {
             FlushScope::All => {
                 inner.map.clear();
+                inner.order.clear();
                 inner.used = 0;
             }
             FlushScope::Domain(name) => {
@@ -317,9 +416,7 @@ impl Cache {
                     .cloned()
                     .collect();
                 for key in keys {
-                    if let Some(entry) = inner.map.remove(&key) {
-                        inner.used = inner.used.saturating_sub(entry.size);
-                    }
+                    inner.remove(&key);
                 }
             }
         }
@@ -357,24 +454,16 @@ fn lock(inner: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
     inner.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Drops least-recently-used entries until the total fits the budget.
 fn evict(inner: &mut Inner) {
     let before = inner.map.len();
-    while inner.used > inner.budget && !inner.map.is_empty() {
-        let Some(victim) = inner
-            .map
-            .iter()
-            .min_by_key(|(_, entry)| entry.last_used)
-            .map(|(key, _)| key.clone())
-        else {
+    while inner.used > inner.budget {
+        let Some((_, victim)) = inner.order.pop_first() else {
             break;
         };
-        match inner.map.remove(&victim) {
-            Some(entry) => inner.used = inner.used.saturating_sub(entry.size),
-            None => break,
+        if let Some(entry) = inner.map.remove(&victim) {
+            inner.used = inner.used.saturating_sub(entry.size);
         }
-    }
-    if inner.map.is_empty() {
-        inner.used = 0;
     }
     let removed = before.saturating_sub(inner.map.len());
     if removed > 0 {
@@ -1009,11 +1098,14 @@ mod tests {
             .lookup_stale(&q, expired, Duration::from_secs(86_400))
             .unwrap();
         assert_eq!(stale.source, AnswerSource::Stale);
-        assert_eq!(stale.dnssec, DnssecStatus::Secure);
+        // Stored as Secure, but a stale serve cannot re-check signature
+        // times: it reports Indeterminate with AD clear.
+        assert_eq!(stale.dnssec, DnssecStatus::Indeterminate);
         assert!(!stale.message.header.ad);
-        assert_eq!(stale.message.answers[0].ttl, 0);
-        assert_eq!(stale.message.authorities[0].ttl, 0);
-        assert_eq!(stale.message.additionals[0].ttl, 0);
+        assert_eq!(stale.message.answers[0].ttl, STALE_ANSWER_TTL);
+        assert_eq!(stale.message.authorities[0].ttl, STALE_ANSWER_TTL);
+        assert_eq!(stale.message.additionals[0].ttl, STALE_ANSWER_TTL);
+        assert_eq!(STALE_ANSWER_TTL, 30);
         assert_eq!(
             stale.ede,
             Some(ExtendedError {
@@ -1071,5 +1163,251 @@ mod tests {
             "serving stale keeps the entry ahead of unused ones"
         );
         assert!(cache.lookup(&items[2].0, expired).is_some());
+    }
+
+    fn simple(owner: &str, ttl: u32) -> (Query, Message) {
+        (
+            query(owner, RecordType::A),
+            message(owner, Rcode::NOERROR, vec![a_record(owner, ttl)], vec![]),
+        )
+    }
+
+    /// The map, the LRU index and the byte count agree with each other.
+    fn assert_consistent(cache: &Cache) {
+        let inner = lock(&cache.inner);
+        assert_eq!(inner.map.len(), inner.order.len());
+        let mut total = 0usize;
+        for (stamp, key) in &inner.order {
+            let entry = inner.map.get(key).unwrap();
+            assert_eq!(entry.last_used, *stamp);
+            total += entry.size;
+        }
+        assert_eq!(inner.used, total);
+        assert!(inner.used <= inner.budget);
+    }
+
+    #[test]
+    fn many_inserts_respect_the_byte_bound_and_keep_the_index_in_sync() {
+        let now = Instant::now();
+        let (q0, m0) = simple("n000.example.", 30);
+        let probe = Cache::new(usize::MAX);
+        put(&probe, &q0, &m0, now, 0, 86_400);
+        let one = probe.bytes_used();
+        let cache = Cache::new(one * 10);
+        for i in 0..200 {
+            let (q, m) = simple(&format!("n{i:03}.example."), 30);
+            put(&cache, &q, &m, now, 0, 86_400);
+            assert!(cache.bytes_used() <= one * 10);
+        }
+        assert_consistent(&cache);
+        assert_eq!(lock(&cache.inner).map.len(), 10);
+        // The ten newest survive, the oldest are gone.
+        assert!(
+            cache
+                .lookup(&query("n199.example.", RecordType::A), now)
+                .is_some()
+        );
+        assert!(
+            cache
+                .lookup(&query("n000.example.", RecordType::A), now)
+                .is_none()
+        );
+        assert_consistent(&cache);
+    }
+
+    #[test]
+    fn oversize_entry_is_not_inserted_and_evicts_nothing() {
+        let now = Instant::now();
+        let (qa, ma) = simple("a.example.", 30);
+        let (qb, mb) = simple("b.example.", 30);
+        let probe = Cache::new(usize::MAX);
+        put(&probe, &qa, &ma, now, 0, 86_400);
+        let one = probe.bytes_used();
+        let cache = Cache::new(one * 2);
+        put(&cache, &qa, &ma, now, 0, 86_400);
+        put(&cache, &qb, &mb, now, 0, 86_400);
+
+        let owner = "big.example.";
+        let records: Vec<Record> = (0..200).map(|_| a_record(owner, 30)).collect();
+        let big = message(owner, Rcode::NOERROR, records, vec![]);
+        let qbig = query(owner, RecordType::A);
+        assert!(entry_size(&big) > one * 2);
+        assert_eq!(put(&cache, &qbig, &big, now, 0, 86_400), Some(30));
+
+        assert!(cache.lookup(&qbig, now).is_none());
+        assert!(cache.lookup(&qa, now).is_some());
+        assert!(cache.lookup(&qb, now).is_some());
+        assert_eq!(cache.bytes_used(), one * 2);
+        assert_consistent(&cache);
+    }
+
+    #[test]
+    fn oversize_replacement_removes_the_superseded_entry() {
+        let now = Instant::now();
+        let (qa, ma) = simple("a.example.", 30);
+        let probe = Cache::new(usize::MAX);
+        put(&probe, &qa, &ma, now, 0, 86_400);
+        let one = probe.bytes_used();
+        let cache = Cache::new(one * 2);
+        put(&cache, &qa, &ma, now, 0, 86_400);
+        let records: Vec<Record> = (0..200).map(|_| a_record("a.example.", 30)).collect();
+        let big = message("a.example.", Rcode::NOERROR, records, vec![]);
+        put(&cache, &qa, &big, now, 0, 86_400);
+        assert!(cache.lookup(&qa, now).is_none());
+        assert_eq!(cache.bytes_used(), 0);
+        assert_consistent(&cache);
+    }
+
+    #[test]
+    fn used_is_consistent_after_overwrite_and_returns_to_zero_after_flush() {
+        let now = Instant::now();
+        let cache = Cache::new(usize::MAX);
+        let (qa, ma) = simple("a.example.", 30);
+        let (qb, mb) = simple("b.example.", 30);
+        put(&cache, &qa, &ma, now, 0, 86_400);
+        put(&cache, &qb, &mb, now, 0, 86_400);
+        let two = cache.bytes_used();
+        // Overwrite `a` with a larger message: the old size is released.
+        let records: Vec<Record> = (0..5).map(|_| a_record("a.example.", 30)).collect();
+        let bigger = message("a.example.", Rcode::NOERROR, records, vec![]);
+        put(&cache, &qa, &bigger, now, 0, 86_400);
+        assert_eq!(
+            cache.bytes_used(),
+            entry_size(&bigger) + entry_size(&mb),
+            "overwrite must replace, not add"
+        );
+        assert!(cache.bytes_used() > two);
+        assert_consistent(&cache);
+        put(&cache, &qa, &ma, now, 0, 86_400);
+        assert_eq!(cache.bytes_used(), two);
+        assert_consistent(&cache);
+
+        cache.flush(&FlushScope::All);
+        assert_eq!(cache.bytes_used(), 0);
+        assert!(lock(&cache.inner).order.is_empty());
+        assert_consistent(&cache);
+    }
+
+    #[test]
+    fn lookup_is_case_insensitive_both_ways() {
+        let now = Instant::now();
+        let cache = Cache::new(usize::MAX);
+        let (q, m) = simple("EXAMPLE.com.", 30);
+        put(&cache, &q, &m, now, 0, 86_400);
+        assert!(
+            cache
+                .lookup(&query("example.com.", RecordType::A), now)
+                .is_some()
+        );
+        assert!(
+            cache
+                .lookup(&query("ExAmPlE.CoM.", RecordType::A), now)
+                .is_some()
+        );
+        // Overwriting with another case replaces the same entry.
+        let (q2, m2) = simple("example.COM.", 30);
+        put(&cache, &q2, &m2, now, 0, 86_400);
+        assert_eq!(lock(&cache.inner).map.len(), 1);
+        assert_consistent(&cache);
+    }
+
+    #[test]
+    fn ttl_decreases_with_the_manual_clock() {
+        let clock = crate::clock::ManualClock::new(std::time::SystemTime::now());
+        let cache = Cache::new(usize::MAX);
+        let (q, m) = simple("www.example.com.", 100);
+        put(
+            &cache,
+            &q,
+            &m,
+            crate::clock::Clock::instant(&clock),
+            0,
+            86_400,
+        );
+        let ttl_at = |clock: &crate::clock::ManualClock| {
+            cache
+                .lookup(&q, crate::clock::Clock::instant(clock))
+                .unwrap()
+                .message
+                .answers[0]
+                .ttl
+        };
+        assert_eq!(ttl_at(&clock), 100);
+        clock.advance(Duration::from_secs(25));
+        assert_eq!(ttl_at(&clock), 75);
+        clock.advance(Duration::from_secs(74));
+        assert_eq!(ttl_at(&clock), 1);
+        clock.advance(Duration::from_secs(1));
+        assert!(
+            cache
+                .lookup(&q, crate::clock::Clock::instant(&clock))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn flush_domain_does_not_touch_a_name_that_merely_ends_alike() {
+        let now = Instant::now();
+        let cache = Cache::new(usize::MAX);
+        for owner in ["example.com.", "www.example.com.", "badexample.com."] {
+            let (q, m) = simple(owner, 30);
+            put(&cache, &q, &m, now, 0, 86_400);
+        }
+        cache.flush(&FlushScope::Domain(name("example.com.")));
+        assert!(
+            cache
+                .lookup(&query("example.com.", RecordType::A), now)
+                .is_none()
+        );
+        assert!(
+            cache
+                .lookup(&query("www.example.com.", RecordType::A), now)
+                .is_none()
+        );
+        assert!(
+            cache
+                .lookup(&query("badexample.com.", RecordType::A), now)
+                .is_some()
+        );
+        assert_consistent(&cache);
+    }
+
+    #[test]
+    fn answer_resolved_before_a_flush_is_not_stored() {
+        let now = Instant::now();
+        let cache = Cache::new(usize::MAX);
+        let (q, m) = simple("a.example.", 30);
+        let clamp = TtlClamp {
+            min: 0,
+            max: 86_400,
+        };
+        let epoch = cache.epoch();
+        cache.flush(&FlushScope::Domain(name("unrelated.test.")));
+        // The TTL is still reported, the entry is not kept.
+        assert_eq!(
+            cache.store_in_epoch(
+                &q,
+                &m,
+                DnssecStatus::Indeterminate,
+                None,
+                now,
+                clamp,
+                Some(epoch)
+            ),
+            Some(30)
+        );
+        assert!(cache.lookup(&q, now).is_none());
+        assert_eq!(cache.bytes_used(), 0);
+        let current = cache.epoch();
+        cache.store_in_epoch(
+            &q,
+            &m,
+            DnssecStatus::Indeterminate,
+            None,
+            now,
+            clamp,
+            Some(current),
+        );
+        assert!(cache.lookup(&q, now).is_some());
     }
 }

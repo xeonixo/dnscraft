@@ -20,6 +20,7 @@
 //! (RFC 4509 section 3).
 
 mod anchors;
+mod budget;
 mod chain;
 pub(crate) mod denial;
 pub(crate) mod nta;
@@ -28,11 +29,15 @@ mod verify;
 pub(crate) mod walk;
 
 pub use anchors::{Anchor, AnchorError, TrustAnchors};
+pub use budget::{
+    MAX_KEYS_PER_TAG, MAX_NSEC3_HASHES_PER_RESOLVE, MAX_SIGS_PER_RRSET,
+    MAX_VERIFICATIONS_PER_RESOLVE, ValidationBudget,
+};
 pub use chain::{
     ChainFailure, DelegationTrust, DsStatus, InsecureReason, KeysOutcome, ValidatedKeys, ds_status,
-    validate_dnskey_rrset, validate_rrset,
+    validate_dnskey_rrset, validate_dnskey_rrset_budgeted, validate_rrset, validate_rrset_budgeted,
 };
 pub use verify::{
-    RrsetValidation, VerifyFailure, is_supported_algorithm, serial_lt, validity_window,
-    verify_rrsig, wildcard_source,
+    RrsetValidation, SIG_INCEPTION_SKEW, VerifyFailure, is_supported_algorithm, serial_lt,
+    validity_window, verify_rrsig, wildcard_source,
 };

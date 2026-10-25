@@ -843,7 +843,7 @@ async fn stale_answer_within_window_when_servers_are_unreachable() {
     )
     .await;
     assert_eq!(stale.source, AnswerSource::Stale);
-    assert_eq!(stale.dnssec, first.dnssec);
+    assert_eq!(stale.dnssec, DnssecStatus::Indeterminate);
     assert!(!stale.message.header.ad);
     assert_eq!(stale.message.rcode(), Rcode::NOERROR);
     assert_eq!(stale.message.answers[0].rdata, rdata);
@@ -855,7 +855,7 @@ async fn stale_answer_within_window_when_servers_are_unreachable() {
         .chain(&stale.message.authorities)
         .chain(&stale.message.additionals)
     {
-        assert_eq!(record.ttl, 0);
+        assert_eq!(record.ttl, 30);
     }
     let ede = stale.ede.expect("stale answer carries EDE");
     assert_eq!(ede.code, 3);
@@ -870,7 +870,7 @@ async fn stale_answer_within_window_when_servers_are_unreachable() {
     )
     .await;
     assert_eq!(again.source, AnswerSource::Stale);
-    assert_eq!(again.message.answers[0].ttl, 0);
+    assert_eq!(again.message.answers[0].ttl, 30);
 }
 
 #[tokio::test]
@@ -944,7 +944,7 @@ async fn stale_answer_does_not_replace_a_fresh_resolution() {
     )
     .await;
     assert_eq!(stale.source, AnswerSource::Stale);
-    assert_eq!(stale.message.answers[0].ttl, 0);
+    assert_eq!(stale.message.answers[0].ttl, 30);
 
     start_zones(&h, ZONES).await;
     clear(&h, ZONES);
@@ -972,4 +972,118 @@ async fn stale_answer_does_not_replace_a_fresh_resolution() {
     assert!(hit.message.answers[0].ttl > 0);
     assert_eq!(hit.message.answers[0].rdata, rdata);
     assert_eq!(traffic(&h, ZONES), 0);
+}
+
+#[tokio::test]
+async fn cached_indeterminate_answer_is_served_with_ad_clear() {
+    // No trust anchors: validation is off and the status is Indeterminate.
+    let h = Hierarchy::start().await.unwrap();
+    let r = Resolver::new(config_for(&h)).await.unwrap();
+    let first = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(first.dnssec, DnssecStatus::Indeterminate);
+    assert!(!first.message.header.ad);
+
+    clear(&h, ZONES);
+    for flags in [
+        RequestFlags::default(),
+        RequestFlags {
+            dnssec_ok: true,
+            ..RequestFlags::default()
+        },
+    ] {
+        let hit = resolve(&r, "www.example.test.", RecordType::A, flags).await;
+        assert_eq!(hit.source, AnswerSource::Cache);
+        assert_eq!(hit.dnssec, DnssecStatus::Indeterminate);
+        assert!(!hit.message.header.ad, "AD must not be set on a cache hit");
+    }
+    assert_eq!(traffic(&h, ZONES), 0);
+}
+
+#[tokio::test]
+async fn cached_insecure_answer_is_served_with_ad_clear() {
+    let zones = [".", "test.", "insecure.test."];
+    let h = Hierarchy::start_scenario(&DnssecScenario::new(&[ChildVariant::Insecure]))
+        .await
+        .unwrap();
+    let mut config = config_for(&h);
+    config.trust_anchors = anchors_of(&h);
+    let r = Resolver::new(config).await.unwrap();
+
+    let first = resolve(
+        &r,
+        "www.insecure.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(first.dnssec, DnssecStatus::Insecure);
+    assert!(!first.message.header.ad);
+
+    clear(&h, &zones);
+    let hit = resolve(
+        &r,
+        "www.insecure.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(hit.source, AnswerSource::Cache);
+    assert_eq!(hit.dnssec, DnssecStatus::Insecure);
+    assert!(!hit.message.header.ad, "AD must not be set on a cache hit");
+    assert_eq!(traffic(&h, &zones), 0);
+}
+
+#[tokio::test]
+async fn stale_answer_of_a_secure_entry_is_indeterminate_with_ad_clear() {
+    let zones = [".", "test.", "secure.test."];
+    // The signatures are valid now, so the clock starts at the real time.
+    let clock = Arc::new(ManualClock::new(SystemTime::now()));
+    let h = Hierarchy::start_scenario(&DnssecScenario::new(&[ChildVariant::Secure]))
+        .await
+        .unwrap();
+    let mut config = config_for(&h);
+    config.trust_anchors = anchors_of(&h);
+    config.clock = clock.clone();
+    config.ttl_max = 30;
+    config.prefetch = false;
+    config.query_timeout = Duration::from_millis(200);
+    let r = Resolver::new(config).await.unwrap();
+
+    let first = resolve(
+        &r,
+        "www.secure.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(first.dnssec, DnssecStatus::Secure);
+    assert!(first.message.header.ad);
+
+    clock.advance(Duration::from_secs(30));
+    stop_zones(&h, &zones).await;
+    let stale = resolve(
+        &r,
+        "www.secure.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(stale.source, AnswerSource::Stale);
+    assert_eq!(stale.dnssec, DnssecStatus::Indeterminate);
+    assert!(!stale.message.header.ad);
+    assert_eq!(stale.message.answers[0].ttl, 30);
+
+    let stats = r.stats();
+    assert_eq!(stats.stale_answers, 1);
+    assert_eq!(stats.dnssec_secure, 1, "only the fresh answer was Secure");
+    assert_eq!(
+        stats.dnssec_indeterminate, 1,
+        "the stale answer is counted as Indeterminate"
+    );
 }

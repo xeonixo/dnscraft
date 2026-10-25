@@ -20,6 +20,7 @@
 //! | [`ResolveError::CnameLimitExceeded`] | `resolver.cname_limit` |
 //! | [`ResolveError::CnameLoop`] | `resolver.cname_limit` |
 //! | [`ResolveError::ForwardLoop`] | `resolver.forward_loop` |
+//! | [`ResolveError::Overloaded`] | `resolver.overloaded` |
 //! | [`ResolveError::Encode`] | `resolver.encode` |
 //!
 //! `CnameLimitExceeded` and `CnameLoop` share `resolver.cname_limit` by design
@@ -105,6 +106,11 @@ pub enum ResolveError {
         /// The forward zone that matched the query.
         zone: Name,
     },
+    /// Too many upstream resolutions are running at once and no slot became
+    /// free within `query_timeout`. Callers answer SERVFAIL. Cache hits never
+    /// see this error.
+    #[error("resolver overloaded: too many concurrent resolutions")]
+    Overloaded,
     /// A query could not be encoded.
     #[error("cannot encode query: {0}")]
     Encode(#[from] ProtoError),
@@ -119,6 +125,7 @@ impl ResolveError {
             Self::ReferralDepthExceeded { .. } => "resolver.referral_depth",
             Self::CnameLimitExceeded { .. } | Self::CnameLoop { .. } => "resolver.cname_limit",
             Self::ForwardLoop { .. } => "resolver.forward_loop",
+            Self::Overloaded => "resolver.overloaded",
             Self::Encode(_) => "resolver.encode",
         }
     }
@@ -177,6 +184,7 @@ mod tests {
                 "resolver.forward_loop",
                 ResolveError::ForwardLoop { zone: root },
             ),
+            ("resolver.overloaded", ResolveError::Overloaded),
         ];
         for (code, err) in cases {
             assert_eq!(err.code(), *code, "{err}");
@@ -194,6 +202,7 @@ mod tests {
             "resolver.referral_depth",
             "resolver.cname_limit",
             "resolver.forward_loop",
+            "resolver.overloaded",
             "resolver.encode",
         ];
         let mut sorted = codes.to_vec();

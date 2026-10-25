@@ -50,6 +50,10 @@ pub(crate) struct Context<'a> {
     pub zone_trust: Mutex<HashMap<Name, Trust>>,
     /// Hidden-cut probes (DS queries) sent during this resolution.
     pub probes: std::sync::atomic::AtomicU32,
+    /// Signature-verification and NSEC3-hash budget shared by every DNSSEC
+    /// check of this resolution (DNSKEY, DS, answers, denial proofs, nested
+    /// DS walks), against CPU exhaustion (KeyTrap, NSEC3 hashing).
+    pub dnssec_budget: crate::dnssec::ValidationBudget,
     budget: Budget,
     /// Name server hosts looked up during this resolution: `Some` once
     /// resolved (empty when the lookup failed), `None` while in progress.
@@ -76,6 +80,7 @@ impl<'a> Context<'a> {
             validate: false,
             zone_trust: Mutex::new(HashMap::new()),
             probes: std::sync::atomic::AtomicU32::new(0),
+            dnssec_budget: crate::dnssec::ValidationBudget::default(),
             budget: Budget::new(config.max_queries_per_resolve),
             ns_hosts: Mutex::new(HashMap::new()),
         }

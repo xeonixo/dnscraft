@@ -155,13 +155,34 @@ fn forward_zone_equal_to_local_zone_overrides_it() {
 }
 
 #[test]
-fn forward_zone_inside_local_zone_overrides_it() {
+fn forward_zone_inside_local_zone_only_overrides_its_own_subtree() {
     let zones = LocalZones::rfc6303();
     let forward = [name("corp.10.in-addr.arpa.")];
+    // Inside the forward zone: forwarded.
     assert!(
         zones
-            .answer(&query("1.0.0.10.in-addr.arpa.", RecordType::PTR), &forward)
+            .answer(
+                &query("1.0.corp.10.in-addr.arpa.", RecordType::PTR),
+                &forward
+            )
             .is_none()
+    );
+    assert!(
+        zones
+            .answer(&query("corp.10.in-addr.arpa.", RecordType::PTR), &forward)
+            .is_none()
+    );
+    // Sibling under the same local zone but outside the forward zone: local.
+    let answer = zones
+        .answer(&query("1.0.0.10.in-addr.arpa.", RecordType::PTR), &forward)
+        .unwrap();
+    assert_eq!(answer.message.rcode(), Rcode::NXDOMAIN);
+    assert!(answer.message.header.aa);
+    // The apex of the local zone is outside the forward zone as well.
+    assert!(
+        zones
+            .answer(&query("10.in-addr.arpa.", RecordType::SOA), &forward)
+            .is_some()
     );
 }
 
@@ -303,5 +324,47 @@ async fn forward_zone_disables_local_answer_for_its_subtree() {
     assert_eq!(
         root_queries(&h),
         vec![("1.0.0.10.in-addr.arpa.".to_owned(), RecordType::PTR)]
+    );
+}
+
+#[tokio::test]
+async fn sibling_of_an_inner_forward_zone_stays_local_and_never_reaches_the_root() {
+    let h = Hierarchy::start().await.unwrap();
+    let mut config = config_for(&h);
+    config.forward_zones = vec![ForwardZone {
+        zone: name("corp.10.in-addr.arpa."),
+        targets: h.root_hints(),
+        validate: false,
+    }];
+    let r = Resolver::new(config).await.unwrap();
+    h.server(".").unwrap().clear_queries();
+
+    let ans = r
+        .resolve(
+            &query("1.0.0.10.in-addr.arpa.", RecordType::PTR),
+            RequestFlags::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ans.message.rcode(), Rcode::NXDOMAIN);
+    assert!(ans.message.header.aa);
+    assert!(
+        root_queries(&h).is_empty(),
+        "private PTR leaked: {:?}",
+        root_queries(&h)
+    );
+
+    // The forward zone itself still forwards.
+    let fwd = r
+        .resolve(
+            &query("1.0.corp.10.in-addr.arpa.", RecordType::PTR),
+            RequestFlags::default(),
+        )
+        .await
+        .unwrap();
+    assert!(!fwd.message.header.aa);
+    assert_eq!(
+        root_queries(&h),
+        vec![("1.0.corp.10.in-addr.arpa.".to_owned(), RecordType::PTR)]
     );
 }
