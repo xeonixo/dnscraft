@@ -229,12 +229,13 @@ impl AcmeOrder for InstantAcme {
         let mut order = account
             .new_order(&new_order)
             .await
-            .map_err(map_acme_order)?;
+            .map_err(|e| map_acme_order(e, self.http.take_last_retry_after()))?;
 
         let mut txts = Vec::new();
         let mut authorizations = order.authorizations();
         while let Some(result) = authorizations.next().await {
-            let mut authz = result.map_err(map_acme_challenge)?;
+            let mut authz =
+                result.map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
             match authz.status {
                 AuthorizationStatus::Pending => {}
                 AuthorizationStatus::Valid => continue,
@@ -285,7 +286,8 @@ impl AcmeOrder for InstantAcme {
         {
             let mut authorizations = order.authorizations();
             while let Some(result) = authorizations.next().await {
-                let mut authz = result.map_err(map_acme_challenge)?;
+                let mut authz =
+                    result.map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
                 if authz.status == AuthorizationStatus::Valid {
                     continue;
                 }
@@ -294,21 +296,24 @@ impl AcmeOrder for InstantAcme {
                         message: "no dns-01 challenge to set ready".into(),
                     }
                 })?;
-                challenge.set_ready().await.map_err(map_acme_challenge)?;
+                challenge
+                    .set_ready()
+                    .await
+                    .map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
             }
         }
 
         let status = order
             .poll_ready(&RetryPolicy::default())
             .await
-            .map_err(map_acme_challenge)?;
+            .map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
         if status != OrderStatus::Ready {
             return Err(TlsError::AcmeChallenge {
                 message: format!("order not ready: {status:?}"),
             });
         }
 
-        let (chain_pem, key_pem) = finalize_with_key_type(&mut order, key_type).await?;
+        let (chain_pem, key_pem) = finalize_with_key_type(&mut order, key_type, &self.http).await?;
         Ok((chain_pem, key_pem))
     }
 
@@ -351,12 +356,17 @@ impl AcmeOrder for InstantAcme {
 async fn finalize_with_key_type(
     order: &mut Order,
     key_type: KeyType,
+    http: &ReqwestHttpClient,
 ) -> Result<(Vec<u8>, Vec<u8>), TlsError> {
     let mut names = Vec::new();
     {
         let mut identifiers = order.identifiers();
         while let Some(result) = identifiers.next().await {
-            names.push(result.map_err(map_acme_order)?.to_string());
+            names.push(
+                result
+                    .map_err(|e| map_acme_order(e, http.take_last_retry_after()))?
+                    .to_string(),
+            );
         }
     }
 
@@ -380,11 +390,11 @@ async fn finalize_with_key_type(
     order
         .finalize_csr(csr.der())
         .await
-        .map_err(map_acme_order)?;
+        .map_err(|e| map_acme_order(e, http.take_last_retry_after()))?;
     let chain = order
         .poll_certificate(&RetryPolicy::default())
         .await
-        .map_err(map_acme_order)?;
+        .map_err(|e| map_acme_order(e, http.take_last_retry_after()))?;
     Ok((chain.into_bytes(), private_key.serialize_pem().into_bytes()))
 }
 
@@ -394,11 +404,11 @@ fn map_acme_account(e: instant_acme::Error) -> TlsError {
     }
 }
 
-fn map_acme_order(e: instant_acme::Error) -> TlsError {
+fn map_acme_order(e: instant_acme::Error, retry_after: Option<std::time::Duration>) -> TlsError {
     if is_rate_limited(&e) {
         return TlsError::AcmeRateLimited {
             message: redact_acme_err(&e),
-            retry_after: None,
+            retry_after,
         };
     }
     TlsError::AcmeOrder {
@@ -406,11 +416,14 @@ fn map_acme_order(e: instant_acme::Error) -> TlsError {
     }
 }
 
-fn map_acme_challenge(e: instant_acme::Error) -> TlsError {
+fn map_acme_challenge(
+    e: instant_acme::Error,
+    retry_after: Option<std::time::Duration>,
+) -> TlsError {
     if is_rate_limited(&e) {
         return TlsError::AcmeRateLimited {
             message: redact_acme_err(&e),
-            retry_after: None,
+            retry_after,
         };
     }
     TlsError::AcmeChallenge {

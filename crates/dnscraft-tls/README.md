@@ -67,6 +67,36 @@ Under `<data_dir>/tls/` (directory mode **0700**):
 Writes are atomic (temp + fsync + rename). A failed renewal never replaces the
 last good `cert.pem` / `key.pem`; errors land only in `state.json`.
 
+`key.pem` and `account.json` must be mode **0600**. On load, group/other bits
+yield `tls.store.permissions` (file name + mode only — never key/account bytes).
+[`TlsEngine::open`](src/engine.rs) still succeeds: a too-open `key.pem` is **not**
+installed into the resolver (refuse to serve that material); a too-open
+`account.json` alone does not unload a good cert. In both cases
+`status.last_error` / `state.json` record `tls.store.permissions` so the operator
+can `chmod 0600` without restarting into a panic.
+
+## Failure codes
+
+| Code | Meaning |
+|------|---------|
+| `tls.config.invalid` | Config validation failed |
+| `tls.secret.missing` | Cloudflare token env / `*_FILE` absent |
+| `tls.acme.account` | ACME account create/load |
+| `tls.acme.order` | ACME new-order / finalize |
+| `tls.acme.challenge` | DNS-01 challenge |
+| `tls.acme.rate_limited` | ACME 429 (`retry_after()` when known) |
+| `tls.acme.propagation` | Challenge TXT not visible in time |
+| `tls.cloudflare.http` | Cloudflare API non-success |
+| `tls.cloudflare.zone` | Zone id / name not found |
+| `tls.store.io` | Store disk I/O |
+| `tls.store.corrupt` | Unreadable / mismatched PEM |
+| `tls.store.permissions` | `key.pem` / `account.json` group/other bits |
+| `tls.dyndns.echo` | Public IP echo failed |
+| `tls.dyndns.update` | A/AAAA upsert failed |
+| `tls.dyndns.entry_conflict` | More than one `public_entry` node |
+| `tls.cert.expiring` | Status flag below warn threshold |
+| `tls.cert.expired` | Status flag past `not_after` |
+
 ## Reserved labels (control-api / Client IDs)
 
 SNI under `*.dns.<public_domain>` is either a **Client ID**, a **node hostname**,

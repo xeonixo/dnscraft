@@ -123,14 +123,38 @@ async fn rate_limit_keeps_retry_after_hint() {
     let err = client.zone().await.expect_err("429");
     assert_eq!(err.code(), "tls.cloudflare.http");
     assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(30)));
-    let TlsError::CloudflareHttp { message, .. } = &err else {
+    let TlsError::CloudflareHttp {
+        message, status, ..
+    } = &err
+    else {
         panic!("expected CloudflareHttp, got {err:?}");
     };
+    assert_eq!(*status, Some(429));
     assert!(
         !message.contains("Retry-After"),
         "retry hint must be structured, not in message: {message}"
     );
     assert!(!message.contains(TOKEN));
+}
+
+#[tokio::test]
+async fn unknown_zone_id_maps_via_http_status_not_message() {
+    let mock = MockCloudflare::start(TOKEN, zone_fixture()).await;
+    let client = CloudflareClient::with_base_url(
+        Secret::new(TOKEN),
+        DOMAIN,
+        &CloudflareConfig {
+            zone_id: Some("no-such-zone-id".into()),
+        },
+        mock.base_url(),
+    )
+    .unwrap();
+    let err = client.zone().await.expect_err("missing zone id");
+    assert_eq!(
+        err.code(),
+        "tls.cloudflare.zone",
+        "404 on zone-by-id must become CloudflareZone (status-based), got {err:?}"
+    );
 }
 
 #[tokio::test]

@@ -49,6 +49,7 @@ fn all_errors() -> Vec<TlsError> {
         TlsError::CloudflareHttp {
             message: "HTTP 401: Authentication error".into(),
             retry_after: None,
+            status: Some(401),
         },
         TlsError::CloudflareZone {
             message: "no zone named example.com".into(),
@@ -58,6 +59,10 @@ fn all_errors() -> Vec<TlsError> {
         },
         TlsError::StoreCorrupt {
             message: "leaf PEM parse error".into(),
+        },
+        TlsError::StorePermissions {
+            file: "key.pem".into(),
+            mode: 0o644,
         },
         TlsError::DyndnsEcho {
             message: "no ip= line in echo body (ipv4)".into(),
@@ -133,5 +138,5 @@ fn every_error_variant_has_unique_code() {
     for err in all_errors() {
         assert!(seen.insert(err.code()), "duplicate {}", err.code());
     }
-    assert_eq!(seen.len(), 16);
+    assert_eq!(seen.len(), 17);
 }

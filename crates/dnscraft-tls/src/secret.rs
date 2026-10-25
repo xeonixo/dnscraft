@@ -4,24 +4,27 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
+use zeroize::Zeroizing;
+
 use crate::error::TlsError;
 
 /// Environment variable holding the Cloudflare API token (Zone → DNS → Edit).
 pub const CLOUDFLARE_API_TOKEN_ENV: &str = "DNSCRAFT_CLOUDFLARE_API_TOKEN";
 
-/// An opaque secret value that never appears in [`Debug`] output.
+/// An opaque secret value that never appears in [`Debug`] output and is wiped on drop.
 #[derive(Clone, PartialEq, Eq)]
-pub struct Secret(String);
+pub struct Secret(Zeroizing<String>);
 
 impl Secret {
     /// Wraps an already-loaded secret string.
     pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+        Self(Zeroizing::new(value.into()))
     }
 
-    /// The secret bytes as a string slice. Callers must not log this.
+    /// The secret bytes as a string slice. Callers must not log this or copy it
+    /// into a plain [`String`] unless the copy is also zeroized.
     pub fn expose(&self) -> &str {
-        &self.0
+        self.0.as_str()
     }
 }
 

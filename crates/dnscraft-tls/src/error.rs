@@ -21,6 +21,7 @@
 //! | [`TlsError::CloudflareZone`] | `tls.cloudflare.zone` |
 //! | [`TlsError::StoreIo`] | `tls.store.io` |
 //! | [`TlsError::StoreCorrupt`] | `tls.store.corrupt` |
+//! | [`TlsError::StorePermissions`] | `tls.store.permissions` |
 //! | [`TlsError::DyndnsEcho`] | `tls.dyndns.echo` |
 //! | [`TlsError::DyndnsUpdate`] | `tls.dyndns.update` |
 //! | [`TlsError::DyndnsEntryConflict`] | `tls.dyndns.entry_conflict` |
@@ -81,6 +82,8 @@ pub enum TlsError {
         message: String,
         /// Parsed `Retry-After` delay when the API provided one.
         retry_after: Option<Duration>,
+        /// HTTP status when the response was received.
+        status: Option<u16>,
     },
     /// Zone id / name resolution failed.
     #[error("Cloudflare zone not found: {message}")]
@@ -99,6 +102,17 @@ pub enum TlsError {
     StoreCorrupt {
         /// Detail for logs.
         message: String,
+    },
+    /// `key.pem` or `account.json` is readable by group/other (expected `0600`).
+    ///
+    /// The message names the file and mode only — never key or account bytes.
+    /// Files are left in place for the operator to `chmod`.
+    #[error("TLS store file {file} mode {mode:04o} allows group/other access (expected 0600)")]
+    StorePermissions {
+        /// Basename only (`key.pem` / `account.json`).
+        file: String,
+        /// Permission bits (`mode & 0o777`).
+        mode: u32,
     },
     /// Public IP echo failed or was unparseable.
     #[error("DynDNS echo failed: {message}")]
@@ -138,6 +152,7 @@ impl TlsError {
             Self::CloudflareZone { .. } => "tls.cloudflare.zone",
             Self::StoreIo { .. } => "tls.store.io",
             Self::StoreCorrupt { .. } => "tls.store.corrupt",
+            Self::StorePermissions { .. } => "tls.store.permissions",
             Self::DyndnsEcho { .. } => "tls.dyndns.echo",
             Self::DyndnsUpdate { .. } => "tls.dyndns.update",
             Self::DyndnsEntryConflict => "tls.dyndns.entry_conflict",
@@ -153,11 +168,25 @@ impl TlsError {
         }
     }
 
-    /// Cloudflare HTTP error without a Retry-After hint.
+    /// Cloudflare HTTP error without a Retry-After hint or status.
     pub(crate) fn cloudflare_http(message: impl Into<String>) -> Self {
         Self::CloudflareHttp {
             message: message.into(),
             retry_after: None,
+            status: None,
+        }
+    }
+
+    /// Cloudflare HTTP error with a known status (and optional Retry-After).
+    pub(crate) fn cloudflare_http_status(
+        message: impl Into<String>,
+        status: u16,
+        retry_after: Option<Duration>,
+    ) -> Self {
+        Self::CloudflareHttp {
+            message: message.into(),
+            retry_after,
+            status: Some(status),
         }
     }
 
@@ -173,12 +202,24 @@ impl TlsError {
     }
 }
 
-/// Parses an HTTP `Retry-After` header value as a delay in seconds.
+/// Parses an HTTP `Retry-After` header (RFC 9110 §10.2.3).
 ///
-/// HTTP-date forms are ignored (Cloudflare and ACME use delta-seconds).
+/// Accepts delta-seconds and HTTP-date (IMF-fixdate / RFC 2822). Past dates
+/// yield a zero delay.
 pub fn parse_retry_after_header(value: &str) -> Option<Duration> {
-    let secs: u64 = value.trim().parse().ok()?;
-    Some(Duration::from_secs(secs))
+    let value = value.trim();
+    if let Ok(secs) = value.parse::<u64>() {
+        return Some(Duration::from_secs(secs));
+    }
+    let then =
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc2822).ok()?;
+    let now = time::OffsetDateTime::now_utc();
+    let secs = (then - now).whole_seconds();
+    if secs <= 0 {
+        Some(Duration::from_secs(0))
+    } else {
+        Some(Duration::from_secs(secs as u64))
+    }
 }
 
 #[cfg(test)]
@@ -208,6 +249,7 @@ mod tests {
             TlsError::CloudflareHttp {
                 message: "x".into(),
                 retry_after: Some(Duration::from_secs(30)),
+                status: Some(429),
             },
             TlsError::CloudflareZone {
                 message: "x".into(),
@@ -217,6 +259,10 @@ mod tests {
             },
             TlsError::StoreCorrupt {
                 message: "x".into(),
+            },
+            TlsError::StorePermissions {
+                file: "key.pem".into(),
+                mode: 0o644,
             },
             TlsError::DyndnsEcho {
                 message: "x".into(),
@@ -242,11 +288,12 @@ mod tests {
             }
             assert!(!err.to_string().is_empty());
         }
-        assert_eq!(seen.len(), 16);
+        assert_eq!(seen.len(), 17);
         assert_eq!(
             TlsError::CloudflareHttp {
                 message: "x".into(),
                 retry_after: Some(Duration::from_secs(30)),
+                status: Some(429),
             }
             .retry_after(),
             Some(Duration::from_secs(30))
@@ -256,6 +303,9 @@ mod tests {
             parse_retry_after_header(" 45 "),
             Some(Duration::from_secs(45))
         );
-        assert_eq!(parse_retry_after_header("Wed, 01 Jan 2020"), None);
+        assert_eq!(
+            parse_retry_after_header("Wed, 01 Jan 2020 00:00:00 GMT"),
+            Some(Duration::from_secs(0))
+        );
     }
 }

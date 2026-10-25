@@ -10,7 +10,7 @@ use dnscraft_tls::{
     AcmeDirectoryKind, AriWindow, BACKOFF_CAP, CertMeta, DEFAULT_EXPIRY_WARN, DEFAULT_RENEW_BEFORE,
     IssueState, KeyPem, LoadedCert, ManualClock, RenewFn, RenewScheduler, TlsError, TlsStatus,
     backoff_delay_with_rng, cert_flags, is_transient_renew_error, next_renewal,
-    next_renewal_with_rng, retry_after_from_error,
+    next_renewal_with_rng,
 };
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -114,17 +114,21 @@ fn backoff_honours_retry_after() {
 #[test]
 fn retry_after_from_structured_field() {
     assert_eq!(
-        retry_after_from_error(&TlsError::CloudflareHttp {
+        TlsError::CloudflareHttp {
             message: "HTTP 429".into(),
             retry_after: Some(Duration::from_secs(12)),
-        }),
+            status: Some(429),
+        }
+        .retry_after(),
         Some(Duration::from_secs(12))
     );
     assert_eq!(
-        retry_after_from_error(&TlsError::CloudflareHttp {
+        TlsError::CloudflareHttp {
             message: "HTTP 429; Retry-After: 12".into(),
             retry_after: None,
-        }),
+            status: Some(429),
+        }
+        .retry_after(),
         None,
         "message text alone is not parsed"
     );
@@ -162,6 +166,7 @@ fn transient_error_classification() {
     assert!(is_transient_renew_error(&TlsError::CloudflareHttp {
         message: "429".into(),
         retry_after: None,
+        status: Some(429),
     }));
     assert!(!is_transient_renew_error(&TlsError::ConfigInvalid {
         reason: "x".into()
@@ -272,6 +277,7 @@ async fn scheduler_backoff_after_transient_failure() {
             Err(TlsError::CloudflareHttp {
                 message: "HTTP 429".into(),
                 retry_after: Some(Duration::from_secs(60)),
+                status: Some(429),
             })
         })
     });

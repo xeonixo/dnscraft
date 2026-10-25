@@ -180,14 +180,6 @@ pub fn is_transient_renew_error(err: &TlsError) -> bool {
     )
 }
 
-/// Extracts a retry hint from a [`TlsError`] when present.
-///
-/// Prefer [`TlsError::retry_after`]; this alias remains for call sites that
-/// already imported the renew helpers.
-pub fn retry_after_from_error(err: &TlsError) -> Option<Duration> {
-    err.retry_after()
-}
-
 /// Boxed renew future returned by [`RenewFn`].
 pub type RenewFut = Pin<Box<dyn Future<Output = Result<(), TlsError>> + Send>>;
 /// Callback that performs one renew/issue attempt.
@@ -339,7 +331,7 @@ async fn run_loop(
                     .await;
                     continue;
                 }
-                let delay = backoff_delay(attempt, retry_after_from_error(&err));
+                let delay = backoff_delay(attempt, err.retry_after());
                 attempt = attempt.saturating_add(1);
                 let wake = clock.now() + delay;
                 wait_or_kick(clock.as_ref(), wake, &tick, &stop).await;

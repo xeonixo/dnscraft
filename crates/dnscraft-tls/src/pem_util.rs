@@ -6,28 +6,30 @@ use rustls::crypto::ring::default_provider;
 use rustls::sign::CertifiedKey;
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use zeroize::Zeroizing;
 
 use crate::store::{LeafInfo, leaf_info_from_der};
 
-/// PEM-encoded private key that never appears in [`Debug`] or [`Display`].
+/// PEM-encoded private key that never appears in [`Debug`] / [`Display`] and is
+/// wiped on drop.
 #[derive(Clone, PartialEq, Eq)]
-pub struct KeyPem(Vec<u8>);
+pub struct KeyPem(Zeroizing<Vec<u8>>);
 
 impl KeyPem {
     /// Wraps raw PEM bytes (already validated or about to be).
     pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Self {
-        Self(bytes.into())
+        Self(Zeroizing::new(bytes.into()))
     }
 
     /// Parses and validates that the bytes contain a private key PEM.
     pub fn parse(pem: &[u8]) -> Result<Self, String> {
         let _ = PrivateKeyDer::from_pem_slice(pem).map_err(|e| format!("key PEM: {e}"))?;
-        Ok(Self(pem.to_vec()))
+        Ok(Self(Zeroizing::new(pem.to_vec())))
     }
 
     /// The PEM bytes. Callers must not log this.
     pub fn as_bytes(&self) -> &[u8] {
-        &self.0
+        self.0.as_slice()
     }
 }
 

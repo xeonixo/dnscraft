@@ -139,7 +139,7 @@ impl CertStore {
             });
         }
 
-        ensure_private_key_mode(&key_path)?;
+        ensure_secret_file_mode(&key_path, KEY_FILE)?;
 
         let chain_pem = fs::read(&cert_path).map_err(|e| store_io("read", &cert_path, e))?;
         let key_bytes = fs::read(&key_path).map_err(|e| store_io("read", &key_path, e))?;
@@ -183,13 +183,32 @@ impl CertStore {
     }
 
     /// Reads ACME `account.json`, if present.
+    ///
+    /// Rejects group/other-readable modes with [`TlsError::StorePermissions`]
+    /// (same policy as `key.pem`).
     pub fn load_account(&self) -> Result<Option<Vec<u8>>, TlsError> {
         let path = self.dir.join(ACCOUNT_FILE);
+        if !path.exists() {
+            return Ok(None);
+        }
+        ensure_secret_file_mode(&path, ACCOUNT_FILE)?;
         match fs::read(&path) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(store_io("read", &path, e)),
         }
+    }
+
+    /// Soft permission probe for engine open: checks `account.json` when present.
+    ///
+    /// Does not read file contents. Used so [`crate::TlsEngine::open`] can
+    /// surface [`TlsError::StorePermissions`] in status without failing open.
+    pub fn check_account_permissions(&self) -> Result<(), TlsError> {
+        let path = self.dir.join(ACCOUNT_FILE);
+        if !path.exists() {
+            return Ok(());
+        }
+        ensure_secret_file_mode(&path, ACCOUNT_FILE)
     }
 
     /// Atomically writes ACME `account.json` (mode 0o600).
@@ -267,25 +286,26 @@ pub(crate) fn leaf_info_from_der(der: &[u8]) -> Result<LeafInfo, String> {
     })
 }
 
-/// Rejects `key.pem` that is readable by group/other (must be `0600`).
+/// Rejects a secret store file that is readable by group/other (must be `0600`).
 ///
-/// Does not rewrite the mode: a too-open key is a hard error so the operator
-/// notices. Files are left in place ([`TlsError::StoreCorrupt`]).
-fn ensure_private_key_mode(path: &Path) -> Result<(), TlsError> {
+/// Does not rewrite the mode: a too-open file is a hard error so the operator
+/// notices. Files are left in place ([`TlsError::StorePermissions`]).
+///
+/// `file_name` is the basename used in the error (`key.pem` / `account.json`).
+fn ensure_secret_file_mode(path: &Path, file_name: &str) -> Result<(), TlsError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let meta = fs::metadata(path).map_err(|e| store_io("metadata", path, e))?;
         let mode = meta.permissions().mode() & 0o777;
         if mode & 0o077 != 0 {
-            return Err(TlsError::StoreCorrupt {
-                message: format!(
-                    "key.pem mode {mode:04o} allows group/other access (expected 0600)"
-                ),
+            return Err(TlsError::StorePermissions {
+                file: file_name.to_owned(),
+                mode,
             });
         }
     }
-    let _ = path;
+    let _ = (path, file_name);
     Ok(())
 }
 

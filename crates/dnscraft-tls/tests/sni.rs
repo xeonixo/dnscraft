@@ -51,6 +51,11 @@ fn sni_table_node_hostname() {
         parse_client_id_sni("node1.dns.example.com", DOMAIN, &reserved),
         SniKind::NodeHostname
     );
+    // Mixed-case reserved label must still be NodeHostname (not ClientId).
+    assert_eq!(
+        parse_client_id_sni("NODE1.DNS.Example.COM", DOMAIN, &reserved),
+        SniKind::NodeHostname
+    );
     let reg = SetRegistry(HashSet::new());
     assert!(!accept_public_sni(
         Some("node1.dns.example.com"),
@@ -58,6 +63,10 @@ fn sni_table_node_hostname() {
         &reserved,
         &reg
     ));
+    assert!(
+        !accept_public_sni(Some("NODE1.DNS.Example.COM"), DOMAIN, &reserved, &reg),
+        "upper-case reserved node SNI must be rejected on public listeners"
+    );
 }
 
 #[test]

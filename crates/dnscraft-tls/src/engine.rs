@@ -120,11 +120,38 @@ impl TlsEngine {
 
         let store = CertStore::open(data_dir)?;
         let resolver = Arc::new(CertResolver::new());
-        if let Some(loaded) = store.load()? {
+
+        // Permission problems on key.pem / account.json must not panic or abort
+        // open: refuse to install a too-open key, record tls.store.permissions
+        // in state/status, leave files for the operator to chmod (see README).
+        let mut permissions_err: Option<TlsError> = None;
+        if let Err(e) = store.check_account_permissions() {
+            permissions_err = Some(e);
+        }
+        let loaded = match store.load() {
+            Ok(v) => v,
+            Err(e @ TlsError::StorePermissions { .. }) => {
+                permissions_err = Some(e);
+                None
+            }
+            Err(e) => return Err(e),
+        };
+        if let Some(loaded) = loaded {
             if let Err(e) = resolver.install(&loaded.chain_pem, loaded.key.as_bytes()) {
                 warn!(code = e.code(), "stored cert could not be installed: {e}");
             } else {
                 info!("loaded last-good certificate into resolver");
+            }
+        }
+        if let Some(ref e) = permissions_err {
+            warn!(code = e.code(), "{e}");
+            let mut state = store.load_state();
+            state.last_error = Some(e.code().to_owned());
+            if let Err(save_err) = store.save_state(&state) {
+                warn!(
+                    code = save_err.code(),
+                    "could not persist store permissions error"
+                );
             }
         }
 

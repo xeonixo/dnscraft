@@ -2,9 +2,16 @@
 //!
 //! Prefer this over instant-acme's `hyper-rustls` feature so the crate keeps a
 //! single HTTP/TLS stack and root store (same as filtering's fetcher).
+//!
+//! Also records `Retry-After` from the last HTTP 429. instant-acme 0.8.5 drops
+//! that header when surfacing `Error::Api(Problem)`, so [`crate::acme`] reads
+//! it back via [`ReqwestHttpClient::take_last_retry_after`] when mapping rate
+//! limits.
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use bytes::Bytes;
 use http::{Request, Response};
@@ -12,12 +19,14 @@ use http_body_util::{BodyExt, Full};
 use instant_acme::{BodyWrapper, BytesResponse, Error as AcmeError, HttpClient};
 use reqwest::Client;
 
-use crate::error::TlsError;
+use crate::error::{TlsError, parse_retry_after_header};
 
 /// Reqwest-backed ACME HTTP client.
 #[derive(Clone, Debug)]
 pub struct ReqwestHttpClient {
     client: Client,
+    /// `Retry-After` from the most recent HTTP 429 response, if any.
+    last_retry_after: Arc<Mutex<Option<Duration>>>,
 }
 
 impl ReqwestHttpClient {
@@ -30,7 +39,10 @@ impl ReqwestHttpClient {
             .map_err(|e| TlsError::AcmeAccount {
                 message: format!("build HTTP client: {e}"),
             })?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            last_retry_after: Arc::new(Mutex::new(None)),
+        })
     }
 
     /// Builds a client that also trusts the given PEM root(s).
@@ -49,12 +61,23 @@ impl ReqwestHttpClient {
             .map_err(|e| TlsError::AcmeAccount {
                 message: format!("build HTTP client with test root: {e}"),
             })?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            last_retry_after: Arc::new(Mutex::new(None)),
+        })
     }
 
     /// Exposes the underlying reqwest client (for tests / diagnostics).
     pub fn inner(&self) -> &Client {
         &self.client
+    }
+
+    /// Takes the `Retry-After` recorded from the last HTTP 429, if any.
+    pub fn take_last_retry_after(&self) -> Option<Duration> {
+        self.last_retry_after
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 }
 
@@ -64,6 +87,7 @@ impl HttpClient for ReqwestHttpClient {
         req: Request<BodyWrapper<Bytes>>,
     ) -> Pin<Box<dyn Future<Output = Result<BytesResponse, AcmeError>> + Send>> {
         let client = self.client.clone();
+        let last_retry_after = Arc::clone(&self.last_retry_after);
         Box::pin(async move {
             let (parts, body) = req.into_parts();
             let body_bytes = match body.collect().await {
@@ -85,6 +109,17 @@ impl HttpClient for ReqwestHttpClient {
                 .map_err(|e| AcmeError::Other(Box::new(e)))?;
             let status = rsp.status();
             let headers = rsp.headers().clone();
+
+            if status.as_u16() == 429 {
+                let delay = headers
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(parse_retry_after_header);
+                if let Ok(mut slot) = last_retry_after.lock() {
+                    *slot = delay;
+                }
+            }
+
             let bytes = rsp
                 .bytes()
                 .await
@@ -149,5 +184,72 @@ mod tests {
             .await
             .expect("loopback GET");
         assert_eq!(rsp.parts.status, 200);
+    }
+
+    #[tokio::test]
+    async fn records_retry_after_on_429_delta_seconds() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let body = b"{\"type\":\"urn:ietf:params:acme:error:rateLimited\"}";
+            let resp = format!(
+                "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 42\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                std::str::from_utf8(body).unwrap()
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+        });
+
+        let client = ReqwestHttpClient::new().unwrap();
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(format!("http://{addr}/new-order"))
+            .body(BodyWrapper::from(Vec::<u8>::new()))
+            .unwrap();
+        let rsp = HttpClient::request(&client, req).await.expect("429");
+        assert_eq!(rsp.parts.status, 429);
+        assert_eq!(
+            client.take_last_retry_after(),
+            Some(Duration::from_secs(42))
+        );
+        assert_eq!(client.take_last_retry_after(), None);
+    }
+
+    #[tokio::test]
+    async fn records_retry_after_on_429_http_date() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Far-future IMF-fixdate so the parsed delay is clearly positive.
+        let http_date = "Wed, 01 Jan 2098 00:00:00 GMT";
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let body = b"{}";
+            let resp = format!(
+                "HTTP/1.1 429 Too Many Requests\r\nRetry-After: {http_date}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                std::str::from_utf8(body).unwrap()
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+        });
+
+        let client = ReqwestHttpClient::new().unwrap();
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(format!("http://{addr}/new-order"))
+            .body(BodyWrapper::from(Vec::<u8>::new()))
+            .unwrap();
+        let _ = HttpClient::request(&client, req).await.expect("429");
+        let delay = client
+            .take_last_retry_after()
+            .expect("http-date retry-after");
+        assert!(
+            delay > Duration::from_secs(3600),
+            "expected multi-hour delay from 2098 date, got {delay:?}"
+        );
     }
 }

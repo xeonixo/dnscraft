@@ -234,23 +234,60 @@ fn store_load_rejects_mismatched_pair_and_keeps_files() {
 
 #[test]
 #[cfg(unix)]
-fn store_load_rejects_world_readable_key() {
+fn store_load_rejects_group_or_world_readable_key() {
     let data = temp_data_dir("key-mode");
     let store = CertStore::open(&data).unwrap();
     let (chain, key) = self_signed(&["dns.example.com"]);
     store.save(&chain, &key, &CertMeta::default()).unwrap();
 
     let key_path = store.dir().join("key.pem");
-    let mut perms = fs::metadata(&key_path).unwrap().permissions();
-    perms.set_mode(0o644);
-    fs::set_permissions(&key_path, perms).unwrap();
+    for mode in [0o644, 0o640] {
+        let mut perms = fs::metadata(&key_path).unwrap().permissions();
+        perms.set_mode(mode);
+        fs::set_permissions(&key_path, perms).unwrap();
 
-    let err = store.load().expect_err("open key");
-    assert_eq!(err.code(), "tls.store.corrupt");
-    assert!(err.to_string().contains("0600") || err.to_string().contains("group/other"));
-    // Files kept for the operator to chmod.
-    assert!(key_path.exists());
-    assert!(store.dir().join("cert.pem").exists());
+        let err = store.load().expect_err("open key");
+        assert_eq!(err.code(), "tls.store.permissions", "mode {mode:04o}");
+        let msg = err.to_string();
+        assert!(msg.contains("key.pem"), "{msg}");
+        assert!(
+            msg.contains(&format!("{mode:04o}")) || msg.contains("group/other"),
+            "{msg}"
+        );
+        assert!(!msg.contains("PRIVATE"), "{msg}");
+        // Files kept for the operator to chmod.
+        assert!(key_path.exists());
+        assert!(store.dir().join("cert.pem").exists());
+    }
+
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[test]
+#[cfg(unix)]
+fn store_load_account_rejects_group_or_world_readable() {
+    let data = temp_data_dir("account-mode");
+    let store = CertStore::open(&data).unwrap();
+    store
+        .save_account(b"{\"directory\":\"https://example/dir\"}")
+        .unwrap();
+
+    let path = store.dir().join("account.json");
+    for mode in [0o644, 0o640] {
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(mode);
+        fs::set_permissions(&path, perms).unwrap();
+
+        let err = store.load_account().expect_err("open account");
+        assert_eq!(err.code(), "tls.store.permissions", "mode {mode:04o}");
+        let msg = err.to_string();
+        assert!(msg.contains("account.json"), "{msg}");
+        assert!(
+            !msg.contains("directory"),
+            "must not leak account body: {msg}"
+        );
+        assert!(path.exists());
+    }
 
     let _ = fs::remove_dir_all(&data);
 }

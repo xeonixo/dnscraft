@@ -301,11 +301,13 @@ impl CloudflareClient {
                     name_servers: z.name_servers,
                 })
             }
-            Err(TlsError::CloudflareHttp { message, .. }) if message.contains("404") => {
-                Err(TlsError::CloudflareZone {
-                    message: format!("zone id {id} not found ({message})"),
-                })
-            }
+            Err(TlsError::CloudflareHttp {
+                status: Some(404),
+                message,
+                ..
+            }) => Err(TlsError::CloudflareZone {
+                message: format!("zone id {id} not found ({message})"),
+            }),
             Err(e) => Err(e),
         }
     }
@@ -324,6 +326,7 @@ impl CloudflareClient {
             })?;
 
         let status = response.status();
+        let status_code = status.as_u16();
         let retry_after = response
             .headers()
             .get(reqwest::header::RETRY_AFTER)
@@ -333,10 +336,11 @@ impl CloudflareClient {
         let bytes = read_capped(response, token).await?;
 
         let envelope: Envelope<T> = serde_json::from_slice(&bytes).map_err(|e| {
-            TlsError::cloudflare_http(redact_token(
-                &format!("HTTP {status}: unparseable body ({e})"),
-                token,
-            ))
+            TlsError::cloudflare_http_status(
+                redact_token(&format!("HTTP {status}: unparseable body ({e})"), token),
+                status_code,
+                retry_after,
+            )
         })?;
 
         if !envelope.success || !status.is_success() {
@@ -354,6 +358,7 @@ impl CloudflareClient {
             return Err(TlsError::CloudflareHttp {
                 message: redact_token(&message, token),
                 retry_after,
+                status: Some(status_code),
             });
         }
 

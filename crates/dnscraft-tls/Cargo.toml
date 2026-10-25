@@ -30,6 +30,8 @@ http-body-util = { workspace = true }
 dnscraft-proto = { path = "../dnscraft-proto" }
 rand = { workspace = true }
 rcgen = { workspace = true }
+zeroize = { workspace = true }
+time = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -250,6 +250,95 @@ async fn concurrent_renew_now_is_single_flight() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
+async fn open_with_world_readable_key_refuses_serve_and_reports_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let data = temp_dir("open-key-perms");
+    let store = CertStore::open(&data).unwrap();
+    let (chain, key) = self_signed();
+    store.save(&chain, &key, &CertMeta::default()).unwrap();
+
+    let key_path = store.dir().join("key.pem");
+    let mut perms = fs::metadata(&key_path).unwrap().permissions();
+    perms.set_mode(0o644);
+    fs::set_permissions(&key_path, perms).unwrap();
+
+    let mut cfg = base_cfg();
+    cfg.acme.enabled = false;
+    cfg.dyndns.enabled = false;
+    cfg.validate_with_token(|_| Ok(Secret::new(TOKEN))).unwrap();
+
+    let engine = TlsEngine::open_with(
+        cfg,
+        &data,
+        clock(),
+        EngineDeps {
+            acme: Arc::new(FakeAcmeDirectory::new()),
+            cloudflare_base_url: Some("http://127.0.0.1:1/client/v4".into()),
+            echo: EchoClient::unbound().unwrap(),
+            token: Secret::new(TOKEN),
+        },
+    )
+    .expect("open must not fail on key.pem permissions");
+
+    let status = engine.status_async().await;
+    assert_eq!(status.last_error.as_deref(), Some("tls.store.permissions"));
+    assert!(
+        !engine.resolver().has_cert(),
+        "must not install world-readable key.pem"
+    );
+    drop(engine);
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn open_with_world_readable_account_reports_permissions_keeps_cert() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let data = temp_dir("open-account-perms");
+    let store = CertStore::open(&data).unwrap();
+    let (chain, key) = self_signed();
+    store.save(&chain, &key, &CertMeta::default()).unwrap();
+    store
+        .save_account(b"{\"directory\":\"https://acme.example/dir\"}")
+        .unwrap();
+
+    let account_path = store.dir().join("account.json");
+    let mut perms = fs::metadata(&account_path).unwrap().permissions();
+    perms.set_mode(0o644);
+    fs::set_permissions(&account_path, perms).unwrap();
+
+    let mut cfg = base_cfg();
+    cfg.acme.enabled = false;
+    cfg.dyndns.enabled = false;
+    cfg.validate_with_token(|_| Ok(Secret::new(TOKEN))).unwrap();
+
+    let engine = TlsEngine::open_with(
+        cfg,
+        &data,
+        clock(),
+        EngineDeps {
+            acme: Arc::new(FakeAcmeDirectory::new()),
+            cloudflare_base_url: Some("http://127.0.0.1:1/client/v4".into()),
+            echo: EchoClient::unbound().unwrap(),
+            token: Secret::new(TOKEN),
+        },
+    )
+    .expect("open must not fail on account.json permissions");
+
+    let status = engine.status_async().await;
+    assert_eq!(status.last_error.as_deref(), Some("tls.store.permissions"));
+    assert!(
+        engine.resolver().has_cert(),
+        "good key.pem must still be served when only account.json is open"
+    );
+    drop(engine);
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
 async fn drop_engine_drops_inner_for_background() {
     let data = temp_dir("drop");
     let mut cfg = base_cfg();
