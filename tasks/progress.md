@@ -11,13 +11,15 @@ Earlier modules: [archive/](archive/) (resolver plan + tasks). Briefs for workin
 ## Current state
 
 - Module `resolver` COMPLETE (Checkpoint E approved 2026-10-25).
-- Module `filtering`: Checkpoint D reviewed by Claude — **not passed yet**; fixes D1a/D1b in progress (Claude's Sonnet agents), then re-review. Deep-name p99 ~19 µs and build-peak RAM accepted by the owner.
+- Module `filtering`: Checkpoint D review findings fixed (D1a/D1b, 2026-10-25) — **awaiting owner approval**. Deep-name p99 ~19 µs and build-peak RAM accepted by the owner.
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Next: P1 plan.
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Next: P1 plan.
 - Module `policy`: **SPEC-policy.md approved** (2026-10-25). Next: P1 plan.
-- Blockers: none. Cursor: R2, then P1 (clients → tls → policy). Claude: filtering D1a/D1b, then Checkpoint D re-review. T1 done.
+- Blockers: none. Cursor: R2, then P1 (clients → tls → policy). Owner: approve filtering Checkpoint D. T1 done.
 
 ## Log
+
+- 2026-10-25 — Filtering D1a + D1b done (Sonnet ×2 in worktrees, lead-reviewed and merged): per-snapshot pinned rule-text reader (open file handle, 4 KiB line checkpoints, bounded `read_at`, 4096-entry cache) — cold verdict p50 3.2 µs / p99 19 µs (page cache) vs ~11 ms before, no stale text after reload; `$badfilter` / `@@$dnsrewrite` from lists/services can no longer touch custom rules; custom-wins-on-tie tested (mutant now killed); `apply_config` returns the build result and commits config only on success; cancelled reload no longer wedges (drop guard); services catalog validated before persisting, 4 MiB caps, 2 000 services / 1 000 rules / 16 KiB icon caps, untrusted-SVG note; no rebuild on 304; scheduler holds `Weak` (no Arc cycle); single fetch on update-now; clock tick race; expired temp allows pruned; unique 0600 temp files. Lead follow-up after a hostile-list measurement (5 000 regexes ≈ 4 ms/query, 20 000 globs ≈ 2.4 ms/query, DFA caches 157 MB): caps tightened to 500 regex / 5 000 glob rules per index, 2 MiB regex budget, 64 KiB DFA cache per regex; real lists: 497 patterns, 0 budget skips, build 1.54 s, steady 58 MB. 617 tests green. Known minor leftovers: a cancelled rebuild also fails other coalesced waiters (they get an error, no wedge); `UpdateScheduler::stop()` takes effect at the next deadline only. **Checkpoint D: review findings fixed — awaiting owner approval.**
 
 - 2026-10-25 — T1 done (Cursor): `Record` derives wire type from `RData` (`Record::rtype()` / `Record::new`); separate `rtype` field removed so mismatched pairs are unrepresentable. Chose derive-over-checked-ctor for smaller blast radius (drop field + `.rtype`→`.rtype()` vs rewriting every literal to a fallible ctor). Decode/encode wire behaviour unchanged. Regression `rtype_is_derived_from_rdata`. DoD green; fuzz `name_decode` / `message_decode` / `message_roundtrip` 60 s each clean.
 

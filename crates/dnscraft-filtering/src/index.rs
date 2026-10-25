@@ -86,12 +86,19 @@ use crate::rule::{BadfilterKey, MatchKind, Rule, RuleAction};
 use crate::types::{ListId, Reason, Rewrite, RuleSource, SetId, Verdict};
 
 /// Maximum number of regex rules in one index; further ones are skipped.
-pub const MAX_REGEX_RULES: usize = 5_000;
+///
+/// Patterns are evaluated linearly per query, so this bounds the worst case a
+/// hostile list can force: 5 000 regexes measured ~4 ms per query. The 19
+/// reference lists hold under 50 regex rules.
+pub const MAX_REGEX_RULES: usize = 500;
 /// Maximum number of glob (wildcard) rules in one index.
-pub const MAX_GLOB_RULES: usize = 20_000;
+///
+/// Same reasoning as [`MAX_REGEX_RULES`]: 20 000 globs sharing a literal
+/// measured ~2.4 ms per query; the reference lists hold ~1 600 globs.
+pub const MAX_GLOB_RULES: usize = 5_000;
 /// Budget for the summed estimated compiled size of all regex rules in one
 /// index (see [`crate::RegexRule::estimated_bytes`]).
-pub const REGEX_BUDGET_BYTES: usize = 32 * 1024 * 1024;
+pub const REGEX_BUDGET_BYTES: usize = 2 * 1024 * 1024;
 
 const F_ALLOW: u8 = 1;
 const F_EXACT: u8 = 2;

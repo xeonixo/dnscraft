@@ -67,7 +67,7 @@ use crate::error::{NameError, RuleError};
 /// Compiled-program size limit per regex rule (bytes).
 pub const REGEX_SIZE_LIMIT: usize = 8 * 1024;
 /// Lazy-DFA cache limit per regex rule (bytes).
-pub const REGEX_DFA_SIZE_LIMIT: usize = 256 * 1024;
+pub const REGEX_DFA_SIZE_LIMIT: usize = 64 * 1024;
 /// Maximum length of the regex error message kept in [`RuleError::InvalidRegex`].
 pub const REGEX_MESSAGE_MAX: usize = 200;
 

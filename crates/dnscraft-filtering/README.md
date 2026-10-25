@@ -188,8 +188,11 @@ Human-readable text is for logs, not end users.
 |-------|-------|---------|--------|
 | Max rule line | 4 KiB | Caps pathological list lines | `MAX_LINE_LEN` in `src/parser.rs` |
 | Skip samples kept | 60 (5 per reason) | Skip report for operators | `SKIP_SAMPLE_LIMIT` / `SKIP_SAMPLES_PER_REASON` |
-| Regex program size | 64 KiB | Reject oversized `/regex/` | `REGEX_SIZE_LIMIT` in `src/pattern.rs` |
-| Regex DFA size | 256 KiB | Cap compiled DFA | `REGEX_DFA_SIZE_LIMIT` |
+| Regex program size | 8 KiB | Reject oversized `/regex/` | `REGEX_SIZE_LIMIT` in `src/pattern.rs` |
+| Regex DFA size | 64 KiB | Cap compiled DFA | `REGEX_DFA_SIZE_LIMIT` |
+| Regex rules per index | 500 | Bounds per-query pattern scan for hostile lists | `MAX_REGEX_RULES` in `src/index.rs` |
+| Glob rules per index | 5 000 | Same, for wildcards | `MAX_GLOB_RULES` |
+| Regex size budget per index | 2 MiB (estimated) | Caps total compiled regex memory | `REGEX_BUDGET_BYTES` |
 | Regex error message | 200 bytes | Truncate engine text | `REGEX_MESSAGE_MAX` |
 | List body size | 64 MiB | Download / store cap | `DEFAULT_MAX_BODY_BYTES` in `src/store.rs` |
 | HTTPS redirects | 5 | Cap redirect chains; HTTPS→HTTP refused | `MAX_REDIRECTS` in `src/fetch.rs` |

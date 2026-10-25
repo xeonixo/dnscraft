@@ -12,3 +12,4 @@
 secrets/
 deploy/*.local.toml
 /spikes/**/target/
+/.claude/worktrees/
