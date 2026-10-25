@@ -201,9 +201,9 @@ Also:
 - Any modification clears AD.
 
 **Acceptance criteria:**
-- [ ] Testkit CNAME chain `a.example.com → tracker.example.net → …` with `tracker.example.net` blocked → blocked answer
-- [ ] Answer IP on an IP rule → blocked; allowed chain name overrides per filtering priority
-- [ ] Unblocked chain keeps AD when the resolver said Secure
+- [x] Testkit CNAME chain `a.example.com → tracker.example.net → …` with `tracker.example.net` blocked → blocked answer
+- [x] Answer IP on an IP rule → blocked; allowed chain name overrides per filtering priority
+- [x] Unblocked chain keeps AD when the resolver said Secure
 
 **Verification:** `cargo test -p dnscraft-policy answer_side`
 

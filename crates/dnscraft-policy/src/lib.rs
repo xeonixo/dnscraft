@@ -6,10 +6,9 @@
 //! the [`ClientDirectory`] contract for device names without depending on
 //! `dnscraft-clients`.
 //!
-//! Phase 1–7: ids, config, snapshot build/select, engine with view local
-//! records (step 1), ClientDirectory (step 2), bypass canaries (step 3),
-//! filter qname block/rewrite (step 4), and resolver passthrough. Steps 5–6
-//! and 8–11 follow later.
+//! Phase 1–8: ids, config, snapshot build/select, engine through filter
+//! (step 4), resolve (step 7), and answer-side CNAME/IP filtering (steps
+//! 8–9). Steps 5–6 and 10–11 follow later.
 
 mod config;
 mod decision;

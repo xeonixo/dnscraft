@@ -14,7 +14,8 @@ use crate::directory::ClientDirectory;
 use crate::error::PolicyError;
 use crate::pipeline::{Draft, Flow, StepCtx, apply_ad_policy};
 use crate::snapshot::PolicySnapshot;
-use crate::steps::{canary, directory, filter, local_records};
+use crate::steps::answer_side::AnswerSide;
+use crate::steps::{answer_side, canary, directory, filter, local_records};
 use crate::synth::{any_rfc8482, resolve_servfail};
 
 /// Final answer from [`PolicyEngine::handle`].
@@ -71,9 +72,9 @@ impl PolicyEngine {
     /// Handles one query: select, run steps, emit.
     ///
     /// Selection, RFC 8482 ANY, view local records (step 1), ClientDirectory
-    /// names/PTR and special-use NXDOMAIN (step 2), bypass canaries (step 3),
-    /// filter qname (step 4), then resolver passthrough (step 7). Steps 5–6
-    /// and 8–11 follow later.
+    /// (step 2), bypass canaries (step 3), filter qname (step 4), resolve
+    /// (step 7), then CNAME uncloaking + answer-IP rules (steps 8–9). Steps
+    /// 5–6 and 10–11 follow later.
     ///
     /// ECS is never forwarded: policy calls the resolver with
     /// [`RequestFlags`] only (no client EDNS options).
@@ -173,13 +174,13 @@ impl PolicyEngine {
             ));
         }
 
-        // Steps 5–6 / 8–11: later tasks. Then resolve.
+        // Steps 5–6 / 10–11: later tasks. Then resolve (step 7).
 
         let flags = RequestFlags {
             checking_disabled: ctx.flags.checking_disabled,
             dnssec_ok: ctx.flags.dnssec_ok,
             client: Some(SocketAddr::new(ctx.source_ip, 0)),
-            forward_zones,
+            forward_zones: forward_zones.clone(),
         };
 
         let resolve_start = Instant::now();
@@ -215,6 +216,22 @@ impl PolicyEngine {
         apply_ad_policy(&mut message, answer.dnssec);
         // Listener owns the message id.
         message.header.id = 0;
+
+        // Steps 8–9: CNAME uncloaking + answer-IP rules (resolver answers only).
+        match answer_side::run(&ctx, step_ctx, &mut draft, &message) {
+            AnswerSide::Replace(synth) => {
+                draft.timings.total_us = elapsed_us(total_start);
+                return Ok(emit(
+                    draft,
+                    synth,
+                    ctx.client_id.clone(),
+                    loggable,
+                    None,
+                    None,
+                ));
+            }
+            AnswerSide::Keep => {}
+        }
 
         draft.timings.total_us = elapsed_us(total_start);
         let rcode = message.rcode();

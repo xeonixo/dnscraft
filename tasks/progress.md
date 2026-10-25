@@ -14,10 +14,12 @@ Earlier modules: [archive/](archive/) (resolver and filtering plans + tasks). Br
 - Module `filtering` COMPLETE (Checkpoint D approved 2026-10-25).
 - Module `clients`: **SPEC-clients.md approved** (2026-10-25). Plan **approved** ([plan-clients.md](plan-clients.md)).
 - Module `tls`: **SPEC-tls.md approved** (2026-10-25). Plan **approved** ([plan-tls.md](plan-tls.md)). **L1–L7 done**; Checkpoint A passed (2026-10-25). Next: **L8** (renewal scheduler).
-- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P7 done. Checkpoint A passed** (2026-10-25). Next: P8.
+- Module `policy`: **SPEC-policy.md approved** (2026-10-25). Plan **approved** ([plan-policy.md](plan-policy.md)). **P1–P8 done. Checkpoint A passed** (2026-10-25). Next: P9.
 - Blockers: none. Clients last. T2 open (any time).
 
 ## Log
+
+- 2026-10-25 — Policy P8 done (Cursor): steps 8–9 answer-side — CNAME chain names (qname + targets) via `match_chain` → Blocked replaces with block synthesis; each A/AAAA via `match_answer_ip` → Blocked same; skipped when `draft.synthetic`; AD cleared on replace, Secure AD kept when unblocked. Important allow on qname overrides chain block. Tests: chain block, important allow, IP rule, Secure AD. DoD green. Next: P9 (then Checkpoint B).
 
 - 2026-10-25 — Policy P7 done (Cursor): step 4 filter qname — `match_name` → Blocked synthesises per set `BlockMode` (REFUSED/NXDOMAIN → EDE 15; NullIp/CustomIp → EDE 4; TTL default 10 s + SOA on NXDOMAIN/NODATA); Rewrite A/NXDOMAIN/CNAME (CNAME target filtered again then resolved via step 7; blocked target → block); Allowed/Pass continue; unrepresentable name → Pass + `FilterSkipped`; unknown set → SERVFAIL once-logged. Temporary allow + set pause honoured. Tests for all BlockModes, rewrites, allow/pause. DoD green. Next: P8.
 

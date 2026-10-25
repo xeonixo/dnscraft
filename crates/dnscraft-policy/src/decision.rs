@@ -55,6 +55,10 @@ pub enum DecisionStep {
         /// Why filtering was skipped.
         reason: &'static str,
     },
+    /// CNAME-chain uncloaking blocked a name in the resolver answer (step 8).
+    AnswerChainBlocked,
+    /// An answer A/AAAA matched an IP block rule (step 9).
+    AnswerIpBlocked,
     /// Resolver returned an answer.
     Resolve {
         /// Cache / recursion / stale.
