@@ -26,8 +26,19 @@ pub struct MockBackend {
     status_delay: Mutex<Option<Arc<Notify>>>,
     /// Number of `get_status` calls started.
     pub status_calls: AtomicUsize,
+    /// Number of `get_status` calls still running.
+    status_active: AtomicUsize,
     /// Number of `validate_token` calls.
     pub token_calls: AtomicUsize,
+}
+
+/// Decrements the active counter even when the tool future is cancelled.
+struct ActiveGuard<'a>(&'a AtomicUsize);
+
+impl Drop for ActiveGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl MockBackend {
@@ -58,6 +69,11 @@ impl MockBackend {
         if let Ok(mut slot) = self.status_delay.lock() {
             *slot = Some(gate);
         }
+    }
+
+    /// Number of `get_status` calls currently running (cancellation drops this).
+    pub fn active_status_calls(&self) -> usize {
+        self.status_active.load(Ordering::SeqCst)
     }
 
     fn status_result(&self) -> Result<NodeStatus, BackendError> {
@@ -141,6 +157,8 @@ impl McpBackend for MockBackend {
 
     async fn get_status(&self) -> Result<NodeStatus, BackendError> {
         self.status_calls.fetch_add(1, Ordering::SeqCst);
+        self.status_active.fetch_add(1, Ordering::SeqCst);
+        let _guard = ActiveGuard(&self.status_active);
         if let Some(gate) = self.delay() {
             gate.notified().await;
         }

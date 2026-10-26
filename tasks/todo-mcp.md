@@ -271,20 +271,20 @@ version and transport. First read the M0 answers and implement **only what rmcp 
 every check below must still be covered by a test through the public `service()`.
 
 **Acceptance criteria:**
-- [ ] GET and DELETE on `/mcp/v1` → 405, body carries `control_api.method_not_allowed`; no session header
+- [x] GET and DELETE on `/mcp/v1` → 405, body carries `control_api.method_not_allowed`; no session header
       issued or required.
-- [ ] Body over `max_request_body_size` → 413 `control_api.payload_too_large` (also when no
+- [x] Body over `max_request_body_size` → 413 `control_api.payload_too_large` (also when no
       `Content-Length`, streamed).
-- [ ] `Origin` present and not in `allowed_origins` → 403 `control_api.auth.invalid_origin`; absent → allowed.
-- [ ] `MCP-Protocol-Version` missing/unsupported (e.g. `2099-01-01`) → 400 `UnsupportedProtocolVersionError`
+- [x] `Origin` present and not in `allowed_origins` → 403 `control_api.auth.invalid_origin`; absent → allowed.
+- [x] `MCP-Protocol-Version` missing/unsupported (e.g. `2099-01-01`) → 400 `UnsupportedProtocolVersionError`
       listing supported versions.
-- [ ] `Mcp-Method` ≠ body method → 400 JSON-RPC `-32020` `HeaderMismatch`; for `tools/call`, `Mcp-Name` ≠
+- [x] `Mcp-Method` ≠ body method → 400 JSON-RPC `-32020` `HeaderMismatch`; for `tools/call`, `Mcp-Name` ≠
       body `params.name` → 400 `-32020`; the tool that runs is always the **body** name (test: header says
       `get_status`, body says a write tool → rejected, nothing executed).
-- [ ] Unknown RPC method → 404 + `-32601`; a notification POST → 202 with empty body.
-- [ ] `request_timeout` cancels a slow backend call (ManualClock/`wait_until` style); a dropped connection
+- [x] Unknown RPC method → 404 + `-32601`; a notification POST → 202 with empty body.
+- [x] `request_timeout` cancels a slow backend call (ManualClock/`wait_until` style); a dropped connection
       cancels the in-flight request and releases resources.
-- [ ] Every HTTP rejection has a stable code in the body (criterion 14), none has an empty body.
+- [x] Every HTTP rejection has a stable code in the body (criterion 14), none has an empty body.
 
 **Verification:** `cargo test -p dnscraft-mcp --test transport`
 

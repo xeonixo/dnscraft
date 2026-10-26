@@ -2,7 +2,9 @@
 //!
 //! Every string from the backend is untrusted and leaves through [`SafeText`].
 
+use rmcp::RoleServer;
 use rmcp::model::CallToolResult;
+use rmcp::service::RequestContext;
 use rmcp::{tool, tool_router};
 use serde_json::{Value, json};
 
@@ -22,8 +24,15 @@ impl McpServer {
             idempotent_hint = true
         )
     )]
-    pub async fn get_status(&self) -> CallToolResult {
-        match self.backend.get_status().await {
+    pub async fn get_status(&self, context: RequestContext<RoleServer>) -> CallToolResult {
+        let result = tokio::select! {
+            result = self.backend.get_status() => result,
+            _ = context.ct.cancelled() => {
+                // Connection closed or request cancelled; the result is never sent.
+                return tool_error("control_api.internal", json!({ "reason": "cancelled" }));
+            }
+        };
+        match result {
             Ok(status) => tool_ok(status_json(&status)),
             Err(error) => {
                 tracing::warn!(code = error.code(), "get_status backend error");

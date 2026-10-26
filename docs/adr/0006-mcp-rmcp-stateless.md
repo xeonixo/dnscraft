@@ -212,6 +212,25 @@ No contradiction beyond the three already recorded appeared in M8. The malformed
 header-level unsupported-version (plain-text 400) behaviours remain for M9 to wrap in the
 control-api envelope.
 
+## M9 implementation findings
+
+- **202 Accepted has no `Content-Type` and no body.** A conformance wrapper that rewrites every
+  non-JSON response must special-case 202/204 or it corrupts notifications.
+- **Origin, Host, body cap and protocol version are enforced before rmcp** where the spec's status
+  code matters (405/413/403/400); rmcp's own origin/body checks remain enabled as defence in depth.
+  The rmcp `Origin` rejection is plain text, so the wrapper also rewrites any bare 403.
+- **Unknown method and header mismatch are already correct:** `404` + `-32601` and `400` +
+  `-32020` arrive as JSON. Notifications are `202` with an empty body.
+- **Timeout cancellation is asynchronous.** Dropping rmcp's response future trips its disconnect
+  guard and cancels the request token; the wrapping `tokio::time::timeout` therefore cancels the
+  spawned handler on a subsequent poll, not synchronously. The test waits for the backend's
+  active-call counter to reach zero rather than asserting immediately.
+- **A direct tower call needs a `Host` header.** rmcp rejects a request without one before
+  dispatch; real axum traffic always has it. Tests that call the service without a listener set it.
+- **Contradiction 3 remains.** An unparseable body is rmcp `415` with plain text. The wrapper keeps
+  the status and replaces the body with `control_api.internal` + `{"reason":"http_415"}`, because
+  control-api owns the code vocabulary and has no parse-error code.
+
 ## Alternatives considered
 
 - **Hand-rolled Streamable HTTP (~500 lines).** Rejected: it would re-implement the SEP-2243
