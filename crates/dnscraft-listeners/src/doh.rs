@@ -5,7 +5,7 @@ use dnscraft_policy::{ClientId, DnsProtocol};
 use dnscraft_proto::{Message, Rcode, RecordType};
 use dnscraft_tls::CertResolver;
 use dnscraft_tls::ClientIdRegistry;
-use http::{Request, Response, StatusCode, header};
+use http::{HeaderMap, Method, Request, Response, StatusCode, Uri, header};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
@@ -17,7 +17,7 @@ use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 use tokio::sync::{Notify, Semaphore, oneshot, watch};
 use tokio::time::Instant as TokioInstant;
@@ -65,10 +65,13 @@ pub struct DohStats {
 }
 
 impl DohStats {
-    fn bump(field: &AtomicU64) {
+    pub(crate) fn bump(field: &AtomicU64) {
         field.fetch_add(1, Ordering::Relaxed);
     }
 }
+
+/// `Alt-Svc` max-age (seconds) when advertising HTTP/3.
+pub const ALT_SVC_MAX_AGE: u32 = 86_400;
 
 /// Inputs for [`serve_doh`].
 pub struct DohServeParams<H: ?Sized> {
@@ -92,23 +95,34 @@ pub struct DohServeParams<H: ?Sized> {
     pub sni_gate: Arc<SniGate>,
     /// Query-log sink; `None` skips emission.
     pub event_sink: Option<Arc<dyn QueryEventSink>>,
+    /// UDP port for `Alt-Svc` when [`ListenerConfig::h3`] (0 = omit until set).
+    pub alt_svc_port: Arc<AtomicU16>,
     /// Bound address (port 0 friendly).
     pub bound: oneshot::Sender<SocketAddr>,
     /// Set to `true` to stop accepting.
     pub shutdown: watch::Receiver<bool>,
 }
 
-struct DohShared<H: ?Sized> {
-    listener: ListenerConfig,
-    limits: Limits,
-    handler: Arc<H>,
-    admission: Arc<Mutex<Admission>>,
-    clock: Arc<dyn Clock>,
-    stats: Arc<DohStats>,
-    sni_gate: Arc<SniGate>,
-    conn_cap: Arc<Semaphore>,
-    per_source: Mutex<HashMap<IpAddr, u32>>,
-    event_sink: Option<Arc<dyn QueryEventSink>>,
+/// Shared DoH request state (HTTP/2 and HTTP/3).
+pub(crate) struct DohShared<H: ?Sized> {
+    pub(crate) listener: ListenerConfig,
+    pub(crate) limits: Limits,
+    pub(crate) handler: Arc<H>,
+    pub(crate) admission: Arc<Mutex<Admission>>,
+    pub(crate) clock: Arc<dyn Clock>,
+    pub(crate) stats: Arc<DohStats>,
+    pub(crate) sni_gate: Arc<SniGate>,
+    pub(crate) conn_cap: Arc<Semaphore>,
+    pub(crate) per_source: Mutex<HashMap<IpAddr, u32>>,
+    pub(crate) event_sink: Option<Arc<dyn QueryEventSink>>,
+    pub(crate) alt_svc_port: Arc<AtomicU16>,
+}
+
+/// Wire answer produced by [`process_doh_request`] (status + headers + body).
+pub(crate) struct DohHttpParts {
+    pub status: StatusCode,
+    pub headers: HeaderMap,
+    pub body: Bytes,
 }
 
 /// Runs one DoH (HTTP/2 + HTTP/1.1) listener until `params.shutdown` is `true`.
@@ -130,6 +144,7 @@ where
         certs,
         sni_gate,
         event_sink,
+        alt_svc_port,
         bound,
         mut shutdown,
     } = params;
@@ -161,6 +176,7 @@ where
         conn_cap,
         per_source: Mutex::new(HashMap::new()),
         event_sink,
+        alt_svc_port,
     });
 
     loop {
@@ -401,12 +417,6 @@ async fn handle_http<H>(
 where
     H: QueryHandler,
 {
-    let path = parse_doh_path(req.uri().path());
-    let client_id_state = match resolve_path_client_id(&shared, peer, &path) {
-        Ok(state) => state,
-        Err(status) => return status_empty(status),
-    };
-
     let (parts, body) = req.into_parts();
     let collected = match Limited::new(body, MAX_MESSAGE_LEN + 1).collect().await {
         Ok(c) => c.to_bytes(),
@@ -418,12 +428,37 @@ where
         return status_empty(StatusCode::PAYLOAD_TOO_LARGE);
     }
 
-    let wire = match extract_wire(
+    let parts_out = process_doh_request(
+        &shared,
+        peer,
         &parts.method,
         &parts.uri,
-        content_type_of(&parts.headers),
-        &collected,
-    ) {
+        &parts.headers,
+        collected,
+    )
+    .await;
+    parts_to_response(parts_out)
+}
+
+/// Shared DoH path/admission/`handle_wire` for HTTP/1.1, HTTP/2, and HTTP/3.
+pub(crate) async fn process_doh_request<H>(
+    shared: &Arc<DohShared<H>>,
+    peer: IpAddr,
+    method: &Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> DohHttpParts
+where
+    H: QueryHandler,
+{
+    let path = parse_doh_path(uri.path());
+    let client_id_state = match resolve_path_client_id(shared, peer, &path) {
+        Ok(state) => state,
+        Err(status) => return empty_parts(status),
+    };
+
+    let wire = match extract_wire(method, uri, content_type_of(headers), &body) {
         Ok(w) => w,
         Err(e) => {
             let status = match e {
@@ -432,7 +467,7 @@ where
                 DohWireError::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 DohWireError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             };
-            return status_empty(status);
+            return empty_parts(status);
         }
     };
 
@@ -449,21 +484,19 @@ where
         AdmitDecision::Drop {
             code: "listeners.banned",
         } => {
-            // Spec: close; with HTTP we answer 403 and drop.
-            return status_empty(StatusCode::FORBIDDEN);
+            return empty_parts(StatusCode::FORBIDDEN);
         }
         AdmitDecision::Drop { .. } => {
-            return status_empty(StatusCode::FORBIDDEN);
+            return empty_parts(StatusCode::FORBIDDEN);
         }
         AdmitDecision::Refuse {
             code: "listeners.rate_limited",
         } => {
             DohStats::bump(&shared.stats.http_429);
-            return status_empty(StatusCode::TOO_MANY_REQUESTS);
+            return empty_parts(StatusCode::TOO_MANY_REQUESTS);
         }
         AdmitDecision::Refuse { .. } => {
-            // Unknown client id should have been 404 already; treat as forbidden.
-            return status_empty(StatusCode::FORBIDDEN);
+            return empty_parts(StatusCode::FORBIDDEN);
         }
         AdmitDecision::Admit => {}
     }
@@ -492,7 +525,7 @@ where
                 emit_optional(&shared.event_sink, shared.clock.as_ref(), out.event);
                 out.bytes
             }
-            None => return status_empty(StatusCode::BAD_REQUEST),
+            None => return empty_parts(StatusCode::BAD_REQUEST),
         },
         () = wait_until(shared.clock.as_ref(), deadline, &wake) => {
             match error_reply_from_wire(
@@ -502,27 +535,66 @@ where
                 shared.limits.udp_payload_max,
             ) {
                 Some(mut bytes) => {
-                    // DoH message id must be 0 (RFC 8484).
                     if bytes.len() >= 2 {
                         bytes[0] = 0;
                         bytes[1] = 0;
                     }
                     bytes
                 }
-                None => return status_empty(StatusCode::BAD_REQUEST),
+                None => return empty_parts(StatusCode::BAD_REQUEST),
             }
         }
     };
 
     DohStats::bump(&shared.stats.answered);
-    let mut builder = Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, DNS_MESSAGE_TYPE);
-    if let Some(max_age) = cache_max_age(&out_bytes) {
-        builder = builder.header(header::CACHE_CONTROL, format!("max-age={max_age}"));
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static(DNS_MESSAGE_TYPE),
+    );
+    if let Some(max_age) = cache_max_age(&out_bytes)
+        && let Ok(v) = header::HeaderValue::from_str(&format!("max-age={max_age}"))
+    {
+        headers.insert(header::CACHE_CONTROL, v);
+    }
+    maybe_alt_svc(shared, &mut headers);
+
+    DohHttpParts {
+        status: StatusCode::OK,
+        headers,
+        body: Bytes::from(out_bytes),
+    }
+}
+
+fn maybe_alt_svc<H: ?Sized>(shared: &DohShared<H>, headers: &mut HeaderMap) {
+    if !shared.listener.h3 {
+        return;
+    }
+    let port = shared.alt_svc_port.load(Ordering::Relaxed);
+    if port == 0 {
+        return;
+    }
+    let value = format!("h3=\":{port}\"; ma={ALT_SVC_MAX_AGE}");
+    if let Ok(v) = header::HeaderValue::from_str(&value) {
+        headers.insert(header::ALT_SVC, v);
+    }
+}
+
+fn empty_parts(status: StatusCode) -> DohHttpParts {
+    DohHttpParts {
+        status,
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+    }
+}
+
+fn parts_to_response(parts: DohHttpParts) -> Response<Full<Bytes>> {
+    let mut builder = Response::builder().status(parts.status);
+    for (name, value) in parts.headers.iter() {
+        builder = builder.header(name, value);
     }
     builder
-        .body(Full::new(Bytes::from(out_bytes)))
+        .body(Full::new(parts.body))
         .unwrap_or_else(|_| status_empty(StatusCode::INTERNAL_SERVER_ERROR))
 }
 

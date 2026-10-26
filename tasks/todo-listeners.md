@@ -294,9 +294,9 @@ serve the same DoH routes through `h3` + `h3-quinn`, reusing `doh_request.rs`. 0
 `Alt-Svc: h3=":<port>"; ma=86400`.
 
 **Acceptance criteria:**
-- [ ] HTTP/3 GET + POST equal the HTTP/2 answers; public path rules identical
-- [ ] `Alt-Svc` present only when h3 is enabled
-- [ ] Stream/connection caps as DoQ
+- [x] HTTP/3 GET + POST equal the HTTP/2 answers; public path rules identical
+- [x] `Alt-Svc` present only when h3 is enabled
+- [x] Stream/connection caps as DoQ
 
 **Verification:** `cargo test -p dnscraft-listeners h3`
 

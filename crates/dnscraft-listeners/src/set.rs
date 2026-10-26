@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -17,6 +17,7 @@ use crate::config::{Exposure, Limits, ListenerConfig, ListenersConfig, Protocol}
 use crate::conn::FramedStats;
 use crate::ddr::{DdrEndpoint, DdrEndpoints};
 use crate::doh::{DohServeParams, DohStats, serve_doh};
+use crate::doh_h3::{DohH3ServeParams, serve_doh_h3};
 use crate::doq::{DoqServeParams, DoqStats, serve_doq};
 use crate::dot::{DotServeParams, DotStats, serve_dot};
 use crate::error::ListenersError;
@@ -345,20 +346,66 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             Protocol::Doh => {
                 let stats = Arc::new(DohStats::default());
                 let tls = Arc::new(TlsStats::default());
-                let join = tokio::spawn(serve_doh(DohServeParams {
-                    listener: listener.clone(),
-                    limits: limits.clone(),
-                    admission: Arc::clone(&self.admission),
-                    handler: Arc::clone(&self.handler),
-                    clock: Arc::clone(&self.clock),
-                    stats: Arc::clone(&stats),
-                    tls_stats: Arc::clone(&tls),
-                    certs: Arc::clone(&self.certs),
-                    sni_gate: Arc::clone(&self.sni_gate),
-                    event_sink: Some(Arc::clone(&self.sink)),
-                    bound: bound_tx,
-                    shutdown: shutdown_rx,
-                }));
+                let alt_svc_port = Arc::new(AtomicU16::new(listener.address.port()));
+                let join = if listener.h3 {
+                    let (h3_bound_tx, h3_bound_rx) = oneshot::channel();
+                    let h3_join = tokio::spawn(serve_doh_h3(DohH3ServeParams {
+                        listener: listener.clone(),
+                        limits: limits.clone(),
+                        admission: Arc::clone(&self.admission),
+                        handler: Arc::clone(&self.handler),
+                        clock: Arc::clone(&self.clock),
+                        stats: Arc::clone(&stats),
+                        tls_stats: Arc::clone(&tls),
+                        certs: Arc::clone(&self.certs),
+                        sni_gate: Arc::clone(&self.sni_gate),
+                        event_sink: Some(Arc::clone(&self.sink)),
+                        alt_svc_port: Arc::clone(&alt_svc_port),
+                        bound: h3_bound_tx,
+                        shutdown: shutdown_rx.clone(),
+                    }));
+                    let tcp_join = tokio::spawn(serve_doh(DohServeParams {
+                        listener: listener.clone(),
+                        limits: limits.clone(),
+                        admission: Arc::clone(&self.admission),
+                        handler: Arc::clone(&self.handler),
+                        clock: Arc::clone(&self.clock),
+                        stats: Arc::clone(&stats),
+                        tls_stats: Arc::clone(&tls),
+                        certs: Arc::clone(&self.certs),
+                        sni_gate: Arc::clone(&self.sni_gate),
+                        event_sink: Some(Arc::clone(&self.sink)),
+                        alt_svc_port: Arc::clone(&alt_svc_port),
+                        bound: bound_tx,
+                        shutdown: shutdown_rx,
+                    }));
+                    // Prefer TCP bind for status; wait briefly for UDP too.
+                    tokio::spawn(async move {
+                        let _ = h3_bound_rx.await;
+                        let (a, b) = tokio::join!(tcp_join, h3_join);
+                        match (a, b) {
+                            (Ok(Err(e)), _) | (_, Ok(Err(e))) => Err(e),
+                            (Err(e), _) | (_, Err(e)) => Err(ListenersError::bind("doh+h3", e)),
+                            _ => Ok(()),
+                        }
+                    })
+                } else {
+                    tokio::spawn(serve_doh(DohServeParams {
+                        listener: listener.clone(),
+                        limits: limits.clone(),
+                        admission: Arc::clone(&self.admission),
+                        handler: Arc::clone(&self.handler),
+                        clock: Arc::clone(&self.clock),
+                        stats: Arc::clone(&stats),
+                        tls_stats: Arc::clone(&tls),
+                        certs: Arc::clone(&self.certs),
+                        sni_gate: Arc::clone(&self.sni_gate),
+                        event_sink: Some(Arc::clone(&self.sink)),
+                        alt_svc_port,
+                        bound: bound_tx,
+                        shutdown: shutdown_rx,
+                    }))
+                };
                 (ListenerKind::Doh { stats, tls }, join)
             }
             Protocol::Doq => {

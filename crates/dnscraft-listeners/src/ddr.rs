@@ -226,17 +226,20 @@ fn hint_addr(bound: SocketAddr, arrival: IpAddr) -> Option<IpAddr> {
 }
 
 fn svcb_params(ep: &DdrEndpoint, hint: IpAddr) -> Option<Vec<(u16, Box<[u8]>)>> {
-    let alpn = match ep.protocol {
-        Protocol::Dot => b"dot".as_slice(),
-        Protocol::Doh => b"h2".as_slice(), // h3 only once N12 exists
-        Protocol::Doq => b"doq".as_slice(),
+    let alpns: &[&[u8]] = match ep.protocol {
+        Protocol::Dot => &[b"dot"],
+        Protocol::Doh if ep.h3 => &[b"h2", b"h3"],
+        Protocol::Doh => &[b"h2"],
+        Protocol::Doq => &[b"doq"],
         Protocol::Udp53 | Protocol::Tcp53 => return None,
     };
     let mut params = Vec::new();
-    // alpn = length-prefixed id(s)
-    let mut alpn_wire = Vec::with_capacity(1 + alpn.len());
-    alpn_wire.push(u8::try_from(alpn.len()).ok()?);
-    alpn_wire.extend_from_slice(alpn);
+    // alpn = sequence of length-prefixed ids (RFC 9460)
+    let mut alpn_wire = Vec::new();
+    for alpn in alpns {
+        alpn_wire.push(u8::try_from(alpn.len()).ok()?);
+        alpn_wire.extend_from_slice(alpn);
+    }
     params.push((SVCB_ALPN, alpn_wire.into_boxed_slice()));
 
     params.push((

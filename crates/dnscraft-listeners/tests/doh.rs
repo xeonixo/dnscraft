@@ -167,6 +167,7 @@ impl DohHarness {
             certs,
             sni_gate: Arc::new(gate),
             event_sink: None,
+            alt_svc_port: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0)),
             bound: bound_tx,
             shutdown: shutdown_rx,
         }));

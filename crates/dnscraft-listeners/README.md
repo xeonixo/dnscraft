@@ -10,7 +10,7 @@ Plan / remaining tasks: [`tasks/todo-listeners.md`](../../tasks/todo-listeners.m
 
 ## Status
 
-Checkpoint C approved; N11 `ListenerSet` done. **Next: N12** (DoH HTTP/3).
+Checkpoint C approved; N12 DoH HTTP/3 done. **Next: N13** (fuzz/bench/README).
 
 **Implemented today**
 
@@ -18,8 +18,9 @@ Checkpoint C approved; N11 `ListenerSet` done. **Next: N12** (DoH HTTP/3).
   length-prefix framing, pipelining, idle timeout, edns-tcp-keepalive
 - DoT (`serve_dot`): TLS via N6 configs, framed loop shared with Do53 TCP,
   Client ID from SNI
-- DoH (`serve_doh`): HTTP/2 and HTTP/1.1 over TLS; GET/POST `/dns-query` and
-  `/dns-query/<id>`; Client ID from path
+- DoH (`serve_doh` / `serve_doh_h3`): HTTP/2 and HTTP/1.1 over TLS; HTTP/3 on UDP
+  when `h3 = true` (`Alt-Svc` on h2); GET/POST `/dns-query` and `/dns-query/<id>`;
+  Client ID from path
 - DoQ (`serve_doq`): quinn + QUIC TLS config; Client ID from SNI; length-prefixed
   streams with id 0
 - Shared message core (`handle_wire`): validation, ECS strip, OPT echo, EDE,
@@ -36,8 +37,7 @@ Checkpoint C approved; N11 `ListenerSet` done. **Next: N12** (DoH HTTP/3).
 
 **Not implemented yet** (see [`todo-listeners.md`](../../tasks/todo-listeners.md))
 
-- DoH over HTTP/3 (task N12; `ALPN_H3` is reserved on the QUIC config only)
-- DoH HTTP/3 / fuzz+bench polish (N12, N13)
+- Fuzz / bench / README polish (N13); optional binary (N14)
 
 ## Crate layout
 
@@ -62,7 +62,9 @@ Checkpoint C approved; N11 `ListenerSet` done. **Next: N12** (DoH HTTP/3).
 | `dot` | DoT `serve_dot` / `DotStats` |
 | `doh_request` | DoH path + GET/POST wire extraction |
 | `doh` | DoH `serve_doh` / `DohStats` (h2 + http/1.1) |
+| `doh_h3` | DoH over HTTP/3 `serve_doh_h3` |
 | `doq` | DoQ `serve_doq` / `DoqStats` |
+| `set` / `events` / `status` | `ListenerSet`, `QueryEventSink`, status |
 
 ## Example
 

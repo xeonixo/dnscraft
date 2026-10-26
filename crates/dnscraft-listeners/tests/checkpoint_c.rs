@@ -466,6 +466,7 @@ impl EncryptedSet {
             certs: Arc::clone(&certs),
             sni_gate: Arc::clone(&gate),
             event_sink: None,
+            alt_svc_port: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0)),
             bound: doh_tx,
             shutdown: doh_sd_rx,
         })));

@@ -16,6 +16,7 @@
 //! N9: DoQ ([`serve_doq`]).
 //! N10: DDR [`_dns.resolver.arpa`](DdrEndpoints) SVCB on local Do53.
 //! N11: [`ListenerSet`] runtime, [`QueryEventSink`], status.
+//! N12: DoH over HTTP/3 ([`serve_doh_h3`]).
 
 #![deny(missing_docs)]
 
@@ -27,6 +28,7 @@ mod conn;
 mod core;
 mod ddr;
 mod doh;
+mod doh_h3;
 mod doh_request;
 mod doq;
 mod dot;
@@ -62,7 +64,8 @@ pub use ddr::{
     DDR_QNAME, DDR_TTL, DOH_PATH, DdrEndpoint, DdrEndpoints, ddr_decision_record, is_ddr_qname,
     try_answer_ddr,
 };
-pub use doh::{DohServeParams, DohStats, cache_max_age, serve_doh};
+pub use doh::{ALT_SVC_MAX_AGE, DohServeParams, DohStats, cache_max_age, serve_doh};
+pub use doh_h3::{DohH3ServeParams, serve_doh_h3};
 pub use doh_request::{
     DNS_MESSAGE_TYPE, DohPath, DohWireError, MAX_DOH_PAYLOAD, extract_wire, parse_doh_path,
 };
