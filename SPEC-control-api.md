@@ -227,6 +227,11 @@ or secret token material. The `CertResolver` is passed to listeners as
   - write endpoints: `20/s` burst `40`
   - auth endpoints: `10/s` burst `20`
   - exceeded: `429` with `control_api.rate_limited`.
+- `/mcp/v1` is mounted on the same listener and shares these buckets. Requests
+  rejected with `401` (missing or invalid bearer token) are counted against the
+  **auth** bucket, so unauthenticated probing cannot use the MCP path to avoid
+  the auth limit. Authenticated MCP requests count against the read or write
+  bucket according to the tool they call.
 
 ### Endpoint table
 
@@ -236,7 +241,7 @@ or secret token material. The `CertResolver` is passed to listeners as
 | GET | `/readyz` | public | readiness aggregates resolver/listener/config states | `control_api.not_ready` |
 | GET | `/api/v1/status` | viewer/admin | node status, module status, build version | `control_api.internal` |
 | GET | `/api/v1/config` | viewer/admin | full current config export (secrets excluded) | `control_api.config.read` |
-| PUT | `/api/v1/config` | admin | atomic config replace; returns new version | `control_api.config.invalid`, `control_api.config.apply` |
+| PUT | `/api/v1/config` | admin | atomic config replace, except `mcp_rules` (carried over when omitted; see § MCP-managed filter rules); returns new version | `control_api.config.invalid`, `control_api.config.apply` |
 | GET | `/api/v1/config/versions` | viewer/admin | list previous config versions | `control_api.config.version` |
 | POST | `/api/v1/config/versions/{version}/rollback` | admin | restore version | `control_api.config.unknown_version` |
 | GET | `/api/v1/policy/views` | viewer/admin | list views | – |
@@ -265,12 +270,45 @@ or secret token material. The `CertResolver` is passed to listeners as
 | POST | `/api/v1/auth/local/login` | public | break-glass login | `control_api.auth.locked` |
 | POST | `/api/v1/auth/logout` | viewer/admin | delete session | – |
 | GET | `/api/v1/auth/me` | viewer/admin | current principal | – |
-| GET/POST | `/api/v1/auth/tokens` | admin | create list of API tokens | – |
+| GET/POST | `/api/v1/auth/tokens` | admin | list/create bearer tokens (`viewer`, `admin`, `mcp:read`, `mcp:write`; plaintext shown once) | – |
 | DELETE | `/api/v1/auth/tokens/{id}` | admin | revoke token | `control_api.auth.unknown_token` |
 | GET | `/api/v1/audit` | viewer/admin | audit log | – |
 
 All paths are stable for v1. Future additions will use `/api/v2` and keep v1
 available for at least one full major release.
+
+### MCP-phase endpoints (MCP phase, after v1 core)
+
+These endpoints are required by the `mcp` module (SPEC-mcp.md § Required
+control-api additions). They are **not part of the v1 core**: they are built
+after Checkpoint F in the MCP phase, and each needs an owner-approved plan (see
+tasks/plan-control-api.md § Phase M). They use the same `{data}`/`{error}`
+envelopes, auth middleware, audit path and config-apply path as the endpoints
+above. `viewer`/`admin` tokens may call the read endpoints; `mcp:read` and
+`mcp:write` tokens may **not** call any `/api/v1` endpoint (see § Auth).
+
+`duration` values are the fixed `PT5M`/`PT15M`/`PT1H` set; the configured
+maxima can only lower that set (SPEC-mcp.md § Limits and defaults).
+
+| Method | Path | Role | Request | Response | Errors |
+|---|---|---|---|---|---|
+| POST | `/api/v1/filtering/explain-block` | viewer/admin | `{ "domain": "ads.example.com", "profile_id": "default", "qtype": "A" }` | `{ "data": { "domain": "...", "profile_id": "default", "filter_set_id": "default", "verdict": "blocked" \| "allowed", "reason": { "rule_text": "\|\|ads.example^", "source": "list:adguard-dns:line 1234", "important": false, "block_mode": "refused" } \| null } }` | `policy.config.unknown_filter_set`, `filter_name.*` |
+| POST | `/api/v1/policy/test-query` | viewer/admin | `{ "domain": "...", "qtype": "A", "client_id": "...", "source_ip": "192.0.2.10", "protocol": "udp53" }` (`client_id` optional) | `{ "data": { ...DecisionRecord..., "answer": { "rcode": "NXDOMAIN", "records": [] } } }` | `policy.selection.no_view`, `filter_name.*` |
+| POST | `/api/v1/filtering/temporary-allows` | admin | `{ "domain": "example.com", "include_subdomains": true, "duration": "PT5M\|PT15M\|PT1H", "filter_set_id": "default", "reason": "..." }` | `{ "data": { "domain": "example.com", "include_subdomains": true, "created_at": "...", "expires_at": "...", "filter_set_id": "default" } }` | `filter_build.invalid_domain`, `filter_build.pattern_not_allowed`, `mcp.domain_too_broad`, `mcp.protected_domain`, `mcp.invalid_input`, `mcp.duration_exceeds_maximum` |
+| POST | `/api/v1/filtering/custom-rules` | admin | `{ "domain": "example.com", "include_subdomains": true, "filter_set_id": "default", "reason": "...", "expires_at": "2026-11-25T10:30:00Z" }` (`expires_at` optional; earlier only) | `{ "data": { "rule_text": "\|\|example.com^", "filter_set_id": "default", "domain": "example.com", "include_subdomains": true, "created_at": "...", "expires_at": "..." } }` | `filter_build.*`, `mcp.domain_too_broad`, `mcp.protected_domain`, `mcp.rule_limit_exceeded`, `control_api.config.apply` |
+| DELETE | `/api/v1/filtering/custom-rules` | admin | `{ "domain": "example.com", "filter_set_id": "default" }` | `{ "data": { "removed": true, "domain": "example.com", "filter_set_id": "default" } }` | `filter_build.*`, `mcp.protected_domain`, `control_api.config.apply` |
+| GET | `/api/v1/filtering/mcp-rules` | viewer/admin | query: `filter_set_id?`, `kind=rules\|temporary_allows\|pauses` (default `rules`), `limit` (default 100, max 500), `offset` | `{ "data": { "filter_set_id": "default", "kind": "rules", "rules": [ { "id": "...", "domain": "example.com", "include_subdomains": true, "rule_text": "\|\|example.com^", "created_at": "...", "expires_at": "...", "filter_set_id": "default" } ], "has_more": false, "next_offset": null } }` (`temporary_allows` and `pauses` use the fields from SPEC-mcp.md) | `policy.config.unknown_filter_set`, `control_api.pagination.invalid` |
+| POST | `/api/v1/filtering/pause` | admin | `{ "filter_set_id": "default", "duration": "PT5M\|PT15M\|PT1H" }` | `{ "data": { "filter_set_id": "default", "paused_until": "..." } }` | `policy.config.unknown_filter_set`, `mcp.invalid_input`, `mcp.duration_exceeds_maximum` |
+| POST | `/api/v1/filtering/resume` | admin | `{ "filter_set_id": "default" }` | `{ "data": { "filter_set_id": "default", "resumed": true } }` | `policy.config.unknown_filter_set` |
+
+`temporary-allows` and `pause`/`resume` change runtime filtering state;
+`custom-rules` add/remove are config mutations (new config version plus audit
+entry; see § MCP-managed filter rules). The `mcp.*` codes in the table are
+defined by SPEC-mcp.md and are returned unchanged, so direct API callers and the
+MCP backend share one contract. `POST /policy/test-query` requires the resolver
+to expose a `no_cache_write` flag; the current resolver public API has no such
+flag (verified 2026-10-26), so it is a prerequisite of the MCP phase, not an
+existing capability.
 
 ## Query log
 
@@ -464,12 +502,47 @@ contacted over the internet from CI; tests use an in-process mock provider.
 - Browser sessions: random opaque session id, stored hashed in SQLite.
   HttpOnly; Secure when TLS is enabled; SameSite=Lax; CSRF token required for
   all mutating cookie-session requests. Lifetime: 12 h absolute, 60 min idle
-  (configurable); no refresh, re-login afterwards.
-- `mcp`/API tokens: random opaque bearer token, stored as SHA-256 hash only.
-  Token has `scope` (`viewer`/`admin`) and optional expiry. No refresh tokens
-  in v1.
-- Tokens are shown once in the API response/UI. Revocation takes effect
-  immediately by deleting the hash.
+  (configurable); no refresh, re-login afterwards. Cookie sessions carry a
+  `viewer` or `admin` role and are valid on `/api/v1` only; they never
+  authorize `/mcp/v1`.
+- Bearer tokens: random opaque token, stored as SHA-256 hash only, shown once
+  in the creation response/UI. Optional expiry; no refresh tokens in v1.
+  Revocation takes effect immediately by deleting the hash.
+
+**Scopes (four, fixed):**
+
+| Scope | Valid on | Grants |
+|---|---|---|
+| `viewer` | `/api/v1` only | read endpoints |
+| `admin` | `/api/v1` only | read and write endpoints |
+| `mcp:read` | `/mcp/v1` only | the 8 MCP read tools |
+| `mcp:write` | `/mcp/v1` only | all 13 MCP tools (read and write) |
+
+- **Endpoint-family validity is enforced on every request.** A token whose
+  scope does not belong to the endpoint family is rejected with HTTP 403
+  `control_api.auth.invalid_scope` (for example `viewer` on `/mcp/v1`, or
+  `mcp:read` on `/api/v1`). No token is valid on both families. A missing,
+  malformed, unknown, revoked or expired bearer token is rejected with HTTP 401
+  `control_api.auth.unauthenticated`; `control_api.auth.unknown_token` is
+  reserved for token-management calls that address a token id
+  (`DELETE /api/v1/auth/tokens/{id}`).
+- **Creation:** `POST /api/v1/auth/tokens`, admin only (an admin OIDC/local
+  session or an `admin` bearer token). The body selects the scope; the response
+  contains the plaintext token exactly once. All four scopes exist from the
+  start. The web UI offers `mcp:read` and `mcp:write` with the explanation
+  "MCP tokens are for AI assistants and work only on the MCP endpoint, not the
+  regular API."
+- **Self-signed warning:** while `tls_mode = self_signed`, the token-create
+  response (and the web UI) carries the `control_api.tls.self_signed` warning;
+  the owner must confirm before an MCP token is issued, because the MCP client
+  pins the bootstrap certificate.
+- **Tool-level scope denial:** an authenticated `mcp:read` token calling a
+  write tool is not an HTTP error; the MCP layer returns a tool result with
+  `isError: true` and `control_api.auth.insufficient_scope` (SPEC-mcp.md). The
+  same code remains the HTTP 403 code for an authenticated principal that lacks
+  a permission on `/api/v1`.
+- Token material (plaintext or hash) never appears in config exports, audit
+  snapshots or logs.
 
 ### CSRF
 
@@ -521,6 +594,43 @@ A config save is an all-or-nothing operation:
 `PolicyEngine`, `ClientEngine`, `ListenerSet` and TLS already use `Arc`
 snapshots, so hot reload happens without blocking DNS queries.
 
+### MCP-managed filter rules
+
+`FilterSetConfig` gains `mcp_rules: Vec<McpRule>` (SPEC-mcp.md § Required
+changes in other modules): structured block rules created through the MCP
+tools, with `id`, `domain`, `include_subdomains`, `created_at`, a mandatory
+`expires_at` and the creating `token_id`. They are part of the versioned
+configuration, not runtime state.
+
+- **Every `mcp_rules` change is a config mutation.** `POST` and `DELETE` on
+  `/api/v1/filtering/custom-rules` validate, persist a new `config_version`,
+  apply the filtering snapshot and write an audit entry. They take the same
+  serialized config-apply lock as `PUT /api/v1/config`.
+- **Cap check inside the lock.** `max_custom_rules_per_set` is checked while
+  holding the apply lock, so concurrent `add_rule` calls cannot exceed the cap.
+- **Merge rule on `PUT /api/v1/config`.** A config replace carries the existing
+  `mcp_rules` of each filter set over unchanged when the request does not
+  include that field. Only an explicit `"mcp_rules": []` for a set deletes
+  them. An unknown field in the request body is rejected with
+  `control_api.config.invalid`; it is never silently dropped.
+- **Expiry.** The server sets `expires_at = created_at +
+  max_block_rule_lifetime` when the request omits it; a request may supply an
+  earlier expiry, never a later one. Expired rules are dropped when the
+  filtering snapshot is built.
+- **Rollback restores them.** A rollback loads the target snapshot including
+  `mcp_rules` and applies it; the audit entry records that MCP-managed rules
+  were part of the restored snapshot.
+- **Runtime, not config:** temporary allows and filter-set pauses are held in
+  `FilterEngine` memory and are not versioned; `PUT /api/v1/config` never
+  contains them. The current recommendation (open question in SPEC-mcp.md
+  § Persistence and versioning) is that they do not survive a restart.
+- **Cluster:** because the rules live in the config snapshot, config
+  replication carries them; no separate replication path.
+
+The filtering crate currently has neither `McpRule` nor
+`FilterSetConfig::mcp_rules` (verified 2026-10-26); both are prerequisites of
+the MCP phase (tasks/plan-control-api.md § Phase M).
+
 ### Rollback
 
 Every successful config save creates a `config_versions` row with a complete
@@ -570,7 +680,23 @@ read_per_second = 100
 write_per_second = 20
 auth_per_second = 10
 burst_factor = 2
+
+[control_api.mcp]
+enabled = false                  # off by default; /mcp/v1 returns 404 control_api.not_found while false
+write_tools_enabled = false      # independent gate for the 5 MCP write tools
+legacy_session_mode = false      # stateless 2026-07-28 only; client compatibility is unverified
+max_concurrent_requests_per_token = 5
+request_timeout = "60s"
+max_request_body_size = "1MiB"
+max_temporary_allow_duration = "1h"   # <= 1h; can only lower the fixed PT5M/PT15M/PT1H set
+max_pause_duration = "1h"             # <= 1h; can only lower the fixed PT5M/PT15M/PT1H set
+max_custom_rules_per_set = 100
+max_block_rule_lifetime = "30d"
+protected_domains = []           # additional domains beyond the auto-derived protected list
 ```
+
+The MCP limits and the derivation of `protected_domains` are specified in
+SPEC-mcp.md § Limits and defaults and § Protected domains.
 
 Limits/defaults:
 
@@ -586,6 +712,18 @@ Limits/defaults:
 | `session_idle_timeout` | 30m | 5m–24h |
 | `session_absolute_timeout` | 24h | 1h–7d |
 
+### MCP mount
+
+`/mcp/v1` is mounted by control-api on the same internal listener via
+`axum::Router::nest_service("/mcp/v1", service)`. The service and the
+`McpBackend` trait are defined in the `mcp` crate; control-api depends on `mcp`
+(not the reverse) and supplies the backend implementation. MCP is off by
+default: while `control_api.mcp.enabled = false`, every request to `/mcp/v1`
+returns HTTP 404 with `control_api.not_found`. The token scopes and the
+`/api/v1` ↔ `/mcp/v1` separation are in § Auth; the protocol surface is in
+SPEC-mcp.md. Mounting is part of the MCP phase (tasks/plan-control-api.md
+§ Phase M), not the v1 core.
+
 ## Error codes
 
 Every error has stable `code()` (`control_api.<area>.<reason>`), uniqueness
@@ -600,6 +738,8 @@ tested. Codes are forwarded from module errors where applicable.
 | `control_api.config.unknown_version` | rollback target does not exist |
 | `control_api.not_found` | route or identifiable object missing |
 | `control_api.internal` | invariant violation / unexpected panic boundary |
+| `control_api.method_not_allowed` | route exists but the HTTP method is not allowed (HTTP 405) |
+| `control_api.payload_too_large` | request body exceeds the configured cap (HTTP 413) |
 | `control_api.rate_limited` | request exceeds API rate limit |
 | `control_api.query_log.read` | SQLite/other query-log read error |
 | `control_api.query_log.export` | CSV export failed |
@@ -608,8 +748,11 @@ tested. Codes are forwarded from module errors where applicable.
 | `control_api.auth.local` | local login credential failure |
 | `control_api.auth.locked` | local account temporarily locked |
 | `control_api.tls.self_signed` | warning (status, not an HTTP error): serving the self-signed bootstrap certificate |
-| `control_api.auth.unknown_token` | token id not found or not owned by actor |
-| `control_api.auth.insufficient_scope` | role lacks permission |
+| `control_api.auth.unknown_token` | token id not found or not owned by actor (token-management calls only) |
+| `control_api.auth.unauthenticated` | missing, malformed, unknown, revoked or expired bearer token (HTTP 401) |
+| `control_api.auth.invalid_scope` | token scope is not valid for this endpoint family (HTTP 403) |
+| `control_api.auth.invalid_origin` | `Origin` header present and invalid (HTTP 403; MCP) |
+| `control_api.auth.insufficient_scope` | authenticated principal lacks the permission (HTTP 403); also the MCP tool-level code when an `mcp:read` token calls a write tool |
 | `control_api.auth.session_expired` | cookie session expired |
 | `control_api.auth.csrf` | missing/invalid CSRF token |
 | `control_api.audit.read` | audit log read failure |
@@ -617,7 +760,17 @@ tested. Codes are forwarded from module errors where applicable.
 
 When a module error is propagated, the original code (e.g.
 `policy.config.unknown_filter_set`) is used, not replaced with a generic
-control-api code. The API wrapper may add context parameters.
+control-api code. The API wrapper may add context parameters. MCP tool-level
+errors reuse `control_api.auth.insufficient_scope` and may also carry `mcp.*`
+codes defined in SPEC-mcp.md; uniqueness is enforced workspace-wide.
+
+**Implementation reality check (2026-10-26):** `control_api.method_not_allowed`,
+`control_api.payload_too_large`, `control_api.auth.insufficient_scope` and
+`control_api.auth.unknown_token` already exist as variants in
+`crates/dnscraft-api/src/error.rs`. The variants still to add are
+`control_api.auth.unauthenticated`, `control_api.auth.invalid_scope` and
+`control_api.auth.invalid_origin`; A0's error-code uniqueness test must cover
+them once A7 adds them.
 
 ## Security considerations
 
@@ -716,8 +869,11 @@ No internet and no real Authentik/Cloudflare in CI.
    expired ID token is rejected.
 6. Local break-glass login works, locks after 5 failed attempts for 15 minutes,
    writes audit events, and verifies passwords with Argon2id.
-7. Viewer cannot call admin endpoints; admin can; MCP viewer/admin token scopes
-   map cleanly to existing role checks.
+7. Viewer cannot call admin endpoints; admin can. Every bearer token carries
+   exactly one of the four scopes (`viewer`, `admin`, `mcp:read`, `mcp:write`);
+   a token from the wrong endpoint family is rejected with
+   `control_api.auth.invalid_scope`, and no token is valid on both `/api/v1`
+   and `/mcp/v1`.
 8. Audit log contains coherent before/after digests for config changes and at
    least one entry for every local/OIDC login failure.
 9. Internal-only binding is enforced: API does not bind to `0.0.0.0`/`::` and

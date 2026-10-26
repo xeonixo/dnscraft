@@ -26,6 +26,7 @@ No I/O, no routing yet.
 
 **Acceptance criteria:**
 - [x] Every error variant has a unique `code()` (enumerating test); every public item documented.
+- [ ] Error-code uniqueness also covers the MCP-alignment codes: `control_api.auth.unauthenticated`, `control_api.auth.invalid_scope`, `control_api.auth.invalid_origin` (added with A7), plus `control_api.method_not_allowed` and `control_api.payload_too_large` (already implemented).
 - [x] `ControlApiConfig` rejects `0.0.0.0`/`::` and accepts loopback, RFC 1918, and ULA addresses.
 - [x] Invalid `retention_days`, `ip_truncate`, rate-limit, and TTL values return the documented code.
 - [x] No `unwrap()`/`expect()` outside tests; no unsafe.
@@ -196,6 +197,7 @@ clock (no wall-clock sleeps). The limiter is consulted in a single middleware.
 - [ ] CSRF: a mutating cookie-session request without/with a wrong token is rejected with
       `control_api.auth.csrf`; a bearer-token request without CSRF is accepted (regression test).
 - [ ] Logout invalidates the session immediately.
+- [ ] Cookie sessions are `viewer`/`admin` only and authorize `/api/v1` only; a session cookie on `/mcp/v1` is not accepted (MCP uses bearer tokens exclusively).
 
 **Verification:** `cargo test -p dnscraft-api auth_session`
 
@@ -210,17 +212,38 @@ clock (no wall-clock sleeps). The limiter is consulted in a single middleware.
 
 **Description:** Implement bearer API tokens and centralized role checks:
 - Token generated with `ring::rand`, returned exactly once; stored only as SHA-256 hash;
-  revoked by deleting the hash. Scope `viewer`/`admin`, optional expiry.
+  revoked by deleting the hash. Optional expiry.
+- **Four scopes from the start:** `viewer`/`admin` (valid only on `/api/v1`) and
+  `mcp:read`/`mcp:write` (valid only on `/mcp/v1`). Scope enum plus a per-endpoint-family
+  validity check; no token is valid on both families.
+- Token creation via `POST /api/v1/auth/tokens`, admin only; all four scopes selectable;
+  the response carries the `control_api.tls.self_signed` warning while the bootstrap
+  certificate is served.
 - `Authorization: Bearer <token>` authentication; no CSRF required.
-- One RBAC middleware maps every route to a required role; `viewer` cannot call admin routes.
-- `control_api.auth.unknown_token` on unknown/revoked token; `control_api.auth.insufficient_scope`
-  on wrong role.
+- One RBAC middleware maps every route to a required scope and enforces the endpoint family;
+  `viewer` cannot call admin routes; an `mcp:read` token cannot call write tools (the MCP
+  layer surfaces that as a tool-level `control_api.auth.insufficient_scope`).
+- `control_api.auth.unauthenticated` (401) on a missing, malformed, unknown, revoked or
+  expired bearer token; `control_api.auth.invalid_scope` (403) on a token from the wrong
+  endpoint family; `control_api.auth.insufficient_scope` (403) on a permission the role
+  lacks. `control_api.auth.unknown_token` is reserved for token-management calls that
+  address a token id.
 
 **Acceptance criteria:**
 - [ ] Token plaintext is returned exactly once; later responses never contain it; DB stores
       only the SHA-256 hash (regression test).
-- [ ] A revoked token immediately fails with `control_api.auth.unknown_token`.
-- [ ] `viewer` cannot call an admin-only route; `admin` can; scopes map cleanly to role checks.
+- [ ] A revoked token immediately fails with `control_api.auth.unauthenticated` (401).
+- [ ] The scope enum is `viewer` | `admin` | `mcp:read` | `mcp:write`; `viewer` cannot call
+      an admin-only route; `admin` can.
+- [ ] Per-endpoint-family validity: a `viewer`/`admin` token on `/mcp/v1` and an
+      `mcp:read`/`mcp:write` token on `/api/v1` are rejected with
+      `control_api.auth.invalid_scope`; no token is valid on both families (regression test).
+- [ ] Missing/malformed token → 401 `control_api.auth.unauthenticated`; a permission the
+      role lacks → 403 `control_api.auth.insufficient_scope`.
+- [ ] Token creation requires admin; all four scopes can be selected; the self-signed
+      warning is present while `tls_mode = self_signed`.
+- [ ] The three new auth codes are added to `ControlApiError` and covered by the A0
+      uniqueness test.
 - [ ] No plaintext token appears in logs or audit.
 
 **Verification:** `cargo test -p dnscraft-api auth_token`
@@ -294,6 +317,11 @@ clock (no wall-clock sleeps). The limiter is consulted in a single middleware.
   re-apply the previous snapshot and return the module's stable code.
 - Narrow module traits (`ApplyFiltering`, `ApplyClients`, `ApplyPolicy`,
   `ApplyListeners`, `ApplyTls`) so tests use fakes. Optimistic concurrency via `If-Match`.
+- **`mcp_rules` merge contract:** a `PUT /config` that omits `mcp_rules` carries the stored
+  rules over per filter set; an explicit `"mcp_rules": []` deletes them; an unknown field
+  in the request body is rejected with `control_api.config.invalid` (never silently
+  dropped). Until M0 introduces the typed field, test this at the snapshot/JSON boundary
+  with fixtures containing an `mcp_rules` key.
 
 **Acceptance criteria:**
 - [ ] Valid config persists, applies, and increments `config_version`; invalid config returns
@@ -301,7 +329,10 @@ clock (no wall-clock sleeps). The limiter is consulted in a single middleware.
 - [ ] Apply order is exactly filtering → clients → policy → listeners → tls.
 - [ ] When `policy` fails, the previous config is replayed and is active again (rollback
       regression test).
-- [ ] Rollback by version restores that exact snapshot and is audited.
+- [ ] Rollback by version restores that exact snapshot (including any `mcp_rules`) and is audited.
+- [ ] `PUT /config` without `mcp_rules` preserves the stored rules; an explicit empty list
+      deletes them; an unknown field returns `control_api.config.invalid` (regression tests
+      for all three cases).
 - [ ] `GET /config` excludes secrets; module validation errors propagate the module code.
 
 **Verification:** `cargo test -p dnscraft-api config_apply`
@@ -428,3 +459,70 @@ DTOs from the modules (no parallel string types):
 - [ ] Spec success criteria 1–13; `cargo deny check` green
 - [ ] Independent Claude review (auth, secrets redaction, TLS switch, apply/rollback)
 - [ ] **Owner approval** (plan + dependency table)
+
+## Phase M (after Checkpoint F): MCP backend
+
+**Placeholder only.** No item below is approved or scheduled, and none belongs
+to Phase 0–6. Each item needs an owner-approved plan. The contract is
+SPEC-control-api.md § MCP-phase endpoints / § MCP-managed filter rules / § Auth /
+§ MCP mount and SPEC-mcp.md.
+
+### Endpoints
+
+- `POST /api/v1/filtering/explain-block`
+- `POST /api/v1/policy/test-query`
+- `POST /api/v1/filtering/temporary-allows`
+- `POST /api/v1/filtering/custom-rules`
+- `DELETE /api/v1/filtering/custom-rules`
+- `GET /api/v1/filtering/mcp-rules`
+- `POST /api/v1/filtering/pause`
+- `POST /api/v1/filtering/resume`
+
+## Task M0: Prerequisites in filtering and resolver — needs owner-approved plan
+
+**Description:** Add the public APIs the MCP backend needs, in their own crates:
+- filtering: `McpRule`; `FilterSetConfig::mcp_rules`; `FilterEngine::set_paused_until`;
+  `TempAllow.created_at`.
+- resolver: a `no_cache_write` flag for cache reads.
+
+Reality check (2026-10-26): `McpRule`, `mcp_rules`, `set_paused_until`,
+`TempAllow.created_at` and `no_cache_write` do **not** exist in the current
+public APIs. Each is a separate crate change and needs its own approved plan.
+
+**Acceptance criteria:** defined by the approved prerequisite plans; not part of
+the control-api v1 tasks.
+
+**Dependencies:** Checkpoint F; owner approval.
+
+## Task M1: `McpBackend` implementation — needs owner-approved plan
+
+**Description:** Implement the `McpBackend` trait from
+`crates/dnscraft-mcp/src/backend.rs` in control-api, calling the internal
+services (policy, filtering, clients, query log, audit). Convert mcp DTOs at this
+boundary only; no mcp types in storage.
+
+**Acceptance criteria:** defined by the approved MCP-phase plan.
+
+**Dependencies:** M0.
+
+## Task M2: MCP-phase HTTP endpoints — needs owner-approved plan
+
+**Description:** Implement the eight endpoints above with the exact shapes and
+codes from SPEC-control-api.md § MCP-phase endpoints. `custom-rules` add/remove
+are config mutations under the apply lock with the `mcp_rules` merge rule;
+temporary allows and pauses stay runtime state.
+
+**Acceptance criteria:** defined by the approved MCP-phase plan.
+
+**Dependencies:** M0, M1.
+
+## Task M3: Mount `/mcp/v1` — needs owner-approved plan
+
+**Description:** Add the `mcp` crate as a dependency, build its service with the
+backend, and mount it with `nest_service` on the internal listener. While MCP is
+disabled, `/mcp/v1` returns 404 `control_api.not_found`. Includes the `rmcp`
+dependency approval recorded in SPEC-mcp.md.
+
+**Acceptance criteria:** defined by the approved MCP-phase plan.
+
+**Dependencies:** M1, M2; owner approval of the `mcp`/`rmcp` dependencies.

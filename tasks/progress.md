@@ -2,6 +2,44 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-26 — S5: control-api spec/plan alignment with SPEC-mcp.md
+
+- SPEC-control-api.md token model now has the four fixed scopes from the start: `viewer`/`admin`
+  (valid only on `/api/v1`) and `mcp:read`/`mcp:write` (valid only on `/mcp/v1`). Creation is the
+  admin-only `POST /api/v1/auth/tokens`, plaintext shown once, hash stored, with the
+  `control_api.tls.self_signed` warning while self-signed. Wrong endpoint family → 403
+  `control_api.auth.invalid_scope`; missing/malformed/unknown/revoked/expired token → 401
+  `control_api.auth.unauthenticated`. Cookie sessions are API-only.
+- Error table adds `control_api.auth.unauthenticated` (401), `control_api.auth.invalid_scope` (403),
+  `control_api.auth.invalid_origin` (403), `control_api.method_not_allowed` (405) and
+  `control_api.payload_too_large` (413). Reality check recorded: the 405/413 codes and
+  `insufficient_scope`/`unknown_token` already exist in `crates/dnscraft-api/src/error.rs`; the three
+  auth codes are new. `insufficient_scope` is also the MCP tool-level code for a read token calling a
+  write tool; `unknown_token` is reserved for token-management calls.
+- New "MCP-phase endpoints (MCP phase, after v1 core)" section with the eight endpoint shapes from
+  SPEC-mcp.md (explain-block, test-query, temporary-allows, custom-rules POST/DELETE, mcp-rules, pause,
+  resume). Notes that test-query needs a resolver `no_cache_write` flag, which does not exist.
+- New "MCP-managed filter rules" config subsection: `mcp_rules` are in the versioned snapshot; add/remove
+  are config mutations under the serialized apply lock with the cap check inside it; `PUT /config`
+  carries omitted `mcp_rules` over, an explicit empty list deletes them, an unknown field is
+  `control_api.config.invalid`; rollback restores them. Temporary allows/pauses stay runtime and
+  non-versioned.
+- Added the `[control_api.mcp]` TOML block and an "MCP mount" note (control-api mounts `/mcp/v1` via
+  `nest_service`; the service and `McpBackend` live in the mcp crate; 404 `control_api.not_found` while
+  disabled). Rate-limit note: 401 responses on `/mcp/v1` count against the auth bucket.
+- Plan: decisions 5 (config merge/apply lock) and 7 (four scopes) updated; phase list, checkpoints,
+  dependency graph and traceability include Phase M. New placeholder section "Phase M (after
+  Checkpoint F): MCP backend" with M0 prerequisites (filtering `McpRule`/`mcp_rules`/`set_paused_until`/
+  `TempAllow.created_at`; resolver `no_cache_write`), M1 `McpBackend`, M2 endpoints, M3 mount — each
+  marked "needs owner-approved plan".
+- Todo: A0 uniqueness item covers the new codes; A6 sessions are API-only; A7 builds the four-scope
+  enum, per-endpoint-family check, new codes, admin-only creation and self-signed warning; A10 owns the
+  `mcp_rules` merge contract tests (omitted/explicit-empty/unknown field); Phase M placeholder tasks
+  M0–M3 after Checkpoint F.
+- Reality-checked 2026-10-26: `error.rs` codes; filtering has no `McpRule`, `mcp_rules`,
+  `set_paused_until` or `TempAllow.created_at`; resolver has no `no_cache_write`; policy has
+  `test_query`. All MCP-phase items are contracts, not implemented code.
+
 ## 2026-10-26 — S4: SPEC-mcp.md final review fixes
 
 - Protected domains are now bidirectional: an operation is rejected when the target equals a protected

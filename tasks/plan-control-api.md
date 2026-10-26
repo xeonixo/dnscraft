@@ -51,7 +51,10 @@ boundaries.
    `filtering` → `clients` → `policy` → `listeners` → `tls`. If any module
    fails, re-apply the previous snapshot, mark the version failed, and return
    the module's stable error code. Expose `config_version` for optimistic
-   concurrency (`If-Match`).
+   concurrency (`If-Match`). `mcp_rules` are the one merge exception: a
+   `PUT /config` that omits them carries the stored rules over (an explicit
+   empty list deletes them), and every MCP rule add/remove is itself a config
+   mutation taking the same serialized apply lock.
 
 6. **TLS bootstrap.** Direct TLS is the default (`control_api.tls = true`). The
    HTTP server resolves a certificate by asking the shared `tls::CertResolver`
@@ -64,10 +67,19 @@ boundaries.
    `trusted_proxies`) is optional.
 
 7. **Auth.** Session ids and bearer tokens are random (`ring::rand`) and stored
-   only as `ring::digest::SHA256` hashes. Break-glass passwords use `argon2`
-   (Argon2id). CSRF uses the synchronizer-token pattern for cookie sessions;
-   bearer-token requests do not require CSRF. OIDC uses Authorization Code +
-   PKCE S256 + nonce.
+   only as `ring::digest::SHA256` hashes. Bearer tokens carry one of **four
+   scopes from the start**: `viewer`/`admin` (valid only on `/api/v1`) and
+   `mcp:read`/`mcp:write` (valid only on `/mcp/v1`). The scope enum and the
+   per-endpoint-family check are built in A7: a wrong-family token is rejected
+   with `control_api.auth.invalid_scope`, a missing/invalid token with
+   `control_api.auth.unauthenticated`. MCP tokens are created through the
+   admin-only `POST /api/v1/auth/tokens`, shown once and stored hashed, with the
+   `control_api.tls.self_signed` warning while the bootstrap certificate is
+   served. MCP tool-level scope denial uses
+   `control_api.auth.insufficient_scope` (SPEC-mcp.md). Break-glass passwords
+   use `argon2` (Argon2id). CSRF uses the synchronizer-token pattern for cookie
+   sessions; bearer-token requests do not require CSRF. OIDC uses Authorization
+   Code + PKCE S256 + nonce.
 
 8. **OpenID Connect integration.** `openidconnect` is the preferred crate. It
    is **ring-only** (no `aws-lc-rs`/`openssl-sys`), but it pulls the RustCrypto
@@ -162,6 +174,8 @@ every 2–4 tasks; the last is Claude review + owner approval.
 - **Phase 4 — Config endpoints:** A10, A11
 - **Phase 5 — Query log + statistics:** A12, A13
 - **Phase 6 — Hardening:** A14
+- **Phase M — MCP backend (after Checkpoint F):** M0–M3 (placeholder; needs its
+  own owner-approved plan, see § Phase M)
 
 Checkpoints:
 
@@ -171,6 +185,8 @@ Checkpoints:
 - **Checkpoint D** after A11 (config endpoints)
 - **Checkpoint E** after A13 (query log + stats + export)
 - **Checkpoint F** after A14 (hardening; **Claude review + owner approval**)
+- **Phase M** starts only after Checkpoint F and needs its own owner-approved
+  plan (see § Phase M)
 
 ### Task dependencies
 
@@ -180,11 +196,43 @@ A0 → A1 → A2 → A3 ─┬─ A4 (TLS bootstrap)
                    └─ A6 (sessions/CSRF) → A7 (tokens/roles) → A8 (local login)
                         → A9 (OIDC) → A10 (apply/rollback) → A11 (CRUD)
                         → A12 (query log) → A13 (stats/export) → A14 (hardening)
+                        → Phase M (separate owner-approved plan)
 ```
 
 `A4`, `A5` and `A6` all depend only on `A3` and may be built in any order.
 `A10`/`A11` need the auth layer (all mutating endpoints are role-checked).
 `A12` needs the listener sink and config from `A3`/`A11`.
+
+## Phase M (after Checkpoint F): MCP backend
+
+**Status: placeholder. Nothing in this phase is approved or scheduled; every
+item needs an owner-approved plan.** No MCP endpoint, config field or crate
+dependency belongs to Phases 0–6. The contract is SPEC-mcp.md plus
+SPEC-control-api.md § MCP-phase endpoints, § MCP-managed filter rules, § Auth
+and § MCP mount.
+
+### Endpoints (exact shapes in SPEC-control-api.md)
+
+- `POST /api/v1/filtering/explain-block`
+- `POST /api/v1/policy/test-query`
+- `POST /api/v1/filtering/temporary-allows`
+- `POST /api/v1/filtering/custom-rules`
+- `DELETE /api/v1/filtering/custom-rules`
+- `GET /api/v1/filtering/mcp-rules`
+- `POST /api/v1/filtering/pause`
+- `POST /api/v1/filtering/resume`
+
+### Work items
+
+| Id | Item | Status | Notes |
+|---|---|---|---|
+| M0 | Prerequisites in other crates | needs owner-approved plan | filtering: `McpRule`, `FilterSetConfig::mcp_rules`, `FilterEngine::set_paused_until`, `TempAllow.created_at`; resolver: `no_cache_write` flag. None of these exist today (verified 2026-10-26); each needs its own crate plan. |
+| M1 | `McpBackend` implementation | needs owner-approved plan | Implement the trait from `crates/dnscraft-mcp/src/backend.rs` by calling control-api's internal services (policy, filtering, clients, query log, audit). mcp DTOs are converted at this boundary only; no mcp types in storage. |
+| M2 | MCP-phase HTTP endpoints | needs owner-approved plan | The eight endpoints above, reusing the v1 auth/audit/apply paths. `mcp_rules` add/remove are config mutations under the apply lock with the merge rule. |
+| M3 | Mount `/mcp/v1` | needs owner-approved plan | Depend on the `mcp` crate, build its service with the backend, mount with `nest_service` on the internal listener; 404 `control_api.not_found` while disabled. Includes the `rmcp` dependency approval recorded in SPEC-mcp.md. |
+
+**Gate:** M1–M3 stay unplanned until M0's prerequisites are merged and the owner
+approves this phase's plan and dependency table.
 
 ## Risks and mitigations
 
@@ -299,7 +347,8 @@ and `time` (workspace).
 | 4. “Why blocked?” full DecisionRecord | A12 |
 | 5. Mock OIDC flow works; invalid/expired claims rejected | A9 |
 | 6. Break-glass login locks after failures and writes audit events | A8 |
-| 7. Viewer/admin role separation; MCP scopes map | A7, A14 |
+| 7. Viewer/admin role separation; four token scopes with per-endpoint-family validity | A7, A14 |
+| MCP-phase endpoints and `McpBackend` (SPEC-control-api.md § MCP-phase endpoints) | Phase M |
 | 8. Audit log with before/after digests + login failures | A2, A8 |
 | 9. Internal-only binding enforcement | A4, A14 |
 | 10. No real external Auth/OIDC/Cloudflare; DoD green | A9, A14 |
