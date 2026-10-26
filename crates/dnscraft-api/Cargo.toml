@@ -12,16 +12,24 @@ description = "Control API (config, query log, stats, audit, auth) for DNScraft"
 workspace = true
 
 [dependencies]
-thiserror = { workspace = true }
+axum = { workspace = true }
+dnscraft-tls = { path = "../dnscraft-tls" }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+rcgen = { workspace = true }
+ring = { workspace = true }
+rusqlite = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tracing = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
 tokio = { workspace = true }
-rusqlite = { workspace = true }
-ring = { workspace = true }
-zeroize = { workspace = true }
-axum = { workspace = true }
+tokio-rustls = { workspace = true }
 tower-http = { workspace = true }
+tracing = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tower = { version = "0.5", default-features = false, features = ["util"] }

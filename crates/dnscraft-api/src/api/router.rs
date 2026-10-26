@@ -12,6 +12,7 @@ use serde_json::json;
 use super::response::{BODY_LIMIT_BYTES, error_response, success};
 use crate::error::ControlApiError;
 use crate::server::AppState;
+use crate::tls::TlsMode;
 
 /// Builds the full router for `state`.
 pub(crate) fn build_router(state: AppState) -> Router {
@@ -46,9 +47,23 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     )
 }
 
-/// Minimal status stub; expanded by A4 (tls_mode, fingerprint) and A11.
-async fn status() -> impl IntoResponse {
-    success(json!({}))
+/// Status: TLS mode, leaf fingerprint, and any active warnings (self-signed
+/// bootstrap certificate). Expanded further by A11 (version, features).
+///
+/// When this process does not terminate TLS (reverse-proxy mode), the TLS
+/// fields are omitted entirely.
+async fn status(State(state): State<AppState>) -> impl IntoResponse {
+    let mut body = serde_json::Map::new();
+    if let Some(tls) = state.tls_status() {
+        body.insert("tls_mode".to_owned(), json!(tls.mode.as_str()));
+        body.insert("tls_fingerprint".to_owned(), json!(tls.fingerprint));
+        let warnings: Vec<&str> = match tls.mode {
+            TlsMode::SelfSigned => vec!["control_api.tls.self_signed"],
+            TlsMode::Acme => Vec::new(),
+        };
+        body.insert("warnings".to_owned(), json!(warnings));
+    }
+    success(serde_json::Value::Object(body))
 }
 
 async fn not_found(req: Request) -> impl IntoResponse {

@@ -341,7 +341,7 @@ fn check_duration_range(
 }
 
 /// Whether an address may host the internal-only API (loopback/private/ULA, never wildcard).
-fn is_internal_bind(ip: IpAddr) -> bool {
+pub(crate) fn is_internal_bind(ip: IpAddr) -> bool {
     match ip.to_canonical() {
         IpAddr::V4(v4) => is_private_v4(v4),
         IpAddr::V6(v6) => is_private_v6(v6),
@@ -386,6 +386,8 @@ mod tests {
             "100.64.0.1",
             "::1",
             "fd00::1",
+            // IPv4-mapped loopback is still internal.
+            "::ffff:127.0.0.1",
         ] {
             assert!(
                 config_with_bind(addr).validate().is_ok(),
@@ -402,6 +404,8 @@ mod tests {
             "8.8.8.8",
             "1.1.1.1",
             "2606:4700:4700::1111",
+            // IPv4-mapped public addresses are rejected too.
+            "::ffff:8.8.8.8",
         ] {
             let err = config_with_bind(addr).validate().unwrap_err();
             assert_eq!(

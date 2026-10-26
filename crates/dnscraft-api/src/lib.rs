@@ -10,6 +10,8 @@
 //! A0: crate skeleton, config model, error type.
 //! A1: SQLite storage and migrations.
 //! A2: config snapshot/version store + audit log with secret redaction.
+//! A3: HTTP server core — router, envelopes, pagination.
+//! A4: internal-only bind + TLS bootstrap (self-signed → ACME handover).
 //! (Further tasks are listed in `tasks/todo-control-api.md`.)
 
 #![deny(missing_docs)]
@@ -22,6 +24,7 @@ mod error;
 mod secret;
 mod server;
 mod storage;
+mod tls;
 
 pub use audit::{Audit, ConfigChangeRecord};
 pub use clock::{Clock, ManualClock, SystemClock};
@@ -36,3 +39,4 @@ pub use error::ControlApiError;
 pub use secret::Secret;
 pub use server::{AppState, Readiness, serve};
 pub use storage::{AuditRecord, ConfigStore, Db};
+pub use tls::{ControlApiTls, TlsMode, TlsStatus, TlsStatusProvider};
