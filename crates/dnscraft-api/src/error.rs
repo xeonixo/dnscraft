@@ -23,6 +23,9 @@
 //! | [`ControlApiError::AuthLocked`] | `control_api.auth.locked` |
 //! | [`ControlApiError::TlsSelfSigned`] | `control_api.tls.self_signed` |
 //! | [`ControlApiError::AuthUnknownToken`] | `control_api.auth.unknown_token` |
+//! | [`ControlApiError::AuthUnauthenticated`] | `control_api.auth.unauthenticated` |
+//! | [`ControlApiError::AuthInvalidScope`] | `control_api.auth.invalid_scope` |
+//! | [`ControlApiError::AuthInvalidOrigin`] | `control_api.auth.invalid_origin` |
 //! | [`ControlApiError::AuthInsufficientScope`] | `control_api.auth.insufficient_scope` |
 //! | [`ControlApiError::AuthSessionExpired`] | `control_api.auth.session_expired` |
 //! | [`ControlApiError::AuthCsrf`] | `control_api.auth.csrf` |
@@ -117,6 +120,15 @@ pub enum ControlApiError {
     /// Token id not found or not owned by the actor.
     #[error("unknown or revoked API token")]
     AuthUnknownToken,
+    /// Missing, malformed, unknown, revoked or expired bearer token.
+    #[error("missing or invalid bearer token")]
+    AuthUnauthenticated,
+    /// Token scope is not valid for this endpoint family.
+    #[error("token scope is not valid for this endpoint")]
+    AuthInvalidScope,
+    /// `Origin` header present and not allowed.
+    #[error("invalid request origin")]
+    AuthInvalidOrigin,
     /// Role lacks the required permission.
     #[error("insufficient scope (need {required})")]
     AuthInsufficientScope {
@@ -183,6 +195,9 @@ impl ControlApiError {
             Self::AuthLocked => "control_api.auth.locked",
             Self::TlsSelfSigned => "control_api.tls.self_signed",
             Self::AuthUnknownToken => "control_api.auth.unknown_token",
+            Self::AuthUnauthenticated => "control_api.auth.unauthenticated",
+            Self::AuthInvalidScope => "control_api.auth.invalid_scope",
+            Self::AuthInvalidOrigin => "control_api.auth.invalid_origin",
             Self::AuthInsufficientScope { .. } => "control_api.auth.insufficient_scope",
             Self::AuthSessionExpired => "control_api.auth.session_expired",
             Self::AuthCsrf => "control_api.auth.csrf",
@@ -240,6 +255,9 @@ mod tests {
             ControlApiError::AuthLocked,
             ControlApiError::TlsSelfSigned,
             ControlApiError::AuthUnknownToken,
+            ControlApiError::AuthUnauthenticated,
+            ControlApiError::AuthInvalidScope,
+            ControlApiError::AuthInvalidOrigin,
             ControlApiError::AuthInsufficientScope {
                 required: "admin".into(),
             },

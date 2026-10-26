@@ -11,6 +11,7 @@ use tokio::net::TcpListener;
 use tower::ServiceExt as _;
 use tower::service_fn;
 
+use crate::api::auth::AuthState;
 use crate::api::rate_limit::RateLimiter;
 use crate::clock::SystemClock;
 use crate::config::{ControlApiConfig, RateLimitConfig, is_internal_bind};
@@ -25,6 +26,7 @@ pub struct AppState {
     readiness: Arc<Readiness>,
     tls: Option<Arc<dyn TlsStatusProvider>>,
     rate_limiter: Arc<RateLimiter>,
+    auth: Option<Arc<AuthState>>,
 }
 
 impl Default for AppState {
@@ -44,7 +46,23 @@ impl AppState {
                 Arc::new(SystemClock),
                 Vec::new(),
             )),
+            auth: None,
         }
+    }
+
+    /// Attaches the session and bearer-token stores.
+    ///
+    /// With auth configured, the router enforces cookie-session/CSRF on
+    /// `/api/v1`, RBAC on both endpoint families, and mounts
+    /// `POST /api/v1/auth/tokens`.
+    pub fn with_auth(mut self, auth: AuthState) -> Self {
+        self.auth = Some(Arc::new(auth));
+        self
+    }
+
+    /// The configured auth stores, if any.
+    pub(crate) fn auth_state(&self) -> Option<&AuthState> {
+        self.auth.as_deref()
     }
 
     /// Attaches the TLS status provider (from [`crate::ControlApiTls`]).

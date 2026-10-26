@@ -6,9 +6,11 @@ use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use serde_json::json;
 
+use super::auth::tokens::create_token;
+use super::auth::{auth_middleware, rbac_middleware};
 use super::rate_limit::rate_limit;
 use super::response::{BODY_LIMIT_BYTES, error_response, success};
 use crate::error::ControlApiError;
@@ -17,15 +19,35 @@ use crate::tls::TlsMode;
 
 /// Builds the full router for `state`.
 pub(crate) fn build_router(state: AppState) -> Router {
-    let api = Router::new().route("/status", get(status));
+    let mut api = Router::new().route("/status", get(status));
+    if state.auth_state().is_some() {
+        // Token management exists only when persistence/auth is configured.
+        api = api.route("/auth/tokens", post(create_token));
+    }
 
-    Router::new()
+    let mut router = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .nest("/api/v1", api)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
-        .with_state(state.clone())
+        .with_state(state.clone());
+
+    if let Some(auth) = state.auth_state() {
+        // Outermost first: the session middleware populates `Principal` for
+        // cookie requests, then RBAC authenticates bearer tokens and enforces
+        // the endpoint family / role for both families.
+        router = router.layer(middleware::from_fn_with_state(
+            state.clone(),
+            rbac_middleware,
+        ));
+        router = router.layer(middleware::from_fn_with_state(
+            auth.sessions().clone(),
+            auth_middleware,
+        ));
+    }
+
+    router
         // DefaultBodyLimit first so the 413 it produces is seen by the
         // envelope-mapping middleware wrapped on top of it.
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))

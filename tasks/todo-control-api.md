@@ -26,7 +26,7 @@ No I/O, no routing yet.
 
 **Acceptance criteria:**
 - [x] Every error variant has a unique `code()` (enumerating test); every public item documented.
-- [ ] Error-code uniqueness also covers the MCP-alignment codes: `control_api.auth.unauthenticated`, `control_api.auth.invalid_scope`, `control_api.auth.invalid_origin` (added with A7), plus `control_api.method_not_allowed` and `control_api.payload_too_large` (already implemented).
+- [x] Error-code uniqueness also covers the MCP-alignment codes: `control_api.auth.unauthenticated`, `control_api.auth.invalid_scope`, `control_api.auth.invalid_origin` (added with A7), plus `control_api.method_not_allowed` and `control_api.payload_too_large` (already implemented).
 - [x] `ControlApiConfig` rejects `0.0.0.0`/`::` and accepts loopback, RFC 1918, and ULA addresses.
 - [x] Invalid `retention_days`, `ip_truncate`, rate-limit, and TTL values return the documented code.
 - [x] No `unwrap()`/`expect()` outside tests; no unsafe.
@@ -230,21 +230,21 @@ clock (no wall-clock sleeps). The limiter is consulted in a single middleware.
   address a token id.
 
 **Acceptance criteria:**
-- [ ] Token plaintext is returned exactly once; later responses never contain it; DB stores
+- [x] Token plaintext is returned exactly once; later responses never contain it; DB stores
       only the SHA-256 hash (regression test).
-- [ ] A revoked token immediately fails with `control_api.auth.unauthenticated` (401).
-- [ ] The scope enum is `viewer` | `admin` | `mcp:read` | `mcp:write`; `viewer` cannot call
+- [x] A revoked token immediately fails with `control_api.auth.unauthenticated` (401).
+- [x] The scope enum is `viewer` | `admin` | `mcp:read` | `mcp:write`; `viewer` cannot call
       an admin-only route; `admin` can.
-- [ ] Per-endpoint-family validity: a `viewer`/`admin` token on `/mcp/v1` and an
+- [x] Per-endpoint-family validity: a `viewer`/`admin` token on `/mcp/v1` and an
       `mcp:read`/`mcp:write` token on `/api/v1` are rejected with
       `control_api.auth.invalid_scope`; no token is valid on both families (regression test).
-- [ ] Missing/malformed token → 401 `control_api.auth.unauthenticated`; a permission the
+- [x] Missing/malformed token → 401 `control_api.auth.unauthenticated`; a permission the
       role lacks → 403 `control_api.auth.insufficient_scope`.
-- [ ] Token creation requires admin; all four scopes can be selected; the self-signed
+- [x] Token creation requires admin; all four scopes can be selected; the self-signed
       warning is present while `tls_mode = self_signed`.
-- [ ] The three new auth codes are added to `ControlApiError` and covered by the A0
+- [x] The three new auth codes are added to `ControlApiError` and covered by the A0
       uniqueness test.
-- [ ] No plaintext token appears in logs or audit.
+- [x] No plaintext token appears in logs or audit.
 
 **Verification:** `cargo test -p dnscraft-api auth_token`
 
