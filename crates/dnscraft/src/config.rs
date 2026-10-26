@@ -2,6 +2,7 @@
 
 use std::env;
 use std::net::SocketAddr;
+use std::path::Path;
 
 use serde::Deserialize;
 
@@ -27,25 +28,126 @@ pub struct TlsSecrets {
 
 /// Environment variable holding the PEM certificate chain.
 pub const TLS_CERT_ENV: &str = "DNSCRAFT_TLS_CERT";
+/// Environment variable holding the path to a PEM certificate chain file.
+pub const TLS_CERT_FILE_ENV: &str = "DNSCRAFT_TLS_CERT_FILE";
 /// Environment variable holding the PEM private key.
 pub const TLS_KEY_ENV: &str = "DNSCRAFT_TLS_KEY";
+/// Environment variable holding the path to a PEM private key file.
+pub const TLS_KEY_FILE_ENV: &str = "DNSCRAFT_TLS_KEY_FILE";
 
 /// Reads the TLS PEM pair from the environment.
 ///
-/// Returns `None` when neither variable is set and an error when exactly one
-/// is set (a half-configured TLS bootstrap must fail loudly).
+/// Each secret has exactly one source: the PEM-in-env variable or the
+/// `*_FILE` path variable (both set → `dnscraft.config.tls_env_conflict`).
+/// Returns `None` when neither secret is configured and
+/// `dnscraft.config.tls_env_incomplete` when only one of the pair is.
 pub fn tls_secrets_from_env() -> Result<Option<TlsSecrets>, Error> {
-    match (env::var(TLS_CERT_ENV).ok(), env::var(TLS_KEY_ENV).ok()) {
+    tls_secrets_from_parts(
+        env::var(TLS_CERT_ENV).ok().as_deref(),
+        env::var(TLS_CERT_FILE_ENV).ok().as_deref(),
+        env::var(TLS_KEY_ENV).ok().as_deref(),
+        env::var(TLS_KEY_FILE_ENV).ok().as_deref(),
+        |path| std::fs::read_to_string(path),
+    )
+}
+
+/// Core secret resolution used by [`tls_secrets_from_env`] and tests (no
+/// process-environment mutation — the workspace forbids `unsafe`, and
+/// `set_var` is unsafe on current Rust).
+pub(crate) fn tls_secrets_from_parts(
+    cert_env: Option<&str>,
+    cert_file: Option<&str>,
+    key_env: Option<&str>,
+    key_file: Option<&str>,
+    read_file: impl Fn(&Path) -> std::io::Result<String>,
+) -> Result<Option<TlsSecrets>, Error> {
+    let chain = resolve_one(
+        "certificate chain",
+        TLS_CERT_ENV,
+        TLS_CERT_FILE_ENV,
+        cert_env,
+        cert_file,
+        &read_file,
+    )?;
+    let key = resolve_one(
+        "private key",
+        TLS_KEY_ENV,
+        TLS_KEY_FILE_ENV,
+        key_env,
+        key_file,
+        &read_file,
+    )?;
+
+    match (chain, key) {
         (None, None) => Ok(None),
-        (Some(chain), Some(key)) => Ok(Some(TlsSecrets {
-            chain_pem: Secret::new(chain),
-            key_pem: Secret::new(key),
-        })),
+        (Some(chain_pem), Some(key_pem)) => {
+            if let Some(warning) = key_file
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .and_then(key_file_permissions_warning)
+            {
+                tracing::warn!("{warning}");
+            }
+            Ok(Some(TlsSecrets { chain_pem, key_pem }))
+        }
         _ => Err(Error::config(
             "dnscraft.config.tls_env_incomplete",
-            format!("{TLS_CERT_ENV} and {TLS_KEY_ENV} must be set together"),
+            format!(
+                "set both {TLS_CERT_ENV}/{TLS_CERT_FILE_ENV} and {TLS_KEY_ENV}/{TLS_KEY_FILE_ENV}"
+            ),
         )),
     }
+}
+
+fn resolve_one(
+    name: &str,
+    env_name: &str,
+    file_name: &str,
+    env_value: Option<&str>,
+    file_value: Option<&str>,
+    read_file: &impl Fn(&Path) -> std::io::Result<String>,
+) -> Result<Option<Secret>, Error> {
+    let env_value = env_value.map(str::trim).filter(|s| !s.is_empty());
+    let file_value = file_value.map(str::trim).filter(|s| !s.is_empty());
+    match (env_value, file_value) {
+        (Some(_), Some(_)) => Err(Error::config(
+            "dnscraft.config.tls_env_conflict",
+            format!("set exactly one of {env_name} or {file_name} for the {name}"),
+        )),
+        (Some(value), None) => Ok(Some(Secret::new(value))),
+        (None, Some(path)) => {
+            let contents = read_file(Path::new(path)).map_err(|e| {
+                Error::config(
+                    "dnscraft.config.tls_env_incomplete",
+                    format!("read {file_name} `{path}`: {e}"),
+                )
+            })?;
+            let trimmed = contents.trim();
+            if trimmed.is_empty() {
+                return Err(Error::config(
+                    "dnscraft.config.tls_env_incomplete",
+                    format!("{file_name} `{path}` is empty"),
+                ));
+            }
+            Ok(Some(Secret::new(trimmed)))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+/// Whether the key file's permissions are too open (group/other readable).
+#[cfg(unix)]
+fn key_file_permissions_warning(path: &str) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(path).ok()?.permissions().mode();
+    (mode & 0o077 != 0).then(|| {
+        format!("TLS key file `{path}` is group/other readable (mode {mode:o}); recommend 0600")
+    })
+}
+
+#[cfg(not(unix))]
+fn key_file_permissions_warning(_path: &str) -> Option<String> {
+    None
 }
 
 /// Top-level configuration loaded from a TOML file.
@@ -161,7 +263,7 @@ fn parse_exposure(s: &str) -> Option<Exposure> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -185,5 +287,71 @@ mod tests {
             shown.contains("Secret([redacted])"),
             "missing marker: {shown}"
         );
+    }
+
+    #[test]
+    fn half_configured_env_is_incomplete() {
+        let err =
+            tls_secrets_from_parts(Some("cert"), None, None, None, |_| unreachable!()).unwrap_err();
+        assert_eq!(err.code(), "dnscraft.config.tls_env_incomplete");
+    }
+
+    #[test]
+    fn both_sources_for_one_secret_is_a_conflict() {
+        let err = tls_secrets_from_parts(
+            Some("cert"),
+            Some("/cert.pem"),
+            None,
+            None,
+            |_| unreachable!(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "dnscraft.config.tls_env_conflict");
+    }
+
+    #[test]
+    fn file_sources_load_and_trim() {
+        let dir = std::env::temp_dir().join("dnscraft-tls-secrets-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let cert = dir.join("cert.pem");
+        let key = dir.join("key.pem");
+        std::fs::write(&cert, "-----BEGIN CERTIFICATE-----\nchain\n").unwrap();
+        std::fs::write(&key, "-----BEGIN PRIVATE KEY-----\nkey\n").unwrap();
+
+        let secrets = tls_secrets_from_parts(
+            None,
+            Some(cert.to_str().unwrap()),
+            None,
+            Some(key.to_str().unwrap()),
+            |p| std::fs::read_to_string(p),
+        )
+        .unwrap()
+        .expect("both file sources resolve");
+        assert_eq!(
+            secrets.chain_pem.expose(),
+            "-----BEGIN CERTIFICATE-----\nchain"
+        );
+        assert_eq!(secrets.key_pem.expose(), "-----BEGIN PRIVATE KEY-----\nkey");
+
+        let _ = std::fs::remove_file(&cert);
+        let _ = std::fs::remove_file(&key);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn key_file_permission_warning_detects_open_modes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join("dnscraft-key-perm-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let key = dir.join("key.pem");
+        std::fs::write(&key, "k").unwrap();
+
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(key_file_permissions_warning(key.to_str().unwrap()).is_none());
+
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(key_file_permissions_warning(key.to_str().unwrap()).is_some());
+
+        let _ = std::fs::remove_file(&key);
     }
 }

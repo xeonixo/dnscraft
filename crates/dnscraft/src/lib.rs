@@ -20,7 +20,8 @@ use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
 
 pub use config::{
-    Config, ListenerToml, TLS_CERT_ENV, TLS_KEY_ENV, TlsSecrets, tls_secrets_from_env,
+    Config, ListenerToml, TLS_CERT_ENV, TLS_CERT_FILE_ENV, TLS_KEY_ENV, TLS_KEY_FILE_ENV,
+    TlsSecrets, tls_secrets_from_env,
 };
 pub use engine::build_engine;
 
@@ -277,6 +278,7 @@ mod tests {
             Error::config("dnscraft.config.unknown_field", "x"),
             Error::config("dnscraft.config.invalid_listener", "x"),
             Error::config("dnscraft.config.tls_env_incomplete", "x"),
+            Error::config("dnscraft.config.tls_env_conflict", "x"),
             Error::startup("dnscraft.startup.bind", "x"),
             Error::startup("dnscraft.startup.resolver", "x"),
             Error::startup("dnscraft.startup.policy", "x"),

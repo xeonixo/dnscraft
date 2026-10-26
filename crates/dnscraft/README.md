@@ -39,16 +39,22 @@ address = "127.0.0.1:5300"  # host:port; port 0 = ephemeral
 
 ## Secrets
 
-TLS certificate material never goes in the TOML file. Set both environment
-variables to install a certificate for `dot`/`doh`/`doq` listeners:
+TLS certificate material never goes in the TOML file. For each secret set
+**exactly one** of the PEM-in-env or the file-path variable (both set is an
+error) to install a certificate for `dot`/`doh`/`doq` listeners:
 
 | Variable | Value |
 |---|---|
 | `DNSCRAFT_TLS_CERT` | PEM certificate chain |
+| `DNSCRAFT_TLS_CERT_FILE` | path to a file holding the PEM certificate chain |
 | `DNSCRAFT_TLS_KEY` | PEM private key |
+| `DNSCRAFT_TLS_KEY_FILE` | path to a file holding the PEM private key |
 
-Setting only one is a configuration error (exit 2). With neither set, encrypted
-listeners stay bound but fail each handshake with `listeners.tls.no_cert`.
+Setting only one secret of the pair is a configuration error (exit 2,
+`dnscraft.config.tls_env_incomplete`); setting both sources for one secret is
+`dnscraft.config.tls_env_conflict`. A key file that is group/other readable
+produces a warning. With neither set, encrypted listeners stay bound but fail
+each handshake with `listeners.tls.no_cert`.
 
 ## Query log
 
