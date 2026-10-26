@@ -219,8 +219,20 @@ cargo bench -p dnscraft-listeners
 ```
 
 `benches/udp.rs` (criterion, `harness = false`) drives a real `serve_udp` over
-loopback UDP and reports queries/sec plus p50 / p99 round-trip latency. See the
-N13 entry in [`tasks/progress.md`](../../tasks/progress.md) for the numbers.
+loopback UDP and reports two things:
+
+* **single-flight round trip** — one query in flight at a time; a *latency*
+  figure (p50 / p99), not a throughput ceiling.
+* **saturation** — N concurrent client threads (N = 4 and 8), each on its own
+  socket, keep N queries in flight for a fixed 5 s window; qps = completed /
+  wall seconds, with warm-up iterations discarded.
+
+Measured 2026-10-26 on an 8-core aarch64 dev machine: single-flight
+p50 ≈ 32 µs / p99 ≈ 69 µs; saturated qps ≈ 63 000 (N = 4) and ≈ 159 000
+(N = 8) — the ≥ 20 000 qps target is met. (The earlier "≈ 23 900 qps" N13
+figure was the reciprocal of single-flight mean latency, not a saturation
+throughput; the saturation run above is the honest number.)
+
 
 ## Fuzzing
 
