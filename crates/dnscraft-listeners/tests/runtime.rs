@@ -42,6 +42,16 @@ fn tcp_cfg(id: &str, addr: SocketAddr) -> ListenerConfig {
     }
 }
 
+fn doh_cfg(id: &str, addr: SocketAddr, h3: bool) -> ListenerConfig {
+    ListenerConfig {
+        id: ListenerId::new(id).unwrap(),
+        protocol: Protocol::Doh,
+        address: addr,
+        exposure: Exposure::Local,
+        h3,
+    }
+}
+
 fn base_cfg(listeners: Vec<ListenerConfig>) -> ListenersConfig {
     ListenersConfig {
         listeners,
@@ -694,4 +704,204 @@ async fn runtime_shutdown_drains_inflight_within_grace() {
         .expect("shutdown within grace")
         .unwrap();
     assert!(done.load(Ordering::SeqCst), "in-flight query must finish");
+}
+
+/// S2: a listener that fails to rebind during `apply_config` records the bind
+/// error in its status instead of failing the whole reload; unchanged
+/// listeners keep serving.
+#[tokio::test]
+async fn runtime_apply_config_bind_failure_keeps_others() {
+    let held = bind_udp(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+    let busy = held.local_addr().unwrap();
+
+    let cfg = base_cfg(vec![
+        udp_cfg("ok-udp", SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
+        udp_cfg(
+            "rebind-udp",
+            SocketAddr::from((Ipv4Addr::new(127, 0, 0, 2), 0)),
+        ),
+    ]);
+    let (sink, _rx) = ChannelSink::new(64);
+    let handler = Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(
+        192, 0, 2, 12,
+    ))));
+    let set = start_set(cfg.clone(), handler, sink).await;
+
+    // Re-point "rebind-udp" at the held port; "ok-udp" stays put.
+    let mut next = cfg;
+    if let Some(l) = next
+        .listeners
+        .iter_mut()
+        .find(|l| l.id.as_str() == "rebind-udp")
+    {
+        l.address = busy;
+    }
+    set.apply_config(next).await.unwrap();
+
+    let status = set.status();
+    let ok = status
+        .listeners
+        .iter()
+        .find(|l| l.id.as_str() == "ok-udp")
+        .unwrap();
+    let rebind = status
+        .listeners
+        .iter()
+        .find(|l| l.id.as_str() == "rebind-udp")
+        .unwrap();
+    assert!(
+        ok.bound.is_some(),
+        "unchanged listener must keep its socket"
+    );
+    assert!(rebind.bound.is_none(), "rebound listener must fail to bind");
+    assert_eq!(
+        rebind.error.as_ref().map(|e| e.code()),
+        Some("listeners.bind")
+    );
+
+    // The unchanged listener still answers.
+    let addr = ok.bound.unwrap();
+    let (wire, _) = query_udp(addr, &encode_a_query(1, "example.com.")).await;
+    assert!(!wire.is_empty());
+
+    drop(held);
+    set.shutdown(Duration::from_secs(2)).await;
+}
+
+/// S2: toggling `h3` on a DoH listener changes `ListenerConfig`, so the
+/// listener restarts (fresh stats → `connections` resets to 0).
+#[tokio::test]
+async fn runtime_h3_toggle_restarts_doh_listener() {
+    let cfg = base_cfg(vec![doh_cfg(
+        "doh",
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        false,
+    )]);
+    let (sink, _rx) = ChannelSink::new(64);
+    let handler = Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(
+        192, 0, 2, 13,
+    ))));
+    let (pem, key, _der) = support::certs::example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+    let set = ListenerSet::start_with(ListenerSetParams {
+        config: cfg.clone(),
+        handler,
+        certs: Some(certs),
+        sink,
+        clock: Arc::new(SystemClock),
+        public_domain: "example.com".into(),
+        client_ids: Arc::new(EmptyClientIds),
+        classify: default_classifier(),
+    })
+    .await
+    .unwrap();
+
+    // A raw TCP connect bumps the DoH `connections` counter (accepted pre-TLS;
+    // with a cert installed the handshake waits instead of closing, so
+    // `accepted - closed` stays 1).
+    let addr = set.status().listeners[0].bound.unwrap();
+    let _conn = TcpStream::connect(addr).await.unwrap();
+    poll_until(
+        || set.status().listeners[0].connections >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let mut h3_on = cfg.clone();
+    h3_on.listeners[0].h3 = true;
+    set.apply_config(h3_on).await.unwrap();
+    assert_eq!(
+        set.status().listeners[0].connections,
+        0,
+        "h3 false -> true must restart the DoH listener"
+    );
+
+    let addr2 = set.status().listeners[0].bound.unwrap();
+    let _conn2 = TcpStream::connect(addr2).await.unwrap();
+    poll_until(
+        || set.status().listeners[0].connections >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let mut h3_off = cfg;
+    h3_off.listeners[0].h3 = false;
+    set.apply_config(h3_off).await.unwrap();
+    assert_eq!(
+        set.status().listeners[0].connections,
+        0,
+        "h3 true -> false must restart the DoH listener"
+    );
+
+    set.shutdown(Duration::from_secs(2)).await;
+}
+
+/// S2: `status()` must not panic or deadlock while `apply_config` rebinds
+/// listeners concurrently.
+#[tokio::test]
+async fn runtime_status_reads_during_apply_config() {
+    let mut listeners = Vec::new();
+    for i in 0..20 {
+        listeners.push(udp_cfg(
+            &format!("udp-{i}"),
+            SocketAddr::from((Ipv4Addr::new(127, 0, 0, (i + 1) as u8), 0)),
+        ));
+    }
+    let cfg = base_cfg(listeners);
+    let (sink, _rx) = ChannelSink::new(64);
+    let handler = Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(
+        192, 0, 2, 14,
+    ))));
+    let set = Arc::new(start_set(cfg.clone(), handler, sink).await);
+
+    // A limits change restarts every listener (stop + start all 20), giving the
+    // concurrent status() reader a real reload to observe.
+    let mut next = cfg;
+    next.limits.udp_payload_max = 4096;
+    let apply = {
+        let set = Arc::clone(&set);
+        tokio::spawn(async move { set.apply_config(next).await })
+    };
+
+    for _ in 0..1000 {
+        let _ = set.status();
+        tokio::task::yield_now().await;
+    }
+
+    apply
+        .await
+        .expect("apply_config task must not panic")
+        .unwrap();
+    assert_eq!(set.status().listeners.len(), 20, "all listeners rebound");
+    let set = Arc::try_unwrap(set).unwrap_or_else(|_| panic!("only one Arc ref remains"));
+    set.shutdown(Duration::from_secs(2)).await;
+}
+
+/// S2: `shutdown(grace)` returns within grace even when a client has opened a
+/// connection and gone quiet (the accept loop stops; the connection task is
+/// detached, so it cannot block shutdown).
+#[tokio::test]
+async fn runtime_shutdown_returns_with_stuck_connection() {
+    let cfg = base_cfg(vec![tcp_cfg(
+        "lan-tcp",
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+    )]);
+    let (sink, _rx) = ChannelSink::new(64);
+    let handler = Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(
+        192, 0, 2, 15,
+    ))));
+    let set = start_set(cfg, handler, sink).await;
+
+    let addr = set.status().listeners[0].bound.unwrap();
+    let _stuck = TcpStream::connect(addr).await.unwrap();
+    poll_until(
+        || set.status().listeners[0].connections >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    tokio::time::timeout(Duration::from_secs(5), set.shutdown(Duration::from_secs(2)))
+        .await
+        .expect("shutdown must not hang on a stuck connection");
 }
