@@ -25,7 +25,7 @@ use tokio_rustls::{LazyConfigAcceptor, TlsAcceptor};
 
 use crate::admission::{Admission, ClientIdState, public_client_id_required};
 use crate::bans::StrikeReason;
-use crate::clock::{Clock, wait_until};
+use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::Exposure;
 use crate::error::ListenersError;
 
@@ -248,15 +248,6 @@ impl ListenerCertResolver {
     /// Cert presence only (local and public listeners).
     pub fn local(inner: Arc<CertResolver>, stats: Arc<TlsStats>) -> Arc<Self> {
         Arc::new(Self { inner, stats })
-    }
-
-    /// Same as [`Self::local`] (SNI gate is not applied in `resolve`).
-    pub fn public(
-        inner: Arc<CertResolver>,
-        _gate: Arc<SniGate>,
-        stats: Arc<TlsStats>,
-    ) -> Arc<Self> {
-        Self::local(inner, stats)
     }
 
     /// Underlying hot-reloadable certificate store.
@@ -498,8 +489,4 @@ fn record_handshake_failure(
 /// Convenience: [`TlsAcceptor`] from a server config (local / already gated).
 pub fn tls_acceptor(config: Arc<ServerConfig>) -> TlsAcceptor {
     TlsAcceptor::from(config)
-}
-
-fn add_duration(now: SystemTime, d: Duration) -> SystemTime {
-    now.checked_add(d).unwrap_or(SystemTime::UNIX_EPOCH)
 }

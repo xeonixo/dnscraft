@@ -42,7 +42,7 @@ pub use admission::{
     public_client_id_required,
 };
 pub use bans::StrikeReason;
-pub use clock::{Clock, ManualClock, SystemClock, wait_until};
+pub use clock::{Clock, ManualClock, SystemClock, add_duration, wait_until};
 pub use config::{
     DEFAULT_BAN_DURATION, DEFAULT_BAN_STRIKES, DEFAULT_BAN_WINDOW, DEFAULT_MAX_CONNECTIONS,
     DEFAULT_MAX_CONNECTIONS_PER_SOURCE, DEFAULT_MAX_INFLIGHT, DEFAULT_MAX_QUERIES_PER_CONNECTION,

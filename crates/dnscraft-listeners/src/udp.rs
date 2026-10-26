@@ -5,7 +5,6 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
 
 use dnscraft_policy::DnsProtocol;
 use dnscraft_proto::Message;
@@ -15,7 +14,7 @@ use tokio::net::UdpSocket as TokioUdpSocket;
 use tokio::sync::{Notify, Semaphore, oneshot, watch};
 
 use crate::admission::{Admission, AdmitDecision, ClientIdState};
-use crate::clock::{Clock, wait_until};
+use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Limits, ListenerConfig};
 use crate::core::{QueryMeta, handle_wire};
 use crate::error::ListenersError;
@@ -324,10 +323,6 @@ async fn send_reply<H>(
     } else {
         shared.sock.send_to(bytes, peer).await.map(|_| ())
     }
-}
-
-fn add_duration(now: SystemTime, d: Duration) -> SystemTime {
-    now.checked_add(d).unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
 fn record_admission_drop(stats: &UdpStats, code: &str) {

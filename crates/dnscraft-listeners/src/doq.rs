@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::SystemTime;
 
 use dnscraft_policy::DnsProtocol;
 use dnscraft_proto::{Message, Rcode};
@@ -17,8 +17,8 @@ use tokio::sync::{Notify, Semaphore, oneshot, watch};
 
 use crate::admission::{Admission, AdmitDecision, ClientIdState, public_client_id_required};
 use crate::bans::StrikeReason;
-use crate::clock::{Clock, wait_until};
-use crate::config::{Limits, ListenerConfig};
+use crate::clock::{Clock, add_duration, wait_until};
+use crate::config::{Exposure, Limits, ListenerConfig};
 use crate::core::{QueryMeta, error_reply_from_wire, handle_wire};
 use crate::error::ListenersError;
 use crate::framing::{MAX_MESSAGE_LEN, write_frame};
@@ -265,13 +265,7 @@ where
             Ok(c) => c,
             Err(_) => {
                 TlsStats::bump(&shared.tls_stats.handshake_fail);
-                {
-                    let mut adm = shared
-                        .admission
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    apply_tls_handshake_strike(&mut adm, exposure, source, shared.clock.now());
-                }
+                strike_tls_handshake(&shared, exposure, source);
                 release_per_source(&shared, source);
                 DoqStats::bump(&shared.stats.closed);
                 return;
@@ -285,13 +279,7 @@ where
                 Ok(c) => c,
                 Err(_) => {
                     TlsStats::bump(&shared.tls_stats.handshake_fail);
-                    {
-                        let mut adm = shared
-                            .admission
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        apply_tls_handshake_strike(&mut adm, exposure, source, shared.clock.now());
-                    }
+                    strike_tls_handshake(&shared, exposure, source);
                     release_per_source(&shared, source);
                     DoqStats::bump(&shared.stats.closed);
                     return;
@@ -299,13 +287,7 @@ where
             },
             () = wait_until(shared.clock.as_ref(), deadline, &wake) => {
                 TlsStats::bump(&shared.tls_stats.handshake_timeouts);
-                {
-                    let mut adm = shared
-                        .admission
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    apply_tls_handshake_strike(&mut adm, exposure, source, shared.clock.now());
-                }
+                strike_tls_handshake(&shared, exposure, source);
                 release_per_source(&shared, source);
                 DoqStats::bump(&shared.stats.closed);
                 return;
@@ -390,36 +372,100 @@ async fn serve_connection<H>(
     let stream_cap = Arc::new(Semaphore::new(
         shared.limits.max_quic_streams_per_connection.max(1) as usize,
     ));
+    let idle = shared.limits.tcp_idle_timeout;
+    let activity = Arc::new(ConnActivity {
+        last: Mutex::new(shared.clock.now()),
+        wake: Notify::new(),
+        // Streams currently answering a complete query (incomplete reads do not count).
+        answering: AtomicUsize::new(0),
+    });
 
     loop {
-        match conn.accept_bi().await {
-            Ok((send, recv)) => {
-                let Ok(permit) = stream_cap.clone().try_acquire_owned() else {
-                    // Transport already caps concurrent streams; treat overflow as load.
-                    conn.close(DOQ_EXCESSIVE_LOAD, b"stream cap");
-                    return;
-                };
-                let shared = Arc::clone(&shared);
-                let conn = conn.clone();
-                let client_id = client_id.clone();
-                tokio::spawn(async move {
-                    let _permit = permit;
-                    if let Err(code) =
-                        handle_stream(Arc::clone(&shared), &conn, send, recv, peer, &client_id)
-                            .await
-                    {
-                        DoqStats::bump(&shared.stats.protocol_errors);
-                        conn.close(code, b"");
+        let deadline = add_duration(activity.last_activity(), idle);
+        let answering_now = activity.answering.load(Ordering::Relaxed);
+        tokio::select! {
+            bi = conn.accept_bi() => {
+                match bi {
+                    Ok((send, recv)) => {
+                        // New stream accepted → re-arm application idle.
+                        activity.touch(shared.clock.as_ref());
+                        let Ok(permit) = stream_cap.clone().try_acquire_owned() else {
+                            conn.close(DOQ_EXCESSIVE_LOAD, b"stream cap");
+                            return;
+                        };
+                        let shared = Arc::clone(&shared);
+                        let conn = conn.clone();
+                        let client_id = client_id.clone();
+                        let activity = Arc::clone(&activity);
+                        tokio::spawn(async move {
+                            let _permit = permit;
+                            let r = handle_stream(
+                                Arc::clone(&shared),
+                                &conn,
+                                send,
+                                recv,
+                                peer,
+                                &client_id,
+                                &activity,
+                            )
+                            .await;
+                            if let Err(code) = r {
+                                DoqStats::bump(&shared.stats.protocol_errors);
+                                conn.close(code, b"");
+                            }
+                        });
                     }
-                });
-            }
-            Err(e) => {
-                if matches!(e, quinn::ConnectionError::TimedOut) {
-                    DoqStats::bump(&shared.stats.idle_timeouts);
+                    Err(e) => {
+                        if matches!(e, quinn::ConnectionError::TimedOut) {
+                            DoqStats::bump(&shared.stats.idle_timeouts);
+                        }
+                        return;
+                    }
                 }
-                return;
+            }
+            // Re-evaluate idle when answering count or last_activity changes.
+            () = activity.wake.notified() => {}
+            () = wait_until(shared.clock.as_ref(), deadline, &activity.wake),
+                if answering_now == 0 => {
+                let still_idle = activity.answering.load(Ordering::Relaxed) == 0
+                    && shared.clock.now() >= add_duration(activity.last_activity(), idle);
+                if still_idle {
+                    DoqStats::bump(&shared.stats.idle_timeouts);
+                    conn.close(DOQ_NO_ERROR, b"idle");
+                    return;
+                }
             }
         }
+    }
+}
+
+/// Per-connection application activity for DoQ idle close.
+struct ConnActivity {
+    last: Mutex<SystemTime>,
+    wake: Notify,
+    answering: AtomicUsize,
+}
+
+impl ConnActivity {
+    fn last_activity(&self) -> SystemTime {
+        *self
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn touch(&self, clock: &dyn Clock) {
+        *self
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = clock.now();
+        self.wake.notify_waiters();
+    }
+
+    fn begin_answering(&self) -> AnsweringGuard<'_> {
+        self.answering.fetch_add(1, Ordering::Relaxed);
+        self.wake.notify_waiters();
+        AnsweringGuard { activity: self }
     }
 }
 
@@ -430,6 +476,7 @@ async fn handle_stream<H>(
     mut recv: RecvStream,
     peer: SocketAddr,
     client_id: &ClientIdState,
+    activity: &ConnActivity,
 ) -> Result<(), VarInt>
 where
     H: QueryHandler + 'static,
@@ -456,6 +503,9 @@ where
             return Ok(());
         }
     };
+
+    // Complete message → answering (blocks application idle until done).
+    let _answering_guard = activity.begin_answering();
 
     // RFC 9250 §4.2.1: Message ID must be 0.
     match Message::decode(&wire) {
@@ -496,6 +546,7 @@ where
                 let _ = write_frame(&mut send, &out).await;
                 let _ = send.finish();
             }
+            activity.touch(shared.clock.as_ref());
             return Ok(());
         }
         AdmitDecision::Admit => {}
@@ -545,7 +596,20 @@ where
     }
     let _ = send.finish();
     DoqStats::bump(&shared.stats.answered);
+    // Stream answered → re-arm application idle.
+    activity.touch(shared.clock.as_ref());
     Ok(())
+}
+
+struct AnsweringGuard<'a> {
+    activity: &'a ConnActivity,
+}
+
+impl Drop for AnsweringGuard<'_> {
+    fn drop(&mut self) {
+        self.activity.answering.fetch_sub(1, Ordering::Relaxed);
+        self.activity.wake.notify_waiters();
+    }
 }
 
 fn force_doq_id0(mut bytes: Vec<u8>) -> Vec<u8> {
@@ -592,6 +656,14 @@ fn strike_framing<H: ?Sized>(shared: &DoqShared<H>, peer: IpAddr) {
     );
 }
 
+fn strike_tls_handshake<H: ?Sized>(shared: &DoqShared<H>, exposure: Exposure, peer: IpAddr) {
+    let mut adm = shared
+        .admission
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    apply_tls_handshake_strike(&mut adm, exposure, peer, shared.clock.now());
+}
+
 fn release_per_source<H: ?Sized>(shared: &DoqShared<H>, source: IpAddr) {
     let mut map = shared
         .per_source
@@ -603,8 +675,4 @@ fn release_per_source<H: ?Sized>(shared: &DoqShared<H>, source: IpAddr) {
             map.remove(&source);
         }
     }
-}
-
-fn add_duration(now: SystemTime, d: Duration) -> SystemTime {
-    now.checked_add(d).unwrap_or(SystemTime::UNIX_EPOCH)
 }

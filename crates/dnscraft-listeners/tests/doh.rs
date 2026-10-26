@@ -537,8 +537,8 @@ async fn doh_partial_headers_closed() {
     h.stop().await;
 }
 
-#[tokio::test(start_paused = true)]
-async fn doh_idle_keepalive_closed() {
+#[tokio::test]
+async fn doh_idle_h1_keepalive_closed() {
     install_ring();
     let engine = policy_engine_with_client_ids(&["phone"]).await;
     let gate = SniGate {
@@ -549,7 +549,8 @@ async fn doh_idle_keepalive_closed() {
     let (pem, key, _) = example_dns_cert();
     let certs = Arc::new(CertResolver::new());
     certs.install(&pem, &key).unwrap();
-    let idle = Duration::from_secs(5);
+    // Real time (not start_paused): paused auto-advance races header_read_timeout.
+    let idle = Duration::from_millis(300);
     let h = DohHarness::spawn(
         Exposure::Local,
         Limits {
@@ -579,12 +580,79 @@ async fn doh_idle_keepalive_closed() {
     assert_eq!(resp.status(), StatusCode::OK);
     let _ = resp.into_body().collect().await.unwrap();
 
-    tokio::time::advance(idle + Duration::from_secs(1)).await;
-    // Connection should have been closed for idle keep-alive.
+    poll_until(
+        || h.stats.closed.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(3),
+    )
+    .await;
+    assert_eq!(h.stats.closed.load(Ordering::Relaxed), 1);
     let next = sender
         .send_request(get_req(&format!("/dns-query?dns={enc}")))
         .await;
-    assert!(next.is_err(), "idle keep-alive must close: {next:?}");
+    assert!(next.is_err(), "idle h1 keep-alive must close: {next:?}");
+    let _ = conn_task.await;
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn doh_idle_h2_ping_keepalive_closed() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: ReservedLabels::new(["node1".into()]),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+    let idle = Duration::from_millis(400);
+    let h = DohHarness::spawn(
+        Exposure::Local,
+        Limits {
+            tcp_idle_timeout: idle,
+            ..Limits::default()
+        },
+        gate,
+        certs,
+        60,
+    )
+    .await;
+
+    let connector = connector(&[b"h2"]);
+    let tcp = TcpStream::connect(h.addr).await.unwrap();
+    let name = ServerName::try_from("dns.example.com").unwrap();
+    let tls = connector.connect(name, tcp).await.unwrap();
+    let io = TokioIo::new(tls);
+    // Client sends PINGs while idle — must not count as application activity.
+    let (mut sender, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+        .timer(hyper_util::rt::TokioTimer::new())
+        .keep_alive_interval(Duration::from_millis(50))
+        .keep_alive_while_idle(true)
+        .handshake(io)
+        .await
+        .unwrap();
+    let conn_task = tokio::spawn(conn);
+
+    let q = encode_a_query(1, "example.com.");
+    let enc = URL_SAFE_NO_PAD.encode(&q);
+    let resp = sender
+        .send_request(get_req(&format!("/dns-query?dns={enc}")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let _ = resp.into_body().collect().await.unwrap();
+
+    poll_until(
+        || h.stats.closed.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(3),
+    )
+    .await;
+    assert_eq!(
+        h.stats.closed.load(Ordering::Relaxed),
+        1,
+        "h2 PING keep-alive must not prevent application idle close"
+    );
     let _ = conn_task.await;
     h.stop().await;
 }

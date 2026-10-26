@@ -10,15 +10,16 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime};
 
 use dnscraft_listeners::{
-    Clock, DOQ_PROTOCOL_ERROR, DoqServeParams, DoqStats, Exposure, FakeHandler, Limits,
-    ListenerConfig, ManualClock, PAD_BLOCK, PolicyClientIds, Protocol, PublicConfig, SniGate,
-    SystemClock, TcpServeParams, TcpStats, TlsStats, read_frame, serve_doq, serve_tcp, write_frame,
+    Clock, DOQ_NO_ERROR, DOQ_PROTOCOL_ERROR, DoqServeParams, DoqStats, Exposure, FakeHandler,
+    Limits, ListenerConfig, ManualClock, PAD_BLOCK, PolicyClientIds, Protocol, PublicConfig,
+    SniGate, SystemClock, TcpServeParams, TcpStats, TlsStats, read_frame, serve_doq, serve_tcp,
+    write_frame,
 };
 use dnscraft_policy::ListenerId;
 use dnscraft_proto::{Message, Rcode};
 use dnscraft_tls::{CertResolver, ReservedLabels};
 use quinn::crypto::rustls::QuicClientConfig;
-use quinn::{ClientConfig, Connection, Endpoint, RecvStream};
+use quinn::{ClientConfig, Connection, Endpoint, RecvStream, TransportConfig};
 use rustls::ClientConfig as RustlsClientConfig;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::ring::default_provider;
@@ -98,6 +99,10 @@ impl ServerCertVerifier for AcceptAll {
 }
 
 fn doq_client_config() -> ClientConfig {
+    doq_client_config_with_keepalive(None)
+}
+
+fn doq_client_config_with_keepalive(keep_alive: Option<Duration>) -> ClientConfig {
     let mut tls = RustlsClientConfig::builder_with_provider(Arc::new(default_provider()))
         .with_safe_default_protocol_versions()
         .unwrap()
@@ -108,12 +113,26 @@ fn doq_client_config() -> ClientConfig {
     tls.enable_early_data = false;
     tls.resumption = rustls::client::Resumption::disabled();
     let quic = QuicClientConfig::try_from(tls).unwrap();
-    ClientConfig::new(Arc::new(quic))
+    let mut cfg = ClientConfig::new(Arc::new(quic));
+    if let Some(interval) = keep_alive {
+        let mut transport = TransportConfig::default();
+        transport.keep_alive_interval(Some(interval));
+        // Transport idle longer than application idle under test.
+        transport.max_idle_timeout(Some(
+            Duration::from_secs(60).try_into().expect("idle timeout"),
+        ));
+        cfg.transport_config(Arc::new(transport));
+    }
+    cfg
 }
 
 async fn connect_doq(addr: SocketAddr, sni: &str) -> Connection {
+    connect_doq_with(addr, sni, doq_client_config()).await
+}
+
+async fn connect_doq_with(addr: SocketAddr, sni: &str, client: ClientConfig) -> Connection {
     let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
-    endpoint.set_default_client_config(doq_client_config());
+    endpoint.set_default_client_config(client);
     endpoint
         .connect(addr, sni)
         .unwrap()
@@ -434,7 +453,12 @@ async fn idle_timeout_closes_connection() {
         .await
         .expect("idle close");
     assert!(
-        matches!(closed, quinn::ConnectionError::TimedOut),
+        matches!(
+            closed,
+            quinn::ConnectionError::TimedOut
+                | quinn::ConnectionError::ApplicationClosed(_)
+                | quinn::ConnectionError::LocallyClosed
+        ),
         "got {closed:?}"
     );
     poll_until(
@@ -442,6 +466,137 @@ async fn idle_timeout_closes_connection() {
         Duration::from_secs(2),
     )
     .await;
+    doq.stop().await;
+}
+
+#[tokio::test]
+async fn app_idle_closes_despite_quic_keepalive() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: ReservedLabels::new(["node1".into()]),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+
+    let idle = Duration::from_secs(2);
+    let clock = Arc::new(ManualClock::new(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(40_000),
+    ));
+    let limits = Limits {
+        tcp_idle_timeout: idle,
+        ..Limits::default()
+    };
+    let doq = DoqHarness::spawn_with(
+        Exposure::Local,
+        limits,
+        gate,
+        certs,
+        Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(192, 0, 2, 9)))),
+        Arc::clone(&clock) as Arc<dyn Clock>,
+    )
+    .await;
+
+    let conn = connect_doq_with(
+        doq.addr,
+        "localhost",
+        doq_client_config_with_keepalive(Some(Duration::from_millis(100))),
+    )
+    .await;
+    // No streams — only QUIC keep-alives.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    clock.advance(idle + Duration::from_millis(100));
+    let closed = tokio::time::timeout(Duration::from_secs(2), conn.closed())
+        .await
+        .expect("app idle must close despite keep-alive");
+    match closed {
+        quinn::ConnectionError::ApplicationClosed(c) => {
+            assert_eq!(c.error_code, DOQ_NO_ERROR);
+        }
+        other => panic!("expected ApplicationClosed(DOQ_NO_ERROR), got {other:?}"),
+    }
+    poll_until(
+        || doq.stats.idle_timeouts.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+    doq.stop().await;
+}
+
+#[tokio::test]
+async fn app_idle_closes_incomplete_streams_with_keepalive_releases_slot() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: ReservedLabels::new(["node1".into()]),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+
+    let idle = Duration::from_secs(2);
+    let clock = Arc::new(ManualClock::new(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(50_000),
+    ));
+    let limits = Limits {
+        tcp_idle_timeout: idle,
+        max_quic_streams_per_connection: 2,
+        max_connections_per_source: 1,
+        query_timeout: Duration::from_secs(60),
+        ..Limits::default()
+    };
+    let doq = DoqHarness::spawn_with(
+        Exposure::Local,
+        limits,
+        gate,
+        certs,
+        Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(192, 0, 2, 9)))),
+        Arc::clone(&clock) as Arc<dyn Clock>,
+    )
+    .await;
+
+    let client = doq_client_config_with_keepalive(Some(Duration::from_millis(100)));
+    let conn = connect_doq_with(doq.addr, "localhost", client.clone()).await;
+    // Cap filled with incomplete streams; client keeps handles (ignores STOP_SENDING).
+    let (_s1, _r1) = conn.open_bi().await.unwrap();
+    let (_s2, _r2) = conn.open_bi().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    clock.advance(idle + Duration::from_millis(100));
+    let closed = tokio::time::timeout(Duration::from_secs(2), conn.closed())
+        .await
+        .expect("app idle must close with incomplete streams + keep-alive");
+    assert!(
+        matches!(
+            closed,
+            quinn::ConnectionError::ApplicationClosed(ref c) if c.error_code == DOQ_NO_ERROR
+        ),
+        "got {closed:?}"
+    );
+    poll_until(
+        || doq.stats.idle_timeouts.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+    poll_until(
+        || doq.stats.closed.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    // Per-source slot released — another connection from the same source is admitted.
+    let again = tokio::time::timeout(
+        Duration::from_secs(2),
+        connect_doq_with(doq.addr, "localhost", client),
+    )
+    .await
+    .expect("slot released after idle close");
+    drop(again);
     doq.stop().await;
 }
 

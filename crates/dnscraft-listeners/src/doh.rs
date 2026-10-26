@@ -17,15 +17,15 @@ use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 use tokio::sync::{Notify, Semaphore, oneshot, watch};
+use tokio::time::Instant as TokioInstant;
 use tokio_rustls::TlsAcceptor;
 
 use crate::admission::{Admission, AdmitDecision, ClientIdState, public_client_id_required};
 use crate::bans::StrikeReason;
-use crate::clock::{Clock, wait_until};
+use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Exposure, Limits, ListenerConfig};
 use crate::core::{QueryMeta, error_reply_from_wire, handle_wire};
 use crate::doh_request::{
@@ -271,16 +271,23 @@ fn handle_accept<H>(
         let io = TokioIo::new(tls);
         let idle_timeout = shared.limits.tcp_idle_timeout;
         let max_streams = shared.limits.max_queries_per_connection.max(1);
+        let activity = Arc::new(ConnActivity::new());
         let svc_shared = Arc::clone(&shared);
         let peer_ip = peer.ip();
+        let act = Arc::clone(&activity);
         let service = service_fn(move |req: Request<Incoming>| {
             let shared = Arc::clone(&svc_shared);
-            async move { Ok::<_, Infallible>(handle_http(shared, peer_ip, req).await) }
+            let act = Arc::clone(&act);
+            async move {
+                act.begin();
+                let resp = handle_http(shared, peer_ip, req).await;
+                act.end();
+                Ok::<_, Infallible>(resp)
+            }
         });
 
-        // TokioTimer enables header_read_timeout / h2 keep-alive (works with
-        // tokio::time::pause in tests). h1 idle = header_read_timeout between
-        // requests; h2 idle = PING keep-alive interval/timeout.
+        // TokioTimer enables http1 header_read_timeout (partial headers).
+        // Application idle (h1 + h2) is tracked below — PING keep-alive is not activity.
         let mut builder = AutoBuilder::new(TokioExecutor::new());
         builder
             .http1()
@@ -289,15 +296,82 @@ fn handle_accept<H>(
         builder
             .http2()
             .timer(TokioTimer::new())
-            .max_concurrent_streams(max_streams)
-            .keep_alive_interval(Some(idle_timeout))
-            .keep_alive_timeout(idle_timeout);
+            .max_concurrent_streams(max_streams);
 
-        let _ = builder.serve_connection(io, service).await;
+        let conn = builder.serve_connection(io, service);
+        tokio::pin!(conn);
+        let mut shutting_down = false;
+        loop {
+            let deadline = activity.idle_deadline(idle_timeout);
+            let in_flight = activity.in_flight();
+            tokio::select! {
+                r = conn.as_mut() => {
+                    let _ = r;
+                    break;
+                }
+                () = activity.notified() => {}
+                () = tokio::time::sleep_until(deadline), if in_flight == 0 && !shutting_down => {
+                    if activity.in_flight() == 0 && TokioInstant::now() >= activity.last_end() + idle_timeout {
+                        shutting_down = true;
+                        conn.as_mut().graceful_shutdown();
+                    }
+                }
+            }
+        }
 
         release_per_source(&shared, source);
         DohStats::bump(&shared.stats.closed);
     });
+}
+
+/// Per-connection HTTP activity for application idle close (h1 keep-alive and h2).
+struct ConnActivity {
+    in_flight: AtomicUsize,
+    last_end: Mutex<TokioInstant>,
+    wake: Notify,
+}
+
+impl ConnActivity {
+    fn new() -> Self {
+        Self {
+            in_flight: AtomicUsize::new(0),
+            last_end: Mutex::new(TokioInstant::now()),
+            wake: Notify::new(),
+        }
+    }
+
+    fn begin(&self) {
+        self.in_flight.fetch_add(1, Ordering::Relaxed);
+        self.wake.notify_waiters();
+    }
+
+    fn end(&self) {
+        self.in_flight.fetch_sub(1, Ordering::Relaxed);
+        *self
+            .last_end
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = TokioInstant::now();
+        self.wake.notify_waiters();
+    }
+
+    fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::Relaxed)
+    }
+
+    fn last_end(&self) -> TokioInstant {
+        *self
+            .last_end
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn idle_deadline(&self, idle: std::time::Duration) -> TokioInstant {
+        self.last_end() + idle
+    }
+
+    fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.wake.notified()
+    }
 }
 
 fn release_per_source<H: ?Sized>(shared: &DohShared<H>, source: IpAddr) {
@@ -438,10 +512,6 @@ where
     builder
         .body(Full::new(Bytes::from(out_bytes)))
         .unwrap_or_else(|_| status_empty(StatusCode::INTERNAL_SERVER_ERROR))
-}
-
-fn add_duration(now: SystemTime, d: Duration) -> SystemTime {
-    now.checked_add(d).unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
 fn resolve_path_client_id<H: ?Sized>(

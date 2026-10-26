@@ -21,7 +21,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | Checkpoint C impl done; **STOP for Claude re-review** (leave Claude box) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
+| `listeners` | Checkpoint C re-review fixes done; **STOP for Claude re-review** (leave Claude box) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -34,6 +34,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-26 — **listeners: Checkpoint C re-review (DoH/DoQ app idle + admission gates).** DoH: per-connection `ConnActivity` (in-flight + last request end); when idle with nothing in flight, `graceful_shutdown` on the pinned hyper-util conn (PING keep-alive is not activity); h1/h2 regression (`closed == 1`). DoQ: Clock `wait_until` app idle re-armed on stream accept/answer; incomplete streams do not block idle; `conn.close(DOQ_NO_ERROR, "idle")`; keep-alive / incomplete-stream + slot-release regressions. Admission mutation tests: public×private no-id answered on DoT/DoH/DoQ; local×classifier-public id optional; handshake-fail strikes shared across DoT/DoH/DoQ → ban → pre-TLS drop. Nits: drop `ListenerCertResolver::public`; shared `clock::add_duration`; DoQ `strike_tls_handshake` helper. Claude box still open. **STOP for Claude re-review.** Do not start N10.
 
 - 2026-10-26 — **docs: catch-up round (D1–D6).** Root README status / workspace table / DoD section;
   listeners README rewritten for post-N9 capabilities (HTTP/3 + DDR called out as not done);

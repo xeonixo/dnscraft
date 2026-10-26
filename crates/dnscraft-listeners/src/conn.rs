@@ -16,7 +16,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, watch};
 use tokio::task::JoinSet;
 
 use crate::admission::{Admission, AdmitDecision, ClientIdState};
-use crate::clock::{Clock, wait_until};
+use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Limits, ListenerConfig};
 use crate::core::{QueryMeta, error_reply_from_wire, handle_wire};
 use crate::framing::{self, FrameError, MAX_MESSAGE_LEN};
@@ -533,8 +533,4 @@ fn attach_tcp_keepalive(wire: &[u8], idle: Duration) -> Option<Vec<u8>> {
 pub fn duration_to_keepalive_units(d: Duration) -> u16 {
     let ms = d.as_millis().min(u128::from(u16::MAX) * 100);
     u16::try_from(ms / 100).unwrap_or(u16::MAX)
-}
-
-fn add_duration(now: SystemTime, d: Duration) -> SystemTime {
-    now.checked_add(d).unwrap_or(SystemTime::UNIX_EPOCH)
 }

@@ -396,9 +396,7 @@ struct EncryptedSet {
     doh_stats: Arc<DohStats>,
     doq_stats: Arc<DoqStats>,
     tls_dot: Arc<TlsStats>,
-    #[allow(dead_code)]
     tls_doh: Arc<TlsStats>,
-    #[allow(dead_code)]
     tls_doq: Arc<TlsStats>,
     shutdowns: Vec<watch::Sender<bool>>,
     joins: Vec<tokio::task::JoinHandle<Result<(), dnscraft_listeners::ListenersError>>>,
@@ -771,12 +769,166 @@ async fn checkpoint_c_public_admission_matrix_and_shared_ban() {
     )
     .await;
 
-    // Private source on a public listener without id is answered.
+    // Private source on a public listener without id is answered (DoT/DoH/DoQ).
     let priv_ok = dot_query(set.dot, "localhost", name, Ipv4Addr::LOCALHOST).await;
     assert_eq!(priv_ok.rcode(), Rcode::NOERROR);
     let (s, _, m) = doh_query(set.doh, "/dns-query", name, &[ALPN_H2], Ipv4Addr::LOCALHOST).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(m.rcode(), Rcode::NOERROR);
+    let priv_doq = doq_query(set.doq, "localhost", name, Ipv4Addr::LOCALHOST).await;
+    assert_eq!(priv_doq.rcode(), Rcode::NOERROR);
+
+    set.stop().await;
+}
+
+#[tokio::test]
+async fn checkpoint_c_local_listener_public_source_id_optional() {
+    install_ring();
+    let (_h, engine) = policy_engine(&["phone"]).await;
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+
+    // Local exposure: even a classifier-Public source may omit Client ID.
+    let set = EncryptedSet::spawn(
+        engine,
+        Exposure::Local,
+        PublicConfig::default(),
+        classify_127_0_0_2_public(),
+        certs,
+    )
+    .await;
+
+    let name = "lan.example.test.";
+    let ok = dot_query(set.dot, "localhost", name, PUBLIC_PEER).await;
+    assert_eq!(ok.rcode(), Rcode::NOERROR);
+    let (s, _, m) = doh_query(set.doh, "/dns-query", name, &[ALPN_H2], PUBLIC_PEER).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(m.rcode(), Rcode::NOERROR);
+    let ok = doq_query(set.doq, "localhost", name, PUBLIC_PEER).await;
+    assert_eq!(ok.rcode(), Rcode::NOERROR);
+
+    set.stop().await;
+}
+
+/// Force a TLS handshake failure (ALPN mismatch) so the server records a strike.
+async fn fail_tcp_tls_handshake(dest: SocketAddr, bad_alpn: &[&[u8]], from: Ipv4Addr, sni: &str) {
+    let connector = tls_connector(bad_alpn, Arc::new(AcceptAll::plain()));
+    let tcp = bind_tcp_from(from, dest).await;
+    let _ = connector
+        .connect(ServerName::try_from(sni.to_owned()).unwrap(), tcp)
+        .await;
+}
+
+fn doq_client_config_alpn(verifier: Arc<dyn ServerCertVerifier>, alpn: &[&[u8]]) -> ClientConfig {
+    let mut tls = RustlsClientConfig::builder_with_provider(Arc::new(default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    tls.alpn_protocols = alpn.iter().map(|a| a.to_vec()).collect();
+    tls.enable_early_data = false;
+    tls.resumption = rustls::client::Resumption::disabled();
+    ClientConfig::new(Arc::new(QuicClientConfig::try_from(tls).unwrap()))
+}
+
+async fn fail_doq_handshake(dest: SocketAddr, from: Ipv4Addr, sni: &str) {
+    let mut ep = Endpoint::client(SocketAddr::from((from, 0))).unwrap();
+    // Wrong ALPN → QUIC/TLS handshake failure + strike.
+    ep.set_default_client_config(doq_client_config_alpn(
+        Arc::new(AcceptAll::plain()),
+        &[b"h3"],
+    ));
+    let _ = ep.connect(dest, sni).unwrap().await;
+}
+
+#[tokio::test]
+async fn checkpoint_c_handshake_abort_strikes_shared_ban() {
+    install_ring();
+    let (_h, engine) = policy_engine(&["phone"]).await;
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+
+    let public = PublicConfig {
+        ban_strikes: 3,
+        ..PublicConfig::default()
+    };
+    let set = EncryptedSet::spawn(
+        Arc::clone(&engine),
+        Exposure::Public,
+        public,
+        classify_127_0_0_2_public(),
+        certs,
+    )
+    .await;
+
+    // DoT handshake fails (ban_strikes budget shared with DoH/DoQ): one DoT + one DoH + one DoQ.
+    fail_tcp_tls_handshake(set.dot, &[ALPN_H2], PUBLIC_PEER, "phone.dns.example.com").await;
+    poll_until(
+        || set.tls_dot.handshake_fail.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+    fail_tcp_tls_handshake(set.doh, &[ALPN_DOT], PUBLIC_PEER, "dns.example.com").await;
+    poll_until(
+        || set.tls_doh.handshake_fail.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+    fail_doq_handshake(set.doq, PUBLIC_PEER, "phone.dns.example.com").await;
+    poll_until(
+        || set.tls_doq.handshake_fail.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    poll_until(
+        || {
+            set.admission
+                .lock()
+                .unwrap()
+                .is_banned(IpAddr::V4(PUBLIC_PEER), SystemTime::now())
+        },
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let before_dot = set.dot_stats.dropped_admission.load(Ordering::Relaxed);
+    let before_doh = set.doh_stats.dropped_banned.load(Ordering::Relaxed);
+    let before_doq = set.doq_stats.dropped_banned.load(Ordering::Relaxed);
+
+    let connector = tls_connector(&[ALPN_DOT], Arc::new(AcceptAll::plain()));
+    let tcp = bind_tcp_from(PUBLIC_PEER, set.dot).await;
+    let _ = connector
+        .connect(ServerName::try_from("phone.dns.example.com").unwrap(), tcp)
+        .await;
+    poll_until(
+        || set.dot_stats.dropped_admission.load(Ordering::Relaxed) > before_dot,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let tcp = bind_tcp_from(PUBLIC_PEER, set.doh).await;
+    let connector_h2 = tls_connector(&[ALPN_H2], Arc::new(AcceptAll::plain()));
+    let _ = connector_h2
+        .connect(ServerName::try_from("dns.example.com").unwrap(), tcp)
+        .await;
+    poll_until(
+        || set.doh_stats.dropped_banned.load(Ordering::Relaxed) > before_doh,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let mut ep = Endpoint::client(SocketAddr::from((PUBLIC_PEER, 0))).unwrap();
+    ep.set_default_client_config(doq_client_config(Arc::new(AcceptAll::plain())));
+    let _ = ep.connect(set.doq, "phone.dns.example.com").unwrap().await;
+    poll_until(
+        || set.doq_stats.dropped_banned.load(Ordering::Relaxed) > before_doq,
+        Duration::from_secs(2),
+    )
+    .await;
 
     set.stop().await;
 }

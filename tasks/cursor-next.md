@@ -9,7 +9,7 @@
 ## Status (updated 2026-10-26)
 
 - `resolver`, `filtering`, `clients`, `tls`, `policy`: complete.
-- `listeners`: Checkpoint C impl done 2026-10-26; **STOP for Claude re-review** (do not start N10).
+- `listeners`: Checkpoint C re-review fixes (app idle + admission gates) 2026-10-26; **STOP for Claude re-review** (do not start N10).
 - Docs catch-up (D1–D6) done 2026-10-26: root README, crate READMEs, CAPABILITY-MAP Status,
   ADRs 0002–0005; see progress.md Log.
 

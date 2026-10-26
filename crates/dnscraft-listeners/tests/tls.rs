@@ -409,8 +409,7 @@ async fn handshake_matrix_local_and_public() {
     let certs = Arc::new(CertResolver::new());
     certs.install(&pem, &key).unwrap();
     let stats = Arc::new(TlsStats::default());
-    let resolver =
-        ListenerCertResolver::public(Arc::clone(&certs), Arc::new(g.clone()), Arc::clone(&stats));
+    let resolver = ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&stats));
     let public =
         ServerHarness::spawn(Exposure::Public, g.clone(), Arc::clone(&certs), resolver).await;
 

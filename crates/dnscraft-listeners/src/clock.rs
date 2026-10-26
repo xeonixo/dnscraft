@@ -79,6 +79,11 @@ impl Clock for ManualClock {
     }
 }
 
+/// `now + d`, saturating at [`SystemTime`] extremes on overflow.
+pub fn add_duration(now: SystemTime, d: Duration) -> SystemTime {
+    now.checked_add(d).unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
 /// Waits until `clock.now() >= deadline`.
 ///
 /// Uses [`Clock::tick_notify`] when present (manual clocks). Otherwise sleeps
