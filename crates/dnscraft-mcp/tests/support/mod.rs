@@ -11,17 +11,53 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use dnscraft_mcp::backend::{BackendError, McpBackend};
 use dnscraft_mcp::dto::{
     AddRuleParams, AddRuleResult, AuditEntry, ClientInfo, ClientListParams, ClientListResult,
-    ExplainBlockResult, ListRulesParams, ListRulesResult, NodeStatus, PauseDuration, PauseResult,
-    QType, QueryDetail, QueryLogEntry, QueryLogResult, QueryLogSearch, RemoveRuleParams,
-    RemoveRuleResult, ResumeResult, StatsParams, StatsResult, TempAllowParams, TempAllowResult,
-    TestQueryParams, TestQueryResult, TokenInfo, TokenScope,
+    ExplainBlockResult, ListRulesParams, ListRulesResult, McpRuleInfo, NodeStatus, PauseDuration,
+    PauseInfo, PauseResult, QType, QueryDetail, QueryLogEntry, QueryLogResult, QueryLogSearch,
+    RemoveRuleParams, RemoveRuleResult, ResumeResult, StatsParams, StatsResult, TempAllowInfo,
+    TempAllowParams, TempAllowResult, TestQueryParams, TestQueryResult, TokenInfo, TokenScope,
 };
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use tokio::sync::Notify;
 
 fn slot<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Whether `timestamp` is after the mock's `now`.
+fn active_after(timestamp: &str, now: &str) -> bool {
+    match (
+        OffsetDateTime::parse(timestamp, &Rfc3339),
+        OffsetDateTime::parse(now, &Rfc3339),
+    ) {
+        (Ok(timestamp), Ok(now)) => timestamp > now,
+        _ => false,
+    }
+}
+
+/// One paginated page.
+struct Page<T> {
+    items: Vec<T>,
+    has_more: bool,
+    next_offset: Option<u32>,
+}
+
+fn paginate<T: Clone>(items: &[T], offset: u32, limit: u32) -> Page<T> {
+    let page: Vec<T> = items
+        .iter()
+        .skip(offset as usize)
+        .take(limit as usize)
+        .cloned()
+        .collect();
+    let next = offset.saturating_add(page.len() as u32);
+    let has_more = (next as usize) < items.len();
+    Page {
+        items: page,
+        has_more,
+        next_offset: has_more.then_some(next),
+    }
 }
 
 /// Configurable in-memory backend.
@@ -58,6 +94,14 @@ pub struct MockBackend {
     client_error: Mutex<Option<BackendError>>,
     /// Parameters of the most recent `list_clients` call.
     pub last_clients: Mutex<Option<ClientListParams>>,
+    rules_filter_set: Mutex<String>,
+    rules_rules: Mutex<Vec<McpRuleInfo>>,
+    rules_allows: Mutex<Vec<TempAllowInfo>>,
+    rules_pauses: Mutex<Vec<PauseInfo>>,
+    rules_now: Mutex<String>,
+    rules_error: Mutex<Option<BackendError>>,
+    /// Parameters of the most recent `list_mcp_rules` call.
+    pub last_rules: Mutex<Option<ListRulesParams>>,
 }
 
 /// Decrements the active counter even when the tool future is cancelled.
@@ -172,6 +216,35 @@ impl MockBackend {
     /// Parameters of the most recent `list_clients` call.
     pub fn last_clients(&self) -> Option<ClientListParams> {
         slot(&self.last_clients).clone()
+    }
+
+    /// Seed the MCP-managed entries the mock can return.
+    pub fn set_rules(
+        &self,
+        filter_set_id: &str,
+        rules: Vec<McpRuleInfo>,
+        allows: Vec<TempAllowInfo>,
+        pauses: Vec<PauseInfo>,
+    ) {
+        *slot(&self.rules_filter_set) = filter_set_id.to_owned();
+        *slot(&self.rules_rules) = rules;
+        *slot(&self.rules_allows) = allows;
+        *slot(&self.rules_pauses) = pauses;
+    }
+
+    /// Set the instant used to drop expired MCP-managed entries.
+    pub fn set_rules_now(&self, now: &str) {
+        *slot(&self.rules_now) = now.to_owned();
+    }
+
+    /// Make `list_mcp_rules` fail with `error`.
+    pub fn set_rules_error(&self, error: BackendError) {
+        *slot(&self.rules_error) = Some(error);
+    }
+
+    /// Parameters of the most recent `list_mcp_rules` call.
+    pub fn last_rules(&self) -> Option<ListRulesParams> {
+        slot(&self.last_rules).clone()
     }
 
     fn status_result(&self) -> Result<NodeStatus, BackendError> {
@@ -312,9 +385,60 @@ impl McpBackend for MockBackend {
 
     async fn list_mcp_rules(
         &self,
-        _params: ListRulesParams,
+        params: ListRulesParams,
     ) -> Result<ListRulesResult, BackendError> {
-        Ok(ListRulesResult::default())
+        *slot(&self.last_rules) = Some(params.clone());
+        if let Some(error) = slot(&self.rules_error).clone() {
+            return Err(error);
+        }
+        let now = slot(&self.rules_now).clone();
+        let now = if now.is_empty() {
+            "2026-10-26T12:00:00Z".to_owned()
+        } else {
+            now
+        };
+        let filter_set_id = slot(&self.rules_filter_set).clone();
+        let mut result = ListRulesResult {
+            filter_set_id,
+            kind: params.kind.clone(),
+            ..ListRulesResult::default()
+        };
+        match params.kind.as_str() {
+            "temporary_allows" => {
+                let allows: Vec<TempAllowInfo> = slot(&self.rules_allows)
+                    .iter()
+                    .filter(|allow| active_after(&allow.expires_at, &now))
+                    .cloned()
+                    .collect();
+                let page = paginate(&allows, params.offset, params.limit);
+                result.temporary_allows = page.items;
+                result.has_more = page.has_more;
+                result.next_offset = page.next_offset;
+            }
+            "pauses" => {
+                let pauses: Vec<PauseInfo> = slot(&self.rules_pauses)
+                    .iter()
+                    .filter(|pause| active_after(&pause.paused_until, &now))
+                    .cloned()
+                    .collect();
+                let page = paginate(&pauses, params.offset, params.limit);
+                result.pauses = page.items;
+                result.has_more = page.has_more;
+                result.next_offset = page.next_offset;
+            }
+            _ => {
+                let rules: Vec<McpRuleInfo> = slot(&self.rules_rules)
+                    .iter()
+                    .filter(|rule| active_after(&rule.expires_at, &now))
+                    .cloned()
+                    .collect();
+                let page = paginate(&rules, params.offset, params.limit);
+                result.rules = page.items;
+                result.has_more = page.has_more;
+                result.next_offset = page.next_offset;
+            }
+        }
+        Ok(result)
     }
 
     async fn allow_temporarily(

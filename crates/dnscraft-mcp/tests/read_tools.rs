@@ -10,9 +10,9 @@ mod support;
 
 use dnscraft_mcp::dto::{
     AnswerRecord, ClientInfo, DecisionTimings, DnssecCounts, ExplainBlockResult, ExplainReason,
-    QType, QueryClient, QueryDetail, QueryLogEntry, QueryLogFilter, QueryName, QueryTimings,
-    Selection, StatsPeriod, StatsResult, SynthesizedAnswer, TestQueryFilter, TestQueryResult,
-    TopClient, TopDomain, VlanInfo,
+    McpRuleInfo, PauseInfo, QType, QueryClient, QueryDetail, QueryLogEntry, QueryLogFilter,
+    QueryName, QueryTimings, Selection, StatsPeriod, StatsResult, SynthesizedAnswer, TempAllowInfo,
+    TestQueryFilter, TestQueryResult, TopClient, TopDomain, VlanInfo,
 };
 use dnscraft_mcp::tools::read::TOP_LIST_LIMIT;
 use dnscraft_mcp::{BackendError, McpConfig};
@@ -1196,5 +1196,365 @@ async fn stats_and_clients_definitions_are_static_and_match_spec() {
     assert_eq!(
         clients["inputSchema"]["properties"]["source"]["enum"],
         json!(["unifi", "manual"])
+    );
+}
+
+fn mcp_rule(index: usize, expires_at: &str) -> McpRuleInfo {
+    McpRuleInfo {
+        id: format!("rule-{index:03}"),
+        domain: format!("blocked{index}.example"),
+        include_subdomains: true,
+        rule_text: format!("||blocked{index}.example^"),
+        created_at: "2026-10-26T10:30:00Z".into(),
+        expires_at: expires_at.into(),
+        filter_set_id: "default".into(),
+    }
+}
+
+fn temp_allow(index: usize, expires_at: &str) -> TempAllowInfo {
+    TempAllowInfo {
+        domain: format!("allowed{index}.example"),
+        include_subdomains: false,
+        created_at: "2026-10-26T10:30:00Z".into(),
+        expires_at: expires_at.into(),
+        filter_set_id: "default".into(),
+    }
+}
+
+fn pause(index: usize, paused_until: &str) -> PauseInfo {
+    PauseInfo {
+        filter_set_id: format!("set-{index}"),
+        paused_until: paused_until.into(),
+    }
+}
+
+#[tokio::test]
+async fn list_mcp_rules_schema_rejects_invalid_arguments() {
+    let server = harness::spawn(McpConfig::default()).await;
+    for arguments in [
+        json!({ "kind": "all" }),
+        json!({ "kind": "rules " }),
+        json!({ "kind": "rules", "limit": 0 }),
+        json!({ "kind": "rules", "limit": 501 }),
+        json!({ "kind": "rules", "limit": "100" }),
+        json!({ "kind": "rules", "offset": -1 }),
+        json!({ "filter_set_id": 5 }),
+        json!({ "extra": true }),
+    ] {
+        assert_invalid_input(&server, "list_mcp_rules", arguments).await;
+    }
+    assert!(server.backend.last_rules().is_none());
+}
+
+#[tokio::test]
+async fn list_mcp_rules_default_kind_and_pagination() {
+    let server = harness::spawn(McpConfig::default()).await;
+    let mut rules: Vec<McpRuleInfo> = (0..120)
+        .map(|index| mcp_rule(index, "2026-10-27T10:30:00Z"))
+        .collect();
+    rules.extend((120..123).map(|index| mcp_rule(index, "2026-10-25T10:30:00Z")));
+    server.backend.set_rules(
+        "default",
+        rules,
+        vec![temp_allow(0, "2026-10-27T10:30:00Z")],
+        vec![pause(0, "2026-10-27T10:30:00Z")],
+    );
+    server.backend.set_rules_now("2026-10-26T12:00:00Z");
+    let client = reqwest::Client::new();
+
+    let (status, body) = harness::tool_call(&client, &server, "list_mcp_rules", json!({})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    let output = harness::tool_output(&body);
+    assert_eq!(
+        keys(&output),
+        sorted(&["filter_set_id", "kind", "rules", "has_more", "next_offset"])
+    );
+    assert_eq!(
+        keys(&output["rules"][0]),
+        sorted(&[
+            "id",
+            "domain",
+            "include_subdomains",
+            "rule_text",
+            "created_at",
+            "expires_at",
+            "filter_set_id"
+        ])
+    );
+    assert_eq!(output["filter_set_id"], "default");
+    assert_eq!(output["kind"], "rules");
+    assert_eq!(output["rules"].as_array().unwrap().len(), 100);
+    assert_eq!(output["has_more"], true);
+    assert_eq!(output["next_offset"], 100);
+    let forwarded = server.backend.last_rules().unwrap();
+    assert_eq!(forwarded.kind, "rules");
+    assert_eq!((forwarded.limit, forwarded.offset), (100, 0));
+    assert_eq!(forwarded.filter_set_id, None);
+
+    let (_, body) =
+        harness::tool_call(&client, &server, "list_mcp_rules", json!({ "offset": 100 })).await;
+    let output = harness::tool_output(&body);
+    assert_eq!(
+        output["rules"].as_array().unwrap().len(),
+        20,
+        "expired rules are omitted"
+    );
+    assert_eq!(output["has_more"], false);
+    assert_eq!(output["next_offset"], Value::Null);
+
+    let (_, body) =
+        harness::tool_call(&client, &server, "list_mcp_rules", json!({ "limit": 500 })).await;
+    let output = harness::tool_output(&body);
+    assert_eq!(output["rules"].as_array().unwrap().len(), 120);
+}
+
+#[tokio::test]
+async fn list_mcp_rules_kinds_and_expiry() {
+    let server = harness::spawn(McpConfig::default()).await;
+    server.backend.set_rules(
+        "default",
+        vec![
+            mcp_rule(0, "2026-10-27T10:30:00Z"),
+            mcp_rule(1, "2026-10-25T10:30:00Z"),
+        ],
+        vec![
+            temp_allow(0, "2026-10-27T10:30:00Z"),
+            temp_allow(1, "2026-10-25T10:30:00Z"),
+        ],
+        vec![
+            pause(0, "2026-10-27T10:30:00Z"),
+            pause(1, "2026-10-25T10:30:00Z"),
+        ],
+    );
+    server.backend.set_rules_now("2026-10-26T12:00:00Z");
+    let client = reqwest::Client::new();
+
+    let (_, body) = harness::tool_call(
+        &client,
+        &server,
+        "list_mcp_rules",
+        json!({ "kind": "temporary_allows", "filter_set_id": "kids" }),
+    )
+    .await;
+    let output = harness::tool_output(&body);
+    assert_eq!(
+        keys(&output),
+        sorted(&[
+            "filter_set_id",
+            "kind",
+            "temporary_allows",
+            "has_more",
+            "next_offset"
+        ])
+    );
+    assert_eq!(output["kind"], "temporary_allows");
+    assert_eq!(output["temporary_allows"].as_array().unwrap().len(), 1);
+    assert_eq!(output["temporary_allows"][0]["domain"], "allowed0.example");
+    assert_eq!(
+        keys(&output["temporary_allows"][0]),
+        sorted(&[
+            "domain",
+            "include_subdomains",
+            "created_at",
+            "expires_at",
+            "filter_set_id"
+        ])
+    );
+    assert_eq!(
+        server
+            .backend
+            .last_rules()
+            .unwrap()
+            .filter_set_id
+            .as_deref(),
+        Some("kids")
+    );
+
+    let (_, body) = harness::tool_call(
+        &client,
+        &server,
+        "list_mcp_rules",
+        json!({ "kind": "pauses" }),
+    )
+    .await;
+    let output = harness::tool_output(&body);
+    assert_eq!(
+        keys(&output),
+        sorted(&["filter_set_id", "kind", "pauses", "has_more", "next_offset"])
+    );
+    assert_eq!(output["pauses"].as_array().unwrap().len(), 1);
+    assert_eq!(output["pauses"][0]["filter_set_id"], "set-0");
+    assert_eq!(
+        keys(&output["pauses"][0]),
+        sorted(&["filter_set_id", "paused_until"])
+    );
+
+    let (_, body) = harness::tool_call(
+        &client,
+        &server,
+        "list_mcp_rules",
+        json!({ "kind": "rules" }),
+    )
+    .await;
+    let output = harness::tool_output(&body);
+    assert_eq!(output["rules"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn list_mcp_rules_sanitizes_all_strings() {
+    let server = harness::spawn(McpConfig::default()).await;
+    server.backend.set_rules(
+        "fs\u{0007}",
+        vec![McpRuleInfo {
+            id: "id\u{0001}".into(),
+            domain: "bad\u{0007}.example".into(),
+            include_subdomains: true,
+            rule_text: "||bad.example^\n".into(),
+            created_at: "2026-10-26T10:30:00Z\n".into(),
+            expires_at: "2026-10-27T10:30:00Z".into(),
+            filter_set_id: "fs\t".into(),
+        }],
+        vec![TempAllowInfo {
+            domain: "allow\u{0000}.example".into(),
+            include_subdomains: false,
+            created_at: "2026-10-26T10:30:00Z\r".into(),
+            expires_at: "2026-10-27T10:30:00Z".into(),
+            filter_set_id: "fs\n".into(),
+        }],
+        vec![PauseInfo {
+            filter_set_id: "set\u{0007}".into(),
+            paused_until: "2026-10-27T10:30:00Z".into(),
+        }],
+    );
+    server.backend.set_rules_now("2026-10-26T12:00:00Z");
+    let client = reqwest::Client::new();
+
+    let (_, body) = harness::tool_call(&client, &server, "list_mcp_rules", json!({})).await;
+    let output = harness::tool_output(&body);
+    assert_eq!(output["filter_set_id"], "fs\u{FFFD}");
+    assert_eq!(output["rules"][0]["id"], "id\u{FFFD}");
+    assert_eq!(output["rules"][0]["domain"], "bad\u{FFFD}.example");
+    assert_eq!(output["rules"][0]["rule_text"], "||bad.example^\u{FFFD}");
+    assert_eq!(
+        output["rules"][0]["created_at"],
+        "2026-10-26T10:30:00Z\u{FFFD}"
+    );
+    assert_eq!(output["rules"][0]["expires_at"], "2026-10-27T10:30:00Z");
+    assert_eq!(output["rules"][0]["filter_set_id"], "fs\u{FFFD}");
+
+    let (_, body) = harness::tool_call(
+        &client,
+        &server,
+        "list_mcp_rules",
+        json!({ "kind": "temporary_allows" }),
+    )
+    .await;
+    let output = harness::tool_output(&body);
+    assert_eq!(
+        output["temporary_allows"][0]["domain"],
+        "allow\u{FFFD}.example"
+    );
+    assert_eq!(
+        output["temporary_allows"][0]["created_at"],
+        "2026-10-26T10:30:00Z\u{FFFD}"
+    );
+    assert_eq!(output["temporary_allows"][0]["filter_set_id"], "fs\u{FFFD}");
+
+    let (_, body) = harness::tool_call(
+        &client,
+        &server,
+        "list_mcp_rules",
+        json!({ "kind": "pauses" }),
+    )
+    .await;
+    let output = harness::tool_output(&body);
+    assert_eq!(output["pauses"][0]["filter_set_id"], "set\u{FFFD}");
+    assert_eq!(output["pauses"][0]["paused_until"], "2026-10-27T10:30:00Z");
+}
+
+#[tokio::test]
+async fn list_mcp_rules_error_mapping() {
+    let server = harness::spawn(McpConfig::default()).await;
+    let client = reqwest::Client::new();
+    server.backend.set_rules_error(BackendError::Coded {
+        code: "policy.config.unknown_filter_set".into(),
+        params: Some(json!({ "filter_set_id": "missing" })),
+    });
+    let (_, body) = harness::tool_call(&client, &server, "list_mcp_rules", json!({})).await;
+    assert_eq!(
+        harness::error_code(&body),
+        "policy.config.unknown_filter_set"
+    );
+    assert_eq!(
+        body["result"]["structuredContent"]["error"]["params"]["filter_set_id"],
+        "missing"
+    );
+
+    server.backend.set_rules_error(BackendError::Internal {
+        message: "secret rule store".into(),
+    });
+    let (_, body) = harness::tool_call(&client, &server, "list_mcp_rules", json!({})).await;
+    assert_eq!(harness::error_code(&body), "control_api.internal");
+    assert!(!body.to_string().contains("secret"), "{body}");
+}
+
+#[tokio::test]
+async fn list_mcp_rules_definition_and_read_scope_listing() {
+    let server = harness::spawn(McpConfig::default()).await;
+    let client = reqwest::Client::new();
+    let body = harness::list_tools(&client, &server).await;
+    let tools = body["result"]["tools"].as_array().unwrap();
+    assert_eq!(
+        tools.len(),
+        8,
+        "a read-scope token sees exactly the eight read tools"
+    );
+    let names: Vec<&str> = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    for name in [
+        "search_query_log",
+        "get_query",
+        "explain_block",
+        "test_query",
+        "get_stats",
+        "list_clients",
+        "get_status",
+        "list_mcp_rules",
+    ] {
+        assert!(names.contains(&name), "{name} missing from {names:?}");
+    }
+    for name in [
+        "allow_temporarily",
+        "add_rule",
+        "remove_rule",
+        "pause_filter_set",
+        "resume_filter_set",
+    ] {
+        assert!(!names.contains(&name), "{name} must stay hidden");
+    }
+
+    let rules = tools
+        .iter()
+        .find(|tool| tool["name"] == "list_mcp_rules")
+        .expect("list_mcp_rules is listed");
+    assert_eq!(
+        rules["description"],
+        "List MCP-managed block rules, active temporary allows, or active pauses for a filter set. Shows domain, subdomain flag, creation and expiry times. Use this to see what assistants changed and when it expires."
+    );
+    assert_eq!(rules["annotations"]["readOnlyHint"], true);
+    assert_eq!(rules["annotations"]["idempotentHint"], true);
+    assert_eq!(rules["annotations"]["openWorldHint"], false);
+    assert_eq!(
+        rules["inputSchema"]["properties"]["kind"]["default"],
+        "rules"
+    );
+    assert_eq!(rules["inputSchema"]["properties"]["limit"]["default"], 100);
+    assert_eq!(rules["inputSchema"]["properties"]["limit"]["maximum"], 500);
+    assert_eq!(
+        rules["inputSchema"]["properties"]["kind"]["enum"],
+        json!(["rules", "temporary_allows", "pauses"])
     );
 }
