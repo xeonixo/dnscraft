@@ -7,7 +7,10 @@ no-default-features = false
 
 [advisories]
 # RustSec advisory database (default URL). No ignores without a written reason.
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint timing side channel concerns private-key operations; the control API only verifies public-key (JWKS) signatures and never performs private-key operations" },
+    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing side channel concerns private-key decryption/signing; the control API only verifies public-key (JWKS) signatures and never performs private-key operations" },
+]
 
 [licenses]
 # Permissive licenses compatible with MIT OR Apache-2.0 dual-licensing of this

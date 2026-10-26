@@ -11,7 +11,7 @@ use tokio::net::TcpListener;
 use tower::ServiceExt as _;
 use tower::service_fn;
 
-use crate::api::auth::{AuthState, LocalAccountStore};
+use crate::api::auth::{AuthState, LocalAccountStore, OidcState};
 use crate::api::rate_limit::RateLimiter;
 use crate::clock::SystemClock;
 use crate::config::{ControlApiConfig, RateLimitConfig, is_internal_bind};
@@ -28,6 +28,7 @@ pub struct AppState {
     rate_limiter: Arc<RateLimiter>,
     auth: Option<Arc<AuthState>>,
     local_login: Option<Arc<LocalAccountStore>>,
+    oidc: Option<Arc<OidcState>>,
 }
 
 impl Default for AppState {
@@ -49,6 +50,7 @@ impl AppState {
             )),
             auth: None,
             local_login: None,
+            oidc: None,
         }
     }
 
@@ -80,6 +82,22 @@ impl AppState {
     /// The configured local-account store, if any.
     pub(crate) fn local_login_store(&self) -> Option<&LocalAccountStore> {
         self.local_login.as_deref()
+    }
+
+    /// Attaches the OIDC relying-party state.
+    ///
+    /// With OIDC configured (in addition to [`AppState::with_auth`]), the
+    /// router mounts the public `GET /api/v1/auth/oidc/authorize-url` and
+    /// `GET /api/v1/auth/oidc/callback` endpoints. Callback sessions are
+    /// created in the auth session store.
+    pub fn with_oidc(mut self, oidc: Arc<OidcState>) -> Self {
+        self.oidc = Some(oidc);
+        self
+    }
+
+    /// The configured OIDC state, if any.
+    pub(crate) fn oidc_state(&self) -> Option<&OidcState> {
+        self.oidc.as_deref()
     }
 
     /// Attaches the TLS status provider (from [`crate::ControlApiTls`]).

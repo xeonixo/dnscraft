@@ -57,6 +57,8 @@ rusqlite = { version = "0.40.0", features = ["bundled"] }
 axum = { version = "0.8.9", default-features = false, features = ["json", "query", "http1", "tokio", "tracing"] }
 tower-http = { version = "0.6.11", default-features = false, features = ["trace"] }
 argon2 = "0.6.0"
+openidconnect = { version = "4.0.1", default-features = false }
+chrono = { version = "0.4.35", default-features = false, features = ["std"] }
 
 [profile.release]
 lto = "thin"

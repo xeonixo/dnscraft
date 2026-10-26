@@ -28,7 +28,7 @@ mod tls;
 
 pub use api::auth::{
     Auth, AuthState, Authenticated, CreatedSession, CreatedToken, EndpointFamily,
-    LocalAccountStore, Principal, Role, Scope, SessionStore, TokenPrincipal, TokenStore,
+    LocalAccountStore, OidcState, Principal, Role, Scope, SessionStore, TokenPrincipal, TokenStore,
     auth_middleware, rbac_middleware, secure_cookie, session_set_cookie,
 };
 pub use api::rate_limit::{DEFAULT_MAX_TRACKED_SOURCES, RateLimiter};

@@ -287,12 +287,12 @@ clock (no wall-clock sleeps). The limiter is consulted in a single middleware.
   approval; no real Authentik/internet in CI.
 
 **Acceptance criteria:**
-- [ ] Happy path with the mock provider creates a session and maps viewer/admin by the groups claim.
-- [ ] Invalid signature, expired token, wrong audience, wrong issuer, missing nonce are rejected
+- [x] Happy path with the mock provider creates a session and maps viewer/admin by the groups claim.
+- [x] Invalid signature, expired token, wrong audience, wrong issuer, missing nonce are rejected
       with `control_api.auth.oidc` (regression tests).
-- [ ] State/nonce/PKCE are validated and one-time only; reuse fails.
-- [ ] alg=none and HS256/alg-confusion are rejected (threat-model regression test).
-- [ ] No real internet/OIDC provider is contacted in tests.
+- [x] State/nonce/PKCE are validated and one-time only; reuse fails.
+- [x] alg=none and HS256/alg-confusion are rejected (threat-model regression test).
+- [x] No real internet/OIDC provider is contacted in tests.
 
 **Verification:** `cargo test -p dnscraft-api auth_oidc`
 

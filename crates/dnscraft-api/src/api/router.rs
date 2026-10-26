@@ -10,6 +10,7 @@ use axum::routing::{get, post};
 use serde_json::json;
 
 use super::auth::local::local_login;
+use super::auth::oidc::{oidc_authorize_url, oidc_callback};
 use super::auth::tokens::create_token;
 use super::auth::{auth_middleware, rbac_middleware};
 use super::rate_limit::rate_limit;
@@ -27,6 +28,12 @@ pub(crate) fn build_router(state: AppState) -> Router {
         // Break-glass login is mounted only when local accounts are provisioned.
         if state.local_login_store().is_some() {
             api = api.route("/auth/local/login", post(local_login));
+        }
+        // OIDC is mounted only when the relying party is configured.
+        if state.oidc_state().is_some() {
+            api = api
+                .route("/auth/oidc/authorize-url", get(oidc_authorize_url))
+                .route("/auth/oidc/callback", get(oidc_callback));
         }
     }
 
