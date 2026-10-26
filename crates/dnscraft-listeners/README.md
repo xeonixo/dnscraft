@@ -16,7 +16,8 @@ N3: [`Admission`](struct.Admission.html) — source class, token buckets, bans.
 N4: Do53 [`serve_udp`](fn.serve_udp.html) — concrete + wildcard (`quinn-udp` 0.5.16).
 N5: Do53 [`serve_tcp`](fn.serve_tcp.html) — RFC 7766 framing, pipelining, idle timeout.
 
-Encrypted transports land in later tasks (N6–N14).
+Encrypted transports land in later tasks (N6–N14). Checkpoint B: e2e +
+`cargo run -p dnscraft-listeners --example serve` (dig `@127.0.0.1 -p 5353`).
 
 ## Crate layout (so far)
 

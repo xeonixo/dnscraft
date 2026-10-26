@@ -489,6 +489,7 @@ dependencies = [
  "dnscraft-policy",
  "dnscraft-proto",
  "dnscraft-resolver",
+ "dnscraft-testkit",
  "proptest",
  "quinn-udp",
  "socket2",

@@ -75,7 +75,7 @@ Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i o
 - [x] N5: Do53 TCP — RFC 7766 framing, pipelining, out-of-order, idle timeout, caps
 
 ### Checkpoint B: Do53 end to end
-- [ ] Do53 UDP/TCP against the real `PolicyEngine` on the testkit hierarchy (IPv4 + IPv6); `examples/serve.rs` answers `dig` on a high port; Claude review
+- [x] Do53 UDP/TCP against the real `PolicyEngine` on the testkit hierarchy (IPv4 + IPv6); `examples/serve.rs` answers `dig` on a high port; **Claude review pending**
 
 ### Phase 2: Encrypted transports
 - [ ] N6: TLS server configs from `CertResolver`, SNI admission, `no_cert` state, hot reload

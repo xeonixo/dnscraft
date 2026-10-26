@@ -161,8 +161,8 @@ when requested; max message 65 535; public source → close immediately.
 **Dependencies:** N2, N3 · **Files:** `src/tcp.rs`, `src/framing.rs`, `tests/tcp.rs` · **Scope:** M
 
 ## Checkpoint B: Do53 end to end
-- [ ] Do53 UDP + TCP against `PolicyEngine` built on the testkit hierarchy (view record, blocked name, recursion) on IPv4 + IPv6
-- [ ] `examples/serve.rs` (no config file: hard-coded loopback high ports + testkit-free real resolver from root) answers `dig @127.0.0.1 -p 5353 example.com` — owner can try it
+- [x] Do53 UDP + TCP against `PolicyEngine` built on the testkit hierarchy (view record, blocked name, recursion) on IPv4 + IPv6
+- [x] `examples/serve.rs` (no config file: hard-coded loopback high ports + testkit-free real resolver from root) answers `dig @127.0.0.1 -p 5353 example.com` — owner can try it
 - [ ] DoD green; Claude review; progress.md updated
 
 ## Phase 2: Encrypted transports
