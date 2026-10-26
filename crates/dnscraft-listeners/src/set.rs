@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use dnscraft_policy::{ListenerId, PolicyEngine};
 use dnscraft_tls::{CertResolver, ClientIdRegistry, ReservedLabels};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{Mutex as AsyncMutex, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::admission::Admission;
@@ -39,6 +39,7 @@ pub struct ListenerSet<H: QueryHandler + ?Sized = PolicyEngine> {
     ddr: Arc<RwLock<DdrEndpoints>>,
     public_domain: String,
     inner: Mutex<Inner>,
+    apply_lock: AsyncMutex<()>,
 }
 
 struct Inner {
@@ -162,6 +163,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                 config: config.clone(),
                 running: HashMap::new(),
             }),
+            apply_lock: AsyncMutex::new(()),
         };
 
         for listener in &config.listeners {
@@ -172,7 +174,10 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
     }
 
     /// Rebinds only listeners whose [`ListenerConfig`] changed; unchanged keep sockets.
+    ///
+    /// Serialized so concurrent reloads cannot interleave their stop/start phases.
     pub async fn apply_config(&self, cfg: ListenersConfig) -> Result<(), ListenersError> {
+        let _apply = self.apply_lock.lock().await;
         cfg.validate()?;
 
         let (to_stop, to_start, limits, rebuild_admission, reserved) = {

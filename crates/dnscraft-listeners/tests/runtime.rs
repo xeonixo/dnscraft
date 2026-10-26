@@ -345,6 +345,41 @@ async fn runtime_apply_limits_change_enforces_new_per_source_cap() {
     set.shutdown(Duration::from_secs(2)).await;
 }
 
+#[tokio::test]
+async fn runtime_concurrent_apply_config_ends_consistent() {
+    let base = base_cfg(vec![udp_cfg(
+        "lan-udp",
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+    )]);
+    let (sink, _rx) = ChannelSink::new(64);
+    let handler = Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(192, 0, 2, 6))));
+    let set = start_set(base.clone(), handler, sink).await;
+
+    let mut a = base.clone();
+    a.listeners.push(udp_cfg(
+        "udp-a",
+        SocketAddr::from((Ipv4Addr::new(127, 0, 0, 2), 0)),
+    ));
+    let mut b = base;
+    b.listeners.push(udp_cfg(
+        "udp-b",
+        SocketAddr::from((Ipv4Addr::new(127, 0, 0, 3), 0)),
+    ));
+
+    let (ra, rb) = tokio::join!(set.apply_config(a), set.apply_config(b));
+    ra.unwrap();
+    rb.unwrap();
+
+    let status = set.status();
+    let ids: Vec<&str> = status.listeners.iter().map(|l| l.id.as_str()).collect();
+    assert!(
+        ids == ["lan-udp", "udp-a"] || ids == ["lan-udp", "udp-b"],
+        "final listeners must match exactly one config, got {ids:?}"
+    );
+
+    set.shutdown(Duration::from_secs(2)).await;
+}
+
 struct GateHandler {
     entered: Arc<Notify>,
     release: Arc<Notify>,
