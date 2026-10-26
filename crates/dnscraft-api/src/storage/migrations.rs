@@ -85,6 +85,8 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     BEGIN
         SELECT RAISE(ABORT, 'audit_log is append-only');
     END;",
+    // v3: cookie sessions carry a viewer/admin role (A6).
+    "ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'viewer';",
 ];
 
 /// Applies every migration newer than the recorded version, then records it.
@@ -120,7 +122,7 @@ mod tests {
     fn audit_log_rejects_update_and_delete_after_v2() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 2);
+        assert_eq!(schema_version(&conn).unwrap(), 3);
 
         conn.execute(
             "INSERT INTO audit_log (

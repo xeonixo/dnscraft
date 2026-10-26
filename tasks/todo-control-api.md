@@ -192,12 +192,12 @@ clock (no wall-clock sleeps). The limiter is consulted in a single middleware.
   bearer-token requests are exempt.
 
 **Acceptance criteria:**
-- [ ] Session id is stored only as a hash; the plaintext is never persisted.
-- [ ] Idle and absolute expiry are enforced with a manual clock (no sleeps).
-- [ ] CSRF: a mutating cookie-session request without/with a wrong token is rejected with
+- [x] Session id is stored only as a hash; the plaintext is never persisted.
+- [x] Idle and absolute expiry are enforced with a manual clock (no sleeps).
+- [x] CSRF: a mutating cookie-session request without/with a wrong token is rejected with
       `control_api.auth.csrf`; a bearer-token request without CSRF is accepted (regression test).
-- [ ] Logout invalidates the session immediately.
-- [ ] Cookie sessions are `viewer`/`admin` only and authorize `/api/v1` only; a session cookie on `/mcp/v1` is not accepted (MCP uses bearer tokens exclusively).
+- [x] Logout invalidates the session immediately.
+- [x] Cookie sessions are `viewer`/`admin` only and authorize `/api/v1` only; a session cookie on `/mcp/v1` is not accepted (MCP uses bearer tokens exclusively).
 
 **Verification:** `cargo test -p dnscraft-api auth_session`
 

@@ -26,6 +26,10 @@ mod server;
 mod storage;
 mod tls;
 
+pub use api::auth::{
+    Auth, CreatedSession, Principal, Role, SessionStore, auth_middleware, secure_cookie,
+    session_set_cookie,
+};
 pub use api::rate_limit::{DEFAULT_MAX_TRACKED_SOURCES, RateLimiter};
 pub use audit::{Audit, ConfigChangeRecord};
 pub use clock::{Clock, ManualClock, SystemClock};
