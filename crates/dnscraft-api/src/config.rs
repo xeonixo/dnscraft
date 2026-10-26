@@ -1,0 +1,501 @@
+//! Control-API configuration values (no TOML parsing — the binary does that later).
+
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::time::Duration;
+
+use crate::error::ControlApiError;
+
+/// Default bind address (loopback; the API is always internal-only).
+pub const DEFAULT_BIND: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+/// Default TCP listen port.
+pub const DEFAULT_PORT: u16 = 8080;
+
+/// Default query-log retention window in days.
+pub const DEFAULT_RETENTION_DAYS: u32 = 30;
+/// Default maximum rows per query-log request.
+pub const DEFAULT_MAX_ROWS_PER_REQUEST: u32 = 10_000;
+
+/// Default failed local-login attempts before lockout.
+pub const DEFAULT_LOCAL_LOGIN_MAX_ATTEMPTS: u32 = 5;
+/// Default local-login lock window.
+pub const DEFAULT_LOCAL_LOGIN_LOCK_WINDOW: Duration = Duration::from_secs(15 * 60);
+/// Default allowed clock skew for OIDC `iat`/`exp` validation.
+pub const DEFAULT_OIDC_TOKEN_SKEW: Duration = Duration::from_secs(30);
+/// Default maximum lifetime of a newly issued API token.
+pub const DEFAULT_API_TOKEN_MAX_TTL: Duration = Duration::from_secs(365 * 24 * 3600);
+/// Default browser-session idle timeout (spec "Decisions": 60 min).
+pub const DEFAULT_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// Default browser-session absolute lifetime (spec "Decisions": 12 h).
+pub const DEFAULT_SESSION_ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(12 * 3600);
+
+/// Default read-endpoint rate (tokens/second).
+pub const DEFAULT_READ_PER_SECOND: u32 = 100;
+/// Default write-endpoint rate (tokens/second).
+pub const DEFAULT_WRITE_PER_SECOND: u32 = 20;
+/// Default auth-endpoint rate (tokens/second).
+pub const DEFAULT_AUTH_PER_SECOND: u32 = 10;
+/// Default burst multiplier (burst = per_second * factor).
+pub const DEFAULT_BURST_FACTOR: u32 = 2;
+
+// Validation bounds (documented in SPEC-control-api.md "Limits/defaults").
+const MIN_RETENTION_DAYS: u32 = 1;
+const MAX_RETENTION_DAYS: u32 = 3650;
+const MIN_MAX_ROWS_PER_REQUEST: u32 = 100;
+const MAX_MAX_ROWS_PER_REQUEST: u32 = 100_000;
+const MIN_LOCAL_LOGIN_MAX_ATTEMPTS: u32 = 1;
+const MAX_LOCAL_LOGIN_MAX_ATTEMPTS: u32 = 20;
+const MIN_LOCAL_LOGIN_LOCK_WINDOW: Duration = Duration::from_secs(60);
+const MAX_LOCAL_LOGIN_LOCK_WINDOW: Duration = Duration::from_secs(24 * 3600);
+const MIN_OIDC_TOKEN_SKEW: Duration = Duration::from_secs(5);
+const MAX_OIDC_TOKEN_SKEW: Duration = Duration::from_secs(300);
+const MIN_API_TOKEN_MAX_TTL: Duration = Duration::from_secs(24 * 3600);
+const MAX_API_TOKEN_MAX_TTL: Duration = Duration::from_secs(3650 * 24 * 3600);
+const MIN_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const MAX_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
+const MIN_SESSION_ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(3600);
+const MAX_SESSION_ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(7 * 24 * 3600);
+
+/// IP truncation level for persisted query-log records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum IpTruncate {
+    /// Keep the full source IP.
+    None,
+    /// IPv4: zero the last octet (`x.x.x.0`); default for new installs.
+    #[default]
+    LastOctet,
+    /// IPv6: keep the first 48 bits.
+    LastGroup,
+}
+
+impl IpTruncate {
+    /// Wire / config name (`none`, `last_octet`, `last_group`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::LastOctet => "last_octet",
+            Self::LastGroup => "last_group",
+        }
+    }
+
+    /// Parses the wire/config name; unknown values are rejected with the config code.
+    pub fn parse(s: &str) -> Result<Self, ControlApiError> {
+        match s.trim() {
+            "none" => Ok(Self::None),
+            "last_octet" => Ok(Self::LastOctet),
+            "last_group" => Ok(Self::LastGroup),
+            other => Err(ControlApiError::config(format!(
+                "ip_truncate must be `none`, `last_octet` or `last_group`, got `{other}`"
+            ))),
+        }
+    }
+}
+
+/// Authentication settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthConfig {
+    /// Whether OIDC login is enabled.
+    pub oidc_enabled: bool,
+    /// OIDC issuer URL (discovery base).
+    pub oidc_issuer: String,
+    /// OIDC client id.
+    pub oidc_client_id: String,
+    /// OIDC client secret (env-only in the binary; never persisted by control-api).
+    pub oidc_client_secret: String,
+    /// Group name that maps to the `admin` role.
+    pub oidc_admin_group: String,
+    /// Allowed clock skew when validating `iat`/`exp` (5–300 s).
+    pub oidc_token_skew: Duration,
+    /// Whether the local break-glass login is enabled.
+    pub local_login_enabled: bool,
+    /// Failed attempts before a local account locks (1–20).
+    pub local_login_max_attempts: u32,
+    /// Sliding window in which local-login failures accumulate (1 m–24 h).
+    pub local_login_lock_window: Duration,
+    /// Maximum lifetime of a newly issued API token (1–3650 d).
+    pub api_token_max_ttl: Duration,
+    /// Idle timeout for a browser session (5 m–24 h).
+    pub session_idle_timeout: Duration,
+    /// Absolute lifetime for a browser session (1 h–7 d).
+    pub session_absolute_timeout: Duration,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            oidc_enabled: true,
+            oidc_issuer: String::new(),
+            oidc_client_id: String::new(),
+            oidc_client_secret: String::new(),
+            oidc_admin_group: "dnscraft-admin".into(),
+            oidc_token_skew: DEFAULT_OIDC_TOKEN_SKEW,
+            local_login_enabled: true,
+            local_login_max_attempts: DEFAULT_LOCAL_LOGIN_MAX_ATTEMPTS,
+            local_login_lock_window: DEFAULT_LOCAL_LOGIN_LOCK_WINDOW,
+            api_token_max_ttl: DEFAULT_API_TOKEN_MAX_TTL,
+            session_idle_timeout: DEFAULT_SESSION_IDLE_TIMEOUT,
+            session_absolute_timeout: DEFAULT_SESSION_ABSOLUTE_TIMEOUT,
+        }
+    }
+}
+
+/// Query-log storage settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryLogConfig {
+    /// Retention window in days (1–3650).
+    pub retention_days: u32,
+    /// Source-IP truncation for persisted records.
+    pub ip_truncate: IpTruncate,
+    /// Maximum rows any single query-log request may return (100–100000).
+    pub max_rows_per_request: u32,
+}
+
+impl Default for QueryLogConfig {
+    fn default() -> Self {
+        Self {
+            retention_days: DEFAULT_RETENTION_DAYS,
+            ip_truncate: IpTruncate::default(),
+            max_rows_per_request: DEFAULT_MAX_ROWS_PER_REQUEST,
+        }
+    }
+}
+
+/// Rate-limit settings for the internal API.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RateLimitConfig {
+    /// Read endpoints: tokens per second.
+    pub read_per_second: u32,
+    /// Write endpoints: tokens per second.
+    pub write_per_second: u32,
+    /// Auth endpoints: tokens per second.
+    pub auth_per_second: u32,
+    /// Burst multiplier (burst = per_second * factor).
+    pub burst_factor: u32,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            read_per_second: DEFAULT_READ_PER_SECOND,
+            write_per_second: DEFAULT_WRITE_PER_SECOND,
+            auth_per_second: DEFAULT_AUTH_PER_SECOND,
+            burst_factor: DEFAULT_BURST_FACTOR,
+        }
+    }
+}
+
+/// Full control-api bootstrap configuration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControlApiConfig {
+    /// Bind address. Must be loopback/private/ULA (never `0.0.0.0`/`::`).
+    pub bind: IpAddr,
+    /// TCP listen port.
+    pub port: u16,
+    /// Serve direct TLS via the `tls` module `CertResolver` (with self-signed bootstrap).
+    pub tls: bool,
+    /// Reverse-proxy addresses allowed to set forwarded headers (used when `tls == false`).
+    pub trusted_proxies: Vec<IpAddr>,
+    /// Authentication settings.
+    pub auth: AuthConfig,
+    /// Query-log settings.
+    pub query_log: QueryLogConfig,
+    /// Rate limits.
+    pub rate_limit: RateLimitConfig,
+}
+
+impl Default for ControlApiConfig {
+    fn default() -> Self {
+        Self {
+            bind: DEFAULT_BIND,
+            port: DEFAULT_PORT,
+            tls: true,
+            trusted_proxies: Vec::new(),
+            auth: AuthConfig::default(),
+            query_log: QueryLogConfig::default(),
+            rate_limit: RateLimitConfig::default(),
+        }
+    }
+}
+
+impl ControlApiConfig {
+    /// Validates the bind address, port and each sub-section against the spec limits.
+    pub fn validate(&self) -> Result<(), ControlApiError> {
+        if !is_internal_bind(self.bind) {
+            return Err(ControlApiError::config(format!(
+                "bind address {} is not loopback/private/ULA",
+                self.bind
+            )));
+        }
+        if self.port == 0 {
+            return Err(ControlApiError::config("port must be > 0"));
+        }
+        validate_auth(&self.auth)?;
+        validate_query_log(&self.query_log)?;
+        validate_rate_limit(&self.rate_limit)?;
+        Ok(())
+    }
+}
+
+fn validate_auth(a: &AuthConfig) -> Result<(), ControlApiError> {
+    if a.local_login_max_attempts < MIN_LOCAL_LOGIN_MAX_ATTEMPTS
+        || a.local_login_max_attempts > MAX_LOCAL_LOGIN_MAX_ATTEMPTS
+    {
+        return Err(ControlApiError::config(format!(
+            "auth.local_login_max_attempts must be {MIN_LOCAL_LOGIN_MAX_ATTEMPTS}..={MAX_LOCAL_LOGIN_MAX_ATTEMPTS}, got {}",
+            a.local_login_max_attempts
+        )));
+    }
+    check_duration_range(
+        "auth.local_login_lock_window",
+        a.local_login_lock_window,
+        MIN_LOCAL_LOGIN_LOCK_WINDOW,
+        MAX_LOCAL_LOGIN_LOCK_WINDOW,
+    )?;
+    check_duration_range(
+        "auth.oidc_token_skew",
+        a.oidc_token_skew,
+        MIN_OIDC_TOKEN_SKEW,
+        MAX_OIDC_TOKEN_SKEW,
+    )?;
+    check_duration_range(
+        "auth.api_token_max_ttl",
+        a.api_token_max_ttl,
+        MIN_API_TOKEN_MAX_TTL,
+        MAX_API_TOKEN_MAX_TTL,
+    )?;
+    check_duration_range(
+        "auth.session_idle_timeout",
+        a.session_idle_timeout,
+        MIN_SESSION_IDLE_TIMEOUT,
+        MAX_SESSION_IDLE_TIMEOUT,
+    )?;
+    check_duration_range(
+        "auth.session_absolute_timeout",
+        a.session_absolute_timeout,
+        MIN_SESSION_ABSOLUTE_TIMEOUT,
+        MAX_SESSION_ABSOLUTE_TIMEOUT,
+    )?;
+    Ok(())
+}
+
+fn validate_query_log(q: &QueryLogConfig) -> Result<(), ControlApiError> {
+    if q.retention_days < MIN_RETENTION_DAYS || q.retention_days > MAX_RETENTION_DAYS {
+        return Err(ControlApiError::config(format!(
+            "query_log.retention_days must be {MIN_RETENTION_DAYS}..={MAX_RETENTION_DAYS}, got {}",
+            q.retention_days
+        )));
+    }
+    if q.max_rows_per_request < MIN_MAX_ROWS_PER_REQUEST
+        || q.max_rows_per_request > MAX_MAX_ROWS_PER_REQUEST
+    {
+        return Err(ControlApiError::config(format!(
+            "query_log.max_rows_per_request must be {MIN_MAX_ROWS_PER_REQUEST}..={MAX_MAX_ROWS_PER_REQUEST}, got {}",
+            q.max_rows_per_request
+        )));
+    }
+    Ok(())
+}
+
+fn validate_rate_limit(r: &RateLimitConfig) -> Result<(), ControlApiError> {
+    if r.read_per_second == 0 {
+        return Err(ControlApiError::config(
+            "rate_limit.read_per_second must be > 0",
+        ));
+    }
+    if r.write_per_second == 0 {
+        return Err(ControlApiError::config(
+            "rate_limit.write_per_second must be > 0",
+        ));
+    }
+    if r.auth_per_second == 0 {
+        return Err(ControlApiError::config(
+            "rate_limit.auth_per_second must be > 0",
+        ));
+    }
+    if r.burst_factor == 0 {
+        return Err(ControlApiError::config(
+            "rate_limit.burst_factor must be > 0",
+        ));
+    }
+    Ok(())
+}
+
+fn check_duration_range(
+    name: &str,
+    value: Duration,
+    min: Duration,
+    max: Duration,
+) -> Result<(), ControlApiError> {
+    if value < min || value > max {
+        return Err(ControlApiError::config(format!(
+            "{name} must be within {}..={} seconds, got {} seconds",
+            min.as_secs(),
+            max.as_secs(),
+            value.as_secs()
+        )));
+    }
+    Ok(())
+}
+
+/// Whether an address may host the internal-only API (loopback/private/ULA, never wildcard).
+fn is_internal_bind(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => is_private_v4(v4),
+        IpAddr::V6(v6) => is_private_v6(v6),
+    }
+}
+
+fn is_private_v4(v4: Ipv4Addr) -> bool {
+    v4.is_private() || v4.is_loopback() || v4.is_link_local() || is_cgnat(v4)
+}
+
+fn is_private_v6(v6: Ipv6Addr) -> bool {
+    v6.is_loopback() || v6.is_unicast_link_local() || v6.is_unique_local()
+}
+
+fn is_cgnat(v4: Ipv4Addr) -> bool {
+    let o = v4.octets();
+    o[0] == 100 && (o[1] & 0xc0) == 64
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::field_reassign_with_default
+)]
+mod tests {
+    use super::*;
+
+    fn config_with_bind(addr: &str) -> ControlApiConfig {
+        let mut c = ControlApiConfig::default();
+        c.bind = addr.parse().unwrap();
+        c
+    }
+
+    #[test]
+    fn bind_accepts_loopback_private_and_ula() {
+        for addr in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "192.168.1.10",
+            "172.16.0.1",
+            "100.64.0.1",
+            "::1",
+            "fd00::1",
+        ] {
+            assert!(
+                config_with_bind(addr).validate().is_ok(),
+                "{addr} should be an allowed bind address"
+            );
+        }
+    }
+
+    #[test]
+    fn bind_rejects_wildcard_and_public() {
+        for addr in [
+            "0.0.0.0",
+            "::",
+            "8.8.8.8",
+            "1.1.1.1",
+            "2606:4700:4700::1111",
+        ] {
+            let err = config_with_bind(addr).validate().unwrap_err();
+            assert_eq!(
+                err.code(),
+                "control_api.config.invalid",
+                "{addr} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn query_log_limits_return_config_code() {
+        let mut c = ControlApiConfig::default();
+        c.query_log.retention_days = 0;
+        assert_eq!(
+            c.validate().unwrap_err().code(),
+            "control_api.config.invalid"
+        );
+        c.query_log.retention_days = MAX_RETENTION_DAYS + 1;
+        assert_eq!(
+            c.validate().unwrap_err().code(),
+            "control_api.config.invalid"
+        );
+
+        let mut c = ControlApiConfig::default();
+        c.query_log.max_rows_per_request = MIN_MAX_ROWS_PER_REQUEST - 1;
+        assert_eq!(
+            c.validate().unwrap_err().code(),
+            "control_api.config.invalid"
+        );
+        c.query_log.max_rows_per_request = MAX_MAX_ROWS_PER_REQUEST + 1;
+        assert_eq!(
+            c.validate().unwrap_err().code(),
+            "control_api.config.invalid"
+        );
+    }
+
+    #[test]
+    fn ip_truncate_parse_rejects_unknown() {
+        assert_eq!(IpTruncate::parse("none").unwrap(), IpTruncate::None);
+        assert_eq!(
+            IpTruncate::parse("last_octet").unwrap(),
+            IpTruncate::LastOctet
+        );
+        assert_eq!(
+            IpTruncate::parse("last_group").unwrap(),
+            IpTruncate::LastGroup
+        );
+        assert_eq!(
+            IpTruncate::parse("everything").unwrap_err().code(),
+            "control_api.config.invalid"
+        );
+    }
+
+    #[test]
+    fn rate_limit_values_return_config_code() {
+        let mut c = ControlApiConfig::default();
+        c.rate_limit.read_per_second = 0;
+        assert_eq!(
+            c.validate().unwrap_err().code(),
+            "control_api.config.invalid"
+        );
+
+        let mut c = ControlApiConfig::default();
+        c.rate_limit.burst_factor = 0;
+        assert_eq!(
+            c.validate().unwrap_err().code(),
+            "control_api.config.invalid"
+        );
+    }
+
+    #[test]
+    fn ttl_values_return_config_code() {
+        let mut c = ControlApiConfig::default();
+        c.auth.local_login_lock_window = Duration::from_secs(30); // below 1 m
+        assert_eq!(
+            c.validate().unwrap_err().code(),
+            "control_api.config.invalid"
+        );
+
+        let mut c = ControlApiConfig::default();
+        c.auth.session_absolute_timeout = Duration::from_secs(30 * 60); // below 1 h
+        assert_eq!(
+            c.validate().unwrap_err().code(),
+            "control_api.config.invalid"
+        );
+
+        let mut c = ControlApiConfig::default();
+        c.auth.api_token_max_ttl = Duration::from_secs(4000 * 24 * 3600); // above 3650 d
+        assert_eq!(
+            c.validate().unwrap_err().code(),
+            "control_api.config.invalid"
+        );
+    }
+
+    #[test]
+    fn default_config_is_valid() {
+        assert!(ControlApiConfig::default().validate().is_ok());
+    }
+}

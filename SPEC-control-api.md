@@ -4,7 +4,7 @@
 > (reads `resolver`, `listeners`, `tls` state only through narrow read traits / status handles)
 > Project-wide decisions: [SPEC.md](SPEC.md)
 > Consumers later: `web-ui`, `mcp`, `cluster`
-> Status: DRAFT, owner questions decided 2026-10-26 (see "Decisions"); awaiting final approval
+> Status: APPROVED 2026-10-26 (owner approved the plan and dependency table); decisions resolved — see "Decisions"
 
 ## Objective
 

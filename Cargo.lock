@@ -438,6 +438,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dnscraft-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "dnscraft-clients"
 version = "0.1.0"
 dependencies = [
