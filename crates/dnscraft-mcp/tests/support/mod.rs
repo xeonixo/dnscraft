@@ -45,6 +45,12 @@ pub struct MockBackend {
     query_detail: Mutex<Option<Result<QueryDetail, BackendError>>>,
     /// Id of the most recent `get_query` call.
     pub last_query_id: Mutex<Option<String>>,
+    explain_result: Mutex<Option<Result<ExplainBlockResult, BackendError>>>,
+    /// Arguments of the most recent `explain_block` call.
+    pub last_explain: Mutex<Option<(String, Option<String>, QType)>>,
+    test_query_result: Mutex<Option<Result<TestQueryResult, BackendError>>>,
+    /// Parameters of the most recent `test_query` call.
+    pub last_test_query: Mutex<Option<TestQueryParams>>,
 }
 
 /// Decrements the active counter even when the tool future is cancelled.
@@ -114,6 +120,26 @@ impl MockBackend {
     /// Id of the most recent `get_query` call.
     pub fn last_query_id(&self) -> Option<String> {
         slot(&self.last_query_id).clone()
+    }
+
+    /// Set the `explain_block` result.
+    pub fn set_explain(&self, value: Result<ExplainBlockResult, BackendError>) {
+        *slot(&self.explain_result) = Some(value);
+    }
+
+    /// Arguments of the most recent `explain_block` call.
+    pub fn last_explain(&self) -> Option<(String, Option<String>, QType)> {
+        slot(&self.last_explain).clone()
+    }
+
+    /// Set the `test_query` result.
+    pub fn set_test_query(&self, value: Result<TestQueryResult, BackendError>) {
+        *slot(&self.test_query_result) = Some(value);
+    }
+
+    /// Parameters of the most recent `test_query` call.
+    pub fn last_test_query(&self) -> Option<TestQueryParams> {
+        slot(&self.last_test_query).clone()
     }
 
     fn status_result(&self) -> Result<NodeStatus, BackendError> {
@@ -194,15 +220,21 @@ impl McpBackend for MockBackend {
 
     async fn explain_block(
         &self,
-        _domain: &str,
-        _profile_id: Option<&str>,
-        _qtype: QType,
+        domain: &str,
+        profile_id: Option<&str>,
+        qtype: QType,
     ) -> Result<ExplainBlockResult, BackendError> {
-        Ok(ExplainBlockResult::default())
+        *slot(&self.last_explain) = Some((domain.to_owned(), profile_id.map(str::to_owned), qtype));
+        slot(&self.explain_result)
+            .clone()
+            .unwrap_or_else(|| Ok(ExplainBlockResult::default()))
     }
 
-    async fn test_query(&self, _params: TestQueryParams) -> Result<TestQueryResult, BackendError> {
-        Ok(TestQueryResult::default())
+    async fn test_query(&self, params: TestQueryParams) -> Result<TestQueryResult, BackendError> {
+        *slot(&self.last_test_query) = Some(params);
+        slot(&self.test_query_result)
+            .clone()
+            .unwrap_or_else(|| Ok(TestQueryResult::default()))
     }
 
     async fn get_stats(&self, _params: StatsParams) -> Result<StatsResult, BackendError> {
