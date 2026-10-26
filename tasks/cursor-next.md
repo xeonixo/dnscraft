@@ -9,7 +9,7 @@
 ## Status (updated 2026-10-25)
 
 - `resolver`, `filtering`, `clients`, `tls`, `policy`: complete.
-- `listeners`: L0 + N0–N4 done, Checkpoint A approved 2026-10-25; Phase 1 next **N5**, STOP at Checkpoint B.
+- `listeners`: L0 + N0–N5 done, Checkpoint A approved 2026-10-25; **next: Checkpoint B** (Do53 e2e + serve example), then STOP for Claude review.
 
 ## Rules for every task (paste once per session)
 

@@ -152,11 +152,11 @@ writer task per connection; idle timeout `tcp_idle_timeout`; edns-tcp-keepalive 
 when requested; max message 65 535; public source → close immediately.
 
 **Acceptance criteria:**
-- [ ] Pipelined queries with a slow first answer (FakeHandler delay via `Notify`, not sleep) come back out of order with the right ids
-- [ ] Idle timeout and both connection caps tested
-- [ ] Half-written length prefix / oversize length → connection closed, counter incremented
+- [x] Pipelined queries with a slow first answer (FakeHandler delay via `Notify`, not sleep) come back out of order with the right ids
+- [x] Idle timeout and both connection caps tested
+- [x] Half-written length prefix / oversize length → connection closed, counter incremented
 
-**Verification:** `cargo test -p dnscraft-listeners tcp`
+**Verification:** `cargo test -p dnscraft-listeners --test tcp`
 
 **Dependencies:** N2, N3 · **Files:** `src/tcp.rs`, `src/framing.rs`, `tests/tcp.rs` · **Scope:** M
 

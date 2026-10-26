@@ -9,6 +9,7 @@
 //! N2: transport-independent [`handle_wire`] (validation, EDNS, padding).
 //! N3: [`Admission`] (source class, rate limits, bans).
 //! N4: Do53 [`serve_udp`].
+//! N5: Do53 [`serve_tcp`] (length-prefix framing, pipelining).
 
 #![deny(missing_docs)]
 
@@ -19,9 +20,11 @@ mod config;
 mod core;
 mod edns;
 mod error;
+mod framing;
 mod handler;
 mod ratelimit;
 mod socket;
+mod tcp;
 mod udp;
 
 pub use admission::{Admission, AdmitDecision, ClientIdState, SourceClass};
@@ -37,6 +40,10 @@ pub use config::{
 pub use core::{HandleWireResult, QueryEvent, QueryMeta, handle_wire};
 pub use edns::{PAD_BLOCK, build_response_edns, encode_padded, strip_ecs};
 pub use error::ListenersError;
+pub use framing::{FrameError, MAX_MESSAGE_LEN, read_frame, write_frame};
 pub use handler::{FakeHandler, QueryHandler};
 pub use socket::{bind_tcp, bind_udp};
+pub use tcp::{
+    OPTION_TCP_KEEPALIVE, TcpServeParams, TcpStats, duration_to_keepalive_units, serve_tcp,
+};
 pub use udp::{CLASSIC_UDP_LIMIT, UdpServeParams, UdpStats, serve_udp, udp_size_limit};

@@ -21,7 +21,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | N4 done; **next: N5** (Phase 1: N5, STOP at Checkpoint B) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
+| `listeners` | N5 done; **next: Checkpoint B** (Do53 e2e + `examples/serve.rs`; STOP for Claude review) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -34,6 +34,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-25 — **listeners: N5 Do53 TCP.** `serve_tcp` / `TcpServeParams`: accept with `max_connections_per_listener` + `max_connections_per_source`; public Do53 → close; per connection 2-byte framing (`framing::read_frame`/`write_frame`), pipelined queries with one writer task (out-of-order answers), idle via `wait_until` + `tcp_idle_timeout`, edns-tcp-keepalive (option 11) echoed with idle units when requested; max message 65 535. `TcpStats` counters. Tests: pipeline Notify out-of-order, ManualClock idle, both caps, half-prefix/zero-length framing, keepalive. DoD green. Next: Checkpoint B.
 
 - 2026-10-25 — **listeners: N4 Do53 UDP.** `serve_udp`: concrete binds via tokio `recv_from`/`send_to`; wildcard (`0.0.0.0`/`::`) via `quinn-udp` 0.5.16 (`RecvMeta.dst_ip` → `Transmit.src_ip`), driven by `readable()` + `try_io` (no sleep loops). Per datagram: admission → in-flight semaphore → `handle_wire` with `udp_size_limit` (EDNS `min(client, udp_payload_max)` / 512) → deadline via `wait_until` + clock. `UdpStats` counters. Dep: `quinn-udp =0.5.16`. Tests: IPv4/IPv6 FakeHandler + PolicyEngine local record, wildcard 127.0.0.1/2 reply source, same-port v4+v6 unspecified, TC/512 truncation, inflight + public drop. DoD green; crypto trees empty; deny ok. Next: N5.
 

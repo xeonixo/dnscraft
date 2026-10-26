@@ -72,7 +72,7 @@ Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i o
 - [x] N2: Message core — validation, EDNS, ECS strip, EDE, id/flags, size limit, padding
 - [x] N3: Admission — source class, token buckets, ban table (bounded), decision API
 - [x] N4: Do53 UDP — concrete + wildcard sockets, reply source, in-flight cap
-- [ ] N5: Do53 TCP — RFC 7766 framing, pipelining, out-of-order, idle timeout, caps
+- [x] N5: Do53 TCP — RFC 7766 framing, pipelining, out-of-order, idle timeout, caps
 
 ### Checkpoint B: Do53 end to end
 - [ ] Do53 UDP/TCP against the real `PolicyEngine` on the testkit hierarchy (IPv4 + IPv6); `examples/serve.rs` answers `dig` on a high port; Claude review

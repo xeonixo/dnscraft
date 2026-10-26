@@ -1,6 +1,6 @@
 //! Shared helpers for listener integration tests.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
