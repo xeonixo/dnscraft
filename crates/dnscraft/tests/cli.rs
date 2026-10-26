@@ -120,3 +120,32 @@ fn exits_two_on_missing_file() {
         .unwrap();
     assert_eq!(status.code(), Some(2), "missing config must exit 2");
 }
+
+#[test]
+fn exits_two_on_unknown_field() {
+    let cfg = temp_config(
+        "unknown-field",
+        r#"public_domain = "example.com"
+exposur = "public"
+"#,
+    );
+    let out = Command::new(binary())
+        .arg(&cfg)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "unknown field must exit 2");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("dnscraft.config.unknown_field"),
+        "stderr must carry the stable code: {stderr}"
+    );
+    assert!(
+        stderr.contains("unknown field"),
+        "stderr must name the unknown field: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(&cfg);
+}

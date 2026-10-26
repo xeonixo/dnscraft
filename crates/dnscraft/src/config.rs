@@ -46,6 +46,7 @@ pub fn tls_secrets_from_env() -> Result<Option<TlsSecrets>, Error> {
 
 /// Top-level configuration loaded from a TOML file.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// Public DNS domain for SNI / DDR (`dns.<domain>`).
     pub public_domain: String,
@@ -56,6 +57,7 @@ pub struct Config {
 
 /// One listener entry in the TOML file.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ListenerToml {
     /// Unique listener id (`[a-z0-9-]{1,64}`).
     pub id: String,

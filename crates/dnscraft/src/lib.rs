@@ -230,4 +230,12 @@ mod tests {
         assert_eq!(err.to_string(), "dnscraft.config.parse: bad toml");
         assert_eq!(err.exit_code(), 2);
     }
+
+    #[test]
+    fn parse_config_rejects_unknown_fields() {
+        let text = "public_domain = \"example.com\"\nexposur = \"public\"\n";
+        let err = parse_config(text, "cfg.toml").unwrap_err();
+        assert_eq!(err.code(), "dnscraft.config.unknown_field");
+        assert!(err.message().contains("unknown field"), "{}", err.message());
+    }
 }
