@@ -425,7 +425,7 @@ listed in [SPEC-control-api.md](SPEC-control-api.md) § Endpoint table.
 | `/dashboard` | Dashboard / node status | viewer/admin | `GET /api/v1/status`, `GET /api/v1/stats/overview`, `GET /readyz` | Stat-tile row (blocked/allowed with semantic color plus text/icon), grouped module-status list, toolbar refresh; persistent self-signed warning banner |
 | `/config` | Full config editor / import-export | read: viewer; write: admin | `GET /api/v1/config`, `PUT /api/v1/config` | Grouped form sections with explanatory footers; save in the toolbar; diff presented in a sheet; `If-Match` with `config_version`; secrets never returned |
 | `/config/versions` | Config versions and rollback | list: viewer; rollback: admin | `GET /api/v1/config/versions`, `POST /api/v1/config/versions/{version}/rollback` | Inset grouped list; version rows with secondary metadata; rollback in a confirmation sheet |
-| `/config/policy` | Views, profiles, pause state | read: viewer via config; write: admin | `GET /api/v1/policy/views`, `GET /api/v1/policy/views/{id}`, `PUT/POST /api/v1/policy/views/{id}`, `DELETE /api/v1/policy/views/{id}`, `GET/POST/PUT/DELETE /api/v1/policy/profiles/{id}`, `GET/POST/PUT/DELETE /api/v1/policy/pause` | Grouped forms; switches for booleans, segmented controls for enums; viewer reads from `GET /api/v1/config` because profile and pause routes are admin-only |
+| `/config/policy` | **Zonen** (split-horizon views + records + selection), **Profile** (behavior), **Test-Abfrage** (decision preview) | read: viewer via config; write: admin | `GET /api/v1/policy/views`, `GET /api/v1/policy/views/{id}`, `PUT/POST /api/v1/policy/views/{id}`, `DELETE /api/v1/policy/views/{id}`, `GET/POST/PUT/DELETE /api/v1/policy/profiles/{id}`, `GET/POST/PUT/DELETE /api/v1/policy/pause`, `POST /api/v1/policy/test-query` | Zone editor: selection (subnets + Client IDs, precedence note), local records (A/AAAA/CNAME/TXT/SRV/MX/PTR, exact names only, CNAME exclusivity, TTL default 60 s), profile link; test-query renders the ordered decision steps without writing the log |
 | `/query-log` | Query log | viewer/admin | `GET /api/v1/query-log`, `GET /api/v1/query-log/export.ndjson`, `GET /api/v1/query-log/export.csv` | Sidebar; search field plus filter sheet; inset grouped table on wide, card list on narrow; domain/client/ID in SF Mono; status as icon + color + text; pagination footer; export in the overflow menu |
 | `/query-log/:id` | Query detail ("why blocked?") | viewer/admin | `GET /api/v1/query-log/{id}` | Grouped detail sections; ordered decision steps; rule and list in SF Mono; toolbar allow action |
 | `/query-log` (action) | One-click temporary allow | admin | `POST /api/v1/filtering/temporary-allows` (MCP-phase endpoint) | Confirmation sheet with the domain, a subdomain switch and a duration segmented control; fall back to the guided rule builder if unavailable |
@@ -456,8 +456,8 @@ administrative ("who can change things"):
 | Übersicht | Dashboard |
 | Aktivität | Anfragen, Statistik |
 | Filterung | Filtersätze, Filterlisten, Regeln & Freigaben |
-| Richtlinien | Richtlinien, Geräte |
-| Infrastruktur | Listener, TLS |
+| DNS-Regelwerk | Zonen (Views), Profile, Test-Abfrage |
+| Netzwerk | Geräte, Listener, TLS |
 | Verwaltung | Konfiguration, API-Tokens, Audit-Log, Einstellungen |
 
 `/login` and `/setup` are public and appear outside the sidebar. Admin-only
