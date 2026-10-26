@@ -661,6 +661,8 @@ pub struct TempAllowParams {
     pub include_subdomains: bool,
     /// Mandatory fixed-set duration.
     pub duration: PauseDuration,
+    /// Filter set that receives the allow; the backend resolves the default.
+    pub filter_set_id: Option<String>,
     /// Assistant-supplied reason, sanitized before audit.
     pub reason: String,
 }
@@ -668,10 +670,12 @@ pub struct TempAllowParams {
 /// Result of `allow_temporarily`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TempAllowResult {
-    /// Canonical domain.
-    pub domain: String,
+    /// RFC 3339 creation timestamp.
+    pub created_at: String,
     /// RFC 3339 expiry timestamp.
     pub expires_at: String,
+    /// Filter set that received the allow.
+    pub filter_set_id: String,
 }
 
 /// Input for `add_rule`.
@@ -732,6 +736,18 @@ pub struct ResumeResult {
     pub resumed: bool,
 }
 
+/// Outcome recorded on an [`AuditEntry`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AuditResult {
+    /// The write succeeded.
+    #[default]
+    #[serde(rename = "success")]
+    Success,
+    /// The write was rejected or failed.
+    #[serde(rename = "error")]
+    Error,
+}
+
 /// One audit entry written by a write tool.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditEntry {
@@ -739,6 +755,12 @@ pub struct AuditEntry {
     pub action: String,
     /// Token id that performed the action.
     pub actor_id: String,
+    /// Sanitized pre-state, when the tool has one.
+    pub before: Option<Value>,
     /// Sanitized post-state.
     pub after: Value,
+    /// Whether the write succeeded.
+    pub result: AuditResult,
+    /// Stable error code when `result` is [`AuditResult::Error`].
+    pub error_code: Option<String>,
 }

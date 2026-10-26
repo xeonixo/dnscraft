@@ -6,15 +6,15 @@
 //!
 //! Listing and dispatch are overridden here because the catalog is
 //! gate-aware: `write_tools_enabled = false` hides the five write tools and a
-//! dispatched write tool is denied before it can touch the backend. The read
-//! tools are defined statically in [`read`] and dispatched manually there so
-//! input failures stay tool results; write tools are listed with an empty
-//! object schema and answer with `control_api.internal`/`not_implemented`
-//! until their task lands.
+//! dispatched write tool is denied before it can touch the backend. All tools
+//! are defined statically and dispatched manually so input failures stay tool
+//! results rather than JSON-RPC errors.
 
 pub mod read;
+pub mod write;
 
 use std::borrow::Cow;
+use std::future::Future;
 
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, JsonObject,
@@ -22,52 +22,43 @@ use rmcp::model::{
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, tool_handler};
-use serde_json::json;
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 
-use crate::backend::McpBackend;
+use crate::backend::{BackendError, McpBackend};
 use crate::config::McpConfig;
-use crate::dto::{TokenInfo, TokenScope};
+use crate::dto::TokenInfo;
 use crate::error::McpError;
+use crate::protected::ProtectedDomains;
 use crate::result::tool_error;
-
-/// The five write tools (not implemented yet).
-const WRITE_TOOLS: [(&str, &str); 5] = [
-    (
-        "allow_temporarily",
-        "Temporarily allow a domain that is currently blocked.",
-    ),
-    ("add_rule", "Add a structured block rule."),
-    ("remove_rule", "Remove an MCP-created block rule."),
-    (
-        "pause_filter_set",
-        "Pause a filter set for a fixed duration.",
-    ),
-    ("resume_filter_set", "Resume a paused filter set."),
-];
 
 /// Shared state cloned into every per-request server instance.
 #[derive(Clone)]
 pub struct McpServer {
     pub(crate) backend: std::sync::Arc<dyn McpBackend>,
     pub(crate) config: McpConfig,
+    /// Built once per server handle. `Err` means the configured list is
+    /// malformed; write tools fail closed with that config error.
+    pub(crate) protected: Result<ProtectedDomains, McpError>,
 }
 
 impl McpServer {
     /// A server handle over `backend` and `config`.
     pub fn new(backend: std::sync::Arc<dyn McpBackend>, config: McpConfig) -> Self {
-        Self { backend, config }
+        let protected = ProtectedDomains::new(config.protected_domains.iter().cloned());
+        Self {
+            backend,
+            config,
+            protected,
+        }
     }
 
     /// All 13 tools: the macro-registered `get_status`, the seven static read
-    /// tools and the five write placeholders.
+    /// tools and the five write tools.
     fn catalog(&self) -> Vec<Tool> {
         let mut tools = Self::tool_router().list_all();
         tools.extend(read::tool_definitions());
-        tools.extend(
-            WRITE_TOOLS
-                .iter()
-                .map(|(name, description)| Tool::new(*name, *description, empty_schema())),
-        );
+        tools.extend(write::tool_definitions());
         tools.sort_by(|a, b| a.name.cmp(&b.name));
         tools
     }
@@ -75,41 +66,65 @@ impl McpServer {
     fn listed_tools(&self) -> Vec<Tool> {
         self.catalog()
             .into_iter()
-            .filter(|tool| self.config.write_tools_enabled || !is_write(&tool.name))
+            .filter(|tool| self.config.write_tools_enabled || !write::is_write_tool(&tool.name))
             .collect()
     }
+}
 
-    fn call_write_tool(&self, name: &str, context: &RequestContext<RoleServer>) -> CallToolResult {
-        let Some(token) = token_from(context) else {
-            return tool_error("control_api.auth.unauthenticated", json!({}));
-        };
-        // Scope is checked before the gate so a read token always sees the
-        // scope error, even while write tools are globally disabled.
-        if token.scope != TokenScope::McpWrite {
-            return tool_error("control_api.auth.insufficient_scope", json!({}));
+/// Parse tool arguments, mapping a deserialization failure to a tool result.
+pub(crate) fn parse_arguments<T: DeserializeOwned>(
+    arguments: Option<JsonObject>,
+) -> Result<T, CallToolResult> {
+    serde_json::from_value(Value::Object(arguments.unwrap_or_default()))
+        .map_err(|_| invalid_input("arguments do not match the input schema"))
+}
+
+/// A `mcp.invalid_input` tool result with a fixed reason.
+pub(crate) fn invalid_input(reason: &'static str) -> CallToolResult {
+    tool_error(
+        McpError::InvalidInput {
+            reason: reason.into(),
         }
-        if !self.config.write_tools_enabled {
-            return tool_error(McpError::WriteToolsDisabled.code(), json!({}));
-        }
-        tool_error(
-            "control_api.internal",
-            json!({ "reason": "not_implemented", "tool": name }),
-        )
+        .code(),
+        json!({ "reason": reason }),
+    )
+}
+
+/// Convert a JSON object literal into a tool input schema.
+pub(crate) fn schema(value: Value) -> JsonObject {
+    match value {
+        Value::Object(map) => map,
+        _ => JsonObject::new(),
     }
 }
 
-fn empty_schema() -> JsonObject {
-    let mut schema = JsonObject::new();
-    schema.insert("type".into(), json!("object"));
-    schema
-}
-
-fn is_write(name: &str) -> bool {
-    WRITE_TOOLS.iter().any(|(tool, _)| *tool == name)
+/// Await a backend call, mapping cancellation and errors to the tool shape.
+pub(crate) async fn backend_call<T, F>(
+    tool: &'static str,
+    context: &RequestContext<RoleServer>,
+    future: F,
+) -> Result<T, CallToolResult>
+where
+    F: Future<Output = Result<T, BackendError>>,
+{
+    let outcome = tokio::select! {
+        result = future => Some(result),
+        _ = context.ct.cancelled() => None,
+    };
+    let Some(result) = outcome else {
+        return Err(tool_error(
+            "control_api.internal",
+            json!({ "reason": "cancelled" }),
+        ));
+    };
+    result.map_err(|error| {
+        tracing::warn!(tool, code = error.code(), "{} backend error", tool);
+        tool_error(error.code(), error.params().unwrap_or_else(|| json!({})))
+    })
 }
 
 /// The token `transport` validated and attached to the request.
-fn token_from(context: &RequestContext<RoleServer>) -> Option<&TokenInfo> {
+pub(crate) fn token_from(context: &RequestContext<RoleServer>) -> Option<&TokenInfo> {
     context
         .extensions
         .get::<http::request::Parts>()?
@@ -159,8 +174,8 @@ impl ServerHandler for McpServer {
         let name = request.name.as_ref();
         let result = if name == "get_status" {
             self.get_status(context).await
-        } else if is_write(name) {
-            self.call_write_tool(name, &context)
+        } else if write::is_write_tool(name) {
+            write::call(name, request.arguments, self, context).await
         } else if read::is_read_tool(name) {
             read::call(name, request.arguments, self, context).await
         } else {

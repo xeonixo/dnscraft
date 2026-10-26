@@ -10,7 +10,6 @@
 //! failures as JSON-RPC `-32602`, which SPEC-mcp.md forbids for tool input
 //! errors.
 
-use std::future::Future;
 use std::net::IpAddr;
 
 use rmcp::RoleServer;
@@ -18,13 +17,11 @@ use rmcp::model::{CallToolResult, JsonObject, Tool, ToolAnnotations};
 use rmcp::service::RequestContext;
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
-use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use super::McpServer;
-use crate::backend::BackendError;
+use super::{McpServer, backend_call, invalid_input, parse_arguments, schema};
 use crate::dto::{
     ClientInfo, ClientListParams, DecisionFilter, DecisionStep, DecisionTimings, DnssecCounts,
     ExplainBlockResult, ExplainReason, ListRulesParams, ListRulesResult, McpRuleInfo, PauseInfo,
@@ -364,55 +361,6 @@ async fn list_mcp_rules(
     {
         Ok(result) => tool_ok(rules_json(&result, &kind)),
         Err(error) => error,
-    }
-}
-
-/// Await a backend call, mapping cancellation and errors to the tool shape.
-async fn backend_call<T, F>(
-    tool: &'static str,
-    context: &RequestContext<RoleServer>,
-    future: F,
-) -> Result<T, CallToolResult>
-where
-    F: Future<Output = Result<T, BackendError>>,
-{
-    let outcome = tokio::select! {
-        result = future => Some(result),
-        _ = context.ct.cancelled() => None,
-    };
-    let Some(result) = outcome else {
-        return Err(tool_error(
-            "control_api.internal",
-            json!({ "reason": "cancelled" }),
-        ));
-    };
-    result.map_err(|error| {
-        tracing::warn!(tool, code = error.code(), "{} backend error", tool);
-        tool_error(error.code(), error.params().unwrap_or_else(|| json!({})))
-    })
-}
-
-fn parse_arguments<T: DeserializeOwned>(
-    arguments: Option<JsonObject>,
-) -> Result<T, CallToolResult> {
-    serde_json::from_value(Value::Object(arguments.unwrap_or_default()))
-        .map_err(|_| invalid_input("arguments do not match the input schema"))
-}
-
-fn invalid_input(reason: &'static str) -> CallToolResult {
-    tool_error(
-        McpError::InvalidInput {
-            reason: reason.into(),
-        }
-        .code(),
-        json!({ "reason": reason }),
-    )
-}
-
-fn schema(value: Value) -> JsonObject {
-    match value {
-        Value::Object(map) => map,
-        _ => JsonObject::new(),
     }
 }
 

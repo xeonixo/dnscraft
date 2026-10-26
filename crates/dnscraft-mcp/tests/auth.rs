@@ -245,12 +245,6 @@ async fn write_token_is_allowed_through_scope_and_gate() {
         let code = &body["result"]["structuredContent"]["error"]["code"];
         assert_ne!(code, "control_api.auth.insufficient_scope", "{name}");
         assert_ne!(code, "mcp.write_tools_disabled", "{name}");
-        // The tool itself is M17's job; the authorization path let it through.
-        assert_eq!(code, "control_api.internal", "{name}: {body}");
-        assert_eq!(
-            body["result"]["structuredContent"]["error"]["params"]["reason"], "not_implemented",
-            "{name}: {body}"
-        );
     }
 }
 

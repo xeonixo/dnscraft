@@ -102,6 +102,13 @@ pub struct MockBackend {
     rules_error: Mutex<Option<BackendError>>,
     /// Parameters of the most recent `list_mcp_rules` call.
     pub last_rules: Mutex<Option<ListRulesParams>>,
+    allow_result: Mutex<Option<Result<TempAllowResult, BackendError>>>,
+    /// Parameters of the most recent `allow_temporarily` call.
+    pub last_allow: Mutex<Option<TempAllowParams>>,
+    /// Number of `allow_temporarily` calls.
+    pub allow_calls: AtomicUsize,
+    audits: Mutex<Vec<AuditEntry>>,
+    audit_error: Mutex<Option<BackendError>>,
 }
 
 /// Decrements the active counter even when the tool future is cancelled.
@@ -245,6 +252,31 @@ impl MockBackend {
     /// Parameters of the most recent `list_mcp_rules` call.
     pub fn last_rules(&self) -> Option<ListRulesParams> {
         slot(&self.last_rules).clone()
+    }
+
+    /// Set the `allow_temporarily` result.
+    pub fn set_allow(&self, value: Result<TempAllowResult, BackendError>) {
+        *slot(&self.allow_result) = Some(value);
+    }
+
+    /// Parameters of the most recent `allow_temporarily` call.
+    pub fn last_allow(&self) -> Option<TempAllowParams> {
+        slot(&self.last_allow).clone()
+    }
+
+    /// Number of `allow_temporarily` calls.
+    pub fn allow_calls(&self) -> usize {
+        self.allow_calls.load(Ordering::SeqCst)
+    }
+
+    /// Audit entries recorded so far.
+    pub fn audits(&self) -> Vec<AuditEntry> {
+        slot(&self.audits).clone()
+    }
+
+    /// Make `record_audit` fail with `error`.
+    pub fn set_audit_error(&self, error: BackendError) {
+        *slot(&self.audit_error) = Some(error);
     }
 
     fn status_result(&self) -> Result<NodeStatus, BackendError> {
@@ -443,9 +475,13 @@ impl McpBackend for MockBackend {
 
     async fn allow_temporarily(
         &self,
-        _params: TempAllowParams,
+        params: TempAllowParams,
     ) -> Result<TempAllowResult, BackendError> {
-        Ok(TempAllowResult::default())
+        *slot(&self.last_allow) = Some(params);
+        self.allow_calls.fetch_add(1, Ordering::SeqCst);
+        slot(&self.allow_result)
+            .clone()
+            .unwrap_or_else(|| Ok(TempAllowResult::default()))
     }
 
     async fn add_custom_rule(&self, _params: AddRuleParams) -> Result<AddRuleResult, BackendError> {
@@ -471,7 +507,11 @@ impl McpBackend for MockBackend {
         Ok(ResumeResult::default())
     }
 
-    async fn record_audit(&self, _entry: AuditEntry) -> Result<(), BackendError> {
+    async fn record_audit(&self, entry: AuditEntry) -> Result<(), BackendError> {
+        if let Some(error) = slot(&self.audit_error).clone() {
+            return Err(error);
+        }
+        slot(&self.audits).push(entry);
         Ok(())
     }
 }
