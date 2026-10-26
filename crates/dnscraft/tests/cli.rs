@@ -54,6 +54,23 @@ fn wait_for_stderr_line(child: &mut Child, needle: &str, timeout: Duration) -> b
     rx.recv_timeout(timeout).is_ok()
 }
 
+/// Reads stderr until the `dnscraft: listening on …` line appears and returns it.
+fn wait_for_listening_line(child: &mut Child, timeout: Duration) -> String {
+    let stderr = child.stderr.take().expect("stderr must be piped");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            if line.contains("listening on") {
+                let _ = tx.send(line);
+                return;
+            }
+        }
+    });
+    rx.recv_timeout(timeout)
+        .expect("binary must report the bound address")
+}
+
 #[test]
 fn exits_zero_on_sigterm() {
     let cfg = temp_config(
@@ -146,6 +163,74 @@ exposur = "public"
         stderr.contains("unknown field"),
         "stderr must name the unknown field: {stderr}"
     );
+
+    let _ = std::fs::remove_file(&cfg);
+}
+
+#[test]
+fn exits_two_on_bind_failure() {
+    let cfg = temp_config(
+        "bind-failure",
+        r#"public_domain = "example.com"
+
+[[listeners]]
+id = "udp"
+protocol = "udp53"
+address = "192.0.2.1:5300"
+"#,
+    );
+    let out = Command::new(binary())
+        .arg(&cfg)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "unbindable listener must exit 2"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("dnscraft.startup.bind"),
+        "stderr must carry the stable code: {stderr}"
+    );
+    assert!(
+        stderr.contains("192.0.2.1:5300"),
+        "stderr must name the failing address: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(&cfg);
+}
+
+#[test]
+fn prints_bound_address_for_ephemeral_port() {
+    let cfg = temp_config(
+        "ephemeral",
+        r#"public_domain = "example.com"
+
+[[listeners]]
+id = "udp"
+protocol = "udp53"
+address = "127.0.0.1:0"
+"#,
+    );
+    let mut child = spawn(&cfg);
+    let line = wait_for_listening_line(&mut child, Duration::from_secs(20));
+    assert!(
+        line.contains("dnscraft: listening on 127.0.0.1:"),
+        "stderr must print the real bound address: {line}"
+    );
+
+    let kill = Command::new("kill")
+        .arg("-TERM")
+        .arg(child.id().to_string())
+        .status()
+        .unwrap();
+    assert!(kill.success());
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(0));
 
     let _ = std::fs::remove_file(&cfg);
 }

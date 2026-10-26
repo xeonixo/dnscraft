@@ -53,6 +53,11 @@ pub struct Config {
     /// Listeners to serve (at least one in practice).
     #[serde(default)]
     pub listeners: Vec<ListenerToml>,
+    /// Keep the listener-set partial-bind behaviour (report bind failures in
+    /// status and keep the other listeners). Default `false`: any bind failure
+    /// is fatal (`dnscraft.startup.bind`).
+    #[serde(default)]
+    pub allow_partial_bind: bool,
 }
 
 /// One listener entry in the TOML file.

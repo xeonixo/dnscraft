@@ -11,7 +11,9 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dnscraft_listeners::{ChannelSink, Clock, ListenerSet, QueryEventSink, SystemClock};
+use dnscraft_listeners::{
+    ChannelSink, Clock, ListenerSet, ListenersStatus, QueryEventSink, SystemClock,
+};
 use dnscraft_policy::PolicyEngine;
 use dnscraft_tls::CertResolver;
 use tokio::task::JoinHandle;
@@ -104,6 +106,11 @@ pub struct App {
 }
 
 impl App {
+    /// Current listener status (bind state, bound addresses, counters).
+    pub fn listener_status(&self) -> ListenersStatus {
+        self.set.status()
+    }
+
     /// Gracefully stops listeners and drains the event writer.
     pub async fn shutdown(self, grace: Duration) {
         self.set.shutdown(grace).await;
@@ -140,6 +147,23 @@ pub async fn build(config: Config) -> Result<App, Error> {
         .await
         .map_err(|e| Error::startup("dnscraft.startup.listeners", format!("listeners: {e}")))?;
 
+    if !config.allow_partial_bind {
+        let failures: Vec<String> = set
+            .status()
+            .listeners
+            .iter()
+            .filter(|l| l.error.is_some())
+            .map(|l| format!("{} (id {})", l.configured_address, l.id.as_str()))
+            .collect();
+        if !failures.is_empty() {
+            set.shutdown(Duration::ZERO).await;
+            return Err(Error::startup(
+                "dnscraft.startup.bind",
+                format!("listener bind failed: {}", failures.join(", ")),
+            ));
+        }
+    }
+
     let writer = tokio::spawn(events::write_events(rx));
     Ok(App { set, writer })
 }
@@ -156,10 +180,29 @@ pub async fn run(config_path: Option<&str>) -> Result<(), Error> {
     let config = parse_config(&text, path)?;
 
     let app = build(config).await?;
-    eprintln!("dnscraft: listening");
+    for line in listening_lines(&app.listener_status()) {
+        eprintln!("{line}");
+    }
     wait_for_shutdown_signal().await;
     app.shutdown(Duration::from_secs(5)).await;
     Ok(())
+}
+
+/// One `dnscraft: listening on <addr> (<protocol>, <id>)` line per bound listener.
+fn listening_lines(status: &ListenersStatus) -> Vec<String> {
+    status
+        .listeners
+        .iter()
+        .filter_map(|l| {
+            l.bound.map(|addr| {
+                format!(
+                    "dnscraft: listening on {addr} ({}, {})",
+                    l.protocol.as_str(),
+                    l.id.as_str()
+                )
+            })
+        })
+        .collect()
 }
 
 /// Resolves to the first of SIGTERM or SIGINT.
@@ -200,6 +243,7 @@ mod tests {
             Error::config("dnscraft.config.unknown_field", "x"),
             Error::config("dnscraft.config.invalid_listener", "x"),
             Error::config("dnscraft.config.tls_env_incomplete", "x"),
+            Error::startup("dnscraft.startup.bind", "x"),
             Error::startup("dnscraft.startup.resolver", "x"),
             Error::startup("dnscraft.startup.policy", "x"),
             Error::startup("dnscraft.startup.listeners", "x"),
