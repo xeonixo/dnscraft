@@ -301,22 +301,22 @@ the resulting `TokenInfo` to tool handlers through the mechanism M0/M8 establish
 tokens are validated once per request. Implement SPEC-mcp.md § Authentication and authorization.
 
 **Acceptance criteria:**
-- [ ] Missing/invalid token → 401 `control_api.auth.unauthenticated`; a token of the wrong scope family
+- [x] Missing/invalid token → 401 `control_api.auth.unauthenticated`; a token of the wrong scope family
       (`viewer`/`admin`) → 403 `control_api.auth.invalid_scope` (via a `BackendError` variant); neither
       reaches JSON-RPC.
-- [ ] `mcp:read` token calling a write tool → tool result `isError: true`, code
+- [x] `mcp:read` token calling a write tool → tool result `isError: true`, code
       `control_api.auth.insufficient_scope`; `mcp:write` may call everything.
-- [ ] `write_tools_enabled = false`: `tools/list` shows only read tools, calling a write tool returns
+- [x] `write_tools_enabled = false`: `tools/list` shows only read tools, calling a write tool returns
       `mcp.write_tools_disabled` (even for `mcp:write`); `true`: all 13 tools listed (placeholders for tools not
       yet implemented are allowed until M18; the listing logic is what is tested).
-- [ ] Per-token in-flight cap (`max_concurrent_requests_per_token`): request N+1 → 429
+- [x] Per-token in-flight cap (`max_concurrent_requests_per_token`): request N+1 → 429
       `control_api.rate_limited`; the slot is released on completion, error, timeout and client disconnect
       (test each).
-- [ ] The raw token never appears in logs, errors or tool output (test with a capturing `tracing`
+- [x] The raw token never appears in logs, errors or tool output (test with a capturing `tracing`
       subscriber).
-- [ ] `legacy_session_mode` false → a handshake-style (`initialize`) client gets `UnsupportedProtocolVersionError`;
+- [x] `legacy_session_mode` false → a handshake-style (`initialize`) client gets `UnsupportedProtocolVersionError`;
       true → behaviour as established in M0 (test both settings; if rmcp cannot support it, report).
-- [ ] 401 responses are counted by the **caller's** rate limiter in Phase 3 (documented in the module docs; no
+- [x] 401 responses are counted by the **caller's** rate limiter in Phase 3 (documented in the module docs; no
       limiter inside this crate).
 
 **Verification:** `cargo test -p dnscraft-mcp --test auth`

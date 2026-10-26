@@ -17,9 +17,11 @@
 //! The caller owns the token rate limiter: 401 responses are counted there
 //! (SPEC-mcp.md § Authentication), not in this crate.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 
 use axum::body::Body;
@@ -31,6 +33,7 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use serde_json::{Value, json};
 use tower::Service;
 
+use crate::auth::{self, AuthError};
 use crate::backend::McpBackend;
 use crate::config::McpConfig;
 use crate::tools::McpServer;
@@ -42,13 +45,16 @@ const ORIGIN_HEADER: &str = "Origin";
 #[derive(Clone)]
 pub struct McpTransport {
     inner: StreamableHttpService<McpServer, LocalSessionManager>,
+    backend: Arc<dyn McpBackend>,
     config: McpConfig,
     supported_versions: Vec<String>,
+    in_flight: InFlight,
 }
 
 impl McpTransport {
     fn new(
         inner: StreamableHttpService<McpServer, LocalSessionManager>,
+        backend: Arc<dyn McpBackend>,
         config: McpConfig,
     ) -> Self {
         let supported_versions = if config.legacy_session_mode {
@@ -61,8 +67,10 @@ impl McpTransport {
         };
         Self {
             inner,
+            backend,
             config,
             supported_versions,
+            in_flight: InFlight::default(),
         }
     }
 
@@ -130,7 +138,7 @@ impl Service<Request<Body>> for McpTransport {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, request: Request<Body>) -> Self::Future {
+    fn call(&mut self, mut request: Request<Body>) -> Self::Future {
         let mut inner = self.inner.clone();
         let this = self.clone();
         Box::pin(async move {
@@ -153,7 +161,54 @@ impl Service<Request<Body>> for McpTransport {
                 return Ok(response);
             }
 
-            match tokio::time::timeout(this.config.request_timeout, inner.call(request)).await {
+            // One deadline covers token validation and the tool call.
+            let deadline = tokio::time::Instant::now() + this.config.request_timeout;
+            let token = match tokio::time::timeout_at(
+                deadline,
+                auth::authenticate(request.headers(), &*this.backend),
+            )
+            .await
+            {
+                Ok(Ok(token)) => token,
+                Ok(Err(AuthError::Unauthenticated)) => {
+                    return Ok(envelope(
+                        StatusCode::UNAUTHORIZED,
+                        "control_api.auth.unauthenticated",
+                        json!({}),
+                    ));
+                }
+                Ok(Err(AuthError::InvalidScope)) => {
+                    return Ok(envelope(
+                        StatusCode::FORBIDDEN,
+                        "control_api.auth.invalid_scope",
+                        json!({}),
+                    ));
+                }
+                Ok(Err(AuthError::Internal)) => {
+                    return Ok(envelope(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "control_api.internal",
+                        json!({ "reason": "token_validation" }),
+                    ));
+                }
+                Err(_) => return Ok(timeout_response(&this.config)),
+            };
+            let _slot = match this.in_flight.try_acquire(
+                &token.token_id,
+                this.config.max_concurrent_requests_per_token,
+            ) {
+                Some(slot) => slot,
+                None => {
+                    return Ok(envelope(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        "control_api.rate_limited",
+                        json!({ "limit": this.config.max_concurrent_requests_per_token }),
+                    ));
+                }
+            };
+            request.extensions_mut().insert(token);
+
+            match tokio::time::timeout_at(deadline, inner.call(request)).await {
                 Ok(Ok(response)) => Ok(normalize(
                     response.map(Body::new),
                     &this.config,
@@ -161,17 +216,60 @@ impl Service<Request<Body>> for McpTransport {
                     &path,
                 )),
                 Ok(Err(never)) => match never {},
-                Err(_) => Ok(envelope(
-                    StatusCode::GATEWAY_TIMEOUT,
-                    "control_api.internal",
-                    json!({
-                        "reason": "timeout",
-                        "timeout_seconds": this.config.request_timeout.as_secs(),
-                    }),
-                )),
+                Err(_) => Ok(timeout_response(&this.config)),
             }
         })
     }
+}
+
+/// Per-token in-flight counters shared by every cloned service instance.
+#[derive(Clone, Default)]
+struct InFlight {
+    counts: Arc<Mutex<HashMap<String, usize>>>,
+}
+
+impl InFlight {
+    fn try_acquire(&self, token_id: &str, limit: u32) -> Option<InFlightSlot> {
+        let mut counts = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = counts.entry(token_id.to_owned()).or_insert(0);
+        if *count >= limit as usize {
+            return None;
+        }
+        *count += 1;
+        Some(InFlightSlot {
+            counts: Arc::clone(&self.counts),
+            token_id: token_id.to_owned(),
+        })
+    }
+}
+
+/// Releases one in-flight slot on completion, error, timeout or disconnect.
+struct InFlightSlot {
+    counts: Arc<Mutex<HashMap<String, usize>>>,
+    token_id: String,
+}
+
+impl Drop for InFlightSlot {
+    fn drop(&mut self) {
+        let mut counts = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = counts.get_mut(&self.token_id) {
+            *count -= 1;
+            if *count == 0 {
+                counts.remove(&self.token_id);
+            }
+        }
+    }
+}
+
+fn timeout_response(config: &McpConfig) -> Response<Body> {
+    envelope(
+        StatusCode::GATEWAY_TIMEOUT,
+        "control_api.internal",
+        json!({
+            "reason": "timeout",
+            "timeout_seconds": config.request_timeout.as_secs(),
+        }),
+    )
 }
 
 /// Turn rmcp's plain-text rejections into stable JSON bodies.
@@ -252,6 +350,7 @@ pub(crate) fn build(backend: std::sync::Arc<dyn McpBackend>, config: McpConfig) 
         .with_allowed_origins(config.allowed_origins.clone())
         .enforce_origin_validation();
     let server_config_for_server = config.clone();
+    let transport_backend = backend.clone();
     let inner = StreamableHttpService::new(
         move || {
             Ok(McpServer::new(
@@ -262,7 +361,7 @@ pub(crate) fn build(backend: std::sync::Arc<dyn McpBackend>, config: McpConfig) 
         std::sync::Arc::new(LocalSessionManager::default()),
         server_config,
     );
-    McpTransport::new(inner, config)
+    McpTransport::new(inner, transport_backend, config)
 }
 
 /// Host allowlist: loopback plus every origin host.

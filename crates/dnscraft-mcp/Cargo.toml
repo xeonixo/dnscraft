@@ -31,3 +31,4 @@ proptest = { workspace = true }
 reqwest = { workspace = true }
 rustls = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }

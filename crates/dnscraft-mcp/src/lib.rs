@@ -20,6 +20,8 @@ pub mod sanitize;
 pub mod tools;
 pub mod transport;
 
+mod auth;
+
 use std::sync::Arc;
 
 pub use backend::{BackendError, McpBackend};

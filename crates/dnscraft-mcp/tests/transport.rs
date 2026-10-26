@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const VERSION: &str = "2026-07-28";
+const TOKEN: &str = "test-token";
 const STATUS_DESCRIPTION: &str = "Get node status: resolver health, listener bindings, TLS certificate status, filter list update times, uptime.";
 
 fn install_crypto() {
@@ -125,6 +126,7 @@ async fn post(
         .header("Accept", "application/json, text/event-stream")
         .header("MCP-Protocol-Version", VERSION)
         .header("Mcp-Method", method)
+        .header("Authorization", format!("Bearer {TOKEN}"))
         .body(request_body(id, method, params));
     if let Some(name) = name {
         request = request.header("Mcp-Name", name);
@@ -183,8 +185,12 @@ async fn smoke_list_tools_exposes_static_read_only_status_tool() {
 
     assert_eq!(status, 200, "tools/list: {body}");
     let tools = body["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 1);
-    let tool = &tools[0];
+    // Write gate defaults to false: only the 8 read tools are listed.
+    assert_eq!(tools.len(), 8);
+    let tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "get_status")
+        .expect("get_status is listed");
     assert_eq!(tool["name"], "get_status");
     assert_eq!(tool["description"], STATUS_DESCRIPTION);
     assert_eq!(tool["annotations"]["readOnlyHint"], true);
@@ -303,7 +309,8 @@ async fn streamed_body_over_cap_without_content_length_is_payload_too_large() {
         "POST /mcp/v1 HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
          Accept: application/json, text/event-stream\r\n\
          MCP-Protocol-Version: {VERSION}\r\nMcp-Method: tools/call\r\n\
-         Mcp-Name: get_status\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
+         Mcp-Name: get_status\r\nAuthorization: Bearer {TOKEN}\r\n\
+         Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
          200000\r\n",
         server.address,
     );
@@ -311,10 +318,11 @@ async fn streamed_body_over_cap_without_content_length_is_payload_too_large() {
     // One oversized chunk, never terminated: rmcp enforces the cap while streaming.
     let _ = stream.write_all(&vec![b'x'; 1_100_000]).await;
     let mut raw = Vec::new();
-    tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut raw))
+    // The server may reset the connection once it has rejected the chunk; the
+    // bytes read so far still carry the response.
+    let _ = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut raw))
         .await
-        .expect("server should answer before the client finishes")
-        .unwrap();
+        .expect("server should answer before the client finishes");
     let response = String::from_utf8_lossy(&raw);
     assert!(response.starts_with("HTTP/1.1 413"), "{response}");
     assert!(
@@ -340,6 +348,7 @@ async fn origin_present_and_not_allowed_is_forbidden() {
         .header("MCP-Protocol-Version", VERSION)
         .header("Mcp-Method", "tools/list")
         .header("Origin", "https://evil.example")
+        .header("Authorization", format!("Bearer {TOKEN}"))
         .body(body.clone())
         .send()
         .await
@@ -355,6 +364,7 @@ async fn origin_present_and_not_allowed_is_forbidden() {
             .header("Accept", "application/json, text/event-stream")
             .header("MCP-Protocol-Version", VERSION)
             .header("Mcp-Method", "tools/list")
+            .header("Authorization", format!("Bearer {TOKEN}"))
             .body(body.clone());
         if let Some(origin) = origin {
             request = request.header("Origin", origin);
@@ -374,6 +384,7 @@ async fn missing_or_unsupported_protocol_version_lists_supported_versions() {
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .header("Mcp-Method", "tools/list")
+        .header("Authorization", format!("Bearer {TOKEN}"))
         .body(body.clone())
         .send()
         .await
@@ -390,6 +401,7 @@ async fn missing_or_unsupported_protocol_version_lists_supported_versions() {
         .header("Accept", "application/json, text/event-stream")
         .header("MCP-Protocol-Version", "2099-01-01")
         .header("Mcp-Method", "tools/list")
+        .header("Authorization", format!("Bearer {TOKEN}"))
         .body(body.clone())
         .send()
         .await
@@ -412,6 +424,7 @@ async fn header_body_mismatches_are_32020_and_run_nothing() {
         .header("Accept", "application/json, text/event-stream")
         .header("MCP-Protocol-Version", VERSION)
         .header("Mcp-Method", "tools/list")
+        .header("Authorization", format!("Bearer {TOKEN}"))
         .body(request_body(
             12,
             "tools/call",
@@ -431,6 +444,7 @@ async fn header_body_mismatches_are_32020_and_run_nothing() {
         .header("MCP-Protocol-Version", VERSION)
         .header("Mcp-Method", "tools/call")
         .header("Mcp-Name", "get_status")
+        .header("Authorization", format!("Bearer {TOKEN}"))
         .body(request_body(
             13,
             "tools/call",
@@ -467,6 +481,7 @@ async fn unknown_method_is_404_minus_32601_and_notification_is_202_empty() {
         .header("Accept", "application/json, text/event-stream")
         .header("MCP-Protocol-Version", VERSION)
         .header("Mcp-Method", "notifications/initialized")
+        .header("Authorization", format!("Bearer {TOKEN}"))
         .body(
             json!({
                 "jsonrpc": "2.0",
@@ -504,6 +519,7 @@ async fn request_timeout_cancels_slow_backend_and_releases_the_call() {
         .header("MCP-Protocol-Version", VERSION)
         .header("Mcp-Method", "tools/call")
         .header("Mcp-Name", "get_status")
+        .header("Authorization", format!("Bearer {TOKEN}"))
         .body(Body::from(request_body(
             15,
             "tools/call",
@@ -542,6 +558,7 @@ async fn dropped_connection_cancels_in_flight_request() {
             .header("MCP-Protocol-Version", VERSION)
             .header("Mcp-Method", "tools/call")
             .header("Mcp-Name", "get_status")
+            .header("Authorization", format!("Bearer {TOKEN}"))
             .body(request_body(
                 16,
                 "tools/call",
