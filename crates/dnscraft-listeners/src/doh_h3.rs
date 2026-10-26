@@ -416,7 +416,7 @@ where
     let (req, mut stream) = tokio::select! {
         r = resolver.resolve_request() => r.map_err(|_| ())?,
         () = wait_until(shared.doh.clock.as_ref(), read_deadline, &read_wake) => {
-                DohStats::bump(&shared.doh.stats.request_timeouts);
+            DohStats::bump(&shared.doh.stats.request_timeouts);
             return Ok(());
         }
     };

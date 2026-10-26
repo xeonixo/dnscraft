@@ -66,6 +66,15 @@ Checkpoint C approved; N12 DoH HTTP/3 done. **Next: N13** (fuzz/bench/README).
 | `doq` | DoQ `serve_doq` / `DoqStats` |
 | `set` / `events` / `status` | `ListenerSet`, `QueryEventSink`, status |
 
+## Limits
+
+Defaults live in `config.rs` (`DEFAULT_*`). One interaction to be aware of:
+
+- **HTTP/3 request budget** is `tcp_idle_timeout` (default 10 s). It covers the
+  header + body *read* only — not the response-send phase — and is bounded by the
+  per-connection stream cap (`max_quic_streams_per_connection`). There is no
+  separate request-timeout setting.
+
 ## Example
 
 A minimal Do53 UDP+TCP demo (real resolver, loopback high ports) lives at
