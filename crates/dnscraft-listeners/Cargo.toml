@@ -41,7 +41,12 @@ rcgen = { workspace = true }
 rustls-pki-types = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "test-util"] }
 http-body-util = { workspace = true }
+criterion = { workspace = true }
 
 [[example]]
 name = "serve"
 required-features = []
+
+[[bench]]
+name = "udp"
+harness = false
