@@ -174,7 +174,7 @@ site first (`cache.rs`, `lib.rs` `store_in_epoch`, infra caches) and list them i
 **Scope:** S
 
 ## Checkpoint P: Prerequisites
-- [ ] DoD green for M1–M5; Claude reviews the additive changes in filtering/resolver/policy (diff, mutation probes)
+- [x] DoD green for M1–M5; Claude reviews the additive changes in filtering/resolver/policy (diff, mutation probes) — 2026-10-26
 - [ ] progress.md updated
 
 ## Phase 1: Core and read-only MCP (mock backend, no control-api needed)
