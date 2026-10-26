@@ -53,6 +53,8 @@ quinn = { version = "0.11.12", default-features = false, features = ["runtime-to
 h3 = "0.0.8"
 h3-quinn = "0.0.10"
 rusqlite = { version = "0.40.0", features = ["bundled"] }
+axum = { version = "0.8.9", default-features = false, features = ["json", "query", "http1", "tokio", "tracing"] }
+tower-http = { version = "0.6.11", default-features = false, features = ["trace"] }
 
 [profile.release]
 lto = "thin"

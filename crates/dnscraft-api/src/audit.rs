@@ -100,10 +100,7 @@ fn looks_like_url_userinfo(s: &str) -> bool {
         return false;
     };
     let authority = &s[scheme_end + 3..];
-    let authority = authority
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or("");
+    let authority = authority.split(['/', '?', '#']).next().unwrap_or("");
     authority
         .rfind('@')
         .is_some_and(|at| authority[..at].contains(':'))

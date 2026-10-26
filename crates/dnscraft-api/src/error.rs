@@ -28,6 +28,9 @@
 //! | [`ControlApiError::AuthCsrf`] | `control_api.auth.csrf` |
 //! | [`ControlApiError::AuditRead`] | `control_api.audit.read` |
 //! | [`ControlApiError::NotReady`] | `control_api.not_ready` |
+//! | [`ControlApiError::MethodNotAllowed`] | `control_api.method_not_allowed` |
+//! | [`ControlApiError::PayloadTooLarge`] | `control_api.payload_too_large` |
+//! | [`ControlApiError::PaginationInvalid`] | `control_api.pagination.invalid` |
 
 /// Top-level error of the control-api module.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -138,6 +141,26 @@ pub enum ControlApiError {
         /// Module that is not ready.
         module: String,
     },
+    /// Route exists but the HTTP method is not allowed for it.
+    #[error("method {method} not allowed for {path}")]
+    MethodNotAllowed {
+        /// The HTTP method that was used.
+        method: String,
+        /// The request path.
+        path: String,
+    },
+    /// Request body exceeded the configured size limit.
+    #[error("request body exceeds the {limit_bytes}-byte limit")]
+    PayloadTooLarge {
+        /// The configured limit in bytes.
+        limit_bytes: u64,
+    },
+    /// A pagination query parameter is out of range or not a number.
+    #[error("invalid pagination parameter: {reason}")]
+    PaginationInvalid {
+        /// Which parameter and why it was rejected.
+        reason: String,
+    },
 }
 
 impl ControlApiError {
@@ -165,6 +188,9 @@ impl ControlApiError {
             Self::AuthCsrf => "control_api.auth.csrf",
             Self::AuditRead { .. } => "control_api.audit.read",
             Self::NotReady { .. } => "control_api.not_ready",
+            Self::MethodNotAllowed { .. } => "control_api.method_not_allowed",
+            Self::PayloadTooLarge { .. } => "control_api.payload_too_large",
+            Self::PaginationInvalid { .. } => "control_api.pagination.invalid",
         }
     }
 
@@ -224,6 +250,16 @@ mod tests {
             },
             ControlApiError::NotReady {
                 module: "resolver".into(),
+            },
+            ControlApiError::MethodNotAllowed {
+                method: "DELETE".into(),
+                path: "/api/v1/config".into(),
+            },
+            ControlApiError::PayloadTooLarge {
+                limit_bytes: 1_048_576,
+            },
+            ControlApiError::PaginationInvalid {
+                reason: "limit 0".into(),
             },
         ];
         let mut codes: Vec<&str> = all.iter().map(ControlApiError::code).collect();

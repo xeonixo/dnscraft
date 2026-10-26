@@ -14,11 +14,13 @@
 
 #![deny(missing_docs)]
 
+mod api;
 mod audit;
 mod clock;
 mod config;
 mod error;
 mod secret;
+mod server;
 mod storage;
 
 pub use audit::{Audit, ConfigChangeRecord};
@@ -32,4 +34,5 @@ pub use config::{
 };
 pub use error::ControlApiError;
 pub use secret::Secret;
+pub use server::{AppState, Readiness, serve};
 pub use storage::{AuditRecord, ConfigStore, Db};

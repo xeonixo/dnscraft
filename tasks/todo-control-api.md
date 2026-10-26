@@ -109,9 +109,9 @@ forgotten on one path.
 - `control_api.internal` invariant boundary.
 
 **Acceptance criteria:**
-- [ ] `/healthz` and `/readyz` respond; `/readyz` returns `control_api.not_ready` when a module is not ready.
-- [ ] Unknown route returns the documented `{error}` envelope with `control_api.not_found`.
-- [ ] Pagination defaults, caps, and `next_offset`/`has_more` behave as specified.
+- [x] `/healthz` and `/readyz` respond; `/readyz` returns `control_api.not_ready` when a module is not ready.
+- [x] Unknown route returns the documented `{error}` envelope with `control_api.not_found`.
+- [x] Pagination defaults, caps, and `next_offset`/`has_more` behave as specified.
 
 **Verification:** `cargo test -p dnscraft-api api_core`
 

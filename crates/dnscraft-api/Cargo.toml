@@ -20,3 +20,8 @@ tokio = { workspace = true }
 rusqlite = { workspace = true }
 ring = { workspace = true }
 zeroize = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+
+[dev-dependencies]
+tower = { version = "0.5", default-features = false, features = ["util"] }
