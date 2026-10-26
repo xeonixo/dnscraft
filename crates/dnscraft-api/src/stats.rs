@@ -696,15 +696,26 @@ fn json_field(record: &Json, path: &[&str]) -> String {
     }
 }
 
-/// Quotes a CSV field when it contains a comma, quote or line break.
+/// Quotes a CSV field when it contains a comma, quote or line break, and
+/// neutralises spreadsheet formula injection (a leading `=`, `+`, `-`, `@`,
+/// tab or CR) with the standard single-quote prefix.
 fn csv_escape(field: &str) -> String {
+    let field = if field
+        .chars()
+        .next()
+        .is_some_and(|c| matches!(c, '=' | '+' | '-' | '@' | '\t' | '\r'))
+    {
+        format!("'{field}")
+    } else {
+        field.to_owned()
+    };
     if field
         .chars()
         .any(|ch| matches!(ch, ',' | '"' | '\n' | '\r'))
     {
         format!("\"{}\"", field.replace('"', "\"\""))
     } else {
-        field.to_owned()
+        field
     }
 }
 
@@ -757,6 +768,25 @@ mod tests {
         assert_eq!(csv_escape("a,b"), "\"a,b\"");
         assert_eq!(csv_escape("a\"b"), "\"a\"\"b\"");
         assert_eq!(csv_escape("a\nb"), "\"a\nb\"");
+    }
+
+    #[test]
+    fn csv_escape_neutralises_formula_injection() {
+        for field in [
+            "=1+1",
+            "+cmd|' /C calc'!A0",
+            "-2+3",
+            "@SUM(A1)",
+            "\t=HYPERLINK(\"http://example.net\")",
+        ] {
+            let escaped = csv_escape(field);
+            assert!(
+                !escaped.starts_with(&['=', '+', '-', '@', '\t'][..]),
+                "{field:?} escaped to {escaped:?}"
+            );
+        }
+        assert_eq!(csv_escape("=1+1"), "'=1+1");
+        assert_eq!(csv_escape("+1+1"), "'+1+1");
     }
 
     #[test]
