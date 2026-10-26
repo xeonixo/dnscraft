@@ -15,6 +15,14 @@ pub const MAX_DOH_PAYLOAD: usize = MAX_MESSAGE_LEN;
 /// Maximum accepted `dns=` query-string length (base64url of ≤ 65 535 octets).
 pub const MAX_DNS_PARAM_CHARS: usize = (MAX_DOH_PAYLOAD * 4).div_ceil(3) + 8;
 
+/// Maximum HTTP header-list / field-section size accepted by the DoH listener.
+///
+/// Shared by both transports: hyper's HTTP/2 `max_header_list_size` and h3's
+/// `max_field_section_size` are pinned to the same bound so the two listeners
+/// reject oversized header sections identically (RFC 9113 §10.5.1 / RFC 9114
+/// §4.2.2). 16 KiB matches hyper's historical HTTP/2 default.
+pub const MAX_DOH_HEADER_LIST_SIZE: u64 = 16 * 1024;
+
 /// Path classification for DoH routing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DohPath {

@@ -29,7 +29,8 @@ use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Exposure, Limits, ListenerConfig};
 use crate::core::{QueryMeta, error_reply_from_wire, handle_wire};
 use crate::doh_request::{
-    DNS_MESSAGE_TYPE, DohPath, DohWireError, content_type_of, extract_wire, parse_doh_path,
+    DNS_MESSAGE_TYPE, DohPath, DohWireError, MAX_DOH_HEADER_LIST_SIZE, content_type_of,
+    extract_wire, parse_doh_path,
 };
 use crate::error::ListenersError;
 use crate::events::{QueryEventSink, emit_optional};
@@ -322,7 +323,8 @@ fn handle_accept<H>(
         builder
             .http2()
             .timer(TokioTimer::new())
-            .max_concurrent_streams(max_streams);
+            .max_concurrent_streams(max_streams)
+            .max_header_list_size(MAX_DOH_HEADER_LIST_SIZE as u32);
 
         let conn = builder.serve_connection(io, service);
         tokio::pin!(conn);

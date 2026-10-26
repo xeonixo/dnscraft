@@ -14,9 +14,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::{Buf, Bytes};
 use dnscraft_listeners::{
     ALT_SVC_MAX_AGE, DNS_MESSAGE_TYPE, DohH3ServeParams, DohServeParams, DohStats, Exposure,
-    FakeHandler, Limits, ListenerConfig, PAD_BLOCK, PolicyClientIds, Protocol, PublicConfig,
-    QueryHandler, SniGate, SystemClock, TcpServeParams, TcpStats, TlsStats, read_frame, serve_doh,
-    serve_doh_h3, serve_tcp, write_frame,
+    FakeHandler, Limits, ListenerConfig, MAX_DOH_HEADER_LIST_SIZE, PAD_BLOCK, PolicyClientIds,
+    Protocol, PublicConfig, QueryHandler, SniGate, SystemClock, TcpServeParams, TcpStats, TlsStats,
+    read_frame, serve_doh, serve_doh_h3, serve_tcp, write_frame,
 };
 use dnscraft_policy::{ListenerId, PolicyAnswer, RequestContext};
 use dnscraft_proto::{Message, Rcode};
@@ -749,8 +749,8 @@ async fn h3_oversized_headers_rejected_server_stays_healthy() {
     let (mut driver, mut send_request) = h3::client::new(quinn_conn).await.unwrap();
     tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
 
-    // A field section well over the 16 KiB bound (mirrors hyper's HTTP/2 default).
-    let big = "x".repeat(32 * 1024);
+    // A field section just over the shared 16 KiB bound (one past the limit).
+    let big = "x".repeat(MAX_DOH_HEADER_LIST_SIZE as usize + 1);
     let req = Request::builder()
         .method(Method::GET)
         .uri("https://dns.example.com/dns-query")
@@ -784,6 +784,80 @@ async fn h3_oversized_headers_rejected_server_stays_healthy() {
     .await;
     assert_eq!(status, StatusCode::OK, "listener must stay healthy");
     assert!(!body.is_empty(), "healthy request must yield an answer");
+
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn h2_oversized_headers_rejected_at_shared_bound() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+    let handler = Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(
+        192, 0, 2, 45,
+    ))));
+
+    let h = DohH3Harness::spawn_with(
+        Exposure::Local,
+        Limits::default(),
+        gate,
+        certs,
+        handler,
+        false,
+    )
+    .await;
+
+    use http_body_util::Full;
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+    use rustls_pki_types::ServerName as PkiName;
+    use tokio_rustls::TlsConnector;
+
+    let mut cfg = RustlsClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(TrustAny))
+        .with_no_client_auth();
+    cfg.alpn_protocols = vec![b"h2".to_vec()];
+    let connector = TlsConnector::from(Arc::new(cfg));
+    let tcp = TcpStream::connect(h.tcp_addr).await.unwrap();
+    let name = PkiName::try_from("dns.example.com").unwrap();
+    let tls = connector.connect(name, tcp).await.unwrap();
+    let io = TokioIo::new(tls);
+    let (mut sender, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+        .handshake(io)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+
+    // One past the shared 16 KiB bound: the server must reject the stream, so
+    // the client never receives a response.
+    let big = "x".repeat(MAX_DOH_HEADER_LIST_SIZE as usize + 1);
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("https://dns.example.com/dns-query")
+        .header(header::CONTENT_TYPE, DNS_MESSAGE_TYPE)
+        .header("x-pad", big)
+        .body(Full::new(Bytes::from_static(b"\x00\x01")))
+        .unwrap();
+    let res = sender.send_request(req).await;
+    let rejected = match res {
+        Ok(resp) => resp.status() == StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+        Err(_) => true,
+    };
+    assert!(
+        rejected,
+        "h2 oversized headers must be rejected with 431 (or a stream reset)"
+    );
 
     h.stop().await;
 }

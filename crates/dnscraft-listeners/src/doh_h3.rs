@@ -19,6 +19,7 @@ use crate::admission::Admission;
 use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Limits, ListenerConfig};
 use crate::doh::{DohShared, DohStats, process_doh_request};
+use crate::doh_request::MAX_DOH_HEADER_LIST_SIZE;
 use crate::error::ListenersError;
 use crate::events::QueryEventSink;
 use crate::framing::MAX_MESSAGE_LEN;
@@ -31,15 +32,6 @@ use crate::tls::{
 
 /// Application close when the per-connection stream cap is exceeded (same idea as DoQ).
 const H3_EXCESSIVE_LOAD: VarInt = VarInt::from_u32(0x101);
-
-/// Maximum HTTP/3 field-section size accepted (RFC 9114 §4.2.2).
-///
-/// Mirrors the HTTP/2 DoH listener: hyper's HTTP/2 server defaults
-/// `max_header_list_size` to 16 KiB and that path sets no explicit bound, so
-/// the two listeners accept the same header size. Without this, h3's
-/// `Connection::new` defaults `max_field_section_size` to `VarInt::MAX` —
-/// effectively unbounded — and an oversized header section would be accepted.
-const H3_MAX_FIELD_SECTION_SIZE: u64 = 16 * 1024;
 
 /// Inputs for [`serve_doh_h3`].
 pub struct DohH3ServeParams<H: ?Sized> {
@@ -335,7 +327,7 @@ where
     H: QueryHandler + 'static,
 {
     let mut h3_builder = h3::server::builder();
-    h3_builder.max_field_section_size(H3_MAX_FIELD_SECTION_SIZE);
+    h3_builder.max_field_section_size(MAX_DOH_HEADER_LIST_SIZE);
     let mut h3_conn = match h3_builder
         .build(h3_quinn::Connection::new(conn.clone()))
         .await
