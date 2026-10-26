@@ -1,6 +1,6 @@
 //! SQLite connection wrapper (single writer; every call runs via `spawn_blocking`).
 
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -30,6 +30,11 @@ impl Db {
         let conn = tokio::task::spawn_blocking(move || -> Result<Connection, ControlApiError> {
             let existed = path.exists();
             prepare_path(&path).map_err(io_err)?;
+            if !existed {
+                // Create 0600 before SQLite opens it, so a fresh file is never
+                // visible with the umask-derived (wider) mode.
+                create_file_0600(&path).map_err(io_err)?;
+            }
             let mut conn = Connection::open(&path).map_err(db_err)?;
             // 0600 before WAL so the -wal/-shm sidecars inherit the same mode.
             tighten_file(&path, existed).map_err(io_err)?;
@@ -249,6 +254,17 @@ fn tighten_file(path: &Path, warn: bool) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Creates a new database file with mode 0600 before SQLite opens it, closing
+/// the window in which a fresh file would otherwise exist with the
+/// umask-derived (wider) mode. 0600 has no group/other bits, so it is immune to
+/// any normal umask.
+fn create_file_0600(path: &Path) -> std::io::Result<()> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).mode(0o600);
+    opts.open(path)?;
+    Ok(())
+}
+
 /// Forces `path` to the exact unix `mode` (owner/group/other bits).
 fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
@@ -400,5 +416,40 @@ mod tests {
 
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn preexisting_wider_file_is_tightened_but_dir_untouched() {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "dnscraft-api-preexisting-{}-{nanos}",
+            std::process::id()
+        ));
+        let path = dir.join("data.db");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, b"").unwrap();
+        // Simulate a pre-existing install: dir 0755, file 0644.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let db = Db::open(&path, Arc::new(SystemClock)).await.unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&dir), 0o755); // a pre-existing dir is never re-chmodded
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn create_file_0600_creates_with_restricted_mode() {
+        let path = temp_db_path();
+        create_file_0600(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let _ = std::fs::remove_file(&path);
     }
 }
