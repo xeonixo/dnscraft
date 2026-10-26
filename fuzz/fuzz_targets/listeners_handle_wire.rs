@@ -5,11 +5,13 @@
 //! "never panic / never hang": every decode, validate, encode and handler path
 //! must be total on adversarial input.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::sync::{Arc, OnceLock};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use dnscraft_filtering::SetId;
-use dnscraft_listeners::{Exposure, FakeHandler, QueryMeta, handle_wire};
+use dnscraft_listeners::{
+    DdrConfig, DdrEndpoint, DdrEndpoints, Exposure, FakeHandler, Protocol, QueryMeta, handle_wire,
+};
 use dnscraft_policy::{
     AnswerOrigin, ClientId, DecisionRecord, DecisionTimings, DnsProtocol, ListenerId, PolicyAnswer,
     ProfileId, SelectionCause, ViewId,
@@ -49,7 +51,54 @@ fn handler() -> Arc<FakeHandler> {
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    RT.get_or_init(|| tokio::runtime::Builder::new_current_thread().build().unwrap())
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+    })
+}
+
+/// Builds a `DdrEndpoints` (as the library does for a local Do53 listener) for
+/// about half of the inputs, selected by an input byte. Both address families
+/// and every encrypted protocol are advertised so `try_answer_ddr`'s SVCB
+/// construction, family filtering and NODATA fallback are all reachable.
+fn ddr_for(data: &[u8]) -> Option<Arc<RwLock<DdrEndpoints>>> {
+    if data.get(23).copied().unwrap_or(0) & 1 != 0 {
+        return None;
+    }
+    let endpoints = vec![
+        DdrEndpoint {
+            protocol: Protocol::Dot,
+            address: SocketAddr::from((Ipv4Addr::LOCALHOST, 853)),
+            h3: false,
+        },
+        DdrEndpoint {
+            protocol: Protocol::Doh,
+            address: SocketAddr::from((Ipv4Addr::LOCALHOST, 443)),
+            h3: true,
+        },
+        DdrEndpoint {
+            protocol: Protocol::Doq,
+            address: SocketAddr::from((Ipv4Addr::LOCALHOST, 8853)),
+            h3: false,
+        },
+        DdrEndpoint {
+            protocol: Protocol::Doh,
+            address: "[::1]:443".parse().unwrap(),
+            h3: false,
+        },
+    ];
+    Some(
+        DdrEndpoints::new(
+            &DdrConfig {
+                enabled: true,
+                target: "dns".into(),
+            },
+            "example.com",
+            endpoints,
+        )
+        .shared(),
+    )
 }
 
 /// Derives a `QueryMeta` from the input bytes. All fields are total: a short
@@ -91,7 +140,7 @@ fn meta_from(data: &[u8]) -> QueryMeta {
         size_limit: 512 + usize::from(b(20)) * 64,
         pad: b(21) & 1 == 0,
         udp_payload_max: 512 + u16::from(b(22)) * 2,
-        ddr: None,
+        ddr: ddr_for(data),
     }
 }
 
