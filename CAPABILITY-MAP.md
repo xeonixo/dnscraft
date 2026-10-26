@@ -15,9 +15,9 @@ Status matches [tasks/progress.md](tasks/progress.md) "Current state".
 | `policy` | Query → profile by source subnet/IP: filter set, split-horizon answers | resolver, filtering | [SPEC-policy.md](SPEC-policy.md) | complete |
 | `listeners` | Do53 UDP/TCP, DoT, DoH (h2/h3), DoQ; multiple NICs/addresses; public listeners for registered Client IDs | policy, tls | [SPEC-listeners.md](SPEC-listeners.md) | complete |
 | `control-api` | REST API, configuration, query log (filterable by device), statistics, OIDC (Authentik) + local break-glass login, locale-neutral error codes | policy, clients | [SPEC-control-api.md](SPEC-control-api.md) (draft) | in progress |
-| `web-ui` | TypeScript frontend, fully internationalized, embedded into the binary as static assets | control-api | – | pending |
+| `web-ui` | TypeScript frontend, fully internationalized, embedded into the binary as static assets | control-api | [SPEC-web-ui.md](SPEC-web-ui.md) (draft) | pending |
 | `mcp` | MCP server for AI assistants: query log, "why blocked?", test query, stats (viewer); temporary allow, rules, pause (admin); internal listener only, same tokens/roles/audit as the API | control-api | [SPEC-mcp.md](SPEC-mcp.md) | in progress |
-| `cluster` | Master/sub-nodes: config sync, writes from any node (forwarded to master, offline fallback), keep serving without the master, log/stats aggregation on the master | control-api | – | pending |
+| `cluster` | Master/sub-nodes: config sync, writes from any node (forwarded to master, offline fallback), keep serving without the master, log/stats aggregation on the master | control-api | [SPEC-cluster.md](SPEC-cluster.md) (draft) | pending |
 
 ## Build order
 

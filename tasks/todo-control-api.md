@@ -409,11 +409,11 @@ DTOs from the modules (no parallel string types):
   `GET /api/v1/query-log/export.csv` (convenience). Both obey the current filter and retention.
 
 **Acceptance criteria:**
-- [ ] NDJSON export streams records and obeys the current filters.
-- [ ] CSV export returns the same filtered set.
-- [ ] Rollup tables are populated for hourly/daily windows; rollup retention is 365 days.
-- [ ] Top clients/domains respect cardinality caps.
-- [ ] Export contains no secret material or client data beyond the documented schema.
+- [x] NDJSON export streams records and obeys the current filters.
+- [x] CSV export returns the same filtered set.
+- [x] Rollup tables are populated for hourly/daily windows; rollup retention is 365 days.
+- [x] Top clients/domains respect cardinality caps.
+- [x] Export contains no secret material or client data beyond the documented schema.
 
 **Verification:** `cargo test -p dnscraft-api stats_export`
 
@@ -424,8 +424,8 @@ DTOs from the modules (no parallel string types):
 **Scope:** M
 
 ## Checkpoint E: Query log + statistics
-- [ ] DoD green; query log + stats + export reviewed (lead review)
-- [ ] progress.md updated
+- [x] DoD green; query log + stats + export reviewed (lead review)
+- [x] progress.md updated
 
 ## Phase 6: Hardening
 

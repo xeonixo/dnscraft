@@ -542,16 +542,16 @@ idempotent. Static descriptions include the multi-client warning from SPEC-mcp.m
 record mutation evidence. No new production behaviour except fixes found by the tests (regression test first).
 
 **Acceptance criteria:**
-- [ ] Matrix test: every one of the 5 write tools × {`mcp:read`, `mcp:write`} × {gate on, off} behaves as
+- [x] Matrix test: every one of the 5 write tools × {`mcp:read`, `mcp:write`} × {gate on, off} behaves as
       specified (list visibility, error code, no backend call when rejected — mock call counters).
-- [ ] Hostile `reason` values (newlines, tabs, `<markup>`, SQL, JSON-breaking quotes, 10 000 chars) are
+- [x] Hostile `reason` values (newlines, tabs, `<markup>`, SQL, JSON-breaking quotes, 10 000 chars) are
       sanitized/truncated before reaching `record_audit`.
-- [ ] Explicit tests: no tool can create an allow rule; no `$` modifier or `$dnsrewrite` can be produced; no
+- [x] Explicit tests: no tool can create an allow rule; no `$` modifier or `$dnsrewrite` can be produced; no
       wildcard/TLD-wide/IP target; durations cannot exceed 1 h; no tool exposes a token or secret.
-- [ ] Mutation probes (recorded in the commit message, restored afterwards): protected check removed,
+- [x] Mutation probes (recorded in the commit message, restored afterwards): protected check removed,
       scope check `==`→`!=`, sanitizer disabled, gate ignored, header/body name check removed — each is caught
       by a named test.
-- [ ] Error-code uniqueness test covers all `mcp.*` codes, no collision with `control_api.*`, `policy.*`,
+- [x] Error-code uniqueness test covers all `mcp.*` codes, no collision with `control_api.*`, `policy.*`,
       `filtering.*` strings used in this crate.
 
 **Verification:** `cargo test -p dnscraft-mcp`
