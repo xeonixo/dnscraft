@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use dnscraft_mcp::backend::{BackendError, McpBackend};
 use dnscraft_mcp::dto::{
-    AddRuleParams, AddRuleResult, AuditEntry, ClientListParams, ClientListResult,
+    AddRuleParams, AddRuleResult, AuditEntry, ClientInfo, ClientListParams, ClientListResult,
     ExplainBlockResult, ListRulesParams, ListRulesResult, NodeStatus, PauseDuration, PauseResult,
     QType, QueryDetail, QueryLogEntry, QueryLogResult, QueryLogSearch, RemoveRuleParams,
     RemoveRuleResult, ResumeResult, StatsParams, StatsResult, TempAllowParams, TempAllowResult,
@@ -51,6 +51,13 @@ pub struct MockBackend {
     test_query_result: Mutex<Option<Result<TestQueryResult, BackendError>>>,
     /// Parameters of the most recent `test_query` call.
     pub last_test_query: Mutex<Option<TestQueryParams>>,
+    stats_result: Mutex<Option<Result<StatsResult, BackendError>>>,
+    /// Parameters of the most recent `get_stats` call.
+    pub last_stats: Mutex<Option<StatsParams>>,
+    client_rows: Mutex<Vec<ClientInfo>>,
+    client_error: Mutex<Option<BackendError>>,
+    /// Parameters of the most recent `list_clients` call.
+    pub last_clients: Mutex<Option<ClientListParams>>,
 }
 
 /// Decrements the active counter even when the tool future is cancelled.
@@ -140,6 +147,31 @@ impl MockBackend {
     /// Parameters of the most recent `test_query` call.
     pub fn last_test_query(&self) -> Option<TestQueryParams> {
         slot(&self.last_test_query).clone()
+    }
+
+    /// Set the `get_stats` result.
+    pub fn set_stats(&self, value: Result<StatsResult, BackendError>) {
+        *slot(&self.stats_result) = Some(value);
+    }
+
+    /// Parameters of the most recent `get_stats` call.
+    pub fn last_stats(&self) -> Option<StatsParams> {
+        slot(&self.last_stats).clone()
+    }
+
+    /// Seed the rows returned by `list_clients` (paginated by the mock).
+    pub fn set_clients(&self, rows: Vec<ClientInfo>) {
+        *slot(&self.client_rows) = rows;
+    }
+
+    /// Make `list_clients` fail with `error`.
+    pub fn set_clients_error(&self, error: BackendError) {
+        *slot(&self.client_error) = Some(error);
+    }
+
+    /// Parameters of the most recent `list_clients` call.
+    pub fn last_clients(&self) -> Option<ClientListParams> {
+        slot(&self.last_clients).clone()
     }
 
     fn status_result(&self) -> Result<NodeStatus, BackendError> {
@@ -237,15 +269,35 @@ impl McpBackend for MockBackend {
             .unwrap_or_else(|| Ok(TestQueryResult::default()))
     }
 
-    async fn get_stats(&self, _params: StatsParams) -> Result<StatsResult, BackendError> {
-        Ok(StatsResult::default())
+    async fn get_stats(&self, params: StatsParams) -> Result<StatsResult, BackendError> {
+        *slot(&self.last_stats) = Some(params);
+        slot(&self.stats_result)
+            .clone()
+            .unwrap_or_else(|| Ok(StatsResult::default()))
     }
 
     async fn list_clients(
         &self,
-        _params: ClientListParams,
+        params: ClientListParams,
     ) -> Result<ClientListResult, BackendError> {
-        Ok(ClientListResult::default())
+        *slot(&self.last_clients) = Some(params.clone());
+        if let Some(error) = slot(&self.client_error).clone() {
+            return Err(error);
+        }
+        let rows = slot(&self.client_rows);
+        let clients: Vec<ClientInfo> = rows
+            .iter()
+            .skip(params.offset as usize)
+            .take(params.limit as usize)
+            .cloned()
+            .collect();
+        let next = params.offset.saturating_add(clients.len() as u32);
+        let has_more = (next as usize) < rows.len();
+        Ok(ClientListResult {
+            clients,
+            has_more,
+            next_offset: has_more.then_some(next),
+        })
     }
 
     async fn get_status(&self) -> Result<NodeStatus, BackendError> {

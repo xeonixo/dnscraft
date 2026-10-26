@@ -9,10 +9,12 @@
 mod support;
 
 use dnscraft_mcp::dto::{
-    AnswerRecord, DecisionTimings, ExplainBlockResult, ExplainReason, QType, QueryClient,
-    QueryDetail, QueryLogEntry, QueryLogFilter, QueryName, QueryTimings, Selection,
-    SynthesizedAnswer, TestQueryFilter, TestQueryResult,
+    AnswerRecord, ClientInfo, DecisionTimings, DnssecCounts, ExplainBlockResult, ExplainReason,
+    QType, QueryClient, QueryDetail, QueryLogEntry, QueryLogFilter, QueryName, QueryTimings,
+    Selection, StatsPeriod, StatsResult, SynthesizedAnswer, TestQueryFilter, TestQueryResult,
+    TopClient, TopDomain, VlanInfo,
 };
+use dnscraft_mcp::tools::read::TOP_LIST_LIMIT;
 use dnscraft_mcp::{BackendError, McpConfig};
 use serde_json::{Value, json};
 use support::harness::{self, TestServer};
@@ -830,5 +832,369 @@ async fn explain_and_test_query_definitions_are_static_and_match_spec() {
     assert_eq!(
         test_query["inputSchema"]["properties"]["source_ip"]["format"],
         "ipv4 or ipv6"
+    );
+}
+
+#[tokio::test]
+async fn get_stats_schema_rejects_invalid_arguments() {
+    let server = harness::spawn(McpConfig::default()).await;
+    for arguments in [
+        json!({ "from": "yesterday" }),
+        json!({ "to": "2026-10-26 10:00:00" }),
+        json!({ "from": "2026-10-26T12:00:00Z", "to": "2026-10-26T11:00:00Z" }),
+        json!({ "profile_id": 7 }),
+        json!({ "limit": 5 }),
+    ] {
+        assert_invalid_input(&server, "get_stats", arguments).await;
+    }
+    assert!(server.backend.last_stats().is_none());
+}
+
+#[tokio::test]
+async fn get_stats_shapes_and_caps_top_lists() {
+    let server = harness::spawn(McpConfig::default()).await;
+    let client = reqwest::Client::new();
+    let result = StatsResult {
+        period: StatsPeriod {
+            from: "2026-10-25T12:00:00Z".into(),
+            to: "2026-10-26T12:00:00Z".into(),
+        },
+        total_queries: 123_456,
+        blocked_queries: 12_345,
+        allowed_queries: 111_111,
+        blocked_ratio: 0.1,
+        top_blocked_domains: (0..15)
+            .map(|index| TopDomain {
+                domain: format!("ads{index}.example"),
+                count: 100 - index,
+            })
+            .collect(),
+        top_clients: (0..15)
+            .map(|index| TopClient {
+                client_name: format!("client {index}"),
+                queries: 1000 - index,
+            })
+            .collect(),
+        cache_hit_ratio: 0.85,
+        dnssec: DnssecCounts {
+            secure: 50_000,
+            insecure: 70_000,
+            bogus: 10,
+        },
+    };
+    server.backend.set_stats(Ok(result));
+
+    let (status, body) = harness::tool_call(&client, &server, "get_stats", json!({})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    let output = harness::tool_output(&body);
+    assert_eq!(
+        keys(&output),
+        sorted(&[
+            "period",
+            "total_queries",
+            "blocked_queries",
+            "allowed_queries",
+            "blocked_ratio",
+            "top_blocked_domains",
+            "top_clients",
+            "cache_hit_ratio",
+            "dnssec",
+        ]),
+        "aggregates only, no raw log fields"
+    );
+    assert_eq!(keys(&output["period"]), sorted(&["from", "to"]));
+    assert_eq!(
+        keys(&output["dnssec"]),
+        sorted(&["secure", "insecure", "bogus"])
+    );
+    assert_eq!(output["period"]["from"], "2026-10-25T12:00:00Z");
+    assert_eq!(output["total_queries"], 123_456);
+    assert_eq!(output["blocked_queries"], 12_345);
+    assert_eq!(output["allowed_queries"], 111_111);
+    assert_eq!(output["blocked_ratio"], 0.1);
+    assert_eq!(output["cache_hit_ratio"], 0.85);
+    assert_eq!(output["dnssec"]["secure"], 50_000);
+    assert_eq!(
+        output["top_blocked_domains"].as_array().unwrap().len(),
+        TOP_LIST_LIMIT
+    );
+    assert_eq!(
+        output["top_clients"].as_array().unwrap().len(),
+        TOP_LIST_LIMIT
+    );
+    assert_eq!(output["top_blocked_domains"][0]["domain"], "ads0.example");
+    assert_eq!(output["top_blocked_domains"][0]["count"], 100);
+    assert_eq!(output["top_clients"][0]["client_name"], "client 0");
+    assert_eq!(output["top_clients"][0]["queries"], 1000);
+
+    let (_, body) = harness::tool_call(
+        &client,
+        &server,
+        "get_stats",
+        json!({
+            "from": "2026-10-25T00:00:00Z",
+            "to": "2026-10-26T00:00:00Z",
+            "profile_id": "kids"
+        }),
+    )
+    .await;
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    let forwarded = server.backend.last_stats().expect("backend was called");
+    assert_eq!(forwarded.from.as_deref(), Some("2026-10-25T00:00:00Z"));
+    assert_eq!(forwarded.to.as_deref(), Some("2026-10-26T00:00:00Z"));
+    assert_eq!(forwarded.profile_id.as_deref(), Some("kids"));
+}
+
+#[tokio::test]
+async fn get_stats_sanitizes_strings_only() {
+    let server = harness::spawn(McpConfig::default()).await;
+    server.backend.set_stats(Ok(StatsResult {
+        period: StatsPeriod {
+            from: "2026-10-25\u{0007}T00:00:00Z".into(),
+            to: "2026-10-26T00:00:00Z\n".into(),
+        },
+        total_queries: 10,
+        blocked_queries: 4,
+        allowed_queries: 6,
+        blocked_ratio: 0.4,
+        top_blocked_domains: vec![TopDomain {
+            domain: "ads\u{0001}.example".into(),
+            count: 4,
+        }],
+        top_clients: vec![TopClient {
+            client_name: "iPho\u{0000}ne".into(),
+            queries: 6,
+        }],
+        cache_hit_ratio: 0.5,
+        dnssec: DnssecCounts {
+            secure: 1,
+            insecure: 2,
+            bogus: 3,
+        },
+    }));
+    let client = reqwest::Client::new();
+
+    let (_, body) = harness::tool_call(&client, &server, "get_stats", json!({})).await;
+    let output = harness::tool_output(&body);
+    assert_eq!(output["period"]["from"], "2026-10-25\u{FFFD}T00:00:00Z");
+    assert_eq!(output["period"]["to"], "2026-10-26T00:00:00Z\u{FFFD}");
+    assert_eq!(
+        output["top_blocked_domains"][0]["domain"],
+        "ads\u{FFFD}.example"
+    );
+    assert_eq!(output["top_clients"][0]["client_name"], "iPho\u{FFFD}ne");
+    assert_eq!(output["dnssec"]["bogus"], 3);
+}
+
+#[tokio::test]
+async fn get_stats_error_mapping() {
+    let server = harness::spawn(McpConfig::default()).await;
+    let client = reqwest::Client::new();
+    server.backend.set_stats(Err(BackendError::Internal {
+        message: "secret stats database".into(),
+    }));
+    let (status, body) = harness::tool_call(&client, &server, "get_stats", json!({})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(harness::error_code(&body), "control_api.internal");
+    assert!(!body.to_string().contains("secret"), "{body}");
+}
+
+#[tokio::test]
+async fn list_clients_schema_rejects_invalid_arguments() {
+    let server = harness::spawn(McpConfig::default()).await;
+    for arguments in [
+        json!({ "limit": 0 }),
+        json!({ "limit": 501 }),
+        json!({ "limit": "100" }),
+        json!({ "limit": 2.5 }),
+        json!({ "offset": -1 }),
+        json!({ "source": "ldap" }),
+        json!({ "name_substr": 5 }),
+        json!({ "extra": true }),
+    ] {
+        assert_invalid_input(&server, "list_clients", arguments).await;
+    }
+    assert!(server.backend.last_clients().is_none());
+}
+
+fn client(index: usize) -> ClientInfo {
+    ClientInfo {
+        id: format!("c-{index:03}"),
+        display_name: format!("client {index}"),
+        source: "unifi".into(),
+        addresses: vec!["192.0.2.10".into()],
+        macs: vec!["aa:bb:cc:dd:ee:ff".into()],
+        vlan: None,
+        local_domain: None,
+    }
+}
+
+#[tokio::test]
+async fn list_clients_pagination_defaults_and_bounds() {
+    let server = harness::spawn(McpConfig::default()).await;
+    server.backend.set_clients((0..250).map(client).collect());
+    let client = reqwest::Client::new();
+
+    let (status, body) = harness::tool_call(&client, &server, "list_clients", json!({})).await;
+    assert_eq!(status, 200, "{body}");
+    let output = harness::tool_output(&body);
+    assert_eq!(output["clients"].as_array().unwrap().len(), 100);
+    assert_eq!(output["clients"][0]["id"], "c-000");
+    assert_eq!(output["has_more"], true);
+    assert_eq!(output["next_offset"], 100);
+    let forwarded = server.backend.last_clients().unwrap();
+    assert_eq!((forwarded.limit, forwarded.offset), (100, 0));
+
+    let (_, body) =
+        harness::tool_call(&client, &server, "list_clients", json!({ "offset": 100 })).await;
+    let output = harness::tool_output(&body);
+    assert_eq!(output["clients"].as_array().unwrap().len(), 100);
+    assert_eq!(output["clients"][0]["id"], "c-100");
+    assert_eq!(output["next_offset"], 200);
+
+    let (_, body) =
+        harness::tool_call(&client, &server, "list_clients", json!({ "offset": 200 })).await;
+    let output = harness::tool_output(&body);
+    assert_eq!(output["clients"].as_array().unwrap().len(), 50);
+    assert_eq!(output["has_more"], false);
+    assert_eq!(output["next_offset"], Value::Null);
+
+    let (_, body) =
+        harness::tool_call(&client, &server, "list_clients", json!({ "limit": 500 })).await;
+    let output = harness::tool_output(&body);
+    assert_eq!(output["clients"].as_array().unwrap().len(), 250);
+
+    let (_, body) = harness::tool_call(
+        &client,
+        &server,
+        "list_clients",
+        json!({ "name_substr": "iphone", "source": "manual", "limit": 1, "offset": 1 }),
+    )
+    .await;
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    let forwarded = server.backend.last_clients().unwrap();
+    assert_eq!(forwarded.limit, 1);
+    assert_eq!(forwarded.offset, 1);
+    assert_eq!(forwarded.name_substr.as_deref(), Some("iphone"));
+    assert_eq!(forwarded.source.as_deref(), Some("manual"));
+}
+
+#[tokio::test]
+async fn list_clients_shapes_and_sanitizes_fields() {
+    let server = harness::spawn(McpConfig::default()).await;
+    let hostile = ClientInfo {
+        id: "c\u{0001}1".into(),
+        display_name: "iPho\u{0000}ne\n".into(),
+        source: "uni\u{0007}fi".into(),
+        addresses: vec!["192.0.2.10\u{0009}".into()],
+        macs: vec!["aa:bb:cc:dd:ee:ff\n".into()],
+        vlan: Some(VlanInfo {
+            id: 40,
+            name: "Io\u{0000}T".into(),
+        }),
+        local_domain: Some("iot\u{0007}.example.com".into()),
+    };
+    let plain = client(1);
+    server.backend.set_clients(vec![hostile, plain]);
+    let client = reqwest::Client::new();
+
+    let (_, body) = harness::tool_call(&client, &server, "list_clients", json!({})).await;
+    let output = harness::tool_output(&body);
+    assert_eq!(
+        keys(&output),
+        sorted(&["clients", "has_more", "next_offset"])
+    );
+    assert_eq!(
+        keys(&output["clients"][0]),
+        sorted(&[
+            "id",
+            "display_name",
+            "source",
+            "addresses",
+            "macs",
+            "vlan",
+            "local_domain"
+        ])
+    );
+    assert_eq!(keys(&output["clients"][0]["vlan"]), sorted(&["id", "name"]));
+    assert_eq!(output["clients"][0]["id"], "c\u{FFFD}1");
+    assert_eq!(
+        output["clients"][0]["display_name"],
+        "iPho\u{FFFD}ne\u{FFFD}"
+    );
+    assert_eq!(output["clients"][0]["source"], "uni\u{FFFD}fi");
+    assert_eq!(output["clients"][0]["addresses"][0], "192.0.2.10\u{FFFD}");
+    assert_eq!(output["clients"][0]["macs"][0], "aa:bb:cc:dd:ee:ff\u{FFFD}");
+    assert_eq!(output["clients"][0]["vlan"]["id"], 40);
+    assert_eq!(output["clients"][0]["vlan"]["name"], "Io\u{FFFD}T");
+    assert_eq!(
+        output["clients"][0]["local_domain"],
+        "iot\u{FFFD}.example.com"
+    );
+    assert_eq!(output["clients"][1]["vlan"], Value::Null);
+    assert_eq!(output["clients"][1]["local_domain"], Value::Null);
+}
+
+#[tokio::test]
+async fn list_clients_error_mapping() {
+    let server = harness::spawn(McpConfig::default()).await;
+    let client = reqwest::Client::new();
+    server.backend.set_clients_error(BackendError::Internal {
+        message: "secret client store".into(),
+    });
+    let (status, body) = harness::tool_call(&client, &server, "list_clients", json!({})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(harness::error_code(&body), "control_api.internal");
+    assert!(!body.to_string().contains("secret"), "{body}");
+}
+
+#[tokio::test]
+async fn stats_and_clients_definitions_are_static_and_match_spec() {
+    let server = harness::spawn(McpConfig::default()).await;
+    let client = reqwest::Client::new();
+    let body = harness::list_tools(&client, &server).await;
+    let tools = body["result"]["tools"].as_array().unwrap();
+    let find = |name: &str| {
+        tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is listed"))
+    };
+
+    let stats = find("get_stats");
+    assert_eq!(
+        stats["description"],
+        "Retrieve DNS statistics: total queries, blocked ratio, top domains, top clients, cache hit ratio, DNSSEC outcomes. Specify a time range or use defaults (last 24 hours)."
+    );
+    assert_eq!(stats["annotations"]["readOnlyHint"], true);
+    assert_eq!(stats["annotations"]["idempotentHint"], true);
+    assert_eq!(stats["annotations"].get("openWorldHint"), None);
+    assert_eq!(stats["inputSchema"]["type"], "object");
+    assert_eq!(
+        keys(&stats["inputSchema"]["properties"]),
+        sorted(&["from", "to", "profile_id"])
+    );
+    assert!(stats["inputSchema"].get("required").is_none());
+
+    let clients = find("list_clients");
+    assert_eq!(
+        clients["description"],
+        "List known clients (devices) with their names, IPs, VLANs, and source (UniFi, manual). Use this to find a client_id for other queries."
+    );
+    assert_eq!(clients["annotations"]["readOnlyHint"], true);
+    assert_eq!(clients["annotations"]["idempotentHint"], true);
+    assert_eq!(clients["annotations"].get("openWorldHint"), None);
+    assert_eq!(
+        clients["inputSchema"]["properties"]["limit"]["default"],
+        100
+    );
+    assert_eq!(
+        clients["inputSchema"]["properties"]["limit"]["maximum"],
+        500
+    );
+    assert_eq!(
+        clients["inputSchema"]["properties"]["source"]["enum"],
+        json!(["unifi", "manual"])
     );
 }
