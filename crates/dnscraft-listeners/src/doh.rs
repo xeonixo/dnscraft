@@ -62,6 +62,10 @@ pub struct DohStats {
     pub http_429: AtomicU64,
     /// Ban strikes recorded for unknown public path ids.
     pub path_strikes: AtomicU64,
+    /// HTTP/3 requests whose header/body read deadline fired (stream reset).
+    pub request_timeouts: AtomicU64,
+    /// HTTP/3 request processing errors (resolve / recv / send failures).
+    pub request_errors: AtomicU64,
 }
 
 impl DohStats {

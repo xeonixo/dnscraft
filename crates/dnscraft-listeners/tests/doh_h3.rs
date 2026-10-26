@@ -345,6 +345,10 @@ async fn h3_get_post_match_do53() {
             DNS_MESSAGE_TYPE,
             "{label}"
         );
+        assert!(
+            headers.get(header::ALT_SVC).is_none(),
+            "{label}: h3 response must not carry Alt-Svc"
+        );
         let msg = Message::decode(body).unwrap();
         assert_eq!(msg.header.id, 0, "{label}");
         assert_eq!(msg.rcode(), Rcode::NOERROR, "{label}");
@@ -546,5 +550,176 @@ async fn h3_stream_cap_like_doq() {
     drop(streams);
     drop(send_request);
     let _ = drive.await;
+    h.stop().await;
+}
+
+/// QUIC client endpoint whose transport sends PING keep-alives every 100 ms so
+/// the connection never idles out at the transport layer. Only the server's
+/// application idle / request deadline can close it.
+fn h3_endpoint_with_keepalive() -> quinn::Endpoint {
+    let mut client_tls = RustlsClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(TrustAny))
+        .with_no_client_auth();
+    client_tls.alpn_protocols = vec![b"h3".to_vec()];
+    let mut client = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+    let mut transport = quinn::TransportConfig::default();
+    transport.keep_alive_interval(Some(Duration::from_millis(100)));
+    let mut cfg = ClientConfig::new(Arc::new(QuicClientConfig::try_from(client_tls).unwrap()));
+    cfg.transport_config(Arc::new(transport));
+    client.set_default_client_config(cfg);
+    client
+}
+
+async fn h3_stall_harness(limits: Limits) -> DohH3Harness {
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: ReservedLabels::new(["node1".into()]),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+    let handler = Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(
+        192, 0, 2, 44,
+    ))));
+    DohH3Harness::spawn_with(Exposure::Local, limits, gate, certs, handler, true).await
+}
+
+#[tokio::test]
+async fn h3_stalled_request_closes_connection() {
+    install_ring();
+    let limits = Limits {
+        tcp_idle_timeout: Duration::from_millis(500),
+        ..Limits::default()
+    };
+    let h = h3_stall_harness(limits).await;
+
+    let client = h3_endpoint_with_keepalive();
+    let conn = client
+        .connect(h.udp_addr, "dns.example.com")
+        .unwrap()
+        .await
+        .unwrap();
+    let quinn_conn = h3_quinn::Connection::new(conn.clone());
+    let (mut driver, mut send_request) = h3::client::new(quinn_conn).await.unwrap();
+    tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    // HEADERS only: never send a body and never finish the request stream.
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("https://dns.example.com/dns-query")
+        .header(header::CONTENT_TYPE, DNS_MESSAGE_TYPE)
+        .body(())
+        .unwrap();
+    let _stream = send_request.send_request(req).await.unwrap();
+
+    // The server's per-request deadline must close the connection despite the
+    // client PING keep-alive and the in-flight (stalled) request.
+    let closed = tokio::time::timeout(Duration::from_secs(3), conn.closed()).await;
+    assert!(
+        closed.is_ok(),
+        "stalled request must not hold the connection open"
+    );
+
+    drop(send_request);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn h3_concurrent_request_completes_while_stalled() {
+    install_ring();
+    let limits = Limits {
+        tcp_idle_timeout: Duration::from_millis(500),
+        ..Limits::default()
+    };
+    let h = h3_stall_harness(limits).await;
+    let q = encode_a_query_edns(2, "example.com.", 1232);
+    let enc = URL_SAFE_NO_PAD.encode(&q);
+
+    let client = h3_endpoint_with_keepalive();
+    let conn = client
+        .connect(h.udp_addr, "dns.example.com")
+        .unwrap()
+        .await
+        .unwrap();
+    let quinn_conn = h3_quinn::Connection::new(conn.clone());
+    let (mut driver, mut send_request) = h3::client::new(quinn_conn).await.unwrap();
+    tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    // Stall one stream with HEADERS only.
+    let stalled = Request::builder()
+        .method(Method::POST)
+        .uri("https://dns.example.com/dns-query")
+        .header(header::CONTENT_TYPE, DNS_MESSAGE_TYPE)
+        .body(())
+        .unwrap();
+    let _stalled_stream = send_request.send_request(stalled).await.unwrap();
+
+    // A well-behaved GET on a second stream still completes.
+    let get = Request::builder()
+        .method(Method::GET)
+        .uri(format!("https://dns.example.com/dns-query?dns={enc}"))
+        .body(())
+        .unwrap();
+    let mut stream = send_request.send_request(get).await.unwrap();
+    stream.finish().await.unwrap();
+    let resp = stream.recv_response().await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut out = Vec::new();
+    while let Some(mut chunk) = stream.recv_data().await.unwrap() {
+        out.extend_from_slice(chunk.chunk());
+        chunk.advance(chunk.remaining());
+    }
+    assert!(!out.is_empty(), "concurrent request must yield an answer");
+
+    drop(send_request);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn h3_slow_progress_killed_at_total_deadline() {
+    install_ring();
+    // The request read budget (headers + body) is a single tcp_idle_timeout
+    // window, not a per-chunk idle timer: progress below the budget is allowed,
+    // but a request that never finishes is killed once the total budget elapses.
+    let limits = Limits {
+        tcp_idle_timeout: Duration::from_millis(500),
+        ..Limits::default()
+    };
+    let h = h3_stall_harness(limits).await;
+
+    let client = h3_endpoint_with_keepalive();
+    let conn = client
+        .connect(h.udp_addr, "dns.example.com")
+        .unwrap()
+        .await
+        .unwrap();
+    let quinn_conn = h3_quinn::Connection::new(conn.clone());
+    let (mut driver, mut send_request) = h3::client::new(quinn_conn).await.unwrap();
+    tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("https://dns.example.com/dns-query")
+        .header(header::CONTENT_TYPE, DNS_MESSAGE_TYPE)
+        .body(())
+        .unwrap();
+    let mut stream = send_request.send_request(req).await.unwrap();
+    // Trickle one byte every 150 ms (< 500 ms deadline) and never finish.
+    for _ in 0..3 {
+        stream.send_data(Bytes::from_static(&[0u8])).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+
+    // Total time has passed the budget; the request must be killed.
+    let closed = tokio::time::timeout(Duration::from_secs(3), conn.closed()).await;
+    assert!(
+        closed.is_ok(),
+        "slow request beyond the total deadline must be killed"
+    );
+
+    drop(send_request);
     h.stop().await;
 }

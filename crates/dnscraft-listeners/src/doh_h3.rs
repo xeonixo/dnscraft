@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 
 use bytes::{Buf, Bytes};
 use dnscraft_tls::CertResolver;
+use http::header;
 use http::{Method, Request};
 use quinn::crypto::rustls::QuicServerConfig;
 use quinn::{Endpoint, EndpointConfig, ServerConfig, TokioRuntime, VarInt};
@@ -361,7 +362,11 @@ where
                             let _permit = permit;
                             activity.in_flight.fetch_add(1, Ordering::Relaxed);
                             let clock = Arc::clone(&shared.doh.clock);
-                            let _ = handle_h3_request(shared, resolver, peer.ip()).await;
+                            let result =
+                                handle_h3_request(Arc::clone(&shared), resolver, peer.ip()).await;
+                            if result.is_err() {
+                                DohStats::bump(&shared.doh.stats.request_errors);
+                            }
                             activity.in_flight.fetch_sub(1, Ordering::Relaxed);
                             activity.touch(clock.as_ref());
                         });
@@ -370,6 +375,10 @@ where
                     Err(_) => return,
                 }
             }
+            // Re-evaluate idle when a request finishes (in_flight -> 0) or
+            // activity changes, so a stalled request that just timed out does
+            // not leave the connection blocked on accept() forever.
+            () = activity.wake.notified() => {}
             () = wait_until(shared.doh.clock.as_ref(), deadline, &activity.wake), if in_flight == 0 => {
                 if activity.in_flight.load(Ordering::Relaxed) == 0
                     && shared.doh.clock.now() >= deadline
@@ -390,27 +399,50 @@ async fn handle_h3_request<H>(
 where
     H: QueryHandler,
 {
-    let (req, mut stream) = resolver.resolve_request().await.map_err(|_| ())?;
+    // Per-request read budget covering header + body read, like DoQ. A client
+    // that sends HEADERS and stalls must not hold the connection open past this.
+    // `tcp_idle_timeout` is the only suitable limit (no request-timeout setting
+    // exists): it is the same window DoH/TCP apply to a non-progressing peer.
+    // The budget is a single total window, not reset per chunk — progress below
+    // it is allowed, but a request that never finishes is killed once it elapses.
+    let read_deadline = add_duration(shared.doh.clock.now(), shared.doh.limits.tcp_idle_timeout);
+    let read_wake = Notify::new();
+
+    let (req, mut stream) = tokio::select! {
+        r = resolver.resolve_request() => r.map_err(|_| ())?,
+        () = wait_until(shared.doh.clock.as_ref(), read_deadline, &read_wake) => {
+                DohStats::bump(&shared.doh.stats.request_timeouts);
+            return Ok(());
+        }
+    };
     let (parts, ()) = req.into_parts();
 
     let mut body = Vec::new();
     loop {
-        match stream.recv_data().await {
-            Ok(Some(mut chunk)) => {
-                body.extend_from_slice(chunk.chunk());
-                chunk.advance(chunk.remaining());
-                if body.len() > MAX_MESSAGE_LEN {
-                    let resp = http::Response::builder()
-                        .status(http::StatusCode::PAYLOAD_TOO_LARGE)
-                        .body(())
-                        .map_err(|_| ())?;
-                    let _ = stream.send_response(resp).await;
-                    let _ = stream.finish().await;
-                    return Ok(());
-                }
+        let mut chunk = tokio::select! {
+            r = stream.recv_data() => match r {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(_) => return Err(()),
+            },
+            () = wait_until(shared.doh.clock.as_ref(), read_deadline, &read_wake) => {
+                // Reset the stalled stream and count it; the caller decrements
+                // in_flight afterwards so the connection can still go idle.
+                stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
+                DohStats::bump(&shared.doh.stats.request_timeouts);
+                return Ok(());
             }
-            Ok(None) => break,
-            Err(_) => return Err(()),
+        };
+        body.extend_from_slice(chunk.chunk());
+        chunk.advance(chunk.remaining());
+        if body.len() > MAX_MESSAGE_LEN {
+            let resp = http::Response::builder()
+                .status(http::StatusCode::PAYLOAD_TOO_LARGE)
+                .body(())
+                .map_err(|_| ())?;
+            let _ = stream.send_response(resp).await;
+            let _ = stream.finish().await;
+            return Ok(());
         }
     }
 
@@ -427,13 +459,16 @@ where
         Bytes::from(body)
     };
 
-    let out = process_doh_request(&shared.doh, peer, &method, &uri, &headers, body_bytes).await;
+    let mut out = process_doh_request(&shared.doh, peer, &method, &uri, &headers, body_bytes).await;
+
+    // The response already travels over HTTP/3, so Alt-Svc is redundant; the
+    // HTTP/2 DoH listener advertises the UDP port instead.
+    out.headers.remove(header::ALT_SVC);
 
     let mut builder = http::Response::builder().status(out.status);
     for (name, value) in out.headers.iter() {
         builder = builder.header(name, value);
     }
-    // h3 responses should not need Alt-Svc (already on h3); strip if present.
     let resp = builder.body(()).map_err(|_| ())?;
     stream.send_response(resp).await.map_err(|_| ())?;
     if !out.body.is_empty() {
