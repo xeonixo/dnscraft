@@ -3,10 +3,10 @@
 <style>
 /* Design plan (SPEC-web-ui.md § Visual design language, Apple HIG):
    macOS/iPad-style admin console for a self-hosted DNS resolver.
-   Layout: persistent source-list sidebar + grouped content column,
-   flat grouped surfaces, continuous corners, system-blue as the only
-   accent, SF Pro system stack + SF Mono for data. No pills, no emoji,
-   no purple, no decorative gradients. */
+   Navigation: grouped source-list sidebar (6 sections, 14 items) — the
+   hierarchy, not a flat list. Flat grouped surfaces, continuous corners,
+   system-blue as the only accent, SF Pro system stack + SF Mono for data.
+   No pills, no emoji, no purple, no decorative gradients. */
 :root {
   --canvas: #F2F2F7;
   --surface: #FFFFFF;
@@ -79,194 +79,113 @@ body {
 .mono { font-family: var(--font-mono); font-size: 0.9em; }
 .num { font-variant-numeric: tabular-nums; }
 
-/* ---- app shell ---- */
-.app {
-  display: flex;
-  min-height: 100%;
-}
+.app { display: flex; min-height: 100%; }
 
-/* ---- sidebar ---- */
+/* ---- sidebar (grouped source list) ---- */
 .sidebar {
-  width: 244px;
-  flex: 0 0 auto;
+  width: 248px; flex: 0 0 auto;
   background: var(--canvas);
   border-right: 1px solid var(--separator);
-  padding: 14px 12px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  position: sticky;
-  top: 0;
-  height: 100vh;
-  overflow-y: auto;
+  padding: 12px 10px 16px;
+  display: flex; flex-direction: column; gap: 2px;
+  position: sticky; top: 0; height: 100vh; overflow-y: auto;
 }
 .brand {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 4px 8px 12px;
-  font-weight: 600;
-  font-size: 15px;
+  display: flex; align-items: center; gap: 9px;
+  padding: 4px 8px 12px; font-weight: 600; font-size: 15px;
   letter-spacing: -0.01em;
 }
 .brand .mark {
-  width: 26px; height: 26px;
-  border-radius: 7px;
-  background: var(--accent);
-  display: grid; place-items: center;
+  width: 26px; height: 26px; border-radius: 7px;
+  background: var(--accent); display: grid; place-items: center;
   color: #fff; flex: 0 0 auto;
 }
 .nav-section {
-  font-size: 12.5px;
+  font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em;
+  text-transform: uppercase;
   color: var(--label-3);
-  text-transform: none;
-  padding: 10px 10px 3px;
+  padding: 14px 10px 4px;
 }
 .nav-item {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 7px 10px;
-  border-radius: 7px;
-  color: var(--label);
-  text-decoration: none;
-  min-height: 32px;
-  cursor: default;
+  display: flex; align-items: center; gap: 9px;
+  padding: 6px 10px; border-radius: 7px;
+  color: var(--label); text-decoration: none;
+  min-height: 31px; cursor: pointer; border: 0; background: none;
+  font: inherit; text-align: left; width: 100%;
 }
 .nav-item svg { color: var(--label-2); flex: 0 0 auto; }
 .nav-item.active { background: var(--accent-fill); color: var(--accent); font-weight: 500; }
 .nav-item.active svg { color: var(--accent); }
 .nav-item:not(.active):hover { background: var(--surface); }
 .sidebar-foot {
-  margin-top: auto;
-  padding: 10px;
-  font-size: 12.5px;
-  color: var(--label-3);
+  margin-top: auto; padding: 10px; font-size: 12.5px; color: var(--label-3);
 }
-.sidebar-foot .node {
-  display: flex; align-items: center; gap: 7px;
-  color: var(--label-2);
-}
+.sidebar-foot .node { display: flex; align-items: center; gap: 7px; color: var(--label-2); }
 .node-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: 0 0 auto; }
 
 /* ---- main ---- */
-.main {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 0 0 56px;
-}
+.main { flex: 1 1 auto; min-width: 0; }
 .toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px 24px 14px;
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 24px 12px;
   background: color-mix(in srgb, var(--canvas) 82%, transparent);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   border-bottom: 1px solid var(--separator);
 }
-.toolbar h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
+.toolbar h1 { font-size: 21px; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
 .toolbar .spacer { flex: 1; }
 
-/* segmented control (the one allowed capsule is the sliding thumb) */
 .seg {
-  display: inline-flex;
-  background: var(--surface);
-  border: 1px solid var(--separator);
-  border-radius: 9px;
-  padding: 2px;
-  gap: 2px;
+  display: inline-flex; background: var(--surface);
+  border: 1px solid var(--separator); border-radius: 9px; padding: 2px; gap: 2px;
 }
 .seg button {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: var(--label);
-  font: inherit;
-  font-size: 13.5px;
-  padding: 5px 13px;
-  border-radius: 7px;
-  cursor: pointer;
-  min-height: 30px;
+  appearance: none; border: 0; background: transparent; color: var(--label);
+  font: inherit; font-size: 13.5px; padding: 5px 13px; border-radius: 7px;
+  cursor: pointer; min-height: 30px;
 }
-.seg button[aria-selected="true"] {
-  background: var(--label);
-  color: var(--canvas);
-  font-weight: 600;
-}
+.seg button[aria-selected="true"] { background: var(--label); color: var(--canvas); font-weight: 600; }
 
 .icon-btn {
-  width: 34px; height: 34px;
-  display: grid; place-items: center;
-  border-radius: var(--r-ctl);
-  border: 1px solid var(--separator);
-  background: var(--surface);
-  color: var(--label);
-  cursor: pointer;
+  width: 34px; height: 34px; display: grid; place-items: center;
+  border-radius: var(--r-ctl); border: 1px solid var(--separator);
+  background: var(--surface); color: var(--label); cursor: pointer;
 }
 .icon-btn:hover { background: var(--surface-2); }
 
 .btn-primary {
   display: inline-flex; align-items: center; gap: 6px;
-  background: var(--accent); color: #fff;
-  font: inherit; font-weight: 600; font-size: 14px;
-  border: 0; border-radius: var(--r-ctl);
-  padding: 7px 15px; min-height: 34px;
-  cursor: pointer;
+  background: var(--accent); color: #fff; font: inherit; font-weight: 600;
+  font-size: 14px; border: 0; border-radius: var(--r-ctl);
+  padding: 7px 15px; min-height: 34px; cursor: pointer;
 }
 
-.content {
-  padding: 20px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  max-width: 1080px;
-}
+.content { padding: 20px 24px; display: flex; flex-direction: column; gap: 18px; max-width: 1040px; }
+.content.wide { max-width: 1200px; }
 
-/* ---- warning banner ---- */
+/* ---- shared surfaces ---- */
 .banner {
-  display: flex; gap: 12px;
-  background: var(--surface);
-  border: 1px solid var(--separator);
-  border-radius: var(--r-card);
-  padding: 14px 16px;
-  align-items: flex-start;
+  display: flex; gap: 12px; background: var(--surface);
+  border: 1px solid var(--separator); border-radius: var(--r-card);
+  padding: 14px 16px; align-items: flex-start;
 }
 .banner .ic { color: var(--warn); flex: 0 0 auto; margin-top: 1px; }
 .banner .body { flex: 1; min-width: 0; }
 .banner .body b { font-weight: 600; }
 .banner .body p { margin: 2px 0 0; color: var(--label-2); font-size: 13.5px; }
 .banner .fp {
-  margin-top: 8px;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  color: var(--label-2);
-  background: var(--surface-2);
-  border-radius: 6px;
-  padding: 4px 8px;
-  display: inline-block;
-  letter-spacing: 0.02em;
+  margin-top: 8px; font-family: var(--font-mono); font-size: 12.5px;
+  color: var(--label-2); background: var(--surface-2); border-radius: 6px;
+  padding: 4px 8px; display: inline-block; letter-spacing: 0.02em;
 }
 
-/* ---- stat tiles ---- */
-.tiles {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-}
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .tile {
-  background: var(--surface);
-  border: 1px solid var(--separator);
-  border-radius: var(--r-card);
-  padding: 16px;
-  box-shadow: var(--shadow);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
+  background: var(--surface); border: 1px solid var(--separator);
+  border-radius: var(--r-card); padding: 16px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 10px; min-width: 0;
 }
 .tile .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .tile .name { color: var(--label-2); font-size: 13.5px; }
@@ -274,35 +193,19 @@ body {
 .tile .value { font-size: 30px; font-weight: 700; letter-spacing: -0.03em; line-height: 1.05; }
 .tile .value .unit { font-size: 15px; font-weight: 600; color: var(--label-2); margin-left: 2px; letter-spacing: 0; }
 .tile .delta { font-size: 12.5px; color: var(--label-3); display: flex; align-items: center; gap: 5px; }
-.tile .delta .tone { font-weight: 600; }
 .tile .delta .up { color: var(--ok); }
 .tile .delta .down { color: var(--danger); }
 .tile .spark { width: 100%; height: 34px; }
 .tile .spark svg { width: 100%; height: 100%; }
 
-/* ---- grouped list ---- */
 .section-head {
-  font-size: 13px;
-  color: var(--label-2);
-  text-transform: none;
-  letter-spacing: 0;
-  padding: 6px 16px 6px;
-  font-weight: 500;
+  font-size: 13px; color: var(--label-2); font-weight: 500; padding: 4px 16px 6px;
 }
 .group {
-  background: var(--surface);
-  border: 1px solid var(--separator);
-  border-radius: var(--r-card);
-  overflow: hidden;
-  box-shadow: var(--shadow);
+  background: var(--surface); border: 1px solid var(--separator);
+  border-radius: var(--r-card); overflow: hidden; box-shadow: var(--shadow);
 }
-.row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  min-height: 52px;
-}
+.row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; min-height: 52px; }
 .row + .row { border-top: 1px solid var(--separator); }
 .row .status-ic { flex: 0 0 auto; }
 .row .status-ic.block { color: var(--danger); }
@@ -315,42 +218,70 @@ body {
 .row .verdict.block { color: var(--danger); }
 .row .verdict.allow { color: var(--ok); }
 .row .time { font-family: var(--font-mono); font-size: 12px; color: var(--label-3); margin-top: 1px; }
+.row .chev { color: var(--label-3); flex: 0 0 auto; }
 
+/* switch (iOS toggle, 51×31) */
+.switch { position: relative; width: 51px; height: 31px; flex: 0 0 auto; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch .track {
+  position: absolute; inset: 0; border-radius: 16px; background: rgba(120,120,128,0.32);
+  transition: background 0.18s; cursor: pointer;
+}
+.switch .thumb {
+  position: absolute; top: 2px; left: 2px; width: 27px; height: 27px;
+  border-radius: 50%; background: #fff; box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  transition: transform 0.18s;
+}
+.switch input:checked + .track { background: var(--ok); }
+.switch input:checked + .track .thumb { transform: translateX(20px); }
+
+.search {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--surface); border: 1px solid var(--separator);
+  border-radius: var(--r-ctl); padding: 7px 12px; min-height: 36px;
+  flex: 1; max-width: 420px;
+}
+.search svg { color: var(--label-3); flex: 0 0 auto; }
+.search input { border: 0; background: none; font: inherit; color: var(--label); outline: none; width: 100%; }
+.search input::placeholder { color: var(--label-3); }
+
+.lead { color: var(--label-2); font-size: 14px; max-width: 60ch; margin: 0; }
 .footnote { font-size: 12.5px; color: var(--label-3); padding: 0 4px; }
+
+/* placeholder screens: feature inventory */
+.feature-row { display: flex; align-items: center; gap: 12px; padding: 11px 16px; min-height: 46px; }
+.feature-row + .feature-row { border-top: 1px solid var(--separator); }
+.feature-row svg { color: var(--accent); flex: 0 0 auto; }
+.feature-row .main { flex: 1; min-width: 0; }
+.feature-row .main b { font-weight: 500; font-size: 14px; display: block; }
+.feature-row .main span { font-size: 12.5px; color: var(--label-2); }
 
 /* ---- mobile ---- */
 .menu-btn { display: none; }
 .scrim { display: none; }
-
 @media (max-width: 880px) {
   .sidebar {
     position: fixed; left: 0; top: 0; bottom: 0; z-index: 40;
     transform: translateX(-100%);
-    transition: transform 0.22s cubic-bezier(0.2,0.8,0.2,1);
-    height: 100dvh;
+    transition: transform 0.22s cubic-bezier(0.2,0.8,0.2,1); height: 100dvh;
   }
   body.nav-open .sidebar { transform: translateX(0); }
-  .scrim {
-    display: block;
-    position: fixed; inset: 0; z-index: 39;
-    background: rgba(0,0,0,0.32);
-    opacity: 0; pointer-events: none;
-    transition: opacity 0.22s;
-  }
+  .scrim { display: block; position: fixed; inset: 0; z-index: 39;
+    background: rgba(0,0,0,0.32); opacity: 0; pointer-events: none; transition: opacity 0.22s; }
   body.nav-open .scrim { opacity: 1; pointer-events: auto; }
   .menu-btn { display: grid; }
   .toolbar { padding: 12px 16px; }
   .toolbar h1 { font-size: 19px; }
   .content { padding: 16px; gap: 16px; }
   .tiles { grid-template-columns: 1fr 1fr; }
+  .search { max-width: none; }
 }
 @media (max-width: 520px) {
   .tiles { grid-template-columns: 1fr; }
   .seg { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .sidebar { transition: none; }
-  .scrim { transition: none; }
+  .sidebar, .scrim, .switch .track, .switch .thumb { transition: none; }
 }
 </style>
 
@@ -363,28 +294,73 @@ body {
       DNScraft
     </div>
 
-    <div class="nav-section">Status</div>
-    <a class="nav-item active" href="#overview">
+    <div class="nav-section">Übersicht</div>
+    <button class="nav-item active" data-target="screen-dashboard" data-title="Übersicht">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/></svg>
-      Übersicht
-    </a>
+      Dashboard
+    </button>
 
-    <div class="nav-section">Daten</div>
-    <a class="nav-item" href="#queries"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Anfragen</a>
-    <a class="nav-item" href="#stats"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg> Statistik</a>
-    <a class="nav-item" href="#clients"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> Geräte</a>
+    <div class="nav-section">Aktivität</div>
+    <button class="nav-item" data-target="screen-queries" data-title="Anfragen">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Anfragen
+    </button>
+    <button class="nav-item" data-target="screen-stats" data-title="Statistik">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
+      Statistik
+    </button>
 
-    <div class="nav-section">Konfiguration</div>
-    <a class="nav-item" href="#filter-sets"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg> Filtersätze</a>
-    <a class="nav-item" href="#filter-lists"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg> Filterlisten</a>
-    <a class="nav-item" href="#listeners"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h20M6 12v6M18 12v6M12 12v6"/><circle cx="4" cy="4" r="2"/><circle cx="20" cy="4" r="2"/><circle cx="12" cy="4" r="2"/></svg> Listener</a>
-    <a class="nav-item" href="#tls"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> TLS</a>
-    <a class="nav-item" href="#mcp"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg> MCP-Regeln</a>
+    <div class="nav-section">Filterung</div>
+    <button class="nav-item" data-target="screen-filter-sets" data-title="Filtersätze">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+      Filtersätze
+    </button>
+    <button class="nav-item" data-target="screen-filter-lists" data-title="Filterlisten">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+      Filterlisten
+    </button>
+    <button class="nav-item" data-target="screen-mcp-rules" data-title="Regeln &amp; Freigaben">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      Regeln &amp; Freigaben
+    </button>
+
+    <div class="nav-section">Richtlinien</div>
+    <button class="nav-item" data-target="screen-policy" data-title="Richtlinien">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>
+      Richtlinien
+    </button>
+    <button class="nav-item" data-target="screen-clients" data-title="Geräte">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      Geräte
+    </button>
+
+    <div class="nav-section">Infrastruktur</div>
+    <button class="nav-item" data-target="screen-listeners" data-title="Listener">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h20M6 12v6M18 12v6M12 12v6"/><circle cx="4" cy="4" r="2"/><circle cx="20" cy="4" r="2"/><circle cx="12" cy="4" r="2"/></svg>
+      Listener
+    </button>
+    <button class="nav-item" data-target="screen-tls" data-title="TLS">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      TLS
+    </button>
 
     <div class="nav-section">Verwaltung</div>
-    <a class="nav-item" href="#tokens"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg> API-Tokens</a>
-    <a class="nav-item" href="#audit"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg> Audit-Log</a>
-    <a class="nav-item" href="#settings"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> Einstellungen</a>
+    <button class="nav-item" data-target="screen-config" data-title="Konfiguration">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+      Konfiguration
+    </button>
+    <button class="nav-item" data-target="screen-tokens" data-title="API-Tokens">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
+      API-Tokens
+    </button>
+    <button class="nav-item" data-target="screen-audit" data-title="Audit-Log">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+      Audit-Log
+    </button>
+    <button class="nav-item" data-target="screen-settings" data-title="Einstellungen">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      Einstellungen
+    </button>
 
     <div class="sidebar-foot">
       <div class="node"><span class="node-dot"></span> node-1 · online</div>
@@ -398,93 +374,299 @@ body {
       <button class="icon-btn menu-btn" aria-label="Menü" onclick="toggleNav()">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
       </button>
-      <h1>Übersicht</h1>
+      <h1 id="page-title">Übersicht</h1>
       <div class="spacer"></div>
-      <div class="seg" role="tablist" aria-label="Zeitraum">
-        <button role="tab" aria-selected="true">24 h</button>
-        <button role="tab" aria-selected="false">7 d</button>
-        <button role="tab" aria-selected="false">30 d</button>
-      </div>
       <button class="icon-btn" id="theme-toggle" aria-label="Darstellung umschalten">
         <svg id="ic-sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
         <svg id="ic-moon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" hidden><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
       </button>
-      <button class="btn-primary">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Regel
-      </button>
     </div>
 
-    <div class="content">
-      <!-- self-signed warning -->
-      <div class="banner" role="status">
-        <span class="ic"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
-        <div class="body">
-          <b>Selbstsigniertes Zertifikat aktiv</b>
-          <p>Bis ein ACME-Zertifikat vorliegt, ist die Verbindung nicht vertrauenswürdig. Das Zertifikat gilt für <span class="mono">node1.dns.example.com</span>.</p>
-          <span class="fp">SHA-256&nbsp; 3A:9C:7F:11:DE:42:0B:88:65:01:EE:2A:94:C3:0D:77</span>
-        </div>
-      </div>
+    <!-- ============ SCREENS ============ -->
 
-      <!-- stat tiles -->
-      <div class="tiles">
-        <div class="tile">
-          <div class="top"><span class="name">Anfragen</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg></div>
-          <div class="value num">128.431</div>
-          <div class="delta"><span class="tone up">+12&nbsp;%</span> gegenüber gestern</div>
-          <div class="spark"><svg viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"><polyline points="0,26 10,22 20,24 30,18 40,20 50,14 60,16 70,10 80,12 90,7 100,9 110,4 120,6" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    <section class="screen" id="screen-dashboard">
+      <div class="content">
+        <div class="banner" role="status">
+          <span class="ic"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+          <div class="body">
+            <b>Selbstsigniertes Zertifikat aktiv</b>
+            <p>Bis ein ACME-Zertifikat vorliegt, ist die Verbindung nicht vertrauenswürdig. Das Zertifikat gilt für <span class="mono">node1.dns.example.com</span>.</p>
+            <span class="fp">SHA-256&nbsp; 3A:9C:7F:11:DE:42:0B:88:65:01:EE:2A:94:C3:0D:77</span>
+          </div>
         </div>
-        <div class="tile">
-          <div class="top"><span class="name">Blockiert</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></div>
-          <div class="value num">4.209<span class="unit">3,3&nbsp;%</span></div>
-          <div class="delta"><span class="tone down">−1,1&nbsp;%</span> seit gestern</div>
-          <div class="spark"><svg viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"><polyline points="0,6 10,8 20,7 30,12 40,10 50,16 60,14 70,20 80,18 90,24 100,22 110,27 120,25" fill="none" stroke="var(--danger)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-        </div>
-        <div class="tile">
-          <div class="top"><span class="name">Cache-Treffer</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-9-9"/><polyline points="21 3 21 9 15 9"/></svg></div>
-          <div class="value num">91,8<span class="unit">%</span></div>
-          <div class="delta"><span class="tone up">+0,4&nbsp;%</span> seit gestern</div>
-          <div class="spark"><svg viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"><polyline points="0,20 10,22 20,18 30,16 40,17 50,13 60,14 70,12 80,10 90,12 100,9 110,10 120,8" fill="none" stroke="var(--ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-        </div>
-        <div class="tile">
-          <div class="top"><span class="name">Aktive Geräte</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="2" y="4" width="13" height="16" rx="2"/><path d="M7 4h10a2 2 0 0 1 2 2v12"/></svg></div>
-          <div class="value num">37</div>
-          <div class="delta"><span class="tone">4 neue</span> in 24 h</div>
-          <div class="spark"><svg viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"><polyline points="0,26 10,24 20,25 30,22 40,23 50,19 60,20 70,17 80,18 90,15 100,16 110,13 120,14" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-        </div>
-      </div>
 
-      <!-- grouped list: recent blocked -->
-      <div class="section-head">Letzte blockierte Anfragen</div>
-      <div class="group">
-        <div class="row">
-          <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span>
-          <div class="main"><div class="domain">ads.example.com</div><div class="meta">iPhone · 192.0.2.11</div></div>
-          <div class="tail"><div class="verdict block">NXDOMAIN</div><div class="time">14:32:07</div></div>
+        <div class="tiles">
+          <div class="tile">
+            <div class="top"><span class="name">Anfragen</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg></div>
+            <div class="value num">128.431</div>
+            <div class="delta"><span class="up">+12&nbsp;%</span> gegenüber gestern</div>
+            <div class="spark"><svg viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"><polyline points="0,26 10,22 20,24 30,18 40,20 50,14 60,16 70,10 80,12 90,7 100,9 110,4 120,6" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          </div>
+          <div class="tile">
+            <div class="top"><span class="name">Blockiert</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></div>
+            <div class="value num">4.209<span class="unit">3,3&nbsp;%</span></div>
+            <div class="delta"><span class="down">−1,1&nbsp;%</span> seit gestern</div>
+            <div class="spark"><svg viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"><polyline points="0,6 10,8 20,7 30,12 40,10 50,16 60,14 70,20 80,18 90,24 100,22 110,27 120,25" fill="none" stroke="var(--danger)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          </div>
+          <div class="tile">
+            <div class="top"><span class="name">Cache-Treffer</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-9-9"/><polyline points="21 3 21 9 15 9"/></svg></div>
+            <div class="value num">91,8<span class="unit">%</span></div>
+            <div class="delta"><span class="up">+0,4&nbsp;%</span> seit gestern</div>
+            <div class="spark"><svg viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"><polyline points="0,20 10,22 20,18 30,16 40,17 50,13 60,14 70,12 80,10 90,12 100,9 110,10 120,8" fill="none" stroke="var(--ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          </div>
+          <div class="tile">
+            <div class="top"><span class="name">Aktive Geräte</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="2" y="4" width="13" height="16" rx="2"/><path d="M7 4h10a2 2 0 0 1 2 2v12"/></svg></div>
+            <div class="value num">37</div>
+            <div class="delta"><span>4 neue</span> in 24 h</div>
+            <div class="spark"><svg viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"><polyline points="0,26 10,24 20,25 30,22 40,23 50,19 60,20 70,17 80,18 90,15 100,16 110,13 120,14" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          </div>
         </div>
-        <div class="row">
-          <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span>
-          <div class="main"><div class="domain">tracker.example.net</div><div class="meta">MacBook · 192.0.2.4</div></div>
-          <div class="tail"><div class="verdict block">NXDOMAIN</div><div class="time">14:31:52</div></div>
+
+        <div class="section-head">Letzte blockierte Anfragen</div>
+        <div class="group">
+          <div class="row">
+            <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span>
+            <div class="main"><div class="domain">ads.example.com</div><div class="meta">iPhone · 192.0.2.11</div></div>
+            <div class="tail"><div class="verdict block">NXDOMAIN</div><div class="time">14:32:07</div></div>
+          </div>
+          <div class="row">
+            <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span>
+            <div class="main"><div class="domain">tracker.example.net</div><div class="meta">MacBook · 192.0.2.4</div></div>
+            <div class="tail"><div class="verdict block">NXDOMAIN</div><div class="time">14:31:52</div></div>
+          </div>
+          <div class="row">
+            <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span>
+            <div class="main"><div class="domain">telemetry.example.org</div><div class="meta">Wohnzimmer-TV · 192.0.2.18</div></div>
+            <div class="tail"><div class="verdict block">NULL-IP</div><div class="time">14:31:18</div></div>
+          </div>
+          <div class="row">
+            <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
+            <div class="main"><div class="domain">cdn.example.com</div><div class="meta">iPhone · 192.0.2.11</div></div>
+            <div class="tail"><div class="verdict allow">NOERROR</div><div class="time">14:30:44</div></div>
+          </div>
+          <div class="row">
+            <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
+            <div class="main"><div class="domain">www.example.com</div><div class="meta">MacBook · 192.0.2.4</div></div>
+            <div class="tail"><div class="verdict allow">NOERROR</div><div class="time">14:30:01</div></div>
+          </div>
         </div>
-        <div class="row">
-          <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span>
-          <div class="main"><div class="domain">telemetry.example.org</div><div class="meta">Wohnzimmer-TV · 192.0.2.18</div></div>
-          <div class="tail"><div class="verdict block">NULL-IP</div><div class="time">14:31:18</div></div>
+        <div class="footnote">Anzeige der letzten 5 von 4.209 blockierten Anfragen · <span class="mono">retention_days = 30</span></div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-queries" hidden>
+      <div class="content wide">
+        <div class="search">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+          <input type="search" placeholder="Domain, Gerät oder IP durchsuchen" aria-label="Suche">
         </div>
-        <div class="row">
-          <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
-          <div class="main"><div class="domain">cdn.example.com</div><div class="meta">iPhone · 192.0.2.11</div></div>
-          <div class="tail"><div class="verdict allow">NOERROR</div><div class="time">14:30:44</div></div>
+
+        <div class="section-head">Alle Anfragen · letzte 24 h</div>
+        <div class="group">
+          <div class="row">
+            <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span>
+            <div class="main"><div class="domain">ads.example.com</div><div class="meta">A · iPhone · 192.0.2.11</div></div>
+            <div class="tail"><div class="verdict block">NXDOMAIN</div><div class="time">14:32:07</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+          <div class="row">
+            <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
+            <div class="main"><div class="domain">www.example.com</div><div class="meta">AAAA · MacBook · 192.0.2.4</div></div>
+            <div class="tail"><div class="verdict allow">NOERROR</div><div class="time">14:31:58</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+          <div class="row">
+            <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
+            <div class="main"><div class="domain">cdn.example.com</div><div class="meta">A · iPhone · 192.0.2.11</div></div>
+            <div class="tail"><div class="verdict allow">NOERROR</div><div class="time">14:31:40</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
         </div>
-        <div class="row">
-          <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
-          <div class="main"><div class="domain">www.example.com</div><div class="meta">MacBook · 192.0.2.4</div></div>
-          <div class="tail"><div class="verdict allow">NOERROR</div><div class="time">14:30:01</div></div>
+        <div class="footnote">Zeigt 3 von 128.431 · Seitenansicht mit <span class="mono">limit</span>/<span class="mono">offset</span> · Export über das Menü</div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-filter-sets" hidden>
+      <div class="content">
+        <p class="lead">Filtersätze bündeln Regeln und verknüpfen eine Filterliste. Jeder Satz wird einer Richtlinie zugewiesen.</p>
+        <div class="section-head">Filtersätze</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><div class="domain">Standard</div><div class="meta">42 Regeln · 1 Liste</div></div>
+            <span class="verdict allow">aktiv</span>
+            <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+          <div class="row">
+            <div class="main"><div class="domain">Kinder</div><div class="meta">17 Regeln · 1 Liste</div></div>
+            <span class="verdict allow">aktiv</span>
+            <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+          <div class="row">
+            <div class="main"><div class="domain">Gäste</div><div class="meta">4 Regeln · keine Liste</div></div>
+            <span class="verdict block">pausiert</span>
+            <label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+        </div>
+        <div class="footnote">Regeln und Roh-Editor öffnen sich in einem Sheet. Erstellen über „Neu" in der Symbolleiste.</div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-listeners" hidden>
+      <div class="content">
+        <div class="banner" role="status">
+          <span class="ic"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+          <div class="body"><b>Öffentlicher Listener</b><p>Öffentliche Listener beantworten nur registrierte Client-IDs — nicht das ganze Netzwerk.</p></div>
+        </div>
+        <div class="section-head">Listener</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><div class="domain">intern</div><div class="meta"><span class="mono">192.0.2.1:53</span> · Do53 · DoH</div></div>
+            <span class="verdict allow">läuft</span>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+          <div class="row">
+            <div class="main"><div class="domain">public</div><div class="meta"><span class="mono">198.51.100.7:853</span> · DoT · DoQ</div></div>
+            <span class="verdict block">nur Client-IDs</span>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+        </div>
+        <div class="footnote">Protokolle werden im Detail-Sheet einzeln aktiviert (Do53/DoT/DoH/DoQ).</div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-settings" hidden>
+      <div class="content">
+        <div class="section-head">Darstellung</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Design</b></div>
+            <div class="seg" role="tablist" aria-label="Design">
+              <button role="tab" aria-selected="true">Hell</button>
+              <button role="tab" aria-selected="false">Dunkel</button>
+              <button role="tab" aria-selected="false">System</button>
+            </div>
+          </div>
+        </div>
+        <div class="section-head">Konto</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><div class="domain">admin</div><div class="meta">Angemeldet über lokales Konto · Rolle: Administrator</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+          <div class="row">
+            <div class="main"><div class="domain" style="color:var(--danger)">Abmelden</div></div>
+          </div>
+        </div>
+        <div class="footnote">Sprache und Design werden lokal im Browser gespeichert.</div>
+      </div>
+    </section>
+
+    <!-- placeholders: feature inventory for the remaining screens -->
+    <section class="screen" id="screen-stats" hidden>
+      <div class="content">
+        <p class="lead">Aggregierte Metriken und Trends über bis zu ein Jahr.</p>
+        <div class="section-head">Enthalten</div>
+        <div class="group">
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg><div class="main"><b>Übersicht</b><span>Anfragen/s, Blockrate, Cache-Trefferquote</span></div></div>
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg><div class="main"><b>Zeitraum</b><span>24 h / 7 d / 30 d / 1 Jahr (Segment-Steuerung)</span></div></div>
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg><div class="main"><b>Top-Listen</b><span>Top-Domains und Top-Clients</span></div></div>
         </div>
       </div>
-      <div class="footnote">Anzeige der letzten 5 von 4.209 blockierten Anfragen · <span class="mono">retention_days = 30</span></div>
-    </div>
+    </section>
+
+    <section class="screen" id="screen-filter-lists" hidden>
+      <div class="content">
+        <p class="lead">Quellen für Filterlisten (https-URL oder lokale Datei) verwalten.</p>
+        <div class="section-head">Enthalten</div>
+        <div class="group">
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg><div class="main"><b>Status je Liste</b><span>Aktualisiert, Fehler, Eintragszahl</span></div></div>
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><div class="main"><b>Hinzufügen / Bearbeiten</b><span>Sheet mit URL- oder Datei-Quelle</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-mcp-rules" hidden>
+      <div class="content">
+        <p class="lead">Von MCP verwaltete Regeln, temporäre Freigaben und Pausen.</p>
+        <div class="section-head">Enthalten</div>
+        <div class="group">
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg><div class="main"><b>Arten</b><span>Regeln / temporäre Freigaben / Pausen (Segment-Steuerung)</span></div></div>
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg><div class="main"><b>Ablauf</b><span>Countdown bis zum Ablauf einer Freigabe</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-policy" hidden>
+      <div class="content">
+        <p class="lead">Views, Profile und Pausen — wer bekommt welche Antwort (Split-Horizon, Zeitpläne).</p>
+        <div class="section-head">Enthalten</div>
+        <div class="group">
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg><div class="main"><b>Views</b><span>Profile pro Quell-Subnetz/IP zuordnen</span></div></div>
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg><div class="main"><b>Zeitpläne</b><span>Zeitfenster pro Profil</span></div></div>
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 9v6M14 9v6"/><circle cx="12" cy="12" r="9"/></svg><div class="main"><b>Pause</b><span>Filterung global pausieren</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-clients" hidden>
+      <div class="content">
+        <p class="lead">Geräteverzeichnis: Namen, VLAN und IPs — manuell oder via UniFi-Sync.</p>
+        <div class="section-head">Enthalten</div>
+        <div class="group">
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg><div class="main"><b>Suche</b><span>Nach Name, IP oder MAC</span></div></div>
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="13" height="16" rx="2"/><path d="M7 4h10a2 2 0 0 1 2 2v12"/></svg><div class="main"><b>Quelle</b><span>Manuell oder UniFi (Badge)</span></div></div>
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><div class="main"><b>Sync</b><span>UniFi-Abgleich anstoßen</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-tls" hidden>
+      <div class="content">
+        <p class="lead">Zertifikate, ACME (DNS-01) und DynDNS für den öffentlichen Hostnamen.</p>
+        <div class="section-head">Enthalten</div>
+        <div class="group">
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><div class="main"><b>Zertifikatsstatus</b><span>Modus (self-signed / ACME), Fingerprint in Mono</span></div></div>
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg><div class="main"><b>DynDNS</b><span>Öffentlichen Hostnamen aktuell halten</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-config" hidden>
+      <div class="content">
+        <p class="lead">Vollständige Konfiguration als atomarer Snapshot — mit Import/Export und Versionsverlauf.</p>
+        <div class="section-head">Enthalten</div>
+        <div class="group">
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg><div class="main"><b>Editor</b><span>Gruppierte Formularsektionen mit Diff vor dem Speichern</span></div></div>
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><div class="main"><b>Versionen</b><span>Verlauf und Rollback mit Bestätigung</span></div></div>
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><div class="main"><b>Import / Export</b><span>Snapshot als Datei übertragen</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-tokens" hidden>
+      <div class="content">
+        <p class="lead">API-Tokens mit festen Scopes (viewer/admin/mcp) verwalten.</p>
+        <div class="section-head">Enthalten</div>
+        <div class="group">
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg><div class="main"><b>Erstellen</b><span>Einmalige Klartext-Anzeige mit Kopieren</span></div></div>
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg><div class="main"><b>Widerruf</b><span>Mit Bestätigung</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-audit" hidden>
+      <div class="content">
+        <p class="lead">Nachvollziehbarkeit aller Änderungen — Akteur, Zeit und redigierte before/after-Werte.</p>
+        <div class="section-head">Enthalten</div>
+        <div class="group">
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg><div class="main"><b>Suche</b><span>Nach Akteur oder Aktion</span></div></div>
+          <div class="feature-row"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><div class="main"><b>Detail</b><span>before/after als redigiertes JSON in Mono</span></div></div>
+        </div>
+      </div>
+    </section>
   </main>
 </div>
 
@@ -493,6 +675,22 @@ function toggleNav() { document.body.classList.toggle('nav-open'); }
 function closeNav() { document.body.classList.remove('nav-open'); }
 document.addEventListener('keydown', function (e) {
   if (e.key === 'Escape') closeNav();
+});
+
+function showScreen(id, title) {
+  document.querySelectorAll('.screen').forEach(function (s) { s.hidden = true; });
+  var target = document.getElementById(id);
+  if (target) target.hidden = false;
+  document.getElementById('page-title').textContent = title;
+  document.querySelectorAll('.nav-item').forEach(function (i) {
+    i.classList.toggle('active', i.dataset.target === id);
+  });
+}
+document.querySelectorAll('.nav-item').forEach(function (item) {
+  item.addEventListener('click', function () {
+    showScreen(item.dataset.target, item.dataset.title);
+    if (window.innerWidth < 880) closeNav();
+  });
 });
 
 var themeBtn = document.getElementById('theme-toggle');
@@ -513,11 +711,4 @@ themeBtn.addEventListener('click', function () {
   syncThemeIcon();
 });
 syncThemeIcon();
-
-var seg = document.querySelector('.seg');
-seg.addEventListener('click', function (e) {
-  if (e.target.tagName !== 'BUTTON') return;
-  seg.querySelectorAll('button').forEach(function (b) { b.setAttribute('aria-selected', 'false'); });
-  e.target.setAttribute('aria-selected', 'true');
-});
 </script>

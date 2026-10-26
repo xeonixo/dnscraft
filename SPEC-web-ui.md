@@ -445,6 +445,30 @@ The MCP server switch and limits (`control_api.mcp.enabled`, `write_tools_enable
 durations, caps) are configuration, edited through `/config` (`GET/PUT
 /api/v1/config`); they are not a separate API endpoint.
 
+### Navigation (sidebar)
+
+The persistent sidebar is a grouped source list — never a flat run of links. Six
+sections order the screens by concern, from operational ("what is happening") to
+administrative ("who can change things"):
+
+| Section | Screens |
+|---|---|
+| Übersicht | Dashboard |
+| Aktivität | Anfragen, Statistik |
+| Filterung | Filtersätze, Filterlisten, Regeln & Freigaben |
+| Richtlinien | Richtlinien, Geräte |
+| Infrastruktur | Listener, TLS |
+| Verwaltung | Konfiguration, API-Tokens, Audit-Log, Einstellungen |
+
+`/login` and `/setup` are public and appear outside the sidebar. Admin-only
+screens (`/tokens`, `/audit`) are hidden — not merely disabled — for `viewer`, so
+the navigation never offers a dead end. Section labels are translated small caps
+with slight letter-spacing; each item is an icon plus a label following the SF
+Symbols metaphor. The active item uses the accent tint, never a colored bar. On
+compact width the sidebar collapses to a drawer opened from the toolbar,
+preserving the same grouping. The prototype at `docs/design/web-ui-prototype.html`
+is the reference for this structure.
+
 ### Responsive structure and screen patterns
 
 Breakpoints: compact (`< 48rem`, phones), regular (`≥ 48rem`, tablets/small laptops)
