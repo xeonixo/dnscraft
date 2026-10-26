@@ -442,13 +442,13 @@ SPEC-mcp.md § Coverage rule: reject when `T = P`, when `P` is a strict subdomai
 module configs lives in control-api (M23); this crate only consumes the list plus `McpConfig.protected_domains`.
 
 **Acceptance criteria:**
-- [ ] The full matrix from SPEC-mcp.md § Protected domains → Testing: equal, ancestor with flag true/false,
+- [x] The full matrix from SPEC-mcp.md § Protected domains → Testing: equal, ancestor with flag true/false,
       descendant with both flags, sibling, canonicalisation (`EXAMPLE.NET.`, punycode vs Unicode `bücher.example`).
-- [ ] Property tests: `check` is insensitive to case/trailing dot; a name is never accepted when its parent is
+- [x] Property tests: `check` is insensitive to case/trailing dot; a name is never accepted when its parent is
       protected; matrix results identical for the Unicode and punycode form.
-- [ ] Label-boundary correctness: protected `example.net` does **not** reject `notexample.net`.
-- [ ] Empty/invalid entries are rejected at construction with a stable `mcp.config.*` code.
-- [ ] Returns the matching protected entry for the error `params` (sanitized).
+- [x] Label-boundary correctness: protected `example.net` does **not** reject `notexample.net`.
+- [x] Empty/invalid entries are rejected at construction with a stable `mcp.config.*` code.
+- [x] Returns the matching protected entry for the error `params` (sanitized).
 
 **Verification:** `cargo test -p dnscraft-mcp protected`
 
@@ -467,15 +467,15 @@ backend call → audit entry via `backend.record_audit` (action `mcp.allow_tempo
 success **and** failure recorded with `result`/`error_code`).
 
 **Acceptance criteria:**
-- [ ] Order of checks proven by tests (a protected domain is rejected before the backend is called; a
+- [x] Order of checks proven by tests (a protected domain is rejected before the backend is called; a
       viewer-scope token never reaches validation).
-- [ ] Duration outside the set → `mcp.invalid_input`; inside the set but above a lowered maximum →
+- [x] Duration outside the set → `mcp.invalid_input`; inside the set but above a lowered maximum →
       `mcp.duration_exceeds_maximum`.
-- [ ] No permanent or `until_resumed` option exists in the schema (schema snapshot test).
-- [ ] `destructiveHint: true`, `idempotentHint: false`; the static description contains the statement that the
+- [x] No permanent or `until_resumed` option exists in the schema (schema snapshot test).
+- [x] `destructiveHint: true`, `idempotentHint: false`; the static description contains the statement that the
       action affects every client of the filter set.
-- [ ] Audit entry content test (actor, token id, redacted `after`, sanitized `reason`); mock failure path audited.
-- [ ] Output shape per spec (`domain`, `include_subdomains`, `created_at`, `expires_at`, `filter_set_id`).
+- [x] Audit entry content test (actor, token id, redacted `after`, sanitized `reason`); mock failure path audited.
+- [x] Output shape per spec (`domain`, `include_subdomains`, `created_at`, `expires_at`, `filter_set_id`).
 
 **Verification:** `cargo test -p dnscraft-mcp --test write_tools allow`
 
@@ -496,16 +496,16 @@ add a backend method for that lookup (for example `find_mcp_rule`) and report th
 amendment to the owner — do not edit SPEC-mcp.md yourself.
 
 **Acceptance criteria:**
-- [ ] Schema rejects `action`, `rule_text`, `expires_at`, wildcards, IPs, single-label names, anything with
+- [x] Schema rejects `action`, `rule_text`, `expires_at`, wildcards, IPs, single-label names, anything with
       `$`, `^`, `|`, spaces or control characters (`mcp.invalid_input`) — table test with the injection
       corpus (`example.com$dnsrewrite=NOERROR;A;192.0.2.1`, `||ads.example^`, `*.example.com`, `com`).
-- [ ] Protected domains rejected on add and on remove (flag taken from the stored rule); error
+- [x] Protected domains rejected on add and on remove (flag taken from the stored rule); error
       `mcp.protected_domain` with sanitized `params`.
-- [ ] Cap error from the backend maps to `mcp.rule_limit_exceeded`; the crate does not count rules itself.
-- [ ] `remove_rule` idempotent; both tools `destructiveHint: true`; `remove_rule` `idempotentHint: true`.
-- [ ] Output of `add_rule` includes `created_at`/`expires_at` (server-set) and the generated `rule_text`
+- [x] Cap error from the backend maps to `mcp.rule_limit_exceeded`; the crate does not count rules itself.
+- [x] `remove_rule` idempotent; both tools `destructiveHint: true`; `remove_rule` `idempotentHint: true`.
+- [x] Output of `add_rule` includes `created_at`/`expires_at` (server-set) and the generated `rule_text`
       (sanitized).
-- [ ] Audit entries (`mcp.add_rule`, `mcp.remove_rule`) with `config_version` when the backend returns one.
+- [x] Audit entries (`mcp.add_rule`, `mcp.remove_rule`) with `config_version` when the backend returns one.
 
 **Verification:** `cargo test -p dnscraft-mcp --test write_tools rules`
 
@@ -522,11 +522,11 @@ optional `filter_set_id`; one active pause per set, a new pause replaces the old
 idempotent. Static descriptions include the multi-client warning from SPEC-mcp.md.
 
 **Acceptance criteria:**
-- [ ] No `until_resumed`; duration and maximum semantics as M16; unknown set → `policy.config.unknown_filter_set`.
-- [ ] Replacement semantics visible in the output (`paused_until` of the latest call); resume of a non-paused
+- [x] No `until_resumed`; duration and maximum semantics as M16; unknown set → `policy.config.unknown_filter_set`.
+- [x] Replacement semantics visible in the output (`paused_until` of the latest call); resume of a non-paused
       set succeeds with `resumed: true/false` as in the spec.
-- [ ] `destructiveHint: true`; audit entries for both tools; description text asserted (warning present).
-- [ ] With all 5 write tools registered, `tools/list` shows 13 tools when the gate is on and 8 when off.
+- [x] `destructiveHint: true`; audit entries for both tools; description text asserted (warning present).
+- [x] With all 5 write tools registered, `tools/list` shows 13 tools when the gate is on and 8 when off.
 
 **Verification:** `cargo test -p dnscraft-mcp --test write_tools pause`
 

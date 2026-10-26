@@ -385,11 +385,11 @@ DTOs from the modules (no parallel string types):
   `policy::DecisionRecord` for “why blocked?”.
 
 **Acceptance criteria:**
-- [ ] With 10 000 inserted rows, filter/order/pagination works within defaults and the row cap.
-- [ ] Query events are enriched with `clients` data when a matching client exists.
-- [ ] Retention deletes rows older than the configured window.
-- [ ] “why blocked?” returns the full `DecisionRecord` steps/filter/timings.
-- [ ] Full sink drops events and does not block DNS answering; the counter increments
+- [x] With 10 000 inserted rows, filter/order/pagination works within defaults and the row cap.
+- [x] Query events are enriched with `clients` data when a matching client exists.
+- [x] Retention deletes rows older than the configured window.
+- [x] “why blocked?” returns the full `DecisionRecord` steps/filter/timings.
+- [x] Full sink drops events and does not block DNS answering; the counter increments
       (regression test).
 
 **Verification:** `cargo test -p dnscraft-api query_log`
