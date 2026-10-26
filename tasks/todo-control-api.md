@@ -137,12 +137,12 @@ forgotten on one path.
   from trusted proxies; `Secure` cookie follows `X-Forwarded-Proto`.
 
 **Acceptance criteria:**
-- [ ] API starts only on allowed bind addresses; `0.0.0.0`/`::` returns `control_api.config.invalid`.
-- [ ] TLS serves a persisted self-signed certificate when no ACME cert exists; status exposes
+- [x] API starts only on allowed bind addresses; `0.0.0.0`/`::` returns `control_api.config.invalid`.
+- [x] TLS serves a persisted self-signed certificate when no ACME cert exists; status exposes
       `tls_mode` and SHA-256 fingerprint.
-- [ ] After a fake `CertResolver` presents a cert, the same listener switches without restart
+- [x] After a fake `CertResolver` presents a cert, the same listener switches without restart
       (fake resolver toggles after start; regression test).
-- [ ] Private key file is mode 0600 (test asserts); self-signed cert never served for a hostname
+- [x] Private key file is mode 0600 (test asserts); self-signed cert never served for a hostname
       that has an ACME cert.
 - [ ] Forwarded headers are honoured only from `trusted_proxies`; direct socket ignores them.
 
