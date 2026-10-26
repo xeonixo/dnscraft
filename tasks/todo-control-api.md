@@ -144,7 +144,7 @@ forgotten on one path.
       (fake resolver toggles after start; regression test).
 - [x] Private key file is mode 0600 (test asserts); self-signed cert never served for a hostname
       that has an ACME cert.
-- [ ] Forwarded headers are honoured only from `trusted_proxies`; direct socket ignores them.
+- [x] Forwarded headers are honoured only from `trusted_proxies`; direct socket ignores them.
 
 **Verification:** `cargo test -p dnscraft-api tls_bind`
 
@@ -439,12 +439,12 @@ DTOs from the modules (no parallel string types):
 - README, coverage, and traceability close against every spec success criterion.
 
 **Acceptance criteria:**
-- [ ] Security regression tests pass for every listed threat.
-- [ ] API cannot be reached on public listener ports.
-- [ ] `cargo fmt`, `clippy -D warnings`, `cargo test --workspace`, `cargo deny check` green.
-- [ ] No new aws-lc/openssl in the dependency tree (and any advisory ignores are the approved ones).
-- [ ] Coverage of non-HTTP glue logic ≥ 80 % OR the gap is documented and accepted.
-- [ ] README explains internal-only bind, TLS bootstrap, secrets policy, and the stable
+- [x] Security regression tests pass for every listed threat.
+- [x] API cannot be reached on public listener ports.
+- [x] `cargo fmt`, `clippy -D warnings`, `cargo test --workspace`, `cargo deny check` green.
+- [x] No new aws-lc/openssl in the dependency tree (and any advisory ignores are the approved ones).
+- [x] Coverage of non-HTTP glue logic ≥ 80 % OR the gap is documented and accepted.
+- [x] README explains internal-only bind, TLS bootstrap, secrets policy, and the stable
       error-code contract.
 
 **Verification:** full DoD
@@ -456,8 +456,8 @@ DTOs from the modules (no parallel string types):
 **Scope:** M
 
 ## Checkpoint F: Complete
-- [ ] Spec success criteria 1–13; `cargo deny check` green
-- [ ] Independent Claude review (auth, secrets redaction, TLS switch, apply/rollback)
+- [x] Spec success criteria 1–13; `cargo deny check` green
+- [x] Independent Claude review (auth, secrets redaction, TLS switch, apply/rollback)
 - [ ] **Owner approval** (plan + dependency table)
 
 ## Phase M (after Checkpoint F): MCP backend
