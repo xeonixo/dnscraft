@@ -1,4 +1,4 @@
-//! Config snapshot/version store (kv + `config_versions`) with secret redaction.
+//! Config snapshot/version store (`config_versions`) with secret redaction.
 
 use serde_json::Value;
 
@@ -6,10 +6,12 @@ use super::Db;
 use crate::audit::redact;
 use crate::error::ControlApiError;
 
-/// Key in `kv` that records the current (latest) config version.
-const CURRENT_VERSION_KEY: &str = "config.current_version";
-
 /// Stores and retrieves versioned, redacted config snapshots.
+///
+/// The "current" version is not a separate pointer: it is always the highest
+/// stored `config_versions.version` (`MAX(version)`). A `store` is therefore a
+/// single insert — there is no second write that could leave a version inserted
+/// but not yet current (no orphan version on failure).
 #[derive(Clone)]
 pub struct ConfigStore {
     db: Db,
@@ -21,15 +23,14 @@ impl ConfigStore {
         Self { db }
     }
 
-    /// Redacts secrets, stores the snapshot, marks it current, and returns its version.
+    /// Redacts secrets, stores the snapshot, and returns its version.
+    ///
+    /// The new version becomes current by virtue of being the maximum; no
+    /// separate pointer is written.
     pub async fn store(&self, snapshot: &Value) -> Result<i64, ControlApiError> {
         let redacted = redact(snapshot);
         let json = serde_json::to_string(&redacted).map_err(serialize_err)?;
-        let version = self.db.config_version_insert(&json).await?;
-        self.db
-            .kv_set(CURRENT_VERSION_KEY, &version.to_string())
-            .await?;
-        Ok(version)
+        self.db.config_version_insert(&json).await
     }
 
     /// Loads the exact stored snapshot of a version (already redacted).
@@ -40,17 +41,9 @@ impl ConfigStore {
         }
     }
 
-    /// Returns the current (latest) version, if any snapshot has been stored.
+    /// Returns the current (highest) version, if any snapshot has been stored.
     pub async fn current(&self) -> Result<Option<i64>, ControlApiError> {
-        let Some(raw) = self.db.kv_get(CURRENT_VERSION_KEY).await? else {
-            return Ok(None);
-        };
-        match raw.parse::<i64>() {
-            Ok(version) => Ok(Some(version)),
-            Err(_) => Err(ControlApiError::Internal {
-                message: format!("invalid current config version: {raw}"),
-            }),
-        }
+        self.db.config_version_max().await
     }
 }
 

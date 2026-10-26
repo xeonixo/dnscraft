@@ -100,6 +100,17 @@ impl Db {
         .await
     }
 
+    /// Highest stored config version, or `None` when no snapshot has been stored.
+    pub async fn config_version_max(&self) -> Result<Option<i64>, ControlApiError> {
+        self.with_conn(move |conn| {
+            conn.query_row("SELECT MAX(version) FROM config_versions", [], |row| {
+                row.get::<_, Option<i64>>(0)
+            })
+            .map_err(db_err)
+        })
+        .await
+    }
+
     /// Inserts a query-log row (minimal columns; expanded by A12).
     pub async fn query_log_insert(
         &self,

@@ -176,3 +176,47 @@ async fn audit_time_comes_from_injected_clock() {
     assert_eq!(rows[0].time, 1_700_000_060);
     assert_eq!(rows[1].time, 1_700_000_000);
 }
+
+#[tokio::test]
+async fn concurrent_stores_current_is_max() {
+    let db = Db::open_in_memory(db_clock()).await.unwrap();
+    let store = Arc::new(ConfigStore::new(db.clone()));
+
+    let mut handles = Vec::new();
+    for i in 0..300 {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move {
+            store.store(&json!({ "i": i })).await.unwrap()
+        }));
+    }
+    let mut versions = Vec::new();
+    for handle in handles {
+        versions.push(handle.await.unwrap());
+    }
+    versions.sort_unstable();
+    assert_eq!(versions, (1..=300).collect::<Vec<i64>>());
+
+    // The current version is the maximum; every version is loadable with no
+    // gaps or orphaned rows.
+    assert_eq!(store.current().await.unwrap(), Some(300));
+    for version in 1..=300 {
+        assert!(store.load(version).await.unwrap().is_some());
+    }
+}
+
+#[tokio::test]
+async fn current_derives_from_max_and_ignores_kv_pointer() {
+    let db = Db::open_in_memory(db_clock()).await.unwrap();
+    let store = ConfigStore::new(db.clone());
+
+    store.store(&json!({ "v": 1 })).await.unwrap();
+    store.store(&json!({ "v": 2 })).await.unwrap();
+
+    // No separate pointer is written.
+    assert_eq!(db.kv_get("config.current_version").await.unwrap(), None);
+    assert_eq!(store.current().await.unwrap(), Some(2));
+
+    // Even a stale/corrupt pointer is ignored: current() is derived from MAX.
+    db.kv_set("config.current_version", "999").await.unwrap();
+    assert_eq!(store.current().await.unwrap(), Some(2));
+}
