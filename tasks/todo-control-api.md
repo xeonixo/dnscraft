@@ -458,7 +458,7 @@ DTOs from the modules (no parallel string types):
 ## Checkpoint F: Complete
 - [x] Spec success criteria 1–13; `cargo deny check` green
 - [x] Independent Claude review (auth, secrets redaction, TLS switch, apply/rollback)
-- [ ] **Owner approval** (plan + dependency table)
+- [x] **Owner approval** (plan + dependency table)
 
 ## Phase M (after Checkpoint F): MCP backend
 
