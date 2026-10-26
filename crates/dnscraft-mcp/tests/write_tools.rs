@@ -1199,7 +1199,6 @@ async fn pause_and_resume_definitions_are_static_and_locked() {
 
 #[tokio::test]
 async fn tools_list_shows_thirteen_with_write_tools_and_eight_without() {
-    let client = reqwest::Client::new();
     let write_names = [
         "allow_temporarily",
         "add_rule",
@@ -1208,7 +1207,10 @@ async fn tools_list_shows_thirteen_with_write_tools_and_eight_without() {
         "resume_filter_set",
     ];
 
+    // Spawn before building the client: `spawn` installs the ring crypto
+    // provider that `reqwest` requires.
     let enabled = spawn(write_config()).await;
+    let client = reqwest::Client::new();
     let body = harness::list_tools(&client, &enabled).await;
     let tools = body["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 13, "write gate on: 8 read + 5 write tools");
@@ -1237,5 +1239,147 @@ async fn tools_list_shows_thirteen_with_write_tools_and_eight_without() {
             !write_names.contains(&name),
             "{name} must not be listed when the gate is off"
         );
+    }
+}
+
+const WRITE_TOOL_NAMES: [&str; 5] = [
+    "allow_temporarily",
+    "add_rule",
+    "remove_rule",
+    "pause_filter_set",
+    "resume_filter_set",
+];
+
+/// Arguments that pass schema, domain, duration and protected checks, so a
+/// write-scope token reaches its backend method.
+fn valid_arguments(name: &str) -> Value {
+    match name {
+        "allow_temporarily" => json!({ "domain": "example.com", "duration": "PT5M" }),
+        "add_rule" => json!({ "domain": "example.com" }),
+        "remove_rule" => json!({ "domain": "example.com" }),
+        "pause_filter_set" => json!({ "duration": "PT5M" }),
+        "resume_filter_set" => json!({}),
+        other => panic!("not a write tool: {other}"),
+    }
+}
+
+/// Every backend method a write tool can invoke, plus audit writes.
+fn write_backend_calls(server: &TestServer) -> usize {
+    server.backend.allow_calls()
+        + server.backend.add_calls()
+        + server.backend.find_calls()
+        + server.backend.remove_calls()
+        + server.backend.pause_calls()
+        + server.backend.resume_calls()
+}
+
+/// The 5 tools x {mcp:read, mcp:write} x {gate on, gate off} matrix.
+///
+/// A rejected call must never reach a write backend method or the audit log,
+/// and listing depends only on the gate, not on the caller's scope.
+#[tokio::test]
+async fn write_tool_matrix_gate_scope_and_backend_isolation() {
+    for gate in [false, true] {
+        for write_scope in [false, true] {
+            let token = if write_scope {
+                support::write_token()
+            } else {
+                support::read_token()
+            };
+            // Spawn before building the client: `spawn` installs the ring
+            // crypto provider that `reqwest` requires.
+            let server = harness::spawn_with(
+                McpConfig {
+                    write_tools_enabled: gate,
+                    ..McpConfig::default()
+                },
+                token,
+            )
+            .await;
+            let client = reqwest::Client::new();
+
+            let body = harness::list_tools(&client, &server).await;
+            let listed: Vec<&str> = body["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap())
+                .collect();
+            assert_eq!(
+                listed.len(),
+                if gate { 13 } else { 8 },
+                "gate={gate} scope={write_scope}"
+            );
+            for name in WRITE_TOOL_NAMES {
+                assert_eq!(
+                    listed.contains(&name),
+                    gate,
+                    "{name} listing with gate={gate}"
+                );
+            }
+
+            for name in WRITE_TOOL_NAMES {
+                let calls_before = write_backend_calls(&server);
+                let body = call(&server, name, valid_arguments(name)).await;
+
+                if !gate {
+                    assert_eq!(
+                        harness::error_code(&body),
+                        "mcp.write_tools_disabled",
+                        "gate off, {name}: {body}"
+                    );
+                    assert_eq!(
+                        write_backend_calls(&server),
+                        calls_before,
+                        "gate off, {name} reached the backend"
+                    );
+                    assert!(
+                        server.backend.audits().is_empty(),
+                        "gate off, {name} wrote an audit entry"
+                    );
+                } else if !write_scope {
+                    assert_eq!(
+                        harness::error_code(&body),
+                        "control_api.auth.insufficient_scope",
+                        "read scope, {name}: {body}"
+                    );
+                    assert_eq!(
+                        write_backend_calls(&server),
+                        calls_before,
+                        "read scope, {name} reached the backend"
+                    );
+                    assert!(
+                        server.backend.audits().is_empty(),
+                        "read scope, {name} wrote an audit entry"
+                    );
+                } else {
+                    assert_eq!(
+                        body["result"]["isError"], false,
+                        "write scope, {name}: {body}"
+                    );
+                }
+            }
+
+            if gate && write_scope {
+                assert_eq!(server.backend.allow_calls(), 1);
+                assert_eq!(server.backend.add_calls(), 1);
+                assert_eq!(server.backend.find_calls(), 1);
+                assert_eq!(
+                    server.backend.remove_calls(),
+                    0,
+                    "remove_rule sends no delete when find_mcp_rule returns nothing"
+                );
+                assert_eq!(server.backend.pause_calls(), 1);
+                assert_eq!(server.backend.resume_calls(), 1);
+                assert_eq!(
+                    server.backend.audits().len(),
+                    5,
+                    "every allowed write tool audits"
+                );
+            } else {
+                assert_eq!(write_backend_calls(&server), 0);
+                assert!(server.backend.audits().is_empty());
+            }
+        }
     }
 }
