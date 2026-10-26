@@ -248,12 +248,12 @@ SPEC-mcp.md § `get_status`, including `tls.mode` and `tls.fingerprint`). Mount 
 test setup). Record the rmcp findings that M0 left open in the ADR.
 
 **Acceptance criteria:**
-- [ ] Without any handshake: `server/discover`, `tools/list` and `tools/call get_status` each return 200 with
+- [x] Without any handshake: `server/discover`, `tools/list` and `tools/call get_status` each return 200 with
       the expected JSON (two consecutive calls prove statelessness).
-- [ ] `tools/list` returns `get_status` with `readOnlyHint: true`, `idempotentHint: true` and a static
+- [x] `tools/list` returns `get_status` with `readOnlyHint: true`, `idempotentHint: true` and a static
       description; output strings pass through `SafeText`.
-- [ ] A mock `NodeStatus` containing hostile strings (newlines, `<script>`) comes back sanitized.
-- [ ] If the rmcp findings contradict SPEC-mcp.md, the task stops and reports instead of working around it.
+- [x] A mock `NodeStatus` containing hostile strings (newlines, `<script>`) comes back sanitized.
+- [x] If the rmcp findings contradict SPEC-mcp.md, the task stops and reports instead of working around it.
 
 **Verification:** `cargo test -p dnscraft-mcp --test transport smoke`
 

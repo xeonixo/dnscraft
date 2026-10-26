@@ -17,6 +17,12 @@ pub mod dto;
 pub mod error;
 pub mod result;
 pub mod sanitize;
+pub mod tools;
+
+use std::sync::Arc;
+
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 
 pub use backend::{BackendError, McpBackend};
 pub use config::McpConfig;
@@ -33,3 +39,23 @@ pub use result::{tool_error, tool_ok};
 pub use sanitize::{
     CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_REASON, CAP_RULE_TEXT, SafeText, sanitize,
 };
+pub use tools::McpServer;
+
+/// Build the stateless MCP service mounted by `control-api` under `/mcp/v1`.
+///
+/// The returned service is cloned per request; every instance shares `backend`
+/// and `config`. The factory itself cannot fail, so malformed per-request state
+/// is impossible to introduce here.
+pub fn service(
+    backend: Arc<dyn McpBackend>,
+    config: McpConfig,
+) -> StreamableHttpService<McpServer, LocalSessionManager> {
+    let server_config = StreamableHttpServerConfig::default()
+        .with_legacy_session_mode(config.legacy_session_mode)
+        .with_json_response(true);
+    StreamableHttpService::new(
+        move || Ok(McpServer::new(backend.clone(), config.clone())),
+        Arc::new(LocalSessionManager::default()),
+        server_config,
+    )
+}

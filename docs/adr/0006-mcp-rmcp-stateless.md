@@ -185,6 +185,33 @@ None of these blocks the transport (M8/M9 will implement what the spec requires 
 by re-wrapping the plain-text rejections into the control-api envelope); they are reported so the
 owner can correct SPEC-mcp.md or the acceptance tests at D0.
 
+## M8 implementation findings
+
+The vertical slice (`get_status` through `server/discover`, `tools/list`, `tools/call`) confirmed:
+
+- **Contradiction 1 is exactly as recorded.** With `with_json_response(true)` the discover result
+  is `{resultType:"complete", supportedVersions:["2026-07-28"], capabilities:{tools:{}},
+  ttlMs:0, cacheScope:"private", _meta:{"io.modelcontextprotocol/serverInfo":{name,version}}}`.
+  There is no top-level `protocolVersion` or `serverInfo`. The M8 test asserts rmcp's shape, as
+  this ADR directs; SPEC-mcp.md § Capabilities still shows the older example.
+- **`supported_protocol_versions()` override is required.** The default is all five known
+  versions; `McpServer` returns only `[2026-07-28]` unless `legacy_session_mode` is enabled.
+- **Per-request `_meta` is mandatory for 2026 requests.** `MCP-Protocol-Version: 2026-07-28`
+  without `_meta["io.modelcontextprotocol/protocolVersion"]` and
+  `_meta["io.modelcontextprotocol/clientCapabilities"]` is rejected with `-32602` before the tool
+  runs. This matches the spec's "each request declares its version in `_meta`" and is not a new
+  contradiction.
+- **Annotations survive the macro.** `annotations(read_only_hint = true, idempotent_hint = true)`
+  serialises as `readOnlyHint`/`idempotentHint`; the tool description is a static string.
+- **`#[tool_handler]` attribute limits.** `version` must be a literal, not `env!(...)`; supplying
+  only `name` makes the generated `Implementation` use `env!("CARGO_PKG_VERSION")`.
+- `#[tool_router]`'s generated function is private by default; an impl block in a submodule needs
+  `vis = "pub(crate)"` so the `#[tool_handler]` block in the parent module can call it.
+
+No contradiction beyond the three already recorded appeared in M8. The malformed-body (415) and
+header-level unsupported-version (plain-text 400) behaviours remain for M9 to wrap in the
+control-api envelope.
+
 ## Alternatives considered
 
 - **Hand-rolled Streamable HTTP (~500 lines).** Rejected: it would re-implement the SEP-2243
