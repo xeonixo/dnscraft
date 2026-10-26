@@ -331,8 +331,8 @@ tokens are validated once per request. Implement SPEC-mcp.md § Authentication a
 ## Checkpoint T: Transport and auth
 - [x] DoD green; Claude security review of transport.rs/auth.rs (header/body confusion, scope isolation,
       slot leaks, token logging) with mutation probes — 2026-10-26
-- [ ] Owner confirms or changes the three defaults in Open question 4 (legacy mode, block-rule lifetime,
-      volatile allows/pauses)
+- [x] Owner confirms or changes the three defaults in Open question 4 (legacy mode, block-rule lifetime,
+      volatile allows/pauses) — 2026-10-26: confirmed legacy=false, 30d lifetime, volatile allows/pauses
 - [x] progress.md updated
 
 ## Task M11: Read tools A — `search_query_log`, `get_query`
