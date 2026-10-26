@@ -1,0 +1,29 @@
+# Sample DNScraft configuration.
+#
+# Do NOT run this file as-is: the addresses below are documentation-only
+# (RFC 5737 TEST-NET-1 and RFC 3849 documentation ranges) and `example.com` is
+# a reserved domain, so these binds will fail on a real host. This file exists
+# to show the schema, not to be executed.
+
+public_domain = "example.com"
+
+# Plain DNS over UDP for the local network.
+[[listeners]]
+id = "lan-udp"
+protocol = "udp53"
+address = "127.0.0.1:5300"
+
+# DNS over TLS, reachable publicly (encrypted transports only).
+[[listeners]]
+id = "public-dot"
+protocol = "dot"
+address = "192.0.2.1:853"
+exposure = "public"
+
+# DNS over HTTPS, with HTTP/3 on the same UDP port.
+[[listeners]]
+id = "public-doh"
+protocol = "doh"
+address = "192.0.2.1:443"
+exposure = "public"
+h3 = true
