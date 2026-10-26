@@ -67,6 +67,37 @@ impl Pagination {
         Ok(Self { limit, offset })
     }
 
+    /// Parses `limit`/`offset` without the generic [`MAX_LIMIT`] cap, for
+    /// endpoints whose page size is clamped instead by an endpoint-specific
+    /// maximum (query-log's `query_log.max_rows_per_request`). Validation is
+    /// otherwise identical to [`Self::parse`].
+    pub(crate) fn parse_unbounded(
+        limit: Option<&str>,
+        offset: Option<&str>,
+    ) -> Result<Self, ControlApiError> {
+        let limit = match limit {
+            None => DEFAULT_LIMIT,
+            Some(raw) => {
+                let n: u32 = raw
+                    .trim()
+                    .parse()
+                    .map_err(|_| invalid("limit", raw, "a non-negative integer"))?;
+                if n == 0 {
+                    return Err(invalid("limit", raw, "at least 1"));
+                }
+                n
+            }
+        };
+        let offset = match offset {
+            None => 0,
+            Some(raw) => raw
+                .trim()
+                .parse()
+                .map_err(|_| invalid("offset", raw, "a non-negative integer"))?,
+        };
+        Ok(Self { limit, offset })
+    }
+
     /// Whether more rows exist after `fetched` (which must be `limit + 1` when
     /// the caller probed for a following page).
     pub(crate) fn has_more(&self, fetched: usize) -> bool {

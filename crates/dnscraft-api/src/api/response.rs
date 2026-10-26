@@ -74,6 +74,7 @@ impl ControlApiError {
             ControlApiError::QueryLogRead { .. } => S::INTERNAL_SERVER_ERROR,
             ControlApiError::QueryLogExport { .. } => S::INTERNAL_SERVER_ERROR,
             ControlApiError::QueryLogDropped { .. } => S::OK,
+            ControlApiError::QueryLogInvalid { .. } => S::BAD_REQUEST,
             ControlApiError::AuthOidc { .. } => S::BAD_GATEWAY,
             ControlApiError::AuthLocal => S::UNAUTHORIZED,
             ControlApiError::AuthLocked => S::LOCKED,
@@ -111,6 +112,7 @@ impl ControlApiError {
                 Some(json!({ "limit_bytes": limit_bytes }))
             }
             ControlApiError::PaginationInvalid { reason } => Some(json!({ "reason": reason })),
+            ControlApiError::QueryLogInvalid { reason } => Some(json!({ "reason": reason })),
             ControlApiError::Module { params, .. } => params.clone(),
             _ => None,
         }

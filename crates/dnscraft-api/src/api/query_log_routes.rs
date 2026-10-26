@@ -39,7 +39,7 @@ pub(crate) struct RawQueryLogParams {
 
 impl RawQueryLogParams {
     fn into_filter(self) -> Result<QueryLogFilter, ControlApiError> {
-        let page = Pagination::parse(self.limit.as_deref(), self.offset.as_deref())?;
+        let page = Pagination::parse_unbounded(self.limit.as_deref(), self.offset.as_deref())?;
         let from_us = self
             .from
             .as_deref()
@@ -53,8 +53,8 @@ impl RawQueryLogParams {
         if let (Some(from), Some(to)) = (from_us, to_us)
             && from > to
         {
-            return Err(ControlApiError::QueryLogRead {
-                message: "`from` must not be after `to`".to_owned(),
+            return Err(ControlApiError::QueryLogInvalid {
+                reason: "`from` must not be after `to`".to_owned(),
             });
         }
         Ok(QueryLogFilter {
@@ -86,8 +86,8 @@ fn non_empty(value: Option<String>) -> Option<String> {
 fn parse_timestamp(raw: &str, field: &str) -> Result<i64, ControlApiError> {
     DateTime::parse_from_rfc3339(raw.trim())
         .map(|time| time.timestamp_micros())
-        .map_err(|_| ControlApiError::QueryLogRead {
-            message: format!("`{field}` must be an RFC 3339 timestamp"),
+        .map_err(|_| ControlApiError::QueryLogInvalid {
+            reason: format!("`{field}` must be an RFC 3339 timestamp"),
         })
 }
 
@@ -96,8 +96,8 @@ fn parse_bool(raw: Option<&str>, field: &str) -> Result<bool, ControlApiError> {
         None => Ok(false),
         Some("true" | "1") => Ok(true),
         Some("false" | "0") => Ok(false),
-        Some(_) => Err(ControlApiError::QueryLogRead {
-            message: format!("`{field}` must be a boolean"),
+        Some(_) => Err(ControlApiError::QueryLogInvalid {
+            reason: format!("`{field}` must be a boolean"),
         }),
     }
 }
@@ -108,8 +108,8 @@ fn parse_order_by(raw: Option<&str>) -> Result<OrderBy, ControlApiError> {
         Some("client") => Ok(OrderBy::Client),
         Some("domain") => Ok(OrderBy::Domain),
         Some("rcode") => Ok(OrderBy::Rcode),
-        Some(_) => Err(ControlApiError::QueryLogRead {
-            message: "`order_by` must be time, client, domain or rcode".to_owned(),
+        Some(_) => Err(ControlApiError::QueryLogInvalid {
+            reason: "`order_by` must be time, client, domain or rcode".to_owned(),
         }),
     }
 }
@@ -118,8 +118,8 @@ fn parse_order(raw: Option<&str>) -> Result<Order, ControlApiError> {
     match raw.map(str::trim) {
         None | Some("desc") => Ok(Order::Desc),
         Some("asc") => Ok(Order::Asc),
-        Some(_) => Err(ControlApiError::QueryLogRead {
-            message: "`order` must be asc or desc".to_owned(),
+        Some(_) => Err(ControlApiError::QueryLogInvalid {
+            reason: "`order` must be asc or desc".to_owned(),
         }),
     }
 }

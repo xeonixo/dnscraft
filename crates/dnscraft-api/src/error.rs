@@ -18,6 +18,7 @@
 //! | [`ControlApiError::QueryLogRead`] | `control_api.query_log.read` |
 //! | [`ControlApiError::QueryLogExport`] | `control_api.query_log.export` |
 //! | [`ControlApiError::QueryLogDropped`] | `control_api.query_log.dropped` |
+//! | [`ControlApiError::QueryLogInvalid`] | `control_api.query_log.invalid` |
 //! | [`ControlApiError::AuthOidc`] | `control_api.auth.oidc` |
 //! | [`ControlApiError::AuthLocal`] | `control_api.auth.local` |
 //! | [`ControlApiError::AuthLocked`] | `control_api.auth.locked` |
@@ -102,6 +103,12 @@ pub enum ControlApiError {
     QueryLogDropped {
         /// Number of events dropped.
         count: u64,
+    },
+    /// A query-log filter parameter is malformed or out of range.
+    #[error("invalid query-log filter: {reason}")]
+    QueryLogInvalid {
+        /// Which parameter and why it was rejected.
+        reason: String,
     },
     /// OIDC provider or configuration error.
     #[error("OIDC error: {message}")]
@@ -200,6 +207,7 @@ impl ControlApiError {
             Self::QueryLogRead { .. } => "control_api.query_log.read",
             Self::QueryLogExport { .. } => "control_api.query_log.export",
             Self::QueryLogDropped { .. } => "control_api.query_log.dropped",
+            Self::QueryLogInvalid { .. } => "control_api.query_log.invalid",
             Self::AuthOidc { .. } => "control_api.auth.oidc",
             Self::AuthLocal => "control_api.auth.local",
             Self::AuthLocked => "control_api.auth.locked",
@@ -259,6 +267,9 @@ mod tests {
                 message: "x".into(),
             },
             ControlApiError::QueryLogDropped { count: 3 },
+            ControlApiError::QueryLogInvalid {
+                reason: "bad filter".into(),
+            },
             ControlApiError::AuthOidc {
                 message: "x".into(),
             },

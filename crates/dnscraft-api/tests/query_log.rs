@@ -473,15 +473,46 @@ async fn query_log_http_list_applies_filters_and_pagination() {
     assert_eq!(body["data"]["next_offset"], 2);
     assert_eq!(queries[0]["filter"]["block_mode"], "nxdomain");
 
-    // Malformed values are accepted as data only when valid; bad order maps
-    // to the documented query-log read code.
-    let (status, body) = get(&log, "/api/v1/query-log?order_by=nope").await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(body["error"]["code"], "control_api.query_log.read");
+    // Malformed filter values are client errors (400 `query_log.invalid`),
+    // never server errors.
+    for uri in [
+        "/api/v1/query-log?order_by=nope",
+        "/api/v1/query-log?order=sideways",
+        "/api/v1/query-log?from=not-a-date",
+        "/api/v1/query-log?only_blocked=maybe",
+        "/api/v1/query-log?from=2026-01-02T00:00:00Z&to=2026-01-01T00:00:00Z",
+    ] {
+        let (status, body) = get(&log, uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        assert_eq!(
+            body["error"]["code"], "control_api.query_log.invalid",
+            "{uri}"
+        );
+    }
+
+    // A malformed pagination value keeps its own documented 400 code.
+    let (status, body) = get(&log, "/api/v1/query-log?limit=0").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "control_api.pagination.invalid");
 
     // A viewer-accessible route is mounted even without auth configured.
     let (status, _) = get(&log, "/api/v1/query-log").await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn query_log_http_limit_honours_max_rows_per_request_beyond_generic_cap() {
+    let (log, _clock) = harness(dnscraft_api::QueryLogConfig::default()).await;
+    let events: Vec<QueryEvent> = (0..700)
+        .map(|i| sample_event(at_secs(BASE_SECS - 700 + i as u64), i))
+        .collect();
+    log.insert_batch(events).await.unwrap();
+
+    // 600 exceeds the generic 500 pagination cap but is within the default
+    // `max_rows_per_request` (10 000), so it is served rather than clamped.
+    let (status, body) = get(&log, "/api/v1/query-log?limit=600").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["queries"].as_array().unwrap().len(), 600);
 }
 
 #[tokio::test]

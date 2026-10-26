@@ -744,6 +744,7 @@ tested. Codes are forwarded from module errors where applicable.
 | `control_api.query_log.read` | SQLite/other query-log read error |
 | `control_api.query_log.export` | CSV export failed |
 | `control_api.query_log.dropped` | sink dropped query events (informational) |
+| `control_api.query_log.invalid` | malformed query-log filter parameter (HTTP 400) |
 | `control_api.auth.oidc` | OIDC provider/configuration error |
 | `control_api.auth.local` | local login credential failure |
 | `control_api.auth.locked` | local account temporarily locked |
