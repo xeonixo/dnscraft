@@ -24,11 +24,11 @@ In progress (N9 DoQ done; **next: Checkpoint C** — encrypted e2e + review).
   streams with id 0
 - Shared message core (`handle_wire`): validation, ECS strip, OPT echo, EDE,
   padding, size limits
-- Shared [`Admission`](struct.Admission.html): source class, token buckets,
-  bans; public SNI/path Client-ID gates; pre-handshake ban refusals
+- Shared `Admission`: source class, token buckets, bans; public SNI/path
+  Client-ID gates; pre-handshake ban refusals
 - TLS helpers: per-family ALPN, `accept_encrypted`, `PolicyClientIds`, hot reload
   of the underlying `CertResolver`
-- Injectable [`Clock`](trait.Clock.html) / [`ManualClock`](struct.ManualClock.html)
+- Injectable `Clock` / `ManualClock`
 
 **Not implemented yet** (see [`todo-listeners.md`](../../tasks/todo-listeners.md))
 

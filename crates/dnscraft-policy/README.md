@@ -68,7 +68,7 @@ always wins. Hosts and citations live in `src/safesearch_table.rs`.
 
 Windows are offsets within one UTC week from Monday 00:00. A Sunday→Monday span
 is two windows. The hot path uses a pre-sorted schedule list on the snapshot and
-[`active_schedule`](fn.active_schedule.html) (no allocation). Pause still wins
+`active_schedule` (no allocation). Pause still wins
 (filtering Passes). `DecisionRecord.filter_set` is the effective set;
 `PolicyStatus.active_schedules` exposes the active schedule id per profile.
 Open question: local time zones (tz dependency) — only `offset_in_week` would
