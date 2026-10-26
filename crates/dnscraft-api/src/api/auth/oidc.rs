@@ -502,3 +502,29 @@ fn oidc_error(message: impl Into<String>) -> ControlApiError {
         message: message.into(),
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// Threat model: `alg=none` and HMAC algorithms (alg-confusion) must never
+    /// be accepted for an ID token. The integration suite proves rejection
+    /// end to end; this pins the allow-list that causes it.
+    #[test]
+    fn alg_confusion_allow_list_is_asymmetric_only() {
+        assert!(!ASYMMETRIC_SIGNING_ALGS.is_empty());
+        for algorithm in ASYMMETRIC_SIGNING_ALGS.iter().cloned() {
+            assert!(
+                !matches!(
+                    algorithm,
+                    CoreJwsSigningAlgorithm::None
+                        | CoreJwsSigningAlgorithm::HmacSha256
+                        | CoreJwsSigningAlgorithm::HmacSha384
+                        | CoreJwsSigningAlgorithm::HmacSha512
+                ),
+                "ID-token algorithm list must not accept {algorithm:?}"
+            );
+        }
+    }
+}

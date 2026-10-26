@@ -669,7 +669,42 @@ fn merge_mcp_rules(body: Value, stored: Option<&Value>) -> Result<Value, Control
             merge_set_rules(set, stored_sets)?;
         }
     }
+
+    // A full snapshot may carry local filter-list sources directly. Apply the
+    // same traversal guard as `PUT /api/v1/filter-lists`; otherwise the raw
+    // config path would be a bypass.
+    if let Some(Value::Object(filtering)) = snapshot.get("filtering")
+        && let Some(Value::Array(lists)) = filtering.get("lists")
+    {
+        for list in lists {
+            if let Some(file) = list
+                .get("source")
+                .and_then(|source| source.get("file"))
+                .and_then(Value::as_str)
+                && !list_source_path_is_safe(file)
+            {
+                return Err(config_invalid(
+                    "filter list `source.file` must not contain `..` path components",
+                ));
+            }
+        }
+    }
     Ok(Value::Object(snapshot))
+}
+
+/// Whether a client-supplied local filter-list source path is free of `..`
+/// traversal components.
+///
+/// `file` sources are an admin-only filtering feature. Rejecting parent
+/// components here covers both the per-list route and a raw `PUT /config`
+/// snapshot, so the two validation paths cannot drift. The data directory
+/// itself is a server-side bootstrap value and is never accepted from a
+/// request.
+pub(crate) fn list_source_path_is_safe(path: &str) -> bool {
+    !path.is_empty()
+        && !std::path::Path::new(path)
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
 }
 
 /// Applies the per-set `mcp_rules` merge rule to one filter-set object.

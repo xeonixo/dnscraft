@@ -20,7 +20,7 @@ use crate::api::config_routes::{
     upsert_by_id, valid_id,
 };
 use crate::api::response::success;
-use crate::config_apply::ConfigActor;
+use crate::config_apply::{ConfigActor, list_source_path_is_safe};
 use crate::error::ControlApiError;
 use crate::server::AppState;
 
@@ -236,11 +236,7 @@ fn validate_list_source(source: &Value) -> Result<(), ControlApiError> {
             "url must be an https:// URL",
         )),
         None => match map.get_key_value("file") {
-            Some((_, Value::String(path)))
-                if !path.is_empty() && !path.split('/').any(|part| part == "..") =>
-            {
-                Ok(())
-            }
+            Some((_, Value::String(path))) if list_source_path_is_safe(path) => Ok(()),
             Some(_) => Err(module_error(
                 "filter_store.invalid_source",
                 "file must be a path without `..` components",
