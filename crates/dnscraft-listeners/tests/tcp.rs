@@ -1,9 +1,10 @@
-//! Do53 TCP listener tests (N5 + Checkpoint B review).
+//! Do53 TCP listener tests (N5 + Checkpoint B re-review).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod support;
 
+use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -16,10 +17,33 @@ use dnscraft_listeners::{
 };
 use dnscraft_policy::{ListenerId, PolicyAnswer, RequestContext};
 use dnscraft_proto::{Edns, EdnsOption, Message, Name, Rcode, RecordType};
-use support::{encode_a_query, fake_a_answer, poll_until};
+use socket2::{Domain, Protocol as SockProtocol, Socket, Type};
+use support::{encode_a_query, fake_a_answer, fake_large_answer, poll_until};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{Notify, oneshot, watch};
+
+/// Connect with a tiny receive window so the server writer blocks quickly.
+async fn connect_small_window(addr: SocketAddr) -> TcpStream {
+    let domain = if addr.is_ipv4() {
+        Domain::IPV4
+    } else {
+        Domain::IPV6
+    };
+    let sock = Socket::new(domain, Type::STREAM, Some(SockProtocol::TCP)).unwrap();
+    sock.set_recv_buffer_size(256).unwrap();
+    sock.set_nonblocking(true).unwrap();
+    match sock.connect(&addr.into()) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::WouldBlock || e.raw_os_error() == Some(115) => {}
+        Err(e) => panic!("connect: {e}"),
+    }
+    let stream = TcpStream::from_std(sock.into()).unwrap();
+    stream.writable().await.unwrap();
+    // Complete non-blocking connect.
+    let _ = stream.peer_addr().unwrap();
+    stream
+}
 
 fn listener_cfg(addr: SocketAddr) -> ListenerConfig {
     ListenerConfig {
@@ -105,6 +129,22 @@ impl dnscraft_listeners::QueryHandler for HangHandler {
         _ctx: RequestContext,
     ) -> Result<PolicyAnswer, dnscraft_policy::PolicyError> {
         std::future::pending().await
+    }
+}
+
+/// Answers only after `gate` is notified (for EOF-drain regression).
+struct ReleaseHandler {
+    gate: Arc<Notify>,
+    answer: PolicyAnswer,
+}
+
+impl dnscraft_listeners::QueryHandler for ReleaseHandler {
+    async fn handle(
+        &self,
+        _ctx: RequestContext,
+    ) -> Result<PolicyAnswer, dnscraft_policy::PolicyError> {
+        self.gate.notified().await;
+        Ok(self.answer.clone())
     }
 }
 
@@ -324,12 +364,71 @@ async fn keepalive_echoed_in_response() {
     h.stop().await;
 }
 
+/// Client pipelines past the query cap and never reads; write deadline aborts and frees the slot.
+async fn non_reading_client_write_timeout_once(
+    clock: &ManualClock,
+    h: &TcpHarness,
+    start_accepted: u64,
+    start_closed: u64,
+) {
+    let mut client = connect_small_window(h.addr).await;
+    let stats = Arc::clone(&h.stats);
+    poll_until(
+        || stats.accepted.load(Ordering::Relaxed) > start_accepted,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    // Large answers + tiny client window fill the server send buffer so write blocks.
+    for i in 0..128u16 {
+        write_frame(
+            &mut client,
+            &encode_a_query(i, &format!("q{i}.example.com.")),
+        )
+        .await
+        .unwrap();
+    }
+    // Do not read answers — wait until the writer stalls (send buffer / window full).
+    poll_until(
+        || stats.answered.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+    let mut last = stats.answered.load(Ordering::Relaxed);
+    let mut stable_rounds = 0u32;
+    let stall_deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while stable_rounds < 10 {
+        if std::time::Instant::now() >= stall_deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let now = stats.answered.load(Ordering::Relaxed);
+        if now == last {
+            stable_rounds += 1;
+        } else {
+            last = now;
+            stable_rounds = 0;
+        }
+    }
+    assert!(
+        last >= 1,
+        "expected some answers before write stall, got {last}"
+    );
+
+    // Writer is blocked inside write_frame; advancing past tcp_idle_timeout trips the deadline.
+    clock.advance(Duration::from_secs(3));
+    poll_until(
+        || stats.closed.load(Ordering::Relaxed) > start_closed,
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(stats.closed.load(Ordering::Relaxed), start_closed + 1);
+    assert!(stats.write_timeouts.load(Ordering::Relaxed) >= 1);
+    drop(client);
+}
+
 #[tokio::test]
 async fn query_cap_write_timeout_frees_per_source_slot() {
-    // Pipeline far more than `max_queries_per_connection` with a hanging handler
-    // and never read. Slots stay held; after ManualClock passes tcp_idle_timeout
-    // the connection closes (aborting in-flight tasks) and the per-source slot
-    // is free again. Write deadlines use the same idle clock.
     let clock = Arc::new(ManualClock::new(
         SystemTime::UNIX_EPOCH + Duration::from_secs(5_000),
     ));
@@ -347,42 +446,14 @@ async fn query_cap_write_timeout_frees_per_source_slot() {
     };
     let h = TcpHarness::spawn(
         SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-        Arc::new(HangHandler),
+        Arc::new(FakeHandler::new(fake_large_answer(40))),
         limits,
         Arc::clone(&clock) as Arc<dyn dnscraft_listeners::Clock>,
     )
     .await;
 
-    let mut client = TcpStream::connect(h.addr).await.unwrap();
     let stats = Arc::clone(&h.stats);
-    poll_until(
-        || stats.accepted.load(Ordering::Relaxed) >= 1,
-        Duration::from_secs(2),
-    )
-    .await;
-
-    for i in 0..64u16 {
-        write_frame(
-            &mut client,
-            &encode_a_query(i, &format!("q{i}.example.com.")),
-        )
-        .await
-        .unwrap();
-    }
-    // Do not read answers.
-    poll_until(
-        || stats.queries.load(Ordering::Relaxed) >= 2,
-        Duration::from_secs(2),
-    )
-    .await;
-
-    clock.advance(Duration::from_secs(3));
-    poll_until(
-        || stats.closed.load(Ordering::Relaxed) >= 1,
-        Duration::from_secs(2),
-    )
-    .await;
-    assert_eq!(stats.closed.load(Ordering::Relaxed), 1);
+    non_reading_client_write_timeout_once(clock.as_ref(), &h, 0, 0).await;
 
     // Per-source slot free: a new connection from the same source is accepted.
     let c2 = TcpStream::connect(h.addr).await.unwrap();
@@ -393,7 +464,138 @@ async fn query_cap_write_timeout_frees_per_source_slot() {
     .await;
     assert_eq!(stats.rejected_per_source.load(Ordering::Relaxed), 0);
     drop(c2);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn query_cap_write_timeout_stable_over_repeats() {
+    let clock = Arc::new(ManualClock::new(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(9_000),
+    ));
+    let limits = Limits {
+        max_queries_per_connection: 2,
+        max_connections_per_source: 1,
+        max_connections_per_listener: 32,
+        tcp_idle_timeout: Duration::from_secs(2),
+        query_timeout: Duration::from_secs(60),
+        rate_per_source: TokenRate {
+            per_second: 10_000,
+            burst: 10_000,
+        },
+        ..Limits::default()
+    };
+    let h = TcpHarness::spawn(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        Arc::new(FakeHandler::new(fake_large_answer(40))),
+        limits,
+        Arc::clone(&clock) as Arc<dyn dnscraft_listeners::Clock>,
+    )
+    .await;
+
+    let stats = Arc::clone(&h.stats);
+    for i in 0..20u64 {
+        non_reading_client_write_timeout_once(clock.as_ref(), &h, i, i).await;
+        assert_eq!(
+            stats.closed.load(Ordering::Relaxed),
+            stats.accepted.load(Ordering::Relaxed)
+        );
+    }
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn peer_eof_drains_in_flight_answer() {
+    let gate = Arc::new(Notify::new());
+    let handler = Arc::new(ReleaseHandler {
+        gate: Arc::clone(&gate),
+        answer: fake_a_answer(Ipv4Addr::new(192, 0, 2, 77)),
+    });
+    let h = TcpHarness::spawn(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        handler,
+        Limits::default(),
+        Arc::new(SystemClock),
+    )
+    .await;
+
+    let mut client = TcpStream::connect(h.addr).await.unwrap();
+    write_frame(&mut client, &encode_a_query(7, "drain.example.com."))
+        .await
+        .unwrap();
+    let stats = Arc::clone(&h.stats);
+    poll_until(
+        || stats.queries.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    client.shutdown().await.unwrap();
+    // Answer after half-close; server must still flush it, then EOF.
+    gate.notify_waiters();
+    let resp = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut client))
+        .await
+        .expect("drained answer")
+        .unwrap();
+    assert_eq!(Message::decode(&resp).unwrap().header.id, 7);
+    let mut buf = [0u8; 4];
+    let n = tokio::time::timeout(Duration::from_secs(2), client.read(&mut buf))
+        .await
+        .expect("eof")
+        .unwrap();
+    assert_eq!(n, 0);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn idle_waits_for_outstanding_then_query_timeout_servfail() {
+    let clock = Arc::new(ManualClock::new(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(7_000),
+    ));
+    let limits = Limits {
+        tcp_idle_timeout: Duration::from_secs(2),
+        query_timeout: Duration::from_secs(5),
+        ..Limits::default()
+    };
+    let h = TcpHarness::spawn(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        Arc::new(HangHandler),
+        limits,
+        Arc::clone(&clock) as Arc<dyn dnscraft_listeners::Clock>,
+    )
+    .await;
+
+    let mut client = TcpStream::connect(h.addr).await.unwrap();
+    write_frame(&mut client, &encode_a_query(99, "hang.example.com."))
+        .await
+        .unwrap();
+    let stats = Arc::clone(&h.stats);
+    poll_until(
+        || stats.queries.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    clock.advance(Duration::from_secs(3));
+    tokio::task::yield_now().await;
+    assert_eq!(stats.closed.load(Ordering::Relaxed), 0);
+    assert_eq!(stats.idle_timeouts.load(Ordering::Relaxed), 0);
+
+    clock.advance(Duration::from_secs(3));
+    let resp = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut client))
+        .await
+        .expect("servfail")
+        .unwrap();
+    assert_eq!(Message::decode(&resp).unwrap().rcode(), Rcode::SERVFAIL);
+    assert_eq!(stats.idle_timeouts.load(Ordering::Relaxed), 0);
+
+    // Peer close (not idle): outstanding work drained via query_timeout, idle never fired.
     drop(client);
+    poll_until(
+        || stats.closed.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(stats.idle_timeouts.load(Ordering::Relaxed), 0);
     h.stop().await;
 }
 
@@ -436,6 +638,11 @@ async fn per_query_rate_limit_refused() {
     }
     assert_eq!(noerror, 1);
     assert_eq!(refused, 4);
+    poll_until(
+        || h.stats.refused.load(Ordering::Relaxed) >= 4,
+        Duration::from_secs(2),
+    )
+    .await;
     h.stop().await;
 }
 

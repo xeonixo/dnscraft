@@ -35,8 +35,10 @@ pub struct TcpStats {
     pub closed: AtomicU64,
     /// Rejected because the peer was a public source on Do53.
     pub dropped_public: AtomicU64,
-    /// Rejected by other admission decisions.
+    /// Rejected by admission Drop (e.g. ban).
     pub dropped_admission: AtomicU64,
+    /// Per-query REFUSED answers (rate limit).
+    pub refused: AtomicU64,
     /// Rejected because `max_connections_per_listener` was full.
     pub rejected_conn_cap: AtomicU64,
     /// Rejected because `max_connections_per_source` was full.
@@ -47,8 +49,10 @@ pub struct TcpStats {
     pub answered: AtomicU64,
     /// Framing errors (bad length / short read after length).
     pub framing_errors: AtomicU64,
-    /// Idle-timeout closes (read idle or write deadline).
+    /// Idle-timeout closes (RFC 7766 §6.2.3: no outstanding queries).
     pub idle_timeouts: AtomicU64,
+    /// Writer write-deadline timeouts (`tcp_idle_timeout`).
+    pub write_timeouts: AtomicU64,
 }
 
 impl TcpStats {
@@ -148,7 +152,8 @@ fn handle_accept<H>(shared: Arc<TcpShared<H>>, stream: TcpStream, peer: SocketAd
 where
     H: QueryHandler + 'static,
 {
-    // Accept-time: public Do53 → close (rate limits apply per query).
+    // Do53-only: public sources are closed at accept. Encrypted transports (DoT in N7)
+    // must run full Admission with Client ID instead of this accept-time close.
     if SourceClass::of(peer.ip()) == SourceClass::Public {
         TcpStats::bump(&shared.stats.dropped_public);
         drop(stream);
@@ -185,6 +190,7 @@ where
                 ConnEnd::Framing => TcpStats::bump(&shared.stats.framing_errors),
                 ConnEnd::Idle => TcpStats::bump(&shared.stats.idle_timeouts),
                 ConnEnd::Banned => TcpStats::bump(&shared.stats.dropped_admission),
+                ConnEnd::WriteTimeout => TcpStats::bump(&shared.stats.write_timeouts),
                 ConnEnd::Peer | ConnEnd::Io => {}
             }
         }
@@ -208,8 +214,19 @@ enum ConnEnd {
     Framing,
     Idle,
     Banned,
+    WriteTimeout,
     Peer,
     Io,
+}
+
+impl ConnEnd {
+    /// Abort in-flight queries (ban, framing, writer failure). EOF/idle drain instead.
+    fn abort_queries(&self) -> bool {
+        matches!(
+            self,
+            ConnEnd::Banned | ConnEnd::Framing | ConnEnd::WriteTimeout | ConnEnd::Io
+        )
+    }
 }
 
 async fn run_connection<H, S>(
@@ -224,62 +241,98 @@ where
     let (reader, writer) = split(stream);
     let mut reader = BufReader::new(reader);
     let (tx, rx) = mpsc::channel::<Vec<u8>>(64);
-    let cancel = Arc::new(Notify::new());
-    let query_slots = Arc::new(Semaphore::new(
-        shared.limits.max_queries_per_connection.max(1) as usize,
-    ));
+    // Level-triggered: writer sets `true` on error/timeout; read loop observes without racing Notify.
+    let (cancel_tx, mut cancel_rx) = watch::channel(false);
+    let slot_cap = shared.limits.max_queries_per_connection.max(1) as usize;
+    let query_slots = Arc::new(Semaphore::new(slot_cap));
     let mut queries: JoinSet<()> = JoinSet::new();
 
     let write_stats = Arc::clone(&shared.stats);
     let write_clock = Arc::clone(&shared.clock);
     let write_idle = shared.limits.tcp_idle_timeout;
-    let write_cancel = Arc::clone(&cancel);
-    let mut write_task = tokio::spawn(async move {
-        writer_loop(
-            writer,
-            rx,
-            write_clock,
-            write_idle,
-            write_stats,
-            write_cancel,
-        )
-        .await
+    let write_task = tokio::spawn(async move {
+        writer_loop(writer, rx, write_clock, write_idle, write_stats, cancel_tx).await
     });
 
     let idle = shared.limits.tcp_idle_timeout;
     let activity = Notify::new();
 
     let result = loop {
+        if *cancel_rx.borrow() {
+            break Err(ConnEnd::WriteTimeout);
+        }
+
         // Backpressure: hold a per-connection slot before reading the next frame.
-        let permit = tokio::select! {
-            biased;
-            () = cancel.notified() => break Err(ConnEnd::Idle),
-            () = wait_until(shared.clock.as_ref(), add_duration(shared.clock.now(), idle), &activity) => {
-                break Err(ConnEnd::Idle);
-            }
-            p = query_slots.clone().acquire_owned() => {
-                match p {
-                    Ok(p) => p,
-                    Err(_) => break Err(ConnEnd::Io),
+        // Read-idle (RFC 7766 §6.2.3) only while no query is outstanding.
+        let idle_now = query_slots.available_permits() == slot_cap;
+        let permit = if idle_now {
+            let deadline = add_duration(shared.clock.now(), idle);
+            tokio::select! {
+                biased;
+                changed = cancel_rx.changed() => {
+                    if changed.is_err() || *cancel_rx.borrow() {
+                        break Err(ConnEnd::WriteTimeout);
+                    }
+                    continue;
+                }
+                () = wait_until(shared.clock.as_ref(), deadline, &activity) => {
+                    break Err(ConnEnd::Idle);
+                }
+                p = query_slots.clone().acquire_owned() => {
+                    match p {
+                        Ok(p) => p,
+                        Err(_) => break Err(ConnEnd::Io),
+                    }
                 }
             }
-            w = &mut write_task => {
-                let _ = w;
-                break Err(ConnEnd::Idle);
+        } else {
+            tokio::select! {
+                biased;
+                changed = cancel_rx.changed() => {
+                    if changed.is_err() || *cancel_rx.borrow() {
+                        break Err(ConnEnd::WriteTimeout);
+                    }
+                    continue;
+                }
+                p = query_slots.clone().acquire_owned() => {
+                    match p {
+                        Ok(p) => p,
+                        Err(_) => break Err(ConnEnd::Io),
+                    }
+                }
             }
         };
 
-        let deadline = add_duration(shared.clock.now(), idle);
-        let frame = tokio::select! {
-            biased;
-            () = cancel.notified() => break Err(ConnEnd::Idle),
-            r = framing::read_frame(&mut reader) => r,
-            () = wait_until(shared.clock.as_ref(), deadline, &activity) => {
-                break Err(ConnEnd::Idle);
+        // Only our speculative permit held ⇒ still "idle" for the read wait.
+        let read_idle = query_slots.available_permits() == slot_cap - 1;
+        let frame = if read_idle {
+            let deadline = add_duration(shared.clock.now(), idle);
+            tokio::select! {
+                biased;
+                changed = cancel_rx.changed() => {
+                    drop(permit);
+                    if changed.is_err() || *cancel_rx.borrow() {
+                        break Err(ConnEnd::WriteTimeout);
+                    }
+                    continue;
+                }
+                r = framing::read_frame(&mut reader) => r,
+                () = wait_until(shared.clock.as_ref(), deadline, &activity) => {
+                    drop(permit);
+                    break Err(ConnEnd::Idle);
+                }
             }
-            w = &mut write_task => {
-                let _ = w;
-                break Err(ConnEnd::Idle);
+        } else {
+            tokio::select! {
+                biased;
+                changed = cancel_rx.changed() => {
+                    drop(permit);
+                    if changed.is_err() || *cancel_rx.borrow() {
+                        break Err(ConnEnd::WriteTimeout);
+                    }
+                    continue;
+                }
+                r = framing::read_frame(&mut reader) => r,
             }
         };
 
@@ -298,13 +351,29 @@ where
         }
     };
 
+    // Stop reading. Dropping `tx` lets the writer finish after in-flight query clones release.
+    let abort = result.as_ref().err().is_some_and(|e| e.abort_queries());
     drop(tx);
-    cancel.notify_waiters();
-    queries.abort_all();
+    if abort {
+        queries.abort_all();
+    }
     while queries.join_next().await.is_some() {}
-    write_task.abort();
-    let _ = write_task.await;
-    result
+    // Await the writer exactly once (no select on JoinHandle; no abort of a drained writer).
+    let writer_end = write_task.await;
+    match result {
+        Err(ConnEnd::Peer) | Err(ConnEnd::Idle) => {
+            // Graceful: prefer writer's timeout/IO if it failed while flushing.
+            match writer_end {
+                Ok(WriterEnd::Timeout) => Err(ConnEnd::WriteTimeout),
+                Ok(WriterEnd::Io) => Err(ConnEnd::Io),
+                _ => result,
+            }
+        }
+        other => {
+            let _ = writer_end;
+            other
+        }
+    }
 }
 
 async fn dispatch_frame<H>(
@@ -333,7 +402,7 @@ where
             Err(ConnEnd::Banned)
         }
         AdmitDecision::Refuse { .. } => {
-            TcpStats::bump(&shared.stats.dropped_admission);
+            TcpStats::bump(&shared.stats.refused);
             if let Some(bytes) = error_reply_from_wire(
                 &datagram,
                 Rcode::REFUSED,
@@ -360,34 +429,41 @@ where
     }
 }
 
+enum WriterEnd {
+    Done,
+    Timeout,
+    Io,
+}
+
 async fn writer_loop<W: AsyncWrite + Unpin>(
     mut writer: W,
     mut rx: mpsc::Receiver<Vec<u8>>,
     clock: Arc<dyn Clock>,
     idle: Duration,
     stats: Arc<TcpStats>,
-    cancel: Arc<Notify>,
-) {
+    cancel: watch::Sender<bool>,
+) -> WriterEnd {
     while let Some(msg) = rx.recv().await {
         let deadline = add_duration(clock.now(), idle);
         let wake = Notify::new();
-        let timed_out = tokio::select! {
+        let outcome = tokio::select! {
             r = framing::write_frame(&mut writer, &msg) => {
                 match r {
                     Ok(()) => {
                         TcpStats::bump(&stats.answered);
-                        false
+                        None
                     }
-                    Err(_) => true,
+                    Err(_) => Some(WriterEnd::Io),
                 }
             }
-            () = wait_until(clock.as_ref(), deadline, &wake) => true,
+            () = wait_until(clock.as_ref(), deadline, &wake) => Some(WriterEnd::Timeout),
         };
-        if timed_out {
-            cancel.notify_waiters();
-            return;
+        if let Some(end) = outcome {
+            let _ = cancel.send(true);
+            return end;
         }
     }
+    WriterEnd::Done
 }
 
 async fn process_query<H>(
