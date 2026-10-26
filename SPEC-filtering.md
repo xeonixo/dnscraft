@@ -38,7 +38,7 @@ Accepted list formats, detected per line:
 | Hosts line | `0.0.0.0 ads.example`, `127.0.0.1 a b c` | **always block**, whatever the IP (owner decision: lists never redirect) |
 | Wildcard pattern | `\|\|ad*.example^` | glob as AdGuard defines it |
 | Regex | `/^ads?[0-9]*\.example$/` | linear-time regex engine only; matched against the canonical name (lower-case, no trailing dot) |
-| IP rule | `\|\|194.0.2.10^`, `@@\|\|2001:db8::1^` | matches DNS **answers** containing that IPv4/IPv6 address (A/AAAA); `policy` applies it to the resolved answer (AdGuard behaviour against malware hosts with changing names) |
+| IP rule | `\|\|192.0.2.10^`, `@@\|\|2001:db8::1^` | matches DNS **answers** containing that IPv4/IPv6 address (A/AAAA); `policy` applies it to the resolved answer (AdGuard behaviour against malware hosts with changing names) |
 | Comment | `! …`, `# …` | ignored |
 
 Supported modifiers: `$important`, `$badfilter`, `$dnstype=…` (incl. negation `~`),
@@ -101,7 +101,7 @@ Supported modifiers: `$important`, `$badfilter`, `$dnstype=…` (incl. negation 
 
 ### Temporary allow
 
-- `allow_temporarily(set, domain, include_subdomains, until)`; expires automatically
+- `allow_temporarily(set, TempAllow { domain, include_subdomains, until })`; expires automatically
   (injectable clock), listed with remaining time, removable early.
 
 ### Matching
@@ -138,7 +138,8 @@ pub fn build_rule(spec: &RuleSpec) -> String;
 ```
 
 Every error exposes a stable `code()` for API and i18n (`filter_list.fetch_failed`,
-`filter_list.too_large`, `filter_rule.invalid_regex`, …).
+`filter_list.too_large`, `filter_rule.invalid_regex`,
+`filter_index.unknown_source`, `filter_index.too_large`, `filter_index.too_many_sources`, …).
 
 ### Budgets (from SPEC.md, reference set ≈ 2.25 M rules, 19 lists)
 

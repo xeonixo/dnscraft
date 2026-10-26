@@ -59,6 +59,8 @@ request, plus a Monday schedule for a longer run:
 - `RUSTUP_TOOLCHAIN=nightly` overrides the stable pin for this job only.
 - `cargo-fuzz` via `taiki-e/install-action`.
 - Duration: **60 s** on push/PR (smoke); **600 s** on the weekly schedule.
-- Coverage for `dnscraft-proto`, `dnscraft-resolver`, and `dnscraft-filtering`
-  fails under **80 %** lines (`--fail-under-lines 80`).
 - Concurrency cancels superseded PR runs, but not pushes to `main`.
+
+The separate `coverage` job fails if line coverage of `dnscraft-proto`,
+`dnscraft-resolver`, `dnscraft-filtering` or `dnscraft-policy` drops under
+**80 %** (`--fail-under-lines 80`).

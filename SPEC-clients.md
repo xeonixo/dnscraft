@@ -273,7 +273,8 @@ impl ClientEngine {
     pub fn status(&self) -> ClientsStatus; // last sync, stale, counts, last_error
 }
 
-impl ClientDirectory for ClientLookup { /* … */ }
+// No `impl ClientDirectory` here: `control-api` adapts `Arc<ClientLookup>` →
+// `Arc<dyn ClientDirectory>` (ADR 0003, "Trait boundary").
 ```
 
 ### Error codes

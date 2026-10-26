@@ -49,7 +49,7 @@ It knows nothing about filters, clients, or listeners; it takes a `Query` and re
 - Negative trust anchors configurable per domain (escape hatch for broken zones).
 
 ### Forward zones
-- Configured zones (and reverse zones such as `30.172.in-addr.arpa`) are sent to a list of
+- Configured zones (and reverse zones such as `2.0.192.in-addr.arpa`) are sent to a list of
   target servers instead of being resolved from the root; targets are tried in RTT order with failover.
 - DNSSEC per forward zone: `validate = false` by default (implicit negative trust anchor),
   because private zones are usually unsigned and may sit below a signed public zone.
@@ -105,12 +105,12 @@ negative_trust_anchors = []
 
 [[resolver.forward_zones]]
 zone = "site-b.internal"
-targets = ["172.30.0.1", "172.30.0.2"]
+targets = ["192.0.2.1", "192.0.2.2"]
 validate = false
 
 [[resolver.forward_zones]]
-zone = "30.172.in-addr.arpa"
-targets = ["172.30.0.1"]
+zone = "2.0.192.in-addr.arpa"
+targets = ["192.0.2.1"]
 ```
 
 ## Out of scope for this module

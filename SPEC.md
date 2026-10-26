@@ -10,7 +10,7 @@ the familiar AdGuard-compatible filter lists while closing these gaps:
 
 - **Full recursion** from the root servers, no upstream provider, with DNSSEC validation.
 - **Split-horizon:** different answers per source subnet
-  (e.g. `192.168.40.0/24` ≠ `192.168.20.0/24`).
+  (e.g. `192.0.2.0/24` ≠ `198.51.100.0/24`).
 - **Client identification via UniFi** (UniFi OS gateway, local API):
   device name, VLAN, IPv4/IPv6, so the query log can be filtered by device.
 - **All common protocols:** Do53 (UDP/TCP), DoT, DoH (HTTP/2, HTTP/3), DoQ.
@@ -78,7 +78,7 @@ Adopted from AdGuard Home and refined; each item belongs to the listed module sp
 | Query log retention and anonymization | control-api | Default: everything visible; retention configurable (default **30 days**); optional IP truncation |
 | Roles | control-api, web-ui | `admin` (everything) and `viewer` (logs, statistics, read-only config), mapped from configurable Authentik groups |
 | Split-horizon views | policy | Per subnet/Client ID: own records (A, AAAA, CNAME, TXT, SRV, MX) **and** own filter set, blocked services, schedules, pause state |
-| Manual client names | clients, web-ui | Names for single IPs or whole ranges (e.g. `172.18.0.0/16` = "Docker on server1", `172.18.0.5` = "paperless"); take precedence over UniFi names. Containers on macvlan are named automatically via UniFi |
+| Manual client names | clients, web-ui | Names for single IPs or whole ranges (e.g. `198.51.100.0/24` = "Container host", `198.51.100.5` = "printer"); take precedence over UniFi names. Containers on macvlan are named automatically via UniFi |
 | DynDNS | tls | Keeps the public A/AAAA record of the DoH/DoT hostname at Cloudflare up to date; public IP from a configurable echo service (default: Cloudflare `cdn-cgi/trace`, as Cloudflare is already in use) |
 | Alerts | control-api, web-ui | Certificate expiry, failed list updates, node offline, DynDNS failures: shown in the web UI only (no push/e-mail for now) |
 | MCP server | mcp | Model Context Protocol server (Streamable HTTP) on the internal API listener only. Thin layer over `control-api`: same API tokens and roles (`viewer` = read tools: query log search, "why blocked?", test query, statistics, list/node status; `admin` = also write tools: temporary allow, add rule, pause a filter set), every write in the audit log. Query-log content (domain names, client names) is attacker-influenced and returned strictly as structured data, never as instructions; write tools are marked destructive so clients ask for confirmation. Off by default |

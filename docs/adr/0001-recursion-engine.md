@@ -167,7 +167,7 @@ What is **not** established by this spike (honest caveats):
 
 ## Consequences
 
-For tasks 4-16 in `tasks/todo.md`. "Implement" means written in `dnscraft-resolver`;
+For tasks 4-16 in `tasks/archive/resolver-todo.md`. "Implement" means written in `dnscraft-resolver`;
 "wrap/configure" means mostly hickory code.
 
 | Task | Verdict | Note |

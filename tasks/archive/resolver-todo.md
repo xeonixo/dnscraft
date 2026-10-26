@@ -41,11 +41,11 @@ check whether hickory 0.26 relocated recursion. Record the decision.
 
 **Verification:**
 - [x] Manual: spike resolves `example.com A` (Secure) and `dnssec-failed.org A` (SERVFAIL) from the internet
-- [ ] Human reviews ADR at Checkpoint A
+- [x] Human reviews ADR at Checkpoint A
 
 **Dependencies:** Task 1
 
-**Files likely touched:** `spikes/hickory-recursor/` (throwaway), `docs/adr/0001-recursion-engine.md`, `tasks/plan.md`
+**Files likely touched:** `spikes/hickory-recursor/` (throwaway), `docs/adr/0001-recursion-engine.md`, `tasks/archive/resolver-plan.md`
 
 **Estimated scope:** M
 
@@ -72,7 +72,7 @@ matching root hints. Servers can be stopped/started individually and record rece
 ## Checkpoint A: Foundation + decision
 - [x] All tests pass, clippy clean
 - [x] ADR-0001 accepted by the owner (Option D)
-- [x] Revised `tasks/plan.md` and this file approved
+- [x] Revised `tasks/archive/resolver-plan.md` and this file approved
 
 ## Phase 1b: Wire format (`dnscraft-proto`)
 

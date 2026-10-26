@@ -445,7 +445,8 @@ rebind_exceptions = ["*.example.com"]
 
 ## Open Questions
 
-None — sensible defaults locked 2026-10-25 (owner asked to decide reasonably).
+Schedule time zones: ship UTC-only (current) or add a profile/timezone field later
+(see Schedules). All other defaults locked 2026-10-25 (owner asked to decide reasonably).
 
 ## Decisions (2026-10-25)
 
