@@ -95,7 +95,7 @@ forgotten on one path.
 
 ## Checkpoint A: Storage
 - [ ] DoD green; migrations, snapshot/version, and audit redaction reviewed (lead review)
-- [ ] progress.md updated
+- [x] progress.md updated
 
 ## Phase 2: Server core
 
