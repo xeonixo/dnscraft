@@ -725,6 +725,15 @@ No internet and no real Authentik/Cloudflare in CI.
 10. No real Authentik/Cloudflare/OIDC provider is contacted in tests. `cargo
     fmt`, `clippy -D warnings`, `cargo test --workspace` and `cargo deny check`
     are green.
+11. The TLS bootstrap self-signed certificate is served only while no ACME
+    certificate exists, reports `tls_mode` and fingerprint, and switches to the
+    ACME certificate automatically without a restart.
+12. NDJSON export is the primary streaming query-log export format and obeys
+    the current filters and retention; CSV export remains available as a
+    convenience.
+13. Audit before/after snapshots are stored as redacted JSON with secret
+    material masked; no plaintext secret from config/environment appears in the
+    audit log or in any query-log record.
 
 ## Candidate dependencies
 

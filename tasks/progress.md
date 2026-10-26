@@ -35,6 +35,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
 
 ## Log
 
+- 2026-10-26 — **plan: control-api plan and tasks.** Created `tasks/plan-control-api.md` and `tasks/todo-control-api.md`; added success criteria 11–13 to `SPEC-control-api.md` (TLS bootstrap switch, NDJSON export primary, audit redaction). Plan phases A0–A9 with checkpoints A–D; dependency table pending dry ring-only check. Next: owner approval of plan/deps before A0.
+
 - 2026-10-26 — **spec: control-api self-signed bootstrap cert.** Owner idea: instead of refusing to start without a certificate, serve a persisted self-signed cert (`rcgen`, already a workspace dep; no new dependency) until the `tls` module has an ACME cert, then switch automatically; `tls_mode` + fingerprint in status, warning `control_api.tls.self_signed` (replaces `tls.no_cert`).
 
 - 2026-10-26 — **spec: control-api decision 1 revised.** Owner: ACME exists, reverse proxy only optional. API TLS now default on via the `tls` module `CertResolver` under the node hostname (covered by `*.dns.<public_domain>`); `tls = false` + `trusted_proxies` = optional proxy mode; new error `control_api.tls.no_cert`.
