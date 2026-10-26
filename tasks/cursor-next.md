@@ -9,7 +9,7 @@
 ## Status (updated 2026-10-25)
 
 - `resolver`, `filtering`, `clients`, `tls`, `policy`: complete.
-- `listeners`: Checkpoint B approved 2026-10-26; Phase 2 (N6–N9) next, STOP at Checkpoint C.
+- `listeners`: N6 done 2026-10-26; **next: N7** DoT (Phase 2 continues through N9, STOP at Checkpoint C).
 
 ## Rules for every task (paste once per session)
 

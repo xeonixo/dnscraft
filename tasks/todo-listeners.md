@@ -181,10 +181,10 @@ because `is_client_id_registered` is case-sensitive), records a ban strike — e
 (helper here). Extract the Client ID for `QueryMeta`.
 
 **Acceptance criteria:**
-- [ ] `PolicyClientIds(Arc<PolicyEngine>)` implements `dnscraft_tls::ClientIdRegistry` (L0 adapter) and follows `apply_config`
-- [ ] Handshake matrix (local/public × registered/unknown/missing/node/apex SNI, incl. upper-case SNI of a registered id) with rcgen certs
-- [ ] Cert A → install cert B → a new handshake sees B without restart; an open connection keeps working
-- [ ] `no_cert` state then install → next handshake succeeds
+- [x] `PolicyClientIds(Arc<PolicyEngine>)` implements `dnscraft_tls::ClientIdRegistry` (L0 adapter) and follows `apply_config`
+- [x] Handshake matrix (local/public × registered/unknown/missing/node/apex SNI, incl. upper-case SNI of a registered id) with rcgen certs
+- [x] Cert A → install cert B → a new handshake sees B without restart; an open connection keeps working
+- [x] `no_cert` state then install → next handshake succeeds
 
 **Verification:** `cargo test -p dnscraft-listeners tls`
 

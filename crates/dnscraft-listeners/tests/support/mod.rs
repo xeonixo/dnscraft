@@ -2,6 +2,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 
+pub mod certs;
+
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -14,7 +16,7 @@ use dnscraft_listeners::{
     UdpServeParams, UdpStats, serve_udp,
 };
 use dnscraft_policy::{
-    AnswerOrigin, DecisionRecord, DecisionTimings, ListenerId, NoClients, PolicyAnswer,
+    AnswerOrigin, ClientId, DecisionRecord, DecisionTimings, ListenerId, NoClients, PolicyAnswer,
     PolicyConfig, PolicyEngine, ProfileConfig, ProfileId, SafeSearchConfig, SelectionCause,
     ViewConfig, ViewId, ViewRecordConfig,
 };
@@ -250,6 +252,48 @@ pub async fn local_policy_engine() -> Arc<PolicyEngine> {
             ttl: 60,
             rdata: RData::A(Ipv4Addr::new(192, 0, 2, 77)),
         }],
+        profile: ProfileId::new("default").unwrap(),
+    };
+    let cfg = PolicyConfig {
+        views: vec![view],
+        profiles: vec![profile],
+        ..PolicyConfig::default()
+    };
+    let resolver = Arc::new(
+        Resolver::new(ResolverConfig {
+            trust_anchors: TrustAnchors::empty(),
+            query_timeout: Duration::from_millis(50),
+            ..ResolverConfig::default()
+        })
+        .await
+        .unwrap(),
+    );
+    let clock = Arc::new(dnscraft_filtering::ManualClock::new(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_000),
+    ));
+    Arc::new(PolicyEngine::new(cfg, empty_filter(), resolver, Arc::new(NoClients), clock).unwrap())
+}
+
+/// PolicyEngine with the given Client IDs registered on the default view.
+pub async fn policy_engine_with_client_ids(ids: &[&str]) -> Arc<PolicyEngine> {
+    let profile = ProfileConfig {
+        id: ProfileId::new("default").unwrap(),
+        filter_set: SetId::new("default").unwrap(),
+        suppress_aaaa: false,
+        firefox_canary: false,
+        icloud_private_relay: false,
+        rebind: Some(false),
+        rebind_exceptions: Vec::new(),
+        forward_zones: None,
+        safesearch: SafeSearchConfig::default(),
+        schedules: Vec::new(),
+    };
+    let view = ViewConfig {
+        id: ViewId::new("default").unwrap(),
+        is_default: true,
+        subnets: Vec::new(),
+        client_ids: ids.iter().map(|id| ClientId::new(id).unwrap()).collect(),
+        records: Vec::new(),
         profile: ProfileId::new("default").unwrap(),
     };
     let cfg = PolicyConfig {

@@ -21,7 +21,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | Checkpoint B approved (2026-10-26); **next: N6** (Phase 2: N6–N9, STOP at Checkpoint C) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
+| `listeners` | N6 done; **next: N7** DoT (Phase 2: N7–N9, STOP at Checkpoint C) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -34,6 +34,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-26 — **listeners: N6 TLS server configs, SNI admission, hot reload.** `PolicyClientIds(Arc<PolicyEngine>)` → `ClientIdRegistry` (lower-cases before lookup; follows `apply_config`). `ListenerCertResolver` over `CertResolver`: TCP family ALPN `dot`/`h2`/`http/1.1` (TLS 1.2+), QUIC family TLS 1.3 + ALPN `doq`/`h3` + `max_early_data_size = 0`. Public SNI via `accept_public_sni` / `inspect_public_sni` (unknown/missing → strike; node/apex → reject no strike); local ignores unknown id. `accept_encrypted` + `tls_handshake_timeout`; `listeners.tls.no_cert` counted. Deps: `dnscraft-tls`, `rustls`, `tokio-rustls` 0.26.6 (`ring`+`tls12`), dev `rcgen`. Crypto trees empty (`aws-lc-rs` / `aws-lc-sys` / `openssl-sys` no match); `cargo deny check` → advisories ok, bans ok, licenses ok, sources ok. Next: N7 DoT.
 
 - 2026-10-26 — **listeners: Checkpoint B approved** (Claude review, 3 fix rounds: `f15cf40`, `b6c2757`, `d5ceaa4`). Findings fixed: TCP connection never closed for a non-reading client (unbounded per-frame tasks + un-timed writer await), TCP rate limit only per connection, no SERVFAIL on TCP `query_timeout`, O(n) LRU eviction (224 µs per new source at cap 100k under the admission mutex), missing OPT-size echo test, dead ECS block; round 2: in-flight queries aborted on EOF/idle (RFC 7766 §6.2.3), double await of the writer `JoinHandle`; round 3: idle timer never re-armed after a slow answer. Final state verified by probes (removed afterwards): slow answer then silence → idle close; 1-byte length stall → idle close; half-close → answer delivered; rate 1/s → 1 NOERROR + 4 REFUSED; 200k pipelined non-reading → write timeout + close + slot freed. Gates: fmt, clippy `-D warnings`, workspace tests, `cargo deny` green. Spec: QR=1 → drop (was NOTIMP). Notes for N7: move the connection loop into generic `src/conn.rs`; DoT needs full admission per accept; writer deadline is per frame, so a trickle-reading client is bounded only by `max_connections_per_source` — consider a connection lifetime cap for public DoT.
 

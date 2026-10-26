@@ -490,11 +490,16 @@ dependencies = [
  "dnscraft-proto",
  "dnscraft-resolver",
  "dnscraft-testkit",
+ "dnscraft-tls",
  "proptest",
  "quinn-udp",
+ "rcgen",
+ "rustls",
+ "rustls-pki-types",
  "socket2",
  "thiserror",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

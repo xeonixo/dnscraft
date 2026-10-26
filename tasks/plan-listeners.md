@@ -78,7 +78,7 @@ Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i o
 - [x] Do53 UDP/TCP against the real `PolicyEngine` on the testkit hierarchy (IPv4 + IPv6); `examples/serve.rs` answers `dig` on a high port; Claude review ✓ (2026-10-26)
 
 ### Phase 2: Encrypted transports
-- [ ] N6: TLS server configs from `CertResolver`, SNI admission, `no_cert` state, hot reload
+- [x] N6: TLS server configs from `CertResolver`, SNI admission, `no_cert` state, hot reload
 - [ ] N7: DoT
 - [ ] N8: DoH over HTTP/2 + HTTP/1.1
 - [ ] N9: DoQ

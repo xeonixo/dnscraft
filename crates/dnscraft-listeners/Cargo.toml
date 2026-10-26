@@ -16,15 +16,20 @@ dnscraft-policy = { path = "../dnscraft-policy" }
 dnscraft-proto = { path = "../dnscraft-proto" }
 dnscraft-resolver = { path = "../dnscraft-resolver" }
 dnscraft-filtering = { path = "../dnscraft-filtering" }
+dnscraft-tls = { path = "../dnscraft-tls" }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["signal"] }
 socket2 = { workspace = true }
 quinn-udp = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
 
 [dev-dependencies]
 dnscraft-testkit = { path = "../dnscraft-testkit" }
 proptest = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+rcgen = { workspace = true }
+rustls-pki-types = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
 
 [[example]]
 name = "serve"

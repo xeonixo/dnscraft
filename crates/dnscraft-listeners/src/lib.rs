@@ -10,6 +10,7 @@
 //! N3: [`Admission`] (source class, rate limits, bans).
 //! N4: Do53 [`serve_udp`].
 //! N5: Do53 [`serve_tcp`] (length-prefix framing, pipelining).
+//! N6: TLS server configs, SNI admission, hot reload.
 
 #![deny(missing_docs)]
 
@@ -25,6 +26,7 @@ mod handler;
 mod ratelimit;
 mod socket;
 mod tcp;
+mod tls;
 mod udp;
 
 pub use admission::{Admission, AdmitDecision, ClientIdState, SourceClass};
@@ -45,5 +47,11 @@ pub use handler::{FakeHandler, QueryHandler};
 pub use socket::{bind_tcp, bind_udp};
 pub use tcp::{
     OPTION_TCP_KEEPALIVE, TcpServeParams, TcpStats, duration_to_keepalive_units, serve_tcp,
+};
+pub use tls::{
+    ALPN_DOQ, ALPN_DOT, ALPN_H2, ALPN_H3, ALPN_HTTP_1_1, AcceptEncrypted, AcceptedTls,
+    ListenerCertResolver, PolicyClientIds, PublicSniOutcome, SniGate, SniRejectKind, TlsStats,
+    accept_encrypted, apply_sni_strike, client_id_state_local, inspect_public_sni,
+    quic_server_config, tcp_server_config, tls_acceptor, tls_handshake_timeout,
 };
 pub use udp::{CLASSIC_UDP_LIMIT, UdpServeParams, UdpStats, serve_udp, udp_size_limit};
