@@ -50,8 +50,12 @@ cargo run -p dnscraft-resolver --example query -- example.com A
   [tls](crates/dnscraft-tls/README.md),
   [policy](crates/dnscraft-policy/README.md),
   [listeners](crates/dnscraft-listeners/README.md)
-- [docs/adr/](docs/adr/) — architecture decision records
-  ([0001](docs/adr/0001-recursion-engine.md))
+- [docs/adr/](docs/adr/) — architecture decision records:
+  [0001 recursion engine](docs/adr/0001-recursion-engine.md),
+  [0002 ring-only crypto](docs/adr/0002-ring-only-crypto.md),
+  [0003 policy ClientDirectory](docs/adr/0003-policy-client-directory.md),
+  [0004 listeners Admission](docs/adr/0004-listeners-shared-admission.md),
+  [0005 injectable Clock](docs/adr/0005-injectable-clock.md)
 - [fuzz/README.md](fuzz/README.md) — fuzz targets, corpora and CI job
 - [tasks/progress.md](tasks/progress.md) — progress log (resume point)
 - [tasks/cursor-next.md](tasks/cursor-next.md) — agent workflow rules and templates
