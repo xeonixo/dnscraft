@@ -555,7 +555,9 @@ where
     let meta = QueryMeta {
         protocol: DnsProtocol::DoQ,
         listener_id: shared.listener.id.clone(),
+        exposure: shared.listener.exposure,
         source: peer.ip().to_canonical(),
+        arrival: peer.ip().to_canonical(),
         client_id: match client_id {
             ClientIdState::Registered(id) => Some(id.clone()),
             _ => None,
@@ -563,6 +565,7 @@ where
         size_limit: MAX_MESSAGE_LEN,
         pad: true,
         udp_payload_max: shared.limits.udp_payload_max,
+        ddr: None,
     };
 
     DoqStats::bump(&shared.stats.queries);

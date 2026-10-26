@@ -10,8 +10,7 @@ Plan / remaining tasks: [`tasks/todo-listeners.md`](../../tasks/todo-listeners.m
 
 ## Status
 
-Checkpoint C impl done (`tests/checkpoint_c.rs`); **STOP for Claude re-review**
-(do not start N10).
+Checkpoint C approved; N10 DDR done. **Next: N11** (`ListenerSet` runtime).
 
 **Implemented today**
 
@@ -24,18 +23,20 @@ Checkpoint C impl done (`tests/checkpoint_c.rs`); **STOP for Claude re-review**
 - DoQ (`serve_doq`): quinn + QUIC TLS config; Client ID from SNI; length-prefixed
   streams with id 0
 - Shared message core (`handle_wire`): validation, ECS strip, OPT echo, EDE,
-  padding, size limits
+  padding, size limits; DDR interception on local Do53
 - Shared `Admission`: source class, token buckets, bans; public SNI/path
   Client-ID gates; pre-handshake ban refusals
 - TLS helpers: per-family ALPN, `accept_encrypted`, `PolicyClientIds`, hot reload
   of the underlying `CertResolver`
 - Injectable `Clock` / `ManualClock`
+- DDR (`DdrEndpoints`): local Do53 `IN SVCB _dns.resolver.arpa.` answers one
+  SVCB per same-family encrypted listener (opportunistic discovery only —
+  certificates cover `dns.<domain>` / `*.dns.<domain>`, not IP SANs; verified
+  discovery per RFC 9462 §4.2 is out of scope)
 
 **Not implemented yet** (see [`todo-listeners.md`](../../tasks/todo-listeners.md))
 
 - DoH over HTTP/3 (task N12; `ALPN_H3` is reserved on the QUIC config only)
-- DDR `_dns.resolver.arpa` SVCB answers (task N10; `DdrConfig` is validated in
-  config only)
 - `ListenerSet` runtime / query-event sink / fuzz+bench polish (N11, N13)
 
 ## Crate layout
@@ -48,6 +49,7 @@ Checkpoint C impl done (`tests/checkpoint_c.rs`); **STOP for Claude re-review**
 | `handler` | `QueryHandler` + `FakeHandler` |
 | `socket` | `bind_udp` / `bind_tcp` via `socket2` |
 | `core` | `handle_wire` / `QueryMeta` / `QueryEvent` |
+| `ddr` | RFC 9462 `_dns.resolver.arpa` SVCB / NODATA |
 | `edns` | ECS strip, OPT echo, padding (block 468) |
 | `admission` | `SourceClass` / `Admission` / `AdmitDecision` |
 | `ratelimit` | token buckets + LRU map (internal) |

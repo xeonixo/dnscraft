@@ -260,9 +260,9 @@ wildcard, the query's arrival address). None → NODATA with SOA. Not on encrypt
 `dnscraft_proto::SvcbData` (RFC 9460 key order, mandatory keys none).
 
 **Acceptance criteria:**
-- [ ] SVCB answer decodes with the testkit's hickory oracle and lists the expected endpoints
-- [ ] NODATA when no encrypted local listener; not answered on DoT/DoH/DoQ (goes to policy as usual)
-- [ ] `ddr.enabled = false` → policy handles the name
+- [x] SVCB answer decodes with the testkit's hickory oracle and lists the expected endpoints
+- [x] NODATA when no encrypted local listener; not answered on DoT/DoH/DoQ (goes to policy as usual)
+- [x] `ddr.enabled = false` → policy handles the name
 
 **Verification:** `cargo test -p dnscraft-listeners ddr`
 

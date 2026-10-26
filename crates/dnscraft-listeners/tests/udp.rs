@@ -145,6 +145,7 @@ async fn same_port_v4_and_v6_unspecified() {
         handler: Arc::clone(&handler),
         clock: Arc::clone(&clock),
         stats: Arc::clone(&stats4),
+        ddr: None,
         bound: b4_tx,
         shutdown: sd4_rx,
     }));
@@ -162,6 +163,7 @@ async fn same_port_v4_and_v6_unspecified() {
         handler,
         clock,
         stats: Arc::clone(&stats6),
+        ddr: None,
         bound: b6_tx,
         shutdown: sd6_rx,
     }));

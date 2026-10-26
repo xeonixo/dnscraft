@@ -205,6 +205,7 @@ async fn dot_matches_do53_except_padding() {
         handler: Arc::clone(&handler),
         clock: Arc::new(SystemClock),
         stats: Arc::clone(&tcp_stats),
+        ddr: None,
         bound: tcp_bound_tx,
         shutdown: tcp_shutdown_rx,
     }));

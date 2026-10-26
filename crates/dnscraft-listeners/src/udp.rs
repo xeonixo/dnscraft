@@ -4,6 +4,7 @@ use std::io::{self, IoSliceMut};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dnscraft_policy::DnsProtocol;
@@ -17,6 +18,7 @@ use crate::admission::{Admission, AdmitDecision, ClientIdState};
 use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Limits, ListenerConfig};
 use crate::core::{QueryMeta, handle_wire};
+use crate::ddr::DdrEndpoints;
 use crate::error::ListenersError;
 use crate::handler::QueryHandler;
 use crate::socket::bind_udp;
@@ -61,6 +63,10 @@ struct UdpShared<H: ?Sized> {
     sock: Arc<TokioUdpSocket>,
     /// Present when bound to an unspecified address (pktinfo path).
     state: Option<Arc<UdpSocketState>>,
+    /// Bound address (concrete bind arrival fallback).
+    local: SocketAddr,
+    /// Shared DDR endpoint list (N11 updates).
+    ddr: Option<Arc<RwLock<DdrEndpoints>>>,
 }
 
 /// Inputs for [`serve_udp`].
@@ -77,6 +83,8 @@ pub struct UdpServeParams<H: ?Sized> {
     pub clock: Arc<dyn Clock>,
     /// Counters for this listener.
     pub stats: Arc<UdpStats>,
+    /// DDR endpoints for `_dns.resolver.arpa` (local Do53).
+    pub ddr: Option<Arc<RwLock<DdrEndpoints>>>,
     /// Receives the bound address once (useful when the config used port 0).
     pub bound: oneshot::Sender<SocketAddr>,
     /// Set to `true` to stop the accept loop.
@@ -99,6 +107,7 @@ where
         handler,
         clock,
         stats,
+        ddr,
         bound,
         mut shutdown,
     } = params;
@@ -134,6 +143,8 @@ where
         inflight,
         sock,
         state,
+        local,
+        ddr,
     });
 
     loop {
@@ -252,14 +263,20 @@ fn spawn_query<H>(
     tokio::spawn(async move {
         let _permit = permit;
         let size_limit = udp_size_limit(&datagram, shared.limits.udp_payload_max);
+        let arrival = dst_ip
+            .map(|ip| ip.to_canonical())
+            .unwrap_or_else(|| shared.local.ip().to_canonical());
         let meta = QueryMeta {
             protocol: DnsProtocol::Udp53,
             listener_id: shared.listener.id.clone(),
+            exposure: shared.listener.exposure,
             source: peer.ip(),
+            arrival,
             client_id: None,
             size_limit,
             pad: false,
             udp_payload_max: shared.limits.udp_payload_max,
+            ddr: shared.ddr.clone(),
         };
         let deadline = add_duration(shared.clock.now(), shared.limits.query_timeout);
         let wake = Notify::new();

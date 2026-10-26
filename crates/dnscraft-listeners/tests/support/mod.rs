@@ -211,6 +211,7 @@ impl UdpHarness {
             handler,
             clock,
             stats: Arc::clone(&stats),
+            ddr: None,
             bound: bound_tx,
             shutdown: shutdown_rx,
         }));

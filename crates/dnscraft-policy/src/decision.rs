@@ -47,6 +47,8 @@ pub enum AnswerOrigin {
     Bypass,
     /// Filter block or rewrite synthesis.
     Filter,
+    /// Listener-synthesised DDR (`_dns.resolver.arpa` SVCB / NODATA).
+    ListenerDdr,
 }
 
 /// One breadcrumb from the pipeline, in order.

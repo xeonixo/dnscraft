@@ -9,7 +9,7 @@
 ## Status (updated 2026-10-26)
 
 - `resolver`, `filtering`, `clients`, `tls`, `policy`: complete.
-- `listeners`: Checkpoint C approved 2026-10-26; Phase 3 next (N10 DDR, N11 runtime, N12 h3, N13, N14), STOP at Checkpoint D.
+- `listeners`: N10 DDR done 2026-10-26; **next: N11** (N12 h3, N13, N14), STOP at Checkpoint D.
 - Docs catch-up (D1–D6) done 2026-10-26: root README, crate READMEs, CAPABILITY-MAP Status,
   ADRs 0002–0005; see progress.md Log.
 

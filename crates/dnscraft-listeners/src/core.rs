@@ -1,6 +1,7 @@
 //! Transport-independent DNS message core (`handle_wire`).
 
 use std::net::IpAddr;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use dnscraft_policy::{
@@ -9,6 +10,8 @@ use dnscraft_policy::{
 use dnscraft_proto::{Class, Header, Message, Opcode, Rcode};
 use dnscraft_resolver::Query;
 
+use crate::config::Exposure;
+use crate::ddr::{DdrEndpoints, ddr_decision_record, try_answer_ddr};
 use crate::edns::{build_response_edns, encode_padded, strip_ecs};
 use crate::handler::QueryHandler;
 
@@ -19,8 +22,12 @@ pub struct QueryMeta {
     pub protocol: DnsProtocol,
     /// Listener that accepted the query.
     pub listener_id: ListenerId,
+    /// Listener exposure (DDR only on local Do53).
+    pub exposure: Exposure,
     /// Client source address (IPv4-mapped forms are canonicalised).
     pub source: IpAddr,
+    /// Arrival / local address for DDR hints (UDP `RecvMeta.dst_ip` or TCP `local_addr`).
+    pub arrival: IpAddr,
     /// Client ID from SNI / DoH path, if any.
     pub client_id: Option<ClientId>,
     /// Maximum encoded answer size (UDP EDNS/512, TCP 65 535, …).
@@ -29,6 +36,8 @@ pub struct QueryMeta {
     pub pad: bool,
     /// Configured EDNS UDP payload maximum (echoed as `min(client, this)`).
     pub udp_payload_max: u16,
+    /// Shared DDR endpoints (Do53). `None` skips DDR interception (encrypted listeners).
+    pub ddr: Option<Arc<RwLock<DdrEndpoints>>>,
 }
 
 /// Structured query-log fields produced when the handler ran (N11 sink later).
@@ -165,6 +174,21 @@ pub async fn handle_wire(
     // Response OPT is built fresh by `build_response_edns` (no ECS/cookies), so
     // client ECS is never echoed; policy never sees ECS options either.
 
+    // DDR (RFC 9462): local Do53 + enabled + IN SVCB `_dns.resolver.arpa.` only.
+    if let Some(ddr_msg) = try_intercept_ddr(&query_msg, &meta) {
+        return finish_response(FinishArgs {
+            query: &query_msg,
+            resp: ddr_msg,
+            ede: None,
+            decision: ddr_decision_record(Rcode::NOERROR),
+            loggable: true,
+            meta: &meta,
+            source,
+            client_had_opt,
+            started,
+        });
+    }
+
     let dnssec_ok = query_msg.edns.as_ref().is_some_and(|e| e.dnssec_ok);
     let ctx = RequestContext {
         source_ip: source,
@@ -200,23 +224,69 @@ pub async fn handle_wire(
         }
     };
 
-    let mut resp = answer.message;
+    finish_response(FinishArgs {
+        query: &query_msg,
+        resp: answer.message,
+        ede: answer.ede.as_ref(),
+        decision: answer.record,
+        loggable: answer.loggable,
+        meta: &meta,
+        source,
+        client_had_opt,
+        started,
+    })
+}
+
+fn try_intercept_ddr(query: &Message, meta: &QueryMeta) -> Option<Message> {
+    if !matches!(meta.protocol, DnsProtocol::Udp53 | DnsProtocol::Tcp53) {
+        return None;
+    }
+    if meta.exposure != Exposure::Local {
+        return None;
+    }
+    let guard = meta.ddr.as_ref()?.read().ok()?;
+    try_answer_ddr(query, meta.arrival.to_canonical(), &guard)
+}
+
+struct FinishArgs<'a> {
+    query: &'a Message,
+    resp: Message,
+    ede: Option<&'a dnscraft_resolver::ExtendedError>,
+    decision: DecisionRecord,
+    loggable: bool,
+    meta: &'a QueryMeta,
+    source: IpAddr,
+    client_had_opt: bool,
+    started: Instant,
+}
+
+fn finish_response(args: FinishArgs<'_>) -> Option<HandleWireResult> {
+    let FinishArgs {
+        query,
+        mut resp,
+        ede,
+        decision,
+        loggable,
+        meta,
+        source,
+        client_had_opt,
+        started,
+    } = args;
+    let question = &query.questions[0];
     // Id: DoH/DoQ → 0 (RFC); else the client's id. Policy leaves id at 0.
     resp.header.id = match meta.protocol {
         DnsProtocol::DoH | DnsProtocol::DoQ => 0,
-        _ => query_msg.header.id,
+        _ => query.header.id,
     };
-    resp.header.rd = query_msg.header.rd;
+    resp.header.rd = query.header.rd;
     resp.header.ra = true;
     resp.header.qr = true;
-    resp.header.cd = query_msg.header.cd;
-    // Questions: ensure we echo the client's question if policy omitted them.
+    resp.header.cd = query.header.cd;
     if resp.questions.is_empty() {
-        resp.questions = query_msg.questions.clone();
+        resp.questions = query.questions.clone();
     }
 
-    if let Some(client_edns) = query_msg.edns.as_ref() {
-        let ede = answer.ede.as_ref();
+    if let Some(client_edns) = query.edns.as_ref() {
         resp.edns = Some(build_response_edns(client_edns, meta.udp_payload_max, ede));
     } else {
         resp.edns = None;
@@ -230,9 +300,9 @@ pub async fn handle_wire(
 
     let event = QueryEvent {
         protocol: meta.protocol,
-        listener_id: meta.listener_id,
+        listener_id: meta.listener_id.clone(),
         source,
-        client_id: meta.client_id,
+        client_id: meta.client_id.clone(),
         query: Query {
             name: question.name.clone(),
             qtype: question.qtype,
@@ -241,8 +311,8 @@ pub async fn handle_wire(
         rcode: resp.rcode(),
         answer_size: bytes.len(),
         duration: started.elapsed(),
-        decision: answer.record,
-        loggable: answer.loggable,
+        decision,
+        loggable,
     };
 
     Some(HandleWireResult {

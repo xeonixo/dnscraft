@@ -9,10 +9,13 @@ use dnscraft_policy::DnsProtocol;
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 use tokio::sync::{Semaphore, oneshot, watch};
 
+use std::sync::RwLock;
+
 use crate::admission::{Admission, ClientIdState, SourceClass};
 use crate::clock::Clock;
 use crate::config::{Limits, ListenerConfig};
 use crate::conn::{ConnIdentity, FramedShared, FramedStats, run_framed_connection};
+use crate::ddr::DdrEndpoints;
 use crate::error::ListenersError;
 use crate::handler::QueryHandler;
 use crate::socket::bind_tcp;
@@ -36,6 +39,8 @@ pub struct TcpServeParams<H: ?Sized> {
     pub clock: Arc<dyn Clock>,
     /// Counters.
     pub stats: Arc<TcpStats>,
+    /// DDR endpoints for `_dns.resolver.arpa` (local Do53).
+    pub ddr: Option<Arc<RwLock<DdrEndpoints>>>,
     /// Bound address (port 0 friendly).
     pub bound: oneshot::Sender<SocketAddr>,
     /// Set to `true` to stop accepting.
@@ -54,6 +59,7 @@ where
         handler,
         clock,
         stats,
+        ddr,
         bound,
         mut shutdown,
     } = params;
@@ -78,6 +84,7 @@ where
         stats,
         conn_cap,
         per_source: Mutex::new(HashMap::new()),
+        ddr,
     });
 
     loop {
@@ -142,10 +149,15 @@ where
     tokio::spawn(async move {
         let _conn_permit = conn_permit;
         let source = peer.ip().to_canonical();
+        let arrival = stream
+            .local_addr()
+            .map(|a| a.ip().to_canonical())
+            .unwrap_or(source);
         let identity = ConnIdentity {
             protocol: DnsProtocol::Tcp53,
             pad: false,
             client_id: ClientIdState::Absent,
+            arrival,
         };
         if let Err(e) = run_framed_connection(Arc::clone(&shared), stream, peer, identity).await {
             e.bump_stats(&shared.stats);

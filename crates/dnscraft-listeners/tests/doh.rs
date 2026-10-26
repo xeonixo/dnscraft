@@ -298,6 +298,7 @@ async fn get_post_match_do53_h2_and_h1() {
         handler,
         clock: Arc::new(SystemClock),
         stats: tcp_stats,
+        ddr: None,
         bound: tcp_tx,
         shutdown: tcp_sd_rx,
     }));

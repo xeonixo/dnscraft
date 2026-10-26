@@ -21,7 +21,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | Checkpoint C approved (2026-10-26); **next: N10** (Phase 3: N10–N14, STOP at Checkpoint D) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
+| `listeners` | N10 DDR done (2026-10-26); **next: N11** (Phase 3: N11–N14, STOP at Checkpoint D) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -34,6 +34,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-26 — **listeners: N10 DDR `_dns.resolver.arpa`.** Local Do53 only (`ddr.enabled`): `IN SVCB` for `_dns.resolver.arpa.` answered before policy with one SVCB per same-family encrypted listener (priority 1…n, TargetName `dns.<domain>` / `<node>.dns.<domain>`, `alpn`/`port`/`ipv4hint|ipv6hint`/`dohpath`); wildcard bind uses arrival address (UDP `RecvMeta.dst_ip` / TCP `local_addr`). None → NODATA + SOA for `resolver.arpa`. `DdrEndpoints` behind `Arc<RwLock<_>>` on UDP/TCP serve params (N11 will refresh). `AnswerOrigin::ListenerDdr`. Opportunistic discovery only (no IP SANs) — README note. Tests: hickory oracle, family split, wildcard hint, NODATA, disabled/non-SVCB → policy, not on DoT/DoH/DoQ. Next: N11.
 
 - 2026-10-26 — **listeners: Checkpoint C approved** (Claude review, 2 fix rounds: `fcd74fe`/`7b9b47d`/`f6d6fb2`, `4e39e57`). Round 1 findings: per-listener ban/rate tables (now one shared `Arc<Mutex<Admission>>`), bans enforced only after the TLS/QUIC handshake (now pre-handshake close / `incoming.refuse()`), no strikes for failed handshakes and none for unknown DoQ SNI (gate moved out of the cert resolver to where the peer IP is known), SNI/path gate ignored the source class (now public×public only, injectable `SourceClassifier` for tests), shared ALPN list across DoT/DoH (now per protocol), DoH without any timeout (slowloris + keep-alive held open), DoQ streams without deadline; missing Checkpoint C tests. Round 2: h2 idle never closed (PING ≠ activity), DoQ idle defeated by client keep-alive and by streams ignoring STOP_SENDING (now application idle on both). Final probes (removed afterwards): h1 partial headers / keep-alive → closed; h2 with client PINGs every 100 ms → closed after idle; DoQ keep-alive without streams → closed; 2 stalled DoQ streams ignoring STOP_SENDING → connection closed. Mutations now caught: gate `&&`→`||`, pre-handshake ban (DoT/DoQ), handshake strike, DoH path strike, DoQ id 0, 0-RTT. Gates: fmt, clippy `-D warnings`, workspace 1179 tests / listeners 110 green, `cargo deny` ok, crypto tree empty. FYI for later: DoH idle uses tokio time (hyper timer), not the injectable Clock.
 

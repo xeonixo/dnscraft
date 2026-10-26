@@ -5,7 +5,9 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use dnscraft_filtering::SetId;
-use dnscraft_listeners::{DEFAULT_UDP_PAYLOAD_MAX, FakeHandler, PAD_BLOCK, QueryMeta, handle_wire};
+use dnscraft_listeners::{
+    DEFAULT_UDP_PAYLOAD_MAX, Exposure, FakeHandler, PAD_BLOCK, QueryMeta, handle_wire,
+};
 use dnscraft_policy::{
     AnswerOrigin, DecisionRecord, DecisionTimings, DnsProtocol, ListenerId, PolicyAnswer,
     ProfileId, SelectionCause, ViewId,
@@ -24,11 +26,14 @@ fn meta(protocol: DnsProtocol, size_limit: usize, pad: bool) -> QueryMeta {
     QueryMeta {
         protocol,
         listener_id: lid(),
+        exposure: Exposure::Local,
         source: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+        arrival: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
         client_id: None,
         size_limit,
         pad,
         udp_payload_max: DEFAULT_UDP_PAYLOAD_MAX,
+        ddr: None,
     }
 }
 

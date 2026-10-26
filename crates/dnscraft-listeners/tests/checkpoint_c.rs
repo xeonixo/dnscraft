@@ -553,6 +553,7 @@ async fn checkpoint_c_same_question_all_transports() {
         handler: Arc::clone(&engine),
         clock: Arc::new(SystemClock),
         stats: Arc::new(UdpStats::default()),
+        ddr: None,
         bound: udp_tx,
         shutdown: udp_sd_rx,
     }));
@@ -573,6 +574,7 @@ async fn checkpoint_c_same_question_all_transports() {
         handler: Arc::clone(&engine),
         clock: Arc::new(SystemClock),
         stats: Arc::new(TcpStats::default()),
+        ddr: None,
         bound: tcp_tx,
         shutdown: tcp_sd_rx,
     }));

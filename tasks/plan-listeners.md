@@ -87,7 +87,7 @@ Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i o
 - [x] DoT / DoH / DoQ answer identically to Do53; public admission matrix; cert hot reload; Claude review ✓ (2026-10-26)
 
 ### Phase 3: Discovery, runtime, HTTP/3
-- [ ] N10: DDR `_dns.resolver.arpa`
+- [x] N10: DDR `_dns.resolver.arpa`
 - [ ] N11: `ListenerSet` runtime — start, partial bind failure, `apply_config`, shutdown, status, query events
 - [ ] N12: DoH over HTTP/3 + `Alt-Svc` (owner: in v1)
 

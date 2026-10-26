@@ -144,6 +144,7 @@ async fn spawn_udp(
         handler: engine,
         clock: Arc::new(SystemClock),
         stats: Arc::new(UdpStats::default()),
+        ddr: None,
         bound: bound_tx,
         shutdown: sd_rx,
     }));
@@ -178,6 +179,7 @@ async fn spawn_tcp(
         handler: engine,
         clock: Arc::new(SystemClock),
         stats: Arc::new(TcpStats::default()),
+        ddr: None,
         bound: bound_tx,
         shutdown: sd_rx,
     }));

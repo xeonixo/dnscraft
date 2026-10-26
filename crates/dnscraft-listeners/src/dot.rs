@@ -97,6 +97,7 @@ where
         stats,
         conn_cap,
         per_source: Mutex::new(HashMap::new()),
+        ddr: None,
     });
 
     loop {
@@ -196,10 +197,12 @@ fn handle_accept<H>(
 
         match accepted {
             Ok(tls) => {
+                let arrival = peer.ip().to_canonical();
                 let identity = ConnIdentity {
                     protocol: DnsProtocol::DoT,
                     pad: true,
                     client_id: tls.client_id,
+                    arrival,
                 };
                 if let Err(e) =
                     run_framed_connection(Arc::clone(&shared), tls.stream, peer, identity).await

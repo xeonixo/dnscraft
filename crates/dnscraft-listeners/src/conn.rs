@@ -19,8 +19,10 @@ use crate::admission::{Admission, AdmitDecision, ClientIdState};
 use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Limits, ListenerConfig};
 use crate::core::{QueryMeta, error_reply_from_wire, handle_wire};
+use crate::ddr::DdrEndpoints;
 use crate::framing::{self, FrameError, MAX_MESSAGE_LEN};
 use crate::handler::QueryHandler;
+use std::sync::RwLock;
 
 /// EDNS option code for TCP keepalive (RFC 7828).
 pub const OPTION_TCP_KEEPALIVE: u16 = 11;
@@ -70,6 +72,8 @@ pub(crate) struct FramedShared<H: ?Sized> {
     pub stats: Arc<FramedStats>,
     pub conn_cap: Arc<Semaphore>,
     pub per_source: Mutex<std::collections::HashMap<IpAddr, u32>>,
+    /// DDR endpoints for Do53 TCP; `None` on DoT.
+    pub ddr: Option<Arc<RwLock<DdrEndpoints>>>,
 }
 
 /// Per-connection transport metadata (protocol, padding, Client ID from SNI).
@@ -78,6 +82,8 @@ pub(crate) struct ConnIdentity {
     pub protocol: DnsProtocol,
     pub pad: bool,
     pub client_id: ClientIdState,
+    /// Local address of the accepted socket (DDR hints).
+    pub arrival: IpAddr,
 }
 
 impl ConnIdentity {
@@ -476,11 +482,14 @@ where
     let meta = QueryMeta {
         protocol: identity.protocol,
         listener_id: shared.listener.id.clone(),
+        exposure: shared.listener.exposure,
         source: peer_ip,
+        arrival: identity.arrival.to_canonical(),
         client_id: identity.meta_client_id(),
         size_limit: MAX_MESSAGE_LEN,
         pad: identity.pad,
         udp_payload_max: shared.limits.udp_payload_max,
+        ddr: shared.ddr.clone(),
     };
     let deadline = add_duration(shared.clock.now(), shared.limits.query_timeout);
     let wake = Notify::new();

@@ -14,6 +14,7 @@
 //! N7: DoT ([`serve_dot`]) over the framed connection loop.
 //! N8: DoH HTTP/2 + HTTP/1.1 ([`serve_doh`]).
 //! N9: DoQ ([`serve_doq`]).
+//! N10: DDR [`_dns.resolver.arpa`](DdrEndpoints) SVCB on local Do53.
 
 #![deny(missing_docs)]
 
@@ -23,6 +24,7 @@ mod clock;
 mod config;
 mod conn;
 mod core;
+mod ddr;
 mod doh;
 mod doh_request;
 mod doq;
@@ -52,6 +54,10 @@ pub use config::{
 };
 pub use conn::FramedStats;
 pub use core::{HandleWireResult, QueryEvent, QueryMeta, error_reply_from_wire, handle_wire};
+pub use ddr::{
+    DDR_QNAME, DDR_TTL, DOH_PATH, DdrEndpoint, DdrEndpoints, ddr_decision_record, is_ddr_qname,
+    try_answer_ddr,
+};
 pub use doh::{DohServeParams, DohStats, cache_max_age, serve_doh};
 pub use doh_request::{
     DNS_MESSAGE_TYPE, DohPath, DohWireError, MAX_DOH_PAYLOAD, extract_wire, parse_doh_path,

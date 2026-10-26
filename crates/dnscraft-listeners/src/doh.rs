@@ -465,7 +465,9 @@ where
     let meta = QueryMeta {
         protocol: DnsProtocol::DoH,
         listener_id: shared.listener.id.clone(),
+        exposure: shared.listener.exposure,
         source: peer,
+        arrival: peer.to_canonical(),
         client_id: match &client_id_state {
             ClientIdState::Registered(id) => Some(id.clone()),
             _ => None,
@@ -473,6 +475,7 @@ where
         size_limit: MAX_MESSAGE_LEN,
         pad: true,
         udp_payload_max: shared.limits.udp_payload_max,
+        ddr: None,
     };
 
     let deadline = add_duration(shared.clock.now(), shared.limits.query_timeout);

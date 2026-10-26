@@ -493,6 +493,7 @@ dependencies = [
  "dnscraft-resolver",
  "dnscraft-testkit",
  "dnscraft-tls",
+ "hickory-proto",
  "http",
  "http-body-util",
  "hyper",
