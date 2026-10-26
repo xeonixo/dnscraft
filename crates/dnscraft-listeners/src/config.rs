@@ -24,6 +24,8 @@ pub const DEFAULT_MAX_CONNECTIONS: u32 = 1024;
 pub const DEFAULT_MAX_CONNECTIONS_PER_SOURCE: u32 = 32;
 /// Default QUIC bidirectional streams per connection.
 pub const DEFAULT_MAX_QUIC_STREAMS: u32 = 64;
+/// Default max concurrent in-flight queries per TCP/DoT connection.
+pub const DEFAULT_MAX_QUERIES_PER_CONNECTION: u32 = 64;
 /// Default ban strikes before a temporary ban.
 pub const DEFAULT_BAN_STRIKES: u32 = 5;
 /// Default window in which ban strikes accumulate.
@@ -143,6 +145,8 @@ pub struct Limits {
     pub max_connections_per_source: u32,
     /// Max QUIC bidirectional streams per connection.
     pub max_quic_streams_per_connection: u32,
+    /// Max concurrent in-flight queries per TCP/DoT connection (backpressure).
+    pub max_queries_per_connection: u32,
     /// Token bucket per source IP (all sources).
     pub rate_per_source: TokenRate,
     /// Token bucket per Client ID (public sources).
@@ -160,6 +164,7 @@ impl Default for Limits {
             max_connections_per_listener: DEFAULT_MAX_CONNECTIONS,
             max_connections_per_source: DEFAULT_MAX_CONNECTIONS_PER_SOURCE,
             max_quic_streams_per_connection: DEFAULT_MAX_QUIC_STREAMS,
+            max_queries_per_connection: DEFAULT_MAX_QUERIES_PER_CONNECTION,
             rate_per_source: TokenRate {
                 per_second: 200,
                 burst: 400,
@@ -331,6 +336,11 @@ fn validate_limits(limits: &Limits) -> Result<(), ListenersError> {
     if limits.max_quic_streams_per_connection == 0 {
         return Err(ListenersError::config(
             "max_quic_streams_per_connection must be > 0",
+        ));
+    }
+    if limits.max_queries_per_connection == 0 {
+        return Err(ListenersError::config(
+            "max_queries_per_connection must be > 0",
         ));
     }
     if limits.rate_per_source.per_second == 0 || limits.rate_per_source.burst == 0 {

@@ -4,7 +4,7 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use dnscraft_filtering::{
     FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId, SetId, SnapshotBuilder,
@@ -23,6 +23,23 @@ use dnscraft_resolver::dnssec::TrustAnchors;
 use dnscraft_resolver::{Resolver, ResolverConfig};
 use tokio::net::UdpSocket;
 use tokio::sync::{oneshot, watch};
+
+/// Polls `ready` until true or `timeout` elapses (then panics).
+///
+/// Prefer this over fixed `sleep` when waiting for background listener work.
+pub async fn poll_until(mut ready: impl FnMut() -> bool, timeout: Duration) {
+    let start = Instant::now();
+    loop {
+        if ready() {
+            return;
+        }
+        if start.elapsed() >= timeout {
+            panic!("poll_until timed out after {timeout:?}");
+        }
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
 
 #[derive(Debug, Default)]
 struct EmptyBodies;

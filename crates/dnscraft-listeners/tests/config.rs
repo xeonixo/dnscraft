@@ -167,6 +167,11 @@ fn config_rejects_zero_limit() {
     cfg.limits.max_inflight_per_listener = 0;
     let err = cfg.validate().unwrap_err();
     assert_eq!(err.code(), "listeners.config.invalid");
+
+    let mut cfg = valid_cfg(vec![]);
+    cfg.limits.max_queries_per_connection = 0;
+    let err = cfg.validate().unwrap_err();
+    assert_eq!(err.code(), "listeners.config.invalid");
 }
 
 #[test]

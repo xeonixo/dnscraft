@@ -62,7 +62,8 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>,
         }
     }
     let len = u16::from_be_bytes(len_buf) as usize;
-    if len == 0 || len > MAX_MESSAGE_LEN {
+    // `len` is a u16 so it cannot exceed [`MAX_MESSAGE_LEN`] (65 535).
+    if len == 0 {
         return Err(FrameError::InvalidLength(len));
     }
     let mut buf = vec![0u8; len];

@@ -8,15 +8,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use dnscraft_policy::DnsProtocol;
-use dnscraft_proto::{EdnsOption, Message};
+use dnscraft_proto::{EdnsOption, Message, Rcode};
 use tokio::io::{AsyncRead, AsyncWrite, BufReader, split};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
-use tokio::sync::{Notify, Semaphore, mpsc, oneshot, watch};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
+use tokio::task::JoinSet;
 
-use crate::admission::{Admission, AdmitDecision, ClientIdState};
+use crate::admission::{Admission, AdmitDecision, ClientIdState, SourceClass};
 use crate::clock::{Clock, wait_until};
 use crate::config::{Limits, ListenerConfig, PublicConfig};
-use crate::core::{QueryMeta, handle_wire};
+use crate::core::{QueryMeta, error_reply_from_wire, handle_wire};
 use crate::error::ListenersError;
 use crate::framing::{self, FrameError, MAX_MESSAGE_LEN};
 use crate::handler::QueryHandler;
@@ -46,7 +47,7 @@ pub struct TcpStats {
     pub answered: AtomicU64,
     /// Framing errors (bad length / short read after length).
     pub framing_errors: AtomicU64,
-    /// Idle-timeout closes.
+    /// Idle-timeout closes (read idle or write deadline).
     pub idle_timeouts: AtomicU64,
 }
 
@@ -147,25 +148,11 @@ fn handle_accept<H>(shared: Arc<TcpShared<H>>, stream: TcpStream, peer: SocketAd
 where
     H: QueryHandler + 'static,
 {
-    let now = shared.clock.now();
-    let decision = {
-        let mut adm = shared
-            .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        adm.check(&shared.listener, peer.ip(), &ClientIdState::Absent, now)
-    };
-    match decision {
-        AdmitDecision::Admit => {}
-        AdmitDecision::Drop { code } | AdmitDecision::Refuse { code } => {
-            if code == "listeners.admission.public_do53" {
-                TcpStats::bump(&shared.stats.dropped_public);
-            } else {
-                TcpStats::bump(&shared.stats.dropped_admission);
-            }
-            drop(stream);
-            return;
-        }
+    // Accept-time: public Do53 → close (rate limits apply per query).
+    if SourceClass::of(peer.ip()) == SourceClass::Public {
+        TcpStats::bump(&shared.stats.dropped_public);
+        drop(stream);
+        return;
     }
 
     let Ok(conn_permit) = shared.conn_cap.clone().try_acquire_owned() else {
@@ -197,6 +184,7 @@ where
             match e {
                 ConnEnd::Framing => TcpStats::bump(&shared.stats.framing_errors),
                 ConnEnd::Idle => TcpStats::bump(&shared.stats.idle_timeouts),
+                ConnEnd::Banned => TcpStats::bump(&shared.stats.dropped_admission),
                 ConnEnd::Peer | ConnEnd::Io => {}
             }
         }
@@ -219,6 +207,7 @@ where
 enum ConnEnd {
     Framing,
     Idle,
+    Banned,
     Peer,
     Io,
 }
@@ -234,27 +223,62 @@ where
 {
     let (reader, writer) = split(stream);
     let mut reader = BufReader::new(reader);
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
-    let stats = Arc::clone(&shared.stats);
+    let (tx, rx) = mpsc::channel::<Vec<u8>>(64);
+    let cancel = Arc::new(Notify::new());
+    let query_slots = Arc::new(Semaphore::new(
+        shared.limits.max_queries_per_connection.max(1) as usize,
+    ));
+    let mut queries: JoinSet<()> = JoinSet::new();
 
-    let write_task = tokio::spawn(async move {
-        let mut writer = writer;
-        while let Some(msg) = rx.recv().await {
-            if framing::write_frame(&mut writer, &msg).await.is_err() {
-                break;
-            }
-            TcpStats::bump(&stats.answered);
-        }
+    let write_stats = Arc::clone(&shared.stats);
+    let write_clock = Arc::clone(&shared.clock);
+    let write_idle = shared.limits.tcp_idle_timeout;
+    let write_cancel = Arc::clone(&cancel);
+    let mut write_task = tokio::spawn(async move {
+        writer_loop(
+            writer,
+            rx,
+            write_clock,
+            write_idle,
+            write_stats,
+            write_cancel,
+        )
+        .await
     });
 
     let idle = shared.limits.tcp_idle_timeout;
     let activity = Notify::new();
 
     let result = loop {
+        // Backpressure: hold a per-connection slot before reading the next frame.
+        let permit = tokio::select! {
+            biased;
+            () = cancel.notified() => break Err(ConnEnd::Idle),
+            () = wait_until(shared.clock.as_ref(), add_duration(shared.clock.now(), idle), &activity) => {
+                break Err(ConnEnd::Idle);
+            }
+            p = query_slots.clone().acquire_owned() => {
+                match p {
+                    Ok(p) => p,
+                    Err(_) => break Err(ConnEnd::Io),
+                }
+            }
+            w = &mut write_task => {
+                let _ = w;
+                break Err(ConnEnd::Idle);
+            }
+        };
+
         let deadline = add_duration(shared.clock.now(), idle);
         let frame = tokio::select! {
+            biased;
+            () = cancel.notified() => break Err(ConnEnd::Idle),
             r = framing::read_frame(&mut reader) => r,
             () = wait_until(shared.clock.as_ref(), deadline, &activity) => {
+                break Err(ConnEnd::Idle);
+            }
+            w = &mut write_task => {
+                let _ = w;
                 break Err(ConnEnd::Idle);
             }
         };
@@ -262,15 +286,11 @@ where
         match frame {
             Ok(datagram) => {
                 activity.notify_waiters();
-                TcpStats::bump(&shared.stats.queries);
-                let shared = Arc::clone(&shared);
-                let tx = tx.clone();
-                let peer_ip = peer.ip();
-                tokio::spawn(async move {
-                    if let Some(bytes) = process_query(&shared, peer_ip, datagram).await {
-                        let _ = tx.send(bytes).await;
-                    }
-                });
+                match dispatch_frame(&shared, peer.ip(), datagram, permit, &tx, &mut queries).await
+                {
+                    Ok(()) => {}
+                    Err(e) => break Err(e),
+                }
             }
             Err(FrameError::UnexpectedEof) => break Err(ConnEnd::Peer),
             Err(FrameError::InvalidLength(_)) => break Err(ConnEnd::Framing),
@@ -279,8 +299,95 @@ where
     };
 
     drop(tx);
+    cancel.notify_waiters();
+    queries.abort_all();
+    while queries.join_next().await.is_some() {}
+    write_task.abort();
     let _ = write_task.await;
     result
+}
+
+async fn dispatch_frame<H>(
+    shared: &Arc<TcpShared<H>>,
+    peer_ip: IpAddr,
+    datagram: Vec<u8>,
+    permit: OwnedSemaphorePermit,
+    tx: &mpsc::Sender<Vec<u8>>,
+    queries: &mut JoinSet<()>,
+) -> Result<(), ConnEnd>
+where
+    H: QueryHandler + 'static,
+{
+    let now = shared.clock.now();
+    let decision = {
+        let mut adm = shared
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        adm.check(&shared.listener, peer_ip, &ClientIdState::Absent, now)
+    };
+
+    match decision {
+        AdmitDecision::Drop { .. } => {
+            drop(permit);
+            Err(ConnEnd::Banned)
+        }
+        AdmitDecision::Refuse { .. } => {
+            TcpStats::bump(&shared.stats.dropped_admission);
+            if let Some(bytes) = error_reply_from_wire(
+                &datagram,
+                Rcode::REFUSED,
+                MAX_MESSAGE_LEN,
+                shared.limits.udp_payload_max,
+            ) {
+                let _ = tx.send(bytes).await;
+            }
+            drop(permit);
+            Ok(())
+        }
+        AdmitDecision::Admit => {
+            TcpStats::bump(&shared.stats.queries);
+            let shared = Arc::clone(shared);
+            let tx = tx.clone();
+            queries.spawn(async move {
+                let _permit = permit;
+                if let Some(bytes) = process_query(&shared, peer_ip, datagram).await {
+                    let _ = tx.send(bytes).await;
+                }
+            });
+            Ok(())
+        }
+    }
+}
+
+async fn writer_loop<W: AsyncWrite + Unpin>(
+    mut writer: W,
+    mut rx: mpsc::Receiver<Vec<u8>>,
+    clock: Arc<dyn Clock>,
+    idle: Duration,
+    stats: Arc<TcpStats>,
+    cancel: Arc<Notify>,
+) {
+    while let Some(msg) = rx.recv().await {
+        let deadline = add_duration(clock.now(), idle);
+        let wake = Notify::new();
+        let timed_out = tokio::select! {
+            r = framing::write_frame(&mut writer, &msg) => {
+                match r {
+                    Ok(()) => {
+                        TcpStats::bump(&stats.answered);
+                        false
+                    }
+                    Err(_) => true,
+                }
+            }
+            () = wait_until(clock.as_ref(), deadline, &wake) => true,
+        };
+        if timed_out {
+            cancel.notify_waiters();
+            return;
+        }
+    }
 }
 
 async fn process_query<H>(
@@ -305,7 +412,14 @@ where
     let wake = Notify::new();
     let out = tokio::select! {
         r = handle_wire(&datagram, meta, &*shared.handler) => r,
-        () = wait_until(shared.clock.as_ref(), deadline, &wake) => None,
+        () = wait_until(shared.clock.as_ref(), deadline, &wake) => {
+            return error_reply_from_wire(
+                &datagram,
+                Rcode::SERVFAIL,
+                MAX_MESSAGE_LEN,
+                shared.limits.udp_payload_max,
+            );
+        }
     }?;
 
     if want_keepalive {

@@ -32,12 +32,12 @@ pub use bans::StrikeReason;
 pub use clock::{Clock, ManualClock, SystemClock, wait_until};
 pub use config::{
     DEFAULT_BAN_DURATION, DEFAULT_BAN_STRIKES, DEFAULT_BAN_WINDOW, DEFAULT_MAX_CONNECTIONS,
-    DEFAULT_MAX_CONNECTIONS_PER_SOURCE, DEFAULT_MAX_INFLIGHT, DEFAULT_MAX_QUIC_STREAMS,
-    DEFAULT_MAX_TRACKED_SOURCES, DEFAULT_QUERY_TIMEOUT, DEFAULT_TCP_IDLE_TIMEOUT,
-    DEFAULT_TLS_HANDSHAKE_TIMEOUT, DEFAULT_UDP_PAYLOAD_MAX, DdrConfig, Exposure, Limits,
-    ListenerConfig, ListenersConfig, Protocol, PublicConfig, TokenRate,
+    DEFAULT_MAX_CONNECTIONS_PER_SOURCE, DEFAULT_MAX_INFLIGHT, DEFAULT_MAX_QUERIES_PER_CONNECTION,
+    DEFAULT_MAX_QUIC_STREAMS, DEFAULT_MAX_TRACKED_SOURCES, DEFAULT_QUERY_TIMEOUT,
+    DEFAULT_TCP_IDLE_TIMEOUT, DEFAULT_TLS_HANDSHAKE_TIMEOUT, DEFAULT_UDP_PAYLOAD_MAX, DdrConfig,
+    Exposure, Limits, ListenerConfig, ListenersConfig, Protocol, PublicConfig, TokenRate,
 };
-pub use core::{HandleWireResult, QueryEvent, QueryMeta, handle_wire};
+pub use core::{HandleWireResult, QueryEvent, QueryMeta, error_reply_from_wire, handle_wire};
 pub use edns::{PAD_BLOCK, build_response_edns, encode_padded, strip_ecs};
 pub use error::ListenersError;
 pub use framing::{FrameError, MAX_MESSAGE_LEN, read_frame, write_frame};

@@ -148,8 +148,10 @@ bounded in-flight set (`max_inflight_per_listener`, excess dropped and counted),
 **Description:** TCP listener: accept loop with `max_connections_per_listener` and
 `max_connections_per_source`; per connection read 2-byte length-prefixed messages, run queries
 concurrently (pipelining) and write answers as they complete (out of order, RFC 7766 §6.2.1.1), one
-writer task per connection; idle timeout `tcp_idle_timeout`; edns-tcp-keepalive (RFC 7828) in responses
-when requested; max message 65 535; public source → close immediately.
+writer task per connection; `max_queries_per_connection` (default 64) backpressure before each frame
+read; write deadline = `tcp_idle_timeout`; idle timeout `tcp_idle_timeout`; edns-tcp-keepalive
+(RFC 7828) in responses when requested; max message 65 535; public source → close immediately;
+per-query admission (Refuse → REFUSED; Drop/ban → close); `query_timeout` → SERVFAIL.
 
 **Acceptance criteria:**
 - [x] Pipelined queries with a slow first answer (FakeHandler delay via `Notify`, not sleep) come back out of order with the right ids

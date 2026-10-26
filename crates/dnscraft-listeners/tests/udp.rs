@@ -17,7 +17,7 @@ use dnscraft_policy::ListenerId;
 use dnscraft_proto::{Header, Message, Name, Rcode, RecordType};
 use support::{
     UdpHarness, encode_a_query, encode_a_query_edns, fake_a_answer, fake_large_answer,
-    local_policy_engine, query_udp, query_udp_from,
+    local_policy_engine, poll_until, query_udp, query_udp_from,
 };
 use tokio::sync::{oneshot, watch};
 
@@ -237,17 +237,21 @@ async fn inflight_cap_and_public_source_counted() {
         .unwrap();
     let wire = encode_a_query(1, "example.com.");
     client.send_to(&wire, h.addr).await.unwrap();
-    // Give the first query time to take the only inflight slot.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let stats = Arc::clone(&h.stats);
+    poll_until(
+        || stats.received.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
     client
         .send_to(&encode_a_query(2, "example.com."), h.addr)
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(
-        h.stats.dropped_inflight.load(Ordering::Relaxed) >= 1,
-        "second query must hit inflight cap"
-    );
+    poll_until(
+        || stats.dropped_inflight.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
     release.notify_waiters();
     // Drain any answers
     let mut buf = [0u8; 512];
@@ -314,10 +318,11 @@ async fn public_source_drop_counted_via_admission_path() {
         .send_to(&encode_a_query(1, "example.com."), dest)
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(
-        h.stats.dropped_public.load(Ordering::Relaxed) >= 1,
-        "public documentation-range source must be dropped"
-    );
+    let stats = Arc::clone(&h.stats);
+    poll_until(
+        || stats.dropped_public.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
     h.stop().await;
 }

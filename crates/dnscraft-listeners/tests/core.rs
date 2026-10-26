@@ -327,6 +327,7 @@ async fn core_sets_ra_copies_rd_and_id_by_protocol() {
 
 #[tokio::test]
 async fn core_opt_echo_min_payload() {
+    // Client 4096, configured max 1232 → response OPT 1232.
     let mut q = a_query(1);
     q.edns = Some(Edns::new(4096));
     let fake = FakeHandler::new(answer_for(&q));
@@ -340,6 +341,22 @@ async fn core_opt_echo_min_payload() {
             .unwrap()
             .udp_payload,
         1232
+    );
+
+    // Client 512, max 1232 → response OPT 512.
+    let mut q2 = a_query(2);
+    q2.edns = Some(Edns::new(512));
+    let fake2 = FakeHandler::new(answer_for(&q2));
+    let mut m2 = meta(DnsProtocol::Udp53, 512, false);
+    m2.udp_payload_max = 1232;
+    let out2 = handle_wire(&encode_query(q2), m2, &fake2).await.unwrap();
+    assert_eq!(
+        Message::decode(&out2.bytes)
+            .unwrap()
+            .edns
+            .unwrap()
+            .udp_payload,
+        512
     );
 }
 

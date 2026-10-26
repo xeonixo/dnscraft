@@ -149,12 +149,7 @@ where
                 if ready.is_err() {
                     continue;
                 }
-                if let Err(e) = recv_batch(&shared).await
-                    && e.kind() != io::ErrorKind::WouldBlock
-                {
-                    // Transient recv errors: keep serving.
-                    continue;
-                }
+                let _ = recv_batch(&shared).await;
             }
         }
     }

@@ -162,11 +162,8 @@ pub async fn handle_wire(
         });
     }
 
-    // Strip ECS on a copy used only for introspection; policy never sees ECS.
-    if let Some(mut edns) = query_msg.edns.clone() {
-        strip_ecs(&mut edns);
-        let _ = edns;
-    }
+    // Response OPT is built fresh by `build_response_edns` (no ECS/cookies), so
+    // client ECS is never echoed; policy never sees ECS options either.
 
     let dnssec_ok = query_msg.edns.as_ref().is_some_and(|e| e.dnssec_ok);
     let ctx = RequestContext {
@@ -299,4 +296,18 @@ fn error_reply(
     }
     resp.set_rcode(rcode).ok()?;
     resp.encode_with_limit(size_limit).ok()
+}
+
+/// Pre-policy error reply (REFUSED / SERVFAIL / …) from wire bytes.
+///
+/// Keeps the client id and question when the query decodes. Used by TCP
+/// admission refusals and TCP `query_timeout` SERVFAIL answers.
+pub fn error_reply_from_wire(
+    bytes: &[u8],
+    rcode: Rcode,
+    size_limit: usize,
+    udp_payload_max: u16,
+) -> Option<Vec<u8>> {
+    let msg = Message::decode(bytes).ok()?;
+    error_reply(&msg, rcode, msg.edns.as_ref(), size_limit, udp_payload_max)
 }

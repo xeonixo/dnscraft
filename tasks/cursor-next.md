@@ -9,7 +9,7 @@
 ## Status (updated 2026-10-25)
 
 - `resolver`, `filtering`, `clients`, `tls`, `policy`: complete.
-- `listeners`: L0 + N0–N5 + Checkpoint B impl done; **STOP for Claude review of Checkpoint B** before N6.
+- `listeners`: Checkpoint B review fixes pushed 2026-10-26; **STOP for Claude re-review** before N6.
 
 ## Rules for every task (paste once per session)
 
