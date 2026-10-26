@@ -177,6 +177,30 @@ impl Default for Limits {
     }
 }
 
+impl Limits {
+    /// True when any field that a running listener's transport/limits read changed.
+    ///
+    /// The two admission rate limits are deliberately excluded: they only feed
+    /// [`crate::admission::Admission`], so changing them must not restart listeners.
+    pub fn listener_limits_changed(&self, old: &Limits) -> bool {
+        self.udp_payload_max != old.udp_payload_max
+            || self.query_timeout != old.query_timeout
+            || self.tcp_idle_timeout != old.tcp_idle_timeout
+            || self.tls_handshake_timeout != old.tls_handshake_timeout
+            || self.max_inflight_per_listener != old.max_inflight_per_listener
+            || self.max_connections_per_listener != old.max_connections_per_listener
+            || self.max_connections_per_source != old.max_connections_per_source
+            || self.max_quic_streams_per_connection != old.max_quic_streams_per_connection
+            || self.max_queries_per_connection != old.max_queries_per_connection
+    }
+
+    /// True when either admission rate limit changed.
+    pub fn admission_limits_changed(&self, old: &Limits) -> bool {
+        self.rate_per_source != old.rate_per_source
+            || self.rate_per_client_id != old.rate_per_client_id
+    }
+}
+
 /// Per-node public DoH/DoT/DoQ settings (off by default).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublicConfig {

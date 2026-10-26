@@ -131,6 +131,12 @@ impl<K: Eq + Hash + Clone, V> LruMap<K, V> {
         self.evict_lru();
     }
 
+    /// Changes the capacity, evicting least-recently-used entries if needed.
+    pub fn set_cap(&mut self, cap: usize) {
+        self.cap = cap.max(1);
+        self.evict_lru();
+    }
+
     /// Takes the value for `key`, or `None` if absent.
     ///
     /// The entry is removed; the caller should [`insert`] it again after mutation

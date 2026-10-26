@@ -186,10 +186,9 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let old = &inner.config;
-            let limits_changed = old.limits != cfg.limits;
-            let rebuild_admission = old.public != cfg.public
-                || old.limits.rate_per_source != cfg.limits.rate_per_source
-                || old.limits.rate_per_client_id != cfg.limits.rate_per_client_id;
+            let limits_changed = cfg.limits.listener_limits_changed(&old.limits);
+            let rebuild_admission =
+                old.public != cfg.public || cfg.limits.admission_limits_changed(&old.limits);
             let reserved = if old.ddr.target != cfg.ddr.target {
                 Some(reserved_from_ddr(&cfg.ddr.target))
             } else {
@@ -227,7 +226,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                 .admission
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *adm = Admission::new(&cfg.limits, &cfg.public);
+            adm.reconfigure(&cfg.limits, &cfg.public);
         }
 
         if let Some(new_reserved) = reserved {

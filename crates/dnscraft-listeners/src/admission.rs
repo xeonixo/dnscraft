@@ -158,6 +158,25 @@ impl Admission {
         (self.classify)(ip.to_canonical())
     }
 
+    /// Applies a new limits/public config slice in place.
+    ///
+    /// Rate buckets are rebuilt empty (their transient token state belongs to the
+    /// old rate), but the ban table is carried over: bans already in force keep
+    /// their expiry, and the new ban params apply to new strikes only.
+    pub fn reconfigure(&mut self, limits: &Limits, public: &PublicConfig) {
+        self.rate_per_source = limits.rate_per_source;
+        self.rate_per_client_id = limits.rate_per_client_id;
+        let cap = public.max_tracked_sources as usize;
+        self.sources = LruMap::new(cap);
+        self.clients = LruMap::new(cap);
+        self.bans.reconfigure(
+            cap,
+            public.ban_strikes,
+            public.ban_window,
+            public.ban_duration,
+        );
+    }
+
     /// Number of tracked source rate buckets (tests / status).
     pub fn source_bucket_count(&self) -> usize {
         self.sources.len()
@@ -271,5 +290,60 @@ fn drop_or_refuse(proto: Protocol, code: &'static str) -> AdmitDecision {
         Protocol::Tcp53 | Protocol::Dot | Protocol::Doh | Protocol::Doq => {
             AdmitDecision::Refuse { code }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn public_ip() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))
+    }
+
+    #[test]
+    fn reconfigure_preserves_ban_table_and_applies_new_params_to_new_strikes() {
+        let limits = Limits::default();
+        let public = PublicConfig {
+            ban_strikes: 1,
+            ban_window: Duration::from_secs(60),
+            ban_duration: Duration::from_secs(900),
+            ..PublicConfig::default()
+        };
+        let mut adm = Admission::new(&limits, &public);
+        let now = SystemTime::UNIX_EPOCH;
+        let src = public_ip();
+
+        adm.strike(src, StrikeReason::UnknownClientId, now);
+        assert!(adm.is_banned(src, now), "single strike should ban");
+
+        // Reconfigure with different ban params and admission rates.
+        let limits2 = {
+            let mut l = limits.clone();
+            l.rate_per_source.per_second = 9999;
+            l.rate_per_source.burst = 19998;
+            l
+        };
+        let public2 = PublicConfig {
+            ban_strikes: 5,
+            ban_window: Duration::from_secs(120),
+            ban_duration: Duration::from_secs(1800),
+            ..PublicConfig::default()
+        };
+        adm.reconfigure(&limits2, &public2);
+
+        // The existing ban survives with its expiry.
+        assert!(adm.is_banned(src, now), "ban must survive reconfigure");
+        assert_eq!(adm.ban_entry_count(), 1);
+
+        // New ban params apply to new strikes: a fresh source needs 5, not 1.
+        let src2 = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2));
+        adm.strike(src2, StrikeReason::UnknownClientId, now);
+        assert!(
+            !adm.is_banned(src2, now),
+            "new ban_strikes=5 must apply to new strikes"
+        );
     }
 }

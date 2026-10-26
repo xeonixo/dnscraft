@@ -50,6 +50,23 @@ impl BanTable {
         self.entries.len()
     }
 
+    /// Applies new ban parameters and LRU cap without dropping existing entries.
+    ///
+    /// Bans already in force keep their `banned_until`; the new strike threshold,
+    /// window and duration apply to strikes recorded after this call.
+    pub fn reconfigure(
+        &mut self,
+        cap: usize,
+        strikes_needed: u32,
+        window: Duration,
+        duration: Duration,
+    ) {
+        self.strikes_needed = strikes_needed.max(1);
+        self.window = window;
+        self.duration = duration;
+        self.entries.set_cap(cap);
+    }
+
     /// Whether `source` is currently banned at `now`.
     pub fn is_banned(&mut self, source: IpAddr, now: SystemTime) -> bool {
         let Some(entry) = self.entries.get_mut(&source) else {

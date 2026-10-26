@@ -346,6 +346,50 @@ async fn runtime_apply_limits_change_enforces_new_per_source_cap() {
 }
 
 #[tokio::test]
+async fn runtime_rate_only_change_keeps_tcp_connection() {
+    let cfg = base_cfg(vec![tcp_cfg(
+        "lan-tcp",
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+    )]);
+    let (sink, _rx) = ChannelSink::new(64);
+    let handler = Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(192, 0, 2, 7))));
+    let set = start_set(cfg.clone(), handler, sink).await;
+
+    let tcp_addr = set.status().listeners[0].bound.unwrap();
+    let mut stream = TcpStream::connect(tcp_addr).await.unwrap();
+    write_frame(&mut stream, &encode_a_query(7, "example.com."))
+        .await
+        .unwrap();
+    let first = read_frame(&mut stream).await.unwrap();
+    assert!(!first.is_empty());
+
+    // Change only admission rate limits; no listener should restart.
+    let mut next = cfg;
+    next.limits.rate_per_source.per_second = 9999;
+    next.limits.rate_per_source.burst = 19998;
+    next.limits.rate_per_client_id.per_second = 42;
+    next.limits.rate_per_client_id.burst = 84;
+    set.apply_config(next).await.unwrap();
+
+    let addr_after = set.status().listeners[0].bound.unwrap();
+    assert_eq!(
+        addr_after, tcp_addr,
+        "rate-only change must keep the listener socket"
+    );
+
+    write_frame(&mut stream, &encode_a_query(8, "example.com."))
+        .await
+        .unwrap();
+    let second = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut stream))
+        .await
+        .expect("tcp still alive after rate-only reload")
+        .unwrap();
+    assert!(!second.is_empty());
+
+    set.shutdown(Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
 async fn runtime_concurrent_apply_config_ends_consistent() {
     let base = base_cfg(vec![udp_cfg(
         "lan-udp",
