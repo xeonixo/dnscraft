@@ -452,6 +452,11 @@ impl Cache {
     pub(crate) fn bytes_used(&self) -> usize {
         lock(&self.inner).used
     }
+
+    /// Number of cached entries (answers, negatives, DNSSEC records, ...).
+    pub(crate) fn entries(&self) -> u64 {
+        u64::try_from(lock(&self.inner).map.len()).unwrap_or(u64::MAX)
+    }
 }
 
 /// Cache budget in bytes. [`ResolverConfig::cache_capacity_bytes`] wins over

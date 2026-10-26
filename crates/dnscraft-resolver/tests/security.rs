@@ -31,6 +31,7 @@ const DO: RequestFlags = RequestFlags {
     dnssec_ok: true,
     client: None,
     forward_zones: None,
+    no_cache_write: false,
 };
 
 fn name(text: &str) -> Name {

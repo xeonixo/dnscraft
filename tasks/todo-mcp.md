@@ -136,13 +136,13 @@ DNSKEY/DS or other cache entry is stored and no prefetch is scheduled for that q
 site first (`cache.rs`, `lib.rs` `store_in_epoch`, infra caches) and list them in the commit message.
 
 **Acceptance criteria:**
-- [ ] Every cache write path is gated; the list of write sites is in the commit message.
-- [ ] With the testkit mock hierarchy: the same name resolved twice with the flag goes upstream both times
+- [x] Every cache write path is gated; the list of write sites is in the commit message.
+- [x] With the testkit mock hierarchy: the same name resolved twice with the flag goes upstream both times
       and `Resolver::stats()` cache entry counts are identical before and after; without the flag the second
       resolve is a cache hit (control test).
-- [ ] A cached entry from earlier normal traffic is still **read** under the flag (dry run sees the cache).
-- [ ] DNSSEC-validated answers resolve correctly with the flag (validation does not depend on caching).
-- [ ] `RequestFlags::default()` unchanged behaviour; all resolver tests green; no public API removed.
+- [x] A cached entry from earlier normal traffic is still **read** under the flag (dry run sees the cache).
+- [x] DNSSEC-validated answers resolve correctly with the flag (validation does not depend on caching).
+- [x] `RequestFlags::default()` unchanged behaviour; all resolver tests green; no public API removed.
 
 **Verification:** `cargo test -p dnscraft-resolver no_cache_write`
 

@@ -516,6 +516,7 @@ const DO: RequestFlags = RequestFlags {
     dnssec_ok: true,
     client: None,
     forward_zones: None,
+    no_cache_write: false,
 };
 
 async fn status_secure(alg: Option<SigAlgorithm>) {
@@ -755,6 +756,7 @@ async fn status_cd_returns_bogus_answer_unvalidated() {
         dnssec_ok: true,
         client: None,
         forward_zones: None,
+        no_cache_write: false,
     };
     for qname in ["www.bogus-sig.test.", "www.bogus-nokey.test."] {
         let ans = status_ask(&r, qname, cd.clone()).await;

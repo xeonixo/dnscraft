@@ -34,6 +34,8 @@ pub struct ResolverStats {
     pub resolve_latency_ns: u64,
     /// Sum of wall-clock nanoseconds spent on the fresh cache-hit path.
     pub cache_hit_latency_ns: u64,
+    /// Entries currently held in the answer cache.
+    pub cache_entries: u64,
 }
 
 /// Atomic counters behind [`ResolverStats`].
@@ -101,6 +103,8 @@ impl Counters {
             dnssec_indeterminate: self.dnssec_indeterminate.load(Ordering::Relaxed),
             resolve_latency_ns: self.resolve_latency_ns.load(Ordering::Relaxed),
             cache_hit_latency_ns: self.cache_hit_latency_ns.load(Ordering::Relaxed),
+            // Filled in by `Resolver::stats`, which can see the cache.
+            cache_entries: 0,
         }
     }
 }

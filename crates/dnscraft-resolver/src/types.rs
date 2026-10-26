@@ -43,6 +43,12 @@ pub struct RequestFlags {
     /// zone is missing from the list is resolved from the root, and that zone
     /// does not suppress a local answer.
     pub forward_zones: Option<Arc<[ForwardZoneId]>>,
+    /// Read the cache but never write to it (dry-run/test queries).
+    ///
+    /// No answer, negative, delegation, DNSKEY/DS or other cache entry is
+    /// stored for this query, and no prefetch is scheduled. `false` by
+    /// default; existing callers keep the normal caching behaviour.
+    pub no_cache_write: bool,
 }
 
 /// How a question is routed.

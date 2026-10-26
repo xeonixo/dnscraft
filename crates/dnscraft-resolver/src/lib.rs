@@ -333,7 +333,7 @@ impl Resolver {
         // CD would store an unvalidated replacement, which is the same reason
         // CD answers are not cached. Bogus entries are never stored, so a hit
         // is already something prefetch is allowed to refresh.
-        if !self.shared.config.prefetch || flags.checking_disabled {
+        if !self.shared.config.prefetch || flags.checking_disabled || flags.no_cache_write {
             return;
         }
         let Some(stats) = self.shared.cache.fresh_stats(query, route, now) else {
@@ -373,6 +373,7 @@ impl Resolver {
             dnssec_ok: flags.dnssec_ok,
             client: None,
             forward_zones: flags.forward_zones.clone(),
+            no_cache_write: false,
         };
         let task = tokio::spawn(async move {
             let result = shared.resolve_upstream(&query, refresh_flags).await;
@@ -420,7 +421,9 @@ impl Resolver {
 
     /// Counters: cache hits, latencies, DNSSEC outcomes, and traffic.
     pub fn stats(&self) -> ResolverStats {
-        self.shared.counters.snapshot()
+        let mut stats = self.shared.counters.snapshot();
+        stats.cache_entries = self.shared.cache.entries();
+        stats
     }
 
     /// Outcome of the priming done in [`Resolver::new`].
@@ -648,7 +651,10 @@ impl Shared {
         let dnssec = status.public();
         // CD skips validation, and Bogus is rewritten to SERVFAIL below. Neither
         // is cached: an unvalidated or bogus answer must not be replayed later.
-        let cacheable = !flags.checking_disabled && !matches!(status, Status::Bogus(_));
+        // Dry-run queries read the cache but never write it.
+        let cacheable = !flags.checking_disabled
+            && !flags.no_cache_write
+            && !matches!(status, Status::Bogus(_));
         match status {
             Status::Secure => message.header.ad = true,
             Status::Bogus(_) => {

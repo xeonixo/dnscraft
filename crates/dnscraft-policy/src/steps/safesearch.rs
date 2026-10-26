@@ -134,6 +134,7 @@ pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Dra
         dnssec_ok: ctx.flags.dnssec_ok,
         client: Some(SocketAddr::new(ctx.source_ip, 0)),
         forward_zones: step.forward_zones_allow.map(Arc::from),
+        no_cache_write: false,
     };
     let target_query = Query {
         name: target_name.clone(),

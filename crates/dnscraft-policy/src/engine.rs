@@ -324,6 +324,7 @@ impl PolicyEngine {
             dnssec_ok: ctx.flags.dnssec_ok,
             client: Some(SocketAddr::new(ctx.source_ip, 0)),
             forward_zones: forward_zones.clone(),
+            no_cache_write: false,
         };
 
         let resolve_start = Instant::now();
