@@ -177,6 +177,23 @@ async fn security_path_traversal_is_rejected_on_every_config_path() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "filter_store.invalid_source");
 
+    // An absolute path is rejected the same way — it would read a file outside
+    // the data directory rather than traverse into it.
+    let (status, body) = call(
+        &state,
+        "PUT",
+        "/api/v1/filter-lists",
+        Some(json!({
+            "id": "abs",
+            "name": "abs",
+            "source": { "file": "/etc/passwd" },
+            "enabled": true,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "filter_store.invalid_source");
+
     // The raw snapshot must not be a traversal bypass.
     let (status, body) = call(
         &state,
@@ -244,6 +261,53 @@ async fn security_path_traversal_is_rejected_on_every_config_path() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"]["code"], "control_api.not_found");
+}
+
+// --- threat: blind SSRF via filter-list URL --------------------------------
+
+/// A filter-list `url` must be https and must not point at an internal host
+/// (loopback/private/link-local/ULA) — a blind SSRF against the node's own
+/// services is rejected at config time.
+#[tokio::test]
+async fn security_filter_list_url_rejects_internal_hosts() {
+    let state = config_state().await;
+    for host in [
+        "127.0.0.1",
+        "169.254.169.254",
+        "192.168.1.10",
+        "[::1]",
+        "[fd00::1]",
+    ] {
+        let (status, body) = call(
+            &state,
+            "PUT",
+            "/api/v1/filter-lists",
+            Some(json!({
+                "id": "ssrf",
+                "name": "ssrf",
+                "source": { "url": format!("https://{host}/blocklist.txt") },
+                "enabled": true,
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{host}: {body}");
+        assert_eq!(body["error"]["code"], "filter_store.invalid_source");
+    }
+
+    // A public hostname is accepted.
+    let (status, body) = call(
+        &state,
+        "PUT",
+        "/api/v1/filter-lists",
+        Some(json!({
+            "id": "public",
+            "name": "public",
+            "source": { "url": "https://example.com/blocklist.txt" },
+            "enabled": true,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 // --- threat: SQL injection -------------------------------------------------

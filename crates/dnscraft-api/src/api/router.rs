@@ -12,7 +12,7 @@ use serde_json::json;
 use super::auth::local::local_login;
 use super::auth::oidc::{oidc_authorize_url, oidc_callback};
 use super::auth::tokens::create_token;
-use super::auth::{auth_middleware, rbac_middleware};
+use super::auth::{auth_middleware, logout, rbac_middleware};
 use super::clients_routes::{
     create_manual, delete_manual, list_clients, list_manual, put_manual, sync_clients,
 };
@@ -117,6 +117,8 @@ pub(crate) fn build_router(state: AppState) -> Router {
     if state.auth_state().is_some() {
         // Token management exists only when persistence/auth is configured.
         api = api.route("/auth/tokens", post(create_token));
+        // Logout revokes the cookie session; available whenever sessions exist.
+        api = api.route("/auth/logout", post(logout));
         // Break-glass login is mounted only when local accounts are provisioned.
         if state.local_login_store().is_some() {
             api = api.route("/auth/local/login", post(local_login));

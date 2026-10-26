@@ -132,6 +132,86 @@ async fn correct_password_creates_a_cookie_session() {
 }
 
 #[tokio::test]
+async fn session_cookie_secure_flag_follows_forwarded_proto() {
+    let (router, _, _, _) = setup(clock()).await;
+
+    // No TLS and no forwarded proto: the cookie carries no `Secure` flag.
+    let (_, headers, _) = login(&router, "admin", PASSWORD).await;
+    let cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+    assert!(!cookie.contains("; Secure"), "{cookie}");
+
+    // A terminating reverse proxy reports https: the cookie must be flagged
+    // `Secure` so the browser never sends it over plaintext.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/local/login")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-forwarded-proto", "https")
+        .body(Body::from(
+            json!({ "username": "admin", "password": PASSWORD }).to_string(),
+        ))
+        .unwrap();
+    let (_, headers, _) = send(router.clone(), req).await;
+    let cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+    assert!(cookie.contains("; Secure"), "{cookie}");
+}
+
+#[tokio::test]
+async fn login_rejects_cross_site_origin() {
+    let (router, _, _, _) = setup(clock()).await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/local/login")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ORIGIN, "https://evil.example")
+        .header(header::HOST, "dns.example")
+        .body(Body::from(
+            json!({ "username": "admin", "password": PASSWORD }).to_string(),
+        ))
+        .unwrap();
+    let (status, _, body) = send(router.clone(), req).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], "control_api.auth.invalid_origin");
+
+    // A same-origin request passes.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/local/login")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ORIGIN, "https://dns.example")
+        .header(header::HOST, "dns.example")
+        .body(Body::from(
+            json!({ "username": "admin", "password": PASSWORD }).to_string(),
+        ))
+        .unwrap();
+    let (status, _, _) = send(router.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn logout_revokes_the_session_and_clears_the_cookie() {
+    let (router, _, sessions, _) = setup(clock()).await;
+    let (_, headers, body) = login(&router, "admin", PASSWORD).await;
+    let cookie = session_cookie(&headers);
+    let csrf = body["data"]["csrf_token"].as_str().unwrap().to_owned();
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/logout")
+        .header(header::COOKIE, format!("dnscraft_session={cookie}"))
+        .header("x-csrf-token", csrf)
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, _) = send(router.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert!(sessions.validate(&cookie).await.is_err());
+    let set_cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+    assert!(set_cookie.contains("Max-Age=0"), "{set_cookie}");
+}
+
+#[tokio::test]
 async fn wrong_password_fails_with_auth_local() {
     let (router, _, _, _) = setup(clock()).await;
 

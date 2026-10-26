@@ -821,6 +821,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "url",
  "webpki-roots",
  "zeroize",
 ]

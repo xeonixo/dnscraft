@@ -24,12 +24,13 @@ pub use sessions::{
 pub use tokens::{CreatedToken, TokenPrincipal, TokenStore};
 
 use axum::extract::{Request, State};
-use axum::http::HeaderMap;
-use axum::http::header;
+use axum::http::{HeaderMap, HeaderValue, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use serde_json::json;
 
 use crate::error::ControlApiError;
+use crate::server::AppState;
 
 /// Name of the session cookie.
 pub(crate) const SESSION_COOKIE: &str = "dnscraft_session";
@@ -167,7 +168,7 @@ fn has_bearer(headers: &HeaderMap) -> bool {
 }
 
 /// Extracts the session cookie value from the `Cookie` header, if present.
-fn session_cookie_value(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn session_cookie_value(headers: &HeaderMap) -> Option<String> {
     let raw = headers.get(header::COOKIE)?.to_str().ok()?;
     for pair in raw.split(';') {
         let pair = pair.trim();
@@ -178,4 +179,58 @@ fn session_cookie_value(headers: &HeaderMap) -> Option<String> {
         }
     }
     None
+}
+
+/// Rejects a cross-site `Origin` on the public cookie-setting endpoints (login
+/// CSRF). `SameSite=Lax` stops the browser from *sending* the session cookie
+/// cross-site, but not from *accepting* a `Set-Cookie` in a cross-site
+/// response, so an attacker's page could log the victim into the attacker's
+/// account. A same-origin request and a non-browser client both pass (matching
+/// authority, or no `Origin` header at all).
+pub(crate) fn ensure_same_origin(headers: &HeaderMap) -> Result<(), ControlApiError> {
+    let Some(origin) = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return Ok(());
+    };
+    let authority = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))
+        .unwrap_or(origin)
+        .trim_end_matches('/');
+    let host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .unwrap_or("");
+    if !authority.is_empty() && authority.eq_ignore_ascii_case(host) {
+        Ok(())
+    } else {
+        Err(ControlApiError::AuthInvalidOrigin)
+    }
+}
+
+/// `POST /api/v1/auth/logout`: revokes the cookie session server-side and
+/// clears the browser cookie. A missing or already-invalid cookie is a no-op,
+/// so logout stays idempotent even after the session has expired.
+pub(crate) async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ControlApiError> {
+    if let Some(sessions) = state
+        .auth_state()
+        .map(|auth| auth.sessions().store().clone())
+        && let Some(cookie) = session_cookie_value(&headers)
+    {
+        sessions.logout(&cookie).await?;
+    }
+
+    let mut response = crate::api::response::success(json!({})).into_response();
+    if let Ok(value) = HeaderValue::from_str(&format!(
+        "{SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"
+    )) {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    Ok(response)
 }

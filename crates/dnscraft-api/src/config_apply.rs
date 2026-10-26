@@ -671,20 +671,27 @@ fn merge_mcp_rules(body: Value, stored: Option<&Value>) -> Result<Value, Control
     }
 
     // A full snapshot may carry local filter-list sources directly. Apply the
-    // same traversal guard as `PUT /api/v1/filter-lists`; otherwise the raw
-    // config path would be a bypass.
+    // same traversal/SSRF guards as `PUT /api/v1/filter-lists`; otherwise the
+    // raw config path would be a bypass.
     if let Some(Value::Object(filtering)) = snapshot.get("filtering")
         && let Some(Value::Array(lists)) = filtering.get("lists")
     {
         for list in lists {
-            if let Some(file) = list
-                .get("source")
-                .and_then(|source| source.get("file"))
-                .and_then(Value::as_str)
+            let Some(source) = list.get("source").and_then(Value::as_object) else {
+                continue;
+            };
+            if let Some(file) = source.get("file").and_then(Value::as_str)
                 && !list_source_path_is_safe(file)
             {
                 return Err(config_invalid(
-                    "filter list `source.file` must not contain `..` path components",
+                    "filter list `source.file` must be a relative path without `..` components",
+                ));
+            }
+            if let Some(url) = source.get("url").and_then(Value::as_str)
+                && !list_source_url_is_safe(url)
+            {
+                return Err(config_invalid(
+                    "filter list `source.url` must be an https:// URL whose host is not loopback/private",
                 ));
             }
         }
@@ -692,19 +699,48 @@ fn merge_mcp_rules(body: Value, stored: Option<&Value>) -> Result<Value, Control
     Ok(Value::Object(snapshot))
 }
 
-/// Whether a client-supplied local filter-list source path is free of `..`
-/// traversal components.
+/// Whether a client-supplied local filter-list source path is a safe relative
+/// path: non-empty, with no `..`, root, or prefix components. An absolute path
+/// (`/etc/passwd`) would let a raw snapshot read arbitrary files from the data
+/// directory, so it is rejected too.
 ///
-/// `file` sources are an admin-only filtering feature. Rejecting parent
-/// components here covers both the per-list route and a raw `PUT /config`
-/// snapshot, so the two validation paths cannot drift. The data directory
-/// itself is a server-side bootstrap value and is never accepted from a
-/// request.
+/// `file` sources are an admin-only filtering feature. Rejecting absolute and
+/// parent components here covers both the per-list route and a raw
+/// `PUT /config` snapshot, so the two validation paths cannot drift. The data
+/// directory itself is a server-side bootstrap value and is never accepted
+/// from a request.
 pub(crate) fn list_source_path_is_safe(path: &str) -> bool {
-    !path.is_empty()
-        && !std::path::Path::new(path)
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
+    let path = std::path::Path::new(path);
+    !path.as_os_str().is_empty()
+        && !path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+}
+
+/// Whether a client-supplied filter-list source URL is an `https://` URL whose
+/// host is not an internal IP literal. A literal loopback/private/link-local/
+/// ULA/CGNAT host is rejected to block SSRF against the node's own services
+/// (e.g. `169.254.169.254` cloud metadata); a hostname passes because it is
+/// expected to resolve to a public address (a hostname that resolves privately
+/// is a fetch-time concern, not config validation).
+pub(crate) fn list_source_url_is_safe(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    match parsed.host() {
+        Some(url::Host::Ipv4(ip)) => !crate::config::is_internal_bind(std::net::IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => !crate::config::is_internal_bind(std::net::IpAddr::V6(ip)),
+        Some(url::Host::Domain(_)) => true,
+        None => false,
+    }
 }
 
 /// Applies the per-set `mcp_rules` merge rule to one filter-set object.

@@ -20,8 +20,7 @@ use argon2::password_hash::PasswordVerifier as _;
 use argon2::password_hash::phc::PasswordHash;
 use axum::Json;
 use axum::extract::State;
-use axum::http::HeaderValue;
-use axum::http::header;
+use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
@@ -29,7 +28,8 @@ use serde_json::json;
 use zeroize::Zeroizing;
 
 use super::Role;
-use super::sessions::session_set_cookie;
+use super::ensure_same_origin;
+use super::sessions::{secure_cookie, session_set_cookie};
 use crate::error::ControlApiError;
 use crate::server::AppState;
 use crate::storage::{AuditRecord, Db, db_err};
@@ -267,8 +267,10 @@ pub(crate) struct LocalLoginRequest {
 /// route is marked so by the RBAC middleware; no bearer token is required.
 pub(crate) async fn local_login(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<LocalLoginRequest>,
 ) -> Result<Response, ControlApiError> {
+    ensure_same_origin(&headers)?;
     let local = state
         .local_login_store()
         .ok_or_else(|| ControlApiError::Internal {
@@ -286,9 +288,14 @@ pub(crate) async fn local_login(
     let role = local.authenticate(&req.username, req.password).await?;
     let created = sessions.create(actor_id, role).await?;
 
-    // Direct TLS is the only case this handler can observe; reverse-proxy
-    // `X-Forwarded-Proto` handling belongs to the trusted-proxy layer.
-    let secure = state.tls_status().is_some();
+    // `Secure` follows direct TLS or a terminating reverse proxy's
+    // `X-Forwarded-Proto`, so the cookie is never sent over plaintext.
+    let secure = secure_cookie(
+        state.tls_status().is_some(),
+        headers
+            .get("x-forwarded-proto")
+            .and_then(|value| value.to_str().ok()),
+    );
     let cookie = session_set_cookie(created.cookie().expose(), secure);
     let cookie = HeaderValue::from_str(&cookie).map_err(|err| ControlApiError::Internal {
         message: format!("build session cookie: {err}"),

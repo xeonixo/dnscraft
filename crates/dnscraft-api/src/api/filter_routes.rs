@@ -20,7 +20,7 @@ use crate::api::config_routes::{
     upsert_by_id, valid_id,
 };
 use crate::api::response::success;
-use crate::config_apply::{ConfigActor, list_source_path_is_safe};
+use crate::config_apply::{ConfigActor, list_source_path_is_safe, list_source_url_is_safe};
 use crate::error::ControlApiError;
 use crate::server::AppState;
 
@@ -230,16 +230,16 @@ fn validate_list_source(source: &Value) -> Result<(), ControlApiError> {
         ));
     }
     match map.get_key_value("url") {
-        Some((_, Value::String(url))) if url.starts_with("https://") && url.len() > 8 => Ok(()),
+        Some((_, Value::String(url))) if list_source_url_is_safe(url) => Ok(()),
         Some(_) => Err(module_error(
             "filter_store.invalid_source",
-            "url must be an https:// URL",
+            "url must be an https:// URL whose host is not loopback/private",
         )),
         None => match map.get_key_value("file") {
             Some((_, Value::String(path))) if list_source_path_is_safe(path) => Ok(()),
             Some(_) => Err(module_error(
                 "filter_store.invalid_source",
-                "file must be a path without `..` components",
+                "file must be a relative path without `..` components",
             )),
             None => Err(module_error(
                 "filter_store.invalid_source",

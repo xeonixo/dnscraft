@@ -44,7 +44,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::Role;
-use super::sessions::session_set_cookie;
+use super::ensure_same_origin;
+use super::sessions::{secure_cookie, session_set_cookie};
 use crate::clock::{Clock, SystemClock, unix_seconds};
 use crate::config::AuthConfig;
 use crate::error::ControlApiError;
@@ -378,6 +379,7 @@ pub(crate) async fn oidc_authorize_url(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ControlApiError> {
+    ensure_same_origin(&headers)?;
     let oidc = state
         .oidc_state()
         .ok_or_else(|| ControlApiError::Internal {
@@ -405,8 +407,10 @@ pub(crate) struct OidcCallbackQuery {
 /// and mints a cookie session for the mapped role.
 pub(crate) async fn oidc_callback(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<OidcCallbackQuery>,
 ) -> Result<Response, ControlApiError> {
+    ensure_same_origin(&headers)?;
     let oidc = state
         .oidc_state()
         .ok_or_else(|| ControlApiError::Internal {
@@ -433,7 +437,15 @@ pub(crate) async fn oidc_callback(
             message: "session authentication is not configured".to_owned(),
         })?;
     let created = sessions.create(actor_id, role).await?;
-    let cookie = session_set_cookie(created.cookie().expose(), state.tls_status().is_some());
+    let cookie = session_set_cookie(
+        created.cookie().expose(),
+        secure_cookie(
+            state.tls_status().is_some(),
+            headers
+                .get("x-forwarded-proto")
+                .and_then(|value| value.to_str().ok()),
+        ),
+    );
     let cookie = HeaderValue::from_str(&cookie).map_err(|err| ControlApiError::Internal {
         message: format!("build session cookie: {err}"),
     })?;
