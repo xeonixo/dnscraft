@@ -186,8 +186,36 @@ Then: dated entry at the top of the Log in tasks/progress.md (re-read right befo
 
 | Crate | Version | Features | Licence | Why | Status |
 |---|---|---|---|---|---|
-| `rmcp` | 3.7.0 | `server`, `transport-streamable-http-server`, `macros`; default off | Apache-2.0 | official Rust MCP SDK, stateless 2026-07-28, Tower service | pending M0 |
-| transitive (new vs workspace lock) | – | – | – | listed by M0 (`cargo tree` diff) | pending M0 |
+| `rmcp` | 3.7.0 | `server`, `transport-streamable-http-server`, `macros`; default off | Apache-2.0 | official Rust MCP SDK, stateless 2026-07-28, Tower service | verified by M0 (deny-clean, ring-only) |
+| `rmcp-macros` | 3.7.0 | – | Apache-2.0 | `#[tool]` macro | new, verified by M0 |
+| `pastey` | 0.2.3 | – | MIT OR Apache-2.0 | macro + server feature | new, verified by M0 |
+| `schemars` | 1.2.3 | `chrono04` | MIT | tool input/output JSON Schema | new, verified by M0 |
+| `schemars_derive` | 1.2.3 | – | MIT | schemars derive | new, verified by M0 |
+| `serde_derive_internals` | 0.30.0 | – | MIT OR Apache-2.0 | schemars internals | new, verified by M0 |
+| `uuid` | 1.29.0 | `v4` | Apache-2.0 OR MIT | session/event ids (server feature) | new, verified by M0 |
+| `sse-stream` | 0.2.6 | – | MIT OR Apache-2.0 | SSE framing fallback | new, verified by M0 |
+| `tokio-stream` | 0.1.19 | – | MIT | server-side-http streams | new, verified by M0 |
+| `chrono` | 0.4.45 | `serde`, `now` | MIT OR Apache-2.0 | RFC 3339 timestamps | new, verified by M0 |
+| `darling` | 0.24.1 | – | MIT | rmcp-macros attribute parsing | new, verified by M0 |
+| `darling_core` | 0.24.1 | – | MIT | darling | new, verified by M0 |
+| `darling_macro` | 0.24.1 | – | MIT | darling | new, verified by M0 |
+| `ident_case` | 1.0.1 | – | MIT OR Apache-2.0 | darling | new, verified by M0 |
+| `strsim` | 0.11.1 | – | MIT | darling | new, verified by M0 |
+| `ref-cast` | 1.0.27 | – | MIT OR Apache-2.0 | schemars | new, verified by M0 |
+| `ref-cast-impl` | 1.0.27 | – | MIT OR Apache-2.0 | ref-cast | new, verified by M0 |
+| `dyn-clone` | 1.0.20 | – | MIT OR Apache-2.0 | schemars | new, verified by M0 |
+| `iana-time-zone` | 0.1.65 | – | MIT OR Apache-2.0 | chrono `now` | new, verified by M0 |
+| `iana-time-zone-haiku` | 0.1.2 | – | MIT OR Apache-2.0 | iana-time-zone (Haiku) | new, verified by M0 |
+| `android_system_properties` | 0.1.6 | – | MIT OR Apache-2.0 | iana-time-zone (Android) | new, verified by M0 |
+| `windows-core` | 0.62.2 | – | MIT OR Apache-2.0 | iana-time-zone (Windows) | new, verified by M0 |
+| `windows-implement` | 0.60.2 | – | MIT OR Apache-2.0 | windows-core | new, verified by M0 |
+| `windows-interface` | 0.59.3 | – | MIT OR Apache-2.0 | windows-core | new, verified by M0 |
+| `windows-result` | 0.4.1 | – | MIT OR Apache-2.0 | windows-core | new, verified by M0 |
+| `windows-strings` | 0.5.1 | – | MIT OR Apache-2.0 | windows-core | new, verified by M0 |
+
+Total new crates vs the workspace lock: **26** (all permissive; `cargo deny check` with the repo's
+`deny.toml` → advisories ok, bans ok, licenses ok, sources ok; crypto trees `aws-lc-rs`/`aws-lc-sys`/
+`openssl-sys`/`native-tls`/`ring`/`reqwest` all empty). Evidence and source citations: ADR-0006.
 
 Dev-dependencies: `reqwest` (workspace, `rustls-no-provider`; install the ring provider in test setup),
 nothing else planned. `uuid` is **not** added to `dnscraft-filtering` (ids are text, SPEC-mcp.md).
