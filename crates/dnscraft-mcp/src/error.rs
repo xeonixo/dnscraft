@@ -123,40 +123,45 @@ impl McpError {
 }
 
 #[cfg(test)]
+pub(crate) fn sample_errors() -> Vec<McpError> {
+    vec![
+        McpError::ToolNotFound {
+            tool: "nope".into(),
+        },
+        McpError::InvalidInput { reason: "x".into() },
+        McpError::DomainTooBroad {
+            domain: "com".into(),
+        },
+        McpError::WriteToolsDisabled,
+        McpError::DurationExceedsMaximum {
+            requested: "PT1H".into(),
+            maximum: "PT15M".into(),
+        },
+        McpError::RuleLimitExceeded {
+            filter_set_id: "fs".into(),
+            max: 100,
+        },
+        McpError::ProtectedDomain {
+            domain: "example.com".into(),
+        },
+        McpError::ConfigInvalid {
+            key: "request_timeout",
+            reason: "x".into(),
+        },
+        McpError::ConfigProtectedDomain {
+            domain: "bad".into(),
+            reason: "x".into(),
+        },
+    ]
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
     fn all() -> Vec<McpError> {
-        vec![
-            McpError::ToolNotFound {
-                tool: "nope".into(),
-            },
-            McpError::InvalidInput { reason: "x".into() },
-            McpError::DomainTooBroad {
-                domain: "com".into(),
-            },
-            McpError::WriteToolsDisabled,
-            McpError::DurationExceedsMaximum {
-                requested: "PT1H".into(),
-                maximum: "PT15M".into(),
-            },
-            McpError::RuleLimitExceeded {
-                filter_set_id: "fs".into(),
-                max: 100,
-            },
-            McpError::ProtectedDomain {
-                domain: "example.com".into(),
-            },
-            McpError::ConfigInvalid {
-                key: "request_timeout",
-                reason: "x".into(),
-            },
-            McpError::ConfigProtectedDomain {
-                domain: "bad".into(),
-                reason: "x".into(),
-            },
-        ]
+        sample_errors()
     }
 
     #[test]

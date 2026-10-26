@@ -15,6 +15,8 @@ pub mod backend;
 pub mod config;
 pub mod dto;
 pub mod error;
+pub mod result;
+pub mod sanitize;
 
 pub use backend::{BackendError, McpBackend};
 pub use config::McpConfig;
@@ -27,3 +29,7 @@ pub use dto::{
     TlsStatus, TokenInfo, TokenScope,
 };
 pub use error::McpError;
+pub use result::{tool_error, tool_ok};
+pub use sanitize::{
+    CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_REASON, CAP_RULE_TEXT, SafeText, sanitize,
+};
