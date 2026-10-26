@@ -303,8 +303,8 @@ clock (no wall-clock sleeps). The limiter is consulted in a single middleware.
 **Scope:** M
 
 ## Checkpoint C: Auth
-- [ ] DoD green; sessions/CSRF, tokens/roles, local login, OIDC reviewed (lead review)
-- [ ] progress.md updated
+- [x] DoD green; sessions/CSRF, tokens/roles, local login, OIDC reviewed (lead review, 2026-10-26)
+- [x] progress.md updated
 
 ## Phase 4: Config endpoints
 
