@@ -52,6 +52,12 @@ fn is_secret_key(key: &str) -> bool {
 }
 
 /// Redacts and digests one optional snapshot.
+///
+/// The digest is a SHA-256 over canonical JSON (keys sorted recursively, no
+/// whitespace), so it is independent of serde_json's `preserve_order` feature.
+/// Because redaction already replaces every secret with the literal
+/// `"redacted"`, a change that differs only in secret values does not change
+/// the digest — the digest cannot be used as an oracle to confirm a secret.
 fn redact_and_digest(
     value: Option<&Value>,
 ) -> Result<(Option<String>, Option<String>), ControlApiError> {
@@ -59,9 +65,52 @@ fn redact_and_digest(
         return Ok((None, None));
     };
     let redacted = redact(value);
-    let json = serde_json::to_string(&redacted).map_err(serialize_err)?;
+    let json = canonical_json(&redacted)?;
     let digest = sha256_hex(json.as_bytes());
     Ok((Some(json), Some(digest)))
+}
+
+/// Serializes `value` to canonical JSON: object keys sorted recursively and no
+/// whitespace, independent of serde_json's `preserve_order` feature.
+fn canonical_json(value: &Value) -> Result<String, ControlApiError> {
+    let mut out = String::new();
+    write_canonical(value, &mut out)?;
+    Ok(out)
+}
+
+fn write_canonical(value: &Value, out: &mut String) -> Result<(), ControlApiError> {
+    match value {
+        Value::Null => out.push_str("null"),
+        Value::Bool(true) => out.push_str("true"),
+        Value::Bool(false) => out.push_str("false"),
+        Value::Number(n) => out.push_str(&n.to_string()),
+        Value::String(s) => out.push_str(&serde_json::to_string(s).map_err(serialize_err)?),
+        Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_canonical(item, out)?;
+            }
+            out.push(']');
+        }
+        Value::Object(map) => {
+            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            out.push('{');
+            for (i, (key, val)) in entries.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(key).map_err(serialize_err)?);
+                out.push(':');
+                write_canonical(val, out)?;
+            }
+            out.push('}');
+        }
+    }
+    Ok(())
 }
 
 fn serialize_err(err: serde_json::Error) -> ControlApiError {
@@ -140,5 +189,37 @@ impl Audit {
         let time = self.db.now_unix();
         let record = config_change_record(&change, time)?;
         self.db.audit_insert(record).await
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn canonical_json_sorts_keys_recursively_and_is_compact() {
+        let value = json!({
+            "z": 1,
+            "a": { "y": true, "b": "x\"y" },
+            "arr": [3, 1, 2]
+        });
+        assert_eq!(
+            canonical_json(&value).unwrap(),
+            r#"{"a":{"b":"x\"y","y":true},"arr":[3,1,2],"z":1}"#
+        );
+    }
+
+    #[test]
+    fn canonical_json_matches_compact_json_for_sorted_input() {
+        // With the default (non-preserve_order) serde_json map, keys are already
+        // sorted, so canonical JSON must equal serde_json's compact output.
+        let value = json!({ "a": 1, "b": [true, null, "s"] });
+        assert_eq!(
+            canonical_json(&value).unwrap(),
+            serde_json::to_string(&value).unwrap()
+        );
     }
 }
