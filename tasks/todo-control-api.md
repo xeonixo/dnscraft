@@ -263,11 +263,11 @@ clock (no wall-clock sleeps). The limiter is consulted in a single middleware.
 - Every success/failure is written to the audit log; passwords never appear in logs/DB.
 
 **Acceptance criteria:**
-- [ ] Correct password creates a session; wrong password fails with `control_api.auth.local`.
-- [ ] Lockout after 5 failures; `423 control_api.auth.locked`; unlocks after window expiry
+- [x] Correct password creates a session; wrong password fails with `control_api.auth.local`.
+- [x] Lockout after 5 failures; `423 control_api.auth.locked`; unlocks after window expiry
       (manual clock, no sleeps — regression test).
-- [ ] Every local login success/failure is audited; the password itself is never stored or logged.
-- [ ] Argon2id is used (config/verify via the `argon2` crate, not PBKDF2).
+- [x] Every local login success/failure is audited; the password itself is never stored or logged.
+- [x] Argon2id is used (config/verify via the `argon2` crate, not PBKDF2).
 
 **Verification:** `cargo test -p dnscraft-api auth_local`
 

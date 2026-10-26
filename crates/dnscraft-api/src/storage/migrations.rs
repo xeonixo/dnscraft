@@ -87,6 +87,16 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     END;",
     // v3: cookie sessions carry a viewer/admin role (A6).
     "ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'viewer';",
+    // v4: local break-glass accounts (Argon2id PHC hashes) and per-account
+    // lockout state (A8). No plaintext password is ever stored.
+    "CREATE TABLE IF NOT EXISTS local_accounts (
+        username        TEXT PRIMARY KEY,
+        password_hash   TEXT NOT NULL,
+        role            TEXT NOT NULL,
+        failed_attempts INTEGER NOT NULL DEFAULT 0,
+        window_started  INTEGER,
+        locked_until    INTEGER
+    );",
 ];
 
 /// Applies every migration newer than the recorded version, then records it.
@@ -122,7 +132,7 @@ mod tests {
     fn audit_log_rejects_update_and_delete_after_v2() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 3);
+        assert_eq!(schema_version(&conn).unwrap(), 4);
 
         conn.execute(
             "INSERT INTO audit_log (

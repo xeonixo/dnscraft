@@ -11,7 +11,7 @@ use tokio::net::TcpListener;
 use tower::ServiceExt as _;
 use tower::service_fn;
 
-use crate::api::auth::AuthState;
+use crate::api::auth::{AuthState, LocalAccountStore};
 use crate::api::rate_limit::RateLimiter;
 use crate::clock::SystemClock;
 use crate::config::{ControlApiConfig, RateLimitConfig, is_internal_bind};
@@ -27,6 +27,7 @@ pub struct AppState {
     tls: Option<Arc<dyn TlsStatusProvider>>,
     rate_limiter: Arc<RateLimiter>,
     auth: Option<Arc<AuthState>>,
+    local_login: Option<Arc<LocalAccountStore>>,
 }
 
 impl Default for AppState {
@@ -47,6 +48,7 @@ impl AppState {
                 Vec::new(),
             )),
             auth: None,
+            local_login: None,
         }
     }
 
@@ -63,6 +65,21 @@ impl AppState {
     /// The configured auth stores, if any.
     pub(crate) fn auth_state(&self) -> Option<&AuthState> {
         self.auth.as_deref()
+    }
+
+    /// Attaches the local break-glass account store.
+    ///
+    /// With local accounts configured, the router mounts
+    /// `POST /api/v1/auth/local/login` (in addition to requiring
+    /// [`AppState::with_auth`] for the session store).
+    pub fn with_local_login(mut self, store: LocalAccountStore) -> Self {
+        self.local_login = Some(Arc::new(store));
+        self
+    }
+
+    /// The configured local-account store, if any.
+    pub(crate) fn local_login_store(&self) -> Option<&LocalAccountStore> {
+        self.local_login.as_deref()
     }
 
     /// Attaches the TLS status provider (from [`crate::ControlApiTls`]).

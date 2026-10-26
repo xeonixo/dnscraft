@@ -12,6 +12,7 @@ description = "Control API (config, query log, stats, audit, auth) for DNScraft"
 workspace = true
 
 [dependencies]
+argon2 = { workspace = true }
 axum = { workspace = true }
 dnscraft-tls = { path = "../dnscraft-tls" }
 hyper = { workspace = true }
