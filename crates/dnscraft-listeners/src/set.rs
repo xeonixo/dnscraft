@@ -93,8 +93,10 @@ pub struct ListenerSetParams<H: QueryHandler + ?Sized = PolicyEngine> {
     pub public_domain: String,
     /// Client-ID registry for public SNI / DoH paths.
     pub client_ids: Arc<dyn ClientIdRegistry>,
-    /// Source classifier; tests inject a public-loopback classifier to exercise
-    /// public admission and bans from `127.0.0.1` without real public peers.
+    /// Source classifier. Production constructors ([`ListenerSet::start`]) pass
+    /// [`default_classifier`]; the field exists as a test seam so tests can
+    /// classify loopback as public and exercise public admission and bans from
+    /// `127.0.0.1` without real public peers.
     pub classify: SourceClassifier,
 }
 

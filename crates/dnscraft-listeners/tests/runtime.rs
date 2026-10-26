@@ -465,6 +465,15 @@ async fn runtime_reload_keeps_bans_across_rate_and_public_changes() {
         "ban must survive a rate-only reload"
     );
 
+    // A new connection from the banned source is still dropped pre-handshake.
+    let dropped_after_rate = set.status().listeners[0].dropped;
+    let _ = TcpStream::connect(addr).await.unwrap();
+    poll_until(
+        || set.status().listeners[0].dropped > dropped_after_rate,
+        Duration::from_secs(2),
+    )
+    .await;
+
     // Reload that changes public ban params must keep the ban too.
     let mut public_change = cfg;
     public_change.public.ban_duration = Duration::from_secs(3600);
@@ -474,6 +483,15 @@ async fn runtime_reload_keeps_bans_across_rate_and_public_changes() {
         1,
         "ban must survive a public-params reload"
     );
+
+    // Still dropped pre-handshake after the public-params reload too.
+    let dropped_after_public = set.status().listeners[0].dropped;
+    let _ = TcpStream::connect(addr).await.unwrap();
+    poll_until(
+        || set.status().listeners[0].dropped > dropped_after_public,
+        Duration::from_secs(2),
+    )
+    .await;
 
     set.shutdown(Duration::from_secs(2)).await;
 }

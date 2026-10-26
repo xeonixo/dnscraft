@@ -79,6 +79,11 @@ after `ban_strikes` strikes within `ban_window` the source is banned for
 `SourceClass::of` classifies as **private** RFC 1918, loopback, link-local, ULA,
 CGNAT and IPv4-mapped forms; everything else is **public**.
 
+`ListenerSetParams::classify` overrides that classifier for a `ListenerSet`.
+Production code (`ListenerSet::start`) always passes `default_classifier()`;
+the field is a test seam so integration tests can classify loopback as public
+and exercise public admission and bans from `127.0.0.1` without real peers.
+
 ## Limits
 
 Defaults in `config.rs` (`DEFAULT_*`); a change to any field *except* the two
