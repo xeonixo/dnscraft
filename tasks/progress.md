@@ -2,6 +2,45 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-26 — S4: SPEC-mcp.md final review fixes
+
+- Protected domains are now bidirectional: an operation is rejected when the target equals a protected
+  domain, is an ancestor whose rule would cover one (only with `include_subdomains = true`), or is a
+  descendant of one. Defined `covers(D, S, N)` precisely; derived sources now name the real config keys
+  (`tls.public_domain`, `tls.dyndns.*`, `listeners_ddr.target`, `control_api.auth.oidc_issuer`,
+  `tls.acme.directory`, `api.cloudflare.com`, `tls.dyndns.echo_url`, `filtering.lists[].url`,
+  `resolver.forward_zones[].zone`). Tests cover equal/ancestor/descendant/sibling, both flag values,
+  trailing dot, case and IDNA/punycode.
+- Removed the unverified "every current client supports 2026-07-28" claim. `legacy_session_mode`
+  defaults to `false` on attack-surface grounds only; client compatibility is explicitly unverified and
+  an owner check.
+- Deleted all change-history text, including the old "Summary of changes" section. Merged the protocol
+  facts and transport sections; dropped the rmcp code snippet (one integration paragraph stays in the
+  dependency section).
+- One error model: read-token-on-write-tool is a tool-level `control_api.auth.insufficient_scope`;
+  `control_api.auth.invalid_scope` is only for "scope not valid for this endpoint". Every HTTP rejection
+  carries a stable code (401 `auth.unauthenticated`, 403 `auth.invalid_origin`/`auth.invalid_scope`,
+  404 `not_found`, 405 `method_not_allowed`, 413 `payload_too_large`, 429 `rate_limited`); disabled MCP
+  is 404 `control_api.not_found` and `mcp.disabled` is gone. Tool errors have one shape: `isError: true`
+  plus `structuredContent.error {code, params}`.
+- Added `list_mcp_rules` (read-only; rules/temporary allows/pauses per filter set, paginated,
+  sanitized). Recounted: 13 tools (8 read, 5 write) everywhere, including success criteria.
+- `McpRule.expires_at` is mandatory `SystemTime`; the server sets `created_at + max_block_rule_lifetime`;
+  MCP offers no client-chosen expiry and the control-api endpoint accepts only an earlier one.
+- Persistence/versioning: `mcp_rules` are part of the versioned config snapshot; add/remove produce a
+  config version plus audit entry; `PUT /config` without `mcp_rules` carries them over; rollback
+  restores them; cluster replication carries them. Temporary allows/pauses stay volatile runtime state
+  (recommended; open question). `McpRuleId` is a filtering-owned `Arc<str>` newtype, so filtering needs
+  no `uuid` dependency.
+- Backend trait now uses mcp-owned DTOs (string ids, `QType` enum), keeping "mcp depends on no DNScraft
+  crates" true. Duration maxima can only lower the fixed `PT5M`/`PT15M`/`PT1H` set (upper bound 1 h);
+  limits table and TOML fixed.
+- rmcp integration details (token hand-off into tool handlers, macro annotations, exact stateless
+  behaviour, JSON response mode) are on the P1 unverified list. Tests use `application/json` and need no
+  SSE parser; `reqwest` with `rustls-no-provider` requires installing the ring provider in test setup.
+- Success criteria rewritten (19 numbered, testable) for the fixes above; open questions kept:
+  legacy session mode default, block-rule lifetime, temporary allow/pause persistence.
+
 ## 2026-10-26 — S3: SPEC-mcp.md protocol revision and rule safety
 
 - Rewrote SPEC-mcp.md to target MCP 2026-07-28 (stateless Streamable HTTP).
