@@ -32,8 +32,9 @@ block responses.
    never appear here. DoH/DoT **Client ID** ≠ UniFi `ClientInfo`.
 5. Listeners supply `RequestContext` (source IP, protocol, Client ID from SNI
    or DoH path). Public Client-ID admission (unknown SNI → reject) is enforced
-   at TLS/listener layer ([SPEC-tls.md](SPEC-tls.md)); policy still maps a
-   present Client ID to a view/profile.
+   at TLS/listener layer ([SPEC-tls.md](SPEC-tls.md)); policy does **not** map
+   Client ID to a view/profile — selection is source-IP only, and the ID merely
+   enriches the log.
 6. Coverage target ≥ 80 % lines (SPEC.md).
 
 ## Requirements
@@ -54,26 +55,26 @@ pub struct RequestContext {
 pub struct Selection {
     pub view_id: ViewId,
     pub profile_id: ProfileId,
-    pub matched_by: SelectionCause,  // ClientId | Subnet(prefix) | Default
+    pub matched_by: SelectionCause,  // Subnet(prefix) | Default
 }
 ```
 
 **Selection order (highest wins):**
 
-1. **Client ID** exact match on a view’s `client_ids` list (beats any subnet).
-2. **Longest-prefix** match of `source_ip` against view subnet/CIDR lists
+1. **Longest-prefix** match of `source_ip` against view subnet/CIDR ranges
    (IPv4 and IPv6 separately).
-3. **Default view** (exactly one required).
+2. **Default view** (exactly one required).
 
-If a Client ID is present but not listed on any view, fall through to subnet /
-default (the ID may still appear in the log via `clients` enrichment). Unknown
+Client IDs are **not** selection keys. A DoH/DoT/DoQ client is placed by its
+source IP exactly like a Do53 client; the Client ID only authenticates the
+client to the listener (public-source admission) and enriches the log. Unknown
 public Client IDs never reach policy (listener rejected them).
 
 ### Views and profiles
 
 | Object | Owns |
 |---|---|
-| **View** | Selection keys (CIDRs, Client IDs); split-horizon **records** (A, AAAA, CNAME, TXT, SRV, MX); pointer to one **profile** |
+| **View** | Selection keys (CIDR ranges); split-horizon **records** (A, AAAA, CNAME, TXT, SRV, MX); pointer to one **profile** |
 | **Profile** | `filter_set` id; pause protection; schedules (low priority); bypass controls; rebind exceptions; `suppress_aaaa`; SafeSearch; optional allow-list of forward-zone ids |
 
 Blocked services and custom rules live on the **filter set** ([SPEC-filtering.md](SPEC-filtering.md)); the profile selects which set is active (schedules may swap the set — see below).
@@ -344,7 +345,7 @@ impl PolicyEngine {
 
 | Code | When |
 |---|---|
-| `policy.config.invalid` | no default view, overlapping Client ID on two views, bad record set, etc. |
+| `policy.config.invalid` | no default view, overlapping subnet range on two views, bad record set, etc. |
 | `policy.config.unknown_filter_set` | profile references missing set |
 | `policy.config.unknown_forward_zone` | profile allow-list id missing |
 | `policy.record.cname_conflict` | CNAME coexists with other types at a name |
@@ -375,7 +376,6 @@ rebind_check_forward_zones = []
 id = "lan"
 subnets = ["192.0.2.0/24", "2001:db8:1::/64"]
 profile = "default"
-# client_ids = ["iphone-k7q2x9"]
 
 [[policy.views.records]]
 name = "nas.lan.example.com"
@@ -406,7 +406,7 @@ rebind_exceptions = ["*.example.com"]
 
 ## Testing
 
-- Table tests: selection (Client ID > longer prefix > shorter > default),
+- Table tests: selection (longer prefix > shorter > default),
   pipeline step order (local beats filter beats recursion), filter before
   SafeSearch (blocked original qname stays blocked; blocked safe host blocked
   after rewrite), unknown name under a local domain falls through while a known
@@ -431,7 +431,7 @@ rebind_exceptions = ["*.example.com"]
 
 ## Success Criteria
 
-1. Selection table tests match the Client ID / LPM / default rules.
+1. Selection table tests match the LPM / default rules (Client IDs never change the selection).
 2. Pipeline golden tests: view record and ClientDirectory answers never hit the
    resolver; blocked qnames never hit the resolver; CNAME chain block works.
 3. Rebind strips private answers except exceptions and forward-zone answers
@@ -475,6 +475,12 @@ Schedule time zones: ship UTC-only (current) or add a profile/timezone field lat
 12. **Review 2026-10-25:** PTR in view records; CNAME follow only within view;
     ANY/ECS notes; rebind vs filter-list complementarity; stale forward-zone
     “open question” wording removed; Client ID vs ClientInfo naming.
+13. **Review 2026-10-26 (owner):** zone selection is **source-IP only** — the
+    `client_ids` selection key is removed. DoH/DoT/DoQ clients are always placed
+    by their source IP (longest-prefix subnet range → default), exactly like
+    Do53; the Client ID only authenticates the client to the listener and
+    enriches the log, never the chosen zone. The UI must let the admin create
+    zones and their subnet ranges themselves.
 13. **Review 2026-10-25 (Claude):** pipeline reordered to filter original qname →
     SafeSearch → filter rewritten host (block wins over SafeSearch); steps
     renumbered (rebind is now step 10). Only names `ClientDirectory` knows are
