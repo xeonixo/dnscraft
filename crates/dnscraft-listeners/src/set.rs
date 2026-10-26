@@ -1,0 +1,555 @@
+//! [`ListenerSet`]: bind, reload, status, and graceful shutdown.
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
+
+use dnscraft_policy::{ListenerId, PolicyEngine};
+use dnscraft_tls::{CertResolver, ClientIdRegistry, ReservedLabels};
+use tokio::sync::{oneshot, watch};
+use tokio::task::JoinHandle;
+
+use crate::admission::Admission;
+use crate::clock::Clock;
+use crate::config::{Exposure, Limits, ListenerConfig, ListenersConfig, Protocol};
+use crate::conn::FramedStats;
+use crate::ddr::{DdrEndpoint, DdrEndpoints};
+use crate::doh::{DohServeParams, DohStats, serve_doh};
+use crate::doq::{DoqServeParams, DoqStats, serve_doq};
+use crate::dot::{DotServeParams, DotStats, serve_dot};
+use crate::error::ListenersError;
+use crate::events::QueryEventSink;
+use crate::handler::QueryHandler;
+use crate::status::{ListenerStatus, ListenersStatus};
+use crate::tcp::{TcpServeParams, TcpStats, serve_tcp};
+use crate::tls::{PolicyClientIds, SniGate, TlsStats};
+use crate::udp::{UdpServeParams, UdpStats, serve_udp};
+
+/// Shared runtime for all configured listeners.
+pub struct ListenerSet<H: QueryHandler + ?Sized = PolicyEngine> {
+    handler: Arc<H>,
+    certs: Arc<CertResolver>,
+    sni_gate: Arc<SniGate>,
+    clock: Arc<dyn Clock>,
+    sink: Arc<dyn QueryEventSink>,
+    admission: Arc<Mutex<Admission>>,
+    ddr: Arc<RwLock<DdrEndpoints>>,
+    public_domain: String,
+    inner: Mutex<Inner>,
+}
+
+struct Inner {
+    config: ListenersConfig,
+    running: HashMap<ListenerId, RunningListener>,
+}
+
+struct RunningListener {
+    config: ListenerConfig,
+    bound: Option<SocketAddr>,
+    bind_error: Option<ListenersError>,
+    shutdown: watch::Sender<bool>,
+    join: JoinHandle<Result<(), ListenersError>>,
+    kind: ListenerKind,
+}
+
+enum ListenerKind {
+    Udp {
+        stats: Arc<UdpStats>,
+    },
+    Tcp {
+        stats: Arc<TcpStats>,
+    },
+    Dot {
+        stats: Arc<DotStats>,
+        tls: Arc<TlsStats>,
+    },
+    Doh {
+        stats: Arc<DohStats>,
+        tls: Arc<TlsStats>,
+    },
+    Doq {
+        stats: Arc<DoqStats>,
+        tls: Arc<TlsStats>,
+    },
+}
+
+/// Inputs for [`ListenerSet::start_with`].
+pub struct ListenerSetParams<H: QueryHandler + ?Sized = PolicyEngine> {
+    /// Validated listener configuration.
+    pub config: ListenersConfig,
+    /// Policy engine or test [`crate::FakeHandler`].
+    pub handler: Arc<H>,
+    /// Shared TLS store; `None` → empty resolver (encrypted → `listeners.tls.no_cert`).
+    pub certs: Option<Arc<CertResolver>>,
+    /// Query-log sink (non-blocking).
+    pub sink: Arc<dyn QueryEventSink>,
+    /// Wall clock.
+    pub clock: Arc<dyn Clock>,
+    /// Public DNS domain for SNI / DDR (`dns.<domain>`).
+    pub public_domain: String,
+    /// Client-ID registry for public SNI / DoH paths.
+    pub client_ids: Arc<dyn ClientIdRegistry>,
+}
+
+impl ListenerSet<PolicyEngine> {
+    /// Starts every listener (SPEC entry point).
+    ///
+    /// Bind failures are recorded in [`Self::status`]; other listeners keep running.
+    pub async fn start(
+        cfg: ListenersConfig,
+        policy: Arc<PolicyEngine>,
+        certs: Option<Arc<CertResolver>>,
+        sink: Arc<dyn QueryEventSink>,
+        clock: Arc<dyn Clock>,
+        public_domain: impl Into<String>,
+    ) -> Result<Self, ListenersError> {
+        let public_domain = public_domain.into();
+        Self::start_with(ListenerSetParams {
+            client_ids: Arc::new(PolicyClientIds(Arc::clone(&policy))),
+            config: cfg,
+            handler: policy,
+            certs,
+            sink,
+            clock,
+            public_domain,
+        })
+        .await
+    }
+}
+
+impl<H: QueryHandler + 'static> ListenerSet<H> {
+    /// Starts listeners with an arbitrary [`QueryHandler`].
+    pub async fn start_with(params: ListenerSetParams<H>) -> Result<Self, ListenersError> {
+        params.config.validate()?;
+        let ListenerSetParams {
+            config,
+            handler,
+            certs,
+            sink,
+            clock,
+            public_domain,
+            client_ids,
+        } = params;
+
+        let certs = certs.unwrap_or_else(|| Arc::new(CertResolver::new()));
+        let sni_gate = Arc::new(SniGate {
+            public_domain: public_domain.clone(),
+            reserved: reserved_from_ddr(&config.ddr.target),
+            registry: client_ids,
+        });
+
+        let admission = Arc::new(Mutex::new(Admission::new(&config.limits, &config.public)));
+        let ddr = DdrEndpoints::new(
+            &config.ddr,
+            public_domain.clone(),
+            ddr_endpoints_from(&config),
+        )
+        .shared();
+
+        let set = Self {
+            handler,
+            certs,
+            sni_gate,
+            clock,
+            sink,
+            admission,
+            ddr,
+            public_domain,
+            inner: Mutex::new(Inner {
+                config: config.clone(),
+                running: HashMap::new(),
+            }),
+        };
+
+        for listener in &config.listeners {
+            set.spawn_one(listener.clone(), &config.limits).await;
+        }
+        set.refresh_ddr(&config);
+        Ok(set)
+    }
+
+    /// Rebinds only listeners whose [`ListenerConfig`] changed; unchanged keep sockets.
+    pub async fn apply_config(&self, cfg: ListenersConfig) -> Result<(), ListenersError> {
+        cfg.validate()?;
+
+        let (to_stop, to_start, limits, rebuild_admission) = {
+            let mut inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let old = &inner.config;
+            let rebuild_admission = old.public != cfg.public
+                || old.limits.rate_per_source != cfg.limits.rate_per_source
+                || old.limits.rate_per_client_id != cfg.limits.rate_per_client_id;
+
+            let mut to_stop = Vec::new();
+            let mut to_start = Vec::new();
+
+            for (id, running) in &inner.running {
+                match cfg.listeners.iter().find(|l| &l.id == id) {
+                    None => to_stop.push(id.clone()),
+                    Some(new_cfg) if new_cfg != &running.config => {
+                        to_stop.push(id.clone());
+                        to_start.push(new_cfg.clone());
+                    }
+                    Some(_) => {}
+                }
+            }
+            for new_cfg in &cfg.listeners {
+                if !inner.running.contains_key(&new_cfg.id)
+                    && !to_start.iter().any(|l| l.id == new_cfg.id)
+                {
+                    to_start.push(new_cfg.clone());
+                }
+            }
+
+            let limits = cfg.limits.clone();
+            inner.config = cfg.clone();
+            (to_stop, to_start, limits, rebuild_admission)
+        };
+
+        if rebuild_admission {
+            let mut adm = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *adm = Admission::new(&cfg.limits, &cfg.public);
+        }
+
+        for id in to_stop {
+            self.stop_one(&id).await;
+        }
+        for listener in to_start {
+            self.spawn_one(listener, &limits).await;
+        }
+        self.refresh_ddr(&cfg);
+        Ok(())
+    }
+
+    /// Current bind / counter snapshot.
+    pub fn status(&self) -> ListenersStatus {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let ban_entries = {
+            let adm = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            adm.ban_entry_count() as u64
+        };
+
+        let mut listeners = Vec::with_capacity(inner.running.len());
+        for running in inner.running.values() {
+            listeners.push(running.to_status());
+        }
+        listeners.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+        ListenersStatus {
+            listeners,
+            events_dropped: self.sink.events_dropped(),
+            ban_entries,
+        }
+    }
+
+    /// Stops accepting and waits up to `grace` for in-flight work to finish.
+    pub async fn shutdown(self, grace: Duration) {
+        let running = {
+            let mut inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut inner.running)
+        };
+        for r in running.values() {
+            let _ = r.shutdown.send(true);
+        }
+        let joins: Vec<_> = running.into_values().map(|r| r.join).collect();
+        let wait = async {
+            for j in joins {
+                let _ = j.await;
+            }
+        };
+        let _ = tokio::time::timeout(grace, wait).await;
+    }
+
+    fn refresh_ddr(&self, cfg: &ListenersConfig) {
+        if let Ok(mut guard) = self.ddr.write() {
+            *guard = DdrEndpoints::new(
+                &cfg.ddr,
+                self.public_domain.clone(),
+                ddr_endpoints_from(cfg),
+            );
+        }
+    }
+
+    async fn spawn_one(&self, listener: ListenerConfig, limits: &Limits) {
+        let (bound_tx, bound_rx) = oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let id = listener.id.clone();
+
+        let (kind, join) = match listener.protocol {
+            Protocol::Udp53 => {
+                let stats = Arc::new(UdpStats::default());
+                let join = tokio::spawn(serve_udp(UdpServeParams {
+                    listener: listener.clone(),
+                    limits: limits.clone(),
+                    admission: Arc::clone(&self.admission),
+                    handler: Arc::clone(&self.handler),
+                    clock: Arc::clone(&self.clock),
+                    stats: Arc::clone(&stats),
+                    ddr: Some(Arc::clone(&self.ddr)),
+                    event_sink: Some(Arc::clone(&self.sink)),
+                    bound: bound_tx,
+                    shutdown: shutdown_rx,
+                }));
+                (ListenerKind::Udp { stats }, join)
+            }
+            Protocol::Tcp53 => {
+                let stats = Arc::new(TcpStats::default());
+                let join = tokio::spawn(serve_tcp(TcpServeParams {
+                    listener: listener.clone(),
+                    limits: limits.clone(),
+                    admission: Arc::clone(&self.admission),
+                    handler: Arc::clone(&self.handler),
+                    clock: Arc::clone(&self.clock),
+                    stats: Arc::clone(&stats),
+                    ddr: Some(Arc::clone(&self.ddr)),
+                    event_sink: Some(Arc::clone(&self.sink)),
+                    bound: bound_tx,
+                    shutdown: shutdown_rx,
+                }));
+                (ListenerKind::Tcp { stats }, join)
+            }
+            Protocol::Dot => {
+                let stats = Arc::new(DotStats::default());
+                let tls = Arc::new(TlsStats::default());
+                let join = tokio::spawn(serve_dot(DotServeParams {
+                    listener: listener.clone(),
+                    limits: limits.clone(),
+                    admission: Arc::clone(&self.admission),
+                    handler: Arc::clone(&self.handler),
+                    clock: Arc::clone(&self.clock),
+                    stats: Arc::clone(&stats),
+                    tls_stats: Arc::clone(&tls),
+                    certs: Arc::clone(&self.certs),
+                    sni_gate: Arc::clone(&self.sni_gate),
+                    event_sink: Some(Arc::clone(&self.sink)),
+                    bound: bound_tx,
+                    shutdown: shutdown_rx,
+                }));
+                (ListenerKind::Dot { stats, tls }, join)
+            }
+            Protocol::Doh => {
+                let stats = Arc::new(DohStats::default());
+                let tls = Arc::new(TlsStats::default());
+                let join = tokio::spawn(serve_doh(DohServeParams {
+                    listener: listener.clone(),
+                    limits: limits.clone(),
+                    admission: Arc::clone(&self.admission),
+                    handler: Arc::clone(&self.handler),
+                    clock: Arc::clone(&self.clock),
+                    stats: Arc::clone(&stats),
+                    tls_stats: Arc::clone(&tls),
+                    certs: Arc::clone(&self.certs),
+                    sni_gate: Arc::clone(&self.sni_gate),
+                    event_sink: Some(Arc::clone(&self.sink)),
+                    bound: bound_tx,
+                    shutdown: shutdown_rx,
+                }));
+                (ListenerKind::Doh { stats, tls }, join)
+            }
+            Protocol::Doq => {
+                let stats = Arc::new(DoqStats::default());
+                let tls = Arc::new(TlsStats::default());
+                let join = tokio::spawn(serve_doq(DoqServeParams {
+                    listener: listener.clone(),
+                    limits: limits.clone(),
+                    admission: Arc::clone(&self.admission),
+                    handler: Arc::clone(&self.handler),
+                    clock: Arc::clone(&self.clock),
+                    stats: Arc::clone(&stats),
+                    tls_stats: Arc::clone(&tls),
+                    certs: Arc::clone(&self.certs),
+                    sni_gate: Arc::clone(&self.sni_gate),
+                    event_sink: Some(Arc::clone(&self.sink)),
+                    bound: bound_tx,
+                    shutdown: shutdown_rx,
+                }));
+                (ListenerKind::Doq { stats, tls }, join)
+            }
+        };
+
+        let (bound, bind_error, join) =
+            match tokio::time::timeout(Duration::from_secs(2), bound_rx).await {
+                Ok(Ok(addr)) => (Some(addr), None, join),
+                Ok(Err(_)) => {
+                    let err = match join.await {
+                        Ok(Err(e)) => Some(e),
+                        Ok(Ok(())) => Some(ListenersError::bind(
+                            listener.address,
+                            "listener exited before bind",
+                        )),
+                        Err(e) => Some(ListenersError::bind(listener.address, e)),
+                    };
+                    (None, err, tokio::spawn(async { Ok(()) }))
+                }
+                Err(_) => {
+                    join.abort();
+                    (
+                        None,
+                        Some(ListenersError::bind(listener.address, "bind timeout")),
+                        tokio::spawn(async { Ok(()) }),
+                    )
+                }
+            };
+
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner.running.insert(
+            id,
+            RunningListener {
+                config: listener,
+                bound,
+                bind_error,
+                shutdown: shutdown_tx,
+                join,
+                kind,
+            },
+        );
+    }
+
+    async fn stop_one(&self, id: &ListenerId) {
+        let running = {
+            let mut inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inner.running.remove(id)
+        };
+        if let Some(r) = running {
+            let _ = r.shutdown.send(true);
+            let _ = tokio::time::timeout(Duration::from_secs(2), r.join).await;
+        }
+    }
+}
+
+impl RunningListener {
+    fn to_status(&self) -> ListenerStatus {
+        let mut status = ListenerStatus {
+            id: self.config.id.clone(),
+            protocol: self.config.protocol,
+            configured_address: self.config.address,
+            bound: self.bound,
+            error: self.bind_error.clone(),
+            connections: 0,
+            queries: 0,
+            answered: 0,
+            dropped: 0,
+            rate_limited: 0,
+            tls_no_cert: 0,
+            tls_handshake_failures: 0,
+        };
+        match &self.kind {
+            ListenerKind::Udp { stats } => {
+                status.queries = stats.received.load(Ordering::Relaxed);
+                status.answered = stats.answered.load(Ordering::Relaxed);
+                status.dropped = stats.dropped_public.load(Ordering::Relaxed)
+                    + stats.dropped_admission.load(Ordering::Relaxed)
+                    + stats.dropped_inflight.load(Ordering::Relaxed)
+                    + stats.dropped_timeout.load(Ordering::Relaxed)
+                    + stats.dropped_silent.load(Ordering::Relaxed);
+            }
+            ListenerKind::Tcp { stats } => fill_framed(&mut status, stats),
+            ListenerKind::Dot { stats, tls } => {
+                fill_framed(&mut status, stats);
+                fill_tls(&mut status, tls);
+            }
+            ListenerKind::Doh { stats, tls } => {
+                status.connections = stats
+                    .accepted
+                    .load(Ordering::Relaxed)
+                    .saturating_sub(stats.closed.load(Ordering::Relaxed));
+                status.answered = stats.answered.load(Ordering::Relaxed);
+                status.queries = status.answered;
+                status.dropped = stats.dropped_banned.load(Ordering::Relaxed)
+                    + stats.rejected_conn_cap.load(Ordering::Relaxed)
+                    + stats.rejected_per_source.load(Ordering::Relaxed);
+                status.rate_limited = stats.http_429.load(Ordering::Relaxed);
+                fill_tls(&mut status, tls);
+            }
+            ListenerKind::Doq { stats, tls } => {
+                status.connections = stats
+                    .accepted
+                    .load(Ordering::Relaxed)
+                    .saturating_sub(stats.closed.load(Ordering::Relaxed));
+                status.queries = stats.queries.load(Ordering::Relaxed);
+                status.answered = stats.answered.load(Ordering::Relaxed);
+                status.dropped = stats.dropped_banned.load(Ordering::Relaxed)
+                    + stats.rejected_conn_cap.load(Ordering::Relaxed)
+                    + stats.rejected_per_source.load(Ordering::Relaxed);
+                status.rate_limited = stats.refused.load(Ordering::Relaxed);
+                fill_tls(&mut status, tls);
+            }
+        }
+        status
+    }
+}
+
+fn fill_framed(status: &mut ListenerStatus, stats: &FramedStats) {
+    status.connections = stats
+        .accepted
+        .load(Ordering::Relaxed)
+        .saturating_sub(stats.closed.load(Ordering::Relaxed));
+    status.queries = stats.queries.load(Ordering::Relaxed);
+    status.answered = stats.answered.load(Ordering::Relaxed);
+    status.dropped = stats.dropped_public.load(Ordering::Relaxed)
+        + stats.dropped_admission.load(Ordering::Relaxed)
+        + stats.rejected_conn_cap.load(Ordering::Relaxed)
+        + stats.rejected_per_source.load(Ordering::Relaxed);
+    status.rate_limited = stats.refused.load(Ordering::Relaxed);
+}
+
+fn fill_tls(status: &mut ListenerStatus, tls: &TlsStats) {
+    status.tls_no_cert = tls.no_cert.load(Ordering::Relaxed);
+    status.tls_handshake_failures =
+        tls.handshake_fail.load(Ordering::Relaxed) + tls.handshake_timeouts.load(Ordering::Relaxed);
+}
+
+fn ddr_endpoints_from(cfg: &ListenersConfig) -> Vec<DdrEndpoint> {
+    cfg.listeners
+        .iter()
+        .filter(|l| {
+            l.exposure == Exposure::Local
+                && matches!(l.protocol, Protocol::Dot | Protocol::Doh | Protocol::Doq)
+        })
+        .map(|l| DdrEndpoint {
+            protocol: l.protocol,
+            address: l.address,
+            h3: l.h3,
+        })
+        .collect()
+}
+
+fn reserved_from_ddr(target: &str) -> ReservedLabels {
+    let t = target.trim_matches('.');
+    if t.is_empty() || t.eq_ignore_ascii_case("dns") {
+        ReservedLabels::new(std::iter::empty())
+    } else {
+        ReservedLabels::new([t.to_ascii_lowercase()])
+    }
+}
+
+/// Client-ID registry that never matches (Do53-only / FakeHandler tests).
+#[derive(Debug, Default)]
+pub struct EmptyClientIds;
+
+impl ClientIdRegistry for EmptyClientIds {
+    fn is_registered(&self, _client_id: &str) -> bool {
+        false
+    }
+}

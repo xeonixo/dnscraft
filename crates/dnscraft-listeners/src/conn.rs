@@ -20,6 +20,7 @@ use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Limits, ListenerConfig};
 use crate::core::{QueryMeta, error_reply_from_wire, handle_wire};
 use crate::ddr::DdrEndpoints;
+use crate::events::{QueryEventSink, emit_optional};
 use crate::framing::{self, FrameError, MAX_MESSAGE_LEN};
 use crate::handler::QueryHandler;
 use std::sync::RwLock;
@@ -74,6 +75,10 @@ pub(crate) struct FramedShared<H: ?Sized> {
     pub per_source: Mutex<std::collections::HashMap<IpAddr, u32>>,
     /// DDR endpoints for Do53 TCP; `None` on DoT.
     pub ddr: Option<Arc<RwLock<DdrEndpoints>>>,
+    /// Query-log sink; `None` skips emission.
+    pub event_sink: Option<Arc<dyn QueryEventSink>>,
+    /// Listener accept-loop shutdown; connections exit when this becomes `true`.
+    pub shutdown: watch::Receiver<bool>,
 }
 
 /// Per-connection transport metadata (protocol, padding, Client ID from SNI).
@@ -213,10 +218,14 @@ where
     let idle = shared.limits.tcp_idle_timeout;
     let mut idle_deadline: Option<SystemTime> = Some(add_duration(shared.clock.now(), idle));
     let identity = Arc::new(identity);
+    let mut listener_shutdown = shared.shutdown.clone();
 
     let result = loop {
         if *cancel_rx.borrow() {
             break Err(ConnEnd::WriteTimeout);
+        }
+        if *listener_shutdown.borrow() {
+            break Err(ConnEnd::Io);
         }
 
         let no_outstanding = outstanding.get() == 0;
@@ -231,6 +240,11 @@ where
             changed = cancel_rx.changed() => {
                 if changed.is_err() || *cancel_rx.borrow() {
                     break Err(ConnEnd::WriteTimeout);
+                }
+            }
+            _ = listener_shutdown.changed() => {
+                if *listener_shutdown.borrow() {
+                    break Err(ConnEnd::Io);
                 }
             }
             () = wait_idle_or_drain(
@@ -504,6 +518,8 @@ where
             );
         }
     }?;
+
+    emit_optional(&shared.event_sink, shared.clock.as_ref(), out.event);
 
     if want_keepalive {
         Some(attach_tcp_keepalive(&out.bytes, shared.limits.tcp_idle_timeout).unwrap_or(out.bytes))

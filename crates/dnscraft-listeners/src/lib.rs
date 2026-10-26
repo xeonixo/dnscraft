@@ -15,6 +15,7 @@
 //! N8: DoH HTTP/2 + HTTP/1.1 ([`serve_doh`]).
 //! N9: DoQ ([`serve_doq`]).
 //! N10: DDR [`_dns.resolver.arpa`](DdrEndpoints) SVCB on local Do53.
+//! N11: [`ListenerSet`] runtime, [`QueryEventSink`], status.
 
 #![deny(missing_docs)]
 
@@ -31,10 +32,13 @@ mod doq;
 mod dot;
 mod edns;
 mod error;
+mod events;
 mod framing;
 mod handler;
 mod ratelimit;
+mod set;
 mod socket;
+mod status;
 mod tcp;
 mod tls;
 mod udp;
@@ -68,9 +72,12 @@ pub use doq::{
 pub use dot::{DotServeParams, DotStats, serve_dot};
 pub use edns::{PAD_BLOCK, build_response_edns, encode_padded, strip_ecs};
 pub use error::ListenersError;
+pub use events::{ChannelSink, NullSink, QueryEventSink, emit_event};
 pub use framing::{FrameError, MAX_MESSAGE_LEN, read_frame, write_frame};
 pub use handler::{FakeHandler, QueryHandler};
+pub use set::{EmptyClientIds, ListenerSet, ListenerSetParams};
 pub use socket::{bind_tcp, bind_udp};
+pub use status::{ListenerStatus, ListenersStatus};
 pub use tcp::{
     OPTION_TCP_KEEPALIVE, TcpServeParams, TcpStats, duration_to_keepalive_units, serve_tcp,
 };

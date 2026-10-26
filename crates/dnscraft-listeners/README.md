@@ -10,7 +10,7 @@ Plan / remaining tasks: [`tasks/todo-listeners.md`](../../tasks/todo-listeners.m
 
 ## Status
 
-Checkpoint C approved; N10 DDR done. **Next: N11** (`ListenerSet` runtime).
+Checkpoint C approved; N11 `ListenerSet` done. **Next: N12** (DoH HTTP/3).
 
 **Implemented today**
 
@@ -37,7 +37,7 @@ Checkpoint C approved; N10 DDR done. **Next: N11** (`ListenerSet` runtime).
 **Not implemented yet** (see [`todo-listeners.md`](../../tasks/todo-listeners.md))
 
 - DoH over HTTP/3 (task N12; `ALPN_H3` is reserved on the QUIC config only)
-- `ListenerSet` runtime / query-event sink / fuzz+bench polish (N11, N13)
+- DoH HTTP/3 / fuzz+bench polish (N12, N13)
 
 ## Crate layout
 

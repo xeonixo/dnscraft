@@ -345,6 +345,7 @@ async fn ddr_udp_serve_end_to_end() {
         clock: Arc::new(SystemClock),
         stats: Arc::clone(&stats),
         ddr: Some(ddr),
+        event_sink: None,
         bound: bound_tx,
         shutdown: sd_rx,
     }));

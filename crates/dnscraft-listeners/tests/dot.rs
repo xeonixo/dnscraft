@@ -147,6 +147,7 @@ impl DotHarness {
             tls_stats: Arc::clone(&tls_stats),
             certs,
             sni_gate: Arc::new(gate),
+            event_sink: None,
             bound: bound_tx,
             shutdown: shutdown_rx,
         }));
@@ -206,6 +207,7 @@ async fn dot_matches_do53_except_padding() {
         clock: Arc::new(SystemClock),
         stats: Arc::clone(&tcp_stats),
         ddr: None,
+        event_sink: None,
         bound: tcp_bound_tx,
         shutdown: tcp_shutdown_rx,
     }));

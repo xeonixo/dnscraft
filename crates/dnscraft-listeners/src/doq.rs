@@ -21,6 +21,7 @@ use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Exposure, Limits, ListenerConfig};
 use crate::core::{QueryMeta, error_reply_from_wire, handle_wire};
 use crate::error::ListenersError;
+use crate::events::{QueryEventSink, emit_optional};
 use crate::framing::{MAX_MESSAGE_LEN, write_frame};
 use crate::handler::QueryHandler;
 use crate::socket::bind_udp;
@@ -87,6 +88,8 @@ pub struct DoqServeParams<H: ?Sized> {
     pub certs: Arc<CertResolver>,
     /// SNI domain / reserved labels / Client-ID registry.
     pub sni_gate: Arc<SniGate>,
+    /// Query-log sink; `None` skips emission.
+    pub event_sink: Option<Arc<dyn QueryEventSink>>,
     /// Bound address (port 0 friendly).
     pub bound: oneshot::Sender<SocketAddr>,
     /// Set to `true` to stop accepting.
@@ -105,6 +108,7 @@ struct DoqShared<H: ?Sized> {
     certs: Arc<CertResolver>,
     conn_cap: Arc<Semaphore>,
     per_source: Mutex<HashMap<IpAddr, u32>>,
+    event_sink: Option<Arc<dyn QueryEventSink>>,
 }
 
 /// Runs one DoQ listener until `params.shutdown` becomes `true`.
@@ -126,6 +130,7 @@ where
         tls_stats,
         certs,
         sni_gate,
+        event_sink,
         bound,
         mut shutdown,
     } = params;
@@ -185,6 +190,7 @@ where
         certs,
         conn_cap,
         per_source: Mutex::new(HashMap::new()),
+        event_sink,
     });
 
     loop {
@@ -571,7 +577,10 @@ where
     DoqStats::bump(&shared.stats.queries);
     let out_bytes = tokio::select! {
         r = handle_wire(&wire, meta, &*shared.handler) => match r {
-            Some(out) => out.bytes,
+            Some(out) => {
+                emit_optional(&shared.event_sink, shared.clock.as_ref(), out.event);
+                out.bytes
+            }
             None => {
                 strike_framing(&shared, peer.ip());
                 return Err(DOQ_PROTOCOL_ERROR);

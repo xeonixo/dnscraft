@@ -84,6 +84,7 @@ impl TcpHarness {
             clock,
             stats: Arc::clone(&stats),
             ddr: None,
+            event_sink: None,
             bound: bound_tx,
             shutdown: shutdown_rx,
         }));

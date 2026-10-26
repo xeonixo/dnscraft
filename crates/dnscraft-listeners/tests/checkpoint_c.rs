@@ -438,6 +438,7 @@ impl EncryptedSet {
             tls_stats: Arc::clone(&tls_dot),
             certs: Arc::clone(&certs),
             sni_gate: Arc::clone(&gate),
+            event_sink: None,
             bound: dot_tx,
             shutdown: dot_sd_rx,
         })));
@@ -464,6 +465,7 @@ impl EncryptedSet {
             tls_stats: Arc::clone(&tls_doh),
             certs: Arc::clone(&certs),
             sni_gate: Arc::clone(&gate),
+            event_sink: None,
             bound: doh_tx,
             shutdown: doh_sd_rx,
         })));
@@ -490,6 +492,7 @@ impl EncryptedSet {
             tls_stats: Arc::clone(&tls_doq),
             certs: Arc::clone(&certs),
             sni_gate: Arc::clone(&gate),
+            event_sink: None,
             bound: doq_tx,
             shutdown: doq_sd_rx,
         })));
@@ -554,6 +557,7 @@ async fn checkpoint_c_same_question_all_transports() {
         clock: Arc::new(SystemClock),
         stats: Arc::new(UdpStats::default()),
         ddr: None,
+        event_sink: None,
         bound: udp_tx,
         shutdown: udp_sd_rx,
     }));
@@ -575,6 +579,7 @@ async fn checkpoint_c_same_question_all_transports() {
         clock: Arc::new(SystemClock),
         stats: Arc::new(TcpStats::default()),
         ddr: None,
+        event_sink: None,
         bound: tcp_tx,
         shutdown: tcp_sd_rx,
     }));

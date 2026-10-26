@@ -2,7 +2,7 @@
 
 use std::net::IpAddr;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use dnscraft_policy::{
     ClientFlags, ClientId, DecisionRecord, DnsProtocol, ListenerId, RequestContext,
@@ -40,9 +40,11 @@ pub struct QueryMeta {
     pub ddr: Option<Arc<RwLock<DdrEndpoints>>>,
 }
 
-/// Structured query-log fields produced when the handler ran (N11 sink later).
+/// Structured query-log fields produced when the handler ran.
 #[derive(Clone, Debug)]
 pub struct QueryEvent {
+    /// Wall-clock stamp; [`crate::emit_event`] overwrites this from the clock.
+    pub time: SystemTime,
     /// Transport.
     pub protocol: DnsProtocol,
     /// Listener id.
@@ -61,7 +63,7 @@ pub struct QueryEvent {
     pub duration: Duration,
     /// Policy decision record.
     pub decision: DecisionRecord,
-    /// When false, the sink must not write the query log.
+    /// When false, the sink must not write the query log (`test_query`).
     pub loggable: bool,
 }
 
@@ -299,6 +301,7 @@ fn finish_response(args: FinishArgs<'_>) -> Option<HandleWireResult> {
     };
 
     let event = QueryEvent {
+        time: crate::events::placeholder_time(),
         protocol: meta.protocol,
         listener_id: meta.listener_id.clone(),
         source,

@@ -166,6 +166,7 @@ impl DohHarness {
             tls_stats,
             certs,
             sni_gate: Arc::new(gate),
+            event_sink: None,
             bound: bound_tx,
             shutdown: shutdown_rx,
         }));
@@ -299,6 +300,7 @@ async fn get_post_match_do53_h2_and_h1() {
         clock: Arc::new(SystemClock),
         stats: tcp_stats,
         ddr: None,
+        event_sink: None,
         bound: tcp_tx,
         shutdown: tcp_sd_rx,
     }));

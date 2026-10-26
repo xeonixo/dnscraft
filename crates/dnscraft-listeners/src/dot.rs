@@ -16,6 +16,7 @@ use crate::clock::Clock;
 use crate::config::{Limits, ListenerConfig};
 use crate::conn::{ConnIdentity, FramedShared, FramedStats, run_framed_connection};
 use crate::error::ListenersError;
+use crate::events::QueryEventSink;
 use crate::handler::QueryHandler;
 use crate::socket::bind_tcp;
 use crate::tls::{
@@ -46,6 +47,8 @@ pub struct DotServeParams<H: ?Sized> {
     pub certs: Arc<CertResolver>,
     /// SNI domain / reserved labels / Client-ID registry.
     pub sni_gate: Arc<SniGate>,
+    /// Query-log sink; `None` skips emission.
+    pub event_sink: Option<Arc<dyn QueryEventSink>>,
     /// Bound address (port 0 friendly).
     pub bound: oneshot::Sender<SocketAddr>,
     /// Set to `true` to stop accepting.
@@ -70,6 +73,7 @@ where
         tls_stats,
         certs,
         sni_gate,
+        event_sink,
         bound,
         mut shutdown,
     } = params;
@@ -85,9 +89,8 @@ where
     let resolver = ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&tls_stats));
     let tls_config: Arc<ServerConfig> = tcp_server_config(resolver, &[ALPN_DOT]);
 
-    let conn_cap = Arc::new(Semaphore::new(
-        limits.max_connections_per_listener.max(1) as usize
-    ));
+    let conn_cap_n = limits.max_connections_per_listener.max(1);
+    let conn_cap = Arc::new(Semaphore::new(conn_cap_n as usize));
     let shared = Arc::new(FramedShared {
         admission,
         listener,
@@ -98,6 +101,8 @@ where
         conn_cap,
         per_source: Mutex::new(HashMap::new()),
         ddr: None,
+        event_sink,
+        shutdown: shutdown.clone(),
     });
 
     loop {
@@ -105,6 +110,7 @@ where
             biased;
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
+                    let _ = shared.conn_cap.acquire_many(conn_cap_n).await;
                     return Ok(());
                 }
             }

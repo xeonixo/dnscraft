@@ -136,6 +136,7 @@ async fn main() {
             clock: Arc::clone(&clock),
             stats: Arc::clone(&udp_stats),
             ddr: None,
+            event_sink: None,
             bound: udp_bound_tx,
             shutdown: udp_sd_rx,
         }));
@@ -165,6 +166,7 @@ async fn main() {
             clock: Arc::clone(&clock),
             stats: Arc::clone(&tcp_stats),
             ddr: None,
+            event_sink: None,
             bound: tcp_bound_tx,
             shutdown: tcp_sd_rx,
         }));

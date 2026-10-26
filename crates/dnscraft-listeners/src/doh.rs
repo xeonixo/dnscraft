@@ -32,6 +32,7 @@ use crate::doh_request::{
     DNS_MESSAGE_TYPE, DohPath, DohWireError, content_type_of, extract_wire, parse_doh_path,
 };
 use crate::error::ListenersError;
+use crate::events::{QueryEventSink, emit_optional};
 use crate::framing::MAX_MESSAGE_LEN;
 use crate::handler::QueryHandler;
 use crate::socket::bind_tcp;
@@ -89,6 +90,8 @@ pub struct DohServeParams<H: ?Sized> {
     pub certs: Arc<CertResolver>,
     /// Client-ID registry (path `<id>` lookup); SNI gate domain unused for DoH path admission.
     pub sni_gate: Arc<SniGate>,
+    /// Query-log sink; `None` skips emission.
+    pub event_sink: Option<Arc<dyn QueryEventSink>>,
     /// Bound address (port 0 friendly).
     pub bound: oneshot::Sender<SocketAddr>,
     /// Set to `true` to stop accepting.
@@ -105,6 +108,7 @@ struct DohShared<H: ?Sized> {
     sni_gate: Arc<SniGate>,
     conn_cap: Arc<Semaphore>,
     per_source: Mutex<HashMap<IpAddr, u32>>,
+    event_sink: Option<Arc<dyn QueryEventSink>>,
 }
 
 /// Runs one DoH (HTTP/2 + HTTP/1.1) listener until `params.shutdown` is `true`.
@@ -125,6 +129,7 @@ where
         tls_stats,
         certs,
         sni_gate,
+        event_sink,
         bound,
         mut shutdown,
     } = params;
@@ -155,6 +160,7 @@ where
         sni_gate,
         conn_cap,
         per_source: Mutex::new(HashMap::new()),
+        event_sink,
     });
 
     loop {
@@ -482,7 +488,10 @@ where
     let wake = Notify::new();
     let out_bytes = tokio::select! {
         r = handle_wire(&wire, meta, &*shared.handler) => match r {
-            Some(out) => out.bytes,
+            Some(out) => {
+                emit_optional(&shared.event_sink, shared.clock.as_ref(), out.event);
+                out.bytes
+            }
             None => return status_empty(StatusCode::BAD_REQUEST),
         },
         () = wait_until(shared.clock.as_ref(), deadline, &wake) => {

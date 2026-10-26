@@ -17,6 +17,7 @@ use crate::config::{Limits, ListenerConfig};
 use crate::conn::{ConnIdentity, FramedShared, FramedStats, run_framed_connection};
 use crate::ddr::DdrEndpoints;
 use crate::error::ListenersError;
+use crate::events::QueryEventSink;
 use crate::handler::QueryHandler;
 use crate::socket::bind_tcp;
 
@@ -41,6 +42,8 @@ pub struct TcpServeParams<H: ?Sized> {
     pub stats: Arc<TcpStats>,
     /// DDR endpoints for `_dns.resolver.arpa` (local Do53).
     pub ddr: Option<Arc<RwLock<DdrEndpoints>>>,
+    /// Query-log sink; `None` skips emission.
+    pub event_sink: Option<Arc<dyn QueryEventSink>>,
     /// Bound address (port 0 friendly).
     pub bound: oneshot::Sender<SocketAddr>,
     /// Set to `true` to stop accepting.
@@ -60,6 +63,7 @@ where
         clock,
         stats,
         ddr,
+        event_sink,
         bound,
         mut shutdown,
     } = params;
@@ -72,9 +76,8 @@ where
         .map_err(|e| ListenersError::bind(listener.address, e))?;
     let _ = bound.send(local);
 
-    let conn_cap = Arc::new(Semaphore::new(
-        limits.max_connections_per_listener.max(1) as usize
-    ));
+    let conn_cap_n = limits.max_connections_per_listener.max(1);
+    let conn_cap = Arc::new(Semaphore::new(conn_cap_n as usize));
     let shared = Arc::new(FramedShared {
         admission,
         listener,
@@ -85,6 +88,8 @@ where
         conn_cap,
         per_source: Mutex::new(HashMap::new()),
         ddr,
+        event_sink,
+        shutdown: shutdown.clone(),
     });
 
     loop {
@@ -92,6 +97,7 @@ where
             biased;
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
+                    let _ = shared.conn_cap.acquire_many(conn_cap_n).await;
                     return Ok(());
                 }
             }

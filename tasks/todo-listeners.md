@@ -277,10 +277,10 @@ shutdown stops accepting and drains in-flight queries up to `grace`. `QueryEvent
 `ChannelSink` (try_send, drop + `events_dropped` counter); events only for `loggable` answers.
 
 **Acceptance criteria:**
-- [ ] Partial bind failure (port in use) reported, other listeners serve
-- [ ] Reload: unchanged listener keeps an open TCP connection; changed address rebinds; removed one closes
-- [ ] Full sink never blocks answering (test with capacity 1 and a stalled consumer); `test_query` answers emit no event
-- [ ] Shutdown drains an in-flight query within grace
+- [x] Partial bind failure (port in use) reported, other listeners serve
+- [x] Reload: unchanged listener keeps an open TCP connection; changed address rebinds; removed one closes
+- [x] Full sink never blocks answering (test with capacity 1 and a stalled consumer); `test_query` answers emit no event
+- [x] Shutdown drains an in-flight query within grace
 
 **Verification:** `cargo test -p dnscraft-listeners runtime`
 

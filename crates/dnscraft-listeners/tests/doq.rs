@@ -213,6 +213,7 @@ impl DoqHarness {
             tls_stats: Arc::clone(&tls_stats),
             certs,
             sni_gate: Arc::new(gate),
+            event_sink: None,
             bound: bound_tx,
             shutdown: shutdown_rx,
         }));
@@ -261,6 +262,7 @@ async fn doq_matches_do53_except_padding_and_id() {
         clock: Arc::new(SystemClock),
         stats: Arc::clone(&tcp_stats),
         ddr: None,
+        event_sink: None,
         bound: tcp_bound_tx,
         shutdown: tcp_shutdown_rx,
     }));

@@ -20,6 +20,7 @@ use crate::config::{Limits, ListenerConfig};
 use crate::core::{QueryMeta, handle_wire};
 use crate::ddr::DdrEndpoints;
 use crate::error::ListenersError;
+use crate::events::{QueryEventSink, emit_optional};
 use crate::handler::QueryHandler;
 use crate::socket::bind_udp;
 
@@ -67,6 +68,7 @@ struct UdpShared<H: ?Sized> {
     local: SocketAddr,
     /// Shared DDR endpoint list (N11 updates).
     ddr: Option<Arc<RwLock<DdrEndpoints>>>,
+    event_sink: Option<Arc<dyn QueryEventSink>>,
 }
 
 /// Inputs for [`serve_udp`].
@@ -85,6 +87,8 @@ pub struct UdpServeParams<H: ?Sized> {
     pub stats: Arc<UdpStats>,
     /// DDR endpoints for `_dns.resolver.arpa` (local Do53).
     pub ddr: Option<Arc<RwLock<DdrEndpoints>>>,
+    /// Query-log sink; `None` skips emission (unit tests).
+    pub event_sink: Option<Arc<dyn QueryEventSink>>,
     /// Receives the bound address once (useful when the config used port 0).
     pub bound: oneshot::Sender<SocketAddr>,
     /// Set to `true` to stop the accept loop.
@@ -108,6 +112,7 @@ where
         clock,
         stats,
         ddr,
+        event_sink,
         bound,
         mut shutdown,
     } = params;
@@ -130,9 +135,8 @@ where
     );
     let _ = bound.send(local);
 
-    let inflight = Arc::new(Semaphore::new(
-        limits.max_inflight_per_listener.max(1) as usize
-    ));
+    let inflight_cap = limits.max_inflight_per_listener.max(1);
+    let inflight = Arc::new(Semaphore::new(inflight_cap as usize));
     let shared = Arc::new(UdpShared {
         admission,
         listener,
@@ -145,6 +149,7 @@ where
         state,
         local,
         ddr,
+        event_sink,
     });
 
     loop {
@@ -152,6 +157,8 @@ where
             biased;
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
+                    // Drain in-flight queries before returning (N11 grace).
+                    let _ = shared.inflight.acquire_many(inflight_cap).await;
                     return Ok(());
                 }
             }
@@ -290,7 +297,10 @@ fn spawn_query<H>(
         let outcome = tokio::select! {
             result = handle_wire(&datagram, meta, &shared.handler) => {
                 match result {
-                    Some(r) => Outcome::Answer(r.bytes),
+                    Some(r) => {
+                        emit_optional(&shared.event_sink, shared.clock.as_ref(), r.event);
+                        Outcome::Answer(r.bytes)
+                    }
                     None => Outcome::Silent,
                 }
             }

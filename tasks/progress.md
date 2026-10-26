@@ -21,7 +21,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | N10 DDR done (2026-10-26); **next: N11** (Phase 3: N11–N14, STOP at Checkpoint D) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
+| `listeners` | N11 ListenerSet done (2026-10-26); **next: N12** (Phase 3: N12–N14, STOP at Checkpoint D) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -34,6 +34,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-26 — **listeners: N11 `ListenerSet` runtime.** `start` / `apply_config` / `status` / `shutdown(grace)`; partial bind → `listeners.bind` in status, others serve; reload diffs by id+`ListenerConfig` (unchanged TCP keeps connections; changed address / removed close via shared shutdown watch + conn drain); `QueryEventSink` + `ChannelSink` (try_send, `events_dropped`); emit only when `loggable`; DDR `RwLock` refreshed on apply. Tests: `runtime` (partial bind, reload, full sink, shutdown drain). Next: N12.
 
 - 2026-10-26 — **listeners: N10 DDR `_dns.resolver.arpa`.** Local Do53 only (`ddr.enabled`): `IN SVCB` for `_dns.resolver.arpa.` answered before policy with one SVCB per same-family encrypted listener (priority 1…n, TargetName `dns.<domain>` / `<node>.dns.<domain>`, `alpn`/`port`/`ipv4hint|ipv6hint`/`dohpath`); wildcard bind uses arrival address (UDP `RecvMeta.dst_ip` / TCP `local_addr`). None → NODATA + SOA for `resolver.arpa`. `DdrEndpoints` behind `Arc<RwLock<_>>` on UDP/TCP serve params (N11 will refresh). `AnswerOrigin::ListenerDdr`. Opportunistic discovery only (no IP SANs) — README note. Tests: hickory oracle, family split, wildcard hint, NODATA, disabled/non-SVCB → policy, not on DoT/DoH/DoQ. Next: N11.
 
