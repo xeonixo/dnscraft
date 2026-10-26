@@ -116,7 +116,11 @@ impl Db {
     }
 
     /// Inserts a query-log row (minimal columns; expanded by A12).
-    pub async fn query_log_insert(
+    ///
+    /// Test-only until the query-log API lands (A12); not part of the public
+    /// surface yet.
+    #[cfg(test)]
+    pub(crate) async fn query_log_insert(
         &self,
         id: &str,
         time: i64,
@@ -141,7 +145,11 @@ impl Db {
     }
 
     /// Counts query-log rows whose `query_name` equals `name` exactly (bound parameter).
-    pub async fn query_log_count_by_name(&self, name: &str) -> Result<i64, ControlApiError> {
+    ///
+    /// Test-only until the query-log API lands (A12); not part of the public
+    /// surface yet.
+    #[cfg(test)]
+    pub(crate) async fn query_log_count_by_name(&self, name: &str) -> Result<i64, ControlApiError> {
         let name = name.to_owned();
         self.with_conn(move |conn| {
             conn.query_row(
@@ -296,6 +304,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(created_at, 1_700_000_000);
+    }
+
+    #[tokio::test]
+    async fn query_log_treats_name_as_bound_data() {
+        let db = Db::open_in_memory(Arc::new(SystemClock)).await.unwrap();
+        let injection = "'; DROP TABLE audit_log; --";
+
+        db.query_log_insert("q1", 1, "node1", "192.0.2.10", injection)
+            .await
+            .unwrap();
+        assert_eq!(db.query_log_count_by_name(injection).await.unwrap(), 1);
+        assert_eq!(db.query_log_count_by_name("x' OR '1'='1").await.unwrap(), 0);
     }
 
     #[tokio::test]

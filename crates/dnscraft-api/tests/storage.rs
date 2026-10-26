@@ -106,13 +106,6 @@ async fn sql_injection_is_treated_as_data() {
     db.kv_set(injection, injection).await.unwrap();
     assert_eq!(db.kv_get(injection).await.unwrap(), Some(injection.into()));
 
-    // query-log: an attacker-influenced name is bound, never interpolated.
-    db.query_log_insert("q1", 1, "node1", "192.0.2.10", injection)
-        .await
-        .unwrap();
-    assert_eq!(db.query_log_count_by_name(injection).await.unwrap(), 1);
-    assert_eq!(db.query_log_count_by_name("x' OR '1'='1").await.unwrap(), 0);
-
     // The audit_log table still exists (nothing was dropped).
     assert!(db.audit_insert(record(1, injection)).await.unwrap() > 0);
 }
