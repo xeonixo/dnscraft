@@ -50,10 +50,10 @@ Tables: `kv`, `config_versions`, `audit_log`, `sessions`, `tokens`,
 All SQL uses bind parameters; user-provided strings never become SQL text.
 
 **Acceptance criteria:**
-- [ ] Migrations are idempotent and record `user_version`.
-- [ ] `kv` get/set and config snapshot store/load round-trips.
-- [ ] `audit_log` insert/read works and returns records ordered by time/id.
-- [ ] A crafted SQL-injection string in a query-log filter/value is treated as data and
+- [x] Migrations are idempotent and record `user_version`.
+- [x] `kv` get/set and config snapshot store/load round-trips.
+- [x] `audit_log` insert/read works and returns records ordered by time/id.
+- [x] A crafted SQL-injection string in a query-log filter/value is treated as data and
       returns no rows or `not_found`, never a syntax error (regression test).
 
 **Verification:** `cargo test -p dnscraft-api storage`

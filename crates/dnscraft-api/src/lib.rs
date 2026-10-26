@@ -16,6 +16,7 @@
 
 mod config;
 mod error;
+mod storage;
 
 pub use config::{
     AuthConfig, ControlApiConfig, DEFAULT_API_TOKEN_MAX_TTL, DEFAULT_AUTH_PER_SECOND, DEFAULT_BIND,
@@ -25,3 +26,4 @@ pub use config::{
     DEFAULT_WRITE_PER_SECOND, IpTruncate, QueryLogConfig, RateLimitConfig,
 };
 pub use error::ControlApiError;
+pub use storage::{AuditRecord, Db};
