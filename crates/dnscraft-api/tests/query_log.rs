@@ -1,0 +1,520 @@
+//! A12: query-log consumer, storage, filtering, pagination and "why blocked?".
+//!
+//! All data is in-memory SQLite; addresses are documentation ranges and names
+//! use `example.com`. No sockets and no wall-clock waits.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use axum::body::Body;
+use axum::extract::connect_info::MockConnectInfo;
+use axum::http::{Request, StatusCode};
+use dnscraft_api::{
+    AppState, ClientEnricher, ClientView, Db, ManualClock, Order, OrderBy, QueryLog,
+    QueryLogFilter, QueryLogPage,
+};
+use dnscraft_filtering::{BlockMode, ListId, Reason, RuleSource, SetId};
+use dnscraft_listeners::{ManualClock as ListenerClock, QueryEvent, QueryEventSink, emit_event};
+use dnscraft_policy::{
+    AnswerOrigin, DecisionRecord, DecisionStep, DecisionTimings, DnsProtocol, FilterHit,
+    ListenerId, ProfileId, SelectionCause, ViewId,
+};
+use dnscraft_proto::{Class, Name, Rcode, RecordType};
+use dnscraft_resolver::{DnssecStatus, Query};
+use serde_json::Value;
+use tower::ServiceExt as _;
+
+const BASE_SECS: u64 = 1_700_000_000;
+
+fn at_secs(secs: u64) -> SystemTime {
+    UNIX_EPOCH + Duration::from_secs(secs)
+}
+
+fn base_time() -> SystemTime {
+    at_secs(BASE_SECS)
+}
+
+/// One synthetic event. Every 10th query is blocked; names cycle over 100
+/// distinct `example.com` hosts; protocols cycle over all five transports.
+fn sample_event(time: SystemTime, index: usize) -> QueryEvent {
+    let blocked = index.is_multiple_of(10);
+    let protocol = match index % 5 {
+        0 => DnsProtocol::Udp53,
+        1 => DnsProtocol::Tcp53,
+        2 => DnsProtocol::DoT,
+        3 => DnsProtocol::DoH,
+        _ => DnsProtocol::DoQ,
+    };
+    let name = Name::from_ascii(&format!("host{}.example.com.", index % 100)).unwrap();
+    let selection = SelectionCause::Subnet {
+        network: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 0)),
+        prefix_len: 24,
+    };
+    let (steps, filter, answer_source, rcode) = if blocked {
+        (
+            vec![
+                DecisionStep::Selected { cause: selection },
+                DecisionStep::FilterBlocked,
+            ],
+            Some(FilterHit {
+                reason: Reason {
+                    rule: Arc::from("||ads.example^"),
+                    source: RuleSource::List {
+                        list: ListId::new("adguard-dns").unwrap(),
+                        line: 7,
+                    },
+                    important: false,
+                },
+                block_mode: Some(BlockMode::NxDomain),
+            }),
+            AnswerOrigin::Filter,
+            Rcode::NXDOMAIN,
+        )
+    } else {
+        (
+            vec![
+                DecisionStep::Selected { cause: selection },
+                DecisionStep::Resolve {
+                    source: dnscraft_resolver::AnswerSource::Recursion,
+                    dnssec: DnssecStatus::Secure,
+                },
+            ],
+            None,
+            AnswerOrigin::Resolver,
+            Rcode::NOERROR,
+        )
+    };
+    QueryEvent {
+        time,
+        protocol,
+        listener_id: ListenerId::new("lan-udp").unwrap(),
+        source: IpAddr::V4(Ipv4Addr::new(192, 0, 2, (index % 200 + 1) as u8)),
+        client_id: (index.is_multiple_of(7))
+            .then(|| dnscraft_policy::ClientId::new("iphone-k7q2x9").unwrap()),
+        query: Query {
+            name,
+            qtype: RecordType::A,
+            qclass: Class::IN,
+        },
+        rcode,
+        answer_size: 100 + index,
+        duration: Duration::from_millis(1),
+        decision: DecisionRecord {
+            view_id: ViewId::new("lan").unwrap(),
+            profile_id: ProfileId::new("default").unwrap(),
+            selection,
+            client_id: None,
+            filter_set: SetId::new("default").unwrap(),
+            steps,
+            filter,
+            forward_zone: None,
+            dnssec: Some(DnssecStatus::Secure),
+            answer_source,
+            timings: DecisionTimings {
+                select_us: 2,
+                filter_us: if blocked { 8 } else { 0 },
+                resolve_us: if blocked { 0 } else { 840 },
+                total_us: 950,
+            },
+            rcode,
+        },
+        loggable: true,
+    }
+}
+
+/// In-memory log plus the manual clock backing it.
+async fn harness(config: dnscraft_api::QueryLogConfig) -> (Arc<QueryLog>, Arc<ManualClock>) {
+    let clock = Arc::new(ManualClock::new(base_time()));
+    let db = Db::open_in_memory(clock.clone()).await.unwrap();
+    let log = QueryLog::new(db, config, "node-a");
+    (Arc::new(log), clock)
+}
+
+async fn get(log: &Arc<QueryLog>, uri: &str) -> (StatusCode, Value) {
+    let state = AppState::new().with_query_log(Arc::clone(log));
+    let router = state
+        .router()
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
+    let response = router
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+fn ids(page: &QueryLogPage) -> Vec<&str> {
+    page.records
+        .iter()
+        .map(|record| record["id"].as_str().unwrap())
+        .collect()
+}
+
+fn default_filter() -> QueryLogFilter {
+    QueryLogFilter {
+        order_by: OrderBy::Time,
+        order: Order::Desc,
+        limit: 50,
+        ..QueryLogFilter::default()
+    }
+}
+
+#[tokio::test]
+async fn query_log_filters_order_and_pagination_over_ten_thousand_rows() {
+    let (log, _clock) = harness(dnscraft_api::QueryLogConfig::default()).await;
+    // Newest record is at BASE-1, oldest at BASE-10000, so every row is
+    // inside the 30-day retention window.
+    let events: Vec<QueryEvent> = (0..10_000)
+        .map(|i| sample_event(at_secs(BASE_SECS - (10_000 - i as u64)), i))
+        .collect();
+    for chunk in events.chunks(1_000) {
+        assert_eq!(log.insert_batch(chunk.to_vec()).await.unwrap(), chunk.len());
+    }
+
+    // Default page: newest first, one-row probe for `has_more`.
+    let page = log.list(&default_filter()).await.unwrap();
+    assert_eq!(page.records.len(), 50);
+    assert!(page.has_more);
+    assert_eq!(page.next_offset, Some(50));
+    assert_eq!(page.records[0]["answer_size"], 100 + 9_999);
+
+    // Two adjacent pages yield disjoint ids.
+    let first = log
+        .list(&QueryLogFilter {
+            limit: 10,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    let second = log
+        .list(&QueryLogFilter {
+            limit: 10,
+            offset: 10,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    let mut seen = std::collections::HashSet::new();
+    for id in ids(&first).into_iter().chain(ids(&second)) {
+        assert!(seen.insert(id.to_owned()), "duplicate id across pages");
+    }
+    assert_eq!(seen.len(), 20);
+
+    // Exact domain filter: 100 events share each host name.
+    let page = log
+        .list(&QueryLogFilter {
+            domain: Some("host7.example.com".to_owned()),
+            limit: 500,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 100);
+    assert!(!page.has_more);
+    assert!(
+        page.records
+            .iter()
+            .all(|record| record["query"]["name"] == "host7.example.com")
+    );
+
+    // Protocol filter: exactly a fifth of the rows.
+    let page = log
+        .list(&QueryLogFilter {
+            protocol: Some("udp53".to_owned()),
+            limit: 500,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 500);
+    assert!(page.has_more);
+
+    // only_blocked: every 10th row.
+    let page = log
+        .list(&QueryLogFilter {
+            only_blocked: true,
+            limit: 500,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 500);
+    assert!(page.has_more);
+    assert!(
+        page.records
+            .iter()
+            .all(|record| record["filter"]["block_mode"] == "nxdomain")
+    );
+
+    // Ascending domain order starts at the lexicographically smallest host.
+    let page = log
+        .list(&QueryLogFilter {
+            order_by: OrderBy::Domain,
+            order: Order::Asc,
+            limit: 5,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records[0]["query"]["name"], "host0.example.com");
+
+    // Time range: [BASE-5000, BASE-1] covers the newest 5000 rows.
+    let page = log
+        .list(&QueryLogFilter {
+            from_us: Some((BASE_SECS as i64 - 5_000) * 1_000_000),
+            to_us: Some((BASE_SECS as i64 - 1) * 1_000_000),
+            limit: 500,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 500);
+    assert!(page.has_more);
+}
+
+#[tokio::test]
+async fn query_log_row_cap_clamps_the_requested_limit() {
+    let (log, _clock) = harness(dnscraft_api::QueryLogConfig {
+        max_rows_per_request: 100,
+        ..dnscraft_api::QueryLogConfig::default()
+    })
+    .await;
+    let events: Vec<QueryEvent> = (0..300)
+        .map(|i| sample_event(at_secs(BASE_SECS - 300 + i as u64), i))
+        .collect();
+    log.insert_batch(events).await.unwrap();
+
+    let page = log
+        .list(&QueryLogFilter {
+            limit: 500,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 100);
+    assert!(page.has_more);
+    assert_eq!(page.next_offset, Some(100));
+}
+
+/// A fake directory with one known device.
+struct FakeClients;
+
+impl ClientEnricher for FakeClients {
+    fn by_ip(&self, ip: IpAddr) -> Option<ClientView> {
+        (ip == IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10))).then(|| ClientView {
+            id: "client-0001".to_owned(),
+            display_name: "iPhone".to_owned(),
+            source: "unifi".to_owned(),
+            macs: vec!["aa:bb:cc:dd:ee:ff".to_owned()],
+            vlan_id: Some(40),
+            vlan_name: Some("IoT".to_owned()),
+            local_domain: Some("iot.example.com".to_owned()),
+        })
+    }
+}
+
+#[tokio::test]
+async fn query_log_events_are_enriched_with_client_data_and_ip_truncated() {
+    let clock = Arc::new(ManualClock::new(base_time()));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    let log = QueryLog::new(db, dnscraft_api::QueryLogConfig::default(), "node-a")
+        .with_client_enricher(Arc::new(FakeClients));
+
+    log.insert_batch(vec![
+        sample_event(at_secs(BASE_SECS - 2), 10), // 192.0.2.11, no client
+        sample_event(at_secs(BASE_SECS - 1), 9),  // 192.0.2.10, enriched
+    ])
+    .await
+    .unwrap();
+
+    // `last_octet` truncation is applied at write.
+    let page = log
+        .list(&QueryLogFilter {
+            domain: Some("host9.example.com".to_owned()),
+            limit: 10,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 1);
+    let record = &page.records[0];
+    assert_eq!(record["source_ip"], "192.0.2.0");
+    assert_eq!(record["source_ip_truncated"], true);
+    assert_eq!(record["client"]["display_name"], "iPhone");
+    assert_eq!(record["client"]["source"], "unifi");
+    assert_eq!(record["client"]["macs"][0], "aa:bb:cc:dd:ee:ff");
+    assert_eq!(record["client"]["vlan_id"], 40);
+
+    // The other source has no matching client.
+    let page = log
+        .list(&QueryLogFilter {
+            domain: Some("host10.example.com".to_owned()),
+            limit: 10,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records[0]["client"], Value::Null);
+
+    // Client-substring and only-with-clients filters.
+    let page = log
+        .list(&QueryLogFilter {
+            client_name_substr: Some("IPH".to_owned()),
+            limit: 10,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 1);
+    let page = log
+        .list(&QueryLogFilter {
+            only_with_clients: true,
+            limit: 10,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 1);
+}
+
+#[tokio::test]
+async fn query_log_retention_deletes_rows_outside_the_configured_window() {
+    let (log, clock) = harness(dnscraft_api::QueryLogConfig {
+        retention_days: 1,
+        ..dnscraft_api::QueryLogConfig::default()
+    })
+    .await;
+
+    // An already-stored stale row is pruned by the next write...
+    log.insert_batch(vec![sample_event(at_secs(BASE_SECS - 2 * 86_400), 0)])
+        .await
+        .unwrap();
+    log.insert_batch(vec![sample_event(at_secs(BASE_SECS - 60), 1)])
+        .await
+        .unwrap();
+    let page = log.list(&default_filter()).await.unwrap();
+    assert_eq!(page.records.len(), 1, "stale row survived the next write");
+
+    // ...and an explicit retention pass removes rows that age out later.
+    clock.advance(Duration::from_secs(2 * 86_400));
+    assert_eq!(log.apply_retention().await.unwrap(), 1);
+    assert!(
+        log.list(&default_filter())
+            .await
+            .unwrap()
+            .records
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn query_log_why_blocked_returns_the_full_decision_record() {
+    let (log, _clock) = harness(dnscraft_api::QueryLogConfig::default()).await;
+    log.insert_batch(vec![sample_event(at_secs(BASE_SECS - 1), 0)])
+        .await
+        .unwrap();
+
+    let page = log.list(&default_filter()).await.unwrap();
+    let id = page.records[0]["id"].as_str().unwrap().to_owned();
+    let (status, body) = get(&log, &format!("/api/v1/query-log/{id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    let record = &body["data"];
+    assert_eq!(record["id"], id);
+    assert_eq!(record["view_id"], "lan");
+    assert_eq!(record["profile_id"], "default");
+    assert_eq!(record["selection"]["cause"], "subnet");
+    assert_eq!(record["selection"]["prefix"], "192.0.2.0/24");
+    assert_eq!(record["filter"]["block_mode"], "nxdomain");
+    assert_eq!(record["filter"]["rule_text"], "||ads.example^");
+    assert_eq!(record["filter"]["list_id"], "adguard-dns");
+    assert_eq!(record["filter"]["important"], false);
+    assert_eq!(record["answer_source"], "filter_block");
+    assert_eq!(record["dnssec"], "secure");
+    assert_eq!(record["timings"]["filter_us"], 8);
+    assert_eq!(record["timings"]["total_us"], 950);
+    let stages: Vec<&str> = record["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| step["stage"].as_str().unwrap())
+        .collect();
+    assert_eq!(stages, ["select", "filter_qname"]);
+    assert_eq!(record["steps"][1]["verdict"], "blocked");
+
+    // Unknown id is the documented 404.
+    let (status, body) = get(&log, "/api/v1/query-log/does-not-exist").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "control_api.not_found");
+}
+
+#[tokio::test]
+async fn query_log_http_list_applies_filters_and_pagination() {
+    let (log, _clock) = harness(dnscraft_api::QueryLogConfig::default()).await;
+    let events: Vec<QueryEvent> = (0..30)
+        .map(|i| sample_event(at_secs(BASE_SECS - 30 + i as u64), i))
+        .collect();
+    log.insert_batch(events).await.unwrap();
+
+    let (status, body) = get(
+        &log,
+        "/api/v1/query-log?only_blocked=true&limit=2&order_by=time&order=asc",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let queries = body["data"]["queries"].as_array().unwrap();
+    assert_eq!(queries.len(), 2);
+    assert_eq!(body["data"]["has_more"], true);
+    assert_eq!(body["data"]["next_offset"], 2);
+    assert_eq!(queries[0]["filter"]["block_mode"], "nxdomain");
+
+    // Malformed values are accepted as data only when valid; bad order maps
+    // to the documented query-log read code.
+    let (status, body) = get(&log, "/api/v1/query-log?order_by=nope").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["error"]["code"], "control_api.query_log.read");
+
+    // A viewer-accessible route is mounted even without auth configured.
+    let (status, _) = get(&log, "/api/v1/query-log").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn query_log_full_sink_drops_without_blocking_and_counts() {
+    let (sink, mut rx) = QueryLog::channel(1);
+    let clock = ListenerClock::new(base_time());
+    let event = sample_event(at_secs(BASE_SECS), 0);
+
+    emit_event(sink.as_ref(), &clock, event.clone());
+    assert_eq!(sink.dropped(), 0);
+    // The channel is full: the second event is dropped, not waited on.
+    emit_event(sink.as_ref(), &clock, event.clone());
+    emit_event(sink.as_ref(), &clock, event.clone());
+    assert_eq!(sink.dropped(), 2);
+    assert_eq!(sink.events_dropped(), 2);
+
+    // Non-loggable events are never counted as drops.
+    let mut quiet = sample_event(at_secs(BASE_SECS), 1);
+    quiet.loggable = false;
+    emit_event(sink.as_ref(), &clock, quiet);
+    assert_eq!(sink.dropped(), 2);
+
+    // The counter is the informational `control_api.query_log.dropped` value.
+    assert_eq!(
+        dnscraft_api::ControlApiError::QueryLogDropped {
+            count: sink.dropped()
+        }
+        .code(),
+        "control_api.query_log.dropped"
+    );
+
+    // Draining the channel lets new events through again.
+    assert!(rx.try_recv().is_ok());
+    emit_event(sink.as_ref(), &clock, event);
+    assert_eq!(sink.dropped(), 2);
+}

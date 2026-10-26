@@ -97,6 +97,26 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         window_started  INTEGER,
         locked_until    INTEGER
     );",
+    // v5: query-log consumer columns (A12). `time` is unix microseconds for
+    // sub-second ordering; the denormalised columns back filtering/ordering,
+    // while `record` holds the full JSON record (including the policy decision
+    // record for "why blocked?"). Old rows keep safe defaults.
+    "ALTER TABLE query_log ADD COLUMN listener_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE query_log ADD COLUMN protocol TEXT NOT NULL DEFAULT '';
+    ALTER TABLE query_log ADD COLUMN source_ip_truncated INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE query_log ADD COLUMN client_id TEXT;
+    ALTER TABLE query_log ADD COLUMN client_name TEXT;
+    ALTER TABLE query_log ADD COLUMN query_type TEXT NOT NULL DEFAULT '';
+    ALTER TABLE query_log ADD COLUMN query_class TEXT NOT NULL DEFAULT '';
+    ALTER TABLE query_log ADD COLUMN view_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE query_log ADD COLUMN profile_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE query_log ADD COLUMN status TEXT NOT NULL DEFAULT '';
+    ALTER TABLE query_log ADD COLUMN answer_source TEXT NOT NULL DEFAULT '';
+    ALTER TABLE query_log ADD COLUMN rcode TEXT NOT NULL DEFAULT '';
+    ALTER TABLE query_log ADD COLUMN record TEXT NOT NULL DEFAULT '{}';
+    CREATE INDEX IF NOT EXISTS query_log_time_idx ON query_log(time);
+    CREATE INDEX IF NOT EXISTS query_log_client_idx ON query_log(client_id);
+    CREATE INDEX IF NOT EXISTS query_log_status_idx ON query_log(status);",
 ];
 
 /// Applies every migration newer than the recorded version, then records it.
@@ -132,7 +152,7 @@ mod tests {
     fn audit_log_rejects_update_and_delete_after_v2() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 4);
+        assert_eq!(schema_version(&conn).unwrap(), 5);
 
         conn.execute(
             "INSERT INTO audit_log (

@@ -9,6 +9,7 @@ pub(crate) mod config_routes;
 pub(crate) mod filter_routes;
 pub(crate) mod listener_routes;
 pub(crate) mod pagination;
+pub(crate) mod query_log_routes;
 pub(crate) mod rate_limit;
 pub(crate) mod response;
 pub(crate) mod router;

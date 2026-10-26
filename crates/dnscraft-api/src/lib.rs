@@ -23,6 +23,7 @@ mod config;
 mod config_apply;
 mod error;
 mod modules;
+mod query_log;
 mod secret;
 mod server;
 mod storage;
@@ -48,6 +49,10 @@ pub use error::ControlApiError;
 pub use modules::{
     ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyTls, ModuleAppliers,
     ModuleFuture,
+};
+pub use query_log::{
+    ClientEnricher, ClientView, Order, OrderBy, QueryLog, QueryLogFilter, QueryLogPage,
+    QueryLogSink,
 };
 pub use secret::Secret;
 pub use server::{AppState, Readiness, serve};

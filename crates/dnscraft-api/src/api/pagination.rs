@@ -33,7 +33,16 @@ pub(crate) struct Pagination {
 impl Pagination {
     /// Parses the raw query values, applying defaults and bounds.
     pub(crate) fn from_query(query: Query<RawPagination>) -> Result<Self, ControlApiError> {
-        let limit = match query.limit.as_deref() {
+        Self::parse(query.limit.as_deref(), query.offset.as_deref())
+    }
+
+    /// Parses already-extracted raw values; shared by endpoints that carry
+    /// additional query parameters besides `limit`/`offset`.
+    pub(crate) fn parse(
+        limit: Option<&str>,
+        offset: Option<&str>,
+    ) -> Result<Self, ControlApiError> {
+        let limit = match limit {
             None => DEFAULT_LIMIT,
             Some(raw) => {
                 let n: u32 = raw
@@ -48,7 +57,7 @@ impl Pagination {
                 n
             }
         };
-        let offset = match query.offset.as_deref() {
+        let offset = match offset {
             None => 0,
             Some(raw) => raw
                 .trim()

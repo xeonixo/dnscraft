@@ -16,6 +16,11 @@ argon2 = { workspace = true }
 axum = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
+dnscraft-filtering = { path = "../dnscraft-filtering" }
+dnscraft-listeners = { path = "../dnscraft-listeners" }
+dnscraft-policy = { path = "../dnscraft-policy" }
+dnscraft-proto = { path = "../dnscraft-proto" }
+dnscraft-resolver = { path = "../dnscraft-resolver" }
 dnscraft-tls = { path = "../dnscraft-tls" }
 hyper = { workspace = true }
 hyper-util = { workspace = true }

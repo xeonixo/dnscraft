@@ -25,6 +25,7 @@ use super::filter_routes::{
     put_filter_set,
 };
 use super::listener_routes::{delete_listener, list_listeners, put_listener};
+use super::query_log_routes::{get_query_log, list_query_log};
 use super::rate_limit::rate_limit;
 use super::response::{BODY_LIMIT_BYTES, error_response, success};
 use super::tls_routes::{delete_tls, get_tls, put_tls};
@@ -96,6 +97,13 @@ pub(crate) fn build_router(state: AppState) -> Router {
                 "/tls",
                 get(get_tls).put(put_tls).post(put_tls).delete(delete_tls),
             );
+    }
+    if state.query_log().is_some() {
+        // Viewer-accessible reads: the RBAC middleware maps non-config GETs
+        // under `/api/v1` to `Requirement::Api`.
+        api = api
+            .route("/query-log", get(list_query_log))
+            .route("/query-log/{id}", get(get_query_log));
     }
     if state.auth_state().is_some() {
         // Token management exists only when persistence/auth is configured.

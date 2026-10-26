@@ -17,6 +17,7 @@ use crate::clock::SystemClock;
 use crate::config::{ControlApiConfig, RateLimitConfig, is_internal_bind};
 use crate::config_apply::ConfigService;
 use crate::error::ControlApiError;
+use crate::query_log::QueryLog;
 use crate::tls::{TlsStatus, TlsStatusProvider};
 
 /// Shared state handed to every handler (and cloned into the router).
@@ -31,6 +32,7 @@ pub struct AppState {
     local_login: Option<Arc<LocalAccountStore>>,
     oidc: Option<Arc<OidcState>>,
     config: Option<Arc<ConfigService>>,
+    query_log: Option<Arc<QueryLog>>,
 }
 
 impl Default for AppState {
@@ -54,6 +56,7 @@ impl AppState {
             local_login: None,
             oidc: None,
             config: None,
+            query_log: None,
         }
     }
 
@@ -69,6 +72,20 @@ impl AppState {
     /// The configured atomic config service, if any.
     pub(crate) fn config_service(&self) -> Option<&ConfigService> {
         self.config.as_deref()
+    }
+
+    /// Attaches the query log created by the A12 consumer.
+    ///
+    /// With a query log configured, `GET /api/v1/query-log` and
+    /// `GET /api/v1/query-log/{id}` are mounted.
+    pub fn with_query_log(mut self, query_log: Arc<QueryLog>) -> Self {
+        self.query_log = Some(query_log);
+        self
+    }
+
+    /// The configured query log, if any.
+    pub(crate) fn query_log(&self) -> Option<&Arc<QueryLog>> {
+        self.query_log.as_ref()
     }
 
     /// Attaches the session and bearer-token stores.
