@@ -1,6 +1,29 @@
 # Progress log
 
 Resume point for interrupted sessions. Newest entry first.
+
+## 2026-10-26 — S3: SPEC-mcp.md protocol revision and rule safety
+
+- Rewrote SPEC-mcp.md to target MCP 2026-07-28 (stateless Streamable HTTP).
+- Replaced HTTP+SSE transport with single-endpoint POST `/mcp/v1`; deleted session lifecycle,
+  `initialize` handshake, SSE stream, `max_sessions_per_token`, `session_idle_timeout`.
+- Replaced session limits with per-token concurrent request cap, per-request deadline, request body cap.
+- `add_rule` is block-only (no `action: "allow"`); allows exist only via `allow_temporarily` with
+  mandatory expiry. Added `max_block_rule_lifetime` (default 30d) for MCP-created block rules.
+- Added protected domains section (server-side list, auto-derived from config, `mcp.protected_domain`).
+- Specified structured `McpRule` storage (not in the single `custom_rules` string); confirmed missing
+  per-set pause setter on `FilterEngine`.
+- Unified error handling: transport auth → HTTP, JSON-RPC protocol → JSON-RPC error, tool-level → `isError: true`.
+  Renamed duration-not-allowed → `mcp.invalid_input`; added `control_api.auth.invalid_scope` +
+  `control_api.auth.invalid_origin` to required control-api additions.
+- Self-signed bootstrap: removed invented SSE notification; exposed `tls_mode` + `fingerprint` in
+  `get_status` output.
+- Fixed dependencies section: axum/tower/tower-http not pinned in root `Cargo.toml` (introduced by
+  control-api plan A3). Resolved test-dependency contradiction (reqwest needed for integration tests).
+- Removed all process residue (draft notes, strikethrough, "Statements to correct", "Elements removed",
+  resolved-questions enumeration).
+- Open questions: legacy session mode default (recommend false) and block rule expiry (recommend 30d).
+- Recounted: 12 tools (7 read, 5 write), 16 success criteria (testable).
 Active plans: [plan-listeners.md](plan-listeners.md) / [todo-listeners.md](todo-listeners.md).
 Briefs and reusable templates for Cursor agents: [cursor-next.md](cursor-next.md).
 
