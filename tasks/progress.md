@@ -21,7 +21,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | N11 ListenerSet done (2026-10-26); **next: N12** (Phase 3: N12–N14, STOP at Checkpoint D) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
+| `listeners` | N12 DoH h3 done (2026-10-26); **next: N13** (Phase 3: N13–N14, STOP at Checkpoint D) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -34,6 +34,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-26 — **spec: control-api open questions decided.** Owner delegated all 8 to Claude: optional API TLS (default off), `argon2` (Argon2id), missing groups claim → viewer, no session refresh (12 h absolute / 60 min idle), NDJSON export primary + CSV, no resolver facade, one configurable rate-limit set, redacted before/after audit snapshots. Recorded in SPEC-control-api.md "Decisions". Spec stays DRAFT until the owner approves; next: P1 plan + dependency table (verify `openidconnect` ring-only).
 
 - 2026-10-26 — **spec: control-api draft reviewed (Claude).** Draft by deepseek-v4-pro (`5a5fccd`); type/function names checked against the code (all exist). Fixed: `async` on `apply_config`/`sync_now`/`renew_now`/`dyndns_now`/`start_with`/`shutdown`, `resume` returns `()`, `dyndns_now` → `DynDnsResult`, `ClientEngine::new` takes `data_dir` and returns `Arc<Self>`, `ListenerSetParams<H>`; dependency table rebased on workspace versions (`reqwest` 0.13 `rustls-no-provider`, no `sha2`/`time`/`base64` duplicates, ring-only caveat for `openidconnect`, RFC/OIDC URLs). CAPABILITY-MAP Spec column linked. Spec stays DRAFT; 8 open questions for the owner at the end of SPEC-control-api.md. Not started: plan (P1).
 

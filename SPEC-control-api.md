@@ -4,6 +4,7 @@
 > (reads `resolver`, `listeners`, `tls` state only through narrow read traits / status handles)
 > Project-wide decisions: [SPEC.md](SPEC.md)
 > Consumers later: `web-ui`, `mcp`, `cluster`
+> Status: DRAFT, owner questions decided 2026-10-26 (see "Decisions"); awaiting final approval
 
 ## Objective
 
@@ -254,6 +255,7 @@ or secret token material. The `CertResolver` is passed to listeners as
 | GET | `/api/v1/query-log` | viewer/admin | query-log search / paginate | `control_api.query_log.*` |
 | GET | `/api/v1/query-log/{id}` | viewer/admin | single query-log record | `control_api.not_found` |
 | GET | `/api/v1/query-log/export.csv` | viewer/admin | CSV export of current filter | `control_api.query_log.export` |
+| GET | `/api/v1/query-log/export.ndjson` | viewer/admin | NDJSON stream of current filter | `control_api.query_log.export` |
 | GET | `/api/v1/stats/overview` | viewer/admin | aggregated dashboard stats | – |
 | GET | `/api/v1/stats/top_clients` | viewer/admin | top N by queries / blocked | – |
 | GET | `/api/v1/stats/top_domains` | viewer/admin | top N domains | – |
@@ -461,7 +463,8 @@ contacted over the internet from CI; tests use an in-process mock provider.
 
 - Browser sessions: random opaque session id, stored hashed in SQLite.
   HttpOnly; Secure when TLS is enabled; SameSite=Lax; CSRF token required for
-  all mutating cookie-session requests.
+  all mutating cookie-session requests. Lifetime: 12 h absolute, 60 min idle
+  (configurable); no refresh, re-login afterwards.
 - `mcp`/API tokens: random opaque bearer token, stored as SHA-256 hash only.
   Token has `scope` (`viewer`/`admin`) and optional expiry. No refresh tokens
   in v1.
@@ -633,7 +636,8 @@ control-api code. The API wrapper may add context parameters.
 
 - Every mutating request records `time`, `node_id`, `actor_id`, `actor_type`
   (`user`, `token`), `action`, `object_type`, `object_id`,
-  `config_version`, `before_digest`, `after_digest`, `result`, `error_code`.
+  `config_version`, `before_digest`, `after_digest`, `before` / `after` (redacted JSON
+  snapshots, secrets masked), `result`, `error_code`.
 - Audit log is append-only; delete/rollback actions are themselves audited.
 - `viewer` users cannot access the audit log unless granted admin role.
 
@@ -732,24 +736,23 @@ References (to be re-checked in P1): OIDC Core
 <https://www.rfc-editor.org/rfc/rfc6749>, Argon2 RFC 9106
 <https://www.rfc-editor.org/rfc/rfc9106>.
 
-## Open Questions (owner)
+## Decisions (owner delegated, 2026-10-26)
 
-1. Should the API listener support direct TLS by default, or rely on a reverse
-   proxy for HTTPS in v1? (Spec assumes optional direct TLS, default off.)
-2. Is `argon2` acceptable as a new dependency for local password hashing, or
-   should we use `ring::pbkdf2` to stay even closer to the existing ring-only
-   dependency set?
-3. How should OIDC group roles behave when the provider’s groups claim is
-   missing or empty — default `viewer` only, or locally configurable group
-   mapping for multiple roles?
-4. Do we need token refresh for browser sessions at all, or is re-login after
-   absolute timeout acceptable for v1?
-5. Should query-log export be limited to CSV, or is a streaming newline-
-   delimited JSON (NDJSON) endpoint also desirable before `mcp` uses the API?
-6. Which exact `ResolverStats`/status type name should be stabilised in the
-   resolver crate for control-api; is adding a small read-only facade accepted
-   by the resolver owner?
-7. The API rate limits are initial defaults; do you want different values for
-   home vs multi-node clusters?
-8. Should the audit log expose unified JSON digests for before/after state, or
-   keep them opaque for now and only return version numbers?
+The owner delegated these to Claude ("whatever is most sensible"). They are
+binding for the plan unless the owner overrides them.
+
+| # | Question | Decision | Reason |
+|---|---|---|---|
+| 1 | Direct TLS on the API listener? | Optional, **default off**. Bind to loopback / internal address; a reverse proxy is the documented default. `control_api.tls = true` uses the `tls` module's `CertResolver`. | Most homelab setups already have a proxy; the option costs little since `tls` exists. |
+| 2 | `argon2` vs `ring::pbkdf2` | **`argon2` (Argon2id)**, new dependency subject to the P1 dependency approval. | Memory-hard, RFC 9106; the ring-only rule is about the TLS/crypto backend and `argon2` is pure Rust. PBKDF2 stays the documented fallback. |
+| 3 | Missing / empty groups claim | Role **`viewer`** only. `admin` only when the configured admin group is present. One configurable admin group; **no** multi-role mapping in v1. | Safe default (least privilege), simple to explain. |
+| 4 | Session refresh | **No refresh.** Absolute session lifetime 12 h plus idle timeout 60 min (both configurable), then re-login. | No refresh-token storage, smaller attack surface. |
+| 5 | Query-log export | **NDJSON streaming** (`/api/v1/query-log/export.ndjson`) is the primary format; CSV (`export.csv`) stays as a convenience for humans. Both obey the same filters and retention. | `mcp` and scripts consume NDJSON easily; CSV is cheap once streaming exists. |
+| 6 | Resolver stats type | Use the existing public `ResolverStats` / `PrimingStatus`; control-api maps them to a read-only DTO. **No** facade in the resolver crate for now. | Avoids touching a finished module; revisit if the type changes. |
+| 7 | Rate limits | One set of defaults for all deployments, **configurable in the TOML**; no separate cluster profile in v1. | Cluster is a later module; premature to split. |
+| 8 | Audit before/after | Store **redacted JSON** before/after snapshots (secrets masked) plus the digest and `config_version`. | Makes "who changed what" answerable; the digest alone is not useful for humans. |
+
+Consequences for the body of this spec: the endpoint table gains
+`GET /api/v1/query-log/export.ndjson` (error code
+`control_api.query_log.export`); the audit-log section stores redacted
+snapshots; session defaults are 12 h absolute / 60 min idle.
