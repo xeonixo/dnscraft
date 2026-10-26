@@ -4,6 +4,7 @@
 
 #[tokio::main]
 async fn main() {
+    dnscraft::init_tracing();
     let mut args = std::env::args();
     let _program = args.next();
     let config_path = args.next();

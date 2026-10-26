@@ -17,6 +17,7 @@ use dnscraft_listeners::{
 use dnscraft_policy::PolicyEngine;
 use dnscraft_tls::CertResolver;
 use tokio::task::JoinHandle;
+use tracing_subscriber::EnvFilter;
 
 pub use config::{
     Config, ListenerToml, TLS_CERT_ENV, TLS_KEY_ENV, TlsSecrets, tls_secrets_from_env,
@@ -78,6 +79,26 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// Initialises a stderr tracing subscriber: level from `RUST_LOG`, default `warn`.
+///
+/// Called by the binary shim before [`run`] so listener / TLS warnings become
+/// visible. Idempotent — a second call is a no-op.
+pub fn init_tracing() {
+    let filter = env_filter_from(std::env::var("RUST_LOG").ok().as_deref());
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
+/// Builds the log filter: `RUST_LOG` when set and parseable, `warn` otherwise.
+fn env_filter_from(spec: Option<&str>) -> EnvFilter {
+    match spec {
+        Some(spec) => EnvFilter::try_new(spec).unwrap_or_else(|_| EnvFilter::new("warn")),
+        None => EnvFilter::new("warn"),
+    }
+}
 
 /// Parses a TOML config, mapping parse failures onto stable error codes.
 ///
@@ -243,6 +264,8 @@ async fn wait_for_shutdown_signal() {
 mod tests {
     use super::*;
 
+    use std::sync::Mutex;
+
     /// Every stable code is unique and well-formed, and errors print as
     /// `dnscraft: <code>: <message>` (the format the main shim relies on).
     #[test]
@@ -312,5 +335,46 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+    #[test]
+    fn env_filter_defaults_to_warn() {
+        assert_eq!(env_filter_from(None).to_string(), "warn");
+        assert_eq!(env_filter_from(Some("hello[")).to_string(), "warn");
+        assert!(env_filter_from(Some("debug")).to_string().contains("debug"));
+    }
+
+    /// A warn line emitted through the subscriber is captured (so the
+    /// default-warn subscriber is proven to let warnings through).
+    #[test]
+    fn warn_lines_are_captured() {
+        static CAPTURED: Mutex<String> = Mutex::new(String::new());
+        struct Capture;
+        impl std::io::Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                CAPTURED
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push_str(&String::from_utf8_lossy(buf));
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        CAPTURED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(|| Capture)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("dnscraft.startup.bind: listener bind failed");
+        });
+        let captured = CAPTURED.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            captured.contains("dnscraft.startup.bind"),
+            "warn line not captured: {captured}"
+        );
     }
 }
