@@ -385,6 +385,8 @@ impl FilterError {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::set::SnapshotError;
+    use crate::types::{ListId, McpRuleId, SetId};
 
     #[test]
     fn codes_are_unique_and_well_formed() {
@@ -511,13 +513,73 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for (code, err) in &all {
             assert_eq!(err.code(), *code, "{err}");
-            assert!(seen.insert(*code), "duplicate code {code}");
-            let (area, reason) = code.split_once('.').expect("area.reason");
-            let ok =
-                |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c == '_');
-            assert!(ok(reason), "{code}");
-            assert!(ok(&area.replace("filter_", "")), "{code}");
+            assert_code(code, &mut seen);
             assert!(!err.to_string().is_empty());
+        }
+
+        let snapshot: Vec<(&str, SnapshotError)> = vec![
+            (
+                "filter_set.unknown_list",
+                SnapshotError::UnknownList {
+                    set: SetId::new("s").unwrap(),
+                    list: ListId::new("l").unwrap(),
+                },
+            ),
+            (
+                "filter_set.duplicate_set",
+                SnapshotError::DuplicateSet(SetId::new("s").unwrap()),
+            ),
+            (
+                "filter_set.duplicate_list",
+                SnapshotError::DuplicateList(ListId::new("l").unwrap()),
+            ),
+            (
+                "filtering.config.mcp_rule_id_duplicate",
+                SnapshotError::DuplicateMcpRuleId {
+                    set: SetId::new("s").unwrap(),
+                    id: McpRuleId::new("r").unwrap(),
+                },
+            ),
+            (
+                "filtering.config.mcp_rule_duplicate",
+                SnapshotError::DuplicateMcpRule {
+                    set: SetId::new("s").unwrap(),
+                    domain: "example.com".parse().unwrap(),
+                },
+            ),
+            (
+                "filtering.config.mcp_rule_expiry",
+                SnapshotError::InvalidMcpRuleExpiry {
+                    set: SetId::new("s").unwrap(),
+                    id: McpRuleId::new("r").unwrap(),
+                },
+            ),
+            (
+                "filtering.config.mcp_rule_invalid",
+                SnapshotError::InvalidMcpRule {
+                    set: SetId::new("s").unwrap(),
+                    id: McpRuleId::new("r").unwrap(),
+                    code: "filter_build.pattern_not_allowed",
+                },
+            ),
+        ];
+        for (code, err) in &snapshot {
+            assert_eq!(err.code(), *code, "{err}");
+            assert_code(code, &mut seen);
+            assert!(!err.to_string().is_empty());
+        }
+    }
+
+    /// Codes are dot-separated lower-case segments; no code may repeat.
+    fn assert_code(code: &'static str, seen: &mut std::collections::HashSet<&'static str>) {
+        assert!(seen.insert(code), "duplicate code {code}");
+        let parts: Vec<&str> = code.split('.').collect();
+        assert!(parts.len() >= 2, "{code} is not area.reason");
+        for part in parts {
+            assert!(
+                !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "{code}"
+            );
         }
     }
 }

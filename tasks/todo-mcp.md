@@ -84,16 +84,16 @@ the snapshot records the next expiry and the existing scheduler triggers a rebui
 and describe the chosen mechanism in the commit message; report the spec gap to the owner.
 
 **Acceptance criteria:**
-- [ ] Config validation: duplicate `(domain, include_subdomains)` in one set is rejected with a stable
+- [x] Config validation: duplicate `(domain, include_subdomains)` in one set is rejected with a stable
       `filtering.config.*` code; `expires_at <= created_at` is rejected; ids unique per set.
-- [ ] A rule with `include_subdomains = true` blocks `a.example.com` and `example.com`; with `false` only
+- [x] A rule with `include_subdomains = true` blocks `a.example.com` and `example.com`; with `false` only
       `example.com` (test through `match_name`).
-- [ ] Expiry is exact with `ManualClock`: blocks at `expires_at - 1 ns`, passes at `expires_at`, with no
+- [x] Expiry is exact with `ManualClock`: blocks at `expires_at - 1 ns`, passes at `expires_at`, with no
       `apply_config` in between.
-- [ ] Expired rules present in a loaded config are dropped silently at build time.
-- [ ] Generated rule text never contains `$` modifiers (property test over arbitrary valid domains).
-- [ ] `custom_rules` (web-UI rules) are untouched and rank as before; existing tests green.
-- [ ] Stable error codes added with the uniqueness test extended.
+- [x] Expired rules present in a loaded config are dropped silently at build time.
+- [x] Generated rule text never contains `$` modifiers (property test over arbitrary valid domains).
+- [x] `custom_rules` (web-UI rules) are untouched and rank as before; existing tests green.
+- [x] Stable error codes added with the uniqueness test extended.
 
 **Verification:** `cargo test -p dnscraft-filtering mcp_rule`
 

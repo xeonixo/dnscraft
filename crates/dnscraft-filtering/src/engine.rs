@@ -180,7 +180,12 @@ impl FilterEngine {
         clock: Arc<dyn Clock>,
     ) -> Result<Arc<Self>, FilterError> {
         let (catalog, services_error) = load_catalog_offline(&store);
-        let snapshot = build_snapshot(list_bodies(&store, &config), &config, catalog.clone())?;
+        let snapshot = build_snapshot(
+            list_bodies(&store, &config),
+            &config,
+            catalog.clone(),
+            Arc::clone(&clock),
+        )?;
         let status = status_from_snapshot(&snapshot, &config, &store);
         let fetcher = Fetcher::new(&store).map_err(|e| FilterError::BuildFailed {
             message: e.to_string(),
@@ -579,11 +584,12 @@ impl FilterEngine {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             let delay = inner.build_delay_ms.load(Ordering::SeqCst);
+            let clock = Arc::clone(&inner.clock);
             let build_result = tokio::task::spawn_blocking(move || {
                 if delay > 0 {
                     std::thread::sleep(Duration::from_millis(delay));
                 }
-                build_snapshot(bodies, &cfg, catalog).map(|snap| (snap, cfg))
+                build_snapshot(bodies, &cfg, catalog, clock).map(|snap| (snap, cfg))
             })
             .await;
 
@@ -785,9 +791,11 @@ fn build_snapshot(
     bodies: Arc<dyn ListBodies>,
     config: &FilterConfig,
     catalog: Option<Arc<ServiceCatalog>>,
+    clock: Arc<dyn Clock>,
 ) -> Result<Snapshot, FilterError> {
     SnapshotBuilder::new(bodies)
         .with_catalog(catalog)
+        .with_clock(clock)
         .build(config)
         .map_err(|e: SnapshotError| FilterError::BuildFailed {
             message: e.to_string(),

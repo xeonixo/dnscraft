@@ -67,7 +67,7 @@ pub use services::{
 };
 pub use set::{
     DEFAULT_UPDATE_INTERVAL, FilterConfig, FilterSetConfig, ListBodies, ListConfig, ListText,
-    OpenedList, SnapshotError,
+    McpRule, OpenedList, SnapshotError,
 };
 pub use snapshot::{CustomFacts, ListFacts, SharedIndex, Snapshot, SnapshotBuilder};
 pub use stats::{FilterStats, ListStats, SetStats};
@@ -76,4 +76,4 @@ pub use store::{
     StoreConfig, StoreError, StoreListBodies,
 };
 pub use temp_allow::TempAllow;
-pub use types::{BlockMode, ListId, Reason, Rewrite, RuleSource, SetId, Verdict};
+pub use types::{BlockMode, ListId, McpRuleId, Reason, Rewrite, RuleSource, SetId, Verdict};

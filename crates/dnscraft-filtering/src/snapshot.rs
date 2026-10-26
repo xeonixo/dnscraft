@@ -36,20 +36,22 @@
 //! [`ListBodies::open`], pinned to the exact bytes that were parsed, so a
 //! snapshot never reads text from a newer body (hot reload).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use crate::builder::{RecordTypeSel, RuleSpec, build_rule};
+use crate::clock::{Clock, SystemClock};
 use crate::error::FilterError;
 use crate::index::{Index, IndexBuilder, IndexMemory, RuleTextSource, SourceId, SourceKind};
 use crate::modifiers::DnsRewrite;
 use crate::name::DomainName;
 use crate::parser::{ListSource, ParsedList, SkipCounts, SkipReason, parse_list, parse_list_each};
-use crate::rule::Rule;
+use crate::rule::{Rule, RuleAction};
 use crate::services::ServiceCatalog;
-use crate::set::{FilterConfig, ListBodies, ListText, SnapshotError};
-use crate::types::{BlockMode, ListId, SetId, Verdict};
+use crate::set::{FilterConfig, ListBodies, ListText, McpRule, SnapshotError};
+use crate::types::{BlockMode, ListId, McpRuleId, Reason, RuleSource, SetId, Verdict};
 
 /// Facts about one list inside one list combination.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -102,6 +104,53 @@ struct SetEntry {
     unknown_services: Vec<String>,
     block_mode: BlockMode,
     paused_until: Option<SystemTime>,
+    mcp: McpIndex,
+}
+
+/// Block rules created through the MCP control API.
+///
+/// Kept apart from the custom index so expiry can be checked exactly at match
+/// time: the snapshot outlives the build, and an expired rule must stop
+/// blocking without a config change or rebuild.
+#[derive(Debug, Default)]
+struct McpIndex {
+    /// Exact-name rules, keyed by canonical domain text.
+    exact: HashMap<Box<str>, McpEntry>,
+    /// Domain-and-subdomain rules, keyed by canonical domain text.
+    subdomains: HashMap<Box<str>, McpEntry>,
+}
+
+#[derive(Debug)]
+struct McpEntry {
+    id: McpRuleId,
+    expires_at: SystemTime,
+    /// Canonical block-rule text from [`build_rule`].
+    rule: Arc<str>,
+}
+
+impl McpIndex {
+    /// The rule that blocks `name` at `now`, or `Verdict::Pass`.
+    ///
+    /// The longest applicable domain wins: an active exact rule first, then
+    /// the nearest active subdomain rule.
+    fn match_name(&self, set: &SetId, name: &DomainName, now: SystemTime) -> Verdict {
+        let exact = self.exact.get(name.as_str()).filter(|e| now < e.expires_at);
+        let entry = exact.or_else(|| {
+            name.suffixes()
+                .find_map(|suffix| self.subdomains.get(suffix).filter(|e| now < e.expires_at))
+        });
+        let Some(entry) = entry else {
+            return Verdict::Pass;
+        };
+        Verdict::Blocked(Reason {
+            rule: Arc::clone(&entry.rule),
+            source: RuleSource::Mcp {
+                set: set.clone(),
+                id: entry.id.clone(),
+            },
+            important: false,
+        })
+    }
 }
 
 /// Immutable view of all filter sets.
@@ -196,7 +245,7 @@ impl Snapshot {
         if e.paused_until.is_some_and(|until| now < until) {
             return Ok(Verdict::Pass);
         }
-        Ok(self.match_name_active(e, name, qtype))
+        Ok(self.match_name_active(set, e, name, qtype, now))
     }
 
     /// CNAME-uncloaking match over a resolution chain.
@@ -245,7 +294,7 @@ impl Snapshot {
             return Ok(Verdict::Pass);
         }
         Ok(resolve_chain(names, |name| {
-            self.match_name_active(e, name, qtype)
+            self.match_name_active(set, e, name, qtype, now)
         }))
     }
 
@@ -280,18 +329,35 @@ impl Snapshot {
         })
     }
 
-    fn match_name_active(&self, e: &SetEntry, name: &DomainName, qtype: u16) -> Verdict {
+    fn match_name_active(
+        &self,
+        set: &SetId,
+        e: &SetEntry,
+        name: &DomainName,
+        qtype: u16,
+        now: SystemTime,
+    ) -> Verdict {
         let list_v = e.lists.index.match_name(name, qtype);
-        let Some(custom) = &e.custom else {
-            return list_v;
-        };
-        let custom_v = custom.match_name(name, qtype);
-        match (verdict_rank(&custom_v), verdict_rank(&list_v)) {
-            (None, _) => list_v,
-            (Some(_), None) => custom_v,
-            (Some(c), Some(l)) if c <= l => custom_v,
-            _ => list_v,
-        }
+        let custom_v = e
+            .custom
+            .as_ref()
+            .map_or(Verdict::Pass, |c| c.match_name(name, qtype));
+        let mcp_v = e.mcp.match_name(set, name, now);
+        // MCP rules rank exactly like appended custom block rules: they
+        // compete with the custom side by AdGuard priority and custom rules
+        // win ties; the resulting custom side then competes with the lists.
+        let custom_side = better_verdict(custom_v, mcp_v);
+        better_verdict(custom_side, list_v)
+    }
+}
+
+/// The better of two verdicts; on equal rank `a` wins.
+fn better_verdict(a: Verdict, b: Verdict) -> Verdict {
+    match (verdict_rank(&a), verdict_rank(&b)) {
+        (None, _) => b,
+        (Some(_), None) => a,
+        (Some(x), Some(y)) if x <= y => a,
+        _ => b,
     }
 }
 
@@ -373,6 +439,7 @@ struct CustomParsed {
 pub struct SnapshotBuilder {
     bodies: Arc<dyn ListBodies>,
     catalog: Option<Arc<ServiceCatalog>>,
+    clock: Arc<dyn Clock>,
 }
 
 impl SnapshotBuilder {
@@ -381,7 +448,16 @@ impl SnapshotBuilder {
         Self {
             bodies,
             catalog: None,
+            clock: Arc::new(SystemClock),
         }
+    }
+
+    /// Uses `clock` to decide which MCP rules are already expired at build
+    /// time (default: [`SystemClock`]).
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Injects blocked-service rules from `catalog` into sets that enable them.
@@ -407,6 +483,7 @@ impl SnapshotBuilder {
         }
         let mut shared: HashMap<Vec<ListId>, Arc<SharedIndex>> = HashMap::new();
         let mut sets: HashMap<SetId, SetEntry> = HashMap::new();
+        let now = self.clock.now();
         for s in &config.sets {
             if sets.contains_key(&s.id) {
                 return Err(SnapshotError::DuplicateSet(s.id.clone()));
@@ -424,6 +501,7 @@ impl SnapshotBuilder {
                     Some(_) => {}
                 }
             }
+            let mcp = build_mcp_index(&s.id, &s.mcp_rules, now)?;
             let mut custom = parse_custom(&s.custom_rules);
             let (service_srcs, unknown_services) =
                 resolve_services(self.catalog.as_deref(), &s.services);
@@ -458,6 +536,7 @@ impl SnapshotBuilder {
                     unknown_services,
                     block_mode: s.block_mode,
                     paused_until: s.paused_until,
+                    mcp,
                 },
             );
         }
@@ -552,6 +631,67 @@ impl SnapshotBuilder {
             .collect();
         Ok(SharedIndex { index, lists })
     }
+}
+
+/// Validates a set's MCP rules and builds the match-time index.
+///
+/// Every rule is validated and converted with [`build_rule`] (block action,
+/// no modifiers); rules already expired at `now` are then dropped silently.
+fn build_mcp_index(
+    set: &SetId,
+    rules: &[McpRule],
+    now: SystemTime,
+) -> Result<McpIndex, SnapshotError> {
+    let mut ids: HashSet<&str> = HashSet::new();
+    let mut pairs: HashSet<(&DomainName, bool)> = HashSet::new();
+    let mut index = McpIndex::default();
+    for rule in rules {
+        if !ids.insert(rule.id.as_str()) {
+            return Err(SnapshotError::DuplicateMcpRuleId {
+                set: set.clone(),
+                id: rule.id.clone(),
+            });
+        }
+        if !pairs.insert((&rule.domain, rule.include_subdomains)) {
+            return Err(SnapshotError::DuplicateMcpRule {
+                set: set.clone(),
+                domain: rule.domain.clone(),
+            });
+        }
+        if rule.expires_at <= rule.created_at {
+            return Err(SnapshotError::InvalidMcpRuleExpiry {
+                set: set.clone(),
+                id: rule.id.clone(),
+            });
+        }
+        let text = build_rule(&RuleSpec {
+            action: RuleAction::Block,
+            domain: rule.domain.as_str().to_owned(),
+            include_subdomains: rule.include_subdomains,
+            record_types: RecordTypeSel::default(),
+            important: false,
+            rewrite: None,
+        })
+        .map_err(|e| SnapshotError::InvalidMcpRule {
+            set: set.clone(),
+            id: rule.id.clone(),
+            code: e.code(),
+        })?;
+        if rule.expires_at <= now {
+            continue;
+        }
+        let entry = McpEntry {
+            id: rule.id.clone(),
+            expires_at: rule.expires_at,
+            rule: Arc::from(text),
+        };
+        if rule.include_subdomains {
+            index.subdomains.insert(rule.domain.as_str().into(), entry);
+        } else {
+            index.exact.insert(rule.domain.as_str().into(), entry);
+        }
+    }
+    Ok(index)
 }
 
 fn parse_custom(text: &str) -> CustomParsed {

@@ -71,6 +71,14 @@ id_type!(
     /// Matches `[a-z0-9-]{1,64}`.
     SetId
 );
+id_type!(
+    /// Identifier of a block rule created through the MCP control API.
+    ///
+    /// Generated as canonical lowercase text by control-api (typically a
+    /// UUID); the filtering crate needs no `uuid` dependency. Matches
+    /// `[a-z0-9-]{1,64}`.
+    McpRuleId
+);
 
 /// Where a rule came from.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -97,6 +105,13 @@ pub enum RuleSource {
     },
     /// A temporary allow (for example "allow for 10 minutes").
     TemporaryAllow,
+    /// A block rule managed through the MCP control API.
+    Mcp {
+        /// The rule set the rule belongs to.
+        set: SetId,
+        /// The rule id.
+        id: McpRuleId,
+    },
 }
 
 /// Why a verdict was reached.

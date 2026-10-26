@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use crate::index::IndexError;
+use crate::name::DomainName;
 use crate::store::ListSourceSpec;
-use crate::types::{BlockMode, ListId, SetId};
+use crate::types::{BlockMode, ListId, McpRuleId, SetId};
 
 /// Default list update interval (24 h).
 pub const DEFAULT_UPDATE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -24,6 +25,29 @@ pub struct ListConfig {
     pub source: ListSourceSpec,
     /// Disabled lists are excluded from every set.
     pub enabled: bool,
+}
+
+/// A block rule created through the MCP control API.
+///
+/// Unlike [`FilterSetConfig::custom_rules`], every rule carries its own
+/// metadata and expires. At snapshot build time non-expired rules are turned
+/// into canonical block-rule text with
+/// [`build_rule`](crate::build_rule); expired rules are dropped silently.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpRule {
+    /// Unique per set.
+    pub id: McpRuleId,
+    /// Domain to block.
+    pub domain: DomainName,
+    /// Block the domain and every subdomain (`||`) rather than the name only
+    /// (`|`).
+    pub include_subdomains: bool,
+    /// When the rule was created.
+    pub created_at: SystemTime,
+    /// When the rule stops blocking (mandatory; must be after `created_at`).
+    pub expires_at: SystemTime,
+    /// Which MCP token created the rule.
+    pub token_id: String,
 }
 
 /// One configured filter set.
@@ -43,6 +67,8 @@ pub struct FilterSetConfig {
     pub block_mode: BlockMode,
     /// The set passes every name before this time.
     pub paused_until: Option<SystemTime>,
+    /// Block rules created through the MCP control API. Empty by default.
+    pub mcp_rules: Vec<McpRule>,
 }
 
 impl FilterSetConfig {
@@ -56,6 +82,7 @@ impl FilterSetConfig {
             services: Vec::new(),
             block_mode: BlockMode::default(),
             paused_until: None,
+            mcp_rules: Vec::new(),
         }
     }
 }
@@ -147,6 +174,40 @@ pub enum SnapshotError {
     /// Two lists share an id.
     #[error("duplicate list id {0}")]
     DuplicateList(ListId),
+    /// Two MCP rules of a set share an id.
+    #[error("set {set} has duplicate MCP rule id {id}")]
+    DuplicateMcpRuleId {
+        /// The set.
+        set: SetId,
+        /// The duplicated id.
+        id: McpRuleId,
+    },
+    /// Two MCP rules of a set block the same `(domain, include_subdomains)`.
+    #[error("set {set} has duplicate MCP rule for {domain}")]
+    DuplicateMcpRule {
+        /// The set.
+        set: SetId,
+        /// The duplicated domain.
+        domain: DomainName,
+    },
+    /// An MCP rule expires at or before it was created.
+    #[error("MCP rule {id} of set {set} must expire after it was created")]
+    InvalidMcpRuleExpiry {
+        /// The set.
+        set: SetId,
+        /// The rule.
+        id: McpRuleId,
+    },
+    /// An MCP rule could not be turned into canonical rule text.
+    #[error("MCP rule {id} of set {set} is invalid: {code}")]
+    InvalidMcpRule {
+        /// The set.
+        set: SetId,
+        /// The rule.
+        id: McpRuleId,
+        /// Underlying error code (for example `filter_build.pattern_not_allowed`).
+        code: &'static str,
+    },
     /// The index builder failed.
     #[error(transparent)]
     Index(#[from] IndexError),
@@ -159,6 +220,10 @@ impl SnapshotError {
             Self::UnknownList { .. } => "filter_set.unknown_list",
             Self::DuplicateSet(_) => "filter_set.duplicate_set",
             Self::DuplicateList(_) => "filter_set.duplicate_list",
+            Self::DuplicateMcpRuleId { .. } => "filtering.config.mcp_rule_id_duplicate",
+            Self::DuplicateMcpRule { .. } => "filtering.config.mcp_rule_duplicate",
+            Self::InvalidMcpRuleExpiry { .. } => "filtering.config.mcp_rule_expiry",
+            Self::InvalidMcpRule { .. } => "filtering.config.mcp_rule_invalid",
             Self::Index(e) => e.code(),
         }
     }
