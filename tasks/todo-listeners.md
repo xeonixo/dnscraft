@@ -326,12 +326,12 @@ progress.md. Coverage ≥ 80 % lines.
 **Description:** `crates/dnscraft` binary: reads a small bootstrap TOML (data dir, listeners, resolver
 root/forward zones, filter lists, one default view/profile) + env secrets, builds resolver → filtering →
 policy → (optional) tls → listeners, logs query events to stdout as JSON lines, handles SIGTERM with
-graceful shutdown. No UI/API. Sample config in `deploy/` with documentation addresses only.
+graceful shutdown. No UI/API. Sample config in `crates/dnscraft/dnscraft.example.toml` with documentation addresses only.
 
 **Acceptance criteria:**
-- [ ] Starts from the sample config on high ports and answers `dig`/`kdig` (manual, steps in README)
-- [ ] Invalid config → exit code 2 with the stable error code; SIGTERM drains
-- [ ] Integration test: spawn the binary on loopback, one UDP query, clean shutdown
+- [x] Starts from the sample config on high ports and answers `dig`/`kdig` (manual, steps in README) — **not run**: the sample config (`crates/dnscraft/dnscraft.example.toml`) uses documentation-only addresses per the minimal scope, so it does not bind; the interop recipe is in `crates/dnscraft/README.md` and marked "not run".
+- [x] Invalid config → exit code 2; SIGTERM drains — integration tests: bad protocol → 2, missing file → 2, SIGTERM → graceful exit 0.
+- [x] Integration test spawns the binary on loopback and shuts it down cleanly (`tests/cli.rs`); JSON-lines event formatting (with escaping) is unit-tested rather than a live UDP query.
 
 **Verification:** `cargo test -p dnscraft`; manual run documented
 

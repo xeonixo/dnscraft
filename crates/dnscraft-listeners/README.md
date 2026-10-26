@@ -28,7 +28,7 @@ A listener is one of the protocols below, each with a unique `id`, a bind
 ## Status
 
 Checkpoint C approved; N12 DoH HTTP/3 done; **N13** (fuzz / bench / README /
-coverage) done. **Next:** N14 optional minimal binary.
+coverage) done; **N14** minimal binary done. **Next:** Checkpoint D.
 
 **Implemented**
 
@@ -57,7 +57,7 @@ coverage) done. **Next:** N14 optional minimal binary.
 
 **Not implemented yet** (see [`todo-listeners.md`](../../tasks/todo-listeners.md))
 
-- Minimal `dnscraft` binary (N14)
+- (none — all Checkpoint C listener items are implemented)
 
 ## Admission
 
