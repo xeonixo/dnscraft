@@ -1,6 +1,6 @@
 # Tasks: `listeners` module
 
-> Plan: [plan-listeners.md](plan-listeners.md) · Spec: [SPEC-listeners.md](../SPEC-listeners.md) · Resume log: [progress.md](progress.md)
+> Plan: [listeners-plan.md](listeners-plan.md) · Spec: [SPEC-listeners.md](../../SPEC-listeners.md) · Resume log: [progress.md](../progress.md)
 > Definition of done per task: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
 > `cargo test --workspace --locked`, `cargo deny check` green; `cargo tree -i aws-lc-rs` / `-i openssl-sys` empty;
 > Claude review at checkpoints; one commit per task.
@@ -10,7 +10,7 @@
 ## Phase 0: Approval and risk spike
 
 **Precondition for every task below:** progress.md logs the owner's approval of SPEC-listeners.md and the
-dependency table in plan-listeners.md.
+dependency table in listeners-plan.md.
 
 ## Task L0: Policy accessor for registered Client IDs (cross-module)
 
@@ -46,7 +46,7 @@ that answer four questions with evidence:
 
 **Acceptance criteria:**
 - [x] Findings (works / doesn't / caveats, exact feature lists, versions) logged in progress.md
-- [x] Dependency table in plan-listeners.md confirmed or corrected
+- [x] Dependency table in listeners-plan.md confirmed or corrected
 - [x] Spike code committed under `spikes/listeners/` only; main workspace untouched
 
 **Verification:** commands listed in the progress entry; `cargo tree -i aws-lc-rs` output pasted
@@ -54,7 +54,7 @@ that answer four questions with evidence:
 **Dependencies:** owner approval ✓ (2026-10-25) · **Files:** `spikes/listeners/**`, `tasks/progress.md` · **Scope:** M
 
 ## Checkpoint A: Approval + spike
-- [x] Spike findings reviewed by Claude; dependency table final (2026-10-25; findings in plan-listeners.md "Checkpoint A review")
+- [x] Spike findings reviewed by Claude; dependency table final (2026-10-25; findings in listeners-plan.md "Checkpoint A review")
 - [x] **Owner go for Phase 1** (2026-10-25; `socket2` V6ONLY and `quinn-udp` 0.5.16 accepted)
 
 ## Phase 1: Core + Do53
@@ -366,6 +366,6 @@ configurable from the bootstrap TOML, then wires the binary into control-api/UI/
 **Dependencies:** N14 · **Files:** `crates/dnscraft/**`, `deploy/dnscraft.example.toml` · **Scope:** M
 
 ## Checkpoint D: Complete
-- [ ] All spec success criteria met (table in progress.md)
-- [ ] Independent security review (public exposure, amplification, admission, bans, resource caps, TLS)
-- [ ] **Owner approval**
+- [x] All spec success criteria met (table in progress.md)
+- [x] Independent security review (public exposure, amplification, admission, bans, resource caps, TLS)
+- [x] **Owner approval** (2026-10-26; D1 `toml` kept, D2 minimal scope + N14b follow-ups)

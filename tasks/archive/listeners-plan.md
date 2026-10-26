@@ -1,9 +1,9 @@
 # Implementation Plan: `listeners` module
 
-> Spec: [SPEC-listeners.md](../SPEC-listeners.md) (approved 2026-10-25) · Project spec: [SPEC.md](../SPEC.md) ·
-> Tasks: [todo-listeners.md](todo-listeners.md) · Resume log: [progress.md](progress.md) ·
-> Neighbours: [archive/policy-plan.md](archive/policy-plan.md), [archive/tls-plan.md](archive/tls-plan.md)
-> Built by **one Cursor agent**, one task per session (template B in [cursor-next.md](cursor-next.md)); Claude reviews at every checkpoint.
+> Spec: [SPEC-listeners.md](../../SPEC-listeners.md) (approved 2026-10-25) · Project spec: [SPEC.md](../../SPEC.md) ·
+> Tasks: [listeners-todo.md](listeners-todo.md) · Resume log: [progress.md](../progress.md) ·
+> Neighbours: [policy-plan.md](policy-plan.md), [tls-plan.md](tls-plan.md)
+> Built by **one Cursor agent**, one task per session (template B in [cursor-next.md](../cursor-next.md)); Claude reviews at every checkpoint.
 
 ## Overview
 
@@ -124,5 +124,5 @@ One agent works sequentially in this order; N7/N8/N9 are independent of each oth
 
 ## Open Questions
 
-See [SPEC-listeners.md § Open Questions](../SPEC-listeners.md#open-questions-owner): dependencies, HTTP/3 in v1,
+See [SPEC-listeners.md § Open Questions](../../SPEC-listeners.md#open-questions-owner): dependencies, HTTP/3 in v1,
 wildcard binds, public Do53 drop vs REFUSED, minimal binary (N14), verified DDR.
