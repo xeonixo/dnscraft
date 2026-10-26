@@ -9,7 +9,7 @@
 ## Status (updated 2026-10-25)
 
 - `resolver`, `filtering`, `clients`, `tls`, `policy`: complete.
-- `listeners`: N8 DoH h2/h1 done 2026-10-26; **next: N9** DoQ (Phase 2 through N9, STOP at Checkpoint C).
+- `listeners`: N9 DoQ done 2026-10-26; **next: Checkpoint C** (encrypted e2e + Claude review).
 
 ## Rules for every task (paste once per session)
 

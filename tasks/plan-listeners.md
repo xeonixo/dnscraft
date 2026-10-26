@@ -81,7 +81,7 @@ Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i o
 - [x] N6: TLS server configs from `CertResolver`, SNI admission, `no_cert` state, hot reload
 - [x] N7: DoT
 - [x] N8: DoH over HTTP/2 + HTTP/1.1
-- [ ] N9: DoQ
+- [x] N9: DoQ
 
 ### Checkpoint C: Encrypted end to end
 - [ ] DoT / DoH / DoQ answer identically to Do53; public admission matrix; cert hot reload; Claude review

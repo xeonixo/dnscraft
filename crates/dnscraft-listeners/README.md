@@ -19,8 +19,9 @@ N6: TLS configs / SNI admission / hot reload — [`tcp_server_config`](fn.tcp_se
 [`accept_encrypted`](fn.accept_encrypted.html), [`PolicyClientIds`](struct.PolicyClientIds.html).
 N7: DoT [`serve_dot`](fn.serve_dot.html) — framed loop in `conn` + N6 TLS.
 N8: DoH [`serve_doh`](fn.serve_doh.html) — HTTP/2 + HTTP/1.1 over N6 TLS; path Client ID.
+N9: DoQ [`serve_doq`](fn.serve_doq.html) — quinn + N6 QUIC config; SNI Client ID.
 
-Encrypted transports continue in N9–N14. Checkpoint B: e2e +
+Encrypted transports continue in N10–N14. Checkpoint B: e2e +
 `cargo run -p dnscraft-listeners --example serve` (dig `@127.0.0.1 -p 5353`).
 
 ## Crate layout (so far)
@@ -45,6 +46,7 @@ Encrypted transports continue in N9–N14. Checkpoint B: e2e +
 | `dot` | DoT `serve_dot` / `DotStats` |
 | `doh_request` | DoH path + GET/POST wire extraction |
 | `doh` | DoH `serve_doh` / `DohStats` (h2 + http/1.1) |
+| `doq` | DoQ `serve_doq` / `DoqStats` |
 
 ## Tests
 
@@ -58,4 +60,5 @@ cargo test -p dnscraft-listeners --test tcp
 cargo test -p dnscraft-listeners --test tls
 cargo test -p dnscraft-listeners --test dot
 cargo test -p dnscraft-listeners --test doh
+cargo test -p dnscraft-listeners --test doq
 ```

@@ -21,7 +21,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | N8 done; **next: N9** DoQ (Phase 2: N8–N9, STOP at Checkpoint C) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
+| `listeners` | N9 done; **next: Checkpoint C** (encrypted e2e + Claude review) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -34,6 +34,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-26 — **listeners: N9 DoQ.** `serve_doq` via quinn 0.11 (`Endpoint::new` on N1 `bind_udp`, IPv6 V6ONLY) + N6 `quic_server_config` (ALPN `doq` only, 0-RTT off). Per connection: accept bi-streams up to `max_quic_streams_per_connection`; each stream reads length-prefixed message requiring STREAM FIN, message id must be 0 else `CONNECTION_CLOSE` with `DOQ_PROTOCOL_ERROR` (0x2); `handle_wire` with pad + id 0; Client ID from SNI (public matrix as DoT via `ListenerCertResolver`). Idle = `tcp_idle_timeout`. Dep: `quinn` 0.11.12 (`runtime-tokio`, `rustls-ring`). Tests: Do53 parity (pad/id aside), 4 concurrent streams, non-zero id → protocol error, stream-cap blocks 3rd, idle timeout, public SNI. Crypto trees empty; `cargo deny check` ok. Next: Checkpoint C.
 
 - 2026-10-26 — **listeners: N8 DoH over HTTP/2 + HTTP/1.1.** `serve_doh` via hyper 1 + hyper-util AutoBuilder over N6 TLS (ALPN h2/http/1.1; local cert resolver — Client ID from path only). Routes: `/dns-query` (local) and `/dns-query/<id>` (id lower-cased); public unknown id → 404 + strike, other paths → 404 no strike. GET `dns=` base64url no padding; POST `application/dns-message` with body cap; 400/405/413/415; rate → 429; response `application/dns-message`, `Cache-Control: max-age=<min TTL>` for NOERROR/NXDOMAIN, id 0, padding on. Deps: hyper/hyper-util/http/http-body-util/bytes/base64 0.23.1. Tests: GET/POST parity vs Do53 on h2 and h1.1; error-status table; cache max-age. Crypto trees empty; `cargo deny check` ok. Next: N9 DoQ.
 

@@ -21,6 +21,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["signal"] }
 socket2 = { workspace = true }
 quinn-udp = { workspace = true }
+quinn = { workspace = true }
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
 hyper = { workspace = true }

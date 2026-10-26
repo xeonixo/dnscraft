@@ -235,9 +235,9 @@ Per connection accept bidirectional streams up to `max_quic_streams_per_connecti
 admission and strikes as DoT.
 
 **Acceptance criteria:**
-- [ ] DoQ answer equals Do53 answer; several concurrent streams on one connection
-- [ ] Non-zero id → `DOQ_PROTOCOL_ERROR`; stream cap enforced; idle timeout
-- [ ] Public SNI matrix as DoT
+- [x] DoQ answer equals Do53 answer; several concurrent streams on one connection
+- [x] Non-zero id → `DOQ_PROTOCOL_ERROR`; stream cap enforced; idle timeout
+- [x] Public SNI matrix as DoT
 
 **Verification:** `cargo test -p dnscraft-listeners doq`
 
