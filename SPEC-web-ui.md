@@ -159,6 +159,21 @@ data lead), **Depth** (layers and materials communicate hierarchy, used sparingl
 does not compete with the content: no decorative gradients, no accent color used for
 decoration, no dense toolbars.
 
+### Forbidden design elements
+
+These are explicitly excluded and must never appear in the interface, even as options:
+
+- **No emoji.** Emoji are forbidden as UI icons, status indicators, empty states and
+  decoration. Icons are line icons from the open set only (see Iconography).
+- **No pills.** Fully-rounded, pill/capsule-shaped badges, chips, tags, buttons and
+  input shells are forbidden as styling tokens. Use the continuous-corner rectilinear
+  shapes above. (Apple's functional controls that happen to be capsule-shaped — the
+  switch knob and the segmented-control thumb — are standard controls, not "pills".)
+- **No purple, and no "AI" aesthetic.** The primary accent is `--system-blue`. Purple —
+  including purple/blue gradients, "blurple", aurora/gradient blobs and the typical
+  AI-product look — is forbidden. Gradients are never used for surfaces, borders or
+  fills.
+
 ### Typography
 
 - **System font stack first**, so Apple devices render SF Pro natively without
@@ -216,6 +231,9 @@ starting points; they are verified for contrast, not treated as immutable.
 - Dark mode is first-class and automatic. It is **not a simple inversion**: the base
   is darker and elevated surfaces get lighter (`#000` → `#1C1C1E` → `#2C2C2E`), while
   semantic hues shift to their dark variants.
+- **Purple is forbidden.** The only accent is `--system-blue`; purple, purple/blue
+  gradients and any "AI-product" gradient aesthetic never appear (see Forbidden design
+  elements).
 - `color-scheme: light dark` on the root; theme bootstrap avoids a flash of the wrong
   palette (a hashed inline script permitted by CSP, or a server-set class).
 
@@ -260,6 +278,8 @@ starting points; they are verified for contrast, not treated as immutable.
 ### Iconography
 
 - Line icons with a consistent ~1.5 px stroke and hierarchical weight, 20–24 px.
+- **Emoji are forbidden** (see Forbidden design elements): never as UI icons, status
+  indicators, empty states or decoration.
 - **SF Symbols are not redistributable and are never bundled.** Use an open icon set
   (recommend **Lucide**, ISC) matched to the 1.5 px stroke, or reviewed inline SVG
   paths owned by the project. The exact set is an open question.
