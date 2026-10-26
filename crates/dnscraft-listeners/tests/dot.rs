@@ -128,13 +128,19 @@ impl DotHarness {
         let tls_stats = Arc::new(TlsStats::default());
         let (bound_tx, bound_rx) = oneshot::channel();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let public = PublicConfig {
+            ban_strikes: 2,
+            ..PublicConfig::default()
+        };
+        let admission = if exposure == Exposure::Public {
+            support::public_test_admission(&limits, &public)
+        } else {
+            support::admission_for(&limits, &public)
+        };
         let join = tokio::spawn(serve_dot(DotServeParams {
             listener: listener_dot(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), exposure),
             limits,
-            public: PublicConfig {
-                ban_strikes: 2,
-                ..PublicConfig::default()
-            },
+            admission,
             handler: Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(192, 0, 2, 9)))),
             clock,
             stats: Arc::clone(&stats),
@@ -195,7 +201,7 @@ async fn dot_matches_do53_except_padding() {
     let tcp_join = tokio::spawn(serve_tcp(TcpServeParams {
         listener: listener_tcp(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
         limits: Limits::default(),
-        public: PublicConfig::default(),
+        admission: support::fresh_admission(),
         handler: Arc::clone(&handler),
         clock: Arc::new(SystemClock),
         stats: Arc::clone(&tcp_stats),
@@ -361,6 +367,45 @@ async fn handshake_timeout_closes_slow_loris() {
     )
     .await;
 
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn dot_rejects_client_offering_only_h2_alpn() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: ReservedLabels::new(["node1".into()]),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+    let h = DotHarness::spawn(
+        Exposure::Local,
+        Limits::default(),
+        Arc::new(SystemClock),
+        gate,
+        certs,
+    )
+    .await;
+
+    let mut cfg = ClientConfig::builder_with_provider(Arc::new(default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AcceptAll))
+        .with_no_client_auth();
+    cfg.alpn_protocols = vec![b"h2".to_vec()];
+    cfg.resumption = rustls::client::Resumption::disabled();
+    let connector = TlsConnector::from(Arc::new(cfg));
+    let tcp = TcpStream::connect(h.addr).await.unwrap();
+    let name = ServerName::try_from("localhost").unwrap();
+    assert!(
+        connector.connect(name, tcp).await.is_err(),
+        "DoT must not negotiate h2-only ClientHello"
+    );
     h.stop().await;
 }
 

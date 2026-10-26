@@ -158,11 +158,12 @@ impl ServerHarness {
         resolver: Arc<ListenerCertResolver>,
     ) -> Self {
         let stats = Arc::clone(resolver.stats());
-        let config = tcp_server_config(resolver);
-        let admission = Arc::new(Mutex::new(Admission::new(
-            &Limits::default(),
-            &PublicConfig::default(),
-        )));
+        let config = tcp_server_config(resolver, &[dnscraft_listeners::ALPN_DOT]);
+        let admission = if exposure == Exposure::Public {
+            support::public_test_admission(&Limits::default(), &PublicConfig::default())
+        } else {
+            support::admission_for(&Limits::default(), &PublicConfig::default())
+        };
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .await
             .unwrap();
@@ -489,7 +490,7 @@ async fn cert_hot_reload_keeps_open_connection() {
     certs.install(&pem_a, &key_a).unwrap();
     let stats = Arc::new(TlsStats::default());
     let resolver = ListenerCertResolver::local(Arc::clone(&certs), stats);
-    let config = tcp_server_config(resolver);
+    let config = tcp_server_config(resolver, &[dnscraft_listeners::ALPN_DOT]);
 
     let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .await
@@ -629,15 +630,27 @@ fn quic_config_has_zero_early_data_and_tls13_alpn() {
 }
 
 #[test]
-fn tcp_config_alpn_includes_dot_h2_http11() {
+fn tcp_config_alpn_is_per_protocol_family() {
     install_ring();
     let certs = Arc::new(CertResolver::new());
     let stats = Arc::new(TlsStats::default());
-    let resolver = ListenerCertResolver::local(certs, stats);
-    let cfg = tcp_server_config(resolver);
-    assert!(cfg.alpn_protocols.iter().any(|p| p == b"dot"));
-    assert!(cfg.alpn_protocols.iter().any(|p| p == b"h2"));
-    assert!(cfg.alpn_protocols.iter().any(|p| p == b"http/1.1"));
+    let dot = tcp_server_config(
+        ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&stats)),
+        &[dnscraft_listeners::ALPN_DOT],
+    );
+    assert_eq!(dot.alpn_protocols, vec![b"dot".to_vec()]);
+
+    let doh = tcp_server_config(
+        ListenerCertResolver::local(certs, stats),
+        &[
+            dnscraft_listeners::ALPN_H2,
+            dnscraft_listeners::ALPN_HTTP_1_1,
+        ],
+    );
+    assert_eq!(
+        doh.alpn_protocols,
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+    );
 }
 
 /// Simple in-test registry (avoids spinning PolicyEngine for pure SNI unit tests).

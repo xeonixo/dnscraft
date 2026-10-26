@@ -15,14 +15,16 @@ validate / EDNS (ECS strip, OPT echo, EDE, padding) / encode with size limit.
 N3: [`Admission`](struct.Admission.html) — source class, token buckets, bans.
 N4: Do53 [`serve_udp`](fn.serve_udp.html) — concrete + wildcard (`quinn-udp` 0.5.16).
 N5: Do53 [`serve_tcp`](fn.serve_tcp.html) — RFC 7766 framing, pipelining, idle timeout.
-N6: TLS configs / SNI admission / hot reload — [`tcp_server_config`](fn.tcp_server_config.html),
-[`accept_encrypted`](fn.accept_encrypted.html), [`PolicyClientIds`](struct.PolicyClientIds.html).
+N6: TLS configs / SNI admission / hot reload — [`tcp_server_config`](fn.tcp_server_config.html)
+(per-family ALPN), [`accept_encrypted`](fn.accept_encrypted.html),
+[`PolicyClientIds`](struct.PolicyClientIds.html).
 N7: DoT [`serve_dot`](fn.serve_dot.html) — framed loop in `conn` + N6 TLS.
 N8: DoH [`serve_doh`](fn.serve_doh.html) — HTTP/2 + HTTP/1.1 over N6 TLS; path Client ID.
 N9: DoQ [`serve_doq`](fn.serve_doq.html) — quinn + N6 QUIC config; SNI Client ID.
 
-Encrypted transports continue in N10–N14. Checkpoint B: e2e +
-`cargo run -p dnscraft-listeners --example serve` (dig `@127.0.0.1 -p 5353`).
+Shared [`Admission`](struct.Admission.html) across listeners; injectable source
+classifier; public SNI/path gates only for public sources; pre-handshake ban
+refusals. Checkpoint C e2e next; N10 DDR after that.
 
 ## Crate layout (so far)
 

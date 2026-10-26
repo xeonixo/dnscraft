@@ -1,6 +1,8 @@
 //! Source classification and admission (SPEC-listeners § Source classification).
 
+use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use dnscraft_policy::ClientId;
@@ -29,6 +31,17 @@ impl SourceClass {
             Self::Public
         }
     }
+}
+
+/// Injectable source classifier (`Admission` and SNI/path gates).
+///
+/// Tests may treat selected loopback addresses (e.g. `127.0.0.2`) as
+/// [`SourceClass::Public`] so public-admission paths can be exercised locally.
+pub type SourceClassifier = Arc<dyn Fn(IpAddr) -> SourceClass + Send + Sync>;
+
+/// Default classifier: [`SourceClass::of`].
+pub fn default_classifier() -> SourceClassifier {
+    Arc::new(SourceClass::of)
 }
 
 fn is_private_source(ip: IpAddr) -> bool {
@@ -84,19 +97,46 @@ pub enum AdmitDecision {
     },
 }
 
+/// Whether a public Client-ID gate (SNI / DoH path) applies.
+///
+/// Only `(exposure Public, source Public)` requires a registered id. A private
+/// source on a public listener behaves like local (id optional, unknown ignored).
+pub fn public_client_id_required(exposure: Exposure, class: SourceClass) -> bool {
+    exposure == Exposure::Public && class == SourceClass::Public
+}
+
 /// Admission state: rate buckets and ban table.
-#[derive(Debug)]
 pub struct Admission {
     rate_per_source: TokenRate,
     rate_per_client_id: TokenRate,
     sources: LruMap<IpAddr, TokenBucket>,
     clients: LruMap<ClientId, TokenBucket>,
     bans: BanTable,
+    classify: SourceClassifier,
+}
+
+impl fmt::Debug for Admission {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Admission")
+            .field("source_buckets", &self.sources.len())
+            .field("client_buckets", &self.clients.len())
+            .field("ban_entries", &self.bans.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Admission {
-    /// Builds empty tables from the validated config slices.
+    /// Builds empty tables from the validated config slices (default classifier).
     pub fn new(limits: &Limits, public: &PublicConfig) -> Self {
+        Self::with_classifier(limits, public, default_classifier())
+    }
+
+    /// Like [`Self::new`] with an injectable source classifier.
+    pub fn with_classifier(
+        limits: &Limits,
+        public: &PublicConfig,
+        classify: SourceClassifier,
+    ) -> Self {
         let cap = public.max_tracked_sources as usize;
         Self {
             rate_per_source: limits.rate_per_source,
@@ -109,7 +149,13 @@ impl Admission {
                 public.ban_window,
                 public.ban_duration,
             ),
+            classify,
         }
+    }
+
+    /// Classifies `ip` with the installed classifier (after `to_canonical`).
+    pub fn classify(&self, ip: IpAddr) -> SourceClass {
+        (self.classify)(ip.to_canonical())
     }
 
     /// Number of tracked source rate buckets (tests / status).
@@ -127,10 +173,19 @@ impl Admission {
         self.bans.len()
     }
 
+    /// Whether a **public** source is currently banned (private → false).
+    pub fn is_banned(&mut self, source: IpAddr, now: SystemTime) -> bool {
+        let source = source.to_canonical();
+        if self.classify(source) != SourceClass::Public {
+            return false;
+        }
+        self.bans.is_banned(source, now)
+    }
+
     /// Records a ban strike for a public source (no-op for private sources).
     pub fn strike(&mut self, source: IpAddr, reason: StrikeReason, now: SystemTime) {
         let source = source.to_canonical();
-        if SourceClass::of(source) != SourceClass::Public {
+        if self.classify(source) != SourceClass::Public {
             return;
         }
         self.bans.strike(source, reason, now);
@@ -148,7 +203,7 @@ impl Admission {
         now: SystemTime,
     ) -> AdmitDecision {
         let source = source.to_canonical();
-        let class = SourceClass::of(source);
+        let class = self.classify(source);
         let proto = listener.protocol;
 
         if class == SourceClass::Public && self.bans.is_banned(source, now) {
@@ -164,7 +219,7 @@ impl Admission {
             };
         }
 
-        if listener.exposure == Exposure::Public && class == SourceClass::Public {
+        if public_client_id_required(listener.exposure, class) {
             match client_id {
                 ClientIdState::Registered(_) => {}
                 ClientIdState::Absent | ClientIdState::Unknown => {

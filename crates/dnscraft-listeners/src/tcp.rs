@@ -11,7 +11,7 @@ use tokio::sync::{Semaphore, oneshot, watch};
 
 use crate::admission::{Admission, ClientIdState, SourceClass};
 use crate::clock::Clock;
-use crate::config::{Limits, ListenerConfig, PublicConfig};
+use crate::config::{Limits, ListenerConfig};
 use crate::conn::{ConnIdentity, FramedShared, FramedStats, run_framed_connection};
 use crate::error::ListenersError;
 use crate::handler::QueryHandler;
@@ -28,8 +28,8 @@ pub struct TcpServeParams<H: ?Sized> {
     pub listener: ListenerConfig,
     /// Shared limits.
     pub limits: Limits,
-    /// Public ban / tracking settings.
-    pub public: PublicConfig,
+    /// Shared admission (bans / rates) across listeners.
+    pub admission: Arc<Mutex<Admission>>,
     /// Policy or test handler.
     pub handler: Arc<H>,
     /// Wall clock.
@@ -50,7 +50,7 @@ where
     let TcpServeParams {
         listener,
         limits,
-        public,
+        admission,
         handler,
         clock,
         stats,
@@ -70,7 +70,7 @@ where
         limits.max_connections_per_listener.max(1) as usize
     ));
     let shared = Arc::new(FramedShared {
-        admission: Mutex::new(Admission::new(&limits, &public)),
+        admission,
         listener,
         limits,
         handler,
@@ -104,7 +104,14 @@ where
 {
     // Do53-only: public sources are closed at accept. Encrypted transports (DoT)
     // use full Admission with Client ID instead of this accept-time close.
-    if SourceClass::of(peer.ip()) == SourceClass::Public {
+    let class = {
+        let adm = shared
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        adm.classify(peer.ip())
+    };
+    if class == SourceClass::Public {
         FramedStats::bump(&shared.stats.dropped_public);
         drop(stream);
         return;

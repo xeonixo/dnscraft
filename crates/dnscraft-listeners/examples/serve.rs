@@ -25,14 +25,15 @@ use dnscraft_filtering::{
     SnapshotBuilder,
 };
 use dnscraft_listeners::{
-    Exposure, Limits, ListenerConfig, Protocol, PublicConfig, SystemClock, TcpServeParams,
-    TcpStats, UdpServeParams, UdpStats, serve_tcp, serve_udp,
+    Admission, Exposure, Limits, ListenerConfig, Protocol, PublicConfig, SystemClock,
+    TcpServeParams, TcpStats, UdpServeParams, UdpStats, serve_tcp, serve_udp,
 };
 use dnscraft_policy::{
     ListenerId, NoClients, PolicyConfig, PolicyEngine, ProfileConfig, ProfileId, SafeSearchConfig,
     ViewConfig, ViewId,
 };
 use dnscraft_resolver::{Resolver, ResolverConfig};
+use std::sync::Mutex;
 use tokio::sync::{oneshot, watch};
 
 #[derive(Debug, Default)]
@@ -117,6 +118,10 @@ async fn main() {
         let (udp_sd_tx, udp_sd_rx) = watch::channel(false);
         let (tcp_sd_tx, tcp_sd_rx) = watch::channel(false);
 
+        let admission = Arc::new(Mutex::new(Admission::new(
+            &Limits::default(),
+            &PublicConfig::default(),
+        )));
         let mut udp_join = tokio::spawn(serve_udp(UdpServeParams {
             listener: ListenerConfig {
                 id: ListenerId::new("demo-udp").unwrap(),
@@ -126,7 +131,7 @@ async fn main() {
                 h3: false,
             },
             limits: Limits::default(),
-            public: PublicConfig::default(),
+            admission: Arc::clone(&admission),
             handler: Arc::clone(&engine),
             clock: Arc::clone(&clock),
             stats: Arc::clone(&udp_stats),
@@ -154,7 +159,7 @@ async fn main() {
                 h3: false,
             },
             limits: Limits::default(),
-            public: PublicConfig::default(),
+            admission,
             handler: Arc::clone(&engine),
             clock: Arc::clone(&clock),
             stats: Arc::clone(&tcp_stats),

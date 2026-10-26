@@ -1,10 +1,9 @@
 //! TLS server configs, SNI admission, and handshake helpers (N6).
 //!
 //! Builds ring-backed [`rustls::ServerConfig`]s from
-//! [`dnscraft_tls::CertResolver`]. Public listeners wrap the resolver so an
-//! unregistered / missing SNI fails the handshake; callers should prefer
-//! [`accept_encrypted`] so ban strikes and [`ClientIdState`] are applied with
-//! the peer address before the handshake completes.
+//! [`dnscraft_tls::CertResolver`]. Public Client-ID SNI checks happen in
+//! [`accept_encrypted`] / DoQ post-handshake (not in the cert resolver), so
+//! ban strikes see the peer address. Per-protocol ALPN is set by the caller.
 
 use std::fmt;
 use std::future::Future;
@@ -15,9 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use dnscraft_policy::{ClientId, PolicyEngine};
-use dnscraft_tls::{
-    CertResolver, ClientIdRegistry, ReservedLabels, SniKind, accept_public_sni, parse_client_id_sni,
-};
+use dnscraft_tls::{CertResolver, ClientIdRegistry, ReservedLabels, SniKind, parse_client_id_sni};
 use rustls::ServerConfig;
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
@@ -26,7 +23,7 @@ use tokio::sync::Notify;
 use tokio_rustls::server::TlsStream;
 use tokio_rustls::{LazyConfigAcceptor, TlsAcceptor};
 
-use crate::admission::{Admission, ClientIdState};
+use crate::admission::{Admission, ClientIdState, public_client_id_required};
 use crate::bans::StrikeReason;
 use crate::clock::{Clock, wait_until};
 use crate::config::Exposure;
@@ -216,15 +213,26 @@ pub fn apply_sni_strike(
     }
 }
 
-/// [`ResolvesServerCert`] over [`CertResolver`] with optional public SNI gate.
+/// Strike a public source on a public listener for a failed / timed-out handshake.
+pub fn apply_tls_handshake_strike(
+    admission: &mut Admission,
+    exposure: Exposure,
+    peer: IpAddr,
+    now: SystemTime,
+) {
+    let class = admission.classify(peer);
+    if public_client_id_required(exposure, class) {
+        admission.strike(peer, StrikeReason::TlsHandshake, now);
+    }
+}
+
+/// [`ResolvesServerCert`] over [`CertResolver`]: cert presence only.
 ///
-/// - No certificate installed → `None` (handshake fails; [`TlsStats::no_cert`]).
-/// - Public gate set and SNI not accepted → `None` ([`TlsStats`] reject counters).
-/// - Otherwise delegates to the inner resolver (hot reload via `install`).
+/// Public SNI / Client-ID admission is enforced in [`accept_encrypted`] (DoT)
+/// or after the QUIC handshake (DoQ), where the peer IP is available for
+/// strikes. Hot reload remains via [`CertResolver::install`].
 pub struct ListenerCertResolver {
     inner: Arc<CertResolver>,
-    /// `Some` for public listeners — SNI admission in [`ResolvesServerCert::resolve`].
-    public: Option<Arc<SniGate>>,
     stats: Arc<TlsStats>,
 }
 
@@ -232,28 +240,23 @@ impl fmt::Debug for ListenerCertResolver {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ListenerCertResolver")
             .field("has_cert", &self.inner.has_cert())
-            .field("public", &self.public.is_some())
             .finish()
     }
 }
 
 impl ListenerCertResolver {
-    /// Local (or pre-checked) listener: cert presence only, no SNI gate.
+    /// Cert presence only (local and public listeners).
     pub fn local(inner: Arc<CertResolver>, stats: Arc<TlsStats>) -> Arc<Self> {
-        Arc::new(Self {
-            inner,
-            public: None,
-            stats,
-        })
+        Arc::new(Self { inner, stats })
     }
 
-    /// Public listener: cert presence + [`accept_public_sni`] in `resolve`.
-    pub fn public(inner: Arc<CertResolver>, gate: Arc<SniGate>, stats: Arc<TlsStats>) -> Arc<Self> {
-        Arc::new(Self {
-            inner,
-            public: Some(gate),
-            stats,
-        })
+    /// Same as [`Self::local`] (SNI gate is not applied in `resolve`).
+    pub fn public(
+        inner: Arc<CertResolver>,
+        _gate: Arc<SniGate>,
+        stats: Arc<TlsStats>,
+    ) -> Arc<Self> {
+        Self::local(inner, stats)
     }
 
     /// Underlying hot-reloadable certificate store.
@@ -273,39 +276,24 @@ impl ResolvesServerCert for ListenerCertResolver {
             TlsStats::bump(&self.stats.no_cert);
             return None;
         }
-        if let Some(gate) = self.public.as_ref() {
-            let sni = client_hello.server_name();
-            if !accept_public_sni(
-                sni,
-                &gate.public_domain,
-                &gate.reserved,
-                gate.registry.as_ref(),
-            ) {
-                match inspect_public_sni(sni, gate) {
-                    PublicSniOutcome::Reject { strike: true, .. } => {
-                        TlsStats::bump(&self.stats.sni_reject_strike);
-                    }
-                    PublicSniOutcome::Reject { strike: false, .. } => {
-                        TlsStats::bump(&self.stats.sni_reject_no_strike);
-                    }
-                    PublicSniOutcome::Accept { .. } => {}
-                }
-                return None;
-            }
-        }
         self.inner.resolve(client_hello)
     }
 }
 
-/// TCP-family server config: TLS 1.2+, ALPN `dot` / `h2` / `http/1.1`.
-pub fn tcp_server_config(resolver: Arc<dyn ResolvesServerCert + 'static>) -> Arc<ServerConfig> {
+/// TCP-family server config: TLS 1.2+, ALPN set by the protocol family.
+///
+/// DoT passes only [`ALPN_DOT`]; DoH passes [`ALPN_H2`] + [`ALPN_HTTP_1_1`].
+pub fn tcp_server_config(
+    resolver: Arc<dyn ResolvesServerCert + 'static>,
+    alpn: &[&[u8]],
+) -> Arc<ServerConfig> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut cfg = ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .unwrap_or_else(|e| panic!("ring provider supports default protocol versions: {e}"))
         .with_no_client_auth()
         .with_cert_resolver(resolver);
-    cfg.alpn_protocols = vec![ALPN_DOT.to_vec(), ALPN_H2.to_vec(), ALPN_HTTP_1_1.to_vec()];
+    cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     // No session tickets: each handshake re-resolves the cert (hot reload visible).
     cfg.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
     Arc::new(cfg)
@@ -326,19 +314,16 @@ pub fn quic_server_config(resolver: Arc<dyn ResolvesServerCert + 'static>) -> Ar
     Arc::new(cfg)
 }
 
-/// Runs `handshake` until it completes or `clock` passes `timeout`.
-///
-/// Callers (N7+) wrap `TlsAcceptor::accept` / `StartHandshake::into_stream`.
-pub async fn tls_handshake_timeout<F, T, E>(
+/// Runs `handshake` until it completes or `clock` reaches `deadline`.
+pub async fn handshake_until<F, T, E>(
     handshake: F,
     clock: &dyn Clock,
-    timeout: Duration,
+    deadline: SystemTime,
 ) -> Result<T, ListenersError>
 where
     F: Future<Output = Result<T, E>>,
     E: std::fmt::Display,
 {
-    let deadline = add_duration(clock.now(), timeout);
     let wake = Notify::new();
     tokio::select! {
         r = handshake => r.map_err(|e| ListenersError::TlsHandshake {
@@ -352,6 +337,27 @@ where
     }
 }
 
+/// Runs `handshake` until it completes or `clock` passes `timeout` from now.
+///
+/// Callers (N7+) wrap `TlsAcceptor::accept` / `StartHandshake::into_stream`.
+pub async fn tls_handshake_timeout<F, T, E>(
+    handshake: F,
+    clock: &dyn Clock,
+    timeout: Duration,
+) -> Result<T, ListenersError>
+where
+    F: Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let deadline = add_duration(clock.now(), timeout);
+    handshake_until(handshake, clock, deadline).await
+}
+
+/// Whether a TLS error is the handshake-timeout sentinel.
+pub fn is_handshake_timeout(err: &ListenersError) -> bool {
+    matches!(err, ListenersError::TlsHandshake { message } if message.contains("timeout"))
+}
+
 /// Accepted encrypted connection plus the Client ID for [`crate::core::QueryMeta`].
 pub struct AcceptedTls<IO> {
     /// TLS stream after a successful handshake.
@@ -362,7 +368,7 @@ pub struct AcceptedTls<IO> {
 
 /// Inputs for [`accept_encrypted`].
 pub struct AcceptEncrypted<'a> {
-    /// rustls server config (TCP or QUIC family).
+    /// rustls server config (TCP family; ALPN already set).
     pub config: Arc<ServerConfig>,
     /// Local vs public SNI rules.
     pub exposure: Exposure,
@@ -370,25 +376,24 @@ pub struct AcceptEncrypted<'a> {
     pub gate: &'a SniGate,
     /// Hot-reloadable cert store (`has_cert` checked before handshake).
     pub certs: &'a CertResolver,
-    /// Ban table for public SNI strikes.
+    /// Ban table for public SNI / handshake strikes.
     pub admission: &'a Mutex<Admission>,
     /// Peer address (strikes are no-op for private sources).
     pub peer: IpAddr,
     /// Clock for handshake deadline and strike timestamps.
     pub clock: &'a dyn Clock,
-    /// Bound for ClientHello + certificate handshake.
+    /// Bound for ClientHello **and** the rest of the handshake (one deadline).
     pub handshake_timeout: Duration,
     /// Counters (`no_cert`, SNI rejects, timeouts).
     pub stats: &'a TlsStats,
 }
 
-/// Accepts TLS with SNI admission, optional strike, and handshake timeout.
+/// Accepts TLS with SNI admission, optional strike, and a single handshake deadline.
 ///
 /// Prefer this over raw [`TlsAcceptor`] on public listeners so strikes are
-/// recorded with the peer IP **before** the handshake is abandoned.
-///
-/// Do53-only accept-time public close does **not** apply here — encrypted
-/// transports use full admission with Client ID (N7+).
+/// recorded with the peer IP. The public SNI gate applies only when both
+/// exposure and source class are Public; private sources on a public listener
+/// use local rules (id optional).
 pub async fn accept_encrypted<IO>(
     stream: IO,
     params: AcceptEncrypted<'_>,
@@ -408,16 +413,18 @@ where
         stats,
     } = params;
 
-    let start = match tls_handshake_timeout(
+    let deadline = add_duration(clock.now(), handshake_timeout);
+
+    let start = match handshake_until(
         LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream),
         clock,
-        handshake_timeout,
+        deadline,
     )
     .await
     {
         Ok(s) => s,
         Err(e) => {
-            TlsStats::bump(&stats.handshake_fail);
+            record_handshake_failure(admission, exposure, peer, clock, stats, &e);
             return Err(e);
         }
     };
@@ -429,8 +436,14 @@ where
 
     let sni_owned = start.client_hello().server_name().map(str::to_owned);
     let sni = sni_owned.as_deref();
-    let client_id = match exposure {
-        Exposure::Public => match inspect_public_sni(sni, gate) {
+    let source_class = {
+        let adm = admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        adm.classify(peer)
+    };
+    let client_id = if public_client_id_required(exposure, source_class) {
+        match inspect_public_sni(sni, gate) {
             PublicSniOutcome::Accept { client_id } => ClientIdState::Registered(client_id),
             outcome @ PublicSniOutcome::Reject { .. } => {
                 if outcome.should_strike() {
@@ -446,28 +459,40 @@ where
                 }
                 return Err(ListenersError::AdmissionUnknownClientId);
             }
-        },
-        Exposure::Local => client_id_state_local(sni, gate),
+        }
+    } else {
+        // Local listener, or private source on a public listener.
+        client_id_state_local(sni, gate)
     };
 
-    // ClientHello already consumed part of the budget; bound the rest with the
-    // same timeout (N7 may share a single deadline across both halves).
-    let stream = match tls_handshake_timeout(start.into_stream(config), clock, handshake_timeout)
-        .await
-    {
+    let stream = match handshake_until(start.into_stream(config), clock, deadline).await {
         Ok(s) => s,
         Err(e) => {
-            if matches!(&e, ListenersError::TlsHandshake { message } if message.contains("timeout"))
-            {
-                TlsStats::bump(&stats.handshake_timeouts);
-            } else {
-                TlsStats::bump(&stats.handshake_fail);
-            }
+            record_handshake_failure(admission, exposure, peer, clock, stats, &e);
             return Err(e);
         }
     };
 
     Ok(AcceptedTls { stream, client_id })
+}
+
+fn record_handshake_failure(
+    admission: &Mutex<Admission>,
+    exposure: Exposure,
+    peer: IpAddr,
+    clock: &dyn Clock,
+    stats: &TlsStats,
+    err: &ListenersError,
+) {
+    if is_handshake_timeout(err) {
+        TlsStats::bump(&stats.handshake_timeouts);
+    } else {
+        TlsStats::bump(&stats.handshake_fail);
+    }
+    let mut adm = admission
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    apply_tls_handshake_strike(&mut adm, exposure, peer, clock.now());
 }
 
 /// Convenience: [`TlsAcceptor`] from a server config (local / already gated).

@@ -156,13 +156,19 @@ impl DoqHarness {
         let tls_stats = Arc::new(TlsStats::default());
         let (bound_tx, bound_rx) = oneshot::channel();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let public = PublicConfig {
+            ban_strikes: 2,
+            ..PublicConfig::default()
+        };
+        let admission = if exposure == Exposure::Public {
+            support::public_test_admission(&limits, &public)
+        } else {
+            support::admission_for(&limits, &public)
+        };
         let join = tokio::spawn(serve_doq(DoqServeParams {
             listener: listener_doq(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), exposure),
             limits,
-            public: PublicConfig {
-                ban_strikes: 2,
-                ..PublicConfig::default()
-            },
+            admission,
             handler: Arc::new(FakeHandler::new(fake_a_answer(answer))),
             clock: Arc::new(SystemClock),
             stats: Arc::clone(&stats),
@@ -212,7 +218,7 @@ async fn doq_matches_do53_except_padding_and_id() {
     let tcp_join = tokio::spawn(serve_tcp(TcpServeParams {
         listener: listener_tcp(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
         limits: Limits::default(),
-        public: PublicConfig::default(),
+        admission: support::fresh_admission(),
         handler: Arc::clone(&handler),
         clock: Arc::new(SystemClock),
         stats: Arc::clone(&tcp_stats),
@@ -448,31 +454,39 @@ async fn public_sni_matrix() {
     assert_eq!(Message::decode(&ok).unwrap().rcode(), Rcode::NOERROR);
     drop(conn);
 
-    // Unknown id → handshake reject + strike counter.
+    // Unknown id → post-handshake SNI reject + strike (QUIC handshake itself may
+    // complete; the server then closes before serving streams).
     let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
     endpoint.set_default_client_config(doq_client_config());
-    let bad = endpoint
+    let bad_conn = endpoint
         .connect(doq.addr, "unknown.dns.example.com")
         .unwrap()
-        .await;
-    assert!(bad.is_err(), "unknown SNI must fail handshake");
+        .await
+        .expect("QUIC handshake completes before SNI gate");
     poll_until(
         || doq.tls_stats.sni_reject_strike.load(Ordering::Relaxed) >= 1,
         Duration::from_secs(2),
     )
     .await;
+    assert!(
+        bad_conn.open_bi().await.is_err(),
+        "unknown SNI connection must not serve streams"
+    );
+    drop(bad_conn);
 
     // Node hostname → reject without strike.
-    let node = endpoint
+    let node_conn = endpoint
         .connect(doq.addr, "node1.dns.example.com")
         .unwrap()
-        .await;
-    assert!(node.is_err());
+        .await
+        .expect("QUIC handshake completes before SNI gate");
     poll_until(
         || doq.tls_stats.sni_reject_no_strike.load(Ordering::Relaxed) >= 1,
         Duration::from_secs(2),
     )
     .await;
+    assert!(node_conn.open_bi().await.is_err());
+    drop(node_conn);
 
     doq.stop().await;
 }

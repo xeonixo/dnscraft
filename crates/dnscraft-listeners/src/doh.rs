@@ -22,10 +22,10 @@ use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 use tokio::sync::{Semaphore, oneshot, watch};
 use tokio_rustls::TlsAcceptor;
 
-use crate::admission::{Admission, AdmitDecision, ClientIdState};
+use crate::admission::{Admission, AdmitDecision, ClientIdState, public_client_id_required};
 use crate::bans::StrikeReason;
 use crate::clock::Clock;
-use crate::config::{Exposure, Limits, ListenerConfig, PublicConfig};
+use crate::config::{Exposure, Limits, ListenerConfig};
 use crate::core::{QueryMeta, handle_wire};
 use crate::doh_request::{
     DNS_MESSAGE_TYPE, DohPath, DohWireError, content_type_of, extract_wire, parse_doh_path,
@@ -35,7 +35,8 @@ use crate::framing::MAX_MESSAGE_LEN;
 use crate::handler::QueryHandler;
 use crate::socket::bind_tcp;
 use crate::tls::{
-    ListenerCertResolver, SniGate, TlsStats, tcp_server_config, tls_acceptor, tls_handshake_timeout,
+    ALPN_H2, ALPN_HTTP_1_1, ListenerCertResolver, SniGate, TlsStats, apply_tls_handshake_strike,
+    is_handshake_timeout, tcp_server_config, tls_acceptor, tls_handshake_timeout,
 };
 
 /// Counters for one DoH listener.
@@ -49,6 +50,8 @@ pub struct DohStats {
     pub rejected_conn_cap: AtomicU64,
     /// Rejected because `max_connections_per_source` was full.
     pub rejected_per_source: AtomicU64,
+    /// Banned public source closed before TLS.
+    pub dropped_banned: AtomicU64,
     /// Successful DNS answers (HTTP 200).
     pub answered: AtomicU64,
     /// HTTP 404 (path / unknown Client ID).
@@ -71,8 +74,8 @@ pub struct DohServeParams<H: ?Sized> {
     pub listener: ListenerConfig,
     /// Shared limits.
     pub limits: Limits,
-    /// Public ban / tracking settings.
-    pub public: PublicConfig,
+    /// Shared admission (bans / rates) across listeners.
+    pub admission: Arc<Mutex<Admission>>,
     /// Policy or test handler.
     pub handler: Arc<H>,
     /// Wall clock.
@@ -95,7 +98,7 @@ struct DohShared<H: ?Sized> {
     listener: ListenerConfig,
     limits: Limits,
     handler: Arc<H>,
-    admission: Mutex<Admission>,
+    admission: Arc<Mutex<Admission>>,
     clock: Arc<dyn Clock>,
     stats: Arc<DohStats>,
     sni_gate: Arc<SniGate>,
@@ -105,9 +108,8 @@ struct DohShared<H: ?Sized> {
 
 /// Runs one DoH (HTTP/2 + HTTP/1.1) listener until `params.shutdown` is `true`.
 ///
-/// Client ID comes from the URL path (not SNI). TLS uses the N6 TCP-family config
-/// (ALPN `h2` / `http/1.1`); the public SNI gate is **not** applied so apex /
-/// shared hostnames can present the certificate.
+/// Client ID comes from the URL path (not SNI). TLS uses DoH-only ALPN
+/// (`h2` / `http/1.1`); cert resolver is presence-only.
 pub async fn serve_doh<H>(params: DohServeParams<H>) -> Result<(), ListenersError>
 where
     H: QueryHandler + 'static,
@@ -115,7 +117,7 @@ where
     let DohServeParams {
         listener,
         limits,
-        public,
+        admission,
         handler,
         clock,
         stats,
@@ -136,14 +138,14 @@ where
 
     // Cert presence only — DoH Client ID is path-based (SPEC-listeners).
     let resolver = ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&tls_stats));
-    let tls_config: Arc<ServerConfig> = tcp_server_config(resolver);
+    let tls_config: Arc<ServerConfig> = tcp_server_config(resolver, &[ALPN_H2, ALPN_HTTP_1_1]);
     let acceptor = tls_acceptor(Arc::clone(&tls_config));
 
     let conn_cap = Arc::new(Semaphore::new(
         limits.max_connections_per_listener.max(1) as usize
     ));
     let shared = Arc::new(DohShared {
-        admission: Mutex::new(Admission::new(&limits, &public)),
+        admission,
         listener,
         limits,
         handler,
@@ -189,6 +191,20 @@ fn handle_accept<H>(
 ) where
     H: QueryHandler + 'static,
 {
+    // Banned public source: close before any TLS work.
+    {
+        let now = shared.clock.now();
+        let mut adm = shared
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if adm.is_banned(peer.ip(), now) {
+            DohStats::bump(&shared.stats.dropped_banned);
+            drop(stream);
+            return;
+        }
+    }
+
     let Ok(conn_permit) = shared.conn_cap.clone().try_acquire_owned() else {
         DohStats::bump(&shared.stats.rejected_conn_cap);
         drop(stream);
@@ -215,6 +231,7 @@ fn handle_accept<H>(
         let _conn_permit = conn_permit;
         let source = peer.ip().to_canonical();
         let handshake_timeout = shared.limits.tls_handshake_timeout;
+        let exposure = shared.listener.exposure;
 
         if !certs.has_cert() {
             TlsStats::bump(&tls_stats.no_cert);
@@ -232,13 +249,17 @@ fn handle_accept<H>(
         {
             Ok(s) => s,
             Err(e) => {
-                if matches!(
-                    &e,
-                    ListenersError::TlsHandshake { message } if message.contains("timeout")
-                ) {
+                if is_handshake_timeout(&e) {
                     TlsStats::bump(&tls_stats.handshake_timeouts);
                 } else {
                     TlsStats::bump(&tls_stats.handshake_fail);
+                }
+                {
+                    let mut adm = shared
+                        .admission
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    apply_tls_handshake_strike(&mut adm, exposure, peer.ip(), shared.clock.now());
                 }
                 release_per_source(&shared, source);
                 DohStats::bump(&shared.stats.closed);
@@ -386,7 +407,21 @@ fn resolve_path_client_id<H: ?Sized>(
     path: &DohPath,
 ) -> Result<ClientIdState, StatusCode> {
     let exposure = shared.listener.exposure;
-    match (exposure, path) {
+    let class = {
+        let adm = shared
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        adm.classify(peer)
+    };
+    // Private source on a public listener → local path rules.
+    let effective = if public_client_id_required(exposure, class) {
+        Exposure::Public
+    } else {
+        Exposure::Local
+    };
+
+    match (effective, path) {
         (Exposure::Local, DohPath::Bare) => Ok(ClientIdState::Absent),
         (Exposure::Local, DohPath::ClientId(id)) => {
             if ClientIdRegistry::is_registered(shared.sni_gate.registry.as_ref(), id) {

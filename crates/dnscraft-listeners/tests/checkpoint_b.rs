@@ -127,6 +127,10 @@ async fn spawn_udp(
 ) {
     let (bound_tx, bound_rx) = oneshot::channel();
     let (sd_tx, sd_rx) = watch::channel(false);
+    let admission = Arc::new(std::sync::Mutex::new(dnscraft_listeners::Admission::new(
+        &Limits::default(),
+        &PublicConfig::default(),
+    )));
     let join = tokio::spawn(serve_udp(UdpServeParams {
         listener: ListenerConfig {
             id: ListenerId::new("e2e-udp").unwrap(),
@@ -136,7 +140,7 @@ async fn spawn_udp(
             h3: false,
         },
         limits: Limits::default(),
-        public: PublicConfig::default(),
+        admission,
         handler: engine,
         clock: Arc::new(SystemClock),
         stats: Arc::new(UdpStats::default()),
@@ -157,6 +161,10 @@ async fn spawn_tcp(
 ) {
     let (bound_tx, bound_rx) = oneshot::channel();
     let (sd_tx, sd_rx) = watch::channel(false);
+    let admission = Arc::new(std::sync::Mutex::new(dnscraft_listeners::Admission::new(
+        &Limits::default(),
+        &PublicConfig::default(),
+    )));
     let join = tokio::spawn(serve_tcp(TcpServeParams {
         listener: ListenerConfig {
             id: ListenerId::new("e2e-tcp").unwrap(),
@@ -166,7 +174,7 @@ async fn spawn_tcp(
             h3: false,
         },
         limits: Limits::default(),
-        public: PublicConfig::default(),
+        admission,
         handler: engine,
         clock: Arc::new(SystemClock),
         stats: Arc::new(TcpStats::default()),

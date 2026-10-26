@@ -13,13 +13,14 @@ use tokio::sync::{Semaphore, oneshot, watch};
 
 use crate::admission::Admission;
 use crate::clock::Clock;
-use crate::config::{Exposure, Limits, ListenerConfig, PublicConfig};
+use crate::config::{Limits, ListenerConfig};
 use crate::conn::{ConnIdentity, FramedShared, FramedStats, run_framed_connection};
 use crate::error::ListenersError;
 use crate::handler::QueryHandler;
 use crate::socket::bind_tcp;
 use crate::tls::{
-    AcceptEncrypted, ListenerCertResolver, SniGate, TlsStats, accept_encrypted, tcp_server_config,
+    ALPN_DOT, AcceptEncrypted, ListenerCertResolver, SniGate, TlsStats, accept_encrypted,
+    tcp_server_config,
 };
 
 /// Counters for one DoT listener (same shape as Do53 TCP framed stats).
@@ -31,8 +32,8 @@ pub struct DotServeParams<H: ?Sized> {
     pub listener: ListenerConfig,
     /// Shared limits (includes `tls_handshake_timeout`).
     pub limits: Limits,
-    /// Public ban / tracking settings.
-    pub public: PublicConfig,
+    /// Shared admission (bans / rates) across listeners.
+    pub admission: Arc<Mutex<Admission>>,
     /// Policy or test handler.
     pub handler: Arc<H>,
     /// Wall clock.
@@ -53,9 +54,8 @@ pub struct DotServeParams<H: ?Sized> {
 
 /// Runs one DoT listener until `params.shutdown` becomes `true`.
 ///
-/// Accept path: connection caps → TLS (`accept_encrypted` with SNI admission) →
-/// framed query loop with padding and Client ID from SNI. Unlike Do53 TCP, public
-/// sources are **not** closed at accept.
+/// Accept path: ban check → connection caps → TLS (`accept_encrypted` with SNI
+/// admission) → framed query loop with padding and Client ID from SNI.
 pub async fn serve_dot<H>(params: DotServeParams<H>) -> Result<(), ListenersError>
 where
     H: QueryHandler + 'static,
@@ -63,7 +63,7 @@ where
     let DotServeParams {
         listener,
         limits,
-        public,
+        admission,
         handler,
         clock,
         stats,
@@ -82,21 +82,14 @@ where
         .map_err(|e| ListenersError::bind(listener.address, e))?;
     let _ = bound.send(local);
 
-    let resolver: Arc<ListenerCertResolver> = match listener.exposure {
-        Exposure::Public => ListenerCertResolver::public(
-            Arc::clone(&certs),
-            Arc::clone(&sni_gate),
-            Arc::clone(&tls_stats),
-        ),
-        Exposure::Local => ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&tls_stats)),
-    };
-    let tls_config: Arc<ServerConfig> = tcp_server_config(resolver);
+    let resolver = ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&tls_stats));
+    let tls_config: Arc<ServerConfig> = tcp_server_config(resolver, &[ALPN_DOT]);
 
     let conn_cap = Arc::new(Semaphore::new(
         limits.max_connections_per_listener.max(1) as usize
     ));
     let shared = Arc::new(FramedShared {
-        admission: Mutex::new(Admission::new(&limits, &public)),
+        admission,
         listener,
         limits,
         handler,
@@ -143,6 +136,20 @@ fn handle_accept<H>(
 ) where
     H: QueryHandler + 'static,
 {
+    // Banned public source: close before any TLS work.
+    {
+        let now = shared.clock.now();
+        let mut adm = shared
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if adm.is_banned(peer.ip(), now) {
+            FramedStats::bump(&shared.stats.dropped_admission);
+            drop(stream);
+            return;
+        }
+    }
+
     let Ok(conn_permit) = shared.conn_cap.clone().try_acquire_owned() else {
         FramedStats::bump(&shared.stats.rejected_conn_cap);
         drop(stream);
@@ -178,7 +185,7 @@ fn handle_accept<H>(
                 exposure,
                 gate: sni_gate.as_ref(),
                 certs: certs.as_ref(),
-                admission: &shared.admission,
+                admission: shared.admission.as_ref(),
                 peer: peer.ip(),
                 clock: shared.clock.as_ref(),
                 handshake_timeout,

@@ -5,6 +5,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use dnscraft_policy::DnsProtocol;
 use dnscraft_proto::{Message, Rcode};
@@ -12,12 +13,12 @@ use dnscraft_tls::CertResolver;
 use quinn::crypto::rustls::{HandshakeData, QuicServerConfig};
 use quinn::{Endpoint, EndpointConfig, RecvStream, SendStream, ServerConfig, TokioRuntime, VarInt};
 use rustls::ServerConfig as RustlsServerConfig;
-use tokio::sync::{Semaphore, oneshot, watch};
+use tokio::sync::{Notify, Semaphore, oneshot, watch};
 
-use crate::admission::{Admission, AdmitDecision, ClientIdState};
+use crate::admission::{Admission, AdmitDecision, ClientIdState, public_client_id_required};
 use crate::bans::StrikeReason;
-use crate::clock::Clock;
-use crate::config::{Exposure, Limits, ListenerConfig, PublicConfig};
+use crate::clock::{Clock, wait_until};
+use crate::config::{Limits, ListenerConfig};
 use crate::core::{QueryMeta, error_reply_from_wire, handle_wire};
 use crate::error::ListenersError;
 use crate::framing::{MAX_MESSAGE_LEN, write_frame};
@@ -25,7 +26,7 @@ use crate::handler::QueryHandler;
 use crate::socket::bind_udp;
 use crate::tls::{
     ALPN_DOQ, ListenerCertResolver, PublicSniOutcome, SniGate, TlsStats, apply_sni_strike,
-    client_id_state_local, inspect_public_sni, quic_server_config,
+    apply_tls_handshake_strike, client_id_state_local, inspect_public_sni, quic_server_config,
 };
 
 /// RFC 9250 §4.3: `DOQ_PROTOCOL_ERROR` (0x2).
@@ -46,6 +47,8 @@ pub struct DoqStats {
     pub rejected_conn_cap: AtomicU64,
     /// Rejected because `max_connections_per_source` was full.
     pub rejected_per_source: AtomicU64,
+    /// Banned public source refused before handshake.
+    pub dropped_banned: AtomicU64,
     /// Queries admitted into `handle_wire`.
     pub queries: AtomicU64,
     /// Answers written to a stream.
@@ -70,11 +73,11 @@ pub struct DoqServeParams<H: ?Sized> {
     pub listener: ListenerConfig,
     /// Shared limits (QUIC stream cap, idle = `tcp_idle_timeout`).
     pub limits: Limits,
-    /// Public ban / tracking settings.
-    pub public: PublicConfig,
+    /// Shared admission (bans / rates) across listeners.
+    pub admission: Arc<Mutex<Admission>>,
     /// Policy or test handler.
     pub handler: Arc<H>,
-    /// Wall clock (admission / strikes; quinn idle uses the runtime clock).
+    /// Wall clock (admission / strikes / handshake deadline).
     pub clock: Arc<dyn Clock>,
     /// DoQ counters.
     pub stats: Arc<DoqStats>,
@@ -94,7 +97,7 @@ struct DoqShared<H: ?Sized> {
     listener: ListenerConfig,
     limits: Limits,
     handler: Arc<H>,
-    admission: Mutex<Admission>,
+    admission: Arc<Mutex<Admission>>,
     clock: Arc<dyn Clock>,
     stats: Arc<DoqStats>,
     tls_stats: Arc<TlsStats>,
@@ -116,7 +119,7 @@ where
     let DoqServeParams {
         listener,
         limits,
-        public,
+        admission,
         handler,
         clock,
         stats,
@@ -133,14 +136,7 @@ where
         .map_err(|e| ListenersError::bind(listener.address, e))?;
     let _ = bound.send(local);
 
-    let resolver: Arc<ListenerCertResolver> = match listener.exposure {
-        Exposure::Public => ListenerCertResolver::public(
-            Arc::clone(&certs),
-            Arc::clone(&sni_gate),
-            Arc::clone(&tls_stats),
-        ),
-        Exposure::Local => ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&tls_stats)),
-    };
+    let resolver = ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&tls_stats));
     // DoQ-only: advertise `doq`, not `h3` (N12 owns HTTP/3 on the same port).
     let mut rustls_cfg: RustlsServerConfig = (*quic_server_config(resolver)).clone();
     rustls_cfg.alpn_protocols = vec![ALPN_DOQ.to_vec()];
@@ -178,7 +174,7 @@ where
         limits.max_connections_per_listener.max(1) as usize
     ));
     let shared = Arc::new(DoqShared {
-        admission: Mutex::new(Admission::new(&limits, &public)),
+        admission,
         listener,
         limits,
         handler,
@@ -218,6 +214,20 @@ where
     let peer = incoming.remote_address();
     let source = peer.ip().to_canonical();
 
+    // Banned public source: refuse before any QUIC/TLS work.
+    {
+        let now = shared.clock.now();
+        let mut adm = shared
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if adm.is_banned(source, now) {
+            DoqStats::bump(&shared.stats.dropped_banned);
+            incoming.refuse();
+            return;
+        }
+    }
+
     let Ok(conn_permit) = shared.conn_cap.clone().try_acquire_owned() else {
         DoqStats::bump(&shared.stats.rejected_conn_cap);
         incoming.refuse();
@@ -250,26 +260,52 @@ where
     tokio::spawn(async move {
         let _conn_permit = conn_permit;
         let handshake_timeout = shared.limits.tls_handshake_timeout;
+        let exposure = shared.listener.exposure;
         let connecting = match incoming.accept() {
             Ok(c) => c,
             Err(_) => {
                 TlsStats::bump(&shared.tls_stats.handshake_fail);
+                {
+                    let mut adm = shared
+                        .admission
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    apply_tls_handshake_strike(&mut adm, exposure, source, shared.clock.now());
+                }
                 release_per_source(&shared, source);
                 DoqStats::bump(&shared.stats.closed);
                 return;
             }
         };
 
-        let conn = match tokio::time::timeout(handshake_timeout, connecting).await {
-            Ok(Ok(c)) => c,
-            Ok(Err(_)) => {
-                TlsStats::bump(&shared.tls_stats.handshake_fail);
-                release_per_source(&shared, source);
-                DoqStats::bump(&shared.stats.closed);
-                return;
-            }
-            Err(_) => {
+        let deadline = add_duration(shared.clock.now(), handshake_timeout);
+        let wake = Notify::new();
+        let conn = tokio::select! {
+            r = connecting => match r {
+                Ok(c) => c,
+                Err(_) => {
+                    TlsStats::bump(&shared.tls_stats.handshake_fail);
+                    {
+                        let mut adm = shared
+                            .admission
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        apply_tls_handshake_strike(&mut adm, exposure, source, shared.clock.now());
+                    }
+                    release_per_source(&shared, source);
+                    DoqStats::bump(&shared.stats.closed);
+                    return;
+                }
+            },
+            () = wait_until(shared.clock.as_ref(), deadline, &wake) => {
                 TlsStats::bump(&shared.tls_stats.handshake_timeouts);
+                {
+                    let mut adm = shared
+                        .admission
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    apply_tls_handshake_strike(&mut adm, exposure, source, shared.clock.now());
+                }
                 release_per_source(&shared, source);
                 DoqStats::bump(&shared.stats.closed);
                 return;
@@ -310,30 +346,35 @@ fn resolve_sni_client_id<H: ?Sized>(
         .flatten();
     let sni_ref = sni.as_deref();
 
-    match shared.listener.exposure {
-        Exposure::Local => Ok(client_id_state_local(sni_ref, shared.sni_gate.as_ref())),
-        Exposure::Public => {
-            // Public cert resolver already rejected unknown SNI during handshake
-            // (connection would not reach here). Re-classify for ClientIdState and
-            // belt-and-braces reject if somehow present.
-            match inspect_public_sni(sni_ref, shared.sni_gate.as_ref()) {
-                PublicSniOutcome::Accept { client_id } => Ok(ClientIdState::Registered(client_id)),
-                outcome => {
-                    if outcome.should_strike() {
-                        TlsStats::bump(&shared.tls_stats.sni_reject_strike);
-                    } else {
-                        TlsStats::bump(&shared.tls_stats.sni_reject_no_strike);
-                    }
-                    {
-                        let mut adm = shared
-                            .admission
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        apply_sni_strike(&mut adm, peer, &outcome, shared.clock.now());
-                    }
-                    Err(())
-                }
+    let class = {
+        let adm = shared
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        adm.classify(peer)
+    };
+
+    if !public_client_id_required(shared.listener.exposure, class) {
+        // Local, or private source on a public listener.
+        return Ok(client_id_state_local(sni_ref, shared.sni_gate.as_ref()));
+    }
+
+    match inspect_public_sni(sni_ref, shared.sni_gate.as_ref()) {
+        PublicSniOutcome::Accept { client_id } => Ok(ClientIdState::Registered(client_id)),
+        outcome => {
+            if outcome.should_strike() {
+                TlsStats::bump(&shared.tls_stats.sni_reject_strike);
+            } else {
+                TlsStats::bump(&shared.tls_stats.sni_reject_no_strike);
             }
+            {
+                let mut adm = shared
+                    .admission
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                apply_sni_strike(&mut adm, peer, &outcome, shared.clock.now());
+            }
+            Err(())
         }
     }
 }
@@ -529,4 +570,8 @@ fn release_per_source<H: ?Sized>(shared: &DoqShared<H>, source: IpAddr) {
             map.remove(&source);
         }
     }
+}
+
+fn add_duration(now: SystemTime, d: Duration) -> SystemTime {
+    now.checked_add(d).unwrap_or(SystemTime::UNIX_EPOCH)
 }

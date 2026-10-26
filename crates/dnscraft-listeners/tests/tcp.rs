@@ -72,10 +72,14 @@ impl TcpHarness {
         let stats = Arc::new(TcpStats::default());
         let (bound_tx, bound_rx) = oneshot::channel();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let admission = Arc::new(std::sync::Mutex::new(dnscraft_listeners::Admission::new(
+            &limits,
+            &PublicConfig::default(),
+        )));
         let join = tokio::spawn(serve_tcp(TcpServeParams {
             listener: listener_cfg(bind),
             limits,
-            public: PublicConfig::default(),
+            admission,
             handler,
             clock,
             stats: Arc::clone(&stats),

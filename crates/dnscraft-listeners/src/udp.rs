@@ -16,7 +16,7 @@ use tokio::sync::{Notify, Semaphore, oneshot, watch};
 
 use crate::admission::{Admission, AdmitDecision, ClientIdState};
 use crate::clock::{Clock, wait_until};
-use crate::config::{Limits, ListenerConfig, PublicConfig};
+use crate::config::{Limits, ListenerConfig};
 use crate::core::{QueryMeta, handle_wire};
 use crate::error::ListenersError;
 use crate::handler::QueryHandler;
@@ -55,7 +55,7 @@ struct UdpShared<H: ?Sized> {
     listener: ListenerConfig,
     limits: Limits,
     handler: Arc<H>,
-    admission: Mutex<Admission>,
+    admission: Arc<Mutex<Admission>>,
     clock: Arc<dyn Clock>,
     stats: Arc<UdpStats>,
     inflight: Arc<Semaphore>,
@@ -70,8 +70,8 @@ pub struct UdpServeParams<H: ?Sized> {
     pub listener: ListenerConfig,
     /// Shared limits (rates, timeouts, in-flight cap).
     pub limits: Limits,
-    /// Public ban / tracking settings (rates still apply when public is off).
-    pub public: PublicConfig,
+    /// Shared admission (bans / rates) across listeners.
+    pub admission: Arc<Mutex<Admission>>,
     /// Policy or test handler.
     pub handler: Arc<H>,
     /// Wall clock (injectable for tests).
@@ -96,7 +96,7 @@ where
     let UdpServeParams {
         listener,
         limits,
-        public,
+        admission,
         handler,
         clock,
         stats,
@@ -126,7 +126,7 @@ where
         limits.max_inflight_per_listener.max(1) as usize
     ));
     let shared = Arc::new(UdpShared {
-        admission: Mutex::new(Admission::new(&limits, &public)),
+        admission,
         listener,
         limits,
         handler,

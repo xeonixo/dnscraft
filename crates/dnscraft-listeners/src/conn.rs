@@ -65,7 +65,7 @@ pub(crate) struct FramedShared<H: ?Sized> {
     pub listener: ListenerConfig,
     pub limits: Limits,
     pub handler: Arc<H>,
-    pub admission: Mutex<Admission>,
+    pub admission: Arc<Mutex<Admission>>,
     pub clock: Arc<dyn Clock>,
     pub stats: Arc<FramedStats>,
     pub conn_cap: Arc<Semaphore>,

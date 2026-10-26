@@ -37,7 +37,10 @@ mod tcp;
 mod tls;
 mod udp;
 
-pub use admission::{Admission, AdmitDecision, ClientIdState, SourceClass};
+pub use admission::{
+    Admission, AdmitDecision, ClientIdState, SourceClass, SourceClassifier, default_classifier,
+    public_client_id_required,
+};
 pub use bans::StrikeReason;
 pub use clock::{Clock, ManualClock, SystemClock, wait_until};
 pub use config::{
@@ -68,7 +71,8 @@ pub use tcp::{
 pub use tls::{
     ALPN_DOQ, ALPN_DOT, ALPN_H2, ALPN_H3, ALPN_HTTP_1_1, AcceptEncrypted, AcceptedTls,
     ListenerCertResolver, PolicyClientIds, PublicSniOutcome, SniGate, SniRejectKind, TlsStats,
-    accept_encrypted, apply_sni_strike, client_id_state_local, inspect_public_sni,
-    quic_server_config, tcp_server_config, tls_acceptor, tls_handshake_timeout,
+    accept_encrypted, apply_sni_strike, apply_tls_handshake_strike, client_id_state_local,
+    handshake_until, inspect_public_sni, is_handshake_timeout, quic_server_config,
+    tcp_server_config, tls_acceptor, tls_handshake_timeout,
 };
 pub use udp::{CLASSIC_UDP_LIMIT, UdpServeParams, UdpStats, serve_udp, udp_size_limit};

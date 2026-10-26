@@ -4,16 +4,16 @@
 
 pub mod certs;
 
-use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use dnscraft_filtering::{
     FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId, SetId, SnapshotBuilder,
 };
 use dnscraft_listeners::{
-    Exposure, FakeHandler, Limits, ListenerConfig, Protocol, PublicConfig, SystemClock,
-    UdpServeParams, UdpStats, serve_udp,
+    Admission, Exposure, FakeHandler, Limits, ListenerConfig, Protocol, PublicConfig, SourceClass,
+    SourceClassifier, SystemClock, UdpServeParams, UdpStats, serve_udp,
 };
 use dnscraft_policy::{
     AnswerOrigin, ClientId, DecisionRecord, DecisionTimings, ListenerId, NoClients, PolicyAnswer,
@@ -146,6 +146,41 @@ pub fn public_default() -> PublicConfig {
     PublicConfig::default()
 }
 
+/// Fresh shared admission for a listener harness (default limits / public config).
+pub fn fresh_admission() -> Arc<Mutex<Admission>> {
+    Arc::new(Mutex::new(Admission::new(
+        &Limits::default(),
+        &PublicConfig::default(),
+    )))
+}
+
+/// Shared admission built from the given limits and public settings.
+pub fn admission_for(limits: &Limits, public: &PublicConfig) -> Arc<Mutex<Admission>> {
+    Arc::new(Mutex::new(Admission::new(limits, public)))
+}
+
+/// Classifies loopback as [`SourceClass::Public`] so public-listener admission
+/// can be exercised from `127.0.0.1` / `::1` without real public peers.
+pub fn loopback_as_public() -> SourceClassifier {
+    Arc::new(|ip: IpAddr| {
+        let ip = ip.to_canonical();
+        match ip {
+            IpAddr::V4(v4) if v4.is_loopback() => SourceClass::Public,
+            IpAddr::V6(v6) if v6.is_loopback() => SourceClass::Public,
+            _ => SourceClass::of(ip),
+        }
+    })
+}
+
+/// Admission for public-listener tests (loopback peers count as public).
+pub fn public_test_admission(limits: &Limits, public: &PublicConfig) -> Arc<Mutex<Admission>> {
+    Arc::new(Mutex::new(Admission::with_classifier(
+        limits,
+        public,
+        loopback_as_public(),
+    )))
+}
+
 pub struct UdpHarness {
     pub addr: SocketAddr,
     pub stats: Arc<UdpStats>,
@@ -168,10 +203,11 @@ impl UdpHarness {
         let (bound_tx, bound_rx) = oneshot::channel();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let clock: Arc<dyn dnscraft_listeners::Clock> = Arc::new(SystemClock);
+        let admission = admission_for(&limits, &public_default());
         let join = tokio::spawn(serve_udp(UdpServeParams {
             listener: listener(Protocol::Udp53, bind),
             limits,
-            public: public_default(),
+            admission,
             handler,
             clock,
             stats: Arc::clone(&stats),

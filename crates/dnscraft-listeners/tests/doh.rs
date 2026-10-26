@@ -128,13 +128,19 @@ impl DohHarness {
         let tls_stats = Arc::new(TlsStats::default());
         let (bound_tx, bound_rx) = oneshot::channel();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let public = PublicConfig {
+            ban_strikes: 5,
+            ..PublicConfig::default()
+        };
+        let admission = if exposure == Exposure::Public {
+            support::public_test_admission(&limits, &public)
+        } else {
+            support::admission_for(&limits, &public)
+        };
         let join = tokio::spawn(serve_doh(DohServeParams {
             listener: listener_doh(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), exposure),
             limits,
-            public: PublicConfig {
-                ban_strikes: 5,
-                ..PublicConfig::default()
-            },
+            admission,
             handler: Arc::new(FakeHandler::new(answer)),
             clock: Arc::new(SystemClock),
             stats: Arc::clone(&stats),
@@ -269,7 +275,7 @@ async fn get_post_match_do53_h2_and_h1() {
             h3: false,
         },
         limits: Limits::default(),
-        public: PublicConfig::default(),
+        admission: support::fresh_admission(),
         handler,
         clock: Arc::new(SystemClock),
         stats: tcp_stats,
