@@ -15,6 +15,7 @@ pub mod backend;
 pub mod config;
 pub mod dto;
 pub mod error;
+pub mod protected;
 pub mod result;
 pub mod sanitize;
 pub mod tools;
@@ -38,6 +39,7 @@ pub use dto::{
     TokenInfo, TokenScope, TopClient, TopDomain, VlanInfo,
 };
 pub use error::McpError;
+pub use protected::ProtectedDomains;
 pub use result::{tool_error, tool_ok};
 pub use sanitize::{
     CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_REASON, CAP_RULE_TEXT, SafeText, sanitize,

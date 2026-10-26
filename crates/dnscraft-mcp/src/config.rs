@@ -10,6 +10,7 @@
 use std::time::Duration;
 
 use crate::error::McpError;
+use crate::protected::ProtectedDomains;
 
 /// Default `max_concurrent_requests_per_token`.
 pub const DEFAULT_MAX_CONCURRENT_REQUESTS_PER_TOKEN: u32 = 5;
@@ -141,9 +142,7 @@ impl McpConfig {
             MIN_BLOCK_RULE_LIFETIME,
             MAX_BLOCK_RULE_LIFETIME,
         )?;
-        for domain in &self.protected_domains {
-            validate_protected_domain(domain)?;
-        }
+        ProtectedDomains::new(self.protected_domains.iter().cloned())?;
         Ok(())
     }
 }
@@ -193,55 +192,6 @@ fn check_duration(
     } else {
         Ok(())
     }
-}
-
-/// Check one configured protected domain.
-///
-/// Accepts a canonical domain or one trailing dot, converts IDNA input to
-/// punycode and rejects schemes, paths, wildcards and empty labels.
-fn validate_protected_domain(raw: &str) -> Result<(), McpError> {
-    let reason = match domain_syntax(raw) {
-        Ok(()) => return Ok(()),
-        Err(reason) => reason,
-    };
-    Err(McpError::ConfigProtectedDomain {
-        domain: raw.to_owned(),
-        reason: reason.to_owned(),
-    })
-}
-
-fn domain_syntax(raw: &str) -> Result<(), &'static str> {
-    if raw.is_empty() {
-        return Err("domain is empty");
-    }
-    if raw.chars().any(|c| c.is_whitespace()) {
-        return Err("domain contains whitespace");
-    }
-    if raw.starts_with('.') || raw.contains("..") {
-        return Err("domain has an empty label");
-    }
-    if raw
-        .chars()
-        .any(|c| matches!(c, '/' | ':' | '*' | '@' | '?' | '#'))
-    {
-        return Err("domain must not contain a scheme, path, port or wildcard");
-    }
-    let without_dot = raw.strip_suffix('.').unwrap_or(raw);
-    let ascii = idna::domain_to_ascii(without_dot).map_err(|_| "domain is not valid IDNA")?;
-    if ascii.is_empty() || ascii.len() > 253 {
-        return Err("domain is empty or longer than 253 characters");
-    }
-    for label in ascii.split('.') {
-        if label.is_empty()
-            || label.len() > 63
-            || label.starts_with('-')
-            || label.ends_with('-')
-            || !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-        {
-            return Err("domain has an invalid label");
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
