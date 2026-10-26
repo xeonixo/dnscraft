@@ -12,6 +12,7 @@
 //! N5: Do53 [`serve_tcp`] (length-prefix framing, pipelining).
 //! N6: TLS server configs, SNI admission, hot reload.
 //! N7: DoT ([`serve_dot`]) over the framed connection loop.
+//! N8: DoH HTTP/2 + HTTP/1.1 ([`serve_doh`]).
 
 #![deny(missing_docs)]
 
@@ -21,6 +22,8 @@ mod clock;
 mod config;
 mod conn;
 mod core;
+mod doh;
+mod doh_request;
 mod dot;
 mod edns;
 mod error;
@@ -44,6 +47,10 @@ pub use config::{
 };
 pub use conn::FramedStats;
 pub use core::{HandleWireResult, QueryEvent, QueryMeta, error_reply_from_wire, handle_wire};
+pub use doh::{DohServeParams, DohStats, cache_max_age, serve_doh};
+pub use doh_request::{
+    DNS_MESSAGE_TYPE, DohPath, DohWireError, MAX_DOH_PAYLOAD, extract_wire, parse_doh_path,
+};
 pub use dot::{DotServeParams, DotStats, serve_dot};
 pub use edns::{PAD_BLOCK, build_response_edns, encode_padded, strip_ecs};
 pub use error::ListenersError;

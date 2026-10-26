@@ -217,9 +217,9 @@ rate limit → 429. Response: `application/dns-message`, `Cache-Control: max-age
 NOERROR/NXDOMAIN, id 0, padding on. No other routes, no directory listing, no server banner details.
 
 **Acceptance criteria:**
-- [ ] GET and POST answers equal the Do53 answer (id 0, padding aside); HTTP/2 and HTTP/1.1 both tested
-- [ ] Error-status table test (400/404/405/413/415/429) incl. public-path rules
-- [ ] `Cache-Control` max-age equals the minimum TTL
+- [x] GET and POST answers equal the Do53 answer (id 0, padding aside); HTTP/2 and HTTP/1.1 both tested
+- [x] Error-status table test (400/404/405/413/415/429) incl. public-path rules
+- [x] `Cache-Control` max-age equals the minimum TTL
 
 **Verification:** `cargo test -p dnscraft-listeners doh`
 

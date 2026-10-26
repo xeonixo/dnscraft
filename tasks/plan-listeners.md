@@ -80,7 +80,7 @@ Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i o
 ### Phase 2: Encrypted transports
 - [x] N6: TLS server configs from `CertResolver`, SNI admission, `no_cert` state, hot reload
 - [x] N7: DoT
-- [ ] N8: DoH over HTTP/2 + HTTP/1.1
+- [x] N8: DoH over HTTP/2 + HTTP/1.1
 - [ ] N9: DoQ
 
 ### Checkpoint C: Encrypted end to end

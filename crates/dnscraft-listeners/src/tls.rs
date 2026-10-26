@@ -59,7 +59,7 @@ pub struct TlsStats {
 }
 
 impl TlsStats {
-    fn bump(field: &AtomicU64) {
+    pub(crate) fn bump(field: &AtomicU64) {
         field.fetch_add(1, Ordering::Relaxed);
     }
 }

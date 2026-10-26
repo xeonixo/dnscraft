@@ -23,6 +23,12 @@ socket2 = { workspace = true }
 quinn-udp = { workspace = true }
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 dnscraft-testkit = { path = "../dnscraft-testkit" }
@@ -30,6 +36,7 @@ proptest = { workspace = true }
 rcgen = { workspace = true }
 rustls-pki-types = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
+http-body-util = { workspace = true }
 
 [[example]]
 name = "serve"

@@ -485,12 +485,18 @@ dependencies = [
 name = "dnscraft-listeners"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
+ "bytes",
  "dnscraft-filtering",
  "dnscraft-policy",
  "dnscraft-proto",
  "dnscraft-resolver",
  "dnscraft-testkit",
  "dnscraft-tls",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "proptest",
  "quinn-udp",
  "rcgen",
@@ -823,6 +829,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
