@@ -434,7 +434,7 @@ impl FilterEngine {
     ///
     /// An existing allow for the same domain (regardless of
     /// `include_subdomains`) is replaced. Does not rebuild the snapshot.
-    pub fn allow_temporarily(&self, set: &SetId, rule: TempAllow) -> Result<(), FilterError> {
+    pub fn allow_temporarily(&self, set: &SetId, mut rule: TempAllow) -> Result<(), FilterError> {
         if self.snapshot_arc().shared_index(set).is_none() {
             return Err(FilterError::UnknownSet(set.to_string()));
         }
@@ -444,6 +444,7 @@ impl FilterEngine {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let list = guard.entry(set.clone()).or_default();
         let now = self.now();
+        rule.created_at = now;
         list.retain(|a| now < a.until);
         if let Some(pos) = list.iter().position(|a| a.domain == rule.domain) {
             list[pos] = rule;
@@ -931,6 +932,7 @@ mod tests {
             domain: domain.parse().unwrap(),
             include_subdomains: false,
             until,
+            created_at: UNIX_EPOCH,
         }
     }
 
@@ -976,6 +978,44 @@ mod tests {
         let listed = eng.list_temporary_allows(&set, at(1_040)).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(stored_temps(&eng, &set), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn temporary_allows_are_stamped_with_creation_time() {
+        let dir =
+            std::env::temp_dir().join(format!("dnscraft-engine-created-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let clock = Arc::new(ManualClock::new(at(1_000)));
+        let store =
+            ListStore::open_with(&dir, StoreConfig::default(), Arc::clone(&clock) as _).unwrap();
+        let set = SetId::new("s").unwrap();
+        let cfg = FilterConfig {
+            sets: vec![FilterSetConfig::new(set.clone(), "s")],
+            ..FilterConfig::default()
+        };
+        let eng = FilterEngine::open_without_scheduler(cfg, store, clock.clone()).unwrap();
+
+        // `allow()` supplies UNIX_EPOCH; the engine must overwrite it.
+        eng.allow_temporarily(&set, allow("a.example", at(2_000)))
+            .unwrap();
+        clock.advance(Duration::from_secs(10));
+        eng.allow_temporarily(&set, allow("b.example", at(2_000)))
+            .unwrap();
+
+        let listed = eng.list_temporary_allows(&set, at(1_010)).unwrap();
+        assert_eq!(listed.len(), 2);
+        let created = |domain: &str| {
+            listed
+                .iter()
+                .find(|a| a.domain.as_str() == domain)
+                .unwrap()
+                .created_at
+        };
+        assert_eq!(created("a.example"), at(1_000));
+        assert_eq!(created("b.example"), at(1_010));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -56,12 +56,12 @@ the repository.
 `list_temporary_allows`. Additive change in a finished module; fix every struct-literal caller.
 
 **Acceptance criteria:**
-- [ ] `TempAllow` has `created_at: SystemTime`; `FilterEngine::allow_temporarily` stamps it with `self.now()`
+- [x] `TempAllow` has `created_at: SystemTime`; `FilterEngine::allow_temporarily` stamps it with `self.now()`
       (the injected `Clock`), `list_temporary_allows` returns it.
-- [ ] Existing temporary-allow behaviour (expiry exactness, ranking like `$important`) unchanged: all existing
+- [x] Existing temporary-allow behaviour (expiry exactness, ranking like `$important`) unchanged: all existing
       filtering tests green.
-- [ ] New test with `ManualClock`: two allows inserted at different times report distinct `created_at`.
-- [ ] All crates that construct `TempAllow` compile (`cargo build --workspace`).
+- [x] New test with `ManualClock`: two allows inserted at different times report distinct `created_at`.
+- [x] All crates that construct `TempAllow` compile (`cargo build --workspace`).
 
 **Verification:** `cargo test -p dnscraft-filtering temp_allow`; `cargo build --workspace --locked`
 

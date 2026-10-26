@@ -191,6 +191,7 @@ fn temp_allow_ranks_like_important_and_expires_exactly() {
             domain: dn("ads.example"),
             include_subdomains: false,
             until: t(100),
+            created_at: t(0),
         },
     )
     .unwrap();
@@ -222,6 +223,7 @@ fn temp_allow_include_subdomains_and_list_remove() {
             domain: dn("ads.example"),
             include_subdomains: true,
             until: t(100),
+            created_at: t(0),
         },
     )
     .unwrap();
@@ -258,6 +260,7 @@ fn temp_allow_include_subdomains_and_list_remove() {
             domain: dn("ads.example"),
             include_subdomains: true,
             until: t(100),
+            created_at: t(0),
         },
     )
     .unwrap();
@@ -277,6 +280,7 @@ fn temp_allow_on_qname_unblocks_chain_like_important() {
             domain: dn("page.example"),
             include_subdomains: false,
             until: t(100),
+            created_at: t(0),
         },
     )
     .unwrap();
@@ -296,6 +300,7 @@ fn temp_allow_on_target_unblocks_chain() {
             domain: dn("tracker.example"),
             include_subdomains: false,
             until: t(100),
+            created_at: t(0),
         },
     )
     .unwrap();
@@ -313,6 +318,7 @@ fn temp_allow_does_not_rebuild_snapshot() {
             domain: dn("ads.example"),
             include_subdomains: false,
             until: t(100),
+            created_at: t(0),
         },
     )
     .unwrap();
@@ -332,6 +338,7 @@ fn temp_allow_unknown_set() {
                 domain: dn("a.example"),
                 include_subdomains: false,
                 until: t(1),
+                created_at: t(0),
             },
         )
         .unwrap_err();
@@ -376,6 +383,7 @@ fn pause_returns_pass_until_deadline() {
             domain: dn("ads.example"),
             include_subdomains: false,
             until: t(2000),
+            created_at: t(0),
         },
     )
     .unwrap();

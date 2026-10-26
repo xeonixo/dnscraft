@@ -20,6 +20,10 @@ pub struct TempAllow {
     /// Instant at which the allow expires (not inclusive: active while
     /// `now < until`).
     pub until: SystemTime,
+    /// Instant at which the allow was added. Stamped by
+    /// [`FilterEngine::allow_temporarily`](crate::FilterEngine::allow_temporarily)
+    /// from the engine clock; any value supplied by the caller is replaced.
+    pub created_at: SystemTime,
 }
 
 impl TempAllow {
@@ -78,6 +82,7 @@ mod tests {
             domain: dn("a.example"),
             include_subdomains: false,
             until: t(100),
+            created_at: t(0),
         };
         assert!(a.matches(&dn("a.example"), t(99)));
         assert!(!a.matches(&dn("a.example"), t(100)));
@@ -90,6 +95,7 @@ mod tests {
             domain: dn("a.example"),
             include_subdomains: false,
             until: t(100),
+            created_at: t(0),
         };
         assert!(!exact.matches(&dn("x.a.example"), t(0)));
         let wide = TempAllow {

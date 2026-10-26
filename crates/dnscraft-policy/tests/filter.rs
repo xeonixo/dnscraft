@@ -342,6 +342,7 @@ async fn filter_temporary_allow_and_set_pause_pass_through() {
                 domain: "ads.example".parse().unwrap(),
                 include_subdomains: false,
                 until: SystemTime::UNIX_EPOCH + Duration::from_secs(5_000),
+                created_at: SystemTime::UNIX_EPOCH,
             },
         )
         .unwrap();
