@@ -13,6 +13,7 @@ use super::auth::local::local_login;
 use super::auth::oidc::{oidc_authorize_url, oidc_callback};
 use super::auth::tokens::create_token;
 use super::auth::{auth_middleware, rbac_middleware};
+use super::config_routes::{get_config, list_versions, put_config, rollback};
 use super::rate_limit::rate_limit;
 use super::response::{BODY_LIMIT_BYTES, error_response, success};
 use crate::error::ControlApiError;
@@ -22,6 +23,12 @@ use crate::tls::TlsMode;
 /// Builds the full router for `state`.
 pub(crate) fn build_router(state: AppState) -> Router {
     let mut api = Router::new().route("/status", get(status));
+    if state.config_service().is_some() {
+        api = api
+            .route("/config", get(get_config).put(put_config))
+            .route("/config/versions", get(list_versions))
+            .route("/config/versions/{version}/rollback", post(rollback));
+    }
     if state.auth_state().is_some() {
         // Token management exists only when persistence/auth is configured.
         api = api.route("/auth/tokens", post(create_token));

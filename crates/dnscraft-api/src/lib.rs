@@ -20,14 +20,16 @@ mod api;
 mod audit;
 mod clock;
 mod config;
+mod config_apply;
 mod error;
+mod modules;
 mod secret;
 mod server;
 mod storage;
 mod tls;
 
 pub use api::auth::{
-    Auth, AuthState, Authenticated, CreatedSession, CreatedToken, EndpointFamily,
+    ActorType, Auth, AuthState, Authenticated, CreatedSession, CreatedToken, EndpointFamily,
     LocalAccountStore, OidcState, Principal, Role, Scope, SessionStore, TokenPrincipal, TokenStore,
     auth_middleware, rbac_middleware, secure_cookie, session_set_cookie,
 };
@@ -41,7 +43,12 @@ pub use config::{
     DEFAULT_RETENTION_DAYS, DEFAULT_SESSION_ABSOLUTE_TIMEOUT, DEFAULT_SESSION_IDLE_TIMEOUT,
     DEFAULT_WRITE_PER_SECOND, IpTruncate, QueryLogConfig, RateLimitConfig,
 };
+pub use config_apply::{ConfigActor, ConfigService, RollbackOutcome, SharedConfigService};
 pub use error::ControlApiError;
+pub use modules::{
+    ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyTls, ModuleAppliers,
+    ModuleFuture,
+};
 pub use secret::Secret;
 pub use server::{AppState, Readiness, serve};
 pub use storage::{AuditRecord, ConfigStore, Db};

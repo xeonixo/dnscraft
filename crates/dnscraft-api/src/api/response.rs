@@ -90,6 +90,7 @@ impl ControlApiError {
             ControlApiError::MethodNotAllowed { .. } => S::METHOD_NOT_ALLOWED,
             ControlApiError::PayloadTooLarge { .. } => S::PAYLOAD_TOO_LARGE,
             ControlApiError::PaginationInvalid { .. } => S::BAD_REQUEST,
+            ControlApiError::Module { .. } => S::BAD_REQUEST,
         }
     }
 
@@ -110,6 +111,7 @@ impl ControlApiError {
                 Some(json!({ "limit_bytes": limit_bytes }))
             }
             ControlApiError::PaginationInvalid { reason } => Some(json!({ "reason": reason })),
+            ControlApiError::Module { params, .. } => params.clone(),
             _ => None,
         }
     }

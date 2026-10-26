@@ -45,6 +45,15 @@ impl ConfigStore {
     pub async fn current(&self) -> Result<Option<i64>, ControlApiError> {
         self.db.config_version_max().await
     }
+
+    /// Lists stored versions newest first as `(version, created_at)`.
+    pub async fn versions(
+        &self,
+        limit: u32,
+        offset: u64,
+    ) -> Result<Vec<(i64, i64)>, ControlApiError> {
+        self.db.config_version_list(limit, offset).await
+    }
 }
 
 fn serialize_err(err: serde_json::Error) -> ControlApiError {

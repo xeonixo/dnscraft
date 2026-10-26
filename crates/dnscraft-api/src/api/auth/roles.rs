@@ -101,6 +101,25 @@ impl From<Role> for Scope {
     }
 }
 
+/// Which credential authenticated the request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActorType {
+    /// A cookie session (or OIDC/break-glass login).
+    User,
+    /// A bearer API token.
+    Token,
+}
+
+impl ActorType {
+    /// The audit-log wire name (`user` | `token`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Token => "token",
+        }
+    }
+}
+
 /// The authenticated principal inserted by [`rbac_middleware`].
 ///
 /// Sessions and bearer tokens both produce this value, so handlers downstream
@@ -109,6 +128,7 @@ impl From<Role> for Scope {
 pub struct Authenticated {
     actor_id: String,
     scope: Scope,
+    actor_type: ActorType,
 }
 
 impl Authenticated {
@@ -120,6 +140,11 @@ impl Authenticated {
     /// The resolved scope (a session role maps to `viewer`/`admin`).
     pub fn scope(&self) -> Scope {
         self.scope
+    }
+
+    /// Which credential authenticated the request.
+    pub fn actor_type(&self) -> ActorType {
+        self.actor_type
     }
 }
 
@@ -211,22 +236,34 @@ pub async fn rbac_middleware(
         return next.run(req).await;
     };
 
-    let (actor_id, scope) = if let Some(principal) = req.extensions().get::<Principal>().cloned() {
-        (principal.actor_id, Scope::from(principal.role))
-    } else if let Some(token) = bearer_token(req.headers()).map(str::to_owned) {
-        match auth.tokens().authenticate(&token).await {
-            Ok(principal) => (principal.actor_id().to_owned(), principal.scope()),
-            Err(err) => return err.into_response(),
-        }
-    } else {
-        return ControlApiError::AuthUnauthenticated.into_response();
-    };
+    let (actor_id, scope, actor_type) =
+        if let Some(principal) = req.extensions().get::<Principal>().cloned() {
+            (
+                principal.actor_id,
+                Scope::from(principal.role),
+                ActorType::User,
+            )
+        } else if let Some(token) = bearer_token(req.headers()).map(str::to_owned) {
+            match auth.tokens().authenticate(&token).await {
+                Ok(principal) => (
+                    principal.actor_id().to_owned(),
+                    principal.scope(),
+                    ActorType::Token,
+                ),
+                Err(err) => return err.into_response(),
+            }
+        } else {
+            return ControlApiError::AuthUnauthenticated.into_response();
+        };
 
     if let Err(err) = authorize(requirement, scope) {
         return err.into_response();
     }
-    req.extensions_mut()
-        .insert(Authenticated { actor_id, scope });
+    req.extensions_mut().insert(Authenticated {
+        actor_id,
+        scope,
+        actor_type,
+    });
     next.run(req).await
 }
 

@@ -324,16 +324,16 @@ clock (no wall-clock sleeps). The limiter is consulted in a single middleware.
   with fixtures containing an `mcp_rules` key.
 
 **Acceptance criteria:**
-- [ ] Valid config persists, applies, and increments `config_version`; invalid config returns
+- [x] Valid config persists, applies, and increments `config_version`; invalid config returns
       the stable code and calls no module apply.
-- [ ] Apply order is exactly filtering → clients → policy → listeners → tls.
-- [ ] When `policy` fails, the previous config is replayed and is active again (rollback
+- [x] Apply order is exactly filtering → clients → policy → listeners → tls.
+- [x] When `policy` fails, the previous config is replayed and is active again (rollback
       regression test).
-- [ ] Rollback by version restores that exact snapshot (including any `mcp_rules`) and is audited.
-- [ ] `PUT /config` without `mcp_rules` preserves the stored rules; an explicit empty list
+- [x] Rollback by version restores that exact snapshot (including any `mcp_rules`) and is audited.
+- [x] `PUT /config` without `mcp_rules` preserves the stored rules; an explicit empty list
       deletes them; an unknown field returns `control_api.config.invalid` (regression tests
       for all three cases).
-- [ ] `GET /config` excludes secrets; module validation errors propagate the module code.
+- [x] `GET /config` excludes secrets; module validation errors propagate the module code.
 
 **Verification:** `cargo test -p dnscraft-api config_apply`
 

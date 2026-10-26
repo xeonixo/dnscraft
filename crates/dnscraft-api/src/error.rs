@@ -34,6 +34,7 @@
 //! | [`ControlApiError::MethodNotAllowed`] | `control_api.method_not_allowed` |
 //! | [`ControlApiError::PayloadTooLarge`] | `control_api.payload_too_large` |
 //! | [`ControlApiError::PaginationInvalid`] | `control_api.pagination.invalid` |
+//! | [`ControlApiError::Module`] | the module's own code (for example `policy.config.invalid`) |
 
 /// Top-level error of the control-api module.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -173,6 +174,15 @@ pub enum ControlApiError {
         /// Which parameter and why it was rejected.
         reason: String,
     },
+    /// A module rejected a configuration value; the module's own stable code is
+    /// forwarded unchanged (for example `policy.config.unknown_filter_set`).
+    #[error("module error {code}")]
+    Module {
+        /// Stable module code (`<module>.<area>.<reason>`).
+        code: &'static str,
+        /// Non-secret context for the error envelope's `params`.
+        params: Option<serde_json::Value>,
+    },
 }
 
 impl ControlApiError {
@@ -206,6 +216,7 @@ impl ControlApiError {
             Self::MethodNotAllowed { .. } => "control_api.method_not_allowed",
             Self::PayloadTooLarge { .. } => "control_api.payload_too_large",
             Self::PaginationInvalid { .. } => "control_api.pagination.invalid",
+            Self::Module { code, .. } => code,
         }
     }
 
@@ -279,18 +290,26 @@ mod tests {
             ControlApiError::PaginationInvalid {
                 reason: "limit 0".into(),
             },
+            ControlApiError::Module {
+                code: "policy.config.invalid",
+                params: None,
+            },
         ];
         let mut codes: Vec<&str> = all.iter().map(ControlApiError::code).collect();
-        for code in &codes {
-            assert!(
-                code.starts_with("control_api."),
-                "code {code} must use control_api. prefix"
-            );
+        for (error, code) in all.iter().zip(&codes) {
             assert!(
                 code.chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_'),
                 "code {code} must be locale-neutral ascii"
             );
+            // Every control-api code namespaces itself; a forwarded module code
+            // keeps the module's own namespace and is never rewritten.
+            if !matches!(error, ControlApiError::Module { .. }) {
+                assert!(
+                    code.starts_with("control_api."),
+                    "code {code} must use control_api. prefix"
+                );
+            }
         }
         codes.sort_unstable();
         codes.dedup();

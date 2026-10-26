@@ -17,7 +17,7 @@ pub(crate) mod tokens;
 
 pub use local::LocalAccountStore;
 pub use oidc::OidcState;
-pub use roles::{Authenticated, EndpointFamily, Scope, rbac_middleware};
+pub use roles::{ActorType, Authenticated, EndpointFamily, Scope, rbac_middleware};
 pub use sessions::{
     CreatedSession, Principal, Role, SessionStore, secure_cookie, session_set_cookie,
 };

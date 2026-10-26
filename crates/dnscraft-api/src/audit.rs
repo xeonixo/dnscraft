@@ -48,6 +48,12 @@ const KEY_MODIFIERS: &[&str] = &[
     "auth",
 ];
 
+/// Exact key names that are identifiers, not secret material, even though a
+/// token names them secret. `token_id` is the creating token's public id inside
+/// a versioned MCP rule; redacting it would lose the rollback snapshot's
+/// provenance. `session_id` is deliberately *not* listed here (it is secret).
+const EXACT_ALLOW_KEYS: &[&str] = &["token_id"];
+
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
 /// Redacts secret material from `value`, recursively, returning a new value.
@@ -108,6 +114,9 @@ fn looks_like_url_userinfo(s: &str) -> bool {
 
 /// Whether an object key names a secret field (token-based, see module docs).
 fn is_secret_key(key: &str) -> bool {
+    if EXACT_ALLOW_KEYS.contains(&key) {
+        return false;
+    }
     let tokens = tokenize_key(key);
     if tokens.is_empty() {
         return false;
@@ -272,6 +281,8 @@ pub struct ConfigChangeRecord {
     pub actor_id: String,
     /// `user` or `token`.
     pub actor_type: String,
+    /// Verb identifying the action (`config.write` or `config.rollback`).
+    pub action: String,
     /// Config version at the time of the action.
     pub config_version: Option<i64>,
     /// Pre-change snapshot (secrets are redacted before persist).
@@ -297,7 +308,7 @@ pub(crate) fn config_change_record(
         node_id: change.node_id.clone(),
         actor_id: change.actor_id.clone(),
         actor_type: change.actor_type.clone(),
-        action: "config.write".to_owned(),
+        action: change.action.clone(),
         object_type: "config".to_owned(),
         object_id: "config".to_owned(),
         config_version: change.config_version,

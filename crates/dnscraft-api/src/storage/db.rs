@@ -120,6 +120,30 @@ impl Db {
         .await
     }
 
+    /// Lists `(version, created_at)` newest first.
+    pub async fn config_version_list(
+        &self,
+        limit: u32,
+        offset: u64,
+    ) -> Result<Vec<(i64, i64)>, ControlApiError> {
+        let offset = i64::try_from(offset).unwrap_or(i64::MAX);
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT version, created_at FROM config_versions
+                     ORDER BY version DESC LIMIT ?1 OFFSET ?2",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map(params![limit, offset], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(db_err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+        })
+        .await
+    }
+
     /// Inserts a query-log row (minimal columns; expanded by A12).
     ///
     /// Test-only until the query-log API lands (A12); not part of the public

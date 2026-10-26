@@ -4,6 +4,7 @@
 //! network entry point (bind, TLS) lives in [`crate::server`].
 
 pub(crate) mod auth;
+pub(crate) mod config_routes;
 pub(crate) mod pagination;
 pub(crate) mod rate_limit;
 pub(crate) mod response;

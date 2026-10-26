@@ -15,6 +15,7 @@ use crate::api::auth::{AuthState, LocalAccountStore, OidcState};
 use crate::api::rate_limit::RateLimiter;
 use crate::clock::SystemClock;
 use crate::config::{ControlApiConfig, RateLimitConfig, is_internal_bind};
+use crate::config_apply::ConfigService;
 use crate::error::ControlApiError;
 use crate::tls::{TlsStatus, TlsStatusProvider};
 
@@ -29,6 +30,7 @@ pub struct AppState {
     auth: Option<Arc<AuthState>>,
     local_login: Option<Arc<LocalAccountStore>>,
     oidc: Option<Arc<OidcState>>,
+    config: Option<Arc<ConfigService>>,
 }
 
 impl Default for AppState {
@@ -51,7 +53,22 @@ impl AppState {
             auth: None,
             local_login: None,
             oidc: None,
+            config: None,
         }
+    }
+
+    /// Attaches the atomic config service.
+    ///
+    /// With a service configured, `/api/v1/config` (export, replace, versions,
+    /// rollback) and the per-module config routes are mounted.
+    pub fn with_config_service(mut self, service: Arc<ConfigService>) -> Self {
+        self.config = Some(service);
+        self
+    }
+
+    /// The configured atomic config service, if any.
+    pub(crate) fn config_service(&self) -> Option<&ConfigService> {
+        self.config.as_deref()
     }
 
     /// Attaches the session and bearer-token stores.
