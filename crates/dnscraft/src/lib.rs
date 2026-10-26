@@ -138,7 +138,10 @@ pub async fn build(
         Some(secrets) => {
             let resolver = Arc::new(CertResolver::new());
             resolver
-                .install(&secrets.chain_pem, &secrets.key_pem)
+                .install(
+                    secrets.chain_pem.expose().as_bytes(),
+                    secrets.key_pem.expose().as_bytes(),
+                )
                 .map_err(|e| {
                     Error::tls("dnscraft.tls.install", format!("certificate install: {e}"))
                 })?;

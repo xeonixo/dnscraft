@@ -9,16 +9,20 @@ use dnscraft_listeners::{
     DdrConfig, Exposure, Limits, ListenerConfig, ListenersConfig, Protocol, PublicConfig,
 };
 use dnscraft_policy::ListenerId;
+use dnscraft_tls::Secret;
 
 use crate::Error;
 
 /// TLS secret material loaded from the environment (never the TOML file).
+///
+/// The PEM fields are wrapped in [`Secret`] so they never appear in `Debug`
+/// output and are zeroized on drop.
 #[derive(Debug)]
 pub struct TlsSecrets {
     /// PEM certificate chain.
-    pub chain_pem: Vec<u8>,
+    pub chain_pem: Secret,
     /// PEM private key.
-    pub key_pem: Vec<u8>,
+    pub key_pem: Secret,
 }
 
 /// Environment variable holding the PEM certificate chain.
@@ -34,8 +38,8 @@ pub fn tls_secrets_from_env() -> Result<Option<TlsSecrets>, Error> {
     match (env::var(TLS_CERT_ENV).ok(), env::var(TLS_KEY_ENV).ok()) {
         (None, None) => Ok(None),
         (Some(chain), Some(key)) => Ok(Some(TlsSecrets {
-            chain_pem: chain.into_bytes(),
-            key_pem: key.into_bytes(),
+            chain_pem: Secret::new(chain),
+            key_pem: Secret::new(key),
         })),
         _ => Err(Error::config(
             "dnscraft.config.tls_env_incomplete",
@@ -153,5 +157,33 @@ fn parse_exposure(s: &str) -> Option<Exposure> {
         "local" => Some(Exposure::Local),
         "public" => Some(Exposure::Public),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tls_secrets_debug_is_redacted() {
+        let secrets = TlsSecrets {
+            chain_pem: Secret::new(
+                "-----BEGIN CERTIFICATE-----\nchain-material\n-----END CERTIFICATE-----",
+            ),
+            key_pem: Secret::new(
+                "-----BEGIN PRIVATE KEY-----\nsuper-secret-key\n-----END PRIVATE KEY-----",
+            ),
+        };
+        let shown = format!("{secrets:?}");
+        assert!(!shown.contains("super-secret-key"), "key leaked: {shown}");
+        assert!(
+            !shown.contains("BEGIN PRIVATE KEY"),
+            "key PEM leaked: {shown}"
+        );
+        assert!(
+            shown.contains("Secret([redacted])"),
+            "missing marker: {shown}"
+        );
     }
 }
