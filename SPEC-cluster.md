@@ -193,6 +193,11 @@ The sub-node calls control-api's **same atomic apply path** used by
 separate path. Runtime-only state (pause/temporary allow) is not in a snapshot;
 it is broadcast separately (§ Writes from any node).
 
+The snapshot is uniform across nodes, but policy views may be **node-scoped**
+(a view's `nodes` list, see [SPEC-policy.md](SPEC-policy.md)). Each node filters
+views to those valid for its own `node_id` at apply time; the full snapshot is
+still replicated so any node can adopt a view without a per-node diff.
+
 ### Conflicts
 
 - Optimistic concurrency stays `config_version` + `If-Match`, and a mismatch is

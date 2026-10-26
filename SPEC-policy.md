@@ -70,11 +70,17 @@ source IP exactly like a Do53 client; the Client ID only authenticates the
 client to the listener (public-source admission) and enriches the log. Unknown
 public Client IDs never reach policy (listener rejected them).
 
+**Node validity:** a view may carry `nodes` (empty = all nodes). On a node, only
+views whose `nodes` is empty or contains the node's `node_id` participate in
+selection; the others are treated as absent. The default view must be valid on
+every node (`policy.config.invalid` otherwise), so every node always has a
+reachable default.
+
 ### Views and profiles
 
 | Object | Owns |
 |---|---|
-| **View** | Selection keys (CIDR ranges); split-horizon **records** (A, AAAA, CNAME, TXT, SRV, MX); pointer to one **profile** |
+| **View** | Selection keys (CIDR ranges); optional `nodes` validity (which nodes the view exists on; empty = all); split-horizon **records** (A, AAAA, CNAME, TXT, SRV, MX); pointer to one **profile** |
 | **Profile** | `filter_set` id; pause protection; schedules (low priority); bypass controls; rebind exceptions; `suppress_aaaa`; SafeSearch; optional allow-list of forward-zone ids |
 
 Blocked services and custom rules live on the **filter set** ([SPEC-filtering.md](SPEC-filtering.md)); the profile selects which set is active (schedules may swap the set — see below).
@@ -376,6 +382,7 @@ rebind_check_forward_zones = []
 id = "lan"
 subnets = ["192.0.2.0/24", "2001:db8:1::/64"]
 profile = "default"
+# nodes = ["node-1", "node-2"]   # leer = auf allen Nodes gültig
 
 [[policy.views.records]]
 name = "nas.lan.example.com"
