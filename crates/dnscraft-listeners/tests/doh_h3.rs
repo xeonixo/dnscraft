@@ -723,3 +723,57 @@ async fn h3_slow_progress_killed_at_total_deadline() {
     drop(send_request);
     h.stop().await;
 }
+
+#[tokio::test]
+async fn h3_oversized_headers_rejected_server_stays_healthy() {
+    install_ring();
+    let h = h3_stall_harness(Limits::default()).await;
+
+    let client = h3_endpoint_with_keepalive();
+    let conn = client
+        .connect(h.udp_addr, "dns.example.com")
+        .unwrap()
+        .await
+        .unwrap();
+    let quinn_conn = h3_quinn::Connection::new(conn.clone());
+    let (mut driver, mut send_request) = h3::client::new(quinn_conn).await.unwrap();
+    tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    // A field section well over the 16 KiB bound (mirrors hyper's HTTP/2 default).
+    let big = "x".repeat(32 * 1024);
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("https://dns.example.com/dns-query")
+        .header("x-pad", big)
+        .body(())
+        .unwrap();
+    let mut stream = send_request.send_request(req).await.unwrap();
+    stream.finish().await.unwrap();
+
+    // The server must reject the oversized header section: 431 or a stream reset
+    // is fine, but never 200 OK.
+    let rejected = match stream.recv_response().await {
+        Ok(resp) => resp.status() == StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+        Err(_) => true,
+    };
+    assert!(rejected, "oversized headers must be rejected");
+
+    drop(stream);
+    drop(send_request);
+
+    // The listener stays healthy: a normal query still succeeds.
+    let q = encode_a_query_edns(3, "example.com.", 1232);
+    let enc = URL_SAFE_NO_PAD.encode(&q);
+    let (status, _hdr, body) = doh_exchange_h3(
+        h.udp_addr,
+        Method::GET,
+        &format!("/dns-query?dns={enc}"),
+        Bytes::new(),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "listener must stay healthy");
+    assert!(!body.is_empty(), "healthy request must yield an answer");
+
+    h.stop().await;
+}

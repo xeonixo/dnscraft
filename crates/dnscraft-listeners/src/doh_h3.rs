@@ -32,6 +32,15 @@ use crate::tls::{
 /// Application close when the per-connection stream cap is exceeded (same idea as DoQ).
 const H3_EXCESSIVE_LOAD: VarInt = VarInt::from_u32(0x101);
 
+/// Maximum HTTP/3 field-section size accepted (RFC 9114 §4.2.2).
+///
+/// Mirrors the HTTP/2 DoH listener: hyper's HTTP/2 server defaults
+/// `max_header_list_size` to 16 KiB and that path sets no explicit bound, so
+/// the two listeners accept the same header size. Without this, h3's
+/// `Connection::new` defaults `max_field_section_size` to `VarInt::MAX` —
+/// effectively unbounded — and an oversized header section would be accepted.
+const H3_MAX_FIELD_SECTION_SIZE: u64 = 16 * 1024;
+
 /// Inputs for [`serve_doh_h3`].
 pub struct DohH3ServeParams<H: ?Sized> {
     /// Listener id / bind / exposure (`h3` should be true).
@@ -325,14 +334,18 @@ async fn serve_h3<H>(shared: Arc<DohH3Shared<H>>, conn: quinn::Connection, peer:
 where
     H: QueryHandler + 'static,
 {
-    let mut h3_conn =
-        match h3::server::Connection::new(h3_quinn::Connection::new(conn.clone())).await {
-            Ok(c) => c,
-            Err(_) => {
-                conn.close(VarInt::from_u32(0), b"h3");
-                return;
-            }
-        };
+    let mut h3_builder = h3::server::builder();
+    h3_builder.max_field_section_size(H3_MAX_FIELD_SECTION_SIZE);
+    let mut h3_conn = match h3_builder
+        .build(h3_quinn::Connection::new(conn.clone()))
+        .await
+    {
+        Ok(c) => c,
+        Err(_) => {
+            conn.close(VarInt::from_u32(0), b"h3");
+            return;
+        }
+    };
 
     let stream_cap = Arc::new(Semaphore::new(
         shared.doh.limits.max_quic_streams_per_connection.max(1) as usize,
