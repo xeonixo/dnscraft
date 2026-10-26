@@ -13,8 +13,9 @@ N1: configuration, errors, clock, handler, sockets.
 N2: transport-independent [`handle_wire`](fn.handle_wire.html) — decode /
 validate / EDNS (ECS strip, OPT echo, EDE, padding) / encode with size limit.
 N3: [`Admission`](struct.Admission.html) — source class, token buckets, bans.
+N4: Do53 [`serve_udp`](fn.serve_udp.html) — concrete + wildcard (`quinn-udp` 0.5.16).
 
-Transports and runtime land in later tasks (N4–N14).
+TCP and encrypted transports land in later tasks (N5–N14).
 
 ## Crate layout (so far)
 
@@ -30,6 +31,7 @@ Transports and runtime land in later tasks (N4–N14).
 | `admission` | `SourceClass` / `Admission` / `AdmitDecision` |
 | `ratelimit` | token buckets + LRU map (internal) |
 | `bans` | strike / ban table (internal) |
+| `udp` | Do53 UDP `serve_udp` / `UdpStats` |
 
 ## Tests
 
@@ -38,4 +40,5 @@ cargo test -p dnscraft-listeners config
 cargo test -p dnscraft-listeners socket
 cargo test -p dnscraft-listeners core
 cargo test -p dnscraft-listeners --test admission
+cargo test -p dnscraft-listeners --test udp
 ```

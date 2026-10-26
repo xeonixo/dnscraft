@@ -133,13 +133,13 @@ bounded in-flight set (`max_inflight_per_listener`, excess dropped and counted),
 `query_timeout` (expiry → drop). Counters for status.
 
 **Acceptance criteria:**
-- [ ] IPv4 + IPv6 loopback query answered through `FakeHandler` and through the real `PolicyEngine`
-- [ ] Wildcard socket replies from the arrival address (two loopback addresses)
-- [ ] `0.0.0.0` and `::` listeners on the same port both answer (IPv4 and IPv6 query)
-- [ ] Truncation: large answer → TC=1 within the limit; no OPT → 512 limit
-- [ ] In-flight cap and public-source drop counted
+- [x] IPv4 + IPv6 loopback query answered through `FakeHandler` and through the real `PolicyEngine`
+- [x] Wildcard socket replies from the arrival address (two loopback addresses)
+- [x] `0.0.0.0` and `::` listeners on the same port both answer (IPv4 and IPv6 query)
+- [x] Truncation: large answer → TC=1 within the limit; no OPT → 512 limit
+- [x] In-flight cap and public-source drop counted
 
-**Verification:** `cargo test -p dnscraft-listeners udp`
+**Verification:** `cargo test -p dnscraft-listeners --test udp`
 
 **Dependencies:** N2, N3 · **Files:** `src/udp.rs`, `tests/udp.rs`, `tests/support/mod.rs` · **Scope:** M
 

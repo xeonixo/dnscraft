@@ -21,7 +21,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | N3 done; **next: N4** (Phase 1: N4–N5, STOP at Checkpoint B) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
+| `listeners` | N4 done; **next: N5** (Phase 1: N5, STOP at Checkpoint B) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -34,6 +34,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-25 — **listeners: N4 Do53 UDP.** `serve_udp`: concrete binds via tokio `recv_from`/`send_to`; wildcard (`0.0.0.0`/`::`) via `quinn-udp` 0.5.16 (`RecvMeta.dst_ip` → `Transmit.src_ip`), driven by `readable()` + `try_io` (no sleep loops). Per datagram: admission → in-flight semaphore → `handle_wire` with `udp_size_limit` (EDNS `min(client, udp_payload_max)` / 512) → deadline via `wait_until` + clock. `UdpStats` counters. Dep: `quinn-udp =0.5.16`. Tests: IPv4/IPv6 FakeHandler + PolicyEngine local record, wildcard 127.0.0.1/2 reply source, same-port v4+v6 unspecified, TC/512 truncation, inflight + public drop. DoD green; crypto trees empty; deny ok. Next: N5.
 
 - 2026-10-25 — **listeners: N3 admission.** `SourceClass::of` (RFC 1918 / loopback / link-local / ULA / CGNAT + IPv4-mapped; documentation ranges public). `Admission::check` → Admit | Drop(code) | Refuse(code): ban → public Do53 drop → public-listener Client ID → per-source token bucket → per-Client-ID bucket (public sources). UDP rate/ban → Drop; TCP/DoT/DoH/DoQ rate → Refuse; banned → Drop (close). `strike` for transports (private no-op). LRU tables capped by `max_tracked_sources`. Tests: source-class table, admission matrix, ManualClock refill/ban/expiry/window, flood 10×cap. DoD green; crypto trees empty; `cargo deny check` ok. Next: N4.
 

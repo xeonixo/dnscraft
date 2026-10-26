@@ -71,7 +71,7 @@ Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i o
 - [x] N1: Crate skeleton — config, validation, errors, `Clock`, `QueryHandler` trait
 - [x] N2: Message core — validation, EDNS, ECS strip, EDE, id/flags, size limit, padding
 - [x] N3: Admission — source class, token buckets, ban table (bounded), decision API
-- [ ] N4: Do53 UDP — concrete + wildcard sockets, reply source, in-flight cap
+- [x] N4: Do53 UDP — concrete + wildcard sockets, reply source, in-flight cap
 - [ ] N5: Do53 TCP — RFC 7766 framing, pipelining, out-of-order, idle timeout, caps
 
 ### Checkpoint B: Do53 end to end

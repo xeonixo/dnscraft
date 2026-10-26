@@ -8,6 +8,7 @@
 //! N1: configuration, errors, clock, handler, sockets.
 //! N2: transport-independent [`handle_wire`] (validation, EDNS, padding).
 //! N3: [`Admission`] (source class, rate limits, bans).
+//! N4: Do53 [`serve_udp`].
 
 #![deny(missing_docs)]
 
@@ -21,6 +22,7 @@ mod error;
 mod handler;
 mod ratelimit;
 mod socket;
+mod udp;
 
 pub use admission::{Admission, AdmitDecision, ClientIdState, SourceClass};
 pub use bans::StrikeReason;
@@ -37,3 +39,4 @@ pub use edns::{PAD_BLOCK, build_response_edns, encode_padded, strip_ecs};
 pub use error::ListenersError;
 pub use handler::{FakeHandler, QueryHandler};
 pub use socket::{bind_tcp, bind_udp};
+pub use udp::{CLASSIC_UDP_LIMIT, UdpServeParams, UdpStats, serve_udp, udp_size_limit};

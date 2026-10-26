@@ -18,8 +18,9 @@ dnscraft-resolver = { path = "../dnscraft-resolver" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 socket2 = { workspace = true }
+quinn-udp = { workspace = true }
 
 [dev-dependencies]
 dnscraft-filtering = { path = "../dnscraft-filtering" }
 proptest = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
