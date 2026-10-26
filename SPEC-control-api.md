@@ -607,7 +607,7 @@ tested. Codes are forwarded from module errors where applicable.
 | `control_api.auth.oidc` | OIDC provider/configuration error |
 | `control_api.auth.local` | local login credential failure |
 | `control_api.auth.locked` | local account temporarily locked |
-| `control_api.tls.no_cert` | direct TLS enabled but the `tls` module has no certificate yet |
+| `control_api.tls.self_signed` | warning (status, not an HTTP error): serving the self-signed bootstrap certificate |
 | `control_api.auth.unknown_token` | token id not found or not owned by actor |
 | `control_api.auth.insufficient_scope` | role lacks permission |
 | `control_api.auth.session_expired` | cookie session expired |
@@ -651,8 +651,22 @@ renewal and hot reload apply to the API automatically. The API is addressed by
 its node hostname (`<node>.dns.<public_domain>`, covered by the wildcard
 certificate). That name must resolve to the node's internal address for
 internal clients (split-horizon / local name); it is never exposed publicly.
-Without a certificate (ACME not configured yet) the listener refuses to start
-with `control_api.tls.no_cert` unless `tls = false` is set explicitly.
+Bootstrap certificate: while the `tls` module has no certificate (first start,
+ACME not configured or not yet issued), control-api serves a **self-signed**
+certificate so the API and web UI are reachable over TLS from the start. It is
+generated once with `rcgen` (already a workspace dependency, ring backend;
+ECDSA P-256, SANs = configured node hostname + `localhost`, validity 1 year),
+persisted in the data directory (private key mode 0600) and reused across
+restarts. The listener's resolver picks the ACME certificate as soon as
+`CertResolver::has_cert()` is true and falls back to the self-signed one
+otherwise; no restart needed. Rules: the self-signed certificate is never
+served for a hostname that has a valid ACME certificate; the status endpoint
+reports `tls_mode` (`acme` | `self_signed`) plus the SHA-256 fingerprint so the
+owner can pin it on first use; a `control_api.tls.self_signed` warning appears
+in status and log while it is active; bearer tokens for `mcp` should not be
+issued while `tls_mode = self_signed` unless the owner confirms (warning in
+the token-create response). Regenerated automatically when expired or when the
+node hostname changes.
 Reverse-proxy mode is optional: `tls = false` plus `trusted_proxies`;
 forwarded headers are honoured only from those addresses, and `Secure` cookies
 follow `X-Forwarded-Proto`. Never self-signed in production.
@@ -753,7 +767,7 @@ binding for the plan unless the owner overrides them.
 
 | # | Question | Decision | Reason |
 |---|---|---|---|
-| 1 | Direct TLS on the API listener? | **Default on**, using the `tls` module's `CertResolver` (ACME, hot reload) under the node hostname; internal-only bind. A reverse proxy is **optional** (`tls = false` + `trusted_proxies`). *(Revised after owner feedback: the ACME module already exists.)* | No extra component needed; the wildcard cert already covers node hostnames. |
+| 1 | Direct TLS on the API listener? | **Default on**, using the `tls` module's `CertResolver` (ACME, hot reload) under the node hostname; until a real certificate exists a persisted **self-signed bootstrap certificate** (`rcgen`) is served and replaced automatically. Internal-only bind. A reverse proxy is **optional** (`tls = false` + `trusted_proxies`). *(Revised after owner feedback.)* | No extra component needed; the wildcard cert already covers node hostnames. |
 | 2 | `argon2` vs `ring::pbkdf2` | **`argon2` (Argon2id)**, new dependency subject to the P1 dependency approval. | Memory-hard, RFC 9106; the ring-only rule is about the TLS/crypto backend and `argon2` is pure Rust. PBKDF2 stays the documented fallback. |
 | 3 | Missing / empty groups claim | Role **`viewer`** only. `admin` only when the configured admin group is present. One configurable admin group; **no** multi-role mapping in v1. | Safe default (least privilege), simple to explain. |
 | 4 | Session refresh | **No refresh.** Absolute session lifetime 12 h plus idle timeout 60 min (both configurable), then re-login. | No refresh-token storage, smaller attack surface. |
@@ -762,8 +776,8 @@ binding for the plan unless the owner overrides them.
 | 7 | Rate limits | One set of defaults for all deployments, **configurable in the TOML**; no separate cluster profile in v1. | Cluster is a later module; premature to split. |
 | 8 | Audit before/after | Store **redacted JSON** before/after snapshots (secrets masked) plus the digest and `config_version`. | Makes "who changed what" answerable; the digest alone is not useful for humans. |
 
-Consequences for the body of this spec: API TLS defaults on (error code
-`control_api.tls.no_cert`, see Error codes);  the endpoint table gains
+Consequences for the body of this spec: API TLS defaults on with a self-signed bootstrap
+certificate (status warning `control_api.tls.self_signed`, see Error codes);  the endpoint table gains
 `GET /api/v1/query-log/export.ndjson` (error code
 `control_api.query_log.export`); the audit-log section stores redacted
 snapshots; session defaults are 12 h absolute / 60 min idle.

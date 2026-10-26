@@ -35,6 +35,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
 
 ## Log
 
+- 2026-10-26 — **spec: control-api self-signed bootstrap cert.** Owner idea: instead of refusing to start without a certificate, serve a persisted self-signed cert (`rcgen`, already a workspace dep; no new dependency) until the `tls` module has an ACME cert, then switch automatically; `tls_mode` + fingerprint in status, warning `control_api.tls.self_signed` (replaces `tls.no_cert`).
+
 - 2026-10-26 — **spec: control-api decision 1 revised.** Owner: ACME exists, reverse proxy only optional. API TLS now default on via the `tls` module `CertResolver` under the node hostname (covered by `*.dns.<public_domain>`); `tls = false` + `trusted_proxies` = optional proxy mode; new error `control_api.tls.no_cert`.
 
 - 2026-10-26 — **spec: control-api open questions decided.** Owner delegated all 8 to Claude: optional API TLS (default off), `argon2` (Argon2id), missing groups claim → viewer, no session refresh (12 h absolute / 60 min idle), NDJSON export primary + CSV, no resolver facade, one configurable rate-limit set, redacted before/after audit snapshots. Recorded in SPEC-control-api.md "Decisions". Spec stays DRAFT until the owner approves; next: P1 plan + dependency table (verify `openidconnect` ring-only).
