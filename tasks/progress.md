@@ -122,8 +122,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
 | `listeners` | COMPLETE (Checkpoint D, 2026-10-26) | [plan](archive/listeners-plan.md) · [tasks](archive/listeners-todo.md) | [SPEC-listeners.md](../SPEC-listeners.md); crates `dnscraft-listeners` + `dnscraft` |
-| `control-api` | A6–A11 done (config endpoints, Checkpoint D, 2026-10-26); **next: A12** (query log) | [plan](plan-control-api.md) · [tasks](todo-control-api.md) | [SPEC-control-api.md](../SPEC-control-api.md); crate `dnscraft-api` |
-| `mcp` | M0–M14 done + D0/T approved (2026-10-26); **next: Checkpoint R → Stage 5 (M15–M19)** | [plan](plan-mcp.md) · [tasks](todo-mcp.md) | [SPEC-mcp.md](../SPEC-mcp.md) |
+| `control-api` | A6–A11 done + RBAC tightening (config reads admin-only, Checkpoint D, 2026-10-26); **next: A12** (query log, dispatched) | [plan](plan-control-api.md) · [tasks](todo-control-api.md) | [SPEC-control-api.md](../SPEC-control-api.md); crate `dnscraft-api` |
+| `mcp` | M0–M14 done + D0/T/R approved (2026-10-26); **next: Stage 5 — M15–M18 dispatched** (write tools) | [plan](plan-mcp.md) · [tasks](todo-mcp.md) | [SPEC-mcp.md](../SPEC-mcp.md) |
 | `web-ui`, `cluster` | pending (no spec yet; see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -151,6 +151,8 @@ SPEC-listeners.md § Success Criteria → evidence (all met; N13 ticked 2026-10-
 | 8 | Coverage ≥ 80 %; fuzz 10 min clean; DoD + `cargo deny` green | 85.32 % lines; fuzz 10.1 M / 13.2 M runs clean; gates green (N13 log entry) |
 
 ## Log
+
+- 2026-10-26 — **control-api: A7 RBAC tightening — config-family reads are admin-only.** One commit (`0392273`). `requirement()` now returns `ApiAdmin` for the config-family prefixes (`/config`, `/policy`, `/clients`, `/filter-sets`, `/filter-lists`, `/listeners`, `/tls`) regardless of method, via a boundary-checked `is_config_path` helper; `viewer` keeps only operational reads (`/query-log`, and later stats/why-blocked). Table-driven test asserts each config GET is admin-only while `GET /query-log` stays `Api`. Gates: fmt/clippy/test `-p dnscraft-api` green. Next: A12 (query log) + M15–M18 (write tools), both dispatched in parallel (crate-scoped DoD).
 
 - 2026-10-26 — **mcp: Stage 4 (M11–M14) done — the seven read tools.** Six commits (M11 `d30cd25`, M12 `160b534`, M13 `9497be9`, M14 `798ed4c`, strengthen `709643d`). `search_query_log`/`get_query`, `explain_block`/`test_query` (syntactic-only validation), `get_stats`/`list_clients`, `list_mcp_rules` — with `get_status` (M8) that is the 8 read tools. Strict `deny_unknown_fields` inputs, `SafeText` on every string, pagination, static descriptions + annotations, backend-code passthrough, raw-JsonObject dispatch (typed params would surface `-32602`, violating `mcp.invalid_input`). Gates: fmt, clippy/test `-p dnscraft-mcp` (81 green, 32 read_tools), deny, crypto empty, still no DNScraft deps. Mutation probes: 9. Deviations: `next_offset` is `null` when no next page; `get_stats` top-N cap 10 (SPEC silent). Next: **Checkpoint R** → Stage 5 (M15–M19).
 
