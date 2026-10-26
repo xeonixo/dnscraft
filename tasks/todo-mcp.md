@@ -20,23 +20,23 @@ scratchpad directory (never inside the repo, no builds, metadata and source read
 the repository.
 
 **Acceptance criteria:**
-- [ ] Exact list of crates that `rmcp` 3.7.0 (features `server`, `transport-streamable-http-server`,
+- [x] Exact list of crates that `rmcp` 3.7.0 (features `server`, `transport-streamable-http-server`,
       `macros`, default off) adds **compared with the current workspace `Cargo.lock`** (name, version,
       licence), plus the total count.
-- [ ] `cargo deny check` result for that tree using a copy of the repo's `deny.toml` (advisories, licences,
+- [x] `cargo deny check` result for that tree using a copy of the repo's `deny.toml` (advisories, licences,
       bans, sources); any advisory/licence hit is listed with a recommendation.
-- [ ] `cargo tree -i aws-lc-rs|aws-lc-sys|openssl-sys|native-tls|ring|reqwest` outputs for the tree.
-- [ ] Each "Unverified details" bullet of SPEC-mcp.md answered with `file:line` from the rmcp source in the
+- [x] `cargo tree -i aws-lc-rs|aws-lc-sys|openssl-sys|native-tls|ring|reqwest` outputs for the tree.
+- [x] Each "Unverified details" bullet of SPEC-mcp.md answered with `file:line` from the rmcp source in the
       cargo registry (or marked "still unverified" with the reason): how request extensions /
       `http::request::Parts` reach tool handlers; how annotations and static descriptions are declared;
       what `with_legacy_session_mode(false)` accepts/rejects and whether per-request state remains; the exact
       encoding under `with_json_response(true)`; which hooks exist for body cap / in-flight cap / Origin /
       header validation versus what must be a tower layer; which of the SPEC-mcp.md transport checks rmcp
       already performs itself.
-- [ ] A recommendation: keep rmcp, or fall back to hand-rolled transport (with the blocking evidence).
-- [ ] `docs/adr/0006-mcp-rmcp-stateless.md` written (Status: Proposed; Context, Decision, Consequences,
+- [x] A recommendation: keep rmcp, or fall back to hand-rolled transport (with the blocking evidence).
+- [x] `docs/adr/0006-mcp-rmcp-stateless.md` written (Status: Proposed; Context, Decision, Consequences,
       Alternatives); the "Dependencies for owner approval" table in plan-mcp.md filled in.
-- [ ] STOP at **Checkpoint D0** for owner approval of the dependency list.
+- [x] STOP at **Checkpoint D0** for owner approval of the dependency list.
 
 **Verification:** read-only; the commands and outputs are quoted in the ADR.
 
@@ -47,7 +47,7 @@ the repository.
 **Scope:** S
 
 ## Checkpoint D0: Dependency approval
-- [ ] Owner approves `rmcp` and the listed transitive crates (or chooses the fallback); logged in progress.md
+- [x] Owner approves `rmcp` 3.7.0 + 26 transitive crates (2026-10-26); logged in progress.md
 
 ## Task M1: `filtering` — `TempAllow.created_at`
 

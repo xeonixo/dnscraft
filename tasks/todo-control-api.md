@@ -177,8 +177,8 @@ clock (no wall-clock sleeps). The limiter is consulted in a single middleware.
 **Scope:** S
 
 ## Checkpoint B: Server core
-- [ ] DoD green; server core + TLS bootstrap + rate limit reviewed (lead review)
-- [ ] progress.md updated
+- [x] DoD green; server core + TLS bootstrap + rate limit reviewed (lead review, 2026-10-26)
+- [x] progress.md updated
 
 ## Phase 3: Auth
 
