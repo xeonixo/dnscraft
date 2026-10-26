@@ -546,6 +546,63 @@ async fn peer_eof_drains_in_flight_answer() {
     h.stop().await;
 }
 
+/// Idle must re-arm after a slow answer completes (must fail on b6c2757).
+#[tokio::test]
+async fn idle_rearms_after_slow_answer() {
+    let clock = Arc::new(ManualClock::new(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(6_000),
+    ));
+    let gate = Arc::new(Notify::new());
+    let handler = Arc::new(ReleaseHandler {
+        gate: Arc::clone(&gate),
+        answer: fake_a_answer(Ipv4Addr::new(192, 0, 2, 33)),
+    });
+    let limits = Limits {
+        tcp_idle_timeout: Duration::from_secs(2),
+        query_timeout: Duration::from_secs(5),
+        ..Limits::default()
+    };
+    let h = TcpHarness::spawn(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        handler,
+        limits,
+        Arc::clone(&clock) as Arc<dyn dnscraft_listeners::Clock>,
+    )
+    .await;
+
+    let mut client = TcpStream::connect(h.addr).await.unwrap();
+    write_frame(&mut client, &encode_a_query(11, "slow.example.com."))
+        .await
+        .unwrap();
+    let stats = Arc::clone(&h.stats);
+    poll_until(
+        || stats.queries.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    // Loop is waiting for the next frame while the query is outstanding; then answer.
+    gate.notify_waiters();
+    let resp = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut client))
+        .await
+        .expect("slow answer")
+        .unwrap();
+    assert_eq!(Message::decode(&resp).unwrap().header.id, 11);
+    // Client stays silent; idle must re-arm from the drain moment.
+    for _ in 0..5 {
+        clock.advance(Duration::from_secs(2));
+        tokio::task::yield_now().await;
+    }
+    poll_until(
+        || stats.idle_timeouts.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(stats.idle_timeouts.load(Ordering::Relaxed), 1);
+    assert_eq!(stats.closed.load(Ordering::Relaxed), 1);
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn idle_waits_for_outstanding_then_query_timeout_servfail() {
     let clock = Arc::new(ManualClock::new(

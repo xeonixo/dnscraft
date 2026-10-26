@@ -21,7 +21,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | Checkpoint B re-review fixes; **STOP for Claude re-review** | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
+| `listeners` | Checkpoint B re-review round 3; **STOP for Claude re-review** | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -34,6 +34,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-26 — **listeners: TCP reader task, idle re-arm after outstanding queries.** Per-connection reader task (`acquire` → `read_frame` → mpsc); main loop selects cancel-safe `frame_rx` / writer cancel / idle. Idle armed only while outstanding query count is 0; re-armed from the drain `Notify` when the last query finishes (fixes stuck connection after a slow answer). Reader aborted on every connection end. Regression: gated handler + silent client + ManualClock → `idle_timeouts == 1`. **STOP for Claude re-review** (Checkpoint B Claude box still open).
 
 - 2026-10-26 — **listeners: TCP drain on EOF/idle, level-triggered writer cancel.** RFC 7766 §6.2.3: on peer EOF / read-idle stop reading, drop sender, drain in-flight (query_timeout → SERVFAIL) and writer (write deadline); idle timer only while all per-connection permits free; `queries.abort_all` only for ban / framing / writer error|timeout. `watch::channel(false)` cancels the reader (no double `JoinHandle` await). TcpStats: `refused`, `write_timeouts` (separate from admission/idle). Accept-time public close documented Do53-only. Tests: EOF drain after `shutdown(Write)`, idle waits for outstanding then SERVFAIL, write-timeout 20× stability. **STOP for Claude re-review** (Checkpoint B Claude box still open).
 

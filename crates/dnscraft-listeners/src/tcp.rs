@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use dnscraft_policy::DnsProtocol;
@@ -229,6 +229,53 @@ impl ConnEnd {
     }
 }
 
+/// Counts in-flight query tasks; notifies when the count returns to zero.
+struct Outstanding {
+    count: AtomicUsize,
+    drained: Notify,
+}
+
+impl Outstanding {
+    fn new() -> Self {
+        Self {
+            count: AtomicUsize::new(0),
+            drained: Notify::new(),
+        }
+    }
+
+    fn get(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+
+    fn acquire(&self) {
+        self.count.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn release(&self) {
+        let prev = self.count.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(prev >= 1, "outstanding underflow");
+        if prev == 1 {
+            self.drained.notify_waiters();
+        }
+    }
+}
+
+struct OutstandingGuard(Arc<Outstanding>);
+
+impl Drop for OutstandingGuard {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+enum ReaderEvent {
+    Frame {
+        datagram: Vec<u8>,
+        permit: OwnedSemaphorePermit,
+    },
+    End(ConnEnd),
+}
+
 async fn run_connection<H, S>(
     shared: Arc<TcpShared<H>>,
     stream: S,
@@ -239,139 +286,198 @@ where
     S: AsyncRead + AsyncWrite + Send + 'static,
 {
     let (reader, writer) = split(stream);
-    let mut reader = BufReader::new(reader);
-    let (tx, rx) = mpsc::channel::<Vec<u8>>(64);
-    // Level-triggered: writer sets `true` on error/timeout; read loop observes without racing Notify.
+    let reader = BufReader::new(reader);
+    let (answer_tx, answer_rx) = mpsc::channel::<Vec<u8>>(64);
     let (cancel_tx, mut cancel_rx) = watch::channel(false);
     let slot_cap = shared.limits.max_queries_per_connection.max(1) as usize;
     let query_slots = Arc::new(Semaphore::new(slot_cap));
+    let outstanding = Arc::new(Outstanding::new());
     let mut queries: JoinSet<()> = JoinSet::new();
+
+    let (frame_tx, mut frame_rx) = mpsc::channel::<ReaderEvent>(8);
+    let reader_slots = Arc::clone(&query_slots);
+    let reader_task = tokio::spawn(async move {
+        reader_loop(reader, reader_slots, frame_tx).await;
+    });
 
     let write_stats = Arc::clone(&shared.stats);
     let write_clock = Arc::clone(&shared.clock);
     let write_idle = shared.limits.tcp_idle_timeout;
     let write_task = tokio::spawn(async move {
-        writer_loop(writer, rx, write_clock, write_idle, write_stats, cancel_tx).await
+        writer_loop(
+            writer,
+            answer_rx,
+            write_clock,
+            write_idle,
+            write_stats,
+            cancel_tx,
+        )
+        .await
     });
 
     let idle = shared.limits.tcp_idle_timeout;
-    let activity = Notify::new();
+    // Armed only while no query is outstanding; re-armed from the drain moment.
+    let mut idle_deadline: Option<SystemTime> = Some(add_duration(shared.clock.now(), idle));
 
     let result = loop {
         if *cancel_rx.borrow() {
             break Err(ConnEnd::WriteTimeout);
         }
 
-        // Backpressure: hold a per-connection slot before reading the next frame.
-        // Read-idle (RFC 7766 §6.2.3) only while no query is outstanding.
-        let idle_now = query_slots.available_permits() == slot_cap;
-        let permit = if idle_now {
-            let deadline = add_duration(shared.clock.now(), idle);
-            tokio::select! {
-                biased;
-                changed = cancel_rx.changed() => {
-                    if changed.is_err() || *cancel_rx.borrow() {
-                        break Err(ConnEnd::WriteTimeout);
-                    }
-                    continue;
-                }
-                () = wait_until(shared.clock.as_ref(), deadline, &activity) => {
-                    break Err(ConnEnd::Idle);
-                }
-                p = query_slots.clone().acquire_owned() => {
-                    match p {
-                        Ok(p) => p,
-                        Err(_) => break Err(ConnEnd::Io),
-                    }
-                }
-            }
-        } else {
-            tokio::select! {
-                biased;
-                changed = cancel_rx.changed() => {
-                    if changed.is_err() || *cancel_rx.borrow() {
-                        break Err(ConnEnd::WriteTimeout);
-                    }
-                    continue;
-                }
-                p = query_slots.clone().acquire_owned() => {
-                    match p {
-                        Ok(p) => p,
-                        Err(_) => break Err(ConnEnd::Io),
-                    }
-                }
-            }
-        };
+        let no_outstanding = outstanding.get() == 0;
+        if !no_outstanding {
+            idle_deadline = None;
+        } else if idle_deadline.is_none() {
+            idle_deadline = Some(add_duration(shared.clock.now(), idle));
+        }
 
-        // Only our speculative permit held ⇒ still "idle" for the read wait.
-        let read_idle = query_slots.available_permits() == slot_cap - 1;
-        let frame = if read_idle {
-            let deadline = add_duration(shared.clock.now(), idle);
-            tokio::select! {
-                biased;
-                changed = cancel_rx.changed() => {
-                    drop(permit);
-                    if changed.is_err() || *cancel_rx.borrow() {
-                        break Err(ConnEnd::WriteTimeout);
+        tokio::select! {
+            biased;
+            changed = cancel_rx.changed() => {
+                if changed.is_err() || *cancel_rx.borrow() {
+                    break Err(ConnEnd::WriteTimeout);
+                }
+            }
+            () = wait_idle_or_drain(
+                shared.clock.as_ref(),
+                idle_deadline,
+                &outstanding,
+            ) => {
+                if outstanding.get() == 0 {
+                    // Idle deadline fired, or the last query just drained (re-arm).
+                    if let Some(deadline) = idle_deadline
+                        && shared.clock.now() >= deadline
+                    {
+                        break Err(ConnEnd::Idle);
                     }
-                    continue;
-                }
-                r = framing::read_frame(&mut reader) => r,
-                () = wait_until(shared.clock.as_ref(), deadline, &activity) => {
-                    drop(permit);
-                    break Err(ConnEnd::Idle);
+                    idle_deadline = Some(add_duration(shared.clock.now(), idle));
                 }
             }
-        } else {
-            tokio::select! {
-                biased;
-                changed = cancel_rx.changed() => {
-                    drop(permit);
-                    if changed.is_err() || *cancel_rx.borrow() {
-                        break Err(ConnEnd::WriteTimeout);
+            ev = frame_rx.recv() => {
+                match ev {
+                    None => break Err(ConnEnd::Io),
+                    Some(ReaderEvent::End(e)) => break Err(e),
+                    Some(ReaderEvent::Frame { datagram, permit }) => {
+                        match dispatch_frame(
+                            &shared,
+                            peer.ip(),
+                            datagram,
+                            permit,
+                            &answer_tx,
+                            &mut queries,
+                            &outstanding,
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                // Refuse (or empty) left no outstanding work: refresh idle.
+                                if outstanding.get() == 0 {
+                                    idle_deadline =
+                                        Some(add_duration(shared.clock.now(), idle));
+                                } else {
+                                    idle_deadline = None;
+                                }
+                            }
+                            Err(e) => break Err(e),
+                        }
                     }
-                    continue;
-                }
-                r = framing::read_frame(&mut reader) => r,
-            }
-        };
-
-        match frame {
-            Ok(datagram) => {
-                activity.notify_waiters();
-                match dispatch_frame(&shared, peer.ip(), datagram, permit, &tx, &mut queries).await
-                {
-                    Ok(()) => {}
-                    Err(e) => break Err(e),
                 }
             }
-            Err(FrameError::UnexpectedEof) => break Err(ConnEnd::Peer),
-            Err(FrameError::InvalidLength(_)) => break Err(ConnEnd::Framing),
-            Err(FrameError::Io(_)) => break Err(ConnEnd::Io),
         }
     };
 
-    // Stop reading. Dropping `tx` lets the writer finish after in-flight query clones release.
+    // Abort the reader on every connection end (cancel-safe: main never held read_frame).
+    reader_task.abort();
+    let _ = reader_task.await;
+
     let abort = result.as_ref().err().is_some_and(|e| e.abort_queries());
-    drop(tx);
+    drop(answer_tx);
     if abort {
         queries.abort_all();
     }
     while queries.join_next().await.is_some() {}
-    // Await the writer exactly once (no select on JoinHandle; no abort of a drained writer).
     let writer_end = write_task.await;
     match result {
-        Err(ConnEnd::Peer) | Err(ConnEnd::Idle) => {
-            // Graceful: prefer writer's timeout/IO if it failed while flushing.
-            match writer_end {
-                Ok(WriterEnd::Timeout) => Err(ConnEnd::WriteTimeout),
-                Ok(WriterEnd::Io) => Err(ConnEnd::Io),
-                _ => result,
-            }
-        }
+        Err(ConnEnd::Peer) | Err(ConnEnd::Idle) => match writer_end {
+            Ok(WriterEnd::Timeout) => Err(ConnEnd::WriteTimeout),
+            Ok(WriterEnd::Io) => Err(ConnEnd::Io),
+            _ => result,
+        },
         other => {
             let _ = writer_end;
             other
+        }
+    }
+}
+
+/// Waits until the idle deadline (when armed) or until outstanding queries drain.
+///
+/// Subscribes to `drained` before re-checking the counter to avoid a lost wakeup.
+async fn wait_idle_or_drain(
+    clock: &dyn Clock,
+    idle_deadline: Option<SystemTime>,
+    outstanding: &Outstanding,
+) {
+    if outstanding.get() == 0 {
+        if let Some(deadline) = idle_deadline {
+            wait_until(clock, deadline, &outstanding.drained).await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+        return;
+    }
+    loop {
+        let notified = outstanding.drained.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if outstanding.get() == 0 {
+            return;
+        }
+        notified.await;
+        if outstanding.get() == 0 {
+            return;
+        }
+    }
+}
+
+async fn reader_loop<R: AsyncRead + Unpin>(
+    mut reader: R,
+    query_slots: Arc<Semaphore>,
+    frame_tx: mpsc::Sender<ReaderEvent>,
+) {
+    loop {
+        let permit = match query_slots.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => {
+                let _ = frame_tx.send(ReaderEvent::End(ConnEnd::Io)).await;
+                return;
+            }
+        };
+        match framing::read_frame(&mut reader).await {
+            Ok(datagram) => {
+                if frame_tx
+                    .send(ReaderEvent::Frame { datagram, permit })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            Err(FrameError::UnexpectedEof) => {
+                drop(permit);
+                let _ = frame_tx.send(ReaderEvent::End(ConnEnd::Peer)).await;
+                return;
+            }
+            Err(FrameError::InvalidLength(_)) => {
+                drop(permit);
+                let _ = frame_tx.send(ReaderEvent::End(ConnEnd::Framing)).await;
+                return;
+            }
+            Err(FrameError::Io(_)) => {
+                drop(permit);
+                let _ = frame_tx.send(ReaderEvent::End(ConnEnd::Io)).await;
+                return;
+            }
         }
     }
 }
@@ -383,6 +489,7 @@ async fn dispatch_frame<H>(
     permit: OwnedSemaphorePermit,
     tx: &mpsc::Sender<Vec<u8>>,
     queries: &mut JoinSet<()>,
+    outstanding: &Arc<Outstanding>,
 ) -> Result<(), ConnEnd>
 where
     H: QueryHandler + 'static,
@@ -416,10 +523,13 @@ where
         }
         AdmitDecision::Admit => {
             TcpStats::bump(&shared.stats.queries);
+            outstanding.acquire();
             let shared = Arc::clone(shared);
             let tx = tx.clone();
+            let outstanding = Arc::clone(outstanding);
             queries.spawn(async move {
                 let _permit = permit;
+                let _guard = OutstandingGuard(outstanding);
                 if let Some(bytes) = process_query(&shared, peer_ip, datagram).await {
                     let _ = tx.send(bytes).await;
                 }
