@@ -447,7 +447,7 @@ durations, caps) are configuration, edited through `/config` (`GET/PUT
 
 ### Navigation (sidebar)
 
-The persistent sidebar is a grouped source list — never a flat run of links. Six
+The persistent sidebar is a grouped source list — never a flat run of links. Eight
 sections order the screens by concern, from operational ("what is happening") to
 administrative ("who can change things"):
 
@@ -458,11 +458,16 @@ administrative ("who can change things"):
 | Filterung | Filtersätze, Filterlisten, Regeln & Freigaben |
 | DNS-Regelwerk | Zonen (Views), Profile, Test-Abfrage |
 | Netzwerk | Geräte, Listener, TLS |
-| Verwaltung | Konfiguration, API-Tokens, Audit-Log, Einstellungen |
+| Cluster | Knoten |
+| Integrationen | MCP, API-Explorer |
+| System | System (Konto, Darstellung, Protokollierung, Konfiguration & Versionen, API-Tokens, Audit-Log) |
 
-`/login` and `/setup` are public and appear outside the sidebar. Admin-only
-screens (`/tokens`, `/audit`) are hidden — not merely disabled — for `viewer`, so
-the navigation never offers a dead end. Section labels are translated small caps
+`/login` and `/setup` are public and appear outside the sidebar. The system-level
+configuration is consolidated into a single **System** screen rather than split
+across separate settings/config/tokens/audit entries; its sections are grouped
+inset lists within one scrollable screen. Admin-only sections (`/tokens`,
+`/audit`) are hidden — not merely disabled — for `viewer`, so the navigation never
+offers a dead end. Section labels are translated small caps
 with slight letter-spacing; each item is an icon plus a label following the SF
 Symbols metaphor. The active item uses the accent tint, never a colored bar. On
 compact width the sidebar collapses to a drawer opened from the toolbar,
