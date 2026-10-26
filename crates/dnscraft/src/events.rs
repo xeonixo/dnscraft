@@ -8,14 +8,16 @@ use dnscraft_policy::DnsProtocol;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
+use crate::config::IpTruncate;
+
 /// Writes each received event as one JSON object per line on stdout.
 ///
 /// Runs on a dedicated thread (spawned with `spawn_blocking` in [`crate::build`])
 /// so the blocking stdout writes never block the async runtime; `serde_json`
 /// handles all string escaping.
-pub fn write_events_blocking(mut rx: mpsc::Receiver<QueryEvent>) {
+pub fn write_events_blocking(mut rx: mpsc::Receiver<QueryEvent>, ip_truncate: IpTruncate) {
     while let Some(event) = rx.blocking_recv() {
-        if let Ok(line) = serde_json::to_string(&event_json(&event)) {
+        if let Ok(line) = serde_json::to_string(&event_json(&event, ip_truncate)) {
             // Lock stdout only for the duration of the write so the guard
             // (`StdoutLock` is `!Send`) never lives across an await point.
             let mut out = std::io::stdout().lock();
@@ -25,12 +27,12 @@ pub fn write_events_blocking(mut rx: mpsc::Receiver<QueryEvent>) {
     }
 }
 
-fn event_json(event: &QueryEvent) -> Value {
+fn event_json(event: &QueryEvent, ip_truncate: IpTruncate) -> Value {
     serde_json::json!({
         "time": unix_seconds(event.time),
         "protocol": protocol_str(event.protocol),
         "listener_id": event.listener_id.as_str(),
-        "source": event.source.to_string(),
+        "source": ip_truncate.truncate(event.source),
         "client_id": event.client_id.as_ref().map(|c| c.as_str()),
         "qname": event.query.name.to_string(),
         "qtype": event.query.qtype.to_string(),
@@ -112,7 +114,7 @@ mod tests {
 
     #[test]
     fn json_line_escapes_qname() {
-        let json = serde_json::to_string(&event_json(&event())).unwrap();
+        let json = serde_json::to_string(&event_json(&event(), IpTruncate::None)).unwrap();
         // The `"` in `a"b.example.com.` must come out escaped as `\"`.
         assert!(
             json.contains("a\\\"b"),
@@ -129,7 +131,7 @@ mod tests {
     #[test]
     fn writer_is_blocking_and_drains_the_channel() {
         let (sink, rx) = ChannelSink::new(8);
-        let handle = std::thread::spawn(move || write_events_blocking(rx));
+        let handle = std::thread::spawn(move || write_events_blocking(rx, IpTruncate::None));
         assert!(sink.try_send(event()));
         drop(sink); // close the channel → writer returns
         handle.join().unwrap();

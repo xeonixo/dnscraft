@@ -321,21 +321,49 @@ progress.md. Coverage ≥ 80 % lines.
 
 **Dependencies:** N11 (N12 if done) · **Files:** `fuzz/**`, `benches/udp.rs`, `README.md`, `tasks/progress.md` · **Scope:** M
 
-## Task N14: Minimal `dnscraft` binary (owner go 2026-10-25)
+## Task N14: Minimal `dnscraft` binary (owner go 2026-10-25; **minimal bootstrap** — D2)
 
-**Description:** `crates/dnscraft` binary: reads a small bootstrap TOML (data dir, listeners, resolver
-root/forward zones, filter lists, one default view/profile) + env secrets, builds resolver → filtering →
-policy → (optional) tls → listeners, logs query events to stdout as JSON lines, handles SIGTERM with
-graceful shutdown. No UI/API. Sample config in `crates/dnscraft/dnscraft.example.toml` with documentation addresses only.
+**Description:** `crates/dnscraft` binary, minimal bootstrap scope (the full N14 text below is deferred
+to N14b). Reads a small TOML (`public_domain`, `listeners`, `allow_partial_bind`, `[log] queries` /
+`ip_truncate`) + TLS secrets from the environment (PEM or `*_FILE`, exactly one source per secret),
+builds resolver (built-in root hints, DNSSEC) → empty filtering → policy (single default view/profile)
+→ optional tls → listeners, logs answered queries to stdout as JSON lines (opt-out via `[log] queries`),
+handles SIGTERM/SIGINT with graceful shutdown and exits 2 with a stable `dnscraft.*` code on
+config/startup errors. No UI/API. Sample config at `deploy/dnscraft.example.toml` (loopback
+`127.0.0.1:5300` UDP+TCP).
 
 **Acceptance criteria:**
-- [x] Starts from the sample config on high ports and answers `dig`/`kdig` (manual, steps in README) — **not run**: the sample config (`crates/dnscraft/dnscraft.example.toml`) uses documentation-only addresses per the minimal scope, so it does not bind; the interop recipe is in `crates/dnscraft/README.md` and marked "not run".
-- [x] Invalid config → exit code 2; SIGTERM drains — integration tests: bad protocol → 2, missing file → 2, SIGTERM → graceful exit 0.
-- [x] Integration test spawns the binary on loopback and shuts it down cleanly (`tests/cli.rs`); JSON-lines event formatting (with escaping) is unit-tested rather than a live UDP query.
+- [x] Invalid/missing config, misspelled keys, half-configured TLS env, public plaintext and unbindable
+  listeners each exit 2 with a stable code on stderr (`tests/cli.rs`).
+- [x] End-to-end: spawns on `127.0.0.1:0`, reads the bound port from stderr, answers one UDP query for a
+  hostile qname with one valid escaped JSON stdout line, SIGTERM → exit 0 (`tests/e2e.rs`).
+- [ ] Manual `dig`/`kdig` interop against `deploy/dnscraft.example.toml` (recipe in the crate README;
+  **not run** here).
+
+**Omitted from the minimal scope (deferred, see N14b):** `data_dir`, resolver forward zones / root-hint
+config, filter lists, configurable default view/profile.
 
 **Verification:** `cargo test -p dnscraft`; manual run documented
 
 **Dependencies:** N13 · **Files:** `crates/dnscraft/**`, `deploy/dnscraft.example.toml` · **Scope:** M
+
+## Task N14b: Configurable resolver / filtering / views (deferred from N14 minimal scope)
+
+**Description:** The N14 minimal bootstrap hardcodes the resolver (built-in root hints, no forward
+zones), an empty filter set, and a single default view/profile. This follow-up makes each of those
+configurable from the bootstrap TOML, then wires the binary into control-api/UI/MCP.
+
+**Acceptance criteria:**
+- [ ] `data_dir` config key used for runtime state (cert store, logs) — depends on a decision where
+  runtime state lives
+- [ ] resolver `root_hints` / `forward_zones` configurable from TOML
+- [ ] filter lists (and sets) configurable from TOML
+- [ ] one configurable default view/profile (records, client ids, subnets)
+- [ ] control-api / UI / MCP wiring (deferred to those modules)
+
+**Verification:** `cargo test -p dnscraft`; manual run documented
+
+**Dependencies:** N14 · **Files:** `crates/dnscraft/**`, `deploy/dnscraft.example.toml` · **Scope:** M
 
 ## Checkpoint D: Complete
 - [ ] All spec success criteria met (table in progress.md)

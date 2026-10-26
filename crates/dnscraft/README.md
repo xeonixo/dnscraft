@@ -11,17 +11,21 @@ do the DNS work; this crate is a thin-but-complete bootstrap around them.
 
 ```bash
 cargo build -p dnscraft
-cargo run -p dnscraft -- dnscraft.example.toml
+cargo run -p dnscraft -- deploy/dnscraft.example.toml
 ```
 
-The only argument is a TOML config path. A sample that uses documentation-only
-addresses (and therefore must **not** be run as-is) is
-[`dnscraft.example.toml`](dnscraft.example.toml).
+The only argument is a TOML config path. A runnable loopback sample is
+[`deploy/dnscraft.example.toml`](../../deploy/dnscraft.example.toml) (UDP + TCP
+on `127.0.0.1:5300`); the public encrypted listeners are commented out.
 
 ## Configuration
 
 ```toml
 public_domain = "example.com"
+
+[log]
+queries = true             # default true: JSON lines on stdout
+# ip_truncate = "none"     # none | last_octet | last_group (default none)
 
 [[listeners]]
 id = "lan-udp"
@@ -33,6 +37,8 @@ address = "127.0.0.1:5300"  # host:port; port 0 = ephemeral
 
 - `public_domain` (required) — the domain used for SNI/DDR (`dns.<domain>`).
 - `listeners` — one `[[listeners]]` table each; `id` must match `[a-z0-9-]{1,64}`.
+- `[log]` — `queries` (default true) and optional `ip_truncate`
+  (`none` | `last_octet` | `last_group`).
 - Shared limits and public settings use the crate defaults; public exposure is
   enabled only when a listener sets `exposure = "public"` (encrypted transports
   only, and then validated against `public_domain`).

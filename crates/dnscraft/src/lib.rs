@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dnscraft_listeners::{
-    ChannelSink, Clock, ListenerSet, ListenersStatus, QueryEventSink, SystemClock,
+    ChannelSink, Clock, ListenerSet, ListenersStatus, NullSink, QueryEventSink, SystemClock,
 };
 use dnscraft_policy::PolicyEngine;
 use dnscraft_tls::CertResolver;
@@ -20,8 +20,8 @@ use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
 
 pub use config::{
-    Config, ListenerToml, TLS_CERT_ENV, TLS_CERT_FILE_ENV, TLS_KEY_ENV, TLS_KEY_FILE_ENV,
-    TlsSecrets, tls_secrets_from_env,
+    Config, IpTruncate, ListenerToml, LogConfig, LogSettings, TLS_CERT_ENV, TLS_CERT_FILE_ENV,
+    TLS_KEY_ENV, TLS_KEY_FILE_ENV, TlsSecrets, tls_secrets_from_env,
 };
 pub use engine::build_engine;
 
@@ -125,7 +125,7 @@ pub(crate) fn parse_config(text: &str, source: &str) -> Result<Config, Error> {
 /// A running server: the listener set plus the JSON event writer task.
 pub struct App {
     set: ListenerSet<PolicyEngine>,
-    writer: JoinHandle<()>,
+    writer: Option<JoinHandle<()>>,
     sink: Arc<dyn QueryEventSink>,
 }
 
@@ -141,7 +141,9 @@ impl App {
         // The channel closes once every listener has dropped its sink, so the
         // writer finishes soon after; the timeout is a backstop against a
         // leaked sender holding the writer (and the process) open.
-        let _ = tokio::time::timeout(Duration::from_secs(2), self.writer).await;
+        if let Some(writer) = self.writer {
+            let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
+        }
         let dropped = self.sink.events_dropped();
         if dropped > 0 {
             eprintln!("dnscraft: {dropped} query events dropped");
@@ -159,6 +161,7 @@ pub async fn build(
     clock: Arc<dyn dnscraft_filtering::Clock>,
 ) -> Result<App, Error> {
     let listeners = config.listeners_config()?;
+    let log = config.log_settings()?;
     let engine = engine::build_engine(clock).await?;
 
     let certs = match tls_secrets_from_env()? {
@@ -177,8 +180,17 @@ pub async fn build(
         None => None,
     };
 
-    let (sink, rx) = ChannelSink::new(1024);
-    let sink: Arc<dyn QueryEventSink> = sink;
+    let (sink, writer) = if log.queries {
+        let (channel, rx) = ChannelSink::new(1024);
+        let sink: Arc<dyn QueryEventSink> = channel;
+        let writer = tokio::task::spawn_blocking(move || {
+            events::write_events_blocking(rx, log.ip_truncate);
+        });
+        (sink, Some(writer))
+    } else {
+        (Arc::new(NullSink) as Arc<dyn QueryEventSink>, None)
+    };
+
     let listener_sink = Arc::clone(&sink);
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let set = ListenerSet::start(
@@ -209,7 +221,6 @@ pub async fn build(
         }
     }
 
-    let writer = tokio::task::spawn_blocking(move || events::write_events_blocking(rx));
     Ok(App { set, writer, sink })
 }
 
@@ -290,6 +301,7 @@ mod tests {
             Error::config("dnscraft.config.parse", "x"),
             Error::config("dnscraft.config.unknown_field", "x"),
             Error::config("dnscraft.config.invalid_listener", "x"),
+            Error::config("dnscraft.config.invalid_log", "x"),
             Error::config("dnscraft.config.tls_env_incomplete", "x"),
             Error::config("dnscraft.config.tls_env_conflict", "x"),
             Error::startup("dnscraft.startup.bind", "x"),

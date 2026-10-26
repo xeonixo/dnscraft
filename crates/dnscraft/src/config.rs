@@ -164,6 +164,78 @@ pub struct Config {
     /// is fatal (`dnscraft.startup.bind`).
     #[serde(default)]
     pub allow_partial_bind: bool,
+    /// Query-log settings.
+    #[serde(default)]
+    pub log: LogConfig,
+}
+
+/// Query-log settings (`[log]`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogConfig {
+    /// Write one JSON object per answered query to stdout. Default `true`.
+    #[serde(default = "default_true")]
+    pub queries: bool,
+    /// Source-IP truncation: `none`, `last_octet` or `last_group`.
+    #[serde(default = "default_ip_truncate")]
+    pub ip_truncate: String,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            queries: true,
+            ip_truncate: default_ip_truncate(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_ip_truncate() -> String {
+    "none".to_owned()
+}
+
+/// Source-IP truncation for query-log lines.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum IpTruncate {
+    /// Keep the full source IP.
+    #[default]
+    None,
+    /// IPv4: zero the last octet (`x.x.x.0`).
+    LastOctet,
+    /// IPv6: keep the first 48 bits (`a:b:c::`).
+    LastGroup,
+}
+
+impl IpTruncate {
+    /// Renders `ip` with this truncation applied.
+    pub fn truncate(self, ip: std::net::IpAddr) -> String {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        match (self, ip) {
+            (Self::None, ip) => ip.to_string(),
+            (Self::LastOctet, IpAddr::V4(v4)) => {
+                let o = v4.octets();
+                Ipv4Addr::new(o[0], o[1], o[2], 0).to_string()
+            }
+            (Self::LastGroup, IpAddr::V6(v6)) => {
+                let s = v6.segments();
+                Ipv6Addr::new(s[0], s[1], s[2], 0, 0, 0, 0, 0).to_string()
+            }
+            (_, ip) => ip.to_string(),
+        }
+    }
+}
+
+/// Resolved query-log settings (validated values).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LogSettings {
+    /// Whether the query log is enabled.
+    pub queries: bool,
+    /// Source-IP truncation.
+    pub ip_truncate: IpTruncate,
 }
 
 /// One listener entry in the TOML file.
@@ -243,6 +315,27 @@ impl Config {
         cfg.validate()
             .map_err(|e| Error::config("dnscraft.config.invalid_listener", e.to_string()))?;
         Ok(cfg)
+    }
+
+    /// Validated query-log settings.
+    pub fn log_settings(&self) -> Result<LogSettings, Error> {
+        let ip_truncate = match self.log.ip_truncate.as_str() {
+            "none" => IpTruncate::None,
+            "last_octet" => IpTruncate::LastOctet,
+            "last_group" => IpTruncate::LastGroup,
+            other => {
+                return Err(Error::config(
+                    "dnscraft.config.invalid_log",
+                    format!(
+                        "ip_truncate must be `none`, `last_octet` or `last_group`, got `{other}`"
+                    ),
+                ));
+            }
+        };
+        Ok(LogSettings {
+            queries: self.log.queries,
+            ip_truncate,
+        })
     }
 }
 
@@ -356,5 +449,37 @@ mod tests {
         assert!(key_file_permissions_warning(key.to_str().unwrap()).is_some());
 
         let _ = std::fs::remove_file(&key);
+    }
+
+    #[test]
+    fn log_settings_rejects_unknown_ip_truncate() {
+        let cfg = Config {
+            public_domain: "example.com".into(),
+            listeners: vec![],
+            allow_partial_bind: false,
+            log: LogConfig {
+                queries: true,
+                ip_truncate: "everything".into(),
+            },
+        };
+        let err = cfg.log_settings().unwrap_err();
+        assert_eq!(err.code(), "dnscraft.config.invalid_log");
+    }
+
+    #[test]
+    fn ip_truncate_renders() {
+        use std::net::IpAddr;
+        assert_eq!(
+            IpTruncate::None.truncate("192.0.2.10".parse::<IpAddr>().unwrap()),
+            "192.0.2.10"
+        );
+        assert_eq!(
+            IpTruncate::LastOctet.truncate("192.0.2.10".parse::<IpAddr>().unwrap()),
+            "192.0.2.0"
+        );
+        assert_eq!(
+            IpTruncate::LastGroup.truncate("2001:db8::1".parse::<IpAddr>().unwrap()),
+            "2001:db8::"
+        );
     }
 }

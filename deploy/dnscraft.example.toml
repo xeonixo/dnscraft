@@ -1,0 +1,44 @@
+# Sample DNScraft configuration.
+#
+# This file actually runs: it binds one plain-DNS listener on a loopback high
+# port (UDP + TCP). Run it with:
+#
+#   cargo run -p dnscraft -- deploy/dnscraft.example.toml
+#
+# The public / documentation-address listeners below are commented out — they
+# need a real certificate (DNSCRAFT_TLS_CERT/KEY or the *_FILE variants) and a
+# real public domain.
+
+public_domain = "example.com"
+
+# Query log: one JSON object per answered query on stdout (default on).
+[log]
+queries = true
+# ip_truncate = "last_octet"   # optional: "none" | "last_octet" | "last_group"
+
+# Plain DNS over UDP for the local machine.
+[[listeners]]
+id = "lan-udp"
+protocol = "udp53"
+address = "127.0.0.1:5300"
+
+# Plain DNS over TCP, same loopback port.
+[[listeners]]
+id = "lan-tcp"
+protocol = "tcp53"
+address = "127.0.0.1:5300"
+
+# --- Public encrypted examples (commented out; documentation addresses only) ---
+#
+# [[listeners]]
+# id = "public-dot"
+# protocol = "dot"
+# address = "192.0.2.1:853"
+# exposure = "public"
+#
+# [[listeners]]
+# id = "public-doh"
+# protocol = "doh"
+# address = "192.0.2.1:443"
+# exposure = "public"
+# h3 = true
