@@ -37,9 +37,10 @@ pub fn tls_secrets_from_env() -> Result<Option<TlsSecrets>, Error> {
             chain_pem: chain.into_bytes(),
             key_pem: key.into_bytes(),
         })),
-        _ => Err(Error::config(format!(
-            "{TLS_CERT_ENV} and {TLS_KEY_ENV} must be set together"
-        ))),
+        _ => Err(Error::config(
+            "dnscraft.config.tls_env_incomplete",
+            format!("{TLS_CERT_ENV} and {TLS_KEY_ENV} must be set together"),
+        )),
     }
 }
 
@@ -82,19 +83,29 @@ impl Config {
         let mut listeners = Vec::with_capacity(self.listeners.len());
         let mut public = false;
         for listener in &self.listeners {
-            let id = ListenerId::new(&listener.id)
-                .map_err(|_| Error::config(format!("invalid listener id `{}`", listener.id)))?;
+            let id = ListenerId::new(&listener.id).map_err(|_| {
+                Error::config(
+                    "dnscraft.config.invalid_listener",
+                    format!("invalid listener id `{}`", listener.id),
+                )
+            })?;
             let protocol = parse_protocol(&listener.protocol).ok_or_else(|| {
-                Error::config(format!(
-                    "unknown protocol `{}` for listener `{}`",
-                    listener.protocol, listener.id
-                ))
+                Error::config(
+                    "dnscraft.config.invalid_listener",
+                    format!(
+                        "unknown protocol `{}` for listener `{}`",
+                        listener.protocol, listener.id
+                    ),
+                )
             })?;
             let exposure = parse_exposure(&listener.exposure).ok_or_else(|| {
-                Error::config(format!(
-                    "unknown exposure `{}` for listener `{}`",
-                    listener.exposure, listener.id
-                ))
+                Error::config(
+                    "dnscraft.config.invalid_listener",
+                    format!(
+                        "unknown exposure `{}` for listener `{}`",
+                        listener.exposure, listener.id
+                    ),
+                )
             })?;
             if exposure == Exposure::Public {
                 public = true;

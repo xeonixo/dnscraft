@@ -26,7 +26,8 @@ impl ListBodies for EmptyBodies {
 }
 
 fn empty_filter() -> Result<Arc<FilterEngine>, Error> {
-    let set_id = SetId::new("default").map_err(|_| Error::startup("built-in filter set id"))?;
+    let set_id = SetId::new("default")
+        .map_err(|_| Error::startup("dnscraft.startup.policy", "built-in filter set id"))?;
     let cfg = FilterConfig {
         lists: Vec::new(),
         sets: vec![FilterSetConfig::new(set_id, "default")],
@@ -34,7 +35,7 @@ fn empty_filter() -> Result<Arc<FilterEngine>, Error> {
     };
     let snapshot = SnapshotBuilder::new(Arc::new(EmptyBodies) as Arc<dyn ListBodies>)
         .build(&cfg)
-        .map_err(|_| Error::startup("empty filter snapshot"))?;
+        .map_err(|_| Error::startup("dnscraft.startup.policy", "empty filter snapshot"))?;
     Ok(Arc::new(FilterEngine::from_snapshot(snapshot)))
 }
 
@@ -47,13 +48,15 @@ pub async fn build_engine() -> Result<Arc<PolicyEngine>, Error> {
             ..ResolverConfig::default()
         })
         .await
-        .map_err(|e| Error::startup(format!("resolver: {e}")))?,
+        .map_err(|e| Error::startup("dnscraft.startup.resolver", format!("resolver: {e}")))?,
     );
 
-    let default = SetId::new("default").map_err(|_| Error::startup("built-in set id"))?;
-    let profile_id =
-        ProfileId::new("default").map_err(|_| Error::startup("built-in profile id"))?;
-    let view_id = ViewId::new("default").map_err(|_| Error::startup("built-in view id"))?;
+    let default = SetId::new("default")
+        .map_err(|_| Error::startup("dnscraft.startup.policy", "built-in set id"))?;
+    let profile_id = ProfileId::new("default")
+        .map_err(|_| Error::startup("dnscraft.startup.policy", "built-in profile id"))?;
+    let view_id = ViewId::new("default")
+        .map_err(|_| Error::startup("dnscraft.startup.policy", "built-in view id"))?;
 
     let profile = ProfileConfig {
         id: profile_id.clone(),
@@ -83,6 +86,6 @@ pub async fn build_engine() -> Result<Arc<PolicyEngine>, Error> {
 
     let clock = Arc::new(ManualClock::new(SystemTime::now()));
     let engine = PolicyEngine::new(cfg, empty_filter()?, resolver, Arc::new(NoClients), clock)
-        .map_err(|e| Error::startup(format!("policy: {e}")))?;
+        .map_err(|e| Error::startup("dnscraft.startup.policy", format!("policy: {e}")))?;
     Ok(Arc::new(engine))
 }

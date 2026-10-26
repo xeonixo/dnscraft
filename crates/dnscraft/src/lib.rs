@@ -20,28 +20,46 @@ pub use config::{
     Config, ListenerToml, TLS_CERT_ENV, TLS_KEY_ENV, TlsSecrets, tls_secrets_from_env,
 };
 
-/// Top-level startup/runtime error; every variant maps to exit code 2.
+/// Top-level startup/runtime error; every error maps to exit code 2.
+///
+/// Each error carries a stable, locale-neutral `code()` of the form
+/// `dnscraft.<area>.<reason>` printed on stderr as `dnscraft: <code>: <message>`.
 #[derive(Debug)]
-pub enum Error {
-    /// Configuration file / parse / mapping or usage error.
-    Config(String),
-    /// TLS certificate installation failed.
-    Tls(String),
-    /// Startup failed (resolver, policy, listener set).
-    Startup(String),
+pub struct Error {
+    code: &'static str,
+    message: String,
 }
 
 impl Error {
-    pub(crate) fn config(message: impl Into<String>) -> Self {
-        Self::Config(message.into())
+    pub(crate) fn config(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
     }
 
-    pub(crate) fn tls(message: impl Into<String>) -> Self {
-        Self::Tls(message.into())
+    pub(crate) fn tls(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
     }
 
-    pub(crate) fn startup(message: impl Into<String>) -> Self {
-        Self::Startup(message.into())
+    pub(crate) fn startup(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// Stable, locale-neutral code (see the module docs).
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    /// Human-readable detail (never contains secret material).
+    pub fn message(&self) -> &str {
+        &self.message
     }
 
     /// Process exit code for any error (2 = usage / config / startup failure).
@@ -52,15 +70,32 @@ impl Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Config(message) => write!(f, "config: {message}"),
-            Self::Tls(message) => write!(f, "tls: {message}"),
-            Self::Startup(message) => write!(f, "startup: {message}"),
-        }
+        write!(f, "{}: {}", self.code, self.message)
     }
 }
 
 impl std::error::Error for Error {}
+
+/// Parses a TOML config, mapping parse failures onto stable error codes.
+///
+/// A serde "unknown field" failure is distinguishable and gets
+/// `dnscraft.config.unknown_field` instead of `dnscraft.config.parse`.
+pub(crate) fn parse_config(text: &str, source: &str) -> Result<Config, Error> {
+    toml::from_str::<Config>(text).map_err(|e| {
+        let message = e.to_string();
+        if message.contains("unknown field") {
+            Error::config(
+                "dnscraft.config.unknown_field",
+                format!("parse `{source}`: {message}"),
+            )
+        } else {
+            Error::config(
+                "dnscraft.config.parse",
+                format!("parse `{source}`: {message}"),
+            )
+        }
+    })
+}
 
 /// A running server: the listener set plus the JSON event writer task.
 pub struct App {
@@ -90,7 +125,9 @@ pub async fn build(config: Config) -> Result<App, Error> {
             let resolver = Arc::new(CertResolver::new());
             resolver
                 .install(&secrets.chain_pem, &secrets.key_pem)
-                .map_err(|e| Error::tls(format!("certificate install: {e}")))?;
+                .map_err(|e| {
+                    Error::tls("dnscraft.tls.install", format!("certificate install: {e}"))
+                })?;
             Some(resolver)
         }
         None => None,
@@ -101,7 +138,7 @@ pub async fn build(config: Config) -> Result<App, Error> {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let set = ListenerSet::start(listeners, engine, certs, sink, clock, config.public_domain)
         .await
-        .map_err(|e| Error::startup(format!("listeners: {e}")))?;
+        .map_err(|e| Error::startup("dnscraft.startup.listeners", format!("listeners: {e}")))?;
 
     let writer = tokio::spawn(events::write_events(rx));
     Ok(App { set, writer })
@@ -112,11 +149,11 @@ pub async fn build(config: Config) -> Result<App, Error> {
 /// Returns `Ok(())` on a graceful shutdown (exit code 0) and an [`Error`] for
 /// any config or startup failure (exit code 2).
 pub async fn run(config_path: Option<&str>) -> Result<(), Error> {
-    let path = config_path.ok_or_else(|| Error::config("usage: dnscraft <config.toml>"))?;
-    let text =
-        std::fs::read_to_string(path).map_err(|e| Error::config(format!("read `{path}`: {e}")))?;
-    let config: Config =
-        toml::from_str(&text).map_err(|e| Error::config(format!("parse `{path}`: {e}")))?;
+    let path = config_path
+        .ok_or_else(|| Error::config("dnscraft.config.usage", "usage: dnscraft <config.toml>"))?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| Error::config("dnscraft.config.read", format!("read `{path}`: {e}")))?;
+    let config = parse_config(&text, path)?;
 
     let app = build(config).await?;
     eprintln!("dnscraft: listening");
@@ -144,5 +181,53 @@ async fn wait_for_shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// Every stable code is unique and well-formed, and errors print as
+    /// `dnscraft: <code>: <message>` (the format the main shim relies on).
+    #[test]
+    fn error_codes_are_unique_and_well_formed() {
+        let errors = [
+            Error::config("dnscraft.config.usage", "x"),
+            Error::config("dnscraft.config.read", "x"),
+            Error::config("dnscraft.config.parse", "x"),
+            Error::config("dnscraft.config.unknown_field", "x"),
+            Error::config("dnscraft.config.invalid_listener", "x"),
+            Error::config("dnscraft.config.tls_env_incomplete", "x"),
+            Error::startup("dnscraft.startup.resolver", "x"),
+            Error::startup("dnscraft.startup.policy", "x"),
+            Error::startup("dnscraft.startup.listeners", "x"),
+            Error::tls("dnscraft.tls.install", "x"),
+        ];
+        let mut codes: Vec<&str> = errors.iter().map(Error::code).collect();
+        for code in &codes {
+            assert!(
+                code.starts_with("dnscraft."),
+                "code {code} must use the dnscraft. prefix"
+            );
+            assert!(
+                code.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_'),
+                "code {code} must be locale-neutral ascii"
+            );
+        }
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), errors.len(), "duplicate error codes");
+    }
+
+    #[test]
+    fn error_displays_code_and_message() {
+        let err = Error::config("dnscraft.config.parse", "bad toml");
+        assert_eq!(err.code(), "dnscraft.config.parse");
+        assert_eq!(err.message(), "bad toml");
+        assert_eq!(err.to_string(), "dnscraft.config.parse: bad toml");
+        assert_eq!(err.exit_code(), 2);
     }
 }
