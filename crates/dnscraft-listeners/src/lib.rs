@@ -68,7 +68,7 @@ pub use doh::{ALT_SVC_MAX_AGE, DohServeParams, DohStats, cache_max_age, serve_do
 pub use doh_h3::{DohH3ServeParams, serve_doh_h3};
 pub use doh_request::{
     DNS_MESSAGE_TYPE, DohPath, DohWireError, MAX_DOH_HEADER_LIST_SIZE, MAX_DOH_PAYLOAD,
-    extract_wire, parse_doh_path,
+    content_type_of, extract_wire, parse_doh_path,
 };
 pub use doq::{
     DOQ_EXCESSIVE_LOAD, DOQ_NO_ERROR, DOQ_PROTOCOL_ERROR, DoqServeParams, DoqStats, serve_doq,
