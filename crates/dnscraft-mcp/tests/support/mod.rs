@@ -6,17 +6,23 @@
 #![allow(dead_code)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use dnscraft_mcp::backend::{BackendError, McpBackend};
 use dnscraft_mcp::dto::{
     AddRuleParams, AddRuleResult, AuditEntry, ClientListParams, ClientListResult,
     ExplainBlockResult, ListRulesParams, ListRulesResult, NodeStatus, PauseDuration, PauseResult,
-    QType, QueryDetail, QueryLogResult, QueryLogSearch, RemoveRuleParams, RemoveRuleResult,
-    ResumeResult, StatsParams, StatsResult, TempAllowParams, TempAllowResult, TestQueryParams,
-    TestQueryResult, TokenInfo, TokenScope,
+    QType, QueryDetail, QueryLogEntry, QueryLogResult, QueryLogSearch, RemoveRuleParams,
+    RemoveRuleResult, ResumeResult, StatsParams, StatsResult, TempAllowParams, TempAllowResult,
+    TestQueryParams, TestQueryResult, TokenInfo, TokenScope,
 };
 use tokio::sync::Notify;
+
+fn slot<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Configurable in-memory backend.
 #[derive(Default)]
@@ -30,6 +36,15 @@ pub struct MockBackend {
     status_active: AtomicUsize,
     /// Number of `validate_token` calls.
     pub token_calls: AtomicUsize,
+    query_rows: Mutex<Vec<QueryLogEntry>>,
+    query_log_error: Mutex<Option<BackendError>>,
+    /// Parameters of the most recent `search_query_log` call.
+    pub last_search: Mutex<Option<QueryLogSearch>>,
+    /// Number of `search_query_log` calls.
+    pub search_calls: AtomicUsize,
+    query_detail: Mutex<Option<Result<QueryDetail, BackendError>>>,
+    /// Id of the most recent `get_query` call.
+    pub last_query_id: Mutex<Option<String>>,
 }
 
 /// Decrements the active counter even when the tool future is cancelled.
@@ -74,6 +89,31 @@ impl MockBackend {
     /// Number of `get_status` calls currently running (cancellation drops this).
     pub fn active_status_calls(&self) -> usize {
         self.status_active.load(Ordering::SeqCst)
+    }
+
+    /// Seed the rows returned by `search_query_log` (paginated by the mock).
+    pub fn set_query_log(&self, rows: Vec<QueryLogEntry>) {
+        *slot(&self.query_rows) = rows;
+    }
+
+    /// Make `search_query_log` fail with `error`.
+    pub fn set_query_log_error(&self, error: BackendError) {
+        *slot(&self.query_log_error) = Some(error);
+    }
+
+    /// Set the `get_query` result.
+    pub fn set_query_detail(&self, value: Result<QueryDetail, BackendError>) {
+        *slot(&self.query_detail) = Some(value);
+    }
+
+    /// Parameters of the most recent `search_query_log` call.
+    pub fn last_search(&self) -> Option<QueryLogSearch> {
+        slot(&self.last_search).clone()
+    }
+
+    /// Id of the most recent `get_query` call.
+    pub fn last_query_id(&self) -> Option<String> {
+        slot(&self.last_query_id).clone()
     }
 
     fn status_result(&self) -> Result<NodeStatus, BackendError> {
@@ -122,13 +162,34 @@ impl McpBackend for MockBackend {
 
     async fn search_query_log(
         &self,
-        _params: QueryLogSearch,
+        params: QueryLogSearch,
     ) -> Result<QueryLogResult, BackendError> {
-        Ok(QueryLogResult::default())
+        *slot(&self.last_search) = Some(params.clone());
+        self.search_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(error) = slot(&self.query_log_error).clone() {
+            return Err(error);
+        }
+        let rows = slot(&self.query_rows);
+        let queries: Vec<QueryLogEntry> = rows
+            .iter()
+            .skip(params.offset as usize)
+            .take(params.limit as usize)
+            .cloned()
+            .collect();
+        let next = params.offset.saturating_add(queries.len() as u32);
+        let has_more = (next as usize) < rows.len();
+        Ok(QueryLogResult {
+            queries,
+            has_more,
+            next_offset: has_more.then_some(next),
+        })
     }
 
-    async fn get_query(&self, _id: &str) -> Result<QueryDetail, BackendError> {
-        Ok(QueryDetail::default())
+    async fn get_query(&self, id: &str) -> Result<QueryDetail, BackendError> {
+        *slot(&self.last_query_id) = Some(id.to_owned());
+        slot(&self.query_detail)
+            .clone()
+            .unwrap_or_else(|| Ok(QueryDetail::default()))
     }
 
     async fn explain_block(
@@ -222,5 +283,135 @@ pub fn read_token() -> TokenInfo {
         token_id: "tok-read".into(),
         scope: TokenScope::McpRead,
         actor_id: "actor".into(),
+    }
+}
+
+/// Real-HTTP harness shared by the read-tool tests.
+pub mod harness {
+    use std::net::SocketAddr;
+    use std::sync::{Arc, Once};
+
+    use axum::Router;
+    use dnscraft_mcp::{McpConfig, TokenInfo};
+    use serde_json::{Value, json};
+
+    use super::MockBackend;
+
+    /// Protocol revision sent by every request.
+    pub const VERSION: &str = "2026-07-28";
+    /// Raw bearer token used by every request.
+    pub const TOKEN: &str = "test-token";
+
+    fn install_crypto() {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        });
+    }
+
+    /// A running server and its backend.
+    pub struct TestServer {
+        /// Endpoint URL.
+        pub url: String,
+        /// The shared mock backend.
+        pub backend: Arc<MockBackend>,
+    }
+
+    /// Spawn a server with `config` that accepts `token`.
+    pub async fn spawn_with(config: McpConfig, token: TokenInfo) -> TestServer {
+        install_crypto();
+        let backend = Arc::new(MockBackend::default());
+        backend.set_token(Ok(token));
+        let router =
+            Router::new().nest_service("/mcp/v1", dnscraft_mcp::service(backend.clone(), config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address: SocketAddr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        TestServer {
+            url: format!("http://{address}/mcp/v1"),
+            backend,
+        }
+    }
+
+    /// Spawn a default-config server with a read-scope token.
+    pub async fn spawn(config: McpConfig) -> TestServer {
+        spawn_with(config, super::read_token()).await
+    }
+
+    fn meta() -> Value {
+        json!({
+            "io.modelcontextprotocol/protocolVersion": VERSION,
+            "io.modelcontextprotocol/clientCapabilities": {},
+        })
+    }
+
+    async fn call(
+        client: &reqwest::Client,
+        url: &str,
+        method: &str,
+        name: Option<&str>,
+        mut params: Value,
+    ) -> (reqwest::StatusCode, Value) {
+        if let Value::Object(map) = &mut params {
+            map.insert("_meta".into(), meta());
+        }
+        let mut request = client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", VERSION)
+            .header("Mcp-Method", method)
+            .header("Authorization", format!("Bearer {TOKEN}"))
+            .body(
+                json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+                    .to_string(),
+            );
+        if let Some(name) = name {
+            request = request.header("Mcp-Name", name);
+        }
+        let response = request.send().await.expect("request should be sent");
+        let status = response.status();
+        let text = response.text().await.expect("response should have a body");
+        (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+    }
+
+    /// Call a tool and return the HTTP status and JSON-RPC body.
+    pub async fn tool_call(
+        client: &reqwest::Client,
+        server: &TestServer,
+        name: &str,
+        arguments: Value,
+    ) -> (reqwest::StatusCode, Value) {
+        call(
+            client,
+            &server.url,
+            "tools/call",
+            Some(name),
+            json!({ "name": name, "arguments": arguments }),
+        )
+        .await
+    }
+
+    /// List the tools the server exposes.
+    pub async fn list_tools(client: &reqwest::Client, server: &TestServer) -> Value {
+        let (_, body) = call(client, &server.url, "tools/list", None, json!({})).await;
+        body
+    }
+
+    /// Parse the JSON payload carried by a successful tool result.
+    pub fn tool_output(body: &Value) -> Value {
+        let text = body["result"]["content"][0]["text"]
+            .as_str()
+            .expect("tool content should be one text item");
+        serde_json::from_str(text).expect("tool text should be JSON")
+    }
+
+    /// The stable code of a failed tool call.
+    pub fn error_code(body: &Value) -> &str {
+        body["result"]["structuredContent"]["error"]["code"]
+            .as_str()
+            .expect("tool error should carry a code")
     }
 }

@@ -6,9 +6,11 @@
 //!
 //! Listing and dispatch are overridden here because the catalog is
 //! gate-aware: `write_tools_enabled = false` hides the five write tools and a
-//! dispatched write tool is denied before it can touch the backend. Tools not
-//! implemented yet are listed with an empty object schema and answer with
-//! `control_api.internal`/`not_implemented` until their task lands.
+//! dispatched write tool is denied before it can touch the backend. The read
+//! tools are defined statically in [`read`] and dispatched manually there so
+//! input failures stay tool results; write tools are listed with an empty
+//! object schema and answer with `control_api.internal`/`not_implemented`
+//! until their task lands.
 
 pub mod read;
 
@@ -27,23 +29,6 @@ use crate::config::McpConfig;
 use crate::dto::{TokenInfo, TokenScope};
 use crate::error::McpError;
 use crate::result::tool_error;
-
-/// Read tools that are not implemented yet (all except `get_status`).
-const READ_TOOLS: [(&str, &str); 7] = [
-    ("search_query_log", "Search the DNS query log with filters."),
-    ("get_query", "Get one query log entry by id."),
-    (
-        "explain_block",
-        "Explain why a domain is or is not blocked.",
-    ),
-    (
-        "test_query",
-        "Evaluate a DNS query without logging it or caching the result.",
-    ),
-    ("get_stats", "Get aggregate query statistics."),
-    ("list_clients", "List known DNS clients."),
-    ("list_mcp_rules", "List MCP-created block rules."),
-];
 
 /// The five write tools (not implemented yet).
 const WRITE_TOOLS: [(&str, &str); 5] = [
@@ -73,14 +58,16 @@ impl McpServer {
         Self { backend, config }
     }
 
-    /// All 13 tools: the macro-registered `get_status` plus placeholders.
+    /// All 13 tools: the macro-registered `get_status`, the seven static read
+    /// tools and the five write placeholders.
     fn catalog(&self) -> Vec<Tool> {
         let mut tools = Self::tool_router().list_all();
-        let placeholders = READ_TOOLS
-            .iter()
-            .chain(WRITE_TOOLS.iter())
-            .map(|(name, description)| Tool::new(*name, *description, empty_schema()));
-        tools.extend(placeholders);
+        tools.extend(read::tool_definitions());
+        tools.extend(
+            WRITE_TOOLS
+                .iter()
+                .map(|(name, description)| Tool::new(*name, *description, empty_schema())),
+        );
         tools.sort_by(|a, b| a.name.cmp(&b.name));
         tools
     }
@@ -119,10 +106,6 @@ fn empty_schema() -> JsonObject {
 
 fn is_write(name: &str) -> bool {
     WRITE_TOOLS.iter().any(|(tool, _)| *tool == name)
-}
-
-fn is_read(name: &str) -> bool {
-    name == "get_status" || READ_TOOLS.iter().any(|(tool, _)| *tool == name)
 }
 
 /// The token `transport` validated and attached to the request.
@@ -178,11 +161,8 @@ impl ServerHandler for McpServer {
             self.get_status(context).await
         } else if is_write(name) {
             self.call_write_tool(name, &context)
-        } else if is_read(name) {
-            tool_error(
-                "control_api.internal",
-                json!({ "reason": "not_implemented", "tool": name }),
-            )
+        } else if read::is_read_tool(name) {
+            read::call(name, request.arguments, self, context).await
         } else {
             tool_error(
                 McpError::ToolNotFound { tool: name.into() }.code(),

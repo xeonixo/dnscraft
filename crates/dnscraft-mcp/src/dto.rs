@@ -3,10 +3,10 @@
 //! Every type here is owned by this crate so that `control-api` can implement
 //! the backend without `dnscraft-mcp` depending on it. Ids are `String`
 //! values and domains are `String` in the canonical form described by
-//! `SPEC-mcp.md`; no DNScraft module type crosses the boundary.
+//! `SPEC-mcp.md`; no DNSCraft module type crosses the boundary.
 //!
-//! These are the shapes the tools emit; most string fields are sanitized by
-//! `sanitize::SafeText` before they reach tool output.
+//! The read-tool shapes mirror `SPEC-mcp.md` § Read tools field for field; the
+//! tools serialize them with fixed field names and sanitized values.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,6 +36,21 @@ pub enum QType {
     /// HTTPS service binding record.
     #[serde(rename = "HTTPS")]
     Https,
+}
+
+impl QType {
+    /// The uppercase wire name used in tool output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::A => "A",
+            Self::Aaaa => "AAAA",
+            Self::Cname => "CNAME",
+            Self::Mx => "MX",
+            Self::Txt => "TXT",
+            Self::Srv => "SRV",
+            Self::Https => "HTTPS",
+        }
+    }
 }
 
 /// Scope carried by an MCP bearer token.
@@ -159,17 +174,77 @@ pub struct NodeStatus {
     pub filtering: FilteringStatus,
 }
 
-/// Filters for `search_query_log`.
+/// Validated filters for [`McpBackend::search_query_log`](crate::backend::McpBackend::search_query_log).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueryLogSearch {
-    /// Maximum number of entries to return.
+    /// Maximum number of entries to return (1..=500).
     pub limit: u32,
     /// Number of entries to skip.
     pub offset: u32,
-    /// Restrict to a canonical domain, when set.
-    pub domain: Option<String>,
-    /// Restrict to a client id, when set.
+    /// Inclusive lower time bound, RFC 3339.
+    pub from: Option<String>,
+    /// Exclusive upper time bound, RFC 3339.
+    pub to: Option<String>,
+    /// Exact client id.
     pub client_id: Option<String>,
+    /// Case-insensitive substring of the client display name.
+    pub client_name_substr: Option<String>,
+    /// Exact canonical domain.
+    pub domain: Option<String>,
+    /// Case-insensitive substring of the domain.
+    pub domain_substr: Option<String>,
+    /// DNS protocol (`udp53`, `tcp53`, `dot`, `doh`, `doq`).
+    pub protocol: Option<String>,
+    /// Policy view id.
+    pub view_id: Option<String>,
+    /// Policy profile id.
+    pub profile_id: Option<String>,
+    /// Query outcome (`allowed`, `blocked`, `dnssec_bogus`, `servfail`).
+    pub status: Option<String>,
+    /// Return only blocked queries.
+    pub only_blocked: bool,
+    /// Sort key (`time`, `client`, `domain`, `rcode`).
+    pub order_by: String,
+    /// Sort direction (`asc`, `desc`).
+    pub order: String,
+}
+
+/// Client attribution of one query-log row.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryClient {
+    /// Client id.
+    pub id: String,
+    /// Display name.
+    pub display_name: String,
+    /// Discovery source, for example `unifi`.
+    pub source: String,
+}
+
+/// Queried name of one query-log row.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryName {
+    /// Canonical domain.
+    pub name: String,
+    /// Query type.
+    pub qtype: QType,
+}
+
+/// Filter attribution of one query-log row.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryLogFilter {
+    /// Filtering reason, for example `adblock`.
+    pub reason: String,
+    /// Matching rule text, when any.
+    pub rule_text: Option<String>,
+    /// Source list id, when any.
+    pub list_id: Option<String>,
+}
+
+/// Timings of one query-log row.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryTimings {
+    /// Total handling time in microseconds.
+    pub total_us: u64,
 }
 
 /// One query-log row.
@@ -178,49 +253,120 @@ pub struct QueryLogEntry {
     /// Canonical query id.
     pub id: String,
     /// RFC 3339 timestamp.
-    pub timestamp: String,
-    /// Client id.
-    pub client_id: String,
-    /// Client display name.
-    pub client_name: String,
-    /// Queried domain.
-    pub domain: String,
-    /// Query type.
-    pub qtype: QType,
-    /// Filtering verdict.
-    pub verdict: String,
+    pub time: String,
+    /// Client attribution.
+    pub client: QueryClient,
+    /// Queried name.
+    pub query: QueryName,
+    /// Policy profile id.
+    pub profile_id: String,
+    /// Where the answer came from, for example `resolver`.
+    pub answer_source: String,
+    /// Filter attribution, when the query matched a rule.
+    pub filter: Option<QueryLogFilter>,
+    /// Response code, for example `NXDOMAIN`.
+    pub rcode: String,
+    /// Timings.
+    pub timings: QueryTimings,
 }
 
 /// A page of query-log rows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueryLogResult {
     /// The rows.
-    pub entries: Vec<QueryLogEntry>,
+    pub queries: Vec<QueryLogEntry>,
     /// Whether more rows exist after this page.
     pub has_more: bool,
     /// Offset to request next, when `has_more`.
     pub next_offset: Option<u32>,
 }
 
-/// Detail for one query.
+/// How the policy view was selected for a query.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Selection {
+    /// Selection cause, for example `subnet` or `client_id`.
+    pub cause: String,
+    /// Matching source prefix, when the cause is a subnet.
+    pub prefix: Option<String>,
+    /// Matching client id, when the cause is a client.
+    pub client_id: Option<String>,
+}
+
+/// One decision-pipeline step.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionStep {
+    /// Pipeline stage, for example `filter_qname`.
+    pub stage: String,
+    /// Stage verdict, for example `blocked`.
+    pub verdict: String,
+    /// Matching rule text, when any.
+    pub rule: Option<String>,
+    /// Source list id, when any.
+    pub list_id: Option<String>,
+}
+
+/// Filter attribution in a decision record.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionFilter {
+    /// Filtering reason, for example `adblock`.
+    pub reason: String,
+    /// Block mode, for example `nxdomain`.
+    pub block_mode: String,
+    /// Matching rule text, when any.
+    pub rule_text: Option<String>,
+    /// Source list id, when any.
+    pub list_id: Option<String>,
+    /// Whether the rule is marked important.
+    pub important: bool,
+}
+
+/// Timings of a decision record.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionTimings {
+    /// View-selection time in microseconds.
+    pub select_us: u64,
+    /// Filtering time in microseconds.
+    pub filter_us: u64,
+    /// Total decision time in microseconds.
+    pub total_us: u64,
+}
+
+/// Detail for one query (`get_query`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueryDetail {
     /// Canonical query id.
     pub id: String,
-    /// RFC 3339 timestamp.
-    pub timestamp: String,
-    /// Client id.
-    pub client_id: String,
-    /// Client display name.
-    pub client_name: String,
-    /// Queried domain.
-    pub domain: String,
-    /// Query type.
-    pub qtype: QType,
-    /// Filtering verdict.
-    pub verdict: String,
-    /// Rule that produced the verdict, when any.
-    pub rule: Option<String>,
+    /// Selected policy view id.
+    pub view_id: String,
+    /// Selected policy profile id.
+    pub profile_id: String,
+    /// View-selection result.
+    pub selection: Selection,
+    /// Decision-pipeline steps.
+    pub steps: Vec<DecisionStep>,
+    /// Filter attribution, when a rule matched.
+    pub filter: Option<DecisionFilter>,
+    /// DNSSEC status, when validated.
+    pub dnssec: Option<String>,
+    /// Where the answer came from.
+    pub answer_source: String,
+    /// Response code.
+    pub rcode: String,
+    /// Timings.
+    pub timings: DecisionTimings,
+}
+
+/// Why a domain is blocked (`explain_block`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExplainReason {
+    /// Matching rule text.
+    pub rule_text: String,
+    /// Rule source, for example `list:adguard-dns:line 1234`.
+    pub source: String,
+    /// Whether the rule is marked important.
+    pub important: bool,
+    /// Block mode.
+    pub block_mode: String,
 }
 
 /// Result of `explain_block`.
@@ -228,61 +374,177 @@ pub struct QueryDetail {
 pub struct ExplainBlockResult {
     /// Canonical domain.
     pub domain: String,
-    /// Whether the domain is currently blocked.
-    pub blocked: bool,
-    /// Matching rule text, when blocked.
-    pub rule: Option<String>,
-    /// Source list id, when known.
-    pub list_id: Option<String>,
+    /// Profile that was evaluated.
+    pub profile_id: String,
+    /// Filter set of the profile.
+    pub filter_set_id: String,
+    /// `blocked` or `allowed`.
+    pub verdict: String,
+    /// Matching rule, when blocked by a filter rule.
+    pub reason: Option<ExplainReason>,
 }
 
-/// Input for `test_query`.
+/// Validated input for `test_query`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestQueryParams {
     /// Canonical domain.
     pub domain: String,
     /// Query type.
     pub qtype: QType,
-    /// Filter profile to evaluate, when not the default.
-    pub profile_id: Option<String>,
+    /// Client id to impersonate, when known.
+    pub client_id: Option<String>,
+    /// Source IP used for view selection when `client_id` is absent.
+    pub source_ip: Option<String>,
+    /// DNS protocol (`udp53`, `tcp53`, `dot`, `doh`, `doq`).
+    pub protocol: String,
+}
+
+/// Filter attribution in a test-query result.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestQueryFilter {
+    /// Matching rule text.
+    pub rule_text: String,
+    /// Source list id, when any.
+    pub list_id: Option<String>,
+    /// Block mode.
+    pub block_mode: String,
+}
+
+/// One synthesized answer record.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnswerRecord {
+    /// Owner name.
+    pub name: String,
+    /// Record type.
+    pub qtype: QType,
+    /// TTL in seconds.
+    pub ttl: u32,
+    /// Presentation-format record data.
+    pub data: String,
+}
+
+/// Synthesized answer of a dry-run query.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SynthesizedAnswer {
+    /// Response code.
+    pub rcode: String,
+    /// Answer records.
+    pub records: Vec<AnswerRecord>,
 }
 
 /// Result of `test_query`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestQueryResult {
+    /// Selected policy view id.
+    pub view_id: String,
+    /// Selected policy profile id.
+    pub profile_id: String,
+    /// View-selection result.
+    pub selection: Selection,
     /// Filtering verdict.
     pub verdict: String,
-    /// Rule that produced the verdict, when any.
-    pub rule: Option<String>,
+    /// Filter attribution, when a rule matched.
+    pub filter: Option<TestQueryFilter>,
+    /// Synthesized answer.
+    pub answer: SynthesizedAnswer,
+    /// DNSSEC status, when validated.
+    pub dnssec: Option<String>,
+    /// Timings.
+    pub timings: DecisionTimings,
 }
 
-/// Time filters for `get_stats`.
+/// Validated time filters for `get_stats`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatsParams {
     /// RFC 3339 lower bound, inclusive.
-    pub since: Option<String>,
+    pub from: Option<String>,
     /// RFC 3339 upper bound, exclusive.
-    pub until: Option<String>,
+    pub to: Option<String>,
+    /// Restrict to one policy profile.
+    pub profile_id: Option<String>,
 }
 
-/// Aggregate statistics.
+/// Evaluated statistics period.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatsPeriod {
+    /// Period start, RFC 3339.
+    pub from: String,
+    /// Period end, RFC 3339.
+    pub to: String,
+}
+
+/// One entry of the top-blocked-domains list.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopDomain {
+    /// Canonical domain.
+    pub domain: String,
+    /// Number of blocked queries.
+    pub count: u64,
+}
+
+/// One entry of the top-clients list.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopClient {
+    /// Client display name.
+    pub client_name: String,
+    /// Number of queries.
+    pub queries: u64,
+}
+
+/// DNSSEC outcome counts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DnssecCounts {
+    /// Securely validated answers.
+    pub secure: u64,
+    /// Insecure answers.
+    pub insecure: u64,
+    /// Bogus answers.
+    pub bogus: u64,
+}
+
+/// Aggregate statistics (`get_stats`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct StatsResult {
+    /// Evaluated period.
+    pub period: StatsPeriod,
     /// Total queries in the window.
     pub total_queries: u64,
     /// Blocked queries.
-    pub blocked: u64,
+    pub blocked_queries: u64,
     /// Allowed queries.
-    pub allowed: u64,
+    pub allowed_queries: u64,
+    /// Blocked fraction in `0.0..=1.0`.
+    pub blocked_ratio: f64,
+    /// Top blocked domains, newest aggregates first.
+    pub top_blocked_domains: Vec<TopDomain>,
+    /// Top clients by query count.
+    pub top_clients: Vec<TopClient>,
+    /// Fraction of queries answered from cache.
+    pub cache_hit_ratio: f64,
+    /// DNSSEC outcome counts.
+    pub dnssec: DnssecCounts,
 }
 
-/// Pagination for `list_clients`.
+/// Validated filters and pagination for `list_clients`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientListParams {
-    /// Maximum number of clients to return.
+    /// Maximum number of clients to return (1..=500).
     pub limit: u32,
     /// Number of clients to skip.
     pub offset: u32,
+    /// Case-insensitive substring of the display name.
+    pub name_substr: Option<String>,
+    /// Discovery source (`unifi`, `manual`).
+    pub source: Option<String>,
+}
+
+/// VLAN attribution of a client.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VlanInfo {
+    /// VLAN id.
+    pub id: u32,
+    /// VLAN name.
+    pub name: String,
 }
 
 /// One known client.
@@ -292,8 +554,16 @@ pub struct ClientInfo {
     pub id: String,
     /// Display name.
     pub display_name: String,
-    /// Last seen as an RFC 3339 timestamp, when known.
-    pub last_seen: Option<String>,
+    /// Discovery source (`unifi`, `manual`).
+    pub source: String,
+    /// Known addresses.
+    pub addresses: Vec<String>,
+    /// Known MAC addresses.
+    pub macs: Vec<String>,
+    /// VLAN, when known.
+    pub vlan: Option<VlanInfo>,
+    /// Local domain, when known.
+    pub local_domain: Option<String>,
 }
 
 /// A page of clients.
@@ -307,39 +577,75 @@ pub struct ClientListResult {
     pub next_offset: Option<u32>,
 }
 
-/// Selection for `list_mcp_rules`.
+/// Validated selection and pagination for `list_mcp_rules`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListRulesParams {
-    /// `rules`, `allows` or `pauses`.
+    /// `rules`, `temporary_allows` or `pauses`.
     pub kind: String,
-    /// Filter set to inspect, when required by `kind`.
+    /// Filter set to inspect; the backend resolves the default when `None`.
     pub filter_set_id: Option<String>,
-    /// Maximum number of rows to return.
+    /// Maximum number of rows to return (1..=500).
     pub limit: u32,
     /// Number of rows to skip.
     pub offset: u32,
 }
 
-/// One MCP-managed rule, temporary allow or pause.
+/// One active MCP-created block rule.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuleInfo {
-    /// Canonical domain, when applicable.
+pub struct McpRuleInfo {
+    /// Rule id.
+    pub id: String,
+    /// Canonical domain.
+    pub domain: String,
+    /// Whether subdomains are covered.
+    pub include_subdomains: bool,
+    /// Canonical rule text.
+    pub rule_text: String,
+    /// RFC 3339 creation timestamp.
+    pub created_at: String,
+    /// RFC 3339 expiry timestamp.
+    pub expires_at: String,
+    /// Filter set the rule belongs to.
+    pub filter_set_id: String,
+}
+
+/// One active temporary allow.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TempAllowInfo {
+    /// Canonical domain.
     pub domain: String,
     /// Whether subdomains are covered.
     pub include_subdomains: bool,
     /// RFC 3339 creation timestamp.
     pub created_at: String,
-    /// RFC 3339 expiry timestamp, when applicable.
-    pub expires_at: Option<String>,
-    /// Filter set the entry belongs to, when applicable.
-    pub filter_set_id: Option<String>,
+    /// RFC 3339 expiry timestamp.
+    pub expires_at: String,
+    /// Filter set the allow belongs to.
+    pub filter_set_id: String,
 }
 
-/// A page of MCP-managed entries.
+/// One active filter-set pause.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseInfo {
+    /// Paused filter set.
+    pub filter_set_id: String,
+    /// RFC 3339 timestamp when filtering resumes.
+    pub paused_until: String,
+}
+
+/// A page of MCP-managed entries; only the vector selected by `kind` is used.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListRulesResult {
-    /// The entries.
-    pub rules: Vec<RuleInfo>,
+    /// Filter set that was inspected (resolved by the backend).
+    pub filter_set_id: String,
+    /// `rules`, `temporary_allows` or `pauses`.
+    pub kind: String,
+    /// Active MCP-created block rules.
+    pub rules: Vec<McpRuleInfo>,
+    /// Active temporary allows.
+    pub temporary_allows: Vec<TempAllowInfo>,
+    /// Active pauses.
+    pub pauses: Vec<PauseInfo>,
     /// Whether more entries exist after this page.
     pub has_more: bool,
     /// Offset to request next, when `has_more`.
@@ -427,7 +733,7 @@ pub struct ResumeResult {
 }
 
 /// One audit entry written by a write tool.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditEntry {
     /// Action label, for example `mcp.add_rule`.
     pub action: String,

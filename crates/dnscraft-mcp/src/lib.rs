@@ -27,12 +27,15 @@ use std::sync::Arc;
 pub use backend::{BackendError, McpBackend};
 pub use config::McpConfig;
 pub use dto::{
-    AddRuleParams, AddRuleResult, AuditEntry, ClientInfo, ClientListParams, ClientListResult,
-    ExplainBlockResult, FilteringStatus, ListRulesParams, ListRulesResult, ListenerStatus,
-    NodeStatus, PauseDuration, PauseResult, QType, QueryDetail, QueryLogEntry, QueryLogResult,
-    QueryLogSearch, RemoveRuleParams, RemoveRuleResult, ResolverStatus, ResumeResult, RuleInfo,
-    StatsParams, StatsResult, TempAllowParams, TempAllowResult, TestQueryParams, TestQueryResult,
-    TlsStatus, TokenInfo, TokenScope,
+    AddRuleParams, AddRuleResult, AnswerRecord, AuditEntry, ClientInfo, ClientListParams,
+    ClientListResult, DecisionFilter, DecisionStep, DecisionTimings, DnssecCounts,
+    ExplainBlockResult, ExplainReason, FilteringStatus, ListRulesParams, ListRulesResult,
+    ListenerStatus, McpRuleInfo, NodeStatus, PauseDuration, PauseInfo, PauseResult, QType,
+    QueryClient, QueryDetail, QueryLogEntry, QueryLogFilter, QueryLogResult, QueryLogSearch,
+    QueryName, QueryTimings, RemoveRuleParams, RemoveRuleResult, ResolverStatus, ResumeResult,
+    Selection, StatsParams, StatsPeriod, StatsResult, SynthesizedAnswer, TempAllowInfo,
+    TempAllowParams, TempAllowResult, TestQueryFilter, TestQueryParams, TestQueryResult, TlsStatus,
+    TokenInfo, TokenScope, TopClient, TopDomain, VlanInfo,
 };
 pub use error::McpError;
 pub use result::{tool_error, tool_ok};
