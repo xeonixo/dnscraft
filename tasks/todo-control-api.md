@@ -25,10 +25,10 @@ the workspace crypto/runtime crates as needed. Contents:
 No I/O, no routing yet.
 
 **Acceptance criteria:**
-- [ ] Every error variant has a unique `code()` (enumerating test); every public item documented.
-- [ ] `ControlApiConfig` rejects `0.0.0.0`/`::` and accepts loopback, RFC 1918, and ULA addresses.
-- [ ] Invalid `retention_days`, `ip_truncate`, rate-limit, and TTL values return the documented code.
-- [ ] No `unwrap()`/`expect()` outside tests; no unsafe.
+- [x] Every error variant has a unique `code()` (enumerating test); every public item documented.
+- [x] `ControlApiConfig` rejects `0.0.0.0`/`::` and accepts loopback, RFC 1918, and ULA addresses.
+- [x] Invalid `retention_days`, `ip_truncate`, rate-limit, and TTL values return the documented code.
+- [x] No `unwrap()`/`expect()` outside tests; no unsafe.
 
 **Verification:** `cargo test -p dnscraft-api error`
 
