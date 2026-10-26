@@ -159,11 +159,11 @@ site first (`cache.rs`, `lib.rs` `store_in_epoch`, infra caches) and list them i
 `test_query: true` request side-effect free; document what is intentionally still shared.
 
 **Acceptance criteria:**
-- [ ] `test_query: true` → resolver flag set; `loggable == false` (already true; keep the test).
-- [ ] After a test query `PolicyStats` and resolver cache entry counts are unchanged (test with testkit);
+- [x] `test_query: true` → resolver flag set; `loggable == false` (already true; keep the test).
+- [x] After a test query `PolicyStats` and resolver cache entry counts are unchanged (test with testkit);
       a normal query still updates them.
-- [ ] The full `DecisionRecord` (steps, filter hit, timings) is returned for a test query as before.
-- [ ] Policy tests green; behaviour for `test_query: false` byte-identical (existing golden tests).
+- [x] The full `DecisionRecord` (steps, filter hit, timings) is returned for a test query as before.
+- [x] Policy tests green; behaviour for `test_query: false` byte-identical (existing golden tests).
 
 **Verification:** `cargo test -p dnscraft-policy test_query`
 

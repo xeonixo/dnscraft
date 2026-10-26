@@ -173,7 +173,7 @@ pub(crate) async fn follow_cname_rewrite(
         dnssec_ok: ctx.flags.dnssec_ok,
         client: Some(SocketAddr::new(ctx.source_ip, 0)),
         forward_zones: step.forward_zones_allow.map(std::sync::Arc::from),
-        no_cache_write: false,
+        no_cache_write: ctx.test_query,
     };
     let target_query = Query {
         name: target_name.clone(),

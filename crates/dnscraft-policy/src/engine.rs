@@ -319,12 +319,15 @@ impl PolicyEngine {
             Flow::Continue => {}
         }
 
+        // A test query reads shared cache/filter state but writes nothing to
+        // the cache (and `loggable` skips PolicyStats). Resolver counters stay
+        // shared on purpose: they count the real upstream work this query did.
         let flags = RequestFlags {
             checking_disabled: ctx.flags.checking_disabled,
             dnssec_ok: ctx.flags.dnssec_ok,
             client: Some(SocketAddr::new(ctx.source_ip, 0)),
             forward_zones: forward_zones.clone(),
-            no_cache_write: false,
+            no_cache_write: ctx.test_query,
         };
 
         let resolve_start = Instant::now();

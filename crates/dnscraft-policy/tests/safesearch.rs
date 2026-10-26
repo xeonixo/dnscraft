@@ -684,3 +684,35 @@ async fn safesearch_follow_preserves_forward_zone_and_dnssec_for_rebind() {
         ans.message.answers
     );
 }
+
+#[tokio::test]
+async fn test_query_safesearch_follow_does_not_write_cache() {
+    let mut profile = profile_base();
+    profile.safesearch = ss(&["google"], YoutubeMode::Strict);
+    let h = Hierarchy::start_with(safesearch_specs()).await.unwrap();
+    let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
+    let eng = PolicyEngine::new(
+        PolicyConfig {
+            default_rebind: true,
+            ptr_prefixes: Vec::new(),
+            local_nxdomain_suffixes: Vec::new(),
+            rebind_check_forward_zones: Vec::new(),
+            views: vec![default_view()],
+            profiles: vec![profile],
+        },
+        empty_filter(),
+        Arc::clone(&resolver),
+        Arc::new(NoClients),
+        clock_at(1_000),
+    )
+    .unwrap();
+
+    let mut dry = ctx("www.google.com.", RecordType::A);
+    dry.test_query = true;
+    let before = eng.stats();
+    let ans = eng.handle(dry).await.unwrap();
+    assert!(has_rewrite(&ans, "google", "forcesafesearch.google.com"));
+    assert!(!ans.loggable);
+    assert_eq!(resolver.stats().cache_entries, 0, "test query wrote cache");
+    assert_eq!(eng.stats(), before);
+}
