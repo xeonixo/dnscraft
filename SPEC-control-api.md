@@ -78,9 +78,9 @@ Control-api depends on the re-exported policy types from
 - `PolicyEngine::new(config: PolicyConfig, filter: Arc<FilterEngine>,
   resolver: Arc<Resolver>, clients: Arc<dyn ClientDirectory>,
   clock: Arc<dyn Clock>) -> Result<Self, PolicyError>`
-- `PolicyEngine::apply_config(&self, config: PolicyConfig) -> Result<(), PolicyError>`
+- `async PolicyEngine::apply_config(&self, config: PolicyConfig) -> Result<(), PolicyError>`
 - `PolicyEngine::pause(&self, scope: PauseScope, until: PauseUntil) -> Result<(), PolicyError>`
-- `PolicyEngine::resume(&self, scope: PauseScope) -> Result<(), PolicyError>`
+- `PolicyEngine::resume(&self, scope: PauseScope)` (infallible, returns `()`)
 - `PolicyEngine::handle(...)` is not used by control-api directly; control-api
   only configures and reads status.
 - `PolicyEngine::is_client_id_registered(&self, id: &str) -> bool` is available
@@ -109,9 +109,9 @@ string types.
 Control-api depends on:
 
 - `Arc<ClientEngine>` from `crates/dnscraft-clients`
-- `ClientEngine::new(config: ClientsConfig, clock: Arc<dyn Clock>) -> Result<Self, ClientsError>`
-- `ClientEngine::apply_config(&self, config: ClientsConfig) -> Result<(), ClientsError>`
-- `ClientEngine::sync_now(&self) -> Result<SyncReport, ClientsError>`
+- `ClientEngine::new(config: ClientsConfig, data_dir: PathBuf, clock: Arc<dyn Clock>) -> Result<Arc<Self>, ClientsError>`
+- `async ClientEngine::apply_config(&self, config: ClientsConfig) -> Result<(), ClientsError>`
+- `async ClientEngine::sync_now(&self) -> Result<SyncReport, ClientsError>`
 - `ClientEngine::status(&self) -> ClientsStatus`
 - `ClientEngine::lookup(&self) -> Arc<ClientLookup>`
 
@@ -155,10 +155,11 @@ runtime. The public API from `crates/dnscraft-listeners` includes:
 
 - `ListenerSet`
 - `ListenerSetParams`
-- `ListenerSet::start_with(params: ListenerSetParams) -> Result<Self, ListenersError>`
-- `ListenerSet::apply_config(&self, cfg: ListenersConfig) -> Result<(), ListenersError>`
+- `async ListenerSet::start_with(params: ListenerSetParams<H>) -> Result<Self, ListenersError>`
+  (`H: QueryHandler`, default `PolicyEngine`)
+- `async ListenerSet::apply_config(&self, cfg: ListenersConfig) -> Result<(), ListenersError>`
 - `ListenerSet::status(&self) -> ListenersStatus`
-- `ListenerSet::shutdown(self, grace: Duration)`
+- `async ListenerSet::shutdown(self, grace: Duration)`
 - `QueryEventSink`, `QueryEvent`
 - `ChannelSink`, `NullSink`
 - `ListenerConfig`, `ListenersConfig`, `ListenerStatus`, `ListenersStatus`,
@@ -182,9 +183,9 @@ Control-api reads TLS status and configures TLS through the public
 - `TlsEngine::open(config: TlsConfig, data_dir: &Path, clock: Arc<dyn Clock>) -> Result<Self, TlsError>`
 - `TlsEngine::resolver(&self) -> Arc<CertResolver>`
 - `TlsEngine::status(&self) -> TlsStatus`
-- `TlsEngine::apply_config(&self, config: TlsConfig) -> Result<(), TlsError>`
-- `TlsEngine::renew_now(&self) -> Result<(), TlsError>`
-- `TlsEngine::dyndns_now(&self) -> Result<(), TlsError>`
+- `async TlsEngine::apply_config(&self, config: TlsConfig) -> Result<(), TlsError>`
+- `async TlsEngine::renew_now(&self) -> Result<(), TlsError>`
+- `async TlsEngine::dyndns_now(&self) -> Result<DynDnsResult, TlsError>`
 
 The API may expose `TlsStatus` fields but must never expose private key PEMs
 or secret token material. The `CertResolver` is passed to listeners as
@@ -699,29 +700,37 @@ No internet and no real Authentik/Cloudflare in CI.
 
 ## Candidate dependencies
 
-All versions below are candidate versions to verify with `cargo search` and
-docs.rs during implementation. No network access was used for this spec, so
-these are marked **unverified** if not already present in the workspace.
+Workspace crates already pinned in the root `Cargo.toml` are reused with their
+workspace versions and features (`tokio`, `serde`, `serde_json`, `time`,
+`base64`, `ring`, `http`, `hyper`, `hyper-util`, `http-body-util`, `bytes`,
+`reqwest` 0.13 with `rustls-no-provider`, `rustls`, `tokio-rustls`). Anything
+below is new and needs one-time owner approval. Versions were **not**
+checked against crates.io for this draft (unverified); the P1 plan must run
+`cargo search` and cite docs.rs for each.
 
-| Crate | Candidate version | Features | Licence | Why / alternatives |
+| Crate | Candidate | Features | Licence | Why / alternatives |
 |---|---|---|---|---|
-| `axum` | 0.8.x | `json`, `query`, `http1` | MIT | Recommended router/handler framework; alternative `actix-web` |
-| `tokio` | 1.x (workspace) | `full` or selected | MIT | async runtime, already used |
-| `tower-http` | 0.6.x | `trace`, `cors`, `auth` | MIT | middleware for tracing/CORS |
-| `serde` / `serde_json` | 1.x (workspace) | derive | MIT/Apache-2.0 | DTO serde |
-| `rusqlite` | 0.34.x or later | `bundled` perhaps | MIT | SQLite persistence; already per SPEC.md stack |
-| `openidconnect` | 4.x | `reqwest`, `rustls-tls` | MIT/Apache-2.0 | OIDC protocol implementation; verify no native-tls features |
-| `reqwest` | 0.12.x | default-features=false, `json`, `rustls-tls` | MIT/Apache-2.0 | OIDC HTTP client; ring-only TLS feature is mandatory |
-| `argon2` | 0.5.x | default | MIT/Apache-2.0 | Argon2id password hashing; pure Rust, no aws-lc/openssl; alternative `ring::pbkdf2` |
-| `uuid` | 1.x | `v4`, `serde` | MIT/Apache-2.0 | IDs |
-| `time` | 0.3.x | `serde`, `formatting`, `macros` | MIT/Apache-2.0 | RFC3339 formatting; alternative `chrono` but time is lighter |
-| `sha2` | 0.10.x | default | MIT/Apache-2.0 | hash tokens/session ids; already in tree via `ring` maybe |
-| `base64` | 0.23.x (workspace) | default | MIT/Apache-2.0 | OIDC PKCE / base64url |
+| `axum` | latest 0.8.x | `json`, `query`, `http1` (no default TLS) | MIT | Router/extractors on the existing `hyper`/`tokio` stack; alternative: hand-rolled on `hyper` (more code, no new dep) |
+| `tower-http` | latest 0.6.x | `trace` only | MIT | Tracing middleware; skip if `tracing` spans in handlers suffice |
+| `rusqlite` | latest | `bundled` | MIT | SQLite persistence, fixed by SPEC.md stack; `bundled` compiles C SQLite (no system lib) |
+| `argon2` | latest 0.5.x | `std` | MIT/Apache-2.0 | Argon2id for break-glass; pure Rust. Alternative without new dep: `ring::pbkdf2` (PBKDF2-HMAC-SHA256) |
+| `uuid` | latest 1.x | `v4` | MIT/Apache-2.0 | Entity IDs; alternative: `ring::rand` + hex, no new dep |
+| `openidconnect` | latest | custom HTTP client, **no** `reqwest` default features | MIT/Apache-2.0 | Discovery, JWKS and ID-token validation; alternative: hand-rolled validation on `ring::signature` + `reqwest` (more code, more risk). It must not pull `aws-lc-rs`, `openssl-sys` or `native-tls`: verify with `cargo tree` before approval |
+
+Not needed: `sha2` (use `ring::digest` for token/session hashing), a separate
+`reqwest` entry (use the workspace one, `rustls-no-provider`, with the ring
+provider installed as in `dnscraft-tls`), `base64` and `time` (workspace).
 
 Ring-only enforcement: before merging control-api, run `cargo tree -i
-aws-lc-rs`, `cargo tree -i aws-lc-sys`, `cargo tree -i openssl-sys` and ensure
-all return `no packages matched`. If `openidconnect` or `reqwest` pulls
-native-tls by default, switch features accordingly.
+aws-lc-rs`, `cargo tree -i aws-lc-sys`, `cargo tree -i openssl-sys` and
+`cargo deny check`; all must stay empty/green. If `openidconnect` cannot be
+made ring-only, fall back to the hand-rolled variant and record it in an ADR.
+
+References (to be re-checked in P1): OIDC Core
+<https://openid.net/specs/openid-connect-core-1_0.html>, PKCE RFC 7636
+<https://www.rfc-editor.org/rfc/rfc7636>, OAuth 2.0 RFC 6749
+<https://www.rfc-editor.org/rfc/rfc6749>, Argon2 RFC 9106
+<https://www.rfc-editor.org/rfc/rfc9106>.
 
 ## Open Questions (owner)
 
