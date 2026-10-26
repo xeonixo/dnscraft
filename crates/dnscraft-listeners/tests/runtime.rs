@@ -69,6 +69,94 @@ async fn start_set(
     .unwrap()
 }
 
+async fn one_query(set: &ListenerSet<FakeHandler>) {
+    let addr = set.status().listeners[0].bound.unwrap();
+    let _ = query_udp(addr, &encode_a_query(1, "example.com.")).await;
+    poll_until(
+        || set.status().listeners[0].queries >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+}
+
+/// S1: every `Limits` field is classified as listener-affecting (restart) or
+/// admission-only (no restart), exercised end-to-end through `apply_config`.
+/// A restart rebinds the UDP socket and resets its `queries` counter, so the
+/// counter is the restart signal.
+#[tokio::test]
+async fn runtime_limits_fields_restart_vs_no_restart() {
+    let cfg = base_cfg(vec![udp_cfg(
+        "lan-udp",
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+    )]);
+    let (sink, _rx) = ChannelSink::new(64);
+    let handler = Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(
+        192, 0, 2, 10,
+    ))));
+    let set = start_set(cfg.clone(), handler, sink).await;
+
+    type LimitsCase = (&'static str, fn(&mut Limits));
+    let listener_cases: &[LimitsCase] = &[
+        ("udp_payload_max", |l| l.udp_payload_max = 4096),
+        ("query_timeout", |l| {
+            l.query_timeout = Duration::from_secs(30)
+        }),
+        ("tcp_idle_timeout", |l| {
+            l.tcp_idle_timeout = Duration::from_secs(30)
+        }),
+        ("tls_handshake_timeout", |l| {
+            l.tls_handshake_timeout = Duration::from_secs(30)
+        }),
+        ("max_inflight_per_listener", |l| {
+            l.max_inflight_per_listener = 8
+        }),
+        ("max_connections_per_listener", |l| {
+            l.max_connections_per_listener = 8
+        }),
+        ("max_connections_per_source", |l| {
+            l.max_connections_per_source = 8
+        }),
+        ("max_quic_streams_per_connection", |l| {
+            l.max_quic_streams_per_connection = 8
+        }),
+        ("max_queries_per_connection", |l| {
+            l.max_queries_per_connection = 8
+        }),
+    ];
+    // Accumulate each change so every apply_config mutates exactly one field
+    // relative to the running config (otherwise later cases would also revert
+    // the earlier listener-affecting edits and spuriously restart).
+    let mut current = cfg.clone();
+    for (name, apply) in listener_cases {
+        one_query(&set).await;
+        apply(&mut current.limits);
+        set.apply_config(current.clone()).await.unwrap();
+        assert_eq!(
+            set.status().listeners[0].queries,
+            0,
+            "{name} change must restart the listener (queries counter reset)"
+        );
+    }
+
+    let admission_cases: &[LimitsCase] = &[
+        ("rate_per_source", |l| l.rate_per_source.per_second = 9999),
+        ("rate_per_client_id", |l| {
+            l.rate_per_client_id.per_second = 9999
+        }),
+    ];
+    for (name, apply) in admission_cases {
+        one_query(&set).await;
+        apply(&mut current.limits);
+        set.apply_config(current.clone()).await.unwrap();
+        assert!(
+            set.status().listeners[0].queries >= 1,
+            "{name} change must not restart the listener (queries counter kept)"
+        );
+    }
+
+    set.shutdown(Duration::from_secs(2)).await;
+}
+
 #[tokio::test]
 async fn runtime_partial_bind_failure_others_serve() {
     let held = bind_udp(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();

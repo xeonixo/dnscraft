@@ -180,24 +180,81 @@ impl Default for Limits {
 impl Limits {
     /// True when any field that a running listener's transport/limits read changed.
     ///
-    /// The two admission rate limits are deliberately excluded: they only feed
+    /// Destructures [`Limits`] exhaustively (no `..`): adding a field fails to
+    /// compile until it is classified here as listener-affecting or, in
+    /// [`Self::admission_limits_changed`], as admission-only. The two admission
+    /// rate limits are deliberately ignored here — they only feed
     /// [`crate::admission::Admission`], so changing them must not restart listeners.
     pub fn listener_limits_changed(&self, old: &Limits) -> bool {
-        self.udp_payload_max != old.udp_payload_max
-            || self.query_timeout != old.query_timeout
-            || self.tcp_idle_timeout != old.tcp_idle_timeout
-            || self.tls_handshake_timeout != old.tls_handshake_timeout
-            || self.max_inflight_per_listener != old.max_inflight_per_listener
-            || self.max_connections_per_listener != old.max_connections_per_listener
-            || self.max_connections_per_source != old.max_connections_per_source
-            || self.max_quic_streams_per_connection != old.max_quic_streams_per_connection
-            || self.max_queries_per_connection != old.max_queries_per_connection
+        let Limits {
+            udp_payload_max,
+            query_timeout,
+            tcp_idle_timeout,
+            tls_handshake_timeout,
+            max_inflight_per_listener,
+            max_connections_per_listener,
+            max_connections_per_source,
+            max_quic_streams_per_connection,
+            max_queries_per_connection,
+            rate_per_source: _,
+            rate_per_client_id: _,
+        } = self;
+        let Limits {
+            udp_payload_max: old_udp_payload_max,
+            query_timeout: old_query_timeout,
+            tcp_idle_timeout: old_tcp_idle_timeout,
+            tls_handshake_timeout: old_tls_handshake_timeout,
+            max_inflight_per_listener: old_max_inflight_per_listener,
+            max_connections_per_listener: old_max_connections_per_listener,
+            max_connections_per_source: old_max_connections_per_source,
+            max_quic_streams_per_connection: old_max_quic_streams_per_connection,
+            max_queries_per_connection: old_max_queries_per_connection,
+            rate_per_source: _,
+            rate_per_client_id: _,
+        } = old;
+        udp_payload_max != old_udp_payload_max
+            || query_timeout != old_query_timeout
+            || tcp_idle_timeout != old_tcp_idle_timeout
+            || tls_handshake_timeout != old_tls_handshake_timeout
+            || max_inflight_per_listener != old_max_inflight_per_listener
+            || max_connections_per_listener != old_max_connections_per_listener
+            || max_connections_per_source != old_max_connections_per_source
+            || max_quic_streams_per_connection != old_max_quic_streams_per_connection
+            || max_queries_per_connection != old_max_queries_per_connection
     }
 
     /// True when either admission rate limit changed.
+    ///
+    /// Mirrors [`Self::listener_limits_changed`]'s exhaustive destructure so a
+    /// new [`Limits`] field is unclassified (fails to compile) until listed here.
     pub fn admission_limits_changed(&self, old: &Limits) -> bool {
-        self.rate_per_source != old.rate_per_source
-            || self.rate_per_client_id != old.rate_per_client_id
+        let Limits {
+            rate_per_source,
+            rate_per_client_id,
+            udp_payload_max: _,
+            query_timeout: _,
+            tcp_idle_timeout: _,
+            tls_handshake_timeout: _,
+            max_inflight_per_listener: _,
+            max_connections_per_listener: _,
+            max_connections_per_source: _,
+            max_quic_streams_per_connection: _,
+            max_queries_per_connection: _,
+        } = self;
+        let Limits {
+            rate_per_source: old_rate_per_source,
+            rate_per_client_id: old_rate_per_client_id,
+            udp_payload_max: _,
+            query_timeout: _,
+            tcp_idle_timeout: _,
+            tls_handshake_timeout: _,
+            max_inflight_per_listener: _,
+            max_connections_per_listener: _,
+            max_connections_per_source: _,
+            max_quic_streams_per_connection: _,
+            max_queries_per_connection: _,
+        } = old;
+        rate_per_source != old_rate_per_source || rate_per_client_id != old_rate_per_client_id
     }
 }
 
