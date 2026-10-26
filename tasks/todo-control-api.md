@@ -162,10 +162,10 @@ principal, with the configured defaults (read 100/s burst 200, write 20/s burst 
 clock (no wall-clock sleeps). The limiter is consulted in a single middleware.
 
 **Acceptance criteria:**
-- [ ] Read/write/auth endpoints are rate-limited at their documented defaults.
-- [ ] Exceeded rate returns `429` with the `control_api.rate_limited` envelope.
-- [ ] Bucket refill is clock-driven; a `ManualClock` test shows refill without sleeping.
-- [ ] A flood beyond the burst is capped (regression test), and the source IP is taken from
+- [x] Read/write/auth endpoints are rate-limited at their documented defaults.
+- [x] Exceeded rate returns `429` with the `control_api.rate_limited` envelope.
+- [x] Bucket refill is clock-driven; a `ManualClock` test shows refill without sleeping.
+- [x] A flood beyond the burst is capped (regression test), and the source IP is taken from
       the trusted peer, not a spoofable header (unless `trusted_proxies`).
 
 **Verification:** `cargo test -p dnscraft-api rate_limit`
