@@ -112,13 +112,13 @@ Add `FilterEngine::paused_until(&self, set) -> Option<SystemTime>` returning the
 config value, whichever ends later) for `list_mcp_rules`.
 
 **Acceptance criteria:**
-- [ ] Overlay is consulted at every place that today asks `snap.paused_until(set)` (`match_name`,
+- [x] Overlay is consulted at every place that today asks `snap.paused_until(set)` (`match_name`,
       `match_chain`, `match_answer_ip` paths); a paused set returns `Pass`.
-- [ ] A new pause **replaces** an earlier one (no stacking); `None` resumes; unknown set → `FilterError`
+- [x] A new pause **replaces** an earlier one (no stacking); `None` resumes; unknown set → `FilterError`
       with a stable code.
-- [ ] The overlay survives `apply_config` (documented); a config `paused_until` still works.
-- [ ] `ManualClock` tests: pause active until exactly `until`, then filtering resumes; resume mid-way.
-- [ ] No lock is held across `.await`; no deadlock with `apply_config` (concurrent test).
+- [x] The overlay survives `apply_config` (documented); a config `paused_until` still works.
+- [x] `ManualClock` tests: pause active until exactly `until`, then filtering resumes; resume mid-way.
+- [x] No lock is held across `.await`; no deadlock with `apply_config` (concurrent test).
 
 **Verification:** `cargo test -p dnscraft-filtering pause`
 

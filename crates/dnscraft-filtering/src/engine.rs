@@ -95,6 +95,9 @@ impl std::fmt::Debug for Coalesce {
 pub struct FilterEngine {
     snapshot: RwLock<Arc<Snapshot>>,
     temps: RwLock<HashMap<SetId, Vec<TempAllow>>>,
+    /// Runtime pause overlay; survives `apply_config` (see
+    /// [`FilterEngine::set_paused_until`]).
+    pauses: RwLock<HashMap<SetId, SystemTime>>,
     stats: RwLock<StatsTable>,
     /// Present when constructed via [`Self::open`]; absent for matching-only.
     inner: Option<EngineInner>,
@@ -167,6 +170,7 @@ impl FilterEngine {
         Self {
             snapshot: RwLock::new(Arc::new(snapshot)),
             temps: RwLock::new(HashMap::new()),
+            pauses: RwLock::new(HashMap::new()),
             stats: RwLock::new(StatsTable::new(set_ids, list_ids)),
             inner: None,
         }
@@ -194,6 +198,7 @@ impl FilterEngine {
         Ok(Arc::new(Self {
             snapshot: RwLock::new(Arc::new(snapshot)),
             temps: RwLock::new(HashMap::new()),
+            pauses: RwLock::new(HashMap::new()),
             stats: RwLock::new(StatsTable::new(set_ids, list_ids)),
             inner: Some(EngineInner {
                 store,
@@ -402,7 +407,7 @@ impl FilterEngine {
         if snap.shared_index(set).is_none() {
             return Err(FilterError::UnknownSet(set.to_string()));
         }
-        if snap.paused_until(set).is_some_and(|u| now < u) {
+        if self.effective_pause(&snap, set).is_some_and(|u| now < u) {
             let v = Verdict::Pass;
             self.stats
                 .read()
@@ -427,12 +432,66 @@ impl FilterEngine {
         ip: IpAddr,
         now: SystemTime,
     ) -> Result<Verdict, FilterError> {
-        let v = self.snapshot_arc().match_answer_ip(set, ip, now)?;
+        let snap = self.snapshot_arc();
+        let v = if self.effective_pause(&snap, set).is_some_and(|u| now < u) {
+            Verdict::Pass
+        } else {
+            snap.match_answer_ip(set, ip, now)?
+        };
         self.stats
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record(set, &v);
         Ok(v)
+    }
+
+    /// Pauses `set` until `until` (or resumes with `None`) immediately.
+    ///
+    /// The pause lives in an in-memory overlay, not in the config: no snapshot
+    /// rebuild happens, a later call replaces an earlier pause, and the
+    /// overlay is **not cleared by [`Self::apply_config`]**. A configured
+    /// [`crate::FilterSetConfig::paused_until`] still applies; the later of the two
+    /// deadlines wins. Unknown set → [`FilterError::UnknownSet`].
+    pub fn set_paused_until(
+        &self,
+        set: &SetId,
+        until: Option<SystemTime>,
+    ) -> Result<(), FilterError> {
+        if self.snapshot_arc().shared_index(set).is_none() {
+            return Err(FilterError::UnknownSet(set.to_string()));
+        }
+        let mut guard = self
+            .pauses
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match until {
+            Some(until) => {
+                guard.insert(set.clone(), until);
+            }
+            None => {
+                guard.remove(set);
+            }
+        }
+        Ok(())
+    }
+
+    /// Effective pause deadline of `set`: the overlay or the configured
+    /// `paused_until`, whichever ends later.
+    pub fn paused_until(&self, set: &SetId) -> Option<SystemTime> {
+        self.effective_pause(&self.snapshot_arc(), set)
+    }
+
+    fn effective_pause(&self, snap: &Snapshot, set: &SetId) -> Option<SystemTime> {
+        let overlay = self
+            .pauses
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(set)
+            .copied();
+        match (overlay, snap.paused_until(set)) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// Adds or replaces a temporary allow for `set`.
@@ -664,7 +723,7 @@ impl FilterEngine {
         if snap.shared_index(set).is_none() {
             return Err(FilterError::UnknownSet(set.to_string()));
         }
-        if snap.paused_until(set).is_some_and(|u| now < u) {
+        if self.effective_pause(&snap, set).is_some_and(|u| now < u) {
             return Ok(Verdict::Pass);
         }
         if let Some(v) = self.temp_verdict(set, name, now) {
