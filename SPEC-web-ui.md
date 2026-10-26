@@ -114,7 +114,8 @@ The routing contract (owner of this layer is an open question; see below):
   exactly as specified. An unknown `/api/v1` path must keep returning the JSON error
   envelope, never the SPA HTML.
 - Any other `GET`/`HEAD` path serves the exact embedded asset when it exists
-  (hashed JS/CSS, icons, `manifest.webmanifest`, message files), otherwise
+  (hashed JS/CSS, icons, `manifest.webmanifest`, `sw.js`, `apple-touch-icon.png`,
+  message files), otherwise
   `index.html` (SPA fallback). Path traversal is avoided by looking up a normalized
   path in the embedded table only; no filesystem path is joined from request input.
 - Response headers: correct `Content-Type` from a fixed extension map (never sniffed),
@@ -671,6 +672,65 @@ Rules:
   warning disappears automatically once `tls_mode = acme` (the SPA re-reads status).
 - The UI never claims the connection is trusted; it reflects the server-reported
   mode.
+- **PWA consequence:** the self-signed bootstrap is not a secure context (unless the
+  owner installs the bootstrap certificate as a trusted root), so the service worker
+  cannot register and offline caching is unavailable until the certificate is trusted.
+  See "Progressive Web App (iOS)".
+
+## Progressive Web App (iOS)
+
+The web UI is installable as a home-screen app on iOS. On iOS "install" is always the
+user's manual **Share → Add to Home Screen**; there is no `beforeinstallprompt` and no
+silent install, so the UI must not depend on an install prompt. The PWA is the same
+static build served above and needs no additional runtime or dependency: the manifest,
+service worker and icons are hand-written static files emitted by the frontend build.
+
+### Web App Manifest
+
+- A `manifest.webmanifest` is embedded and served at `/manifest.webmanifest` with
+  `Content-Type: application/manifest+json` and `Cache-Control: no-cache`.
+- Required members: `name`, `short_name`, `start_url` (`"/"`), `scope` (`"/"`),
+  `display: "standalone"`, `theme_color` and `background_color` (both from the
+  semantic tokens), and `icons` — 192×192 and 512×512 PNG with `purpose: "any"`, plus
+  a 512×512 `purpose: "maskable"` variant for Android.
+- `id` is a stable value and must never change after install (a new `id` is a new app
+  identity).
+
+### apple-touch-icon and iOS meta
+
+- `<link rel="apple-touch-icon" href="/apple-touch-icon.png">` — a **180×180 PNG with
+  no transparency** (opaque and square; iOS does not round or mask the icon). Also
+  place `apple-touch-icon.png` at the web root so iOS finds it even without the link.
+- `<meta name="apple-mobile-web-app-capable" content="yes">`,
+  `<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">`
+  (the status bar overlays the content — the safe-area insets above cover this), and
+  `<meta name="apple-mobile-web-app-title" content="DNScraft">`.
+
+### Service worker and offline
+
+- A `sw.js` is embedded and served at the **root** `/sw.js`, un-hashed and
+  `Cache-Control: no-cache` (a service worker is scoped to its directory, so root
+  scope requires root placement). It precaches the app shell — `index.html`, hashed
+  `/_app/immutable/*` JS/CSS, fonts and icons — and serves it from Cache Storage while
+  offline (network-first for navigations, cache-first for hashed assets).
+- API data is **not** cached by default: query log, config and stats are live. Offline
+  the UI shows the cached shell plus a translated "backend unreachable" state.
+  Read-only screens may optionally use a short stale-while-revalidate for
+  `GET /api/v1/status` and the current config snapshot.
+- Update strategy: version the cache by build hash; `skipWaiting` + `clients.claim`
+  are acceptable for an admin tool, otherwise show a "new version available" reload
+  prompt.
+
+### HTTPS and the self-signed bootstrap
+
+A service worker requires a secure context (HTTPS with a certificate the device
+trusts, or `localhost`). The self-signed bootstrap is not trusted unless the owner
+installs the bootstrap certificate as a root, so until then the service worker cannot
+register and offline caching is unavailable. The app still runs as a home-screen web
+app (icon, title, standalone) — only the offline shell degrades. Once `tls_mode =
+acme` (or the root is installed), the service worker registers and offline returns.
+The setup documentation states this explicitly; the UI advertises offline only after
+registration succeeds.
 
 ## Testing strategy
 
@@ -733,6 +793,10 @@ No internet access, no real OIDC provider, no real Cloudflare/UniFi/ACME endpoin
 6. **Visual snapshots (optional):** screenshots of a stat tile, a grouped form and a
    query-log row at compact and regular width in both schemes, reviewed when the
    design system changes; not a hard CI gate.
+7. **PWA checks:** a Lighthouse PWA audit (installability, manifest validity,
+   `apple-touch-icon` presence, `display: standalone`), a service-worker offline test
+   (register, precache the app shell, serve it with the network blocked), and a
+   manifest/apple-meta validation in the static checks.
 
 ## Candidate dependencies
 
@@ -857,6 +921,18 @@ Deliberately not included:
 20. Theme switching (light/dark/system) and a locale switch work on login and
     authenticated screens; layout remains usable on phone width and with German
     strings, using CSS logical properties.
+21. **Installable (iOS):** a valid `manifest.webmanifest` (`display: standalone`,
+    `theme_color`/`background_color` from the tokens, 192/512 icons including one
+    maskable) is served with `application/manifest+json`; `apple-touch-icon`
+    (180×180, opaque) and the `apple-mobile-web-app-*` meta tags are present; the app
+    launches standalone from the home screen with the correct title and icon.
+22. **Offline app shell:** the service worker registers at the root scope, precaches
+    the built app shell, and serves it while offline; API data is not cached by
+    default, and the UI shows a translated "backend unreachable" state.
+23. **Trusted TLS:** the PWA works fully once the certificate is trusted (ACME or an
+    installed root); with the self-signed bootstrap it still runs as a home-screen app
+    but does not advertise offline, and the service worker fails registration
+    gracefully.
 
 ## Open questions
 
@@ -970,6 +1046,15 @@ Deliberately not included:
 26. **CodeMirror theming.** CodeMirror 6 ships its own themes; confirm it is restyled
     to the light/dark/increased-contrast tokens (including SF Mono) rather than
     shipping its default palette.
+27. **Self-signed bootstrap and offline.** With `tls_mode = self_signed` the origin is
+    not a secure context (unless the owner installs the bootstrap cert as a trusted
+    root), so the service worker cannot register. Confirm the v1 behavior: ship
+    offline only for ACME/installed-root deployments, or also document a
+    certificate-install path so offline works before ACME.
+28. **Web Push.** iOS 16.4+ supports Web Push only for home-screen apps, with
+    permission only on a user gesture and every push must show a notification; it also
+    needs a trusted cert. Decide whether v1 includes any push (cert-expiry/outage
+    alerts) or defers it. Recommendation: defer to v2.
 
 ### Required control-api additions (not invented here)
 
