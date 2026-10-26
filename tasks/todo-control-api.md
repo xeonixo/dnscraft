@@ -75,11 +75,11 @@ A single redaction helper is shared by config export and audit, so masking canno
 forgotten on one path.
 
 **Acceptance criteria:**
-- [ ] A config version round-trips through `config_versions` with its `config_version`.
-- [ ] Audit rows are append-only and carry `before_digest`/`after_digest` plus redacted snapshots.
-- [ ] A fake secret placed in config appears as `"redacted"` in both the stored snapshot and
+- [x] A config version round-trips through `config_versions` with its `config_version`.
+- [x] Audit rows are append-only and carry `before_digest`/`after_digest` plus redacted snapshots.
+- [x] A fake secret placed in config appears as `"redacted"` in both the stored snapshot and
       the audit before/after; the plaintext never reaches SQLite (regression test).
-- [ ] Rollback-by-version is prepared: a stored version can be read back as the exact snapshot.
+- [x] Rollback-by-version is prepared: a stored version can be read back as the exact snapshot.
 
 **Verification:** `cargo test -p dnscraft-api config_store`
 

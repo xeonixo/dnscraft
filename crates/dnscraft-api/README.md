@@ -12,7 +12,8 @@ Plan / remaining tasks: [`tasks/todo-control-api.md`](../../tasks/todo-control-a
 
 **A0 complete** (crate skeleton, config model, error type).
 **A1 complete** (SQLite storage, migrations, kv store, audit log).
-**Next: A2** (config snapshot/version store with secret redaction).
+**A2 complete** (config snapshot/version store + audit secret redaction).
+**Next: A3** (HTTP server core — router, envelopes, pagination).
 
 See `tasks/todo-control-api.md` for the full task list.
 
@@ -42,40 +43,53 @@ address (default `127.0.0.1:8080`).
 SQLite with a single-writer connection behind `Mutex`. Every database call runs
 via `tokio::task::spawn_blocking` to avoid blocking the async runtime.
 
-Migrations are idempotent and tracked via `PRAGMA user_version`. The schema is
-refined incrementally:
+Migrations are idempotent and tracked via `PRAGMA user_version`:
 
-- **A1**: `kv` table (key-value store) and `audit` table (append-only log)
-- **A2**: `config_versions` table (config snapshots with secret redaction)
-- **A12**: `query_log` full schema (currently placeholder)
-- **A13**: `stats_rollups` (aggregated metrics)
+- **A1**: full schema — `kv`, `config_versions`, `audit_log`, `sessions`,
+  `tokens`, `query_log`, `stats_hourly`, `stats_daily`
+- **A2**: `ConfigStore` (versioned snapshots) and audit `before`/`after`
+  redaction (SHA-256 digests, secrets masked before they reach SQLite)
+- **A12**: `query_log` accessors, retention and export (table exists)
+- **A13**: `stats_*` aggregation (tables exist; rollups later)
 
 All SQL uses bind parameters — never string interpolation. See the
 `sql_injection_is_treated_as_data` test for verification.
 
-## API Surface (A0, A1)
+## API Surface (A0–A2)
 
 ```rust
-use dnscraft_api::{ControlApiConfig, Db, AuditRecord};
+use dnscraft_api::{Audit, ConfigChangeRecord, ConfigStore, Db};
+use serde_json::json;
 
-// 1. Load config (validate bind address, rate limits, retention)
-let config = ControlApiConfig::from_toml_str(toml_str)?;
+// 1. Open a database (idempotent migrations applied on open).
+let db = Db::open_in_memory().await?;
 
-// 2. Open database (idempotent migrations applied on open)
-let db = Db::open("path/to/control.db").await?;
+// 2. Store a config snapshot; secrets are redacted before persist.
+let store = ConfigStore::new(db.clone());
+let version = store
+    .store(&json!({
+        "auth": { "oidc_client_secret": "s3cr3t", "issuer": "https://auth.example.net" }
+    }))
+    .await?;
 
-// 3. Key-value store (versioned config snapshots later in A2)
-db.kv_set("some_key", b"some_value").await?;
-let val = db.kv_get("some_key").await?;
+// 3. Load it back (secrets come back as "redacted").
+let snapshot = store.load(version).await?;
 
-// 4. Audit log (append-only, ordered by timestamp)
-db.audit_append(AuditRecord {
-    timestamp: 1730000000,
-    actor: "admin".into(),
-    action: "config.update".into(),
-    // ... resource, old_value, new_value
-}).await?;
-let records = db.audit_list_since(since_ts).await?;
+// 4. Record an audit row; before/after are redacted + SHA-256 digested.
+let audit = Audit::new(db.clone());
+let id = audit
+    .record_config_change(ConfigChangeRecord {
+        time: 1_730_000_000,
+        node_id: "node1".into(),
+        actor_id: "admin".into(),
+        actor_type: "user".into(),
+        config_version: Some(version),
+        before: None,
+        after: Some(json!({ "auth": { "oidc_client_secret": "s3cr3t" } })),
+        result: "ok".into(),
+        error_code: None,
+    })
+    .await?;
 ```
 
 The HTTP server and auth flow are implemented in later tasks (A3+).
@@ -90,7 +104,8 @@ Integration tests cover:
 - Config validation (bind address, rate limits, retention bounds)
 - SQLite migrations (idempotent, version tracking)
 - Key-value round-trips
-- Audit log ordering and filtering
+- Config snapshot versioning + secret redaction (plaintext never reaches SQLite)
+- Audit log ordering, digesting, and redaction
 - SQL injection prevention (`sql_injection_is_treated_as_data`)
 - Error code stability (every error variant has a unique `code()`)
 
