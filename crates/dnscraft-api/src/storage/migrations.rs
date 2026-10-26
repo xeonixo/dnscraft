@@ -72,6 +72,19 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         query_count   INTEGER NOT NULL,
         PRIMARY KEY (day, profile_id, protocol, answer_source)
     );",
+    // v2: audit log is append-only — UPDATE/DELETE are rejected at the SQL
+    // layer so no code path (including retention, which needs its own explicit
+    // migration) can silently mutate recorded history.
+    "CREATE TRIGGER audit_log_no_update
+        BEFORE UPDATE ON audit_log
+    BEGIN
+        SELECT RAISE(ABORT, 'audit_log is append-only');
+    END;
+    CREATE TRIGGER audit_log_no_delete
+        BEFORE DELETE ON audit_log
+    BEGIN
+        SELECT RAISE(ABORT, 'audit_log is append-only');
+    END;",
 ];
 
 /// Applies every migration newer than the recorded version, then records it.
@@ -96,4 +109,41 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<(), ControlApiError> {
 pub(crate) fn schema_version(conn: &Connection) -> Result<i64, ControlApiError> {
     conn.query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(db_err)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audit_log_rejects_update_and_delete_after_v2() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 2);
+
+        conn.execute(
+            "INSERT INTO audit_log (
+                time, node_id, actor_id, actor_type, action, object_type, object_id, result
+             ) VALUES (1, 'n', 'a', 'user', 'config.write', 'config', 'cfg', 'ok')",
+            [],
+        )
+        .unwrap();
+
+        // Append-only: UPDATE and DELETE are rejected by the v2 triggers.
+        assert!(
+            conn.execute("UPDATE audit_log SET action = 'x' WHERE id = 1", [])
+                .is_err()
+        );
+        assert!(
+            conn.execute("DELETE FROM audit_log WHERE id = 1", [])
+                .is_err()
+        );
+
+        // INSERT and SELECT still work; the single row is intact.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
 }
