@@ -116,26 +116,98 @@ protocol = "bogus"
 address = "127.0.0.1:0"
 "#,
     );
-    let status = Command::new(binary())
+    let out = Command::new(binary())
         .arg(&cfg)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::piped())
+        .output()
         .unwrap();
-    assert_eq!(status.code(), Some(2), "invalid config must exit 2");
+    assert_eq!(out.status.code(), Some(2), "invalid config must exit 2");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("dnscraft.config.invalid_listener"),
+        "stderr must carry the stable code: {stderr}"
+    );
 
     let _ = std::fs::remove_file(&cfg);
 }
 
 #[test]
 fn exits_two_on_missing_file() {
-    let status = Command::new(binary())
+    let out = Command::new(binary())
         .arg("/nonexistent/dnscraft.toml")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::piped())
+        .output()
         .unwrap();
-    assert_eq!(status.code(), Some(2), "missing config must exit 2");
+    assert_eq!(out.status.code(), Some(2), "missing config must exit 2");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("dnscraft.config.read"),
+        "stderr must carry the stable code: {stderr}"
+    );
+}
+
+#[test]
+fn exits_two_on_half_configured_tls_env() {
+    let cfg = temp_config(
+        "half-tls",
+        r#"public_domain = "example.com"
+
+[[listeners]]
+id = "udp"
+protocol = "udp53"
+address = "127.0.0.1:0"
+"#,
+    );
+    let out = Command::new(binary())
+        .arg(&cfg)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .env_remove("DNSCRAFT_TLS_CERT")
+        .env_remove("DNSCRAFT_TLS_CERT_FILE")
+        .env_remove("DNSCRAFT_TLS_KEY")
+        .env_remove("DNSCRAFT_TLS_KEY_FILE")
+        .env("DNSCRAFT_TLS_CERT", "-----BEGIN CERTIFICATE-----")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "half TLS env must exit 2");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("dnscraft.config.tls_env_incomplete"),
+        "stderr must carry the stable code: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(&cfg);
+}
+
+#[test]
+fn exits_two_on_public_plaintext_listener() {
+    let cfg = temp_config(
+        "public-plaintext",
+        r#"public_domain = "example.com"
+
+[[listeners]]
+id = "udp"
+protocol = "udp53"
+address = "127.0.0.1:0"
+exposure = "public"
+"#,
+    );
+    let out = Command::new(binary())
+        .arg(&cfg)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "public plaintext must exit 2");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("dnscraft.config.invalid_listener"),
+        "stderr must carry the stable code: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(&cfg);
 }
 
 #[test]

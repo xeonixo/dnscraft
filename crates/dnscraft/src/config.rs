@@ -231,7 +231,7 @@ impl Config {
                 h3: listener.h3,
             });
         }
-        Ok(ListenersConfig {
+        let cfg = ListenersConfig {
             listeners,
             limits: Limits::default(),
             public: PublicConfig {
@@ -239,7 +239,10 @@ impl Config {
                 ..PublicConfig::default()
             },
             ddr: DdrConfig::default(),
-        })
+        };
+        cfg.validate()
+            .map_err(|e| Error::config("dnscraft.config.invalid_listener", e.to_string()))?;
+        Ok(cfg)
     }
 }
 
