@@ -313,9 +313,9 @@ manual interop recipe (`dig`, `kdig +tls/+https/+quic`, `curl --http2/--http3`).
 progress.md. Coverage ≥ 80 % lines.
 
 **Acceptance criteria:**
-- [ ] Fuzz 10 min per target clean (execs logged)
-- [ ] Bench numbers logged (target ≥ 20 000 qps on loopback)
-- [ ] Coverage ≥ 80 % (or gap listed with reason); README complete
+- [x] Fuzz 10 min per target clean (execs logged) — `listeners_handle_wire` 10 149 393 runs / 601 s, `listeners_doh_request` 13 169 854 runs / 601 s, both clean (no crash/timeout)
+- [x] Bench numbers logged (target ≥ 20 000 qps on loopback) — qps ≈ 23 900, p50 38.5 µs, p99 66.0 µs
+- [x] Coverage ≥ 80 % (or gap listed with reason); README complete — 85.32 % lines
 
 **Verification:** `cargo llvm-cov -p dnscraft-listeners --summary-only`; fuzz commands in the log
 

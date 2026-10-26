@@ -58,7 +58,7 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
-      # SPEC.md: ≥ 80 % lines for proto, resolver, filtering, policy.
+      # SPEC.md: ≥ 80 % lines for proto, resolver, filtering, policy, listeners.
       - name: Coverage with fail-under
         run: >
           cargo llvm-cov
@@ -66,6 +66,7 @@ jobs:
           -p dnscraft-resolver
           -p dnscraft-filtering
           -p dnscraft-policy
+          -p dnscraft-listeners
           --locked
           --fail-under-lines 80
           --summary-only

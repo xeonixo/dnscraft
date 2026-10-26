@@ -12,7 +12,7 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::time::Duration;
 
-use criterion::{Throughput, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use dnscraft_filtering::SetId;
 use dnscraft_listeners::{
     Admission, Exposure, FakeHandler, Limits, ListenerConfig, Protocol, PublicConfig, SystemClock,
@@ -22,7 +22,7 @@ use dnscraft_policy::{
     AnswerOrigin, DecisionRecord, DecisionTimings, ListenerId, PolicyAnswer, ProfileId,
     SelectionCause, ViewId,
 };
-use dnscraft_proto::{Message, Name, RecordType, Rcode};
+use dnscraft_proto::{Message, Name, Rcode, RecordType};
 use tokio::sync::{oneshot, watch};
 
 /// A minimal NOERROR answer so `handle_wire` runs the full encode/send path.
