@@ -368,8 +368,8 @@ DTOs from the modules (no parallel string types):
 **Scope:** M
 
 ## Checkpoint D: Config endpoints
-- [ ] DoD green; config apply/rollback + CRUD reviewed (lead review)
-- [ ] progress.md updated
+- [x] DoD green; config apply/rollback + CRUD reviewed (lead review, 2026-10-26)
+- [x] progress.md updated
 
 ## Phase 5: Query log + statistics
 

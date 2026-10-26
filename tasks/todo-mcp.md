@@ -426,9 +426,9 @@ filter set (`kind`: `rules` | `temporary_allows` | `pauses`, default `rules`), p
 **Scope:** S
 
 ## Checkpoint R: Read-only MCP complete
-- [ ] DoD green; all 8 read tools work against the mock backend through the real `service()`
-- [ ] Claude review (sanitizer coverage, injection corpus, schema strictness, mutation probes)
-- [ ] progress.md updated
+- [x] DoD green; all 8 read tools work against the mock backend through the real `service()` — 2026-10-26
+- [x] Claude review (sanitizer coverage, injection corpus, schema strictness, mutation probes)
+- [x] progress.md updated
 
 ## Phase 2: Write tools (mock backend)
 
