@@ -3,15 +3,23 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::net::SocketAddr;
+
 use axum::body::Body;
+use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Request, StatusCode, header};
 use serde_json::Value;
 use tower::ServiceExt as _;
 
 use dnscraft_api::AppState;
 
+/// The peer address the rate-limiter middleware sees in these in-process tests.
+fn test_addr() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], 40_000))
+}
+
 async fn send(state: AppState, req: Request<Body>) -> (StatusCode, Value) {
-    let router = state.router();
+    let router = state.router().layer(MockConnectInfo(test_addr()));
     let res = router.oneshot(req).await.unwrap();
     let status = res.status();
     let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
@@ -103,7 +111,7 @@ async fn non_get_on_healthz_is_method_not_allowed_not_not_found() {
 
 #[tokio::test]
 async fn response_content_type_is_json() {
-    let router = AppState::new().router();
+    let router = AppState::new().router().layer(MockConnectInfo(test_addr()));
     let res = router
         .oneshot(
             Request::builder()

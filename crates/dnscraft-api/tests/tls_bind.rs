@@ -4,12 +4,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::fs;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::body::Body;
+use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Request, StatusCode};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::ring::default_provider;
@@ -154,6 +156,7 @@ async fn status_reports_tls_mode_fingerprint_and_self_signed_warning() {
     })));
     let res = state
         .router()
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))))
         .oneshot(
             Request::builder()
                 .uri("/api/v1/status")
@@ -179,6 +182,7 @@ async fn status_reports_tls_mode_fingerprint_and_self_signed_warning() {
 async fn status_omits_tls_fields_without_a_provider() {
     let res = AppState::new()
         .router()
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))))
         .oneshot(
             Request::builder()
                 .uri("/api/v1/status")

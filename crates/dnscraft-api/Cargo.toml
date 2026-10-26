@@ -27,9 +27,7 @@ thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
 tokio-rustls = { workspace = true }
+tower = { version = "0.5", default-features = false, features = ["util"] }
 tower-http = { workspace = true }
 tracing = { workspace = true }
 zeroize = { workspace = true }
-
-[dev-dependencies]
-tower = { version = "0.5", default-features = false, features = ["util"] }

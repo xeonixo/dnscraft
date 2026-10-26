@@ -26,6 +26,7 @@ mod server;
 mod storage;
 mod tls;
 
+pub use api::rate_limit::{DEFAULT_MAX_TRACKED_SOURCES, RateLimiter};
 pub use audit::{Audit, ConfigChangeRecord};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{

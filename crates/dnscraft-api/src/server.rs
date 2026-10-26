@@ -4,9 +4,16 @@ use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
+use axum::extract::ConnectInfo;
+use axum::http::Request;
+use hyper::body::Incoming;
 use tokio::net::TcpListener;
+use tower::ServiceExt as _;
+use tower::service_fn;
 
-use crate::config::{ControlApiConfig, is_internal_bind};
+use crate::api::rate_limit::RateLimiter;
+use crate::clock::SystemClock;
+use crate::config::{ControlApiConfig, RateLimitConfig, is_internal_bind};
 use crate::error::ControlApiError;
 use crate::tls::{TlsStatus, TlsStatusProvider};
 
@@ -17,6 +24,7 @@ use crate::tls::{TlsStatus, TlsStatusProvider};
 pub struct AppState {
     readiness: Arc<Readiness>,
     tls: Option<Arc<dyn TlsStatusProvider>>,
+    rate_limiter: Arc<RateLimiter>,
 }
 
 impl Default for AppState {
@@ -31,6 +39,11 @@ impl AppState {
         Self {
             readiness: Arc::new(Readiness::default()),
             tls: None,
+            rate_limiter: Arc::new(RateLimiter::new(
+                RateLimitConfig::default(),
+                Arc::new(SystemClock),
+                Vec::new(),
+            )),
         }
     }
 
@@ -38,6 +51,18 @@ impl AppState {
     pub fn with_tls(mut self, provider: Arc<dyn TlsStatusProvider>) -> Self {
         self.tls = Some(provider);
         self
+    }
+
+    /// Attaches a caller-configured rate limiter (built from the validated
+    /// config and the trusted-proxy list at startup).
+    pub fn with_rate_limiter(mut self, rate_limiter: Arc<RateLimiter>) -> Self {
+        self.rate_limiter = rate_limiter;
+        self
+    }
+
+    /// The rate limiter guarding all endpoints.
+    pub(crate) fn rate_limiter(&self) -> &Arc<RateLimiter> {
+        &self.rate_limiter
     }
 
     /// The current TLS status, if a provider is attached.
@@ -118,6 +143,13 @@ pub async fn serve(
                 message: format!("read local address of {addr}: {e}"),
             })?,
     )?;
+    // Build the rate limiter from the validated config so the trusted-proxy
+    // list is honoured without the binary having to wire it manually.
+    let state = state.with_rate_limiter(Arc::new(RateLimiter::new(
+        config.rate_limit.clone(),
+        Arc::new(SystemClock),
+        config.trusted_proxies.clone(),
+    )));
     let router = state.router();
     if config.tls {
         let server_config = tls.ok_or_else(|| ControlApiError::Internal {
@@ -125,11 +157,14 @@ pub async fn serve(
         })?;
         serve_tls(listener, router, server_config).await
     } else {
-        axum::serve(listener, router)
-            .await
-            .map_err(|e| ControlApiError::Internal {
-                message: format!("serve: {e}"),
-            })
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .map_err(|e| ControlApiError::Internal {
+            message: format!("serve: {e}"),
+        })
     }
 }
 
@@ -150,9 +185,6 @@ async fn serve_tls(
     server_config: Arc<rustls::ServerConfig>,
 ) -> Result<(), ControlApiError> {
     let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
-    // axum's Router is a `tower::Service`; hyper's connection driver wants a
-    // `hyper::service::Service`, bridged by hyper-util.
-    let service = hyper_util::service::TowerToHyperService::new(router);
     loop {
         let (stream, peer) = listener
             .accept()
@@ -161,7 +193,7 @@ async fn serve_tls(
                 message: format!("accept: {e}"),
             })?;
         let acceptor = acceptor.clone();
-        let service = service.clone();
+        let router = router.clone();
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(stream).await {
                 Ok(stream) => stream,
@@ -171,6 +203,17 @@ async fn serve_tls(
                 }
             };
             let io = hyper_util::rt::TokioIo::new(tls_stream);
+            // axum's Router is a `tower::Service`; hyper's connection driver
+            // wants a `hyper::service::Service`, bridged by hyper-util. Wrap it
+            // in a per-connection service that injects the trusted peer address
+            // so the rate limiter sees the real socket peer, not a spoofable
+            // header.
+            let service = service_fn(move |mut req: Request<Incoming>| {
+                req.extensions_mut().insert(ConnectInfo(peer));
+                let router = router.clone();
+                async move { router.oneshot(req).await }
+            });
+            let service = hyper_util::service::TowerToHyperService::new(service);
             if let Err(e) = hyper::server::conn::http1::Builder::new()
                 .serve_connection(io, service)
                 .await

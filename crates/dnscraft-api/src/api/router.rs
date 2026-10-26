@@ -9,6 +9,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use serde_json::json;
 
+use super::rate_limit::rate_limit;
 use super::response::{BODY_LIMIT_BYTES, error_response, success};
 use crate::error::ControlApiError;
 use crate::server::AppState;
@@ -24,11 +25,15 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .nest("/api/v1", api)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
-        .with_state(state)
+        .with_state(state.clone())
         // DefaultBodyLimit first so the 413 it produces is seen by the
         // envelope-mapping middleware wrapped on top of it.
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))
         .layer(middleware::from_fn(map_payload_too_large))
+        // Rate limiting is outermost: it runs before body-size mapping so an
+        // over-limit source is rejected before any body is read. It needs the
+        // state (for the limiter) so it uses `from_fn_with_state`.
+        .layer(middleware::from_fn_with_state(state, rate_limit))
 }
 
 async fn healthz() -> impl IntoResponse {
