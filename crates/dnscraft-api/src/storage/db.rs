@@ -1,6 +1,7 @@
 //! SQLite connection wrapper (single writer; every call runs via `spawn_blocking`).
 
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -27,8 +28,13 @@ impl Db {
     pub async fn open(path: &Path, clock: Arc<dyn Clock>) -> Result<Self, ControlApiError> {
         let path = path.to_owned();
         let conn = tokio::task::spawn_blocking(move || -> Result<Connection, ControlApiError> {
+            let existed = path.exists();
+            prepare_path(&path).map_err(io_err)?;
             let mut conn = Connection::open(&path).map_err(db_err)?;
+            // 0600 before WAL so the -wal/-shm sidecars inherit the same mode.
+            tighten_file(&path, existed).map_err(io_err)?;
             apply_pragmas(&mut conn, true)?;
+            tighten_sidecars(&path).map_err(io_err)?;
             migrate(&mut conn)?;
             Ok(conn)
         })
@@ -193,6 +199,63 @@ fn apply_pragmas(conn: &mut Connection, wal: bool) -> Result<(), ControlApiError
     conn.execute_batch(sql).map_err(db_err)
 }
 
+/// Maps an I/O error to the internal error code.
+fn io_err(err: std::io::Error) -> ControlApiError {
+    ControlApiError::Internal {
+        message: err.to_string(),
+    }
+}
+
+/// Creates the data directory with mode 0700 when it does not exist yet.
+///
+/// An already-existing directory is left untouched (the operator may point at a
+/// shared or otherwise-configured location); only directories this call creates
+/// are forced to 0700, independent of umask.
+fn prepare_path(path: &Path) -> std::io::Result<()> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
+        && !dir.exists()
+    {
+        std::fs::create_dir_all(dir)?;
+        set_mode(dir, 0o700)?;
+    }
+    Ok(())
+}
+
+/// Sets `path` to mode 0600 if it is currently wider, warning when `warn` is
+/// set (used for a pre-existing database file).
+fn tighten_file(path: &Path, warn: bool) -> std::io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let current = std::fs::metadata(path)?.permissions().mode() & 0o777;
+    if current != 0o600 {
+        if warn {
+            tracing::warn!(
+                path = %path.display(),
+                from = format!("{current:o}"),
+                "tightening database file permissions to 0600"
+            );
+        }
+        set_mode(path, 0o600)?;
+    }
+    Ok(())
+}
+
+/// Forces `path` to the exact unix `mode` (owner/group/other bits).
+fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+/// Tightens any existing `-wal`/`-shm` sidecars to 0600.
+fn tighten_sidecars(path: &Path) -> std::io::Result<()> {
+    let base = path.to_string_lossy();
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = PathBuf::from(format!("{base}{suffix}"));
+        tighten_file(&sidecar, false)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -289,5 +352,33 @@ mod tests {
         assert_eq!(synchronous, 1); // NORMAL
         assert_eq!(busy_timeout, 5000);
         assert_eq!(foreign_keys, 1);
+    }
+
+    #[tokio::test]
+    async fn file_permissions_are_0600_and_dir_0700_regardless_of_umask() {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("dnscraft-api-perm-{}-{nanos}", std::process::id()));
+        let path = dir.join("data.db");
+
+        let db = Db::open(&path, Arc::new(SystemClock)).await.unwrap();
+        // A write materializes the -wal/-shm sidecars.
+        db.config_version_insert("{\"v\":1}").await.unwrap();
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&dir), 0o700);
+        let base = path.to_string_lossy();
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = PathBuf::from(format!("{base}{suffix}"));
+            assert!(sidecar.exists(), "missing sidecar {suffix}");
+            assert_eq!(mode(&sidecar), 0o600, "sidecar {suffix} not 0600");
+        }
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
