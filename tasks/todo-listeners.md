@@ -165,7 +165,7 @@ per-query admission (Refuse → REFUSED; Drop/ban → close); `query_timeout` �
 ## Checkpoint B: Do53 end to end
 - [x] Do53 UDP + TCP against `PolicyEngine` built on the testkit hierarchy (view record, blocked name, recursion) on IPv4 + IPv6
 - [x] `examples/serve.rs` (no config file: hard-coded loopback high ports + testkit-free real resolver from root) answers `dig @127.0.0.1 -p 5353 example.com` — owner can try it
-- [ ] DoD green; Claude review; progress.md updated
+- [x] DoD green; Claude review; progress.md updated (approved 2026-10-26 after three fix rounds)
 
 ## Phase 2: Encrypted transports
 
@@ -194,6 +194,9 @@ because `is_client_id_registered` is case-sensitive), records a ban strike — e
 
 **Description:** DoT listener = TCP shell (N5 framing and limits) over `tokio-rustls` with the N6
 config and handshake timeout; Client ID from SNI into `QueryMeta`; padding on.
+Reuse the N5 connection loop (reader task, per-connection permits, drain on EOF/idle, write deadline)
+by moving it into a generic `src/conn.rs` over `AsyncRead + AsyncWrite`; DoT keeps its own accept path
+(full `Admission::check` with `ClientIdState` from SNI — not the Do53 accept-time public close).
 
 **Acceptance criteria:**
 - [ ] DoT query answered identically to Do53 (except padding) for the same question

@@ -9,7 +9,7 @@
 ## Status (updated 2026-10-25)
 
 - `resolver`, `filtering`, `clients`, `tls`, `policy`: complete.
-- `listeners`: Checkpoint B re-review round 3 (idle re-arm) pushed 2026-10-26; **STOP for Claude re-review** before N6.
+- `listeners`: Checkpoint B approved 2026-10-26; Phase 2 (N6–N9) next, STOP at Checkpoint C.
 
 ## Rules for every task (paste once per session)
 

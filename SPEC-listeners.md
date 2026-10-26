@@ -93,7 +93,7 @@ Every query is admitted before policy sees it:
 ### Message handling (all transports)
 
 - Decode with `dnscraft-proto`. Undecodable → `FORMERR` when a header could be parsed, otherwise drop.
-- `QR=1`, `opcode != QUERY` → `NOTIMP`; `QDCOUNT != 1` → `FORMERR`; class other than IN/CH/ANY →
+- `QR=1` → drop silently (no reflection of responses); `opcode != QUERY` → `NOTIMP`; `QDCOUNT != 1` → `FORMERR`; class other than IN/CH/ANY →
   `REFUSED`. CHAOS `version.bind` / `id.server` → `REFUSED` (no fingerprinting).
 - EDNS: if the query has OPT, the response has OPT; advertised UDP size = `min(client, udp_payload_max)`;
   unknown EDNS version → `BADVERS`. ECS options are removed and never answered. Client cookies are
