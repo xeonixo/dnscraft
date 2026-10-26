@@ -12,7 +12,7 @@ Formal requirements: [`SPEC-filtering.md`](../../SPEC-filtering.md).
 ## Status
 
 Usable as a library for list parsing, matching, hot reload, and blocked-services
-catalog. Wired into the rest of DNScraft by later modules.
+catalog. Consumed by `dnscraft-policy` (and by the listeners example / e2e tests).
 
 | Area | State |
 |------|--------|

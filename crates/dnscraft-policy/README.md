@@ -27,6 +27,7 @@ AAAA suppression.
 | 9 | Answer-IP rules (`match_answer_ip`) |
 | 10 | Rebind: strip private A/AAAA from answers **and** additional section; scrub HTTPS/SVCB `ipv4hint`/`ipv6hint` (RFC 9460 §7.3); if `mandatory` listed a dropped hint, drop the whole RR (§8). When an RRset of type `T` is removed or rewritten, covering RRSIGs (`type_covered == T`) in that section are dropped too (RFC 4035 §3.1.1 / §5) so validating stubs see an unsigned, modified answer — AD is never set for it |
 | 11 | AAAA suppression (`suppress_aaaa` + qtype AAAA → NODATA + SOA) |
+| 12 | Emit message + `DecisionRecord` |
 
 ECS is never forwarded. Synthesised / modified answers always clear AD.
 

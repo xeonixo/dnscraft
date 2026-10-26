@@ -12,8 +12,9 @@ to call the API.
 
 ## Status
 
-Usable for real-internet lookups and as a library dependency while the rest of
-DNScraft is built.
+Usable for real-internet lookups and as a library dependency of `policy` and
+`listeners` (those modules are complete or in progress; see
+[tasks/progress.md](../../tasks/progress.md)).
 
 | Area | State |
 |------|--------|
