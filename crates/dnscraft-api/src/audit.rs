@@ -71,10 +71,11 @@ fn serialize_err(err: serde_json::Error) -> ControlApiError {
 }
 
 /// Input for recording one config change in the audit log.
+///
+/// The audit timestamp is stamped by [`Audit::record_config_change`] from the
+/// database's injected clock (ADR-0005), not supplied by the caller.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConfigChangeRecord {
-    /// Unix seconds.
-    pub time: i64,
     /// Node that performed the action.
     pub node_id: String,
     /// Actor identifier (user or token).
@@ -93,15 +94,16 @@ pub struct ConfigChangeRecord {
     pub error_code: Option<String>,
 }
 
-/// Builds a redacted, digested [`AuditRecord`] for a config change.
+/// Builds a redacted, digested [`AuditRecord`] for a config change at `time`.
 pub(crate) fn config_change_record(
     change: &ConfigChangeRecord,
+    time: i64,
 ) -> Result<AuditRecord, ControlApiError> {
     let (before, before_digest) = redact_and_digest(change.before.as_ref())?;
     let (after, after_digest) = redact_and_digest(change.after.as_ref())?;
     Ok(AuditRecord {
         id: 0,
-        time: change.time,
+        time,
         node_id: change.node_id.clone(),
         actor_id: change.actor_id.clone(),
         actor_type: change.actor_type.clone(),
@@ -135,7 +137,8 @@ impl Audit {
         &self,
         change: ConfigChangeRecord,
     ) -> Result<i64, ControlApiError> {
-        let record = config_change_record(&change)?;
+        let time = self.db.now_unix();
+        let record = config_change_record(&change, time)?;
         self.db.audit_insert(record).await
     }
 }

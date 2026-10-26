@@ -15,11 +15,13 @@
 #![deny(missing_docs)]
 
 mod audit;
+mod clock;
 mod config;
 mod error;
 mod storage;
 
 pub use audit::{Audit, ConfigChangeRecord};
+pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{
     AuthConfig, ControlApiConfig, DEFAULT_API_TOKEN_MAX_TTL, DEFAULT_AUTH_PER_SECOND, DEFAULT_BIND,
     DEFAULT_BURST_FACTOR, DEFAULT_LOCAL_LOGIN_LOCK_WINDOW, DEFAULT_LOCAL_LOGIN_MAX_ATTEMPTS,

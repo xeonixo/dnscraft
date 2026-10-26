@@ -2,9 +2,16 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
 use serde_json::{Value, json};
 
-use dnscraft_api::{Audit, ConfigChangeRecord, ConfigStore, Db};
+use dnscraft_api::{Audit, ConfigChangeRecord, ConfigStore, Db, ManualClock, SystemClock};
+
+fn db_clock() -> Arc<SystemClock> {
+    Arc::new(SystemClock)
+}
 
 fn secret_snapshot() -> Value {
     json!({
@@ -20,7 +27,7 @@ fn secret_snapshot() -> Value {
 
 #[tokio::test]
 async fn config_version_round_trips_redacted() {
-    let db = Db::open_in_memory().await.unwrap();
+    let db = Db::open_in_memory(db_clock()).await.unwrap();
     let store = ConfigStore::new(db.clone());
 
     let v1 = store.store(&secret_snapshot()).await.unwrap();
@@ -46,7 +53,7 @@ async fn config_version_round_trips_redacted() {
 
 #[tokio::test]
 async fn audit_redacts_secrets_and_digests() {
-    let db = Db::open_in_memory().await.unwrap();
+    let db = Db::open_in_memory(db_clock()).await.unwrap();
     let audit = Audit::new(db.clone());
 
     // Differ in both a secret and a non-secret field.
@@ -56,7 +63,6 @@ async fn audit_redacts_secrets_and_digests() {
 
     let id = audit
         .record_config_change(ConfigChangeRecord {
-            time: 123,
             node_id: "node1".into(),
             actor_id: "u1".into(),
             actor_type: "user".into(),
@@ -90,11 +96,10 @@ async fn audit_redacts_secrets_and_digests() {
 
 #[tokio::test]
 async fn audit_digest_is_over_redacted_snapshot() {
-    let db = Db::open_in_memory().await.unwrap();
+    let db = Db::open_in_memory(db_clock()).await.unwrap();
     let audit = Audit::new(db.clone());
 
     let record = |secret: &str| ConfigChangeRecord {
-        time: 1,
         node_id: "n".into(),
         actor_id: "a".into(),
         actor_type: "user".into(),
@@ -116,7 +121,7 @@ async fn audit_digest_is_over_redacted_snapshot() {
 
 #[tokio::test]
 async fn rollback_by_version_reads_exact_snapshot() {
-    let db = Db::open_in_memory().await.unwrap();
+    let db = Db::open_in_memory(db_clock()).await.unwrap();
     let store = ConfigStore::new(db.clone());
 
     let v1 = store.store(&json!({ "version": "one" })).await.unwrap();
@@ -127,4 +132,47 @@ async fn rollback_by_version_reads_exact_snapshot() {
     assert_eq!(rolled_back, json!({ "version": "one" }));
     let latest = store.load(v2).await.unwrap().unwrap();
     assert_eq!(latest, json!({ "version": "two" }));
+}
+
+#[tokio::test]
+async fn audit_time_comes_from_injected_clock() {
+    let clock = Arc::new(ManualClock::new(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+    ));
+    let db = Db::open_in_memory(clock.clone()).await.unwrap();
+    let audit = Audit::new(db.clone());
+
+    audit
+        .record_config_change(ConfigChangeRecord {
+            node_id: "node1".into(),
+            actor_id: "u1".into(),
+            actor_type: "user".into(),
+            config_version: None,
+            before: None,
+            after: None,
+            result: "ok".into(),
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(db.audit_list(1, 0).await.unwrap()[0].time, 1_700_000_000);
+
+    // Advancing the clock changes the timestamp of the next record.
+    clock.advance(Duration::from_secs(60));
+    audit
+        .record_config_change(ConfigChangeRecord {
+            node_id: "node1".into(),
+            actor_id: "u1".into(),
+            actor_type: "user".into(),
+            config_version: None,
+            before: None,
+            after: None,
+            result: "ok".into(),
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    let rows = db.audit_list(10, 0).await.unwrap();
+    assert_eq!(rows[0].time, 1_700_000_060);
+    assert_eq!(rows[1].time, 1_700_000_000);
 }

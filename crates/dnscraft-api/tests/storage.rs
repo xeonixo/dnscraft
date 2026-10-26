@@ -3,8 +3,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use dnscraft_api::{AuditRecord, Db};
+use dnscraft_api::{AuditRecord, Db, SystemClock};
+
+fn db_clock() -> Arc<SystemClock> {
+    Arc::new(SystemClock)
+}
 
 fn temp_db_path(tag: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -41,18 +46,18 @@ fn record(time: i64, action: &str) -> AuditRecord {
 async fn migrations_are_idempotent() {
     let path = temp_db_path("idempotent");
     {
-        let db = Db::open(&path).await.unwrap();
+        let db = Db::open(&path, db_clock()).await.unwrap();
         assert_eq!(db.schema_version().await.unwrap(), 1);
     }
     // Reopening the same file re-runs migrations; they must be a no-op.
-    let db = Db::open(&path).await.unwrap();
+    let db = Db::open(&path, db_clock()).await.unwrap();
     assert_eq!(db.schema_version().await.unwrap(), 1);
     let _ = std::fs::remove_file(&path);
 }
 
 #[tokio::test]
 async fn kv_round_trips() {
-    let db = Db::open_in_memory().await.unwrap();
+    let db = Db::open_in_memory(db_clock()).await.unwrap();
     assert_eq!(db.kv_get("missing").await.unwrap(), None);
     db.kv_set("a", "1").await.unwrap();
     db.kv_set("a", "2").await.unwrap(); // replace
@@ -63,7 +68,7 @@ async fn kv_round_trips() {
 
 #[tokio::test]
 async fn config_version_round_trips() {
-    let db = Db::open_in_memory().await.unwrap();
+    let db = Db::open_in_memory(db_clock()).await.unwrap();
     let v1 = db.config_version_insert("{\"v\":1}").await.unwrap();
     let v2 = db.config_version_insert("{\"v\":2}").await.unwrap();
     assert!(v2 > v1);
@@ -80,7 +85,7 @@ async fn config_version_round_trips() {
 
 #[tokio::test]
 async fn audit_insert_and_list_are_ordered() {
-    let db = Db::open_in_memory().await.unwrap();
+    let db = Db::open_in_memory(db_clock()).await.unwrap();
     db.audit_insert(record(10, "first")).await.unwrap();
     db.audit_insert(record(20, "second")).await.unwrap();
     db.audit_insert(record(15, "third")).await.unwrap();
@@ -94,7 +99,7 @@ async fn audit_insert_and_list_are_ordered() {
 
 #[tokio::test]
 async fn sql_injection_is_treated_as_data() {
-    let db = Db::open_in_memory().await.unwrap();
+    let db = Db::open_in_memory(db_clock()).await.unwrap();
     let injection = "'; DROP TABLE audit_log; --";
 
     // kv: a key/value that looks like SQL round-trips as data.
