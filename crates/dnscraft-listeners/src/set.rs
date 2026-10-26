@@ -11,7 +11,7 @@ use dnscraft_tls::{CertResolver, ClientIdRegistry, ReservedLabels};
 use tokio::sync::{Mutex as AsyncMutex, oneshot, watch};
 use tokio::task::JoinHandle;
 
-use crate::admission::Admission;
+use crate::admission::{Admission, SourceClassifier, default_classifier};
 use crate::clock::Clock;
 use crate::config::{Exposure, Limits, ListenerConfig, ListenersConfig, Protocol};
 use crate::conn::FramedStats;
@@ -93,6 +93,9 @@ pub struct ListenerSetParams<H: QueryHandler + ?Sized = PolicyEngine> {
     pub public_domain: String,
     /// Client-ID registry for public SNI / DoH paths.
     pub client_ids: Arc<dyn ClientIdRegistry>,
+    /// Source classifier; tests inject a public-loopback classifier to exercise
+    /// public admission and bans from `127.0.0.1` without real public peers.
+    pub classify: SourceClassifier,
 }
 
 impl ListenerSet<PolicyEngine> {
@@ -116,6 +119,7 @@ impl ListenerSet<PolicyEngine> {
             sink,
             clock,
             public_domain,
+            classify: default_classifier(),
         })
         .await
     }
@@ -133,6 +137,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             clock,
             public_domain,
             client_ids,
+            classify,
         } = params;
 
         let certs = certs.unwrap_or_else(|| Arc::new(CertResolver::new()));
@@ -142,7 +147,11 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             registry: client_ids,
         });
 
-        let admission = Arc::new(Mutex::new(Admission::new(&config.limits, &config.public)));
+        let admission = Arc::new(Mutex::new(Admission::with_classifier(
+            &config.limits,
+            &config.public,
+            classify,
+        )));
         let ddr = DdrEndpoints::new(
             &config.ddr,
             public_domain.clone(),
@@ -676,6 +685,7 @@ mod tests {
             clock: Arc::new(SystemClock),
             public_domain: "example.com".into(),
             client_ids: Arc::new(EmptyClientIds),
+            classify: default_classifier(),
         })
         .await
         .unwrap();

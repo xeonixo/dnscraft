@@ -11,12 +11,14 @@ use std::time::Duration;
 
 use dnscraft_listeners::{
     ChannelSink, EmptyClientIds, Exposure, FakeHandler, Limits, ListenerConfig, ListenerSet,
-    ListenerSetParams, ListenersConfig, Protocol, SystemClock, bind_udp, emit_event, read_frame,
-    write_frame,
+    ListenerSetParams, ListenersConfig, Protocol, PublicConfig, SystemClock, bind_udp,
+    default_classifier, emit_event, read_frame, write_frame,
 };
 use dnscraft_policy::{ListenerId, PolicyAnswer, RequestContext};
 use dnscraft_proto::{Message, Name, RecordType};
+use dnscraft_tls::CertResolver;
 use support::{encode_a_query, fake_a_answer, poll_until, query_udp};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::Notify;
 
@@ -61,6 +63,7 @@ async fn start_set(
         clock: Arc::new(SystemClock),
         public_domain: "example.com".into(),
         client_ids: Arc::new(EmptyClientIds),
+        classify: default_classifier(),
     })
     .await
     .unwrap()
@@ -390,6 +393,92 @@ async fn runtime_rate_only_change_keeps_tcp_connection() {
 }
 
 #[tokio::test]
+async fn runtime_reload_keeps_bans_across_rate_and_public_changes() {
+    // Public DoT listener with loopback classified public; one strike bans.
+    let (pem, key, _der) = support::certs::example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+
+    let cfg = ListenersConfig {
+        listeners: vec![ListenerConfig {
+            id: ListenerId::new("pub-dot").unwrap(),
+            protocol: Protocol::Dot,
+            address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            exposure: Exposure::Public,
+            h3: false,
+        }],
+        limits: Limits {
+            tls_handshake_timeout: Duration::from_millis(500),
+            ..Limits::default()
+        },
+        public: PublicConfig {
+            enabled: true,
+            ban_strikes: 1,
+            ..PublicConfig::default()
+        },
+        ..ListenersConfig::default()
+    };
+    let (sink, _rx) = ChannelSink::new(64);
+    let handler = Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(192, 0, 2, 8))));
+    let set = ListenerSet::start_with(ListenerSetParams {
+        config: cfg.clone(),
+        handler,
+        certs: Some(certs),
+        sink,
+        clock: Arc::new(SystemClock),
+        public_domain: "example.com".into(),
+        client_ids: Arc::new(EmptyClientIds),
+        classify: support::loopback_as_public(),
+    })
+    .await
+    .unwrap();
+
+    let addr = set.status().listeners[0].bound.unwrap();
+
+    // A non-TLS client on a public DoT listener fails the handshake → one strike
+    // (ban_strikes = 1) bans the loopback source through the real admission path.
+    {
+        let mut tcp = TcpStream::connect(addr).await.unwrap();
+        let _ = tcp.write_all(b"not-a-tls-client-hello").await;
+    }
+    poll_until(|| set.status().ban_entries >= 1, Duration::from_secs(2)).await;
+
+    // Banned source is now dropped before any TLS work.
+    let dropped_before = set.status().listeners[0].dropped;
+    let _ = TcpStream::connect(addr).await.unwrap();
+    poll_until(
+        || set.status().listeners[0].dropped > dropped_before,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    // Reload that changes only admission rates must keep the ban.
+    let mut rate_only = cfg.clone();
+    rate_only.limits.rate_per_source.per_second = 9999;
+    rate_only.limits.rate_per_source.burst = 19998;
+    rate_only.limits.rate_per_client_id.per_second = 42;
+    rate_only.limits.rate_per_client_id.burst = 84;
+    set.apply_config(rate_only).await.unwrap();
+    assert_eq!(
+        set.status().ban_entries,
+        1,
+        "ban must survive a rate-only reload"
+    );
+
+    // Reload that changes public ban params must keep the ban too.
+    let mut public_change = cfg;
+    public_change.public.ban_duration = Duration::from_secs(3600);
+    set.apply_config(public_change).await.unwrap();
+    assert_eq!(
+        set.status().ban_entries,
+        1,
+        "ban must survive a public-params reload"
+    );
+
+    set.shutdown(Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
 async fn runtime_concurrent_apply_config_ends_consistent() {
     let base = base_cfg(vec![udp_cfg(
         "lan-udp",
@@ -468,6 +557,7 @@ async fn runtime_shutdown_drains_inflight_within_grace() {
         clock: Arc::new(SystemClock),
         public_domain: "example.com".into(),
         client_ids: Arc::new(EmptyClientIds),
+        classify: default_classifier(),
     })
     .await
     .unwrap();
