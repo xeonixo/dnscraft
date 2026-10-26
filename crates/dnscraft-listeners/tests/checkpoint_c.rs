@@ -163,7 +163,9 @@ fn classify_127_0_0_2_public() -> SourceClassifier {
 fn sni_gate(engine: Arc<PolicyEngine>) -> Arc<SniGate> {
     Arc::new(SniGate {
         public_domain: DOMAIN.into(),
-        reserved: ReservedLabels::new(["node1".into()]),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
         registry: Arc::new(PolicyClientIds(engine)),
     })
 }

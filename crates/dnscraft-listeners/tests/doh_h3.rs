@@ -281,7 +281,9 @@ async fn h3_get_post_match_do53() {
     let engine = policy_engine_with_client_ids(&["phone"]).await;
     let gate = SniGate {
         public_domain: DOMAIN.into(),
-        reserved: ReservedLabels::new(["node1".into()]),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
         registry: Arc::new(PolicyClientIds(engine)),
     };
     let (pem, key, _) = example_dns_cert();
@@ -385,7 +387,9 @@ async fn alt_svc_only_when_h3_enabled() {
     let engine = policy_engine_with_client_ids(&["phone"]).await;
     let gate = SniGate {
         public_domain: DOMAIN.into(),
-        reserved: ReservedLabels::new(["node1".into()]),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
         registry: Arc::new(PolicyClientIds(Arc::clone(&engine))),
     };
     let (pem, key, _) = example_dns_cert();
@@ -403,7 +407,9 @@ async fn alt_svc_only_when_h3_enabled() {
 
     let gate_h3 = SniGate {
         public_domain: DOMAIN.into(),
-        reserved: ReservedLabels::new(["node1".into()]),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
         registry: Arc::new(PolicyClientIds(Arc::clone(&engine))),
     };
     let with_h3 = DohH3Harness::spawn_with(
@@ -465,7 +471,9 @@ async fn h3_stream_cap_like_doq() {
     let engine = policy_engine_with_client_ids(&["phone"]).await;
     let gate = SniGate {
         public_domain: DOMAIN.into(),
-        reserved: ReservedLabels::new(["node1".into()]),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
         registry: Arc::new(PolicyClientIds(engine)),
     };
     let (pem, key, _) = example_dns_cert();
@@ -575,7 +583,9 @@ async fn h3_stall_harness(limits: Limits) -> DohH3Harness {
     let engine = policy_engine_with_client_ids(&["phone"]).await;
     let gate = SniGate {
         public_domain: DOMAIN.into(),
-        reserved: ReservedLabels::new(["node1".into()]),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
         registry: Arc::new(PolicyClientIds(engine)),
     };
     let (pem, key, _) = example_dns_cert();

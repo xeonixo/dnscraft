@@ -35,7 +35,9 @@ const HANDSHAKE: Duration = Duration::from_secs(5);
 fn gate(registry: Arc<dyn dnscraft_tls::ClientIdRegistry>) -> SniGate {
     SniGate {
         public_domain: DOMAIN.into(),
-        reserved: ReservedLabels::new(["node1".into()]),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
         registry,
     }
 }

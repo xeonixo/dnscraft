@@ -296,6 +296,55 @@ async fn runtime_full_sink_never_blocks_and_test_query_silent() {
     set.shutdown(Duration::from_secs(2)).await;
 }
 
+#[tokio::test]
+async fn runtime_apply_limits_change_enforces_new_per_source_cap() {
+    let mut cfg = base_cfg(vec![tcp_cfg(
+        "lan-tcp",
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+    )]);
+    cfg.limits.max_connections_per_source = 1;
+    let (sink, _rx) = ChannelSink::new(64);
+    let handler = Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(192, 0, 2, 5))));
+    let set = start_set(cfg.clone(), handler, sink).await;
+    let addr = set.status().listeners[0].bound.unwrap();
+
+    // Cap 1: the first connection is accepted, the second is rejected.
+    let _c1 = TcpStream::connect(addr).await.unwrap();
+    poll_until(
+        || set.status().listeners[0].connections >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+    let _c2 = TcpStream::connect(addr).await.unwrap();
+    poll_until(
+        || set.status().listeners[0].dropped >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    // Raise the cap: limits changed, so the listener restarts with the new value.
+    let mut next = cfg;
+    next.limits.max_connections_per_source = 2;
+    set.apply_config(next).await.unwrap();
+    let addr2 = set.status().listeners[0].bound.unwrap();
+
+    // Cap 2: two connections from the same source are both accepted.
+    let _c3 = TcpStream::connect(addr2).await.unwrap();
+    let _c4 = TcpStream::connect(addr2).await.unwrap();
+    poll_until(
+        || set.status().listeners[0].connections >= 2,
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(
+        set.status().listeners[0].dropped,
+        0,
+        "cap 2 must accept both connections"
+    );
+
+    set.shutdown(Duration::from_secs(2)).await;
+}
+
 struct GateHandler {
     entered: Arc<Notify>,
     release: Arc<Notify>,

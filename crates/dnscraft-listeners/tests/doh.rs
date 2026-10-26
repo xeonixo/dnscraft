@@ -273,7 +273,9 @@ async fn get_post_match_do53_h2_and_h1() {
     let engine = policy_engine_with_client_ids(&["phone"]).await;
     let gate = SniGate {
         public_domain: DOMAIN.into(),
-        reserved: ReservedLabels::new(["node1".into()]),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
         registry: Arc::new(PolicyClientIds(engine)),
     };
     let (pem, key, _) = example_dns_cert();
@@ -365,7 +367,9 @@ async fn error_status_table() {
     let engine = policy_engine_with_client_ids(&["phone"]).await;
     let gate = SniGate {
         public_domain: DOMAIN.into(),
-        reserved: ReservedLabels::new(["node1".into()]),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
         registry: Arc::new(PolicyClientIds(Arc::clone(&engine))),
     };
     let (pem, key, _) = example_dns_cert();
@@ -504,7 +508,9 @@ async fn doh_partial_headers_closed() {
     let engine = policy_engine_with_client_ids(&["phone"]).await;
     let gate = SniGate {
         public_domain: DOMAIN.into(),
-        reserved: ReservedLabels::new(["node1".into()]),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
         registry: Arc::new(PolicyClientIds(engine)),
     };
     let (pem, key, _) = example_dns_cert();
@@ -547,7 +553,9 @@ async fn doh_idle_h1_keepalive_closed() {
     let engine = policy_engine_with_client_ids(&["phone"]).await;
     let gate = SniGate {
         public_domain: DOMAIN.into(),
-        reserved: ReservedLabels::new(["node1".into()]),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
         registry: Arc::new(PolicyClientIds(engine)),
     };
     let (pem, key, _) = example_dns_cert();
@@ -604,7 +612,9 @@ async fn doh_idle_h2_ping_keepalive_closed() {
     let engine = policy_engine_with_client_ids(&["phone"]).await;
     let gate = SniGate {
         public_domain: DOMAIN.into(),
-        reserved: ReservedLabels::new(["node1".into()]),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
         registry: Arc::new(PolicyClientIds(engine)),
     };
     let (pem, key, _) = example_dns_cert();
@@ -667,7 +677,9 @@ async fn doh_h2_stream_cap() {
     let engine = policy_engine_with_client_ids(&["phone"]).await;
     let gate = SniGate {
         public_domain: DOMAIN.into(),
-        reserved: ReservedLabels::new(["node1".into()]),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
         registry: Arc::new(PolicyClientIds(engine)),
     };
     let (pem, key, _) = example_dns_cert();

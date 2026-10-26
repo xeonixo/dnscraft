@@ -10,6 +10,7 @@ use std::future::Future;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
@@ -87,17 +88,18 @@ impl ClientIdRegistry for PolicyClientIds {
 pub struct SniGate {
     /// Apex domain (e.g. `example.com`) for `<id>.dns.<domain>`.
     pub public_domain: String,
-    /// Node hostnames and fixed reserved labels.
-    pub reserved: ReservedLabels,
+    /// Node hostnames and fixed reserved labels (follows `apply_config`).
+    pub reserved: Arc<RwLock<ReservedLabels>>,
     /// Registered Client IDs (typically [`PolicyClientIds`]).
     pub registry: Arc<dyn ClientIdRegistry>,
 }
 
 impl fmt::Debug for SniGate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let reserved = self.reserved.read().unwrap_or_else(|e| e.into_inner());
         f.debug_struct("SniGate")
             .field("public_domain", &self.public_domain)
-            .field("reserved", &self.reserved)
+            .field("reserved", &*reserved)
             .finish_non_exhaustive()
     }
 }
@@ -154,7 +156,8 @@ pub fn inspect_public_sni(sni: Option<&str>, gate: &SniGate) -> PublicSniOutcome
             kind: SniRejectKind::Missing,
         };
     };
-    match parse_client_id_sni(sni, &gate.public_domain, &gate.reserved) {
+    let reserved = gate.reserved.read().unwrap_or_else(|e| e.into_inner());
+    match parse_client_id_sni(sni, &gate.public_domain, &reserved) {
         SniKind::ClientId(id) => {
             if gate.registry.is_registered(&id) {
                 // parse_client_id_sni already lower-cased; ClientId::new accepts it.
@@ -193,7 +196,8 @@ pub fn client_id_state_local(sni: Option<&str>, gate: &SniGate) -> ClientIdState
     let Some(sni) = sni else {
         return ClientIdState::Absent;
     };
-    match parse_client_id_sni(sni, &gate.public_domain, &gate.reserved) {
+    let reserved = gate.reserved.read().unwrap_or_else(|e| e.into_inner());
+    match parse_client_id_sni(sni, &gate.public_domain, &reserved) {
         SniKind::ClientId(id) if gate.registry.is_registered(&id) => ClientId::new(&id)
             .map(ClientIdState::Registered)
             .unwrap_or(ClientIdState::Absent),

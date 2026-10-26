@@ -137,7 +137,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
         let certs = certs.unwrap_or_else(|| Arc::new(CertResolver::new()));
         let sni_gate = Arc::new(SniGate {
             public_domain: public_domain.clone(),
-            reserved: reserved_from_ddr(&config.ddr.target),
+            reserved: Arc::new(RwLock::new(reserved_from_ddr(&config.ddr.target))),
             registry: client_ids,
         });
 
@@ -175,15 +175,21 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
     pub async fn apply_config(&self, cfg: ListenersConfig) -> Result<(), ListenersError> {
         cfg.validate()?;
 
-        let (to_stop, to_start, limits, rebuild_admission) = {
+        let (to_stop, to_start, limits, rebuild_admission, reserved) = {
             let mut inner = self
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let old = &inner.config;
+            let limits_changed = old.limits != cfg.limits;
             let rebuild_admission = old.public != cfg.public
                 || old.limits.rate_per_source != cfg.limits.rate_per_source
                 || old.limits.rate_per_client_id != cfg.limits.rate_per_client_id;
+            let reserved = if old.ddr.target != cfg.ddr.target {
+                Some(reserved_from_ddr(&cfg.ddr.target))
+            } else {
+                None
+            };
 
             let mut to_stop = Vec::new();
             let mut to_start = Vec::new();
@@ -191,7 +197,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             for (id, running) in &inner.running {
                 match cfg.listeners.iter().find(|l| &l.id == id) {
                     None => to_stop.push(id.clone()),
-                    Some(new_cfg) if new_cfg != &running.config => {
+                    Some(new_cfg) if limits_changed || new_cfg != &running.config => {
                         to_stop.push(id.clone());
                         to_start.push(new_cfg.clone());
                     }
@@ -208,7 +214,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
 
             let limits = cfg.limits.clone();
             inner.config = cfg.clone();
-            (to_stop, to_start, limits, rebuild_admission)
+            (to_stop, to_start, limits, rebuild_admission, reserved)
         };
 
         if rebuild_admission {
@@ -217,6 +223,15 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             *adm = Admission::new(&cfg.limits, &cfg.public);
+        }
+
+        if let Some(new_reserved) = reserved {
+            let mut guard = self
+                .sni_gate
+                .reserved
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            *guard = new_reserved;
         }
 
         for id in to_stop {
@@ -598,5 +613,89 @@ pub struct EmptyClientIds;
 impl ClientIdRegistry for EmptyClientIds {
     fn is_registered(&self, _client_id: &str) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::clock::SystemClock;
+    use crate::events::ChannelSink;
+    use crate::handler::FakeHandler;
+    use dnscraft_filtering::SetId;
+    use dnscraft_policy::{
+        AnswerOrigin, DecisionRecord, DecisionTimings, PolicyAnswer, ProfileId, SelectionCause,
+        ViewId,
+    };
+    use dnscraft_proto::{Message, Name, Rcode, RecordType};
+
+    fn dummy_answer() -> PolicyAnswer {
+        let q = Message::query(1, Name::from_ascii("example.com.").unwrap(), RecordType::A);
+        PolicyAnswer {
+            message: Message::response_to(&q),
+            ede: None,
+            record: DecisionRecord {
+                view_id: ViewId::new("default").unwrap(),
+                profile_id: ProfileId::new("default").unwrap(),
+                selection: SelectionCause::Default,
+                client_id: None,
+                filter_set: SetId::new("default").unwrap(),
+                steps: Vec::new(),
+                filter: None,
+                forward_zone: None,
+                dnssec: None,
+                answer_source: AnswerOrigin::LocalView,
+                timings: DecisionTimings::default(),
+                rcode: Rcode::NOERROR,
+            },
+            loggable: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_config_updates_reserved_from_ddr_target() {
+        let cfg = ListenersConfig {
+            ddr: crate::config::DdrConfig {
+                target: "node1".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (sink, _rx) = ChannelSink::new(4);
+        let set = ListenerSet::start_with(ListenerSetParams {
+            config: cfg.clone(),
+            handler: Arc::new(FakeHandler::new(dummy_answer())),
+            certs: None,
+            sink,
+            clock: Arc::new(SystemClock),
+            public_domain: "example.com".into(),
+            client_ids: Arc::new(EmptyClientIds),
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            set.sni_gate
+                .reserved
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains("node1")
+        );
+
+        let mut next = cfg;
+        next.ddr.target = "dns".into();
+        set.apply_config(next).await.unwrap();
+
+        assert!(
+            !set.sni_gate
+                .reserved
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains("node1")
+        );
+
+        set.shutdown(Duration::from_secs(2)).await;
     }
 }
