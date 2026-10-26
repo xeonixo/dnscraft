@@ -16,9 +16,10 @@
 //! empty array deletes them; any unknown field is rejected instead of being
 //! silently dropped.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::audit::{Audit, ConfigChangeRecord};
 use crate::error::ControlApiError;
@@ -175,6 +176,19 @@ impl ConfigService {
                 return Err(err);
             }
         };
+        if let Err(err) = validate_cross_module(&snapshot) {
+            self.record(
+                actor,
+                "config.write",
+                previous_version,
+                previous.as_ref(),
+                Some(&snapshot),
+                "error",
+                Some(err.code()),
+            )
+            .await;
+            return Err(err);
+        }
         if let Err(err) = self.validate_modules(&snapshot) {
             self.record(
                 actor,
@@ -241,6 +255,19 @@ impl ConfigService {
             return Err(ControlApiError::ConfigUnknownVersion { version: target });
         };
 
+        if let Err(err) = validate_cross_module(&snapshot) {
+            self.record(
+                actor,
+                "config.rollback",
+                current_version,
+                previous.as_ref(),
+                Some(&snapshot),
+                "error",
+                Some(err.code()),
+            )
+            .await;
+            return Err(err);
+        }
         if let Err(err) = self.validate_modules(&snapshot) {
             self.record(
                 actor,
@@ -399,6 +426,156 @@ impl ConfigService {
         if let Err(err) = self.audit.record_config_change(change).await {
             tracing::error!(error = %err, "failed to write config audit record");
         }
+    }
+}
+
+/// Cross-module validation performed before any module apply.
+///
+/// Checks list references, duplicate ids, view → profile references,
+/// profile → filter-set references and profile → forward-zone references. A
+/// missing `resolver` section disables the forward-zone check (nothing to
+/// compare against); set/profile references are always checked.
+fn validate_cross_module(snapshot: &Value) -> Result<(), ControlApiError> {
+    let filtering = snapshot.get("filtering");
+    let lists = filtering
+        .and_then(|value| value.get("lists"))
+        .and_then(Value::as_array);
+    let sets = filtering
+        .and_then(|value| value.get("sets"))
+        .and_then(Value::as_array);
+
+    let mut list_ids = HashSet::new();
+    if let Some(lists) = lists {
+        for list in lists {
+            let Some(id) = list.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if !list_ids.insert(id) {
+                return Err(module_error(
+                    "filter_set.duplicate_list",
+                    json!({ "id": id }),
+                ));
+            }
+        }
+    }
+
+    let mut set_ids = HashSet::new();
+    if let Some(sets) = sets {
+        for set in sets {
+            let Some(id) = set.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if !set_ids.insert(id) {
+                return Err(module_error(
+                    "filter_set.duplicate_set",
+                    json!({ "id": id }),
+                ));
+            }
+            if let Some(references) = set.get("lists").and_then(Value::as_array) {
+                for reference in references.iter().filter_map(Value::as_str) {
+                    if !list_ids.contains(reference) {
+                        return Err(module_error(
+                            "filter_set.unknown_list",
+                            json!({ "set": id, "list": reference }),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    let policy = snapshot.get("policy");
+    let profiles = policy
+        .and_then(|value| value.get("profiles"))
+        .and_then(Value::as_array);
+    let mut profile_ids = HashSet::new();
+    if let Some(profiles) = profiles {
+        for profile in profiles {
+            if let Some(id) = profile.get("id").and_then(Value::as_str)
+                && !profile_ids.insert(id)
+            {
+                return Err(module_error(
+                    "policy.config.invalid",
+                    json!({ "reason": "duplicate profile id", "id": id }),
+                ));
+            }
+        }
+    }
+
+    if let Some(views) = policy
+        .and_then(|value| value.get("views"))
+        .and_then(Value::as_array)
+    {
+        let mut view_ids = HashSet::new();
+        for view in views {
+            if let Some(id) = view.get("id").and_then(Value::as_str)
+                && !view_ids.insert(id)
+            {
+                return Err(module_error(
+                    "policy.config.invalid",
+                    json!({ "reason": "duplicate view id", "id": id }),
+                ));
+            }
+            if let Some(profile) = view.get("profile").and_then(Value::as_str)
+                && !profile_ids.contains(profile)
+            {
+                return Err(module_error(
+                    "policy.config.invalid",
+                    json!({ "reason": "view references unknown profile", "profile": profile }),
+                ));
+            }
+        }
+    }
+
+    let resolver_zone_ids = snapshot
+        .get("resolver")
+        .and_then(|value| value.get("forward_zones"))
+        .and_then(Value::as_array)
+        .map(|zones| {
+            zones
+                .iter()
+                .filter_map(|zone| {
+                    zone.as_str()
+                        .or_else(|| zone.get("id").and_then(Value::as_str))
+                })
+                .collect::<HashSet<_>>()
+        });
+
+    if let Some(profiles) = profiles {
+        for profile in profiles {
+            let id = profile.get("id").and_then(Value::as_str).unwrap_or("-");
+            if let Some(filter_set) = profile.get("filter_set").and_then(Value::as_str)
+                && !set_ids.contains(filter_set)
+            {
+                return Err(module_error(
+                    "policy.config.unknown_filter_set",
+                    json!({ "id": filter_set }),
+                ));
+            }
+            if let Some(zone_ids) = &resolver_zone_ids
+                && let Some(zone) = profile
+                    .get("forward_zones")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .find(|zone| !zone_ids.contains(zone))
+            {
+                return Err(module_error(
+                    "policy.config.unknown_forward_zone",
+                    json!({ "id": zone, "profile": id }),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Builds a forwarded module error with non-secret `params`.
+fn module_error(code: &'static str, params: Value) -> ControlApiError {
+    ControlApiError::Module {
+        code,
+        params: Some(params),
     }
 }
 

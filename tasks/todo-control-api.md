@@ -353,9 +353,9 @@ DTOs from the modules (no parallel string types):
   applicable (`policy.config.*`, `clients.config.*`, `listeners.config.*`, `tls.config.*`).
 
 **Acceptance criteria:**
-- [ ] Every documented CRUD endpoint exists with the correct request/response shape.
-- [ ] Cross-module validation (profile → view, forward-zone id exists) is performed before apply.
-- [ ] A module validation error is returned with the module's code, not a generic control-api code.
+- [x] Every documented CRUD endpoint exists with the correct request/response shape.
+- [x] Cross-module validation (profile → view, forward-zone id exists) is performed before apply.
+- [x] A module validation error is returned with the module's code, not a generic control-api code.
 
 **Verification:** `cargo test -p dnscraft-api config_http`
 

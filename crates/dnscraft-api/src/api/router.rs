@@ -13,9 +13,21 @@ use super::auth::local::local_login;
 use super::auth::oidc::{oidc_authorize_url, oidc_callback};
 use super::auth::tokens::create_token;
 use super::auth::{auth_middleware, rbac_middleware};
-use super::config_routes::{get_config, list_versions, put_config, rollback};
+use super::clients_routes::{
+    create_manual, delete_manual, list_clients, list_manual, put_manual, sync_clients,
+};
+use super::config_routes::{
+    delete_pause, delete_profile, delete_view, get_config, get_pause, get_profile, get_view,
+    list_versions, list_views, put_config, put_pause, put_profile, put_view, rollback,
+};
+use super::filter_routes::{
+    delete_filter_list, delete_filter_set, list_filter_lists, list_filter_sets, put_filter_list,
+    put_filter_set,
+};
+use super::listener_routes::{delete_listener, list_listeners, put_listener};
 use super::rate_limit::rate_limit;
 use super::response::{BODY_LIMIT_BYTES, error_response, success};
+use super::tls_routes::{delete_tls, get_tls, put_tls};
 use crate::error::ControlApiError;
 use crate::server::AppState;
 use crate::tls::TlsMode;
@@ -27,7 +39,63 @@ pub(crate) fn build_router(state: AppState) -> Router {
         api = api
             .route("/config", get(get_config).put(put_config))
             .route("/config/versions", get(list_versions))
-            .route("/config/versions/{version}/rollback", post(rollback));
+            .route("/config/versions/{version}/rollback", post(rollback))
+            .route("/policy/views", get(list_views))
+            .route(
+                "/policy/views/{id}",
+                get(get_view)
+                    .put(put_view)
+                    .post(put_view)
+                    .delete(delete_view),
+            )
+            .route(
+                "/policy/profiles/{id}",
+                get(get_profile)
+                    .put(put_profile)
+                    .post(put_profile)
+                    .delete(delete_profile),
+            )
+            .route(
+                "/policy/pause",
+                get(get_pause)
+                    .put(put_pause)
+                    .post(put_pause)
+                    .delete(delete_pause),
+            )
+            .route(
+                "/clients/manual",
+                get(list_manual)
+                    .post(create_manual)
+                    .put(put_manual)
+                    .delete(delete_manual),
+            )
+            .route("/clients", get(list_clients))
+            .route("/clients/sync", post(sync_clients))
+            .route(
+                "/filter-sets",
+                get(list_filter_sets)
+                    .post(put_filter_set)
+                    .put(put_filter_set)
+                    .delete(delete_filter_set),
+            )
+            .route(
+                "/filter-lists",
+                get(list_filter_lists)
+                    .post(put_filter_list)
+                    .put(put_filter_list)
+                    .delete(delete_filter_list),
+            )
+            .route(
+                "/listeners",
+                get(list_listeners)
+                    .post(put_listener)
+                    .put(put_listener)
+                    .delete(delete_listener),
+            )
+            .route(
+                "/tls",
+                get(get_tls).put(put_tls).post(put_tls).delete(delete_tls),
+            );
     }
     if state.auth_state().is_some() {
         // Token management exists only when persistence/auth is configured.
