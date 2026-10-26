@@ -21,6 +21,7 @@ use tokio::task::JoinHandle;
 pub use config::{
     Config, ListenerToml, TLS_CERT_ENV, TLS_KEY_ENV, TlsSecrets, tls_secrets_from_env,
 };
+pub use engine::build_engine;
 
 /// Top-level startup/runtime error; every error maps to exit code 2.
 ///
@@ -123,9 +124,15 @@ impl App {
 
 /// Builds a server from a parsed config, reading TLS secrets from the
 /// environment and emitting JSON-lines query events on stdout.
-pub async fn build(config: Config) -> Result<App, Error> {
+///
+/// `clock` drives the policy engine (schedules, pauses). Production passes
+/// [`dnscraft_filtering::SystemClock`]; tests inject a manual clock.
+pub async fn build(
+    config: Config,
+    clock: Arc<dyn dnscraft_filtering::Clock>,
+) -> Result<App, Error> {
     let listeners = config.listeners_config()?;
-    let engine = engine::build_engine().await?;
+    let engine = engine::build_engine(clock).await?;
 
     let certs = match tls_secrets_from_env()? {
         Some(secrets) => {
@@ -179,7 +186,8 @@ pub async fn run(config_path: Option<&str>) -> Result<(), Error> {
         .map_err(|e| Error::config("dnscraft.config.read", format!("read `{path}`: {e}")))?;
     let config = parse_config(&text, path)?;
 
-    let app = build(config).await?;
+    let clock: Arc<dyn dnscraft_filtering::Clock> = Arc::new(dnscraft_filtering::SystemClock);
+    let app = build(config, clock).await?;
     for line in listening_lines(&app.listener_status()) {
         eprintln!("{line}");
     }
@@ -281,5 +289,25 @@ mod tests {
         let err = parse_config(text, "cfg.toml").unwrap_err();
         assert_eq!(err.code(), "dnscraft.config.unknown_field");
         assert!(err.message().contains("unknown field"), "{}", err.message());
+    }
+
+    /// Production source must never use the frozen manual clock; the
+    /// injectable clock parameter exists so only tests reach for it.
+    #[test]
+    fn no_manual_clock_in_production_source() {
+        let needle = concat!("Manual", "Clock");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                !text.contains(needle),
+                "{} must not use the manual clock in production",
+                path.display()
+            );
+        }
     }
 }

@@ -1,11 +1,10 @@
 //! Builds the policy engine (resolver + filtering + policy) for the binary.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use dnscraft_filtering::{
-    FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId, ManualClock, SetId,
-    SnapshotBuilder,
+    Clock, FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId, SetId, SnapshotBuilder,
 };
 use dnscraft_policy::{
     NoClients, PolicyConfig, PolicyEngine, ProfileConfig, ProfileId, SafeSearchConfig, ViewConfig,
@@ -41,7 +40,11 @@ fn empty_filter() -> Result<Arc<FilterEngine>, Error> {
 
 /// Builds a policy engine from the built-in root hints and a single default
 /// profile/view (no filter lists, no client directory, DNSSEC per resolver).
-pub async fn build_engine() -> Result<Arc<PolicyEngine>, Error> {
+///
+/// `clock` is the wall-clock the policy engine uses for schedules and pauses.
+/// Production passes [`dnscraft_filtering::SystemClock`]; tests pass a manual
+/// clock they can advance.
+pub async fn build_engine(clock: Arc<dyn Clock>) -> Result<Arc<PolicyEngine>, Error> {
     let resolver = Arc::new(
         Resolver::new(ResolverConfig {
             query_timeout: Duration::from_secs(5),
@@ -84,7 +87,6 @@ pub async fn build_engine() -> Result<Arc<PolicyEngine>, Error> {
         ..PolicyConfig::default()
     };
 
-    let clock = Arc::new(ManualClock::new(SystemTime::now()));
     let engine = PolicyEngine::new(cfg, empty_filter()?, resolver, Arc::new(NoClients), clock)
         .map_err(|e| Error::startup("dnscraft.startup.policy", format!("policy: {e}")))?;
     Ok(Arc::new(engine))
