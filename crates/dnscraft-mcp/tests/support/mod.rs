@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use dnscraft_mcp::backend::{BackendError, McpBackend};
 use dnscraft_mcp::dto::{
     AddRuleParams, AddRuleResult, AuditEntry, ClientInfo, ClientListParams, ClientListResult,
-    ExplainBlockResult, ListRulesParams, ListRulesResult, McpRuleInfo, NodeStatus, PauseDuration,
-    PauseInfo, PauseResult, QType, QueryDetail, QueryLogEntry, QueryLogResult, QueryLogSearch,
+    ExplainBlockResult, ListRulesParams, ListRulesResult, McpRuleInfo, NodeStatus, PauseInfo,
+    PauseParams, PauseResult, QType, QueryDetail, QueryLogEntry, QueryLogResult, QueryLogSearch,
     RemoveRuleParams, RemoveRuleResult, ResumeResult, StatsParams, StatsResult, TempAllowInfo,
     TempAllowParams, TempAllowResult, TestQueryParams, TestQueryResult, TokenInfo, TokenScope,
 };
@@ -122,6 +122,16 @@ pub struct MockBackend {
     pub last_remove: Mutex<Option<RemoveRuleParams>>,
     /// Number of `remove_custom_rule` calls.
     pub remove_calls: AtomicUsize,
+    pause_result: Mutex<Option<Result<PauseResult, BackendError>>>,
+    /// Parameters of the most recent `pause_filter_set` call.
+    pub last_pause: Mutex<Option<PauseParams>>,
+    /// Number of `pause_filter_set` calls.
+    pub pause_calls: AtomicUsize,
+    resume_result: Mutex<Option<Result<ResumeResult, BackendError>>>,
+    /// Arguments of the most recent `resume_filter_set` call.
+    pub last_resume: Mutex<Option<Option<String>>>,
+    /// Number of `resume_filter_set` calls.
+    pub resume_calls: AtomicUsize,
     audits: Mutex<Vec<AuditEntry>>,
     audit_error: Mutex<Option<BackendError>>,
 }
@@ -327,6 +337,36 @@ impl MockBackend {
     /// Number of `remove_custom_rule` calls.
     pub fn remove_calls(&self) -> usize {
         self.remove_calls.load(Ordering::SeqCst)
+    }
+
+    /// Set the `pause_filter_set` result.
+    pub fn set_pause(&self, value: Result<PauseResult, BackendError>) {
+        *slot(&self.pause_result) = Some(value);
+    }
+
+    /// Parameters of the most recent `pause_filter_set` call.
+    pub fn last_pause(&self) -> Option<PauseParams> {
+        slot(&self.last_pause).clone()
+    }
+
+    /// Number of `pause_filter_set` calls.
+    pub fn pause_calls(&self) -> usize {
+        self.pause_calls.load(Ordering::SeqCst)
+    }
+
+    /// Set the `resume_filter_set` result.
+    pub fn set_resume(&self, value: Result<ResumeResult, BackendError>) {
+        *slot(&self.resume_result) = Some(value);
+    }
+
+    /// Arguments of the most recent `resume_filter_set` call.
+    pub fn last_resume(&self) -> Option<Option<String>> {
+        slot(&self.last_resume).clone()
+    }
+
+    /// Number of `resume_filter_set` calls.
+    pub fn resume_calls(&self) -> usize {
+        self.resume_calls.load(Ordering::SeqCst)
     }
 
     /// Audit entries recorded so far.
@@ -573,16 +613,23 @@ impl McpBackend for MockBackend {
             .unwrap_or_else(|| Ok(RemoveRuleResult::default()))
     }
 
-    async fn pause_filter_set(
-        &self,
-        _filter_set_id: &str,
-        _duration: PauseDuration,
-    ) -> Result<PauseResult, BackendError> {
-        Ok(PauseResult::default())
+    async fn pause_filter_set(&self, params: PauseParams) -> Result<PauseResult, BackendError> {
+        *slot(&self.last_pause) = Some(params);
+        self.pause_calls.fetch_add(1, Ordering::SeqCst);
+        slot(&self.pause_result)
+            .clone()
+            .unwrap_or_else(|| Ok(PauseResult::default()))
     }
 
-    async fn resume_filter_set(&self, _filter_set_id: &str) -> Result<ResumeResult, BackendError> {
-        Ok(ResumeResult::default())
+    async fn resume_filter_set(
+        &self,
+        filter_set_id: Option<&str>,
+    ) -> Result<ResumeResult, BackendError> {
+        *slot(&self.last_resume) = Some(filter_set_id.map(str::to_owned));
+        self.resume_calls.fetch_add(1, Ordering::SeqCst);
+        slot(&self.resume_result)
+            .clone()
+            .unwrap_or_else(|| Ok(ResumeResult::default()))
     }
 
     async fn record_audit(&self, entry: AuditEntry) -> Result<(), BackendError> {

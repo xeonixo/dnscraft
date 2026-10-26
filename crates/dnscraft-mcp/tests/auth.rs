@@ -241,6 +241,11 @@ async fn write_token_is_allowed_through_scope_and_gate() {
     {
         let (status, body) = tool_call(&client, &server.url, TOKEN, id as u64 + 1, name).await;
         assert_eq!(status, 200, "{name}: {body}");
+        if name == "resume_filter_set" {
+            // `{}` is valid for resume, so the mock backend answers.
+            assert_eq!(body["result"]["isError"], false, "{name}: {body}");
+            continue;
+        }
         assert_eq!(body["result"]["isError"], true, "{name}: {body}");
         let code = &body["result"]["structuredContent"]["error"]["code"];
         assert_ne!(code, "control_api.auth.insufficient_scope", "{name}");

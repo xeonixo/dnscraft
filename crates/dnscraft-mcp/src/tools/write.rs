@@ -1,9 +1,10 @@
 //! Write tools.
 //!
-//! All five tools share one check order (gate, scope, schema, duration
-//! maximum, protected domain, backend call, audit). Failures that know their
-//! arguments are audited with `result: "error"` and the stable code; a failed
-//! audit write is logged and never replaces the tool result.
+//! All five tools share one check order (gate, scope, schema, backend call,
+//! audit); duration maxima and protected domains are checked where they apply.
+//! Failures that know their arguments are audited with `result: "error"` and
+//! the stable code; a failed audit write is logged and never replaces the tool
+//! result.
 //!
 //! Strings from the assistant (`reason`) and from the backend are untrusted
 //! and leave through [`SafeText`]. Tool descriptions are static.
@@ -19,8 +20,8 @@ use serde_json::{Value, json};
 
 use super::{McpServer, invalid_input, parse_arguments, schema, token_from};
 use crate::dto::{
-    AddRuleParams, AuditEntry, AuditResult, PauseDuration, RemoveRuleParams, TempAllowParams,
-    TokenInfo, TokenScope,
+    AddRuleParams, AuditEntry, AuditResult, PauseDuration, PauseParams, RemoveRuleParams,
+    TempAllowParams, TokenInfo, TokenScope,
 };
 use crate::error::McpError;
 use crate::result::{tool_error, tool_ok};
@@ -37,8 +38,11 @@ const ADD_RULE_DESCRIPTION: &str = "Add a custom block rule to a filter set. The
 /// Static description for `remove_rule`.
 const REMOVE_RULE_DESCRIPTION: &str = "Remove a custom block rule that was previously added via MCP. Only rules created via MCP can be removed; web UI rules and downloaded list rules cannot. Requires mcp:write scope.";
 
-const PAUSE_SCOPE: &str = "Pause a filter set for a fixed duration.";
-const RESUME_SCOPE: &str = "Resume a paused filter set.";
+/// Static description for `pause_filter_set`.
+const PAUSE_DESCRIPTION: &str = "Pause filtering for a filter set for a short duration. While paused, all queries using this set are allowed (filtering returns Pass). Requires mcp:write scope and write_tools_enabled. The client will ask you to confirm this action. **This affects every client using this filter set.** Pausing a filter set affects every client that uses that set. All devices on the affected profiles will have filtering disabled for the duration. A filter set has only one active pause: pausing a set that is already paused replaces the existing pause and extends it to the new expiry; it does not create a second pause.";
+
+/// Static description for `resume_filter_set`.
+const RESUME_DESCRIPTION: &str = "Resume filtering for a paused filter set. Requires mcp:write scope and write_tools_enabled. The client will ask you to confirm this action. Resuming a set that is not paused is a no-op.";
 
 const WRITE_TOOL_NAMES: [&str; 5] = [
     "allow_temporarily",
@@ -59,8 +63,8 @@ pub fn tool_definitions() -> Vec<Tool> {
         allow_definition(),
         add_rule_definition(),
         remove_rule_definition(),
-        placeholder("pause_filter_set", PAUSE_SCOPE),
-        placeholder("resume_filter_set", RESUME_SCOPE),
+        pause_definition(),
+        resume_definition(),
     ]
 }
 
@@ -155,11 +159,45 @@ fn remove_rule_definition() -> Tool {
     .with_annotations(ToolAnnotations::new().destructive(true).idempotent(true))
 }
 
-/// A not-yet-implemented write tool definition (until its task lands).
-fn placeholder(name: &'static str, description: &'static str) -> Tool {
-    let mut input_schema = JsonObject::new();
-    input_schema.insert("type".into(), json!("object"));
-    Tool::new(name, description, input_schema)
+/// A static `pause_filter_set` definition.
+fn pause_definition() -> Tool {
+    Tool::new(
+        "pause_filter_set",
+        PAUSE_DESCRIPTION,
+        schema(json!({
+            "type": "object",
+            "properties": {
+                "filter_set_id": {
+                    "type": "string",
+                    "description": "Filter set ID (default set if omitted)"
+                },
+                "duration": {
+                    "type": "string",
+                    "enum": ["PT5M", "PT15M", "PT1H"],
+                    "description": "Pause duration: 5 minutes, 15 minutes, or 1 hour"
+                }
+            },
+            "required": ["duration"]
+        })),
+    )
+    .with_annotations(ToolAnnotations::new().destructive(true).idempotent(false))
+}
+
+fn resume_definition() -> Tool {
+    Tool::new(
+        "resume_filter_set",
+        RESUME_DESCRIPTION,
+        schema(json!({
+            "type": "object",
+            "properties": {
+                "filter_set_id": {
+                    "type": "string",
+                    "description": "Filter set ID (default set if omitted)"
+                }
+            }
+        })),
+    )
+    .with_annotations(ToolAnnotations::new().destructive(true).idempotent(true))
 }
 
 /// Dispatch one write tool after the gate and scope checks.
@@ -182,6 +220,8 @@ pub(crate) async fn call(
         "allow_temporarily" => allow_temporarily(arguments, server, &token).await,
         "add_rule" => add_rule(arguments, server, &token).await,
         "remove_rule" => remove_rule(arguments, server, &token).await,
+        "pause_filter_set" => pause_filter_set(arguments, server, &token).await,
+        "resume_filter_set" => resume_filter_set(arguments, server, &token).await,
         other => tool_error(
             "control_api.internal",
             json!({ "reason": "not_implemented", "tool": other }),
@@ -566,6 +606,163 @@ async fn remove_rule(
                 "mcp.remove_rule",
                 Some(before),
                 Some(json!({ "removed": false })),
+                AuditResult::Error,
+                Some(&code),
+            )
+            .await;
+            tool_error(&code, params)
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PauseArgs {
+    filter_set_id: Option<String>,
+    duration: PauseDuration,
+}
+
+async fn pause_filter_set(
+    arguments: Option<JsonObject>,
+    server: &McpServer,
+    token: &TokenInfo,
+) -> CallToolResult {
+    let args = match parse_arguments::<PauseArgs>(arguments) {
+        Ok(args) => args,
+        Err(error) => return error,
+    };
+    let filter_set_id = args.filter_set_id.clone();
+
+    if let Some(error) = duration_error(args.duration, server.config.max_pause_duration) {
+        let after = pause_failure_after(filter_set_id.as_deref(), args.duration);
+        record(
+            server,
+            token,
+            "mcp.pause_filter_set",
+            None,
+            Some(after),
+            AuditResult::Error,
+            Some(error.code()),
+        )
+        .await;
+        return tool_error(error.code(), error.params().unwrap_or_else(|| json!({})));
+    }
+
+    let params = PauseParams {
+        filter_set_id: filter_set_id.clone(),
+        duration: args.duration,
+    };
+    match server.backend.pause_filter_set(params).await {
+        Ok(result) => {
+            let after = json!({
+                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
+                "paused_until": SafeText::new(&result.paused_until, CAP_CLIENT_NAME),
+            });
+            record(
+                server,
+                token,
+                "mcp.pause_filter_set",
+                None,
+                Some(after),
+                AuditResult::Success,
+                None,
+            )
+            .await;
+            tool_ok(json!({
+                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
+                "paused_until": SafeText::new(&result.paused_until, CAP_CLIENT_NAME),
+            }))
+        }
+        Err(error) => {
+            let code = error.code().to_owned();
+            let params = error.params().unwrap_or_else(|| json!({}));
+            let after = pause_failure_after(filter_set_id.as_deref(), args.duration);
+            record(
+                server,
+                token,
+                "mcp.pause_filter_set",
+                None,
+                Some(after),
+                AuditResult::Error,
+                Some(&code),
+            )
+            .await;
+            tool_error(&code, params)
+        }
+    }
+}
+
+fn pause_failure_after(filter_set_id: Option<&str>, duration: PauseDuration) -> Value {
+    json!({
+        "filter_set_id": filter_set_id.map(|id| SafeText::new(id, CAP_LIST_ID)),
+        "duration": duration.as_str(),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResumeArgs {
+    filter_set_id: Option<String>,
+}
+
+async fn resume_filter_set(
+    arguments: Option<JsonObject>,
+    server: &McpServer,
+    token: &TokenInfo,
+) -> CallToolResult {
+    let args = match parse_arguments::<ResumeArgs>(arguments) {
+        Ok(args) => args,
+        Err(error) => return error,
+    };
+    let filter_set_id = args.filter_set_id.clone();
+
+    match server
+        .backend
+        .resume_filter_set(filter_set_id.as_deref())
+        .await
+    {
+        Ok(result) => {
+            let after = json!({
+                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
+                "resumed": result.resumed,
+            });
+            let before = json!({
+                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
+                "was_paused_until": result
+                    .was_paused_until
+                    .as_deref()
+                    .map(|until| SafeText::new(until, CAP_CLIENT_NAME)),
+            });
+            record(
+                server,
+                token,
+                "mcp.resume_filter_set",
+                Some(before),
+                Some(after),
+                AuditResult::Success,
+                None,
+            )
+            .await;
+            tool_ok(json!({
+                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
+                "resumed": result.resumed,
+            }))
+        }
+        Err(error) => {
+            let code = error.code().to_owned();
+            let params = error.params().unwrap_or_else(|| json!({}));
+            let before = json!({
+                "filter_set_id": filter_set_id
+                    .as_deref()
+                    .map(|id| SafeText::new(id, CAP_LIST_ID)),
+                "was_paused_until": Value::Null,
+            });
+            record(
+                server,
+                token,
+                "mcp.resume_filter_set",
+                Some(before),
+                Some(json!({ "resumed": false })),
                 AuditResult::Error,
                 Some(&code),
             )

@@ -728,22 +728,33 @@ pub struct RemoveRuleResult {
     pub config_version: Option<u64>,
 }
 
+/// Input for `pause_filter_set`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseParams {
+    /// Filter set to pause; the backend resolves the default.
+    pub filter_set_id: Option<String>,
+    /// Mandatory fixed-set duration.
+    pub duration: PauseDuration,
+}
+
 /// Result of `pause_filter_set`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PauseResult {
-    /// Filter set that was paused.
+    /// Filter set that was paused (resolved by the backend).
     pub filter_set_id: String,
-    /// RFC 3339 expiry timestamp.
-    pub expires_at: String,
+    /// RFC 3339 timestamp when filtering resumes.
+    pub paused_until: String,
 }
 
 /// Result of `resume_filter_set`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResumeResult {
-    /// Filter set that was resumed.
+    /// Filter set that was resumed (resolved by the backend).
     pub filter_set_id: String,
     /// Whether the set is now running.
     pub resumed: bool,
+    /// Expiry of the pause that was cleared, when one was active.
+    pub was_paused_until: Option<String>,
 }
 
 /// Outcome recorded on an [`AuditEntry`].

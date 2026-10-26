@@ -9,8 +9,8 @@
 mod support;
 
 use dnscraft_mcp::{
-    AddRuleResult, AuditResult, BackendError, McpConfig, McpRuleInfo, RemoveRuleResult,
-    TempAllowResult,
+    AddRuleResult, AuditResult, BackendError, McpConfig, McpRuleInfo, PauseResult,
+    RemoveRuleResult, ResumeResult, TempAllowResult,
 };
 use serde_json::{Value, json};
 use support::harness::{self, TestServer};
@@ -850,5 +850,392 @@ async fn rule_definitions_are_static_and_locked() {
                 tool["name"]
             );
         }
+    }
+}
+
+fn paused_until(until: &str) -> PauseResult {
+    PauseResult {
+        filter_set_id: "default".into(),
+        paused_until: until.into(),
+    }
+}
+
+#[tokio::test]
+async fn pause_filter_set_schema_rejects_unknown_fields_and_bad_durations() {
+    let server = spawn(write_config()).await;
+    for arguments in [
+        json!({}),
+        json!({ "duration": "PT2M" }),
+        json!({ "duration": "P1D" }),
+        json!({ "duration": "5m" }),
+        json!({ "duration": 300 }),
+        json!({ "duration": "PT5M", "until_resumed": true }),
+        json!({ "duration": "PT5M", "reason": "troubleshooting" }),
+        json!({ "duration": "PT5M", "filter_set_id": 1 }),
+    ] {
+        assert_invalid_input(&server, "pause_filter_set", arguments).await;
+    }
+    assert_eq!(server.backend.pause_calls(), 0);
+}
+
+#[tokio::test]
+async fn pause_filter_set_accepts_only_the_fixed_enum_within_the_maximum() {
+    let server = spawn(write_config()).await;
+    server
+        .backend
+        .set_pause(Ok(paused_until("2026-10-26T11:35:00Z")));
+
+    // Default max is one hour: all three fixed values are accepted.
+    for value in ["PT5M", "PT15M", "PT1H"] {
+        let body = call(&server, "pause_filter_set", json!({ "duration": value })).await;
+        assert_eq!(body["result"]["isError"], false, "{value}: {body}");
+        let output = harness::tool_output(&body);
+        assert_eq!(keys(&output), sorted(&["filter_set_id", "paused_until"]));
+        assert_eq!(output["filter_set_id"], "default");
+        assert_eq!(output["paused_until"], "2026-10-26T11:35:00Z");
+    }
+    assert_eq!(server.backend.pause_calls(), 3);
+    assert_eq!(
+        server.backend.last_pause().unwrap().duration,
+        dnscraft_mcp::PauseDuration::Pt1H
+    );
+
+    // A lowered maximum rejects the next-larger value and up.
+    let limited = spawn(McpConfig {
+        max_pause_duration: std::time::Duration::from_secs(600),
+        ..write_config()
+    })
+    .await;
+    limited
+        .backend
+        .set_pause(Ok(paused_until("2026-10-26T11:35:00Z")));
+
+    for value in ["PT15M", "PT1H"] {
+        let body = call(&limited, "pause_filter_set", json!({ "duration": value })).await;
+        assert_eq!(
+            harness::error_code(&body),
+            "mcp.duration_exceeds_maximum",
+            "{value}: {body}"
+        );
+        assert_eq!(
+            body["result"]["structuredContent"]["error"]["params"]["requested"],
+            value
+        );
+        assert_eq!(
+            body["result"]["structuredContent"]["error"]["params"]["maximum"],
+            "PT600S"
+        );
+    }
+    assert_eq!(limited.backend.pause_calls(), 0);
+
+    let body = call(&limited, "pause_filter_set", json!({ "duration": "PT5M" })).await;
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    assert_eq!(limited.backend.pause_calls(), 1);
+
+    let audits = limited.backend.audits();
+    assert_eq!(audits.len(), 3);
+    assert_eq!(audits[0].result, AuditResult::Error);
+    assert_eq!(audits[0].after["duration"], "PT15M");
+    assert_eq!(audits[1].result, AuditResult::Error);
+    assert_eq!(audits[1].after["duration"], "PT1H");
+    assert!(
+        audits[..2]
+            .iter()
+            .all(|entry| { entry.error_code.as_deref() == Some("mcp.duration_exceeds_maximum") })
+    );
+    assert_eq!(audits[2].action, "mcp.pause_filter_set");
+    assert_eq!(audits[2].result, AuditResult::Success);
+    assert_eq!(audits[2].after["filter_set_id"], "default");
+    assert_eq!(audits[2].after["paused_until"], "2026-10-26T11:35:00Z");
+}
+
+#[tokio::test]
+async fn pause_filter_set_replaces_an_active_pause_and_reports_the_new_expiry() {
+    let server = spawn(write_config()).await;
+    server
+        .backend
+        .set_pause(Ok(paused_until("2026-10-26T11:35:00Z")));
+    let first = call(&server, "pause_filter_set", json!({ "duration": "PT5M" })).await;
+    let first = harness::tool_output(&first);
+
+    server
+        .backend
+        .set_pause(Ok(paused_until("2026-10-26T12:30:00Z")));
+    let second = call(
+        &server,
+        "pause_filter_set",
+        json!({ "duration": "PT1H", "filter_set_id": "kids" }),
+    )
+    .await;
+    assert_eq!(second["result"]["isError"], false, "{second}");
+    let second = harness::tool_output(&second);
+
+    assert_eq!(first["paused_until"], "2026-10-26T11:35:00Z");
+    assert_eq!(second["paused_until"], "2026-10-26T12:30:00Z");
+    assert_eq!(second["filter_set_id"], "default");
+    assert_eq!(server.backend.pause_calls(), 2);
+    assert_eq!(
+        server
+            .backend
+            .last_pause()
+            .unwrap()
+            .filter_set_id
+            .as_deref(),
+        Some("kids")
+    );
+
+    let audits = server.backend.audits();
+    assert_eq!(audits.len(), 2);
+    assert_eq!(audits[0].after["paused_until"], "2026-10-26T11:35:00Z");
+    assert_eq!(audits[1].after["paused_until"], "2026-10-26T12:30:00Z");
+}
+
+#[tokio::test]
+async fn pause_filter_set_unknown_set_is_forwarded_and_audited() {
+    let server = spawn(write_config()).await;
+    server.backend.set_pause(Err(BackendError::Coded {
+        code: "policy.config.unknown_filter_set".into(),
+        params: Some(json!({ "filter_set_id": "missing" })),
+    }));
+
+    let body = call(
+        &server,
+        "pause_filter_set",
+        json!({ "duration": "PT5M", "filter_set_id": "missing" }),
+    )
+    .await;
+    assert_eq!(
+        harness::error_code(&body),
+        "policy.config.unknown_filter_set",
+        "{body}"
+    );
+    let audits = server.backend.audits();
+    assert_eq!(audits.len(), 1);
+    assert_eq!(audits[0].action, "mcp.pause_filter_set");
+    assert_eq!(audits[0].result, AuditResult::Error);
+    assert_eq!(
+        audits[0].error_code.as_deref(),
+        Some("policy.config.unknown_filter_set")
+    );
+    assert_eq!(audits[0].after["filter_set_id"], "missing");
+}
+
+#[tokio::test]
+async fn resume_filter_set_output_and_audit() {
+    let server = spawn(write_config()).await;
+    server.backend.set_resume(Ok(ResumeResult {
+        filter_set_id: "default".into(),
+        resumed: true,
+        was_paused_until: Some("2026-10-26T11:35:00Z".into()),
+    }));
+
+    let body = call(
+        &server,
+        "resume_filter_set",
+        json!({ "filter_set_id": "default" }),
+    )
+    .await;
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    let output = harness::tool_output(&body);
+    assert_eq!(keys(&output), sorted(&["filter_set_id", "resumed"]));
+    assert_eq!(output["filter_set_id"], "default");
+    assert_eq!(output["resumed"], true);
+    assert_eq!(
+        server.backend.last_resume(),
+        Some(Some("default".to_owned()))
+    );
+
+    let audits = server.backend.audits();
+    assert_eq!(audits.len(), 1);
+    let entry = &audits[0];
+    assert_eq!(entry.action, "mcp.resume_filter_set");
+    assert_eq!(entry.actor_id, "tok-write");
+    assert_eq!(entry.result, AuditResult::Success);
+    assert_eq!(
+        entry.before,
+        Some(json!({
+            "filter_set_id": "default",
+            "was_paused_until": "2026-10-26T11:35:00Z",
+        }))
+    );
+    assert_eq!(
+        entry.after,
+        json!({ "filter_set_id": "default", "resumed": true })
+    );
+}
+
+#[tokio::test]
+async fn resume_filter_set_is_idempotent_and_rejects_extra_fields() {
+    let server = spawn(write_config()).await;
+    server.backend.set_resume(Ok(ResumeResult {
+        filter_set_id: "default".into(),
+        resumed: false,
+        was_paused_until: None,
+    }));
+
+    for arguments in [json!({}), json!({ "filter_set_id": "default" })] {
+        let body = call(&server, "resume_filter_set", arguments.clone()).await;
+        assert_eq!(body["result"]["isError"], false, "{arguments}: {body}");
+        let output = harness::tool_output(&body);
+        assert_eq!(output["resumed"], false);
+    }
+    assert_eq!(server.backend.resume_calls(), 2);
+    assert_eq!(
+        server.backend.last_resume(),
+        Some(Some("default".to_owned()))
+    );
+
+    let audits = server.backend.audits();
+    assert_eq!(audits.len(), 2);
+    assert!(audits.iter().all(|entry| {
+        entry.result == AuditResult::Success
+            && entry.before.as_ref().unwrap()["was_paused_until"].is_null()
+    }));
+
+    for arguments in [
+        json!({ "duration": "PT5M" }),
+        json!({ "until_resumed": true }),
+        json!({ "filter_set_id": 1 }),
+    ] {
+        assert_invalid_input(&server, "resume_filter_set", arguments).await;
+    }
+    assert_eq!(server.backend.resume_calls(), 2);
+}
+
+#[tokio::test]
+async fn resume_filter_set_failure_is_audited() {
+    let server = spawn(write_config()).await;
+    server.backend.set_resume(Err(BackendError::Coded {
+        code: "policy.config.unknown_filter_set".into(),
+        params: Some(json!({ "filter_set_id": "missing" })),
+    }));
+
+    let body = call(
+        &server,
+        "resume_filter_set",
+        json!({ "filter_set_id": "missing" }),
+    )
+    .await;
+    assert_eq!(
+        harness::error_code(&body),
+        "policy.config.unknown_filter_set",
+        "{body}"
+    );
+    let audits = server.backend.audits();
+    assert_eq!(audits.len(), 1);
+    assert_eq!(audits[0].result, AuditResult::Error);
+    assert_eq!(
+        audits[0].before,
+        Some(json!({ "filter_set_id": "missing", "was_paused_until": null }))
+    );
+}
+
+#[tokio::test]
+async fn pause_and_resume_definitions_are_static_and_locked() {
+    let server = spawn(write_config()).await;
+    let client = reqwest::Client::new();
+    let body = harness::list_tools(&client, &server).await;
+    let tools = body["result"]["tools"].as_array().unwrap();
+    let find = |name: &str| {
+        tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is listed"))
+    };
+
+    let pause = find("pause_filter_set");
+    assert_eq!(pause["annotations"]["destructiveHint"], true);
+    assert_eq!(pause["annotations"]["idempotentHint"], false);
+    assert_eq!(
+        pause["inputSchema"],
+        json!({
+            "type": "object",
+            "properties": {
+                "filter_set_id": {
+                    "type": "string",
+                    "description": "Filter set ID (default set if omitted)"
+                },
+                "duration": {
+                    "type": "string",
+                    "enum": ["PT5M", "PT15M", "PT1H"],
+                    "description": "Pause duration: 5 minutes, 15 minutes, or 1 hour"
+                }
+            },
+            "required": ["duration"]
+        })
+    );
+    let description = pause["description"].as_str().unwrap();
+    assert!(description.contains(
+        "Pausing a filter set affects every client that uses that set. All devices on the affected profiles will have filtering disabled for the duration."
+    ));
+    assert!(description.contains("**This affects every client using this filter set.**"));
+    assert!(description.contains("replaces the existing pause"));
+
+    let resume = find("resume_filter_set");
+    assert_eq!(resume["annotations"]["destructiveHint"], true);
+    assert_eq!(resume["annotations"]["idempotentHint"], true);
+    assert_eq!(
+        resume["inputSchema"],
+        json!({
+            "type": "object",
+            "properties": {
+                "filter_set_id": {
+                    "type": "string",
+                    "description": "Filter set ID (default set if omitted)"
+                }
+            }
+        })
+    );
+
+    for tool in [pause, resume] {
+        let serialized = tool.to_string();
+        assert!(
+            !serialized.contains("until_resumed"),
+            "until_resumed in {}",
+            tool["name"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn tools_list_shows_thirteen_with_write_tools_and_eight_without() {
+    let client = reqwest::Client::new();
+    let write_names = [
+        "allow_temporarily",
+        "add_rule",
+        "remove_rule",
+        "pause_filter_set",
+        "resume_filter_set",
+    ];
+
+    let enabled = spawn(write_config()).await;
+    let body = harness::list_tools(&client, &enabled).await;
+    let tools = body["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 13, "write gate on: 8 read + 5 write tools");
+    let names: Vec<&str> = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    for name in write_names {
+        assert!(
+            names.contains(&name),
+            "{name} is listed when the gate is on"
+        );
+    }
+    let mut unique = names.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), names.len(), "tool names are unique");
+
+    let disabled = spawn(McpConfig::default()).await;
+    let body = harness::list_tools(&client, &disabled).await;
+    let tools = body["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 8, "write gate off: read tools only");
+    for tool in tools {
+        let name = tool["name"].as_str().unwrap();
+        assert!(
+            !write_names.contains(&name),
+            "{name} must not be listed when the gate is off"
+        );
     }
 }

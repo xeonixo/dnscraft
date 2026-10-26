@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::dto::{
     AddRuleParams, AddRuleResult, AuditEntry, ClientListParams, ClientListResult,
-    ExplainBlockResult, ListRulesParams, ListRulesResult, McpRuleInfo, NodeStatus, PauseDuration,
+    ExplainBlockResult, ListRulesParams, ListRulesResult, McpRuleInfo, NodeStatus, PauseParams,
     PauseResult, QType, QueryDetail, QueryLogResult, QueryLogSearch, RemoveRuleParams,
     RemoveRuleResult, ResumeResult, StatsParams, StatsResult, TempAllowParams, TempAllowResult,
     TestQueryParams, TestQueryResult, TokenInfo,
@@ -145,14 +145,17 @@ pub trait McpBackend: Send + Sync {
     ) -> Result<RemoveRuleResult, BackendError>;
 
     /// Pause a filter set for a mandatory fixed-set duration.
-    async fn pause_filter_set(
-        &self,
-        filter_set_id: &str,
-        duration: PauseDuration,
-    ) -> Result<PauseResult, BackendError>;
+    ///
+    /// A filter set has at most one active pause; a newer pause replaces an
+    /// older one and the returned `paused_until` is the new expiry.
+    async fn pause_filter_set(&self, params: PauseParams) -> Result<PauseResult, BackendError>;
 
-    /// Resume a paused filter set.
-    async fn resume_filter_set(&self, filter_set_id: &str) -> Result<ResumeResult, BackendError>;
+    /// Resume a paused filter set. Resuming a set that is not paused succeeds
+    /// with `resumed: false`.
+    async fn resume_filter_set(
+        &self,
+        filter_set_id: Option<&str>,
+    ) -> Result<ResumeResult, BackendError>;
 
     /// Persist an audit entry for a completed write.
     async fn record_audit(&self, entry: AuditEntry) -> Result<(), BackendError>;
