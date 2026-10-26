@@ -5,17 +5,41 @@ use serde_json::{Map, Value};
 use crate::error::ControlApiError;
 use crate::storage::{AuditRecord, Db};
 
-/// Secret-key name fragments that mark a JSON value for redaction (matched
-/// case-insensitively against object keys). Over-redaction is acceptable; the
-/// invariant is that no secret material is ever persisted or exported.
-const SECRET_KEY_FRAGMENTS: &[&str] = &["secret", "password", "private_key", "api_key"];
+/// Secret name tokens that mark a JSON object key for redaction. Keys are
+/// split into tokens on `_`, `-` and camelCase boundaries and compared
+/// case-insensitively. Over-redaction is acceptable; the invariant is that no
+/// secret material is ever persisted or exported.
+const SECRET_TOKENS: &[&str] = &[
+    "secret",
+    "password",
+    "passwd",
+    "passphrase",
+    "credential",
+    "credentials",
+    "authorization",
+    "bearer",
+    "cookie",
+    "token",
+    "session",
+    "pem",
+    "apikey",
+];
+
+/// Name tokens that keep a key intact even when a secret token is also present
+/// (e.g. `session_idle_timeout`, `api_token_max_ttl` are durations, not secrets).
+const ALLOW_TOKENS: &[&str] = &[
+    "ttl", "timeout", "days", "max", "limit", "attempts", "window", "enabled", "count", "interval",
+    "lifetime",
+];
 
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
-/// Redacts known secret fields from `value`, recursively, returning a new value.
+/// Redacts secret material from `value`, recursively, returning a new value.
 ///
-/// Any object key containing a [`SECRET_KEY_FRAGMENTS`] fragment is replaced by
-/// the literal `"redacted"`. Non-secret values are copied verbatim.
+/// An object key is redacted when its tokens contain a [`SECRET_TOKENS`] token
+/// (or the `private`+`key` / `api`+`key` pair) and no [`ALLOW_TOKENS`] token.
+/// String values are also redacted when they look like a PEM block or a
+/// `Bearer` credential. Everything else is copied verbatim.
 pub(crate) fn redact(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
@@ -31,7 +55,76 @@ pub(crate) fn redact(value: &Value) -> Value {
             Value::Object(out)
         }
         Value::Array(items) => Value::Array(items.iter().map(redact).collect()),
+        Value::String(s) if looks_secret_value(s) => Value::String("redacted".to_owned()),
         other => other.clone(),
+    }
+}
+
+/// Whether a string value itself carries secret material (PEM block or Bearer
+/// credential), independent of its key name.
+fn looks_secret_value(s: &str) -> bool {
+    s.get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("Bearer "))
+        || s.contains("-----BEGIN ")
+}
+
+/// Whether an object key names a secret field (token-based, see module docs).
+fn is_secret_key(key: &str) -> bool {
+    let tokens = tokenize_key(key);
+    if tokens.is_empty() {
+        return false;
+    }
+    // Allow-list tokens override secret tokens (durations/counts/flags stay
+    // intact even when they mention `token` or `session`).
+    if tokens.iter().any(|t| ALLOW_TOKENS.contains(&t.as_str())) {
+        return false;
+    }
+    if tokens.iter().any(|t| SECRET_TOKENS.contains(&t.as_str())) {
+        return true;
+    }
+    let has = |needle: &str| tokens.iter().any(|t| t == needle);
+    (has("private") && has("key")) || (has("api") && has("key"))
+}
+
+/// Splits an object key into lowercase tokens on `_`, `-` and camelCase
+/// boundaries (an acronym run before a lowercase letter also starts a token).
+fn tokenize_key(key: &str) -> Vec<String> {
+    let chars: Vec<char> = key.chars().collect();
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '_' || c == '-' {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        if c.is_uppercase() {
+            let prev_lower = i > 0 && chars[i - 1].is_lowercase();
+            let next_lower = chars.get(i + 1).is_some_and(|n| n.is_lowercase());
+            if !current.is_empty() && (prev_lower || next_lower) {
+                tokens.push(std::mem::take(&mut current));
+            }
+        }
+        current.push(c.to_ascii_lowercase());
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+/// Whether `value` contains the literal `"redacted"` placeholder string.
+///
+/// Test-only helper used to assert that a snapshot has been redacted; it has
+/// no non-test caller yet.
+#[cfg(test)]
+pub(crate) fn contains_redacted_placeholder(value: &Value) -> bool {
+    match value {
+        Value::String(s) => s == "redacted",
+        Value::Array(items) => items.iter().any(contains_redacted_placeholder),
+        Value::Object(map) => map.values().any(contains_redacted_placeholder),
+        _ => false,
     }
 }
 
@@ -44,11 +137,6 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
         out.push(HEX[(b & 0x0f) as usize] as char);
     }
     out
-}
-
-fn is_secret_key(key: &str) -> bool {
-    let lower = key.to_ascii_lowercase();
-    SECRET_KEY_FRAGMENTS.iter().any(|frag| lower.contains(frag))
 }
 
 /// Redacts and digests one optional snapshot.
@@ -198,6 +286,8 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::config::ControlApiConfig;
+    use crate::secret::Secret;
 
     #[test]
     fn canonical_json_sorts_keys_recursively_and_is_compact() {
@@ -221,5 +311,103 @@ mod tests {
             canonical_json(&value).unwrap(),
             serde_json::to_string(&value).unwrap()
         );
+    }
+
+    #[test]
+    fn tokenize_key_splits_snake_dash_and_camel() {
+        assert_eq!(tokenize_key("client_secret"), ["client", "secret"]);
+        assert_eq!(tokenize_key("client-secret"), ["client", "secret"]);
+        assert_eq!(tokenize_key("clientSecret"), ["client", "secret"]);
+        assert_eq!(tokenize_key("APIKey"), ["api", "key"]);
+        assert_eq!(
+            tokenize_key("session_idle_timeout"),
+            ["session", "idle", "timeout"]
+        );
+    }
+
+    #[test]
+    fn redact_matches_tokens_not_substrings() {
+        // "secret" token redacts, but a mere substring ("secretion") does not.
+        assert_eq!(
+            redact(&json!({ "secretion": "x" })),
+            json!({ "secretion": "x" })
+        );
+        assert_eq!(
+            redact(&json!({ "clientSecret": "x" })),
+            json!({ "clientSecret": "redacted" })
+        );
+        // Pairs: private+key and api+key.
+        assert_eq!(
+            redact(&json!({ "private_key": "x" })),
+            json!({ "private_key": "redacted" })
+        );
+        assert_eq!(
+            redact(&json!({ "apiKey": "x" })),
+            json!({ "apiKey": "redacted" })
+        );
+    }
+
+    #[test]
+    fn redact_keeps_allow_listed_durations() {
+        let value = json!({
+            "token_ttl_days": 30,
+            "session_idle_timeout": 3600,
+            "session_idle_timeout_seconds": 3600,
+            "client_secret": "s3cret"
+        });
+        let out = redact(&value);
+        assert_eq!(out["token_ttl_days"].as_i64(), Some(30));
+        assert_eq!(out["session_idle_timeout"].as_i64(), Some(3600));
+        assert_eq!(out["client_secret"], "redacted");
+    }
+
+    #[test]
+    fn redact_detects_pem_and_bearer_values() {
+        let value = json!({
+            "tls": { "cert": "-----BEGIN CERTIFICATE-----\nABC" },
+            "auth_header": "Bearer abc.def.ghi",
+            "note": "just a note"
+        });
+        let out = redact(&value);
+        assert_eq!(out["tls"]["cert"], "redacted");
+        assert_eq!(out["auth_header"], "redacted");
+        assert_eq!(out["note"], "just a note");
+    }
+
+    #[test]
+    fn contains_redacted_placeholder_detects_nested() {
+        assert!(contains_redacted_placeholder(
+            &json!({ "a": { "b": "redacted" } })
+        ));
+        assert!(contains_redacted_placeholder(&json!(["x", "redacted"])));
+        assert!(!contains_redacted_placeholder(
+            &json!({ "a": { "b": "ok" } })
+        ));
+        assert!(!contains_redacted_placeholder(&json!(1)));
+    }
+
+    #[test]
+    fn control_api_config_redacts_secret_and_keeps_durations() {
+        let mut config = ControlApiConfig::default();
+        config.auth.oidc_client_secret = Secret::new("supersecret");
+        let value = serde_json::to_value(&config).unwrap();
+
+        // The Secret field serializes as "redacted" before redact() even runs.
+        assert_eq!(
+            value["auth"]["oidc_client_secret"].as_str(),
+            Some("redacted")
+        );
+
+        let out = redact(&value);
+        assert_eq!(out["auth"]["oidc_client_secret"].as_str(), Some("redacted"));
+        // Duration/count fields with allow-list tokens stay intact.
+        assert!(out["auth"]["api_token_max_ttl"].is_object());
+        assert!(out["auth"]["session_idle_timeout"].is_object());
+        assert!(out["auth"]["session_absolute_timeout"].is_object());
+        assert!(out["auth"]["local_login_max_attempts"].is_number());
+        // Non-secret identifiers survive verbatim.
+        assert_eq!(out["auth"]["oidc_client_id"].as_str(), Some(""));
+        // The plaintext secret never appears anywhere.
+        assert!(!serde_json::to_string(&out).unwrap().contains("supersecret"));
     }
 }

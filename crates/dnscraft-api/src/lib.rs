@@ -18,6 +18,7 @@ mod audit;
 mod clock;
 mod config;
 mod error;
+mod secret;
 mod storage;
 
 pub use audit::{Audit, ConfigChangeRecord};
@@ -30,4 +31,5 @@ pub use config::{
     DEFAULT_WRITE_PER_SECOND, IpTruncate, QueryLogConfig, RateLimitConfig,
 };
 pub use error::ControlApiError;
+pub use secret::Secret;
 pub use storage::{AuditRecord, ConfigStore, Db};

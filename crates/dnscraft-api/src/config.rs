@@ -3,7 +3,10 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
+use serde::Serialize;
+
 use crate::error::ControlApiError;
+use crate::secret::Secret;
 
 /// Default bind address (loopback; the API is always internal-only).
 pub const DEFAULT_BIND: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -56,7 +59,7 @@ const MIN_SESSION_ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(3600);
 const MAX_SESSION_ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// IP truncation level for persisted query-log records.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize)]
 #[non_exhaustive]
 pub enum IpTruncate {
     /// Keep the full source IP.
@@ -92,7 +95,7 @@ impl IpTruncate {
 }
 
 /// Authentication settings.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct AuthConfig {
     /// Whether OIDC login is enabled.
     pub oidc_enabled: bool,
@@ -100,8 +103,8 @@ pub struct AuthConfig {
     pub oidc_issuer: String,
     /// OIDC client id.
     pub oidc_client_id: String,
-    /// OIDC client secret (env-only in the binary; never persisted by control-api).
-    pub oidc_client_secret: String,
+    /// OIDC client secret (env-only in the binary; serializes as `"redacted"`).
+    pub oidc_client_secret: Secret,
     /// Group name that maps to the `admin` role.
     pub oidc_admin_group: String,
     /// Allowed clock skew when validating `iat`/`exp` (5–300 s).
@@ -126,7 +129,7 @@ impl Default for AuthConfig {
             oidc_enabled: true,
             oidc_issuer: String::new(),
             oidc_client_id: String::new(),
-            oidc_client_secret: String::new(),
+            oidc_client_secret: Secret::default(),
             oidc_admin_group: "dnscraft-admin".into(),
             oidc_token_skew: DEFAULT_OIDC_TOKEN_SKEW,
             local_login_enabled: true,
@@ -140,7 +143,7 @@ impl Default for AuthConfig {
 }
 
 /// Query-log storage settings.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct QueryLogConfig {
     /// Retention window in days (1–3650).
     pub retention_days: u32,
@@ -161,7 +164,7 @@ impl Default for QueryLogConfig {
 }
 
 /// Rate-limit settings for the internal API.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RateLimitConfig {
     /// Read endpoints: tokens per second.
     pub read_per_second: u32,
@@ -185,7 +188,7 @@ impl Default for RateLimitConfig {
 }
 
 /// Full control-api bootstrap configuration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ControlApiConfig {
     /// Bind address. Must be loopback/private/ULA (never `0.0.0.0`/`::`).
     pub bind: IpAddr,

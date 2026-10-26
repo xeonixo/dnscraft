@@ -19,3 +19,4 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 rusqlite = { workspace = true }
 ring = { workspace = true }
+zeroize = { workspace = true }
