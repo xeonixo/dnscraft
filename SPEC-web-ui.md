@@ -431,6 +431,7 @@ listed in [SPEC-control-api.md](SPEC-control-api.md) § Endpoint table.
 | `/query-log` (action) | One-click temporary allow | admin | `POST /api/v1/filtering/temporary-allows` (MCP-phase endpoint) | Confirmation sheet with the domain, a subdomain switch and a duration segmented control; fall back to the guided rule builder if unavailable |
 | `/statistics` | Statistics dashboard | viewer/admin | `GET /api/v1/stats/overview`, `GET /api/v1/stats/top_clients`, `GET /api/v1/stats/top_domains`, `GET /api/v1/stats/cache` | Stat-tile row, period segmented control, inset grouped tables, inline SVG sparklines; rolls up to one year |
 | `/clients` | Clients / device directory | list: viewer/admin; edit: admin | `GET /api/v1/clients`, `GET/POST/PUT/DELETE /api/v1/clients/manual`, `POST /api/v1/clients/sync` | Search field; inset grouped table on wide, card list on narrow; source badge; IP/MAC in SF Mono; edit in a sheet; names are untrusted data |
+| `/doh-clients` | Verified DoH/DoT clients (Client IDs) | read: viewer via config; write: admin | `GET /api/v1/policy/views` (reads `client_ids`), `PUT/POST /api/v1/policy/views/{id}` (writes `client_ids`) | Inset grouped list grouped by Zone; create in a sheet with a generated Client ID and the DoH `/dns-query/<id>` + DoT `<id>.dns.<domain>` endpoints; unknown IDs are rejected by the listener; client ID and protocol are query-log facets |
 | `/filter-sets` | Filter sets | read: viewer via config; write: admin | `GET/POST/PUT/DELETE /api/v1/filter-sets`, `GET /api/v1/config` | Grouped form plus a guided rule-builder sheet and a CodeMirror raw-editor sheet; never require hard-to-type characters |
 | `/filter-lists` | Filter list URLs | read: viewer via config; write: admin | `GET/POST/PUT/DELETE /api/v1/filter-lists`, `GET /api/v1/config` | Inset grouped list with status rows; add in the toolbar; edit in a sheet; per-list effectiveness is a gap (no endpoint) |
 | `/listeners` | DNS listeners | read: viewer via config/status; write: admin | `GET/POST/PUT/DELETE /api/v1/listeners`, `GET /api/v1/status`, `GET /api/v1/config` | Inset grouped list; switches per protocol; exposure warning banner; warn that public listeners expose only registered Client IDs |
@@ -457,7 +458,7 @@ administrative ("who can change things"):
 | Aktivität | Anfragen, Statistik |
 | Filterung | Filtersätze, Filterlisten, Regeln & Freigaben |
 | DNS-Regelwerk | Zonen (Views), Profile, Test-Abfrage |
-| Netzwerk | Geräte, Listener, TLS |
+| Netzwerk | Geräte, DoH-Clients, Listener, TLS |
 | Cluster | Knoten |
 | Integrationen | MCP, API-Explorer |
 | System | System (Konto, Darstellung, Protokollierung, Konfiguration & Versionen, API-Tokens, Audit-Log) |
