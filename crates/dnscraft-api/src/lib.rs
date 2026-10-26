@@ -26,6 +26,7 @@ mod modules;
 mod query_log;
 mod secret;
 mod server;
+mod stats;
 mod storage;
 mod tls;
 
@@ -56,5 +57,9 @@ pub use query_log::{
 };
 pub use secret::Secret;
 pub use server::{AppState, Readiness, serve};
+pub use stats::{
+    CacheStats, ROLLUP_RETENTION_DAYS, RollupRow, RollupWindow, StatsOverview, TOP_CLIENTS_MAX,
+    TOP_DOMAINS_MAX, TopBy, TopClient, TopClients, TopDomain, TopDomains,
+};
 pub use storage::{AuditRecord, ConfigStore, Db};
 pub use tls::{ControlApiTls, TlsMode, TlsStatus, TlsStatusProvider};

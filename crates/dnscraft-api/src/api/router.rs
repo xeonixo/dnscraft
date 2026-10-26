@@ -28,6 +28,9 @@ use super::listener_routes::{delete_listener, list_listeners, put_listener};
 use super::query_log_routes::{get_query_log, list_query_log};
 use super::rate_limit::rate_limit;
 use super::response::{BODY_LIMIT_BYTES, error_response, success};
+use super::stats_routes::{
+    export_csv, export_ndjson, stats_cache, stats_overview, stats_top_clients, stats_top_domains,
+};
 use super::tls_routes::{delete_tls, get_tls, put_tls};
 use crate::error::ControlApiError;
 use crate::server::AppState;
@@ -103,7 +106,13 @@ pub(crate) fn build_router(state: AppState) -> Router {
         // under `/api/v1` to `Requirement::Api`.
         api = api
             .route("/query-log", get(list_query_log))
-            .route("/query-log/{id}", get(get_query_log));
+            .route("/query-log/export.ndjson", get(export_ndjson))
+            .route("/query-log/export.csv", get(export_csv))
+            .route("/query-log/{id}", get(get_query_log))
+            .route("/stats/overview", get(stats_overview))
+            .route("/stats/top_clients", get(stats_top_clients))
+            .route("/stats/top_domains", get(stats_top_domains))
+            .route("/stats/cache", get(stats_cache));
     }
     if state.auth_state().is_some() {
         // Token management exists only when persistence/auth is configured.

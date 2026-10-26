@@ -223,6 +223,11 @@ impl QueryLog {
         &self.config
     }
 
+    /// The underlying database handle (crate-internal, for stats and export).
+    pub(crate) fn db(&self) -> &Db {
+        &self.db
+    }
+
     /// Creates the bounded channel and its non-blocking sink.
     pub fn channel(capacity: usize) -> (Arc<QueryLogSink>, mpsc::Receiver<QueryEvent>) {
         let (tx, rx) = mpsc::channel(capacity.max(1));
@@ -368,53 +373,8 @@ impl QueryLog {
         let offset = i64::try_from(filter.offset).unwrap_or(i64::MAX);
 
         let mut sql = String::from("SELECT record FROM query_log WHERE 1 = 1");
-        let mut values: Vec<Value> = Vec::new();
-        if let Some(from_us) = filter.from_us {
-            sql.push_str(" AND time >= ?");
-            values.push(Value::Integer(from_us));
-        }
-        if let Some(to_us) = filter.to_us {
-            sql.push_str(" AND time <= ?");
-            values.push(Value::Integer(to_us));
-        }
-        if let Some(client_id) = &filter.client_id {
-            sql.push_str(" AND client_id = ?");
-            values.push(Value::Text(client_id.clone()));
-        }
-        if let Some(needle) = &filter.client_name_substr {
-            sql.push_str(" AND LOWER(client_name) LIKE ? ESCAPE '\\'");
-            values.push(Value::Text(like_contains(needle)));
-        }
-        if let Some(domain) = &filter.domain {
-            sql.push_str(" AND query_name = ?");
-            values.push(Value::Text(normalize_name(domain)));
-        }
-        if let Some(needle) = &filter.domain_substr {
-            sql.push_str(" AND query_name LIKE ? ESCAPE '\\'");
-            values.push(Value::Text(like_contains(needle)));
-        }
-        if let Some(protocol) = &filter.protocol {
-            sql.push_str(" AND protocol = ?");
-            values.push(Value::Text(protocol.clone()));
-        }
-        if let Some(view_id) = &filter.view_id {
-            sql.push_str(" AND view_id = ?");
-            values.push(Value::Text(view_id.clone()));
-        }
-        if let Some(profile_id) = &filter.profile_id {
-            sql.push_str(" AND profile_id = ?");
-            values.push(Value::Text(profile_id.clone()));
-        }
-        if let Some(status) = &filter.status {
-            sql.push_str(" AND status = ?");
-            values.push(Value::Text(status.clone()));
-        }
-        if filter.only_blocked {
-            sql.push_str(" AND status = 'blocked'");
-        }
-        if filter.only_with_clients {
-            sql.push_str(" AND client_name IS NOT NULL");
-        }
+        let (conditions, mut values) = filter_clause(filter);
+        sql.push_str(&conditions);
         let column = match filter.order_by {
             OrderBy::Time => "time",
             OrderBy::Client => "COALESCE(client_name, client_id, '')",
@@ -463,6 +423,41 @@ impl QueryLog {
         })
     }
 
+    /// Reads one page of stored records for export.
+    ///
+    /// Rows are returned in insertion (`rowid`) order after `after_rowid`
+    /// (exclusive), so the caller can loop until an empty page without
+    /// materialising the whole export in memory. The filter's `limit`/`offset`
+    /// are deliberately ignored: an export covers the whole filtered set.
+    pub(crate) async fn export_records(
+        &self,
+        filter: &QueryLogFilter,
+        after_rowid: i64,
+        page: u32,
+    ) -> Result<Vec<(i64, String)>, ControlApiError> {
+        let (conditions, mut values) = filter_clause(filter);
+        let sql = format!(
+            "SELECT rowid, record FROM query_log WHERE 1 = 1{conditions}
+             AND rowid > ? ORDER BY rowid LIMIT ?"
+        );
+        values.push(Value::Integer(after_rowid));
+        values.push(Value::Integer(i64::from(page.max(1))));
+        self.db
+            .with_conn(move |conn| {
+                let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+                let rows = stmt
+                    .query_map(params_from_iter(values), |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(db_err)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+            })
+            .await
+            .map_err(|error| ControlApiError::QueryLogExport {
+                message: error.to_string(),
+            })
+    }
+
     /// Loads one record by id, or `None` when it is absent (or aged out).
     pub async fn get(&self, id: &str) -> Result<Option<Json>, ControlApiError> {
         let id = id.to_owned();
@@ -490,6 +485,63 @@ impl QueryLog {
             }
         }
     }
+}
+
+/// Builds the shared `WHERE` conditions for a [`QueryLogFilter`].
+///
+/// The returned suffix starts with `" AND "` and is appended to
+/// `WHERE 1 = 1`. Every user value is a bind parameter; only fixed column names
+/// are part of the SQL text.
+fn filter_clause(filter: &QueryLogFilter) -> (String, Vec<Value>) {
+    let mut sql = String::new();
+    let mut values = Vec::new();
+    if let Some(from_us) = filter.from_us {
+        sql.push_str(" AND time >= ?");
+        values.push(Value::Integer(from_us));
+    }
+    if let Some(to_us) = filter.to_us {
+        sql.push_str(" AND time <= ?");
+        values.push(Value::Integer(to_us));
+    }
+    if let Some(client_id) = &filter.client_id {
+        sql.push_str(" AND client_id = ?");
+        values.push(Value::Text(client_id.clone()));
+    }
+    if let Some(needle) = &filter.client_name_substr {
+        sql.push_str(" AND LOWER(client_name) LIKE ? ESCAPE '\\'");
+        values.push(Value::Text(like_contains(needle)));
+    }
+    if let Some(domain) = &filter.domain {
+        sql.push_str(" AND query_name = ?");
+        values.push(Value::Text(normalize_name(domain)));
+    }
+    if let Some(needle) = &filter.domain_substr {
+        sql.push_str(" AND query_name LIKE ? ESCAPE '\\'");
+        values.push(Value::Text(like_contains(needle)));
+    }
+    if let Some(protocol) = &filter.protocol {
+        sql.push_str(" AND protocol = ?");
+        values.push(Value::Text(protocol.clone()));
+    }
+    if let Some(view_id) = &filter.view_id {
+        sql.push_str(" AND view_id = ?");
+        values.push(Value::Text(view_id.clone()));
+    }
+    if let Some(profile_id) = &filter.profile_id {
+        sql.push_str(" AND profile_id = ?");
+        values.push(Value::Text(profile_id.clone()));
+    }
+    if let Some(status) = &filter.status {
+        sql.push_str(" AND status = ?");
+        values.push(Value::Text(status.clone()));
+    }
+    if filter.only_blocked {
+        sql.push_str(" AND status = 'blocked'");
+    }
+    if filter.only_with_clients {
+        sql.push_str(" AND client_name IS NOT NULL");
+    }
+    (sql, values)
 }
 
 /// Denormalised insert row plus its full JSON record.

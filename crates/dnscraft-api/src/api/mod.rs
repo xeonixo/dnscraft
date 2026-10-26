@@ -13,4 +13,5 @@ pub(crate) mod query_log_routes;
 pub(crate) mod rate_limit;
 pub(crate) mod response;
 pub(crate) mod router;
+pub(crate) mod stats_routes;
 pub(crate) mod tls_routes;

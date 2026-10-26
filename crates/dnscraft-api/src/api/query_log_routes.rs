@@ -38,7 +38,7 @@ pub(crate) struct RawQueryLogParams {
 }
 
 impl RawQueryLogParams {
-    fn into_filter(self) -> Result<QueryLogFilter, ControlApiError> {
+    pub(crate) fn into_filter(self) -> Result<QueryLogFilter, ControlApiError> {
         let page = Pagination::parse_unbounded(self.limit.as_deref(), self.offset.as_deref())?;
         let from_us = self
             .from
@@ -83,7 +83,7 @@ fn non_empty(value: Option<String>) -> Option<String> {
 }
 
 /// Parses an RFC 3339 timestamp into unix microseconds.
-fn parse_timestamp(raw: &str, field: &str) -> Result<i64, ControlApiError> {
+pub(crate) fn parse_timestamp(raw: &str, field: &str) -> Result<i64, ControlApiError> {
     DateTime::parse_from_rfc3339(raw.trim())
         .map(|time| time.timestamp_micros())
         .map_err(|_| ControlApiError::QueryLogInvalid {
