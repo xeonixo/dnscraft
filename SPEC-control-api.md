@@ -239,19 +239,19 @@ or secret token material. The `CertResolver` is passed to listeners as
 |---|---|---|---|---|
 | GET | `/healthz` | public | liveness only | – |
 | GET | `/readyz` | public | readiness aggregates resolver/listener/config states | `control_api.not_ready` |
-| GET | `/api/v1/status` | viewer/admin | node status, module status, build version | `control_api.internal` |
-| GET | `/api/v1/config` | viewer/admin | full current config export (secrets excluded) | `control_api.config.read` |
+| GET | `/api/v1/status` | public | node status, module status, build version | `control_api.internal` |
+| GET | `/api/v1/config` | admin | full current config export (secrets excluded) | `control_api.config.read` |
 | PUT | `/api/v1/config` | admin | atomic config replace, except `mcp_rules` (carried over when omitted; see § MCP-managed filter rules); returns new version | `control_api.config.invalid`, `control_api.config.apply` |
-| GET | `/api/v1/config/versions` | viewer/admin | list previous config versions | `control_api.config.version` |
+| GET | `/api/v1/config/versions` | admin | list previous config versions | `control_api.config.version` |
 | POST | `/api/v1/config/versions/{version}/rollback` | admin | restore version | `control_api.config.unknown_version` |
-| GET | `/api/v1/policy/views` | viewer/admin | list views | – |
-| GET | `/api/v1/policy/views/{id}` | viewer/admin | single view | `control_api.not_found` |
+| GET | `/api/v1/policy/views` | admin | list views | – |
+| GET | `/api/v1/policy/views/{id}` | admin | single view | `control_api.not_found` |
 | PUT/POST | `/api/v1/policy/views/{id}` | admin | create/update view | `policy.config.invalid` etc. |
 | DELETE | `/api/v1/policy/views/{id}` | admin | delete view | `control_api.not_found` |
 | GET/POST/PUT/DELETE | `/api/v1/policy/profiles/{id}` | admin | profile CRUD | `policy.config.unknown_filter_set` |
 | GET/POST/PUT/DELETE | `/api/v1/policy/pause` | admin | global/per-profile pause state | `policy.config.invalid` |
 | GET/POST/PUT/DELETE | `/api/v1/clients/manual` | admin | manual IP/CIDR entries | `clients.config.invalid` |
-| GET | `/api/v1/clients` | viewer/admin | client directory/list | – |
+| GET | `/api/v1/clients` | admin | client directory/list | – |
 | POST | `/api/v1/clients/sync` | admin | trigger UniFi sync | `clients.sync.*` |
 | GET/POST/PUT/DELETE | `/api/v1/filter-sets` | admin | filter set configuration | `filtering.config.*` |
 | GET/POST/PUT/DELETE | `/api/v1/filter-lists` | admin | URL list management | `filtering.*` |
@@ -513,7 +513,7 @@ contacted over the internet from CI; tests use an in-process mock provider.
 
 | Scope | Valid on | Grants |
 |---|---|---|
-| `viewer` | `/api/v1` only | read endpoints |
+| `viewer` | `/api/v1` only | operational reads (query-log, stats) — configuration-family reads are admin-only |
 | `admin` | `/api/v1` only | read and write endpoints |
 | `mcp:read` | `/mcp/v1` only | the 8 MCP read tools |
 | `mcp:write` | `/mcp/v1` only | all 13 MCP tools (read and write) |

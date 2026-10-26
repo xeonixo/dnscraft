@@ -3,9 +3,10 @@
 A lightweight, self-hosted, recursive DNS resolver for home networks — written in Rust.
 
 > **Status** (see [tasks/progress.md](tasks/progress.md)): `resolver`, `filtering`,
-> `clients`, `tls` and `policy` are **complete**. `listeners` is **in progress**
-> (Do53 / DoT / DoH h2+h1.1 / DoQ; next Checkpoint C). `control-api` is **in progress**
-> (A0, A1 complete). `web-ui`, `mcp` and `cluster` are **pending**.
+> `clients`, `tls`, `policy` and `listeners` are **complete**. `control-api` is
+> **complete** (A0–A14; Checkpoint F pending owner approval). `mcp` is **in
+> progress** (crate + all 13 tools implemented, `/mcp/v1` mount pending). `web-ui`
+> and `cluster` are **pending** (specs drafted).
 
 - Recursive resolution from the root servers with DNSSEC validation — no upstream provider
 - AdGuard-compatible filter lists, custom rules, "why was this blocked?"
@@ -35,6 +36,8 @@ cargo run -p dnscraft-resolver --example query -- example.com A
 | [`dnscraft-policy`](crates/dnscraft-policy/README.md) | Views/profiles and the query pipeline | [`policy`](CAPABILITY-MAP.md) |
 | [`dnscraft-listeners`](crates/dnscraft-listeners/README.md) | Do53 / DoT / DoH / DoQ listeners | [`listeners`](CAPABILITY-MAP.md) |
 | [`dnscraft-api`](crates/dnscraft-api/README.md) | HTTP API, config, query log, stats, audit, auth | [`control-api`](CAPABILITY-MAP.md) |
+| [`dnscraft-mcp`](crates/dnscraft-mcp) | MCP server for AI assistants (13 tools) | [`mcp`](CAPABILITY-MAP.md) |
+| [`dnscraft`](crates/dnscraft/README.md) | Minimal server binary (TOML bootstrap) | (binary) |
 
 ## Documentation
 
@@ -58,7 +61,10 @@ cargo run -p dnscraft-resolver --example query -- example.com A
   [0002 ring-only crypto](docs/adr/0002-ring-only-crypto.md),
   [0003 policy ClientDirectory](docs/adr/0003-policy-client-directory.md),
   [0004 listeners Admission](docs/adr/0004-listeners-shared-admission.md),
-  [0005 injectable Clock](docs/adr/0005-injectable-clock.md)
+  [0005 injectable Clock](docs/adr/0005-injectable-clock.md),
+  [0006 MCP rmcp stateless](docs/adr/0006-mcp-rmcp-stateless.md)
+- [docs/API-REFERENCE.md](docs/API-REFERENCE.md) — API explorer: every REST endpoint
+  and MCP tool, with roles and status (implemented vs. planned)
 - [fuzz/README.md](fuzz/README.md) — fuzz targets, corpora and CI job
 - [tasks/progress.md](tasks/progress.md) — progress log (resume point)
 - [tasks/cursor-next.md](tasks/cursor-next.md) — agent workflow rules and templates
