@@ -4,13 +4,13 @@ A lightweight, self-hosted, recursive DNS resolver for home networks — written
 
 > **Status** (see [tasks/progress.md](tasks/progress.md)): `resolver`, `filtering`,
 > `clients`, `tls` and `policy` are **complete**. `listeners` is **in progress**
-> (Do53 / DoT / DoH h2+h1.1 / DoQ; next Checkpoint C). `control-api`, `web-ui`,
-> `mcp` and `cluster` are **pending**.
+> (Do53 / DoT / DoH h2+h1.1 / DoQ; next Checkpoint C). `control-api` is **in progress**
+> (A0, A1 complete). `web-ui`, `mcp` and `cluster` are **pending**.
 
 - Recursive resolution from the root servers with DNSSEC validation — no upstream provider
 - AdGuard-compatible filter lists, custom rules, "why was this blocked?"
 - Split-horizon answers per source subnet, forward zones for private networks
-- Do53, DoT, DoH (HTTP/2 + HTTP/1.1), DoQ — public access via per-device Client IDs (DoH over HTTP/3 planned)
+- Do53, DoT, DoH (HTTP/2 + HTTP/1.1 + HTTP/3), DoQ — public access via per-device Client IDs
 - Certificates via ACME DNS-01 (Cloudflare)
 - UniFi integration for device names in the query log
 - Multi-node (master + sub-nodes), Docker-first, multiple NICs (planned)
@@ -34,6 +34,7 @@ cargo run -p dnscraft-resolver --example query -- example.com A
 | [`dnscraft-tls`](crates/dnscraft-tls/README.md) | ACME DNS-01, cert store, DynDNS, SNI helpers | [`tls`](CAPABILITY-MAP.md) |
 | [`dnscraft-policy`](crates/dnscraft-policy/README.md) | Views/profiles and the query pipeline | [`policy`](CAPABILITY-MAP.md) |
 | [`dnscraft-listeners`](crates/dnscraft-listeners/README.md) | Do53 / DoT / DoH / DoQ listeners | [`listeners`](CAPABILITY-MAP.md) |
+| [`dnscraft-api`](crates/dnscraft-api/README.md) | HTTP API, config, query log, stats, audit, auth | [`control-api`](CAPABILITY-MAP.md) |
 
 ## Documentation
 
@@ -41,7 +42,8 @@ cargo run -p dnscraft-resolver --example query -- example.com A
 - [SPEC.md](SPEC.md) — project-wide specification
 - [SPEC-resolver.md](SPEC-resolver.md) · [SPEC-filtering.md](SPEC-filtering.md) ·
   [SPEC-clients.md](SPEC-clients.md) · [SPEC-tls.md](SPEC-tls.md) ·
-  [SPEC-policy.md](SPEC-policy.md) · [SPEC-listeners.md](SPEC-listeners.md)
+  [SPEC-policy.md](SPEC-policy.md) · [SPEC-listeners.md](SPEC-listeners.md) ·
+  [SPEC-control-api.md](SPEC-control-api.md)
 - Crate READMEs: [proto](crates/dnscraft-proto/README.md),
   [testkit](crates/dnscraft-testkit/README.md),
   [resolver](crates/dnscraft-resolver/README.md),
@@ -49,7 +51,8 @@ cargo run -p dnscraft-resolver --example query -- example.com A
   [clients](crates/dnscraft-clients/README.md),
   [tls](crates/dnscraft-tls/README.md),
   [policy](crates/dnscraft-policy/README.md),
-  [listeners](crates/dnscraft-listeners/README.md)
+  [listeners](crates/dnscraft-listeners/README.md),
+  [api](crates/dnscraft-api/README.md)
 - [docs/adr/](docs/adr/) — architecture decision records:
   [0001 recursion engine](docs/adr/0001-recursion-engine.md),
   [0002 ring-only crypto](docs/adr/0002-ring-only-crypto.md),

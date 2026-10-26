@@ -14,10 +14,12 @@
 
 #![deny(missing_docs)]
 
+mod audit;
 mod config;
 mod error;
 mod storage;
 
+pub use audit::{Audit, ConfigChangeRecord};
 pub use config::{
     AuthConfig, ControlApiConfig, DEFAULT_API_TOKEN_MAX_TTL, DEFAULT_AUTH_PER_SECOND, DEFAULT_BIND,
     DEFAULT_BURST_FACTOR, DEFAULT_LOCAL_LOGIN_LOCK_WINDOW, DEFAULT_LOCAL_LOGIN_MAX_ATTEMPTS,
@@ -26,4 +28,4 @@ pub use config::{
     DEFAULT_WRITE_PER_SECOND, IpTruncate, QueryLogConfig, RateLimitConfig,
 };
 pub use error::ControlApiError;
-pub use storage::{AuditRecord, Db};
+pub use storage::{AuditRecord, ConfigStore, Db};

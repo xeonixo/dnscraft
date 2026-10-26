@@ -441,6 +441,7 @@ dependencies = [
 name = "dnscraft-api"
 version = "0.1.0"
 dependencies = [
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",
