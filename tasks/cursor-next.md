@@ -9,7 +9,7 @@
 ## Status (updated 2026-10-25)
 
 - `resolver`, `filtering`, `clients`, `tls`, `policy`: complete.
-- `listeners`: N9 DoQ done 2026-10-26; **next: Checkpoint C** (encrypted e2e + Claude review).
+- `listeners`: Checkpoint C impl done 2026-10-26; **STOP for Claude re-review** (do not start N10).
 
 ## Rules for every task (paste once per session)
 

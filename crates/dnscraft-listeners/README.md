@@ -10,7 +10,8 @@ Plan / remaining tasks: [`tasks/todo-listeners.md`](../../tasks/todo-listeners.m
 
 ## Status
 
-In progress (N9 DoQ done; **next: Checkpoint C** — encrypted e2e + review).
+Checkpoint C impl done (`tests/checkpoint_c.rs`); **STOP for Claude re-review**
+(do not start N10).
 
 **Implemented today**
 

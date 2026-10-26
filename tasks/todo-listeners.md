@@ -244,8 +244,8 @@ admission and strikes as DoT.
 **Dependencies:** N6 · **Files:** `src/doq.rs`, `tests/doq.rs` · **Scope:** M
 
 ## Checkpoint C: Encrypted end to end
-- [ ] One test sends the same question over UDP, TCP, DoT, DoH (h2 + http/1.1) and DoQ and compares the decoded answers
-- [ ] Public admission matrix across DoT/DoH/DoQ; cert hot reload
+- [x] One test sends the same question over UDP, TCP, DoT, DoH (h2 + http/1.1) and DoQ and compares the decoded answers
+- [x] Public admission matrix across DoT/DoH/DoQ; cert hot reload
 - [ ] DoD green; Claude review (security focus: admission, strikes, caps); progress.md updated
 
 ## Phase 3: Discovery, runtime, HTTP/3
