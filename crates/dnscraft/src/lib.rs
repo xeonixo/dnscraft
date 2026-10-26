@@ -126,6 +126,7 @@ pub(crate) fn parse_config(text: &str, source: &str) -> Result<Config, Error> {
 pub struct App {
     set: ListenerSet<PolicyEngine>,
     writer: JoinHandle<()>,
+    sink: Arc<dyn QueryEventSink>,
 }
 
 impl App {
@@ -141,6 +142,10 @@ impl App {
         // writer finishes soon after; the timeout is a backstop against a
         // leaked sender holding the writer (and the process) open.
         let _ = tokio::time::timeout(Duration::from_secs(2), self.writer).await;
+        let dropped = self.sink.events_dropped();
+        if dropped > 0 {
+            eprintln!("dnscraft: {dropped} query events dropped");
+        }
     }
 }
 
@@ -174,10 +179,18 @@ pub async fn build(
 
     let (sink, rx) = ChannelSink::new(1024);
     let sink: Arc<dyn QueryEventSink> = sink;
+    let listener_sink = Arc::clone(&sink);
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let set = ListenerSet::start(listeners, engine, certs, sink, clock, config.public_domain)
-        .await
-        .map_err(|e| Error::startup("dnscraft.startup.listeners", format!("listeners: {e}")))?;
+    let set = ListenerSet::start(
+        listeners,
+        engine,
+        certs,
+        listener_sink,
+        clock,
+        config.public_domain,
+    )
+    .await
+    .map_err(|e| Error::startup("dnscraft.startup.listeners", format!("listeners: {e}")))?;
 
     if !config.allow_partial_bind {
         let failures: Vec<String> = set
@@ -196,8 +209,8 @@ pub async fn build(
         }
     }
 
-    let writer = tokio::spawn(events::write_events(rx));
-    Ok(App { set, writer })
+    let writer = tokio::task::spawn_blocking(move || events::write_events_blocking(rx));
+    Ok(App { set, writer, sink })
 }
 
 /// Loads `config_path`, builds and runs until SIGTERM/SIGINT, then shuts down.

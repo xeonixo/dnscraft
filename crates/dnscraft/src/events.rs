@@ -10,13 +10,14 @@ use tokio::sync::mpsc;
 
 /// Writes each received event as one JSON object per line on stdout.
 ///
-/// A dedicated task owns the blocking stdout handle so the answer path never
-/// blocks; `serde_json` handles all string escaping.
-pub async fn write_events(mut rx: mpsc::Receiver<QueryEvent>) {
-    while let Some(event) = rx.recv().await {
+/// Runs on a dedicated thread (spawned with `spawn_blocking` in [`crate::build`])
+/// so the blocking stdout writes never block the async runtime; `serde_json`
+/// handles all string escaping.
+pub fn write_events_blocking(mut rx: mpsc::Receiver<QueryEvent>) {
+    while let Some(event) = rx.blocking_recv() {
         if let Ok(line) = serde_json::to_string(&event_json(&event)) {
             // Lock stdout only for the duration of the write so the guard
-            // (`StdoutLock` is `!Send`) never lives across an `.await`.
+            // (`StdoutLock` is `!Send`) never lives across an await point.
             let mut out = std::io::stdout().lock();
             let _ = writeln!(out, "{line}");
             let _ = out.flush();
@@ -66,6 +67,7 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use dnscraft_filtering::SetId;
+    use dnscraft_listeners::{ChannelSink, QueryEventSink};
     use dnscraft_policy::{
         AnswerOrigin, DecisionRecord, DecisionTimings, DnsProtocol, ListenerId, ProfileId,
         SelectionCause, ViewId,
@@ -119,5 +121,17 @@ mod tests {
         // And the whole line must still be valid JSON.
         let parsed: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["qname"], "a\"b.example.com.");
+    }
+
+    /// The writer is a plain blocking function (no async runtime needed) and
+    /// returns once the channel closes; the answer path runs it on a dedicated
+    /// thread so blocking stdout writes never stall the runtime.
+    #[test]
+    fn writer_is_blocking_and_drains_the_channel() {
+        let (sink, rx) = ChannelSink::new(8);
+        let handle = std::thread::spawn(move || write_events_blocking(rx));
+        assert!(sink.try_send(event()));
+        drop(sink); // close the channel → writer returns
+        handle.join().unwrap();
     }
 }
