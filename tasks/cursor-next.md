@@ -6,10 +6,12 @@
 > [archive/cursor-clients-tls-policy.md](archive/cursor-clients-tls-policy.md).
 > Background: [SPEC.md](../SPEC.md) · [CAPABILITY-MAP.md](../CAPABILITY-MAP.md) · [progress.md](progress.md).
 
-## Status (updated 2026-10-25)
+## Status (updated 2026-10-26)
 
 - `resolver`, `filtering`, `clients`, `tls`, `policy`: complete.
 - `listeners`: Checkpoint C impl done 2026-10-26; **STOP for Claude re-review** (do not start N10).
+- Docs catch-up (D1–D6) done 2026-10-26: root README, crate READMEs, CAPABILITY-MAP Status,
+  ADRs 0002–0005; see progress.md Log.
 
 ## Rules for every task (paste once per session)
 
