@@ -79,6 +79,9 @@ forgotten on one path.
 - [x] Audit rows are append-only and carry `before_digest`/`after_digest` plus redacted snapshots.
 - [x] A fake secret placed in config appears as `"redacted"` in both the stored snapshot and
       the audit before/after; the plaintext never reaches SQLite (regression test).
+- [x] Token/session *secret* keys (`client_secret`, `api_key`, `session_id`, `bearer`) are
+      redacted by token match, and non-secret durations/counts (`*_ttl`, `*_timeout`,
+      `*_max_attempts`) are kept (R1 token-based redaction + allow-list; tests in `audit.rs`).
 - [x] Rollback-by-version is prepared: a stored version can be read back as the exact snapshot.
 
 **Verification:** `cargo test -p dnscraft-api config_store`
