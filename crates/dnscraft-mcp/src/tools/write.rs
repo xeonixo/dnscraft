@@ -18,16 +18,25 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{McpServer, invalid_input, parse_arguments, schema, token_from};
-use crate::dto::{AuditEntry, AuditResult, PauseDuration, TempAllowParams, TokenInfo, TokenScope};
+use crate::dto::{
+    AddRuleParams, AuditEntry, AuditResult, PauseDuration, RemoveRuleParams, TempAllowParams,
+    TokenInfo, TokenScope,
+};
 use crate::error::McpError;
 use crate::result::{tool_error, tool_ok};
-use crate::sanitize::{CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_REASON, SafeText};
+use crate::sanitize::{
+    CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_REASON, CAP_RULE_TEXT, SafeText,
+};
 
 /// Static description for `allow_temporarily`.
 const ALLOW_DESCRIPTION: &str = "Temporarily allow a domain that is currently blocked, for a specified duration. The allow expires automatically. Use this when a legitimate site is blocked by a list and needs immediate access. Requires mcp:write scope and write_tools_enabled. The client will ask you to confirm this action. This affects every client using this filter set.";
 
-const ADD_RULE_SCOPE: &str = "Add a structured block rule.";
-const REMOVE_RULE_SCOPE: &str = "Remove an MCP-created block rule.";
+/// Static description for `add_rule`.
+const ADD_RULE_DESCRIPTION: &str = "Add a custom block rule to a filter set. The rule is built from structured input; no raw AdGuard syntax is accepted via MCP. Requires mcp:write scope and write_tools_enabled. The client will ask you to confirm. This affects every client using this filter set.";
+
+/// Static description for `remove_rule`.
+const REMOVE_RULE_DESCRIPTION: &str = "Remove a custom block rule that was previously added via MCP. Only rules created via MCP can be removed; web UI rules and downloaded list rules cannot. Requires mcp:write scope.";
+
 const PAUSE_SCOPE: &str = "Pause a filter set for a fixed duration.";
 const RESUME_SCOPE: &str = "Resume a paused filter set.";
 
@@ -48,8 +57,8 @@ pub fn is_write_tool(name: &str) -> bool {
 pub fn tool_definitions() -> Vec<Tool> {
     vec![
         allow_definition(),
-        placeholder("add_rule", ADD_RULE_SCOPE),
-        placeholder("remove_rule", REMOVE_RULE_SCOPE),
+        add_rule_definition(),
+        remove_rule_definition(),
         placeholder("pause_filter_set", PAUSE_SCOPE),
         placeholder("resume_filter_set", RESUME_SCOPE),
     ]
@@ -92,6 +101,60 @@ fn allow_definition() -> Tool {
     .with_annotations(ToolAnnotations::new().destructive(true).idempotent(false))
 }
 
+fn add_rule_definition() -> Tool {
+    Tool::new(
+        "add_rule",
+        ADD_RULE_DESCRIPTION,
+        schema(json!({
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "description": "Domain name to block (validated; no wildcards, no single-label names, no IP addresses)"
+                },
+                "include_subdomains": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Apply to all subdomains"
+                },
+                "filter_set_id": {
+                    "type": "string",
+                    "description": "Filter set ID (default set if omitted)"
+                },
+                "reason": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "description": "Why this rule is being added (optional, for audit; sanitized before storage)"
+                }
+            },
+            "required": ["domain"]
+        })),
+    )
+    .with_annotations(ToolAnnotations::new().destructive(true).idempotent(false))
+}
+
+fn remove_rule_definition() -> Tool {
+    Tool::new(
+        "remove_rule",
+        REMOVE_RULE_DESCRIPTION,
+        schema(json!({
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "description": "Domain of the MCP-created rule to remove (exact match)"
+                },
+                "filter_set_id": {
+                    "type": "string",
+                    "description": "Filter set ID (default set if omitted)"
+                }
+            },
+            "required": ["domain"]
+        })),
+    )
+    .with_annotations(ToolAnnotations::new().destructive(true).idempotent(true))
+}
+
 /// A not-yet-implemented write tool definition (until its task lands).
 fn placeholder(name: &'static str, description: &'static str) -> Tool {
     let mut input_schema = JsonObject::new();
@@ -117,6 +180,8 @@ pub(crate) async fn call(
     }
     match name {
         "allow_temporarily" => allow_temporarily(arguments, server, &token).await,
+        "add_rule" => add_rule(arguments, server, &token).await,
+        "remove_rule" => remove_rule(arguments, server, &token).await,
         other => tool_error(
             "control_api.internal",
             json!({ "reason": "not_implemented", "tool": other }),
@@ -244,6 +309,263 @@ async fn allow_temporarily(
                 "mcp.allow_temporarily",
                 None,
                 Some(after),
+                AuditResult::Error,
+                Some(&code),
+            )
+            .await;
+            tool_error(&code, params)
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddRuleArgs {
+    domain: String,
+    include_subdomains: Option<bool>,
+    filter_set_id: Option<String>,
+    reason: Option<String>,
+}
+
+async fn add_rule(
+    arguments: Option<JsonObject>,
+    server: &McpServer,
+    token: &TokenInfo,
+) -> CallToolResult {
+    let args = match parse_arguments::<AddRuleArgs>(arguments) {
+        Ok(args) => args,
+        Err(error) => return error,
+    };
+    let domain = match validate_domain(&args.domain) {
+        Ok(domain) => domain,
+        Err(error) => return error,
+    };
+    let include_subdomains = args.include_subdomains.unwrap_or(true);
+    let reason = sanitize_reason(args.reason.as_deref());
+    let filter_set_id = args.filter_set_id.clone();
+
+    if let Err(error) = protected_violation(server, &domain, include_subdomains) {
+        let after = rule_failure_after(
+            &domain,
+            include_subdomains,
+            filter_set_id.as_deref(),
+            &reason,
+        );
+        record(
+            server,
+            token,
+            "mcp.add_rule",
+            None,
+            Some(after),
+            AuditResult::Error,
+            Some(error.code()),
+        )
+        .await;
+        return tool_error(error.code(), error.params().unwrap_or_else(|| json!({})));
+    }
+
+    let params = AddRuleParams {
+        domain: domain.clone(),
+        include_subdomains,
+        filter_set_id: filter_set_id.clone(),
+        lifetime_seconds: server.config.max_block_rule_lifetime.as_secs(),
+    };
+    match server.backend.add_custom_rule(params).await {
+        Ok(result) => {
+            let after = json!({
+                "domain": SafeText::new(&domain, CAP_DOMAIN),
+                "include_subdomains": include_subdomains,
+                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
+                "reason": reason,
+                "rule_text": SafeText::new(&result.rule_text, CAP_RULE_TEXT),
+                "created_at": SafeText::new(&result.created_at, CAP_CLIENT_NAME),
+                "expires_at": SafeText::new(&result.expires_at, CAP_CLIENT_NAME),
+                "config_version": result.config_version,
+            });
+            record(
+                server,
+                token,
+                "mcp.add_rule",
+                None,
+                Some(after),
+                AuditResult::Success,
+                None,
+            )
+            .await;
+            tool_ok(json!({
+                "rule_text": SafeText::new(&result.rule_text, CAP_RULE_TEXT),
+                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
+                "domain": SafeText::new(&domain, CAP_DOMAIN),
+                "include_subdomains": include_subdomains,
+                "created_at": SafeText::new(&result.created_at, CAP_CLIENT_NAME),
+                "expires_at": SafeText::new(&result.expires_at, CAP_CLIENT_NAME),
+            }))
+        }
+        Err(error) => {
+            let code = error.code().to_owned();
+            let params = error.params().unwrap_or_else(|| json!({}));
+            let after = rule_failure_after(
+                &domain,
+                include_subdomains,
+                filter_set_id.as_deref(),
+                &reason,
+            );
+            record(
+                server,
+                token,
+                "mcp.add_rule",
+                None,
+                Some(after),
+                AuditResult::Error,
+                Some(&code),
+            )
+            .await;
+            tool_error(&code, params)
+        }
+    }
+}
+
+fn rule_failure_after(
+    domain: &str,
+    include_subdomains: bool,
+    filter_set_id: Option<&str>,
+    reason: &str,
+) -> Value {
+    json!({
+        "domain": SafeText::new(domain, CAP_DOMAIN),
+        "include_subdomains": include_subdomains,
+        "filter_set_id": filter_set_id.map(|id| SafeText::new(id, CAP_LIST_ID)),
+        "reason": reason,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoveRuleArgs {
+    domain: String,
+    filter_set_id: Option<String>,
+}
+
+async fn remove_rule(
+    arguments: Option<JsonObject>,
+    server: &McpServer,
+    token: &TokenInfo,
+) -> CallToolResult {
+    let args = match parse_arguments::<RemoveRuleArgs>(arguments) {
+        Ok(args) => args,
+        Err(error) => return error,
+    };
+    let domain = match validate_domain(&args.domain) {
+        Ok(domain) => domain,
+        Err(error) => return error,
+    };
+    let filter_set_id = args.filter_set_id.clone();
+    let before = json!({
+        "domain": SafeText::new(&domain, CAP_DOMAIN),
+        "filter_set_id": filter_set_id.as_deref().map(|id| SafeText::new(id, CAP_LIST_ID)),
+    });
+
+    let found = match server
+        .backend
+        .find_mcp_rule(&domain, filter_set_id.as_deref())
+        .await
+    {
+        Ok(found) => found,
+        Err(error) => {
+            let code = error.code().to_owned();
+            let params = error.params().unwrap_or_else(|| json!({}));
+            record(
+                server,
+                token,
+                "mcp.remove_rule",
+                Some(before),
+                Some(json!({ "removed": false })),
+                AuditResult::Error,
+                Some(&code),
+            )
+            .await;
+            return tool_error(&code, params);
+        }
+    };
+
+    if let Some(rule) = &found
+        && let Err(error) = protected_violation(server, &domain, rule.include_subdomains)
+    {
+        record(
+            server,
+            token,
+            "mcp.remove_rule",
+            Some(before),
+            Some(json!({ "removed": false })),
+            AuditResult::Error,
+            Some(error.code()),
+        )
+        .await;
+        return tool_error(error.code(), error.params().unwrap_or_else(|| json!({})));
+    }
+
+    let Some(rule) = found else {
+        let after = json!({
+            "domain": SafeText::new(&domain, CAP_DOMAIN),
+            "filter_set_id": filter_set_id.as_deref().map(|id| SafeText::new(id, CAP_LIST_ID)),
+            "removed": false,
+            "config_version": Value::Null,
+        });
+        record(
+            server,
+            token,
+            "mcp.remove_rule",
+            Some(before),
+            Some(after),
+            AuditResult::Success,
+            None,
+        )
+        .await;
+        return tool_ok(json!({ "removed": false }));
+    };
+
+    let params = RemoveRuleParams {
+        domain: domain.clone(),
+        filter_set_id: filter_set_id.clone(),
+    };
+    match server.backend.remove_custom_rule(params).await {
+        Ok(result) => {
+            let after = json!({
+                "domain": SafeText::new(&domain, CAP_DOMAIN),
+                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
+                "removed": result.removed,
+                "config_version": result.config_version,
+                "rule_id": SafeText::new(&rule.id, CAP_LIST_ID),
+            });
+            record(
+                server,
+                token,
+                "mcp.remove_rule",
+                Some(before),
+                Some(after),
+                AuditResult::Success,
+                None,
+            )
+            .await;
+            if result.removed {
+                tool_ok(json!({
+                    "removed": true,
+                    "domain": SafeText::new(&domain, CAP_DOMAIN),
+                    "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
+                }))
+            } else {
+                tool_ok(json!({ "removed": false }))
+            }
+        }
+        Err(error) => {
+            let code = error.code().to_owned();
+            let params = error.params().unwrap_or_else(|| json!({}));
+            record(
+                server,
+                token,
+                "mcp.remove_rule",
+                Some(before),
+                Some(json!({ "removed": false })),
                 AuditResult::Error,
                 Some(&code),
             )

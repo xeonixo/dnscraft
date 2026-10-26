@@ -685,8 +685,10 @@ pub struct AddRuleParams {
     pub domain: String,
     /// Whether subdomains are covered.
     pub include_subdomains: bool,
-    /// Filter set that receives the rule.
-    pub filter_set_id: String,
+    /// Filter set that receives the rule; the backend resolves the default.
+    pub filter_set_id: Option<String>,
+    /// Server-assigned lifetime in seconds (`max_block_rule_lifetime`).
+    pub lifetime_seconds: u64,
 }
 
 /// Result of `add_rule`.
@@ -694,19 +696,25 @@ pub struct AddRuleParams {
 pub struct AddRuleResult {
     /// Server-assigned rule id.
     pub rule_id: String,
+    /// Generated rule text.
+    pub rule_text: String,
+    /// Filter set that received the rule.
+    pub filter_set_id: String,
+    /// Server-set RFC 3339 creation timestamp.
+    pub created_at: String,
     /// Server-set RFC 3339 expiry timestamp.
     pub expires_at: String,
-    /// Configuration version produced by the mutation.
-    pub config_version: u64,
+    /// Configuration version produced by the mutation, when any.
+    pub config_version: Option<u64>,
 }
 
 /// Input for `remove_rule`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveRuleParams {
-    /// Rule id to remove.
-    pub rule_id: String,
-    /// Filter set that owns the rule.
-    pub filter_set_id: String,
+    /// Canonical domain of the MCP-created rule.
+    pub domain: String,
+    /// Filter set that owns the rule; the backend resolves the default.
+    pub filter_set_id: Option<String>,
 }
 
 /// Result of `remove_rule`.
@@ -714,8 +722,10 @@ pub struct RemoveRuleParams {
 pub struct RemoveRuleResult {
     /// Whether a rule was removed.
     pub removed: bool,
-    /// Configuration version produced by the mutation.
-    pub config_version: u64,
+    /// Filter set that was inspected (resolved by the backend).
+    pub filter_set_id: String,
+    /// Configuration version produced by the mutation, when any.
+    pub config_version: Option<u64>,
 }
 
 /// Result of `pause_filter_set`.

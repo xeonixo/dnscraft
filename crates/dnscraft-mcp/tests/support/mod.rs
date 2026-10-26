@@ -107,6 +107,21 @@ pub struct MockBackend {
     pub last_allow: Mutex<Option<TempAllowParams>>,
     /// Number of `allow_temporarily` calls.
     pub allow_calls: AtomicUsize,
+    add_result: Mutex<Option<Result<AddRuleResult, BackendError>>>,
+    /// Parameters of the most recent `add_custom_rule` call.
+    pub last_add: Mutex<Option<AddRuleParams>>,
+    /// Number of `add_custom_rule` calls.
+    pub add_calls: AtomicUsize,
+    find_result: Mutex<Option<Result<Option<McpRuleInfo>, BackendError>>>,
+    /// Arguments of the most recent `find_mcp_rule` call.
+    pub last_find: Mutex<Option<(String, Option<String>)>>,
+    /// Number of `find_mcp_rule` calls.
+    pub find_calls: AtomicUsize,
+    remove_result: Mutex<Option<Result<RemoveRuleResult, BackendError>>>,
+    /// Parameters of the most recent `remove_custom_rule` call.
+    pub last_remove: Mutex<Option<RemoveRuleParams>>,
+    /// Number of `remove_custom_rule` calls.
+    pub remove_calls: AtomicUsize,
     audits: Mutex<Vec<AuditEntry>>,
     audit_error: Mutex<Option<BackendError>>,
 }
@@ -267,6 +282,51 @@ impl MockBackend {
     /// Number of `allow_temporarily` calls.
     pub fn allow_calls(&self) -> usize {
         self.allow_calls.load(Ordering::SeqCst)
+    }
+
+    /// Set the `add_custom_rule` result.
+    pub fn set_add(&self, value: Result<AddRuleResult, BackendError>) {
+        *slot(&self.add_result) = Some(value);
+    }
+
+    /// Parameters of the most recent `add_custom_rule` call.
+    pub fn last_add(&self) -> Option<AddRuleParams> {
+        slot(&self.last_add).clone()
+    }
+
+    /// Number of `add_custom_rule` calls.
+    pub fn add_calls(&self) -> usize {
+        self.add_calls.load(Ordering::SeqCst)
+    }
+
+    /// Set the `find_mcp_rule` result.
+    pub fn set_find(&self, value: Result<Option<McpRuleInfo>, BackendError>) {
+        *slot(&self.find_result) = Some(value);
+    }
+
+    /// Arguments of the most recent `find_mcp_rule` call.
+    pub fn last_find(&self) -> Option<(String, Option<String>)> {
+        slot(&self.last_find).clone()
+    }
+
+    /// Number of `find_mcp_rule` calls.
+    pub fn find_calls(&self) -> usize {
+        self.find_calls.load(Ordering::SeqCst)
+    }
+
+    /// Set the `remove_custom_rule` result.
+    pub fn set_remove(&self, value: Result<RemoveRuleResult, BackendError>) {
+        *slot(&self.remove_result) = Some(value);
+    }
+
+    /// Parameters of the most recent `remove_custom_rule` call.
+    pub fn last_remove(&self) -> Option<RemoveRuleParams> {
+        slot(&self.last_remove).clone()
+    }
+
+    /// Number of `remove_custom_rule` calls.
+    pub fn remove_calls(&self) -> usize {
+        self.remove_calls.load(Ordering::SeqCst)
     }
 
     /// Audit entries recorded so far.
@@ -484,15 +544,33 @@ impl McpBackend for MockBackend {
             .unwrap_or_else(|| Ok(TempAllowResult::default()))
     }
 
-    async fn add_custom_rule(&self, _params: AddRuleParams) -> Result<AddRuleResult, BackendError> {
-        Ok(AddRuleResult::default())
+    async fn add_custom_rule(&self, params: AddRuleParams) -> Result<AddRuleResult, BackendError> {
+        *slot(&self.last_add) = Some(params);
+        self.add_calls.fetch_add(1, Ordering::SeqCst);
+        slot(&self.add_result)
+            .clone()
+            .unwrap_or_else(|| Ok(AddRuleResult::default()))
+    }
+
+    async fn find_mcp_rule(
+        &self,
+        domain: &str,
+        filter_set_id: Option<&str>,
+    ) -> Result<Option<McpRuleInfo>, BackendError> {
+        *slot(&self.last_find) = Some((domain.to_owned(), filter_set_id.map(str::to_owned)));
+        self.find_calls.fetch_add(1, Ordering::SeqCst);
+        slot(&self.find_result).clone().unwrap_or(Ok(None))
     }
 
     async fn remove_custom_rule(
         &self,
-        _params: RemoveRuleParams,
+        params: RemoveRuleParams,
     ) -> Result<RemoveRuleResult, BackendError> {
-        Ok(RemoveRuleResult::default())
+        *slot(&self.last_remove) = Some(params);
+        self.remove_calls.fetch_add(1, Ordering::SeqCst);
+        slot(&self.remove_result)
+            .clone()
+            .unwrap_or_else(|| Ok(RemoveRuleResult::default()))
     }
 
     async fn pause_filter_set(

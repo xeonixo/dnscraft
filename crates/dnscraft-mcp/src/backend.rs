@@ -14,10 +14,10 @@ use serde_json::Value;
 
 use crate::dto::{
     AddRuleParams, AddRuleResult, AuditEntry, ClientListParams, ClientListResult,
-    ExplainBlockResult, ListRulesParams, ListRulesResult, NodeStatus, PauseDuration, PauseResult,
-    QType, QueryDetail, QueryLogResult, QueryLogSearch, RemoveRuleParams, RemoveRuleResult,
-    ResumeResult, StatsParams, StatsResult, TempAllowParams, TempAllowResult, TestQueryParams,
-    TestQueryResult, TokenInfo,
+    ExplainBlockResult, ListRulesParams, ListRulesResult, McpRuleInfo, NodeStatus, PauseDuration,
+    PauseResult, QType, QueryDetail, QueryLogResult, QueryLogSearch, RemoveRuleParams,
+    RemoveRuleResult, ResumeResult, StatsParams, StatsResult, TempAllowParams, TempAllowResult,
+    TestQueryParams, TestQueryResult, TokenInfo,
 };
 
 /// An error returned by an [`McpBackend`] implementation.
@@ -127,6 +127,16 @@ pub trait McpBackend: Send + Sync {
 
     /// Create an MCP-managed block rule.
     async fn add_custom_rule(&self, params: AddRuleParams) -> Result<AddRuleResult, BackendError>;
+
+    /// Look up one MCP-created rule by canonical domain and filter set.
+    ///
+    /// `remove_rule` needs the stored `include_subdomains` flag for the
+    /// protected-domain check (SPEC-mcp.md § Protected domains).
+    async fn find_mcp_rule(
+        &self,
+        domain: &str,
+        filter_set_id: Option<&str>,
+    ) -> Result<Option<McpRuleInfo>, BackendError>;
 
     /// Remove an MCP-created rule.
     async fn remove_custom_rule(
