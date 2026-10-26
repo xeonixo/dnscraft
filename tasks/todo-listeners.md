@@ -246,7 +246,7 @@ admission and strikes as DoT.
 ## Checkpoint C: Encrypted end to end
 - [x] One test sends the same question over UDP, TCP, DoT, DoH (h2 + http/1.1) and DoQ and compares the decoded answers
 - [x] Public admission matrix across DoT/DoH/DoQ; cert hot reload
-- [ ] DoD green; Claude review (security focus: admission, strikes, caps); progress.md updated
+- [x] DoD green; Claude review (security focus: admission, strikes, caps); progress.md updated (approved 2026-10-26 after two fix rounds)
 
 ## Phase 3: Discovery, runtime, HTTP/3
 

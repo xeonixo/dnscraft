@@ -84,7 +84,7 @@ Gate after adding any of them: `cargo tree -i aws-lc-rs`, `-i aws-lc-sys`, `-i o
 - [x] N9: DoQ
 
 ### Checkpoint C: Encrypted end to end
-- [ ] DoT / DoH / DoQ answer identically to Do53; public admission matrix; cert hot reload; Claude review
+- [x] DoT / DoH / DoQ answer identically to Do53; public admission matrix; cert hot reload; Claude review ✓ (2026-10-26)
 
 ### Phase 3: Discovery, runtime, HTTP/3
 - [ ] N10: DDR `_dns.resolver.arpa`
