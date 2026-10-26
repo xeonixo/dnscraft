@@ -177,6 +177,9 @@ fn requirement(method: &Method, path: &str) -> Requirement {
     if path == "/api/v1/auth/logout" || path == "/api/v1/auth/me" {
         return Requirement::Api;
     }
+    if is_config_path(path) {
+        return Requirement::ApiAdmin;
+    }
     match EndpointFamily::for_path(path) {
         Some(EndpointFamily::Mcp) => Requirement::Mcp,
         Some(EndpointFamily::Api) => {
@@ -188,6 +191,24 @@ fn requirement(method: &Method, path: &str) -> Requirement {
         }
         None => Requirement::Public,
     }
+}
+
+/// Whether `path` is a configuration-family route. These are admin-only for
+/// reads and writes: config exposes network topology (client names, filter
+/// rules, forward zones, TLS settings) that `viewer` must not read.
+fn is_config_path(path: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "/api/v1/config",
+        "/api/v1/policy",
+        "/api/v1/clients",
+        "/api/v1/filter-sets",
+        "/api/v1/filter-lists",
+        "/api/v1/listeners",
+        "/api/v1/tls",
+    ];
+    PREFIXES
+        .iter()
+        .any(|p| path == *p || (path.starts_with(p) && path.as_bytes().get(p.len()) == Some(&b'/')))
 }
 
 /// Checks the scope against the requirement, returning the documented error.
@@ -303,6 +324,24 @@ mod tests {
             requirement(&Method::GET, "/api/v1/query-log"),
             Requirement::Api
         );
+        // Configuration-family routes are admin-only for reads too.
+        for path in [
+            "/api/v1/config",
+            "/api/v1/config/versions",
+            "/api/v1/policy/views",
+            "/api/v1/clients",
+            "/api/v1/clients/manual",
+            "/api/v1/filter-sets",
+            "/api/v1/filter-lists",
+            "/api/v1/listeners",
+            "/api/v1/tls",
+        ] {
+            assert_eq!(
+                requirement(&Method::GET, path),
+                Requirement::ApiAdmin,
+                "config read {path} must be admin-only"
+            );
+        }
         assert_eq!(
             requirement(&Method::POST, "/api/v1/config"),
             Requirement::ApiAdmin
