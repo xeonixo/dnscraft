@@ -434,14 +434,25 @@ async fn handle_stream<H>(
 where
     H: QueryHandler + 'static,
 {
-    let wire = match read_doq_message(&mut recv).await {
-        Ok(w) => w,
-        Err(DoqReadError::Protocol) => {
-            strike_framing(&shared, peer.ip());
-            return Err(DOQ_PROTOCOL_ERROR);
-        }
-        Err(DoqReadError::Closed) => {
-            // Peer abandoned the stream; nothing to answer.
+    let deadline = add_duration(shared.clock.now(), shared.limits.query_timeout);
+    let wake = Notify::new();
+
+    // Per-stream deadline covers read_to_end + handle_wire (RFC 9250 query budget).
+    let wire = tokio::select! {
+        r = read_doq_message(&mut recv) => match r {
+            Ok(w) => w,
+            Err(DoqReadError::Protocol) => {
+                strike_framing(&shared, peer.ip());
+                return Err(DOQ_PROTOCOL_ERROR);
+            }
+            Err(DoqReadError::Closed) => {
+                return Ok(());
+            }
+        },
+        () = wait_until(shared.clock.as_ref(), deadline, &wake) => {
+            // Incomplete message: reset/stop the stream (no DNS answer).
+            let _ = recv.stop(DOQ_NO_ERROR);
+            let _ = send.reset(DOQ_NO_ERROR);
             return Ok(());
         }
     };
@@ -454,7 +465,6 @@ where
             return Err(DOQ_PROTOCOL_ERROR);
         }
         Err(_) => {
-            // Undecodable → still a protocol / framing failure for DoQ.
             strike_framing(&shared, peer.ip());
             return Err(DOQ_PROTOCOL_ERROR);
         }
@@ -482,12 +492,7 @@ where
                 MAX_MESSAGE_LEN,
                 shared.limits.udp_payload_max,
             ) {
-                // Force id 0 on the REFUSED reply (DoQ).
-                let mut out = bytes;
-                if out.len() >= 2 {
-                    out[0] = 0;
-                    out[1] = 0;
-                }
+                let out = force_doq_id0(bytes);
                 let _ = write_frame(&mut send, &out).await;
                 let _ = send.finish();
             }
@@ -510,17 +515,45 @@ where
     };
 
     DoqStats::bump(&shared.stats.queries);
-    let Some(out) = handle_wire(&wire, meta, &*shared.handler).await else {
-        strike_framing(&shared, peer.ip());
-        return Err(DOQ_PROTOCOL_ERROR);
+    let out_bytes = tokio::select! {
+        r = handle_wire(&wire, meta, &*shared.handler) => match r {
+            Some(out) => out.bytes,
+            None => {
+                strike_framing(&shared, peer.ip());
+                return Err(DOQ_PROTOCOL_ERROR);
+            }
+        },
+        () = wait_until(shared.clock.as_ref(), deadline, &wake) => {
+            // Message was complete: answer SERVFAIL within the remaining budget.
+            match error_reply_from_wire(
+                &wire,
+                Rcode::SERVFAIL,
+                MAX_MESSAGE_LEN,
+                shared.limits.udp_payload_max,
+            ) {
+                Some(bytes) => force_doq_id0(bytes),
+                None => {
+                    let _ = send.reset(DOQ_NO_ERROR);
+                    return Ok(());
+                }
+            }
+        }
     };
 
-    if write_frame(&mut send, &out.bytes).await.is_err() {
+    if write_frame(&mut send, &out_bytes).await.is_err() {
         return Ok(());
     }
     let _ = send.finish();
     DoqStats::bump(&shared.stats.answered);
     Ok(())
+}
+
+fn force_doq_id0(mut bytes: Vec<u8>) -> Vec<u8> {
+    if bytes.len() >= 2 {
+        bytes[0] = 0;
+        bytes[1] = 0;
+    }
+    bytes
 }
 
 enum DoqReadError {

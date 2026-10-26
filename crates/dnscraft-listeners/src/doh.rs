@@ -9,7 +9,7 @@ use http::{Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder as AutoBuilder;
 use rustls::ServerConfig;
 use std::collections::HashMap;
@@ -18,15 +18,16 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
-use tokio::sync::{Semaphore, oneshot, watch};
+use tokio::sync::{Notify, Semaphore, oneshot, watch};
 use tokio_rustls::TlsAcceptor;
 
 use crate::admission::{Admission, AdmitDecision, ClientIdState, public_client_id_required};
 use crate::bans::StrikeReason;
-use crate::clock::Clock;
+use crate::clock::{Clock, wait_until};
 use crate::config::{Exposure, Limits, ListenerConfig};
-use crate::core::{QueryMeta, handle_wire};
+use crate::core::{QueryMeta, error_reply_from_wire, handle_wire};
 use crate::doh_request::{
     DNS_MESSAGE_TYPE, DohPath, DohWireError, content_type_of, extract_wire, parse_doh_path,
 };
@@ -268,6 +269,8 @@ fn handle_accept<H>(
         };
 
         let io = TokioIo::new(tls);
+        let idle_timeout = shared.limits.tcp_idle_timeout;
+        let max_streams = shared.limits.max_queries_per_connection.max(1);
         let svc_shared = Arc::clone(&shared);
         let peer_ip = peer.ip();
         let service = service_fn(move |req: Request<Incoming>| {
@@ -275,9 +278,22 @@ fn handle_accept<H>(
             async move { Ok::<_, Infallible>(handle_http(shared, peer_ip, req).await) }
         });
 
-        let _ = AutoBuilder::new(TokioExecutor::new())
-            .serve_connection(io, service)
-            .await;
+        // TokioTimer enables header_read_timeout / h2 keep-alive (works with
+        // tokio::time::pause in tests). h1 idle = header_read_timeout between
+        // requests; h2 idle = PING keep-alive interval/timeout.
+        let mut builder = AutoBuilder::new(TokioExecutor::new());
+        builder
+            .http1()
+            .timer(TokioTimer::new())
+            .header_read_timeout(Some(idle_timeout));
+        builder
+            .http2()
+            .timer(TokioTimer::new())
+            .max_concurrent_streams(max_streams)
+            .keep_alive_interval(Some(idle_timeout))
+            .keep_alive_timeout(idle_timeout);
+
+        let _ = builder.serve_connection(io, service).await;
 
         release_per_source(&shared, source);
         DohStats::bump(&shared.stats.closed);
@@ -385,20 +401,47 @@ where
         udp_payload_max: shared.limits.udp_payload_max,
     };
 
-    let Some(out) = handle_wire(&wire, meta, &*shared.handler).await else {
-        return status_empty(StatusCode::BAD_REQUEST);
+    let deadline = add_duration(shared.clock.now(), shared.limits.query_timeout);
+    let wake = Notify::new();
+    let out_bytes = tokio::select! {
+        r = handle_wire(&wire, meta, &*shared.handler) => match r {
+            Some(out) => out.bytes,
+            None => return status_empty(StatusCode::BAD_REQUEST),
+        },
+        () = wait_until(shared.clock.as_ref(), deadline, &wake) => {
+            match error_reply_from_wire(
+                &wire,
+                Rcode::SERVFAIL,
+                MAX_MESSAGE_LEN,
+                shared.limits.udp_payload_max,
+            ) {
+                Some(mut bytes) => {
+                    // DoH message id must be 0 (RFC 8484).
+                    if bytes.len() >= 2 {
+                        bytes[0] = 0;
+                        bytes[1] = 0;
+                    }
+                    bytes
+                }
+                None => return status_empty(StatusCode::BAD_REQUEST),
+            }
+        }
     };
 
     DohStats::bump(&shared.stats.answered);
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, DNS_MESSAGE_TYPE);
-    if let Some(max_age) = cache_max_age(&out.bytes) {
+    if let Some(max_age) = cache_max_age(&out_bytes) {
         builder = builder.header(header::CACHE_CONTROL, format!("max-age={max_age}"));
     }
     builder
-        .body(Full::new(Bytes::from(out.bytes)))
+        .body(Full::new(Bytes::from(out_bytes)))
         .unwrap_or_else(|_| status_empty(StatusCode::INTERNAL_SERVER_ERROR))
+}
+
+fn add_duration(now: SystemTime, d: Duration) -> SystemTime {
+    now.checked_add(d).unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
 fn resolve_path_client_id<H: ?Sized>(

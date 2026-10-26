@@ -15,10 +15,11 @@ use bytes::Bytes;
 use dnscraft_listeners::{
     DNS_MESSAGE_TYPE, DohPath, DohServeParams, DohStats, DohWireError, Exposure, FakeHandler,
     Limits, ListenerConfig, MAX_DOH_PAYLOAD, PAD_BLOCK, PolicyClientIds, Protocol, PublicConfig,
-    SniGate, SystemClock, TcpServeParams, TcpStats, TlsStats, cache_max_age, extract_wire,
-    parse_doh_path, read_frame, serve_doh, serve_tcp, write_frame,
+    QueryHandler, SniGate, SystemClock, TcpServeParams, TcpStats, TlsStats, cache_max_age,
+    extract_wire, parse_doh_path, read_frame, serve_doh, serve_tcp, write_frame,
 };
 use dnscraft_policy::ListenerId;
+use dnscraft_policy::{PolicyAnswer, PolicyError, RequestContext};
 use dnscraft_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
 use dnscraft_tls::{CertResolver, ReservedLabels};
 use http::{Method, Request, StatusCode, Uri, header};
@@ -33,8 +34,9 @@ use support::certs::example_dns_cert;
 use support::{
     encode_a_query, encode_a_query_edns, fake_a_answer, policy_engine_with_client_ids, poll_until,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{Notify, oneshot, watch};
 use tokio_rustls::TlsConnector;
 
 const DOMAIN: &str = "example.com";
@@ -124,6 +126,23 @@ impl DohHarness {
         if let Some(rr) = answer.message.answers.first_mut() {
             rr.ttl = answer_ttl;
         }
+        Self::spawn_with(
+            exposure,
+            limits,
+            gate,
+            certs,
+            Arc::new(FakeHandler::new(answer)),
+        )
+        .await
+    }
+
+    async fn spawn_with<H: QueryHandler + 'static>(
+        exposure: Exposure,
+        limits: Limits,
+        gate: SniGate,
+        certs: Arc<CertResolver>,
+        handler: Arc<H>,
+    ) -> Self {
         let stats = Arc::new(DohStats::default());
         let tls_stats = Arc::new(TlsStats::default());
         let (bound_tx, bound_rx) = oneshot::channel();
@@ -141,7 +160,7 @@ impl DohHarness {
             listener: listener_doh(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), exposure),
             limits,
             admission,
-            handler: Arc::new(FakeHandler::new(answer)),
+            handler,
             clock: Arc::new(SystemClock),
             stats: Arc::clone(&stats),
             tls_stats,
@@ -461,4 +480,183 @@ fn cache_max_age_min_ttl() {
     ));
     let wire = resp.encode().unwrap();
     assert_eq!(cache_max_age(&wire), Some(45));
+}
+
+struct HangHandler {
+    release: Arc<Notify>,
+    answer: PolicyAnswer,
+}
+
+impl QueryHandler for HangHandler {
+    async fn handle(&self, _ctx: RequestContext) -> Result<PolicyAnswer, PolicyError> {
+        self.release.notified().await;
+        Ok(self.answer.clone())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn doh_partial_headers_closed() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: ReservedLabels::new(["node1".into()]),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+    let idle = Duration::from_secs(5);
+    let h = DohHarness::spawn(
+        Exposure::Local,
+        Limits {
+            tcp_idle_timeout: idle,
+            ..Limits::default()
+        },
+        gate,
+        certs,
+        60,
+    )
+    .await;
+
+    let connector = connector(&[b"http/1.1"]);
+    let tcp = TcpStream::connect(h.addr).await.unwrap();
+    let name = ServerName::try_from("dns.example.com").unwrap();
+    let mut tls = connector.connect(name, tcp).await.unwrap();
+    // Incomplete request-line / headers — header_read_timeout should close.
+    tls.write_all(b"GET /dns-query HTTP/1.1\r\nHost: dns.example.com\r\n")
+        .await
+        .unwrap();
+    tokio::time::advance(idle + Duration::from_secs(1)).await;
+    let mut buf = [0u8; 8];
+    let closed = tokio::time::timeout(Duration::from_secs(1), tls.read(&mut buf)).await;
+    assert!(
+        matches!(closed, Ok(Ok(0)) | Ok(Err(_)) | Err(_)),
+        "partial headers must close the connection: {closed:?}"
+    );
+    h.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn doh_idle_keepalive_closed() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: ReservedLabels::new(["node1".into()]),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+    let idle = Duration::from_secs(5);
+    let h = DohHarness::spawn(
+        Exposure::Local,
+        Limits {
+            tcp_idle_timeout: idle,
+            ..Limits::default()
+        },
+        gate,
+        certs,
+        60,
+    )
+    .await;
+
+    let connector = connector(&[b"http/1.1"]);
+    let tcp = TcpStream::connect(h.addr).await.unwrap();
+    let name = ServerName::try_from("dns.example.com").unwrap();
+    let tls = connector.connect(name, tcp).await.unwrap();
+    let io = TokioIo::new(tls);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await.unwrap();
+    let conn_task = tokio::spawn(conn);
+
+    let q = encode_a_query(1, "example.com.");
+    let enc = URL_SAFE_NO_PAD.encode(&q);
+    let resp = sender
+        .send_request(get_req(&format!("/dns-query?dns={enc}")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let _ = resp.into_body().collect().await.unwrap();
+
+    tokio::time::advance(idle + Duration::from_secs(1)).await;
+    // Connection should have been closed for idle keep-alive.
+    let next = sender
+        .send_request(get_req(&format!("/dns-query?dns={enc}")))
+        .await;
+    assert!(next.is_err(), "idle keep-alive must close: {next:?}");
+    let _ = conn_task.await;
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn doh_h2_stream_cap() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: ReservedLabels::new(["node1".into()]),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+    let release = Arc::new(Notify::new());
+    let h = DohHarness::spawn_with(
+        Exposure::Local,
+        Limits {
+            max_queries_per_connection: 2,
+            ..Limits::default()
+        },
+        gate,
+        certs,
+        Arc::new(HangHandler {
+            release: Arc::clone(&release),
+            answer: fake_a_answer(Ipv4Addr::new(192, 0, 2, 44)),
+        }),
+    )
+    .await;
+
+    let connector = connector(&[b"h2"]);
+    let tcp = TcpStream::connect(h.addr).await.unwrap();
+    let name = ServerName::try_from("dns.example.com").unwrap();
+    let tls = connector.connect(name, tcp).await.unwrap();
+    let io = TokioIo::new(tls);
+    let (mut sender, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+        .handshake(io)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+
+    let q = encode_a_query(1, "example.com.");
+    let enc = URL_SAFE_NO_PAD.encode(&q);
+    let r1 = sender.send_request(get_req(&format!("/dns-query?dns={enc}")));
+    let r2 = sender.send_request(get_req(&format!("/dns-query?dns={enc}")));
+    tokio::pin!(r1);
+    tokio::pin!(r2);
+    // Drive the two hanging streams far enough to occupy the cap.
+    let _ = tokio::time::timeout(Duration::from_millis(100), async {
+        tokio::select! {
+            biased;
+            _ = &mut r1 => {}
+            _ = &mut r2 => {}
+            () = tokio::task::yield_now() => {}
+        }
+    })
+    .await;
+
+    let third = tokio::time::timeout(
+        Duration::from_millis(300),
+        sender.send_request(get_req(&format!("/dns-query?dns={enc}"))),
+    )
+    .await;
+    assert!(
+        third.is_err() || third.as_ref().ok().is_some_and(|r| r.is_err()),
+        "third concurrent h2 stream must be blocked by max_concurrent_streams"
+    );
+
+    release.notify_waiters();
+    h.stop().await;
 }

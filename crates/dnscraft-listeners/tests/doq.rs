@@ -7,12 +7,12 @@ mod support;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use dnscraft_listeners::{
-    DOQ_PROTOCOL_ERROR, DoqServeParams, DoqStats, Exposure, FakeHandler, Limits, ListenerConfig,
-    PAD_BLOCK, PolicyClientIds, Protocol, PublicConfig, SniGate, SystemClock, TcpServeParams,
-    TcpStats, TlsStats, read_frame, serve_doq, serve_tcp, write_frame,
+    Clock, DOQ_PROTOCOL_ERROR, DoqServeParams, DoqStats, Exposure, FakeHandler, Limits,
+    ListenerConfig, ManualClock, PAD_BLOCK, PolicyClientIds, Protocol, PublicConfig, SniGate,
+    SystemClock, TcpServeParams, TcpStats, TlsStats, read_frame, serve_doq, serve_tcp, write_frame,
 };
 use dnscraft_policy::ListenerId;
 use dnscraft_proto::{Message, Rcode};
@@ -152,6 +152,25 @@ impl DoqHarness {
         certs: Arc<CertResolver>,
         answer: Ipv4Addr,
     ) -> Self {
+        Self::spawn_with(
+            exposure,
+            limits,
+            gate,
+            certs,
+            Arc::new(FakeHandler::new(fake_a_answer(answer))),
+            Arc::new(SystemClock),
+        )
+        .await
+    }
+
+    async fn spawn_with<H: dnscraft_listeners::QueryHandler + 'static>(
+        exposure: Exposure,
+        limits: Limits,
+        gate: SniGate,
+        certs: Arc<CertResolver>,
+        handler: Arc<H>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         let stats = Arc::new(DoqStats::default());
         let tls_stats = Arc::new(TlsStats::default());
         let (bound_tx, bound_rx) = oneshot::channel();
@@ -169,8 +188,8 @@ impl DoqHarness {
             listener: listener_doq(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), exposure),
             limits,
             admission,
-            handler: Arc::new(FakeHandler::new(fake_a_answer(answer))),
-            clock: Arc::new(SystemClock),
+            handler,
+            clock,
             stats: Arc::clone(&stats),
             tls_stats: Arc::clone(&tls_stats),
             certs,
@@ -487,6 +506,67 @@ async fn public_sni_matrix() {
     .await;
     assert!(node_conn.open_bi().await.is_err());
     drop(node_conn);
+
+    doq.stop().await;
+}
+
+#[tokio::test]
+async fn stream_query_timeout_frees_cap_for_third() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: ReservedLabels::new(["node1".into()]),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+
+    let clock = Arc::new(ManualClock::new(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(30_000),
+    ));
+    let limits = Limits {
+        max_quic_streams_per_connection: 2,
+        query_timeout: Duration::from_secs(2),
+        tcp_idle_timeout: Duration::from_secs(60),
+        ..Limits::default()
+    };
+    let doq = DoqHarness::spawn_with(
+        Exposure::Local,
+        limits,
+        gate,
+        certs,
+        Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(192, 0, 2, 9)))),
+        Arc::clone(&clock) as Arc<dyn Clock>,
+    )
+    .await;
+
+    let conn = connect_doq(doq.addr, "localhost").await;
+    // Two streams without FIN: consume the stream cap until the per-stream deadline.
+    let (mut s1, r1) = conn.open_bi().await.unwrap();
+    let (mut s2, r2) = conn.open_bi().await.unwrap();
+    // Prefix of a length-framed query, no FIN — read_to_end stays pending.
+    s1.write_all(&[0, 12]).await.unwrap();
+    s2.write_all(&[0, 12]).await.unwrap();
+
+    // Let the server accept both streams and enter read_to_end + wait_until.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    clock.advance(Duration::from_secs(3));
+    // Drop client handles so QUIC stream credits return after server stop/reset.
+    drop(s1);
+    drop(s2);
+    drop(r1);
+    drop(r2);
+
+    let q = encode_a_query(0, "example.com.");
+    let third = tokio::time::timeout(Duration::from_secs(2), async {
+        query_on_stream(&conn, &q).await
+    })
+    .await
+    .expect("third query should open after stalled streams timed out");
+    assert_eq!(Message::decode(&third).unwrap().rcode(), Rcode::NOERROR);
 
     doq.stop().await;
 }

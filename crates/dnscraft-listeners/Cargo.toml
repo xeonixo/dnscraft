@@ -36,7 +36,7 @@ dnscraft-testkit = { path = "../dnscraft-testkit" }
 proptest = { workspace = true }
 rcgen = { workspace = true }
 rustls-pki-types = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "test-util"] }
 http-body-util = { workspace = true }
 
 [[example]]
