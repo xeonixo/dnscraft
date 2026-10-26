@@ -21,7 +21,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | N6 done; **next: N7** DoT (Phase 2: N7–N9, STOP at Checkpoint C) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
+| `listeners` | N7 done; **next: N8** DoH h2/h1 (Phase 2: N8–N9, STOP at Checkpoint C) | [plan](plan-listeners.md) · [tasks](todo-listeners.md) | [SPEC-listeners.md](../SPEC-listeners.md); crate `dnscraft-listeners` |
 | `control-api`, `web-ui`, `mcp`, `cluster` | pending (see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md)) | – | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -34,6 +34,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
   tls — `RETRY_AFTER_MAX_LEN` cap untested.
 
 ## Log
+
+- 2026-10-26 — **listeners: N7 DoT.** Framed query loop extracted to `src/conn.rs` (`run_framed_connection` over `AsyncRead+AsyncWrite`); Do53 TCP reuses it. `serve_dot`: caps → `accept_encrypted` (SNI + handshake timeout) → framed loop with `DnsProtocol::DoT`, padding on, Client ID from SNI; no Do53-style accept-time public close. Tests: answer parity vs Do53 (except pad), public registered/unknown/node SNI, ManualClock handshake timeout, ban-after-strikes helper. Next: N8 DoH.
 
 - 2026-10-26 — **listeners: N6 TLS server configs, SNI admission, hot reload.** `PolicyClientIds(Arc<PolicyEngine>)` → `ClientIdRegistry` (lower-cases before lookup; follows `apply_config`). `ListenerCertResolver` over `CertResolver`: TCP family ALPN `dot`/`h2`/`http/1.1` (TLS 1.2+), QUIC family TLS 1.3 + ALPN `doq`/`h3` + `max_early_data_size = 0`. Public SNI via `accept_public_sni` / `inspect_public_sni` (unknown/missing → strike; node/apex → reject no strike); local ignores unknown id. `accept_encrypted` + `tls_handshake_timeout`; `listeners.tls.no_cert` counted. Deps: `dnscraft-tls`, `rustls`, `tokio-rustls` 0.26.6 (`ring`+`tls12`), dev `rcgen`. Crypto trees empty (`aws-lc-rs` / `aws-lc-sys` / `openssl-sys` no match); `cargo deny check` → advisories ok, bans ok, licenses ok, sources ok. Next: N7 DoT.
 

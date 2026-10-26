@@ -17,8 +17,9 @@ N4: Do53 [`serve_udp`](fn.serve_udp.html) — concrete + wildcard (`quinn-udp` 0
 N5: Do53 [`serve_tcp`](fn.serve_tcp.html) — RFC 7766 framing, pipelining, idle timeout.
 N6: TLS configs / SNI admission / hot reload — [`tcp_server_config`](fn.tcp_server_config.html),
 [`accept_encrypted`](fn.accept_encrypted.html), [`PolicyClientIds`](struct.PolicyClientIds.html).
+N7: DoT [`serve_dot`](fn.serve_dot.html) — framed loop in `conn` + N6 TLS.
 
-Encrypted transports continue in N7–N14. Checkpoint B: e2e +
+Encrypted transports continue in N8–N14. Checkpoint B: e2e +
 `cargo run -p dnscraft-listeners --example serve` (dig `@127.0.0.1 -p 5353`).
 
 ## Crate layout (so far)
@@ -39,6 +40,8 @@ Encrypted transports continue in N7–N14. Checkpoint B: e2e +
 | `framing` | 2-byte length prefix read/write |
 | `tcp` | Do53 TCP `serve_tcp` / `TcpStats` |
 | `tls` | Server configs, SNI admission, `accept_encrypted`, hot reload |
+| `conn` | Shared framed TCP/DoT query loop |
+| `dot` | DoT `serve_dot` / `DotStats` |
 
 ## Tests
 
@@ -50,4 +53,5 @@ cargo test -p dnscraft-listeners --test admission
 cargo test -p dnscraft-listeners --test udp
 cargo test -p dnscraft-listeners --test tcp
 cargo test -p dnscraft-listeners --test tls
+cargo test -p dnscraft-listeners --test dot
 ```

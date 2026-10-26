@@ -199,9 +199,9 @@ by moving it into a generic `src/conn.rs` over `AsyncRead + AsyncWrite`; DoT kee
 (full `Admission::check` with `ClientIdState` from SNI — not the Do53 accept-time public close).
 
 **Acceptance criteria:**
-- [ ] DoT query answered identically to Do53 (except padding) for the same question
-- [ ] Public listener: registered SNI answered, unknown SNI rejected + strike, ban after N strikes
-- [ ] Handshake timeout closes slow-loris connections
+- [x] DoT query answered identically to Do53 (except padding) for the same question
+- [x] Public listener: registered SNI answered, unknown SNI rejected + strike, ban after N strikes
+- [x] Handshake timeout closes slow-loris connections
 
 **Verification:** `cargo test -p dnscraft-listeners dot`
 

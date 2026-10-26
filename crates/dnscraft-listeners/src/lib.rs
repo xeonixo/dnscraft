@@ -11,6 +11,7 @@
 //! N4: Do53 [`serve_udp`].
 //! N5: Do53 [`serve_tcp`] (length-prefix framing, pipelining).
 //! N6: TLS server configs, SNI admission, hot reload.
+//! N7: DoT ([`serve_dot`]) over the framed connection loop.
 
 #![deny(missing_docs)]
 
@@ -18,7 +19,9 @@ mod admission;
 mod bans;
 mod clock;
 mod config;
+mod conn;
 mod core;
+mod dot;
 mod edns;
 mod error;
 mod framing;
@@ -39,7 +42,9 @@ pub use config::{
     DEFAULT_TCP_IDLE_TIMEOUT, DEFAULT_TLS_HANDSHAKE_TIMEOUT, DEFAULT_UDP_PAYLOAD_MAX, DdrConfig,
     Exposure, Limits, ListenerConfig, ListenersConfig, Protocol, PublicConfig, TokenRate,
 };
+pub use conn::FramedStats;
 pub use core::{HandleWireResult, QueryEvent, QueryMeta, error_reply_from_wire, handle_wire};
+pub use dot::{DotServeParams, DotStats, serve_dot};
 pub use edns::{PAD_BLOCK, build_response_edns, encode_padded, strip_ecs};
 pub use error::ListenersError;
 pub use framing::{FrameError, MAX_MESSAGE_LEN, read_frame, write_frame};
