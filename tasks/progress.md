@@ -35,7 +35,11 @@ success-criteria tables, measurements and review findings of resolver, filtering
 
 ## Log
 
+- 2026-10-26 — **spec: control-api decision 1 revised.** Owner: ACME exists, reverse proxy only optional. API TLS now default on via the `tls` module `CertResolver` under the node hostname (covered by `*.dns.<public_domain>`); `tls = false` + `trusted_proxies` = optional proxy mode; new error `control_api.tls.no_cert`.
+
 - 2026-10-26 — **spec: control-api open questions decided.** Owner delegated all 8 to Claude: optional API TLS (default off), `argon2` (Argon2id), missing groups claim → viewer, no session refresh (12 h absolute / 60 min idle), NDJSON export primary + CSV, no resolver facade, one configurable rate-limit set, redacted before/after audit snapshots. Recorded in SPEC-control-api.md "Decisions". Spec stays DRAFT until the owner approves; next: P1 plan + dependency table (verify `openidconnect` ring-only).
+
+- 2026-10-26 — **listeners: N12 DoH over HTTP/3.** When `h3 = true`: UDP `quinn` + `h3`/`h3-quinn` ALPN `h3`, 0-RTT off, `Endpoint::new` + `bind_udp`; shared `process_doh_request` with h2 (path/admission identical); HTTP/2 `Alt-Svc: h3=":<port>"; ma=86400` only when h3 on; conn/stream caps like DoQ (uni streams allowed for H3 control). DDR alpn `h2`+`h3` when advertised. Deps: `h3` 0.0.8, `h3-quinn` 0.0.10. Tests: `doh_h3` GET/POST, Alt-Svc, stream cap. Next: N13.
 
 - 2026-10-26 — **spec: control-api draft reviewed (Claude).** Draft by deepseek-v4-pro (`5a5fccd`); type/function names checked against the code (all exist). Fixed: `async` on `apply_config`/`sync_now`/`renew_now`/`dyndns_now`/`start_with`/`shutdown`, `resume` returns `()`, `dyndns_now` → `DynDnsResult`, `ClientEngine::new` takes `data_dir` and returns `Arc<Self>`, `ListenerSetParams<H>`; dependency table rebased on workspace versions (`reqwest` 0.13 `rustls-no-provider`, no `sha2`/`time`/`base64` duplicates, ring-only caveat for `openidconnect`, RFC/OIDC URLs). CAPABILITY-MAP Spec column linked. Spec stays DRAFT; 8 open questions for the owner at the end of SPEC-control-api.md. Not started: plan (P1).
 
