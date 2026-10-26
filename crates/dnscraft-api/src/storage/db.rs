@@ -28,8 +28,7 @@ impl Db {
         let path = path.to_owned();
         let conn = tokio::task::spawn_blocking(move || -> Result<Connection, ControlApiError> {
             let mut conn = Connection::open(&path).map_err(db_err)?;
-            conn.execute_batch("PRAGMA foreign_keys = ON;")
-                .map_err(db_err)?;
+            apply_pragmas(&mut conn, true)?;
             migrate(&mut conn)?;
             Ok(conn)
         })
@@ -45,8 +44,7 @@ impl Db {
     pub async fn open_in_memory(clock: Arc<dyn Clock>) -> Result<Self, ControlApiError> {
         let conn = tokio::task::spawn_blocking(|| -> Result<Connection, ControlApiError> {
             let mut conn = Connection::open_in_memory().map_err(db_err)?;
-            conn.execute_batch("PRAGMA foreign_keys = ON;")
-                .map_err(db_err)?;
+            apply_pragmas(&mut conn, false)?;
             migrate(&mut conn)?;
             Ok(conn)
         })
@@ -176,13 +174,44 @@ fn join_err(err: tokio::task::JoinError) -> ControlApiError {
     }
 }
 
+/// Applies the control-api SQLite durability and integrity pragmas.
+///
+/// WAL is file-only: an in-memory database keeps its `memory` journal mode.
+/// `synchronous=NORMAL` (safe under WAL), a 5 s `busy_timeout`, and enforced
+/// foreign keys apply to both.
+fn apply_pragmas(conn: &mut Connection, wal: bool) -> Result<(), ControlApiError> {
+    let sql = if wal {
+        "PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = NORMAL;
+         PRAGMA busy_timeout = 5000;
+         PRAGMA foreign_keys = ON;"
+    } else {
+        "PRAGMA synchronous = NORMAL;
+         PRAGMA busy_timeout = 5000;
+         PRAGMA foreign_keys = ON;"
+    };
+    conn.execute_batch(sql).map_err(db_err)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
 
     use super::*;
-    use crate::clock::ManualClock;
+    use crate::clock::{ManualClock, SystemClock};
+
+    fn temp_db_path() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "dnscraft-api-pragmas-{}-{nanos}.db",
+            std::process::id()
+        ))
+    }
 
     #[tokio::test]
     async fn config_version_created_at_comes_from_injected_clock() {
@@ -204,5 +233,61 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(created_at, 1_700_000_000);
+    }
+
+    #[tokio::test]
+    async fn file_db_sets_wal_and_durability_pragmas() {
+        let path = temp_db_path();
+        let db = Db::open(&path, Arc::new(SystemClock)).await.unwrap();
+        let (journal, synchronous, busy_timeout, foreign_keys) = db
+            .with_conn(|conn| {
+                let journal: String = conn
+                    .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                    .map_err(db_err)?;
+                let synchronous: i64 = conn
+                    .query_row("PRAGMA synchronous", [], |row| row.get(0))
+                    .map_err(db_err)?;
+                let busy_timeout: i64 = conn
+                    .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+                    .map_err(db_err)?;
+                let foreign_keys: i64 = conn
+                    .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+                    .map_err(db_err)?;
+                Ok((journal, synchronous, busy_timeout, foreign_keys))
+            })
+            .await
+            .unwrap();
+        assert_eq!(journal.to_ascii_lowercase(), "wal");
+        assert_eq!(synchronous, 1); // NORMAL
+        assert_eq!(busy_timeout, 5000);
+        assert_eq!(foreign_keys, 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn in_memory_db_keeps_memory_journal_mode() {
+        let db = Db::open_in_memory(Arc::new(SystemClock)).await.unwrap();
+        let (journal, synchronous, busy_timeout, foreign_keys) = db
+            .with_conn(|conn| {
+                let journal: String = conn
+                    .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                    .map_err(db_err)?;
+                let synchronous: i64 = conn
+                    .query_row("PRAGMA synchronous", [], |row| row.get(0))
+                    .map_err(db_err)?;
+                let busy_timeout: i64 = conn
+                    .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+                    .map_err(db_err)?;
+                let foreign_keys: i64 = conn
+                    .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+                    .map_err(db_err)?;
+                Ok((journal, synchronous, busy_timeout, foreign_keys))
+            })
+            .await
+            .unwrap();
+        assert_eq!(journal.to_ascii_lowercase(), "memory");
+        assert_eq!(synchronous, 1); // NORMAL
+        assert_eq!(busy_timeout, 5000);
+        assert_eq!(foreign_keys, 1);
     }
 }
