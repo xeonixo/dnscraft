@@ -71,7 +71,7 @@
 
 ## Checkpoints
 
-- [ ] Checkpoint 0 — Phase 0 spec reconciliation owner-approved.
+- [x] Checkpoint 0 — Phase 0 spec reconciliation owner-approved.
 - [x] Checkpoint 1 — control-api hooks/admin/data-model green (`cargo test -p dnscraft-api`, 300 tests).
 - [x] Checkpoint 2 — join + mTLS transport (loopback, happy path + wrong-CA/missing/unregistered/revoked).
 - [x] Checkpoint 3 — config sync converges under partition.

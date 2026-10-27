@@ -2,7 +2,7 @@
 
 > Module id `cluster` · crate `crates/dnscraft-cluster` · depends on: `control-api`
 > Project-wide decisions: [SPEC.md](SPEC.md)
-> Status: **DRAFT — open questions resolved 2026-10-27; owner review at Checkpoint 0**
+> Status: **APPROVED — owner approved at Checkpoint 0 (2026-10-27); implementation complete (CL0–CL26)**
 
 ## Objective
 
