@@ -46,26 +46,74 @@ use crate::tls::TlsStatusProvider;
 pub(crate) type SharedClusterBroadcast = Arc<Mutex<Option<dnscraft_cluster::ClusterBroadcast>>>;
 
 /// Service handles the MCP backend needs.
+///
+/// The production assembler builds this with [`mcp_backend_inner`] and attaches
+/// it with [`AppState::with_mcp_backend`](crate::AppState::with_mcp_backend).
 #[derive(Clone)]
-pub(crate) struct McpBackendInner {
-    pub policy: Option<Arc<dnscraft_policy::PolicyEngine>>,
-    pub filter: Option<Arc<FilterEngine>>,
-    pub query_log: Option<Arc<QueryLog>>,
-    pub tokens: Option<crate::api::auth::TokenStore>,
-    pub audit: Option<Arc<Audit>>,
-    pub config: Option<Arc<ConfigService>>,
-    pub clock: Arc<dyn Clock>,
-    pub tls: Option<Arc<dyn TlsStatusProvider>>,
-    pub resolver_cache_size: Arc<AtomicU64>,
-    pub node_id: String,
-    pub version: String,
-    pub start_time: std::time::Instant,
+pub struct McpBackendInner {
+    pub(crate) policy: Option<Arc<dnscraft_policy::PolicyEngine>>,
+    pub(crate) filter: Option<Arc<FilterEngine>>,
+    pub(crate) query_log: Option<Arc<QueryLog>>,
+    pub(crate) tokens: Option<crate::api::auth::TokenStore>,
+    pub(crate) audit: Option<Arc<Audit>>,
+    pub(crate) config: Option<Arc<ConfigService>>,
+    pub(crate) clock: Arc<dyn Clock>,
+    pub(crate) tls: Option<Arc<dyn TlsStatusProvider>>,
+    pub(crate) resolver_cache_size: Arc<AtomicU64>,
+    pub(crate) node_id: String,
+    pub(crate) version: String,
+    pub(crate) start_time: std::time::Instant,
     /// MCP limits, protected-domain additions and the write-tools gate.
-    pub mcp_config: dnscraft_mcp::McpConfig,
+    pub(crate) mcp_config: dnscraft_mcp::McpConfig,
     /// OIDC issuer URL whose host is protected, when OIDC is enabled.
-    pub oidc_issuer: Option<String>,
+    pub(crate) oidc_issuer: Option<String>,
     /// Master broadcast handle; `None` on a standalone or sub-node runtime.
-    pub cluster_broadcast: SharedClusterBroadcast,
+    pub(crate) cluster_broadcast: SharedClusterBroadcast,
+}
+
+/// Builds the production MCP backend's inner handle (D3).
+///
+/// The `dnscraft` binary is the only caller. It hands over the live engines and
+/// stores plus the status providers the tools read; no secret material (token
+/// plaintext, OIDC client secret, TLS private key) is accepted or stored. The
+/// backend validates tokens against `tokens` and writes through `config` under
+/// its apply lock.
+///
+/// `query_log` is `None` until the SQLite query-log consumer lands (AS12);
+/// the log-reading tools then report `control_api.internal` until it is wired.
+/// A standalone node leaves the cluster broadcast handle empty.
+#[allow(clippy::too_many_arguments)]
+pub fn mcp_backend_inner(
+    filter: Arc<FilterEngine>,
+    policy: Arc<dnscraft_policy::PolicyEngine>,
+    query_log: Option<Arc<QueryLog>>,
+    config: Arc<ConfigService>,
+    audit: Arc<Audit>,
+    tokens: crate::api::auth::TokenStore,
+    clock: Arc<dyn Clock>,
+    tls: Option<Arc<dyn TlsStatusProvider>>,
+    node_id: impl Into<String>,
+    version: impl Into<String>,
+    mcp_config: dnscraft_mcp::McpConfig,
+    oidc_issuer: Option<String>,
+) -> Arc<McpBackendInner> {
+    Arc::new(McpBackendInner {
+        policy: Some(policy),
+        filter: Some(filter),
+        query_log,
+        tokens: Some(tokens),
+        audit: Some(audit),
+        config: Some(config),
+        clock,
+        tls,
+        resolver_cache_size: Arc::new(AtomicU64::new(0)),
+        node_id: node_id.into(),
+        version: version.into(),
+        start_time: std::time::Instant::now(),
+        mcp_config,
+        oidc_issuer,
+        cluster_broadcast: Arc::new(Mutex::new(None)),
+    })
 }
 
 impl McpBackendInner {

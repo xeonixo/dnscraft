@@ -282,10 +282,9 @@ impl AppState {
     /// Attaches the MCP backend inner handle (engines, stores, status providers).
     ///
     /// With a backend attached, `POST /mcp/v1` is mounted when
-    /// `control_api.mcp.enabled` is true.
-    // Wired by the binary that assembles the MCP engines.
-    #[allow(dead_code)]
-    pub(crate) fn with_mcp_backend(mut self, inner: Arc<McpBackendInner>) -> Self {
+    /// `control_api.mcp.enabled` is true. The production assembler builds the
+    /// handle with [`crate::mcp_backend_inner`].
+    pub fn with_mcp_backend(mut self, inner: Arc<McpBackendInner>) -> Self {
         // The runtime may already have attached its broadcast handle; share it
         // with the MCP backend so write tools broadcast like the HTTP routes.
         if let Some(broadcast) = self.cluster_broadcast() {

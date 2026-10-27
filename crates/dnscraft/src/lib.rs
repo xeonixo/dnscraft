@@ -5,6 +5,7 @@
 
 mod apply;
 mod config;
+mod control_api;
 mod engine;
 mod events;
 
@@ -136,10 +137,13 @@ pub struct App {
     set: Arc<ListenerSet<PolicyEngine>>,
     writer: Option<JoinHandle<()>>,
     sink: Arc<dyn QueryEventSink>,
-    /// Engines kept alive for the control-api assembly in later phases.
+    /// Engines kept alive for the control-api assembly.
     engines: Engines,
-    /// Atomic config service; control-api (Phase 3) attaches to this handle.
+    /// Atomic config service; control-api attaches to this handle.
     config_service: SharedConfigService,
+    /// Control-api HTTP listener task (aborted on shutdown); `None` when it
+    /// stopped during startup and the DNS listeners keep serving.
+    api: Option<JoinHandle<Result<(), Error>>>,
 }
 
 impl App {
@@ -173,6 +177,12 @@ impl App {
         if let Some(writer) = self.writer {
             let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
         }
+        // `serve` has no shutdown hook, so the API listener is stopped by
+        // aborting its task.
+        if let Some(api) = self.api {
+            api.abort();
+            let _ = api.await;
+        }
         let dropped = self.sink.events_dropped();
         if dropped > 0 {
             eprintln!("dnscraft: {dropped} query events dropped");
@@ -186,7 +196,7 @@ impl App {
 /// `clock` drives the policy engine (schedules, pauses). Production passes
 /// [`dnscraft_filtering::SystemClock`]; tests inject a manual clock.
 pub async fn build(
-    config: Config,
+    mut config: Config,
     clock: Arc<dyn dnscraft_filtering::Clock>,
 ) -> Result<App, Error> {
     let listeners = config.listeners_config()?;
@@ -197,7 +207,8 @@ pub async fn build(
     // first run. A non-empty store wins; the live engines were still built from
     // TOML in this phase.
     let snapshot = config_snapshot(&config, &listeners)?;
-    let db_path = engine::engine_data_dir(&config).join(CONFIG_DB_FILE);
+    let data_dir = engine::engine_data_dir(&config);
+    let db_path = data_dir.join(CONFIG_DB_FILE);
     let db = Db::open(&db_path, Arc::new(dnscraft_api::SystemClock))
         .await
         .map_err(|e| Error::startup("dnscraft.startup.store", format!("config store: {e}")))?;
@@ -238,6 +249,7 @@ pub async fn build(
 
     let listener_sink = Arc::clone(&sink);
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let api_acme = certs.clone();
     let set = Arc::new(
         ListenerSet::start(
             listeners,
@@ -245,7 +257,7 @@ pub async fn build(
             certs,
             listener_sink,
             clock,
-            config.public_domain,
+            config.public_domain.clone(),
         )
         .await
         .map_err(|e| Error::startup("dnscraft.startup.listeners", format!("listeners: {e}")))?,
@@ -273,10 +285,22 @@ pub async fn build(
     let modules = apply::appliers(&engines, &set);
     let config_service = Arc::new(ConfigService::new(
         store,
-        Audit::new(db),
+        Audit::new(db.clone()),
         modules,
         CONFIG_NODE_ID,
     ));
+
+    // AS10/AS11: serve the control-api (and mount `/mcp/v1` when enabled)
+    // alongside the DNS listeners.
+    let control_api = control_api::start(
+        &mut config,
+        &engines,
+        &db,
+        &data_dir,
+        Arc::clone(&config_service),
+        api_acme,
+    )
+    .await?;
 
     Ok(App {
         set,
@@ -284,6 +308,7 @@ pub async fn build(
         sink,
         engines,
         config_service,
+        api: control_api.task,
     })
 }
 
@@ -424,6 +449,9 @@ mod tests {
             Error::startup("dnscraft.startup.listeners", "x"),
             Error::startup("dnscraft.startup.store", "x"),
             Error::startup("dnscraft.startup.config_seed", "x"),
+            Error::startup("dnscraft.startup.control_api", "x"),
+            Error::startup("dnscraft.startup.control_api_tls", "x"),
+            Error::startup("dnscraft.startup.control_api_auth", "x"),
             Error::tls("dnscraft.tls.install", "x"),
         ];
         let mut codes: Vec<&str> = errors.iter().map(Error::code).collect();
