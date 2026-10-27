@@ -25,10 +25,10 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::Secret;
 use crate::audit::sha256_hex;
 use crate::clock::{Clock, unix_seconds};
 use crate::error::ControlApiError;
-use crate::secret::Secret;
 
 /// Certificate validity: one year.
 const VALIDITY_SECS: i64 = 365 * 24 * 3600;

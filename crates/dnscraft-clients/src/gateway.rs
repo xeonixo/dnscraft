@@ -11,9 +11,9 @@ use reqwest::Client;
 use reqwest::redirect::Policy;
 use rustls::Error as RustlsError;
 
+use crate::Secret;
 use crate::config::UnifiConfig;
 use crate::error::ClientsError;
-use crate::secret::Secret;
 use crate::tls::build_client_config;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);

@@ -29,7 +29,6 @@ mod modules;
 mod notifications;
 mod protected_list;
 mod query_log;
-mod secret;
 mod server;
 mod stats;
 mod storage;
@@ -59,6 +58,7 @@ pub use config::{
 };
 pub use config_apply::{ConfigActor, ConfigService, RollbackOutcome, SharedConfigService};
 pub use dnscraft_cluster::{ClusterStore, OfflineWriteQueue};
+pub use dnscraft_common::secret::Secret;
 pub use error::ControlApiError;
 pub use mcp_backend::{McpBackendInner, mcp_backend_inner};
 #[doc(hidden)]
@@ -74,7 +74,6 @@ pub use query_log::{
     ClientEnricher, ClientView, Order, OrderBy, QueryLog, QueryLogFilter, QueryLogPage,
     QueryLogSink,
 };
-pub use secret::Secret;
 pub use server::{AppState, Readiness, serve};
 pub use stats::{
     CacheStats, ROLLUP_RETENTION_DAYS, RollupRow, RollupWindow, StatsOverview, TOP_CLIENTS_MAX,

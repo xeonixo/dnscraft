@@ -25,7 +25,6 @@ reqwest = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 time = { workspace = true }
-zeroize = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

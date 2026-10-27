@@ -22,13 +22,13 @@ use axum::response::IntoResponse;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use crate::Secret;
 use crate::api::auth::Authenticated;
 use crate::api::config_routes::{json_body, module_error, service, stored_snapshot};
 use crate::api::response::success;
 use crate::config_apply::ConfigActor;
 use crate::error::ControlApiError;
 use crate::notifications::{EVENT_CERT_EXPIRING, EVENT_DYNDNS_FAILURE, TlsWebhook};
-use crate::secret::Secret;
 use crate::server::AppState;
 use crate::tls::{TlsAdmin, TlsMode};
 

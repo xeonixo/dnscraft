@@ -41,6 +41,15 @@ impl Serialize for Secret {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for Secret {
+    /// Wraps any string as a secret. Round-trips the `"[redacted]"` marker that
+    /// other config snapshots persist, so a deserialized snapshot never fails
+    /// on a placeholder value.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        <String as serde::Deserialize>::deserialize(deserializer).map(Self::new)
+    }
+}
+
 /// Reads a secret from `name` or `{name}_FILE`.
 ///
 /// Resolution order:

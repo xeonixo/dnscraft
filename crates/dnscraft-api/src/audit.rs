@@ -354,10 +354,10 @@ mod tests {
     use dnscraft_mcp::McpConfig;
 
     use super::*;
+    use crate::Secret;
     use crate::config::{
         AuthConfig, ControlApiConfig, IpTruncate, QueryLogConfig, RateLimitConfig,
     };
-    use crate::secret::Secret;
 
     #[test]
     fn canonical_json_sorts_keys_recursively_and_is_compact() {

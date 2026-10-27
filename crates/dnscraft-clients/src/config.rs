@@ -11,7 +11,7 @@ use std::time::Duration;
 use ipnet::IpNet;
 
 use crate::error::ClientsError;
-use crate::secret::{Secret, UNIFI_API_KEY_ENV, read_secret};
+use crate::{Secret, UNIFI_API_KEY_ENV, read_secret};
 
 /// serde adapter for an optional [`IpNet`], which has no serde implementation
 /// used by this crate. Uses the CIDR presentation form (`192.0.2.0/24`).
@@ -107,7 +107,7 @@ impl TlsMode {
 }
 
 /// UniFi gateway connection settings. The API key is never stored here — see
-/// [`crate::secret::read_secret`].
+/// [`crate::read_secret`].
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UnifiConfig {
     /// When false, UniFi contributes nothing; manuals only.

@@ -14,9 +14,9 @@ use tokio::sync::{Mutex, MutexGuard};
 
 const JSON: HeaderValue = HeaderValue::from_static("application/json");
 
+use crate::Secret;
 use crate::config::{CloudflareConfig, ZoneConfig};
 use crate::error::TlsError;
-use crate::secret::Secret;
 
 /// Production Cloudflare API root (v4).
 pub const CLOUDFLARE_API_BASE: &str = "https://api.cloudflare.com/client/v4";

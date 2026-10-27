@@ -30,7 +30,6 @@ mod pem_util;
 mod propagation;
 mod renew;
 mod resolver;
-mod secret;
 mod sni;
 mod status;
 mod store;
@@ -52,6 +51,7 @@ pub use config::{
     Ipv6IdentifierMode, KeyType, ManualCertConfig, ManualDns01Config, NodeEntry,
     NotificationsConfig, TlsConfig, TrustPin, ZoneConfig, validate_public_entry,
 };
+pub use dnscraft_common::secret::Secret;
 pub use dyndns::{
     DynDnsResult, EchoClient, InventoryRecord, dyndns_interval, dyndns_interval_with_rng,
     dyndns_names, dyndns_once, parse_trace_ip, record_inventory,
@@ -67,7 +67,16 @@ pub use renew::{
     is_transient_renew_error, next_renewal, next_renewal_with_rng, plan_renewal,
 };
 pub use resolver::CertResolver;
-pub use secret::{CLOUDFLARE_API_TOKEN_ENV, Secret, read_secret};
+
+/// Environment variable holding the Cloudflare API token (Zone → DNS → Edit).
+pub const CLOUDFLARE_API_TOKEN_ENV: &str = "DNSCRAFT_CLOUDFLARE_API_TOKEN";
+
+/// Reads a secret from `name` or `{name}_FILE`.
+///
+/// A missing or empty value maps to [`TlsError::SecretMissing`].
+pub fn read_secret(name: &str) -> Result<Secret, TlsError> {
+    dnscraft_common::secret::read_secret(name).map_err(|name| TlsError::SecretMissing { name })
+}
 pub use sni::{
     ClientIdRegistry, FIXED_RESERVED_LABELS, ReservedLabels, SniKind, accept_public_sni,
     parse_client_id_sni,

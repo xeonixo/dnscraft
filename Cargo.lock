@@ -854,7 +854,6 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
- "zeroize",
 ]
 
 [[package]]

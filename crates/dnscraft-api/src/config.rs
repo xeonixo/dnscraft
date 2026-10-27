@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use dnscraft_mcp::McpConfig;
 
+use crate::Secret;
 use crate::error::ControlApiError;
-use crate::secret::Secret;
 
 /// Default bind address (loopback; the API is always internal-only).
 pub const DEFAULT_BIND: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);

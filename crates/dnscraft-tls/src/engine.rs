@@ -23,12 +23,12 @@ use crate::renew::{
     AriWindow, RenewFn, RenewScheduler, ScheduleFn, StatusFn, current_ari_window, next_renewal,
 };
 use crate::resolver::CertResolver;
-use crate::secret::{CLOUDFLARE_API_TOKEN_ENV, Secret, read_secret};
 use crate::status::{
     AriStatus, CertSource, DynDnsAuditEntry, IssueOutcome, IssueRecord, PreflightCheck,
     PreflightReport, RateLimitStatus, TlsStatus,
 };
 use crate::store::{CertMeta, CertStore, push_dyndns_audit, push_history};
+use crate::{CLOUDFLARE_API_TOKEN_ENV, Secret, read_secret};
 
 /// Injectable dependencies for [`TlsEngine::open_with`] (tests / custom ACME).
 pub struct EngineDeps {

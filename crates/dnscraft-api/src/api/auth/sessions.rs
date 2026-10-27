@@ -15,8 +15,8 @@ use rusqlite::{OptionalExtension, params};
 
 use super::csrf::csrf_token_for;
 use super::{SESSION_COOKIE, hex};
+use crate::Secret;
 use crate::error::ControlApiError;
-use crate::secret::Secret;
 use crate::storage::{Db, db_err};
 
 /// A browser-session role. Cookie sessions are `viewer` or `admin` only.

@@ -10,7 +10,7 @@ use axum::http::Method;
 use ring::digest::{Context, SHA256};
 
 use super::hex;
-use crate::secret::Secret;
+use crate::Secret;
 
 /// Domain-separation prefix so the CSRF token never equals the stored session
 /// hash (an attacker with read access to the hash cannot forge the token).

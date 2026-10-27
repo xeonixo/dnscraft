@@ -405,9 +405,9 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::*;
+    use crate::Secret;
     use crate::clock::ManualClock;
     use crate::config::AuthConfig;
-    use crate::secret::Secret;
     use crate::storage::Db;
 
     async fn auth_state() -> (AuthState, CreatedToken, OidcState) {

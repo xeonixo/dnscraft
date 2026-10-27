@@ -23,7 +23,6 @@ mod integration;
 mod label;
 mod lookup;
 mod merge;
-mod secret;
 mod state;
 mod status;
 mod sync;
@@ -40,6 +39,7 @@ pub use config::{
     ClientsConfig, DEFAULT_IPV6_ADDRESS_TTL, DEFAULT_LOCAL_DOMAIN, DEFAULT_OFFLINE_RETAIN,
     DEFAULT_POLL_INTERVAL, LocalDomainMode, MAX_MANUAL_ENTRIES, ManualEntry, TlsMode, UnifiConfig,
 };
+pub use dnscraft_common::secret::Secret;
 pub use engine::{ClientEngine, SyncReport};
 pub use error::ClientsError;
 pub use gateway::{GatewayClient, MAX_BODY_BYTES};
@@ -55,9 +55,18 @@ pub use merge::{
     MAX_CLIENT_COUNT, MergeOutput, MergeStats, NetworkInfo, UnifiObservation, WARN_CLIENT_COUNT,
     build, is_link_local,
 };
-pub use secret::{Secret, UNIFI_API_KEY_ENV, read_secret};
 pub use state::{RetainedClient, State};
 pub use status::ClientsStatus;
 pub use sync::{SyncResult, sync_once};
 pub use tls::{INSECURE_WARN_CODE, leaf_sha256};
 pub use types::{ClientId, ClientInfo, ClientSource, MacAddr, VlanInfo};
+
+/// Environment variable holding the UniFi Network Integration API key.
+pub const UNIFI_API_KEY_ENV: &str = "DNSCRAFT_UNIFI_API_KEY";
+
+/// Reads a secret from `name` or `{name}_FILE`.
+///
+/// A missing or empty value maps to [`ClientsError::SecretMissing`].
+pub fn read_secret(name: &str) -> Result<Secret, ClientsError> {
+    dnscraft_common::secret::read_secret(name).map_err(|name| ClientsError::SecretMissing { name })
+}

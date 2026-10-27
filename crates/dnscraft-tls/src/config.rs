@@ -5,14 +5,15 @@
 //! SPEC-tls.md (empty `extra_sans`, DNS-only DynDNS, hostname under
 //! `dns.<domain>`, ACME email when enabled, HTTPS-only URLs).
 
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::Ipv6Addr;
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::TlsError;
 use crate::pem_util::certified_key_from_pem;
-use crate::secret::{CLOUDFLARE_API_TOKEN_ENV, Secret, read_secret};
+use crate::{CLOUDFLARE_API_TOKEN_ENV, Secret, read_secret};
+use dnscraft_common::config::{check_https_url, normalise_domain};
 
 /// Default renew-before window: 30 days.
 pub const DEFAULT_RENEW_BEFORE: Duration = Duration::from_secs(30 * 24 * 3600);
@@ -60,12 +61,18 @@ impl AcmeDirectoryKind {
     }
 }
 
+/// Serializes a secret as the bracket marker persisted in TLS config snapshots.
+fn serialize_redacted<S: serde::Serializer>(_: &Secret, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str("[redacted]")
+}
+
 /// External Account Binding (RFC 8555 §7.3.4).
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Eab {
     /// Key identifier issued by the CA.
     pub kid: String,
     /// Raw HMAC key value (not base64-decoded); redacted in [`Debug`].
+    #[serde(serialize_with = "serialize_redacted")]
     pub hmac_key: Secret,
 }
 
@@ -132,6 +139,7 @@ pub struct ManualCertConfig {
     /// Intermediate chain PEM (may be empty).
     pub chain_pem: String,
     /// Private key PEM (redacted).
+    #[serde(serialize_with = "serialize_redacted")]
     pub key_pem: Secret,
 }
 
@@ -169,7 +177,7 @@ pub struct TrustPin {
 }
 
 /// Cloudflare zone settings. The API token is never stored here — see
-/// [`crate::secret::read_secret`].
+/// [`crate::read_secret`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CloudflareConfig {
     /// Optional zone id; when empty it is resolved by `public_domain` name.
@@ -383,7 +391,7 @@ impl TlsConfig {
         &mut self,
         lookup: impl FnOnce(&str) -> Result<Secret, TlsError>,
     ) -> Result<(), TlsError> {
-        self.public_domain = normalise_domain(&self.public_domain)?;
+        self.public_domain = normalise_domain(&self.public_domain).map_err(TlsError::config)?;
         if self.public_domain.is_empty() {
             return Err(TlsError::config("public_domain is empty"));
         }
@@ -434,7 +442,8 @@ impl TlsConfig {
             return Err(TlsError::config("acme.propagation_poll must be positive"));
         }
         if let AcmeDirectoryKind::Url(url) = &self.acme.directory {
-            check_https_url(url, self.allow_http_for_tests, "acme.directory")?;
+            check_https_url(url, self.allow_http_for_tests, "acme.directory")
+                .map_err(TlsError::config)?;
         }
         if let Some(eab) = &mut self.acme.account.eab {
             eab.kid = eab.kid.trim().to_owned();
@@ -449,7 +458,7 @@ impl TlsConfig {
 
     fn validate_dns_provider(&mut self) -> Result<(), TlsError> {
         for zone in &mut self.dns_provider.zones {
-            zone.name = normalise_domain(&zone.name)?;
+            zone.name = normalise_domain(&zone.name).map_err(TlsError::config)?;
             if zone.name.is_empty() {
                 return Err(TlsError::config("dns_provider.zones has an empty name"));
             }
@@ -457,7 +466,7 @@ impl TlsConfig {
         self.dns_provider.zones.sort_by(|a, b| a.name.cmp(&b.name));
         self.dns_provider.zones.dedup_by(|a, b| a.name == b.name);
         for txt in &mut self.dns_provider.manual_txt {
-            txt.name = normalise_domain(&txt.name)?;
+            txt.name = normalise_domain(&txt.name).map_err(TlsError::config)?;
             txt.value = txt.value.trim().to_owned();
             if txt.name.is_empty() || txt.value.is_empty() {
                 return Err(TlsError::DnsManual {
@@ -519,7 +528,8 @@ impl TlsConfig {
             if url.is_empty() {
                 self.notifications.webhook_url = None;
             } else {
-                check_https_url(&url, self.allow_http_for_tests, "notifications.webhook_url")?;
+                check_https_url(&url, self.allow_http_for_tests, "notifications.webhook_url")
+                    .map_err(TlsError::config)?;
                 self.notifications.webhook_url = Some(url);
             }
         }
@@ -547,7 +557,8 @@ impl TlsConfig {
             &self.dyndns.echo_url,
             self.allow_http_for_tests,
             "dyndns.echo_url",
-        )?;
+        )
+        .map_err(TlsError::config)?;
 
         // IPv6 stable identifier: static mode needs a valid fixed address.
         let static_addr = self.dyndns.ipv6_identifier.static_address.as_deref();
@@ -610,7 +621,7 @@ impl TlsConfig {
             }
         }
 
-        self.dyndns.hostname = normalise_domain(&self.dyndns.hostname)?;
+        self.dyndns.hostname = normalise_domain(&self.dyndns.hostname).map_err(TlsError::config)?;
         let expected_suffix = format!("dns.{}", self.public_domain);
         let Some((label, rest)) = self.dyndns.hostname.split_once('.') else {
             return Err(TlsError::config(format!(
@@ -663,69 +674,6 @@ pub fn validate_public_entry(nodes: &[NodeEntry]) -> Result<(), TlsError> {
     } else {
         Ok(())
     }
-}
-
-/// Normalises a domain: UTS 46 → ASCII, lower-case, no trailing dot.
-fn normalise_domain(input: &str) -> Result<String, TlsError> {
-    let trimmed = input.trim().trim_end_matches('.');
-    if trimmed.is_empty() {
-        return Ok(String::new());
-    }
-    let ascii = idna::domain_to_ascii_cow(trimmed.as_bytes(), idna::AsciiDenyList::URL)
-        .map_err(|_| TlsError::config(format!("invalid domain {input:?}")))?;
-    let s = ascii.into_owned().to_ascii_lowercase();
-    if s.is_empty() || s.starts_with('.') || s.contains("..") || s.ends_with('.') {
-        return Err(TlsError::config(format!("invalid domain {input:?}")));
-    }
-    for label in s.split('.') {
-        if label.is_empty() || label.len() > 63 {
-            return Err(TlsError::config(format!("invalid domain {input:?}")));
-        }
-    }
-    if s.len() > 253 {
-        return Err(TlsError::config(format!("domain too long ({})", s.len())));
-    }
-    Ok(s)
-}
-
-fn check_https_url(url: &str, allow_http_for_tests: bool, field: &str) -> Result<(), TlsError> {
-    let lower = url.trim().to_ascii_lowercase();
-    let rest = if let Some(r) = lower.strip_prefix("https://") {
-        r
-    } else if allow_http_for_tests {
-        if let Some(r) = lower.strip_prefix("http://") {
-            if !is_loopback_host_str(r) {
-                return Err(TlsError::config(format!(
-                    "{field} http:// is only allowed for loopback in tests"
-                )));
-            }
-            r
-        } else {
-            return Err(TlsError::config(format!("{field} must be an https:// URL")));
-        }
-    } else {
-        return Err(TlsError::config(format!("{field} must be an https:// URL")));
-    };
-    if rest.is_empty() || rest.starts_with('/') || rest.chars().any(char::is_whitespace) {
-        return Err(TlsError::config(format!("{field} has no valid host")));
-    }
-    Ok(())
-}
-
-fn is_loopback_host_str(rest: &str) -> bool {
-    // rest is "host/path…" or "host:port/…"
-    let host_port = rest.split('/').next().unwrap_or(rest);
-    let host = if host_port.starts_with('[') {
-        host_port
-            .trim_start_matches('[')
-            .split(']')
-            .next()
-            .unwrap_or("")
-    } else {
-        host_port.split(':').next().unwrap_or(host_port)
-    };
-    host.eq_ignore_ascii_case("localhost")
-        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 #[cfg(test)]

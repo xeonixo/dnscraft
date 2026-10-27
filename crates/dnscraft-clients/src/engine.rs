@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 use tokio::task::JoinHandle;
 
+use crate::Secret;
 use crate::cache::{self, CachePayload};
 use crate::clock::{self, Clock};
 use crate::config::{ClientsConfig, UnifiConfig};
@@ -21,7 +22,6 @@ use crate::error::ClientsError;
 use crate::gateway::GatewayClient;
 use crate::lookup::ClientLookup;
 use crate::merge::{self, NetworkInfo, UnifiObservation};
-use crate::secret::Secret;
 use crate::state::State;
 use crate::status::ClientsStatus;
 use crate::sync::{self, SyncResult};
@@ -151,7 +151,7 @@ impl ClientEngine {
         let key = if config.unifi.enabled {
             let k = match api_key {
                 Some(k) => k,
-                None => crate::secret::read_secret(crate::secret::UNIFI_API_KEY_ENV)?,
+                None => crate::read_secret(crate::UNIFI_API_KEY_ENV)?,
             };
             let for_validate = k.clone();
             config.validate_with_secret(move |_| Ok(for_validate))?;
@@ -336,7 +336,7 @@ impl ClientEngine {
     /// retained-offline inventory / IPv6 TTL maps are dropped with the
     /// observations (they would otherwise reappear as UniFi clients).
     pub async fn apply_config(&self, config: ClientsConfig) -> Result<(), ClientsError> {
-        self.apply_config_with_secret(config, crate::secret::read_secret)
+        self.apply_config_with_secret(config, crate::read_secret)
             .await
     }
 
@@ -359,7 +359,7 @@ impl ClientEngine {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
-            let key = match lookup(crate::secret::UNIFI_API_KEY_ENV) {
+            let key = match lookup(crate::UNIFI_API_KEY_ENV) {
                 Ok(k) => k,
                 Err(e) => stored.ok_or(e)?,
             };
@@ -532,7 +532,7 @@ impl ClientEngine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .ok_or_else(|| ClientsError::SecretMissing {
-                name: crate::secret::UNIFI_API_KEY_ENV.into(),
+                name: crate::UNIFI_API_KEY_ENV.into(),
             })?;
 
         let fetched_with = cfg.unifi.clone();
