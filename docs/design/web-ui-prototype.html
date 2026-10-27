@@ -373,6 +373,10 @@ body {
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
       Namen
     </button>
+    <button class="nav-item" data-target="screen-forward-zones" data-title="Forward-Zonen">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><polyline points="13 6 19 12 13 18"/></svg>
+      Forward-Zonen
+    </button>
     <button class="nav-item" data-target="screen-profiles" data-title="Profile">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
       Profile
@@ -479,6 +483,91 @@ body {
             <div class="value num">37</div>
             <div class="delta"><span>4 neue</span> in 24 h</div>
             <div class="spark"><svg viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"><polyline points="0,26 10,24 20,25 30,22 40,23 50,19 60,20 70,17 80,18 90,15 100,16 110,13 120,14" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          </div>
+          <div class="tile">
+            <div class="top"><span class="name">Antwortzeit</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 21a9 9 0 1 1 9-9"/><polyline points="12 3 12 12 17 14"/></svg></div>
+            <div class="value num">12<span class="unit">ms p50</span></div>
+            <div class="delta"><span>p95 32 ms · p99 71 ms</span></div>
+            <div class="spark"><svg viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"><polyline points="0,20 10,18 20,19 30,15 40,16 50,12 60,13 70,10 80,11 90,8 100,9 110,6 120,7" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          </div>
+          <div class="tile">
+            <div class="top"><span class="name">DNSSEC validiert</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+            <div class="value num">98,2<span class="unit">%</span></div>
+            <div class="delta"><span>1,4 % ungesichert · 0,4 % fehlgeschlagen</span></div>
+            <div class="spark"><svg viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"><polyline points="0,8 10,8 20,9 30,7 40,8 50,7 60,7 70,6 80,7 90,6 100,6 110,6 120,6" fill="none" stroke="var(--ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          </div>
+        </div>
+
+        <div class="section-head">Antwortzeiten · 24 h</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><div class="domain">Gesamt</div><div class="meta">Eingang bis Antwort</div></div>
+            <div class="tail"><div class="domain">p50 8 ms · p95 32 ms · p99 71 ms</div></div>
+          </div>
+          <div class="row">
+            <div class="main"><div class="domain">Cache</div><div class="meta">Treffer aus dem Cache</div></div>
+            <div class="tail"><div class="domain">p50 0,4 ms · p95 1,2 ms</div></div>
+          </div>
+          <div class="row">
+            <div class="main"><div class="domain">Rekursion</div><div class="meta">vollständige Auflösung</div></div>
+            <div class="tail"><div class="domain">p50 24 ms · p95 68 ms</div></div>
+          </div>
+          <div class="row">
+            <div class="main"><div class="domain">Upstream</div><div class="meta">10.0.0.53:853</div></div>
+            <div class="tail"><div class="domain">p50 21 ms · p95 61 ms</div></div>
+          </div>
+        </div>
+
+        <div class="section-head">Module</div>
+        <div class="group">
+          <div class="row">
+            <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
+            <div class="main"><div class="domain">Resolver</div><div class="meta">Rekursion · DNSSEC · Cache</div></div>
+            <div class="tail"><div class="verdict allow">aktiv</div></div>
+          </div>
+          <div class="row">
+            <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
+            <div class="main"><div class="domain">Filterung</div><div class="meta">3 Sets · 3 Listen · letzter Sync vor 12 min</div></div>
+            <div class="tail"><div class="verdict allow">aktiv</div></div>
+          </div>
+          <div class="row">
+            <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
+            <div class="main"><div class="domain">Policy</div><div class="meta">3 Zonen · 4 Profile · 6 Namen</div></div>
+            <div class="tail"><div class="verdict allow">aktiv</div></div>
+          </div>
+          <div class="row">
+            <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
+            <div class="main"><div class="domain">Listener</div><div class="meta">2 gebunden · Do53 · DoH · DoT</div></div>
+            <div class="tail"><div class="verdict allow">aktiv</div></div>
+          </div>
+          <div class="row">
+            <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
+            <div class="main"><div class="domain">UniFi-Clients</div><div class="meta">Sync vor 58 s · 37 Geräte</div></div>
+            <div class="tail"><div class="verdict allow">aktiv</div></div>
+          </div>
+          <div class="row">
+            <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+            <div class="main"><div class="domain">TLS</div><div class="meta">selbstsigniert · ACME noch nicht aktiv</div></div>
+            <div class="tail"><div class="verdict block">self_signed</div></div>
+          </div>
+        </div>
+
+        <div class="section-head">Warnungen</div>
+        <div class="group">
+          <div class="row">
+            <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+            <div class="main"><div class="domain">Knoten „node-3" offline</div><div class="meta">seit 14:02 · Konfiguration v10 · Rückstand 2 Versionen</div></div>
+            <div class="tail"><div class="time">14:02</div></div>
+          </div>
+          <div class="row">
+            <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+            <div class="main"><div class="domain">Zertifikat läuft in 28 Tagen ab</div><div class="meta">ACME nicht aktiv · Erneuerung ausstehend</div></div>
+            <div class="tail"><div class="time">—</div></div>
+          </div>
+          <div class="row">
+            <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+            <div class="main"><div class="domain">DynDNS fehlgeschlagen</div><div class="meta">letzter Versuch vor 3 min · Cloudflare 502</div></div>
+            <div class="tail"><div class="time">14:29</div></div>
           </div>
         </div>
 
@@ -1092,6 +1181,27 @@ body {
       </div>
     </section>
 
+    <section class="screen" id="screen-forward-zones" hidden>
+      <div class="content">
+        <p class="lead">Forward-Zonen leiten private Domains (z. B. ein Remote-Standort über Site-to-Site-VPN) an einen anderen DNS-Server weiter, statt sie rekursiv aufzulösen.</p>
+        <div class="section-head">Forward-Zonen</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><div class="domain">site-a.example.com</div><div class="meta">10.9.0.53 · reverse 0.9.10.in-addr.arpa · nur Profil „VPN"</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+          <div class="row">
+            <div class="main"><div class="domain">internal.example.net</div><div class="meta">198.51.100.53 · reverse 100.51.198.in-addr.arpa · alle Profile</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+          <div class="row">
+            <div class="main"><b style="font-weight:500;color:var(--accent)">Forward-Zone hinzufügen</b><div class="meta">Domain, Upstream, Reverse-Zone, Profile</div></div>
+          </div>
+        </div>
+        <div class="footnote">Forward-Zonen werden vor der Rekursion geprüft und können pro Profil eingeschränkt werden (allow-list).</div>
+      </div>
+    </section>
+
     <section class="screen" id="screen-profiles" hidden>
       <div class="content">
         <p class="lead">Profile legen das Verhalten fest: Filter-Set, Pause, Schutz (SafeSearch, Rebind, AAAA) und Zeitpläne.</p>
@@ -1248,6 +1358,18 @@ body {
             <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
             <div class="main"><div class="domain">Gäste-iPad</div><div class="meta mono">guest-j4m2pz · DoH · 198.51.100.7 → Gäste</div></div>
             <div class="tail"><div class="verdict allow">verifiziert</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+        </div>
+
+        <div class="section-head">Geräteprofile</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><div class="domain">Apple (.mobileconfig)</div><div class="meta">iOS / macOS · verschlüsseltes DoH-Profil pro Client-ID</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+          <div class="row">
+            <div class="main"><div class="domain">Android „Private DNS"</div><div class="meta mono">node1.dns.example.com</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
         </div>
