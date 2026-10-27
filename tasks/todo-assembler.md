@@ -39,9 +39,9 @@
 
 ## Phase 3 — control-api + MCP
 
-- [ ] **AS10** Assemble `AppState` (auth/OIDC/local/tokens, `QueryLog`, stats, TLS admin/status,
+- [x] **AS10** Assemble `AppState` (auth/OIDC/local/tokens, `QueryLog`, stats, TLS admin/status,
       rate limiter) and call `serve`. Wire `Readiness` producers from the real engines. Closes GA29.
-- [ ] **AS11** Construct the MCP backend (D3) and mount `/mcp/v1`; populate `allowed_origins` from the
+- [x] **AS11** Construct the MCP backend (D3) and mount `/mcp/v1`; populate `allowed_origins` from the
       TLS public domain. Closes GM1/GM2/GM11.
 
 ## Phase 4 — Query-log pipeline + delivery
