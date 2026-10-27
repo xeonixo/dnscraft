@@ -1,0 +1,3 @@
+[cluster]
+role = "standalone"
+master_url = "https://master.example.net:8443"

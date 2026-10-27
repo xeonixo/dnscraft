@@ -1,0 +1,1 @@
+{"protocol":1,"node_id":"node-a","first_seq":1,"last_seq":2,"records":[{"id":"r1","record":{"q":"a.example"}},{"id":"r2","record":{"q":"b.example"}}]}

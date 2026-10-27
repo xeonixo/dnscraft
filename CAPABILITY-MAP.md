@@ -17,7 +17,7 @@ Status matches [tasks/progress.md](tasks/progress.md) "Current state".
 | `control-api` | REST API, configuration, query log (filterable by device), statistics, OIDC (Authentik) + local break-glass login, locale-neutral error codes | policy, clients | [SPEC-control-api.md](SPEC-control-api.md) | complete |
 | `web-ui` | TypeScript frontend, fully internationalized, embedded into the binary as static assets | control-api | [SPEC-web-ui.md](SPEC-web-ui.md) (draft) | pending |
 | `mcp` | MCP server for AI assistants: query log, "why blocked?", test query, stats (viewer); temporary allow, rules, pause (admin); internal listener only, same tokens/roles/audit as the API | control-api | [SPEC-mcp.md](SPEC-mcp.md) | complete |
-| `cluster` | Master/sub-nodes: config sync, writes from any node (forwarded to master, offline fallback), keep serving without the master, log/stats aggregation on the master | control-api | [SPEC-cluster.md](SPEC-cluster.md) (draft) | pending |
+| `cluster` | Master/sub-nodes: config sync, writes from any node (forwarded to master, offline fallback), keep serving without the master, log/stats aggregation on the master | control-api | [SPEC-cluster.md](SPEC-cluster.md) (draft) | implemented (awaiting control-api wiring) |
 
 ## Build order
 

@@ -27,7 +27,12 @@ no multi-entry.
 
 ## Current state (code reality-check, 2026-10-27)
 
-- **No** `crates/dnscraft-cluster`; no partial cluster implementation (spec/docs only).
+- `crates/dnscraft-cluster` implemented (CL9–CL24): config validation, CA/join/identity/store,
+  mTLS transport, full-snapshot sync, write relay + offline queue, runtime broadcast, log
+  streaming/backfill, cert/auth push, quotas/skew, with loopback integration suites. CL26 added the
+  `cluster_join_token` / `cluster_log_batch` / `cluster_config` fuzz targets, the crate README and
+  the success-criteria traceability. **Remaining:** CL6/CL7 (control-api admin routes + status
+  fields), CL15 (sub-node apply/TLS/auth-snapshot/DNS wiring), CL25 (security suite), Checkpoint F.
 - `control-api` (`dnscraft-api`) COMPLETE (A0–A14, Checkpoint F owner-approved). Already provides:
   - Atomic apply path: `ConfigService` (`config_apply.rs:107`; `replace`/`mutate`/`mutate_unrecorded`/
     `rollback` under a serial `apply_lock`; `APPLY_ORDER` = filtering→clients→policy→listeners→tls).
@@ -122,8 +127,9 @@ master is known. `AuthSnapshot` (encrypted) replication (owner: YES); session-in
 Quotas (relay/log/queue), clock-skew warning. **STOP: Checkpoint 6**.
 
 ### Phase 7 — Hardening, fault injection, fuzz, docs, traceability
-Security suite (threat model), complete fault injection, fuzz targets (`join_token`, `log_batch`),
-README, `CAPABILITY-MAP.md` row, SPEC success-criteria traceability, `cargo deny` + ring-only trees.
+Security suite (threat model), complete fault injection, fuzz targets (`cluster_join_token`,
+`cluster_log_batch`, `cluster_config`), README, `CAPABILITY-MAP.md` row, SPEC success-criteria
+traceability in `tasks/progress.md`, `cargo deny` + ring-only trees.
 **STOP: Checkpoint F** (independent security review + owner approval + archive).
 
 ## Reuse (existing code)

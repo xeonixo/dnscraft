@@ -14,6 +14,8 @@ dnscraft-filtering = { path = "../crates/dnscraft-filtering" }
 dnscraft-policy = { path = "../crates/dnscraft-policy" }
 dnscraft-listeners = { path = "../crates/dnscraft-listeners" }
 dnscraft-mcp = { path = "../crates/dnscraft-mcp" }
+dnscraft-cluster = { path = "../crates/dnscraft-cluster" }
+serde_json = "1.0.154"
 http = "1.5.0"
 tokio = { version = "1.54.1", features = ["rt"] }
 
@@ -69,6 +71,27 @@ bench = false
 [[bin]]
 name = "mcp_tool_input"
 path = "fuzz_targets/mcp_tool_input.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cluster_join_token"
+path = "fuzz_targets/cluster_join_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cluster_log_batch"
+path = "fuzz_targets/cluster_log_batch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cluster_config"
+path = "fuzz_targets/cluster_config.rs"
 test = false
 doc = false
 bench = false

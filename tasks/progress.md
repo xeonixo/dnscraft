@@ -124,7 +124,8 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `listeners` | COMPLETE (Checkpoint D, 2026-10-26) | [plan](archive/listeners-plan.md) · [tasks](archive/listeners-todo.md) | [SPEC-listeners.md](../SPEC-listeners.md); crates `dnscraft-listeners` + `dnscraft` |
 | `control-api` | A0–A14 done (Checkpoint F, 2026-10-26); **owner approved** | [plan](plan-control-api.md) · [tasks](todo-control-api.md) | [SPEC-control-api.md](../SPEC-control-api.md); crate `dnscraft-api` |
 | `mcp` | COMPLETE (Checkpoint F, 2026-10-27; owner approved) | [plan](archive/mcp-plan.md) · [tasks](archive/mcp-todo.md) | [SPEC-mcp.md](../SPEC-mcp.md); crates `dnscraft-mcp` + `dnscraft-api`; coverage 94.84 % |
-| `web-ui`, `cluster` | specs drafted (DRAFT, owner review pending; web-ui Apple-design revision in progress) | [SPEC-web-ui.md](../SPEC-web-ui.md) · [SPEC-cluster.md](../SPEC-cluster.md) | – |
+| `web-ui` | spec drafted (DRAFT, owner review pending; Apple-design revision in progress) | [SPEC-web-ui.md](../SPEC-web-ui.md) | – |
+| `cluster` | crate implemented (CL9–CL24); CL25/CL26 in progress; awaiting control-api wiring (CL6/CL7/CL15) | [plan](plan-cluster.md) · [tasks](todo-cluster.md) | [SPEC-cluster.md](../SPEC-cluster.md); crate `dnscraft-cluster`; loopback suites + fuzz targets |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
   (2026-10-25); ring-only TLS enforced by `cargo deny` bans; `cargo deny check` runs in CI.
@@ -176,7 +177,39 @@ SPEC-mcp.md § Success Criteria (19) → evidence (all met; M0–M27 done 2026-1
 | 18 | Structured input only, no `$` modifiers | `write_tools.rs`, `injection.rs` |
 | 19 | No internet in tests | all (global convention) |
 
+## Cluster success criteria
+
+SPEC-cluster.md § Success Criteria (19) → evidence. Crate-owned rows are
+covered by `cargo test -p dnscraft-cluster`; rows marked *wiring* depend on
+control-api CL6/CL7 (`/api/v1/cluster/*`, status fields) or CL15 (sub-node
+apply, TLS/auth-snapshot and DNS-serving integration) and are not yet
+end-to-end.
+
+| # | Criterion | Evidence |
+|---|---|---|
+| 1 | Role/config validation; non-private bind rejected | `src/config.rs` (`ClusterConfig::validate`, 12 unit tests), `fuzz/fuzz_targets/cluster_config.rs` |
+| 2 | One-time join; per-node cert + mTLS; wrong CA / unregistered / revoked / expired rejected; identity bound to `node_id` | `src/enroll.rs`, `src/server.rs`, `src/store.rs`; `tests/join.rs` (`enroll_connect_hello_and_heartbeat`, `missing_unregistered_revoked_and_wrong_ca_are_rejected`), `fuzz/fuzz_targets/cluster_join_token.rs` |
+| 3 | Master never initiates a connection to a sub-node | `ClusterServer` is inbound-only; every socket is opened by `ClusterClient` (`src/client.rs`, all `tests/*.rs`, `127.0.0.1:0`) |
+| 4 | Config write → snapshot → apply → ack → zero lag; `mcp_rules` travel in the snapshot | `src/sync.rs`, `src/client.rs`; `tests/sync.rs::push_apply_ack_reaches_zero_lag`; apply path implemented by control-api (CL15) |
+| 5 | Failed apply keeps the previous version, reports `cluster.config.apply`, master retries | `tests/sync.rs::apply_failure_keeps_the_previous_version_and_does_not_ack`; rollback itself in control-api `ConfigService` (CL15) |
+| 6 | Relayed write reaches master, audit carries originating `node_id` + actor + version + digests | `src/relay.rs`; `tests/relay.rs::relayed_write_reaches_the_executor_and_the_response_is_verbatim`; audit emission in control-api `WriteExecutor` (CL15) |
+| 7 | `If-Match` mismatch relayed unchanged (`409`), nothing applied on the sub-node | `RelayResponse` returned verbatim (`src/relay.rs`, `tests/relay.rs`); the `409` body is produced by the canonical control-api handler (CL15) |
+| 8 | Master unreachable: sub-node keeps answering DNS and serving reads; never-synced is not-ready | *wiring* CL15; the crate has no DNS dependency and holds no readiness gate |
+| 9 | Offline writes: `202` with keys, `400` without, `503` when full; master-only ops never queued | `src/offline.rs` (`enqueue_requires_idempotency_and_if_match`, `disabled_queue_does_not_buffer`, `queue_cap_returns_full`); HTTP mapping in control-api (CL15) |
+| 10 | FIFO replay, `409` conflict blocks, expiry, survive restart, no double apply | `src/offline.rs` (`replay_is_strict_fifo_and_keeps_original_keys`, `conflict_blocks_later_writes_and_stops_replay`, `expired_rows_are_dropped_without_sending`, `queue_survives_store_reopen`) |
+| 11 | Per-node ordered log stream, zero duplicates after lost ack, highest contiguous ack | `tests/logs.rs` (`ordered_streaming_acks_the_highest_contiguous_seq`, `lost_ack_replays_with_zero_duplicate_rows`, `payload_node_id_mismatch_is_rejected`), `fuzz/fuzz_targets/cluster_log_batch.rs` |
+| 12 | Backfill from `last_acked_log_seq`; over-long outage reports gap + drop, no panic | `src/log.rs` (`Backfill`), `tests/logs.rs` (`backfill_resumes_from_the_master_highest_seq`, `over_long_outage_reports_a_gap_and_continues`) |
+| 13 | Master stats cover all nodes and distinguish `node_id`; sub-node offline serves a local view | *control-api* (CL5/CL21); the crate carries `node_id` in the log envelope and keeps records opaque |
+| 14 | Runtime pause/resume and temporary allow reach every node; offline is rejected | `src/relay.rs`, `tests/relay.rs::runtime_command_broadcast_reaches_every_connected_node`; offline rejection mapping in control-api (CL15) |
+| 15 | No privilege bypass: viewer relay returns `403`; no role escalation | `RelayedActor` forwarded unchanged and `WriteExecutor` re-checks RBAC (`src/relay.rs`); enforcement + `403` test in control-api (CL15) |
+| 16 | Cert push installs without restart; sub-node starts no ACME order while a master is known | `tests/sync.rs` (`cert_push_reaches_the_installer_with_the_exact_chain_and_key`, `failing_cert_install_is_reported_as_cert_push_failed`); ACME wiring in assembler (CL15) |
+| 17 | Audit append-only and coherent; no secret material in audit/log/export | `Secret`/redacted `Debug` (`src/enroll.rs`, `src/relay.rs`, `src/sync.rs`); audit persistence in control-api (CL15/CL16) |
+| 18 | All `cluster.*` codes unique/stable; fmt, clippy, tests, deny, ring-only green | `src/error.rs::codes_are_unique_and_well_formed`; gates run for CL26 |
+| 19 | Loopback only, injectable clock, no internet | every `tests/*.rs` uses `127.0.0.1:0` + `ManualClock`; no outbound request |
+
 ## Log
+
+- 2026-10-27 — **cluster CL26: fuzz targets, README, traceability.** Added `cluster_join_token` (`EnrollRequest` JSON decode + `check_protocol`), `cluster_log_batch` (`LogBatch::validate` over arbitrary JSON, matching and mismatching identity) and `cluster_config` (`ClusterConfig::from_toml`) to `fuzz/`, with seed corpora and the CI matrix; all three reject with well-formed `cluster.*` codes. Wrote `crates/dnscraft-cluster/README.md` (module layout, public API, security model, `[cluster]` config, error table) and mapped SPEC-cluster's 19 success criteria to evidence above. `CAPABILITY-MAP.md` cluster row → implemented (awaiting control-api wiring); CL6/CL7/CL15 are the remaining integration work.
 
 - 2026-10-27 — **G0 AS1 done (owner approved D1–D6): serde on all module configs.** Two commits: `224f695` tls (redacting `Secret` serde — `Serialize` emits `"[redacted]"`, `Deserialize` wraps; hard no-plaintext test) and `2f67162` resolver/filtering/clients/policy/listeners. Cross-crate types handled: `dnscraft_proto::Name`/`RData` via `name_serde`/`rdata_serde` (wire-bytes), `SystemTime` via `system_time_serde` (epoch secs/nanos), `IpNet` via `ipnet`'s `serde` feature, id newtypes (`SetId`/`ForwardZoneId`/`ListId`/`McpRuleId`/policy ids) via `#[serde(try_from = "String")]` so charset/length rules hold on deserialize, `ResolverConfig::clock` (`Arc<dyn Clock>`) `#[serde(skip)]`. Round-trip tests per crate green. Note: policy keeps a `serde_ids` adapter now redundant with the native id serde — harmless, cleanup later. **Remaining Phase 0:** AS0 (`ControlApiConfig`/`McpConfig` `Deserialize`) blocked on the concurrent cluster work in `dnscraft-api`; AS2 (binary `Config` extension) waits on AS0.
 

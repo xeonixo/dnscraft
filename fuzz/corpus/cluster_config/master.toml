@@ -1,0 +1,7 @@
+[cluster]
+role = "master"
+node_id = "master-a"
+
+[cluster.listen]
+bind = "127.0.0.1"
+port = 8443

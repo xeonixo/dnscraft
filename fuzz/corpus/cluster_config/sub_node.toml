@@ -1,0 +1,10 @@
+[cluster]
+role = "sub_node"
+node_id = "node-a"
+master_url = "https://master.example.net:8443"
+
+[cluster.quota]
+max_relay_requests_per_second = 50
+max_log_bytes_per_second = "2MiB"
+max_queued_offline_writes = 100
+clock_skew_warning = "5m"
