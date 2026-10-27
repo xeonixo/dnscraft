@@ -50,6 +50,10 @@
         `upstream_unknown_below_three_samples`, `upstream_down_when_success_below_half`,
         `upstream_samples_outside_window_ignored`, `upstream_last_error_is_stable_code`,
         `upstream_health_sends_no_probe_queries`.
+  - [ ] Open (deferred): DNSSEC Bogus results are not yet counted as upstream failures
+        (SPEC-resolver.md § Upstream health lists them). The verdict is per zone/answer and
+        the answering target is unknown there; needs the responder address threaded out of
+        `exchange_forward`. Test when done: `upstream_bogus_counts_as_failure`.
   - [ ] Phase 2: `GET /api/v1/resolver/upstreams` in `dnscraft-api`. Tests:
         `upstreams_viewer_200`, `upstreams_unauthenticated_401`,
         `upstreams_without_forward_zones_returns_recursion_only`.
