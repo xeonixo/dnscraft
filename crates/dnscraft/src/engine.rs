@@ -25,12 +25,19 @@ use crate::{Config, Error};
 const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Runtime engines assembled from config.
-pub(crate) struct Engines {
+///
+/// Kept public so later phases (control-api assembly) can reach the live
+/// engines; the config-apply adapters use the same handles.
+pub struct Engines {
+    /// Filtering engine (inherited by the policy engine and the list scheduler).
+    pub filtering: Arc<FilterEngine>,
+    /// Client directory engine.
+    pub clients: Arc<ClientEngine>,
     /// Policy engine wiring the resolver, filter, and client directory.
-    pub(crate) policy: Arc<PolicyEngine>,
+    pub policy: Arc<PolicyEngine>,
     /// TLS engine when `[tls]` is configured; its background renewal/DynDNS
     /// tasks live as long as this value is kept.
-    pub(crate) tls: Option<TlsEngine>,
+    pub tls: Option<Arc<TlsEngine>>,
 }
 
 /// [`ClientDirectory`] over the live [`ClientEngine`] snapshot.
@@ -107,25 +114,33 @@ pub(crate) async fn build_engines(
         ClientEngine::new(config.clients.clone(), data_dir.clone(), Arc::clone(&clock))
             .map_err(|e| Error::startup("dnscraft.startup.clients", format!("clients: {e}")))?;
     let clients: Arc<dyn ClientDirectory> = Arc::new(EngineClients {
-        engine: clients_engine,
+        engine: Arc::clone(&clients_engine),
     });
 
     // AS6: real policy over the resolver, filter, and client directory.
-    let policy = PolicyEngine::new(policy_config, filter, resolver, clients, Arc::clone(&clock))
-        .map_err(|e| Error::startup("dnscraft.startup.policy", format!("policy: {e}")))?;
+    let policy = PolicyEngine::new(
+        policy_config,
+        Arc::clone(&filter),
+        resolver,
+        clients,
+        Arc::clone(&clock),
+    )
+    .map_err(|e| Error::startup("dnscraft.startup.policy", format!("policy: {e}")))?;
 
     // AS7: real TLS engine. An empty `[tls]` public domain means the section
     // is not configured (its type default enables ACME/DynDNS with no domain).
     let tls = if config.tls.public_domain.trim().is_empty() {
         None
     } else {
-        Some(
+        Some(Arc::new(
             TlsEngine::open(config.tls.clone(), &data_dir, clock)
                 .map_err(|e| Error::startup("dnscraft.startup.tls", format!("tls: {e}")))?,
-        )
+        ))
     };
 
     Ok(Engines {
+        filtering: filter,
+        clients: clients_engine,
         policy: Arc::new(policy),
         tls,
     })
@@ -141,17 +156,18 @@ fn resolver_config(config: &ResolverConfig) -> ResolverConfig {
     config
 }
 
-/// Persistent engine directory: `data_dir` when configured, otherwise a stable
-/// private directory under the system temp dir so a minimal config still boots.
-fn engine_data_dir(config: &Config) -> PathBuf {
+/// Persistent engine directory: `data_dir` when configured, otherwise a
+/// per-process directory under the system temp dir so a minimal config still
+/// boots and two instances never fight over the same SQLite file.
+pub(crate) fn engine_data_dir(config: &Config) -> PathBuf {
     if let Some(dir) = config.data_dir() {
         return dir.to_path_buf();
     }
-    // ponytail: no data_dir configured — keep state in a stable temp path.
+    // ponytail: no data_dir configured — keep state in a per-process temp path.
     // Set `data_dir` for real deployments (SQLite, TLS, filter bodies).
-    let dir = std::env::temp_dir().join("dnscraft");
+    let dir = std::env::temp_dir().join(format!("dnscraft-{}", std::process::id()));
     tracing::warn!(
-        "data_dir is not configured; engine state will be kept in {}",
+        "data_dir is not configured; engine state will be kept in {} (not persisted)",
         dir.display()
     );
     dir

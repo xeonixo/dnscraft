@@ -3,6 +3,7 @@
 //! The heavy lifting (config parsing, engine construction, event formatting)
 //! lives here so [`main.rs`](crate) stays a thin exit-code shim.
 
+mod apply;
 mod config;
 mod engine;
 mod events;
@@ -11,11 +12,14 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use dnscraft_api::{Audit, ConfigService, ConfigStore, Db, SharedConfigService};
 use dnscraft_listeners::{
-    ChannelSink, Clock, ListenerSet, ListenersStatus, NullSink, QueryEventSink, SystemClock,
+    ChannelSink, Clock, ListenerSet, ListenersConfig, ListenersStatus, NullSink, QueryEventSink,
+    SystemClock,
 };
 use dnscraft_policy::PolicyEngine;
-use dnscraft_tls::{CertResolver, TlsEngine};
+use dnscraft_tls::CertResolver;
+use serde_json::Value;
 use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
 
@@ -23,7 +27,12 @@ pub use config::{
     Config, IpTruncate, ListenerToml, LogConfig, LogSettings, TLS_CERT_ENV, TLS_CERT_FILE_ENV,
     TLS_KEY_ENV, TLS_KEY_FILE_ENV, TlsSecrets, tls_secrets_from_env,
 };
-pub use engine::build_engine;
+pub use engine::{Engines, build_engine};
+
+/// SQLite file holding the config versions and the audit log (`data_dir`).
+const CONFIG_DB_FILE: &str = "dnscraft.db";
+/// Audit node id for a standalone (non-cluster) assembler.
+const CONFIG_NODE_ID: &str = "local";
 
 /// Top-level startup/runtime error; every error maps to exit code 2.
 ///
@@ -124,12 +133,13 @@ pub(crate) fn parse_config(text: &str, source: &str) -> Result<Config, Error> {
 
 /// A running server: the listener set plus the JSON event writer task.
 pub struct App {
-    set: ListenerSet<PolicyEngine>,
+    set: Arc<ListenerSet<PolicyEngine>>,
     writer: Option<JoinHandle<()>>,
     sink: Arc<dyn QueryEventSink>,
-    /// Keeps the TLS engine (and its renewal / DynDNS tasks) alive with the
-    /// server. Reads use the shared [`CertResolver`] handed to the listeners.
-    _tls: Option<TlsEngine>,
+    /// Engines kept alive for the control-api assembly in later phases.
+    engines: Engines,
+    /// Atomic config service; control-api (Phase 3) attaches to this handle.
+    config_service: SharedConfigService,
 }
 
 impl App {
@@ -138,9 +148,25 @@ impl App {
         self.set.status()
     }
 
+    /// The shared atomic config service (control-api and MCP attach here).
+    pub fn config_service(&self) -> SharedConfigService {
+        Arc::clone(&self.config_service)
+    }
+
+    /// The live engines assembled at startup.
+    pub fn engines(&self) -> &Engines {
+        &self.engines
+    }
+
     /// Gracefully stops listeners and drains the event writer.
     pub async fn shutdown(self, grace: Duration) {
-        self.set.shutdown(grace).await;
+        if let Some(set) = Arc::into_inner(self.set) {
+            set.shutdown(grace).await;
+        } else {
+            // A clone of the set outlived the app; the listener tasks are
+            // dropped with their join handles.
+            tracing::warn!("listener set still shared at shutdown");
+        }
         // The channel closes once every listener has dropped its sink, so the
         // writer finishes soon after; the timeout is a backstop against a
         // leaked sender holding the writer (and the process) open.
@@ -165,11 +191,22 @@ pub async fn build(
 ) -> Result<App, Error> {
     let listeners = config.listeners_config()?;
     let log = config.log_settings()?;
-    let engine::Engines { policy, tls } = engine::build_engines(&config, clock).await?;
+    let engines = engine::build_engines(&config, clock).await?;
+
+    // AS9: SQLite config store under `data_dir`, seeded from the TOML config on
+    // first run. A non-empty store wins; the live engines were still built from
+    // TOML in this phase.
+    let snapshot = config_snapshot(&config, &listeners)?;
+    let db_path = engine::engine_data_dir(&config).join(CONFIG_DB_FILE);
+    let db = Db::open(&db_path, Arc::new(dnscraft_api::SystemClock))
+        .await
+        .map_err(|e| Error::startup("dnscraft.startup.store", format!("config store: {e}")))?;
+    let store = ConfigStore::new(db.clone());
+    seed_config_store(&store, &snapshot).await?;
 
     // A configured `[tls]` engine owns certificate renewal; otherwise keep the
     // environment-PEM bootstrap for encrypted listeners.
-    let certs = match tls.as_ref() {
+    let certs = match engines.tls.as_ref() {
         Some(engine) => Some(engine.resolver()),
         None => match tls_secrets_from_env()? {
             Some(secrets) => {
@@ -201,16 +238,18 @@ pub async fn build(
 
     let listener_sink = Arc::clone(&sink);
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let set = ListenerSet::start(
-        listeners,
-        policy,
-        certs,
-        listener_sink,
-        clock,
-        config.public_domain,
-    )
-    .await
-    .map_err(|e| Error::startup("dnscraft.startup.listeners", format!("listeners: {e}")))?;
+    let set = Arc::new(
+        ListenerSet::start(
+            listeners,
+            Arc::clone(&engines.policy),
+            certs,
+            listener_sink,
+            clock,
+            config.public_domain,
+        )
+        .await
+        .map_err(|e| Error::startup("dnscraft.startup.listeners", format!("listeners: {e}")))?,
+    );
 
     if !config.allow_partial_bind {
         let failures: Vec<String> = set
@@ -221,7 +260,9 @@ pub async fn build(
             .map(|l| format!("{} (id {})", l.configured_address, l.id.as_str()))
             .collect();
         if !failures.is_empty() {
-            set.shutdown(Duration::ZERO).await;
+            if let Some(set) = Arc::into_inner(set) {
+                set.shutdown(Duration::ZERO).await;
+            }
             return Err(Error::startup(
                 "dnscraft.startup.bind",
                 format!("listener bind failed: {}", failures.join(", ")),
@@ -229,12 +270,69 @@ pub async fn build(
         }
     }
 
+    let modules = apply::appliers(&engines, &set);
+    let config_service = Arc::new(ConfigService::new(
+        store,
+        Audit::new(db),
+        modules,
+        CONFIG_NODE_ID,
+    ));
+
     Ok(App {
         set,
         writer,
         sink,
-        _tls: tls,
+        engines,
+        config_service,
     })
+}
+
+/// The five-section JSON snapshot seeded into an empty config store.
+///
+/// Uses exactly the top-level keys [`ConfigService`] applies. `listeners` is
+/// the mapped [`ListenersConfig`] (listeners + limits + public + ddr), which
+/// is what `ApplyListeners` consumes.
+fn config_snapshot(config: &Config, listeners: &ListenersConfig) -> Result<Value, Error> {
+    Ok(serde_json::json!({
+        "filtering": section("filtering", &config.filtering)?,
+        "clients": section("clients", &config.clients)?,
+        "policy": section("policy", &config.policy)?,
+        "listeners": section("listeners", listeners)?,
+        "tls": section("tls", &config.tls)?,
+    }))
+}
+
+/// Serializes one TOML section for the bootstrap snapshot.
+fn section<T: serde::Serialize>(name: &str, value: &T) -> Result<Value, Error> {
+    serde_json::to_value(value).map_err(|e| {
+        Error::startup(
+            "dnscraft.startup.config_seed",
+            format!("serialize `{name}` for the config store: {e}"),
+        )
+    })
+}
+
+/// Seeds an empty config store; a store that already has a snapshot is kept.
+///
+/// D4: the TOML file is a first-run bootstrap only. It never overwrites an
+/// operator's stored (API-managed) configuration; a single warning says so.
+async fn seed_config_store(store: &ConfigStore, snapshot: &Value) -> Result<(), Error> {
+    let seed_err = |e: dnscraft_api::ControlApiError| {
+        Error::startup("dnscraft.startup.config_seed", format!("config store: {e}"))
+    };
+    match store.current().await.map_err(seed_err)? {
+        Some(version) => {
+            tracing::warn!(
+                version,
+                "config store already holds a snapshot; keeping it instead of re-seeding from TOML"
+            );
+        }
+        None => {
+            let version = store.store(snapshot).await.map_err(seed_err)?;
+            tracing::info!(version, "seeded the config store from TOML");
+        }
+    }
+    Ok(())
 }
 
 /// Loads `config_path`, builds and runs until SIGTERM/SIGINT, then shuts down.
@@ -324,6 +422,8 @@ mod tests {
             Error::startup("dnscraft.startup.policy", "x"),
             Error::startup("dnscraft.startup.tls", "x"),
             Error::startup("dnscraft.startup.listeners", "x"),
+            Error::startup("dnscraft.startup.store", "x"),
+            Error::startup("dnscraft.startup.config_seed", "x"),
             Error::tls("dnscraft.tls.install", "x"),
         ];
         let mut codes: Vec<&str> = errors.iter().map(Error::code).collect();
@@ -358,6 +458,49 @@ mod tests {
         let err = parse_config(text, "cfg.toml").unwrap_err();
         assert_eq!(err.code(), "dnscraft.config.unknown_field");
         assert!(err.message().contains("unknown field"), "{}", err.message());
+    }
+
+    /// The bootstrap snapshot carries exactly the five applied sections, and
+    /// each one is valid JSON for the applier that consumes it.
+    #[test]
+    fn config_snapshot_has_the_five_applied_sections() {
+        let snapshot = config_snapshot(&Config::default(), &ListenersConfig::default()).unwrap();
+
+        let mut keys: Vec<&str> = snapshot
+            .as_object()
+            .map(|map| map.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["clients", "filtering", "listeners", "policy", "tls"]
+        );
+        for section in keys {
+            assert!(
+                snapshot[section].is_object(),
+                "section `{section}` must be a JSON object"
+            );
+        }
+    }
+
+    /// D4: seeding runs once; a store that already has a snapshot is kept.
+    #[tokio::test]
+    async fn seed_never_overwrites_an_existing_snapshot() {
+        let db = Db::open_in_memory(Arc::new(dnscraft_api::SystemClock))
+            .await
+            .unwrap();
+        let store = ConfigStore::new(db);
+
+        let first = config_snapshot(&Config::default(), &ListenersConfig::default()).unwrap();
+        seed_config_store(&store, &first).await.unwrap();
+        assert_eq!(store.current().await.unwrap(), Some(1));
+
+        let mut second = first.clone();
+        second["filtering"] = serde_json::json!({ "changed": true });
+        seed_config_store(&store, &second).await.unwrap();
+
+        assert_eq!(store.current().await.unwrap(), Some(1), "no second seed");
+        assert_eq!(store.load(1).await.unwrap(), Some(first));
     }
 
     /// Production source must never use the frozen manual clock; the
