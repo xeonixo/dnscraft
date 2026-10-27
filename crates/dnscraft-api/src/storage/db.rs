@@ -85,6 +85,23 @@ impl Db {
             .await
     }
 
+    /// Stores a config snapshot under an explicit version.
+    ///
+    /// Used by cluster sync to adopt the master's `config_version` verbatim.
+    /// SQLite accepts an explicit value in an `AUTOINCREMENT` primary key as
+    /// long as it does not collide with an existing row, so no migration is
+    /// needed; the master is the sole writer and never pushes an older version.
+    pub async fn config_version_insert_at(
+        &self,
+        version: i64,
+        snapshot: &str,
+    ) -> Result<i64, ControlApiError> {
+        let snapshot = snapshot.to_owned();
+        let created_at = self.now_unix();
+        self.with_conn(move |conn| config_version_insert_at(conn, version, &snapshot, created_at))
+            .await
+    }
+
     /// Loads the snapshot of a stored config version, or `None` when absent.
     pub async fn config_version_load(
         &self,
@@ -210,12 +227,12 @@ impl Db {
     /// interleave with the transaction.
     pub(crate) async fn transaction<T, F>(&self, f: F) -> Result<T, ControlApiError>
     where
-        F: FnOnce(&mut Connection) -> Result<T, ControlApiError> + Send + 'static,
+        F: FnOnce(&Connection) -> Result<T, ControlApiError> + Send + 'static,
         T: Send + 'static,
     {
         self.with_conn(move |conn| {
             let tx = conn.transaction().map_err(db_err)?;
-            let value = f(&mut tx)?;
+            let value = f(&tx)?;
             tx.commit().map_err(db_err)?;
             Ok(value)
         })
@@ -235,6 +252,21 @@ pub(crate) fn config_version_insert(
     )
     .map_err(db_err)?;
     Ok(conn.last_insert_rowid())
+}
+
+/// Inserts one config snapshot row under an explicit version.
+pub(crate) fn config_version_insert_at(
+    conn: &Connection,
+    version: i64,
+    snapshot: &str,
+    created_at: i64,
+) -> Result<i64, ControlApiError> {
+    conn.execute(
+        "INSERT INTO config_versions (version, snapshot, created_at) VALUES (?1, ?2, ?3)",
+        params![version, snapshot, created_at],
+    )
+    .map_err(db_err)?;
+    Ok(version)
 }
 
 /// Maps a blocking-pool join failure to the internal error code.

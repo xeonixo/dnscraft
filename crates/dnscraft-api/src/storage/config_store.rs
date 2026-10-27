@@ -33,6 +33,17 @@ impl ConfigStore {
         self.db.config_version_insert(&json).await
     }
 
+    /// Stores a snapshot under an explicit version, adopting the master's
+    /// `config_version` verbatim instead of auto-incrementing.
+    ///
+    /// Only the cluster master writes config, so the supplied version is the
+    /// current maximum on the sub-node.
+    pub async fn store_at(&self, snapshot: &Value, version: i64) -> Result<i64, ControlApiError> {
+        let redacted = redact(snapshot);
+        let json = serde_json::to_string(&redacted).map_err(serialize_err)?;
+        self.db.config_version_insert_at(version, &json).await
+    }
+
     /// Stores `snapshot` and its audit record in one transaction.
     ///
     /// The config version and the audit row commit together or not at all, so

@@ -218,6 +218,36 @@ impl ConfigService {
             previous_version,
             previous.as_ref(),
             &snapshot,
+            None,
+        )
+        .await
+    }
+
+    /// Applies a full snapshot pushed by the cluster master and adopts its
+    /// `config_version` verbatim (no local bump).
+    ///
+    /// Takes the same validate → apply → store path as [`Self::replace`] under
+    /// the same serial apply lock, including re-applying the previous snapshot
+    /// on a module failure. The `mcp_rules` merge is deliberately not applied:
+    /// the pushed snapshot is complete and is adopted as-is.
+    pub async fn apply_synced_config(
+        &self,
+        snapshot: Value,
+        version: i64,
+    ) -> Result<i64, ControlApiError> {
+        let _guard = self.apply_lock.lock().await;
+        let previous_version = self.store.current().await?;
+        let previous = match previous_version {
+            Some(previous) => self.store.load(previous).await?,
+            None => None,
+        };
+        self.commit(
+            &ConfigActor::local(),
+            "cluster.config.apply",
+            previous_version,
+            previous.as_ref(),
+            &snapshot,
+            Some(version),
         )
         .await
     }
@@ -261,9 +291,16 @@ impl ConfigService {
                 return Err(err);
             }
         }
-        self.commit(actor, action, current_version, previous.as_ref(), &snapshot)
-            .await
-            .map(Some)
+        self.commit(
+            actor,
+            action,
+            current_version,
+            previous.as_ref(),
+            &snapshot,
+            None,
+        )
+        .await
+        .map(Some)
     }
 
     /// Runs a config mutation whose audit row is committed with the new
@@ -366,8 +403,11 @@ impl ConfigService {
         }
     }
 
-    /// Shared validate → apply → store → audit path used by [`Self::replace`]
-    /// and [`Self::mutate`].
+    /// Shared validate → apply → store → audit path used by [`Self::replace`],
+    /// [`Self::mutate`] and [`Self::apply_synced_config`].
+    ///
+    /// `version` is `Some` only for a cluster sync, which stores under the
+    /// master's explicit version; `None` auto-increments.
     async fn commit(
         &self,
         actor: &ConfigActor,
@@ -375,8 +415,9 @@ impl ConfigService {
         previous_version: Option<i64>,
         previous: Option<&Value>,
         snapshot: &Value,
+        version: Option<i64>,
     ) -> Result<i64, ControlApiError> {
-        match self.validate_apply_store(snapshot, previous).await {
+        match self.validate_apply_store(snapshot, previous, version).await {
             Ok(version) => {
                 self.record(
                     actor,
@@ -409,14 +450,19 @@ impl ConfigService {
     /// Validates and applies `snapshot`, then stores it as a new version.
     ///
     /// Apply failures replay `previous` for the modules already touched; the
-    /// failing module's error is returned unchanged.
+    /// failing module's error is returned unchanged. An explicit `version`
+    /// stores under that version instead of auto-incrementing.
     async fn validate_apply_store(
         &self,
         snapshot: &Value,
         previous: Option<&Value>,
+        version: Option<i64>,
     ) -> Result<i64, ControlApiError> {
         self.validate_and_apply(snapshot, previous).await?;
-        self.store.store(snapshot).await
+        match version {
+            Some(version) => self.store.store_at(snapshot, version).await,
+            None => self.store.store(snapshot).await,
+        }
     }
 
     /// Validates `snapshot` and applies it to every configured module.
@@ -1081,10 +1127,12 @@ pub type SharedConfigService = Arc<ConfigService>;
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::time::{Duration, SystemTime};
 
     use super::*;
     use crate::clock::ManualClock;
+    use crate::modules::{ApplyFiltering, ModuleFuture};
     use crate::storage::Db;
 
     #[tokio::test]
@@ -1158,21 +1206,16 @@ mod tests {
         let actor = ConfigActor::new("tok", "token");
 
         let version = service
-            .mutate_audited(
-                &actor,
-                "mcp.add_rule",
-                None,
-                |snapshot| {
-                    snapshot["filtering"]["marker"] = json!(true);
-                    Ok(Some(MutationAudit {
-                        before: None,
-                        after: json!({
-                            "domain": "x.example.com",
-                            "config_version": Value::Null,
-                        }),
-                    }))
-                },
-            )
+            .mutate_audited(&actor, "mcp.add_rule", None, |snapshot| {
+                snapshot["filtering"]["marker"] = json!(true);
+                Ok(Some(MutationAudit {
+                    before: None,
+                    after: json!({
+                        "domain": "x.example.com",
+                        "config_version": Value::Null,
+                    }),
+                }))
+            })
             .await
             .unwrap()
             .expect("a version");
@@ -1231,5 +1274,138 @@ mod tests {
                 })),
             }
         );
+    }
+
+    /// A valid full snapshot carrying a marker the fake applier inspects.
+    fn synced_snapshot(marker: &str, fail: bool) -> Value {
+        json!({
+            "filtering": { "lists": [], "sets": [], "marker": marker, "fail": fail },
+            "clients": {},
+            "policy": {},
+            "listeners": {},
+            "tls": {},
+        })
+    }
+
+    /// Filtering applier that records every applied section and fails when the
+    /// section carries `"fail": true`.
+    struct RecordingFiltering {
+        applied: Arc<Mutex<Vec<Value>>>,
+    }
+
+    impl ApplyFiltering for RecordingFiltering {
+        fn apply<'a>(&'a self, config: &'a Value) -> ModuleFuture<'a> {
+            Box::pin(async move {
+                self.applied.lock().unwrap().push(config.clone());
+                if config.get("fail").and_then(Value::as_bool) == Some(true) {
+                    return Err(module_error(
+                        "filtering.config.invalid",
+                        json!({ "reason": "injected" }),
+                    ));
+                }
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_synced_config_adopts_the_explicit_version() {
+        let clock = Arc::new(ManualClock::new(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        ));
+        let db = Db::open_in_memory(clock).await.unwrap();
+        let service = ConfigService::new(
+            ConfigStore::new(db.clone()),
+            Audit::new(db.clone()),
+            ModuleAppliers::default(),
+            "node-b",
+        );
+
+        assert_eq!(
+            service
+                .apply_synced_config(synced_snapshot("v7", false), 7)
+                .await
+                .unwrap(),
+            7
+        );
+        assert_eq!(service.current().await.unwrap().0, Some(7));
+
+        // The next push continues from the master's version, not a local bump.
+        assert_eq!(
+            service
+                .apply_synced_config(synced_snapshot("v8", false), 8)
+                .await
+                .unwrap(),
+            8
+        );
+        assert_eq!(
+            service.current().await.unwrap(),
+            (Some(8), Some(synced_snapshot("v8", false)))
+        );
+
+        let rows = db.audit_list(10, 0).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].action, "cluster.config.apply");
+        assert_eq!(rows[0].node_id, "node-b");
+        assert_eq!(rows[0].config_version, Some(8));
+        assert_eq!(rows[0].result, "ok");
+    }
+
+    #[tokio::test]
+    async fn apply_synced_config_rolls_back_to_the_previous_version_on_failure() {
+        let clock = Arc::new(ManualClock::new(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        ));
+        let db = Db::open_in_memory(clock).await.unwrap();
+        let applied = Arc::new(Mutex::new(Vec::new()));
+        let service = ConfigService::new(
+            ConfigStore::new(db.clone()),
+            Audit::new(db.clone()),
+            ModuleAppliers {
+                filtering: Some(Arc::new(RecordingFiltering {
+                    applied: Arc::clone(&applied),
+                })),
+                ..ModuleAppliers::default()
+            },
+            "node-b",
+        );
+
+        service
+            .apply_synced_config(synced_snapshot("old", false), 5)
+            .await
+            .unwrap();
+        applied.lock().unwrap().clear();
+
+        let err = service
+            .apply_synced_config(synced_snapshot("new", true), 6)
+            .await
+            .expect_err("the injected module apply fails");
+        assert_eq!(err.code(), "filtering.config.invalid");
+
+        // The sub-node stays on the previous version and snapshot.
+        let (version, snapshot) = service.current().await.unwrap();
+        assert_eq!(version, Some(5));
+        assert_eq!(snapshot.unwrap()["filtering"]["marker"], "old");
+        assert!(
+            service.store.load(6).await.unwrap().is_none(),
+            "the rejected version is never stored"
+        );
+
+        // The new snapshot was attempted, then the previous one was re-applied.
+        {
+            let applied = applied.lock().unwrap();
+            assert_eq!(applied.len(), 2);
+            assert_eq!(applied[0]["marker"], "new");
+            assert_eq!(applied[1]["marker"], "old");
+        }
+
+        let rows = db.audit_list(10, 0).await.unwrap();
+        assert_eq!(rows[0].action, "cluster.config.apply");
+        assert_eq!(rows[0].result, "error");
+        assert_eq!(
+            rows[0].error_code.as_deref(),
+            Some("filtering.config.invalid")
+        );
+        assert_eq!(rows[0].config_version, Some(5));
     }
 }
