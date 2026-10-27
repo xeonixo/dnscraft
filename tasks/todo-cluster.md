@@ -55,13 +55,13 @@
 
 - [x] CL19 log outbox streaming + contiguous ack + dedupe `(node_id, record_id)`+`(node_id, seq)`.
 - [x] CL20 backfill from `last_acked_log_seq` + gap counting + buffer retention.
-- [ ] CL21 stats node_id rollups + per-node breakdown + sub-node read model (local offline).
+- [x] CL21 stats node_id rollups + per-node breakdown (CL5) + sub-node read model (→ CL15 assembler).
 
 ## Phase 6 — TLS cert push + auth snapshot + quotas/skew
 
 - [x] CL22 `CertPush {chain, key}` → `CertInstaller` trait (hot-reload). Wiring (CertResolver::import + no-ACME) → CL15.
 - [x] CL23 `AuthSnapshot` push record + `AuthSnapshotApplier` trait + session epoch (CL3a). Wiring → CL15.
-- [ ] CL24 quotas (relay/log/queue) + clock-skew warning.
+- [x] CL24 quotas (relay/log/queue) + clock-skew warning.
 
 ## Phase 7 — Hardening, fault injection, fuzz, docs, traceability
 
