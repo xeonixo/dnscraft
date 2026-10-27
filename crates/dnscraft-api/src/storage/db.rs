@@ -81,15 +81,8 @@ impl Db {
     pub async fn config_version_insert(&self, snapshot: &str) -> Result<i64, ControlApiError> {
         let snapshot = snapshot.to_owned();
         let created_at = self.now_unix();
-        self.with_conn(move |conn| {
-            conn.execute(
-                "INSERT INTO config_versions (snapshot, created_at) VALUES (?1, ?2)",
-                params![snapshot, created_at],
-            )
-            .map_err(db_err)?;
-            Ok(conn.last_insert_rowid())
-        })
-        .await
+        self.with_conn(move |conn| config_version_insert(conn, &snapshot, created_at))
+            .await
     }
 
     /// Loads the snapshot of a stored config version, or `None` when absent.
@@ -208,6 +201,40 @@ impl Db {
         .await
         .map_err(join_err)?
     }
+
+    /// Runs `f` inside one SQLite transaction on the shared connection.
+    ///
+    /// The transaction commits only when `f` returns `Ok`; any error (including
+    /// a failed statement) rolls every write in `f` back. Because the single
+    /// writer connection is held for the whole call, no other database call can
+    /// interleave with the transaction.
+    pub(crate) async fn transaction<T, F>(&self, f: F) -> Result<T, ControlApiError>
+    where
+        F: FnOnce(&mut Connection) -> Result<T, ControlApiError> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.with_conn(move |conn| {
+            let tx = conn.transaction().map_err(db_err)?;
+            let value = f(&mut tx)?;
+            tx.commit().map_err(db_err)?;
+            Ok(value)
+        })
+        .await
+    }
+}
+
+/// Inserts one config snapshot row on an open connection or transaction.
+pub(crate) fn config_version_insert(
+    conn: &Connection,
+    snapshot: &str,
+    created_at: i64,
+) -> Result<i64, ControlApiError> {
+    conn.execute(
+        "INSERT INTO config_versions (snapshot, created_at) VALUES (?1, ?2)",
+        params![snapshot, created_at],
+    )
+    .map_err(db_err)?;
+    Ok(conn.last_insert_rowid())
 }
 
 /// Maps a blocking-pool join failure to the internal error code.

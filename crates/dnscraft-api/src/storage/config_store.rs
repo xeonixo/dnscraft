@@ -2,8 +2,8 @@
 
 use serde_json::Value;
 
-use super::Db;
-use crate::audit::redact;
+use super::{Db, audit as audit_store, db};
+use crate::audit::{ConfigChangeRecord, config_change_record, redact};
 use crate::error::ControlApiError;
 
 /// Stores and retrieves versioned, redacted config snapshots.
@@ -31,6 +31,35 @@ impl ConfigStore {
         let redacted = redact(snapshot);
         let json = serde_json::to_string(&redacted).map_err(serialize_err)?;
         self.db.config_version_insert(&json).await
+    }
+
+    /// Stores `snapshot` and its audit record in one transaction.
+    ///
+    /// The config version and the audit row commit together or not at all, so
+    /// a committed rule mutation can never be left unaudited. `change`'s
+    /// `config_version` (and `after.config_version`, when `after` is an object)
+    /// are set to the newly assigned version.
+    pub(crate) async fn store_with_audit(
+        &self,
+        snapshot: &Value,
+        change: ConfigChangeRecord,
+    ) -> Result<i64, ControlApiError> {
+        let redacted = redact(snapshot);
+        let json = serde_json::to_string(&redacted).map_err(serialize_err)?;
+        let created_at = self.db.now_unix();
+        self.db
+            .transaction(move |conn| {
+                let version = db::config_version_insert(conn, &json, created_at)?;
+                let mut change = change;
+                change.config_version = Some(version);
+                if let Some(Value::Object(after)) = change.after.as_mut() {
+                    after.insert("config_version".to_owned(), Value::from(version));
+                }
+                let record = config_change_record(&change, created_at)?;
+                audit_store::audit_insert(conn, &record)?;
+                Ok(version)
+            })
+            .await
     }
 
     /// Loads the exact stored snapshot of a version (already redacted).

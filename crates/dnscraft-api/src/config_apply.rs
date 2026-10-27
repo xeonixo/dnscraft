@@ -94,6 +94,18 @@ impl ConfigActor {
     }
 }
 
+/// Audit content captured by an audited config mutation.
+///
+/// The service fills `config_version` and commits the record with the config
+/// version; the closure supplies the redaction-ready `before`/`after` shapes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MutationAudit {
+    /// Pre-change state.
+    pub before: Option<Value>,
+    /// Post-change state; `config_version` is filled by the service.
+    pub after: Value,
+}
+
 /// Result of a rollback: the newly created version and the restored source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RollbackOutcome {
@@ -254,22 +266,25 @@ impl ConfigService {
             .map(Some)
     }
 
-    /// Same atomic apply path as [`Self::mutate`] but without an audit record.
+    /// Runs a config mutation whose audit row is committed with the new
+    /// config version in one SQLite transaction.
     ///
-    /// The MCP write tools audit through [`crate::mcp_backend`] with the
-    /// token-scoped entry the `dnscraft-mcp` layer supplies, so an internal
-    /// audit here would duplicate every mutation. The apply lock is still held
-    /// across read, mutation, validation, apply and store.
-    ///
-    /// `mutate` must return `Ok(false)` when it made no change; that stores no
-    /// version. `Ok(true)` takes the same validate → apply → store path as
-    /// [`Self::replace`], minus the audit record.
-    pub(crate) async fn mutate_unrecorded<F>(
+    /// The apply lock is held across read, mutation, validation, apply, store
+    /// and audit, so a committed mutation always has exactly one audit row and
+    /// a failed audit write rolls the config version back. `mutate` returns
+    /// `Ok(None)` when it made no change (no version, no audit of its own
+    /// content); then `fallback_after` is audited best-effort as a successful
+    /// no-op. An error from `mutate` or from validate/apply is audited
+    /// best-effort only, because nothing was committed.
+    pub(crate) async fn mutate_audited<F>(
         &self,
+        actor: &ConfigActor,
+        action: &str,
+        fallback_after: Option<Value>,
         mutate: F,
     ) -> Result<Option<i64>, ControlApiError>
     where
-        F: FnOnce(&mut Value) -> Result<bool, ControlApiError>,
+        F: FnOnce(&mut Value) -> Result<Option<MutationAudit>, ControlApiError>,
     {
         let _guard = self.apply_lock.lock().await;
         let current_version = self.store.current().await?;
@@ -278,15 +293,77 @@ impl ConfigService {
             None => None,
         };
         let mut snapshot = previous.clone().unwrap_or_else(empty_snapshot);
-        match mutate(&mut snapshot) {
-            Ok(true) => {}
-            Ok(false) => return Ok(None),
-            Err(err) => return Err(err),
+        let audit = match mutate(&mut snapshot) {
+            Ok(Some(audit)) => audit,
+            Ok(None) => {
+                self.record(
+                    actor,
+                    action,
+                    current_version,
+                    None,
+                    fallback_after.as_ref(),
+                    "ok",
+                    None,
+                )
+                .await;
+                return Ok(None);
+            }
+            Err(err) => {
+                self.record(
+                    actor,
+                    action,
+                    current_version,
+                    None,
+                    fallback_after.as_ref(),
+                    "error",
+                    Some(err.code()),
+                )
+                .await;
+                return Err(err);
+            }
+        };
+        let change = ConfigChangeRecord {
+            node_id: self.node_id.clone(),
+            actor_id: actor.actor_id.clone(),
+            actor_type: actor.actor_type.clone(),
+            action: action.to_owned(),
+            config_version: None,
+            before: audit.before.clone(),
+            after: Some(audit.after.clone()),
+            result: "ok".to_owned(),
+            error_code: None,
+        };
+        match self.validate_and_apply(&snapshot, previous.as_ref()).await {
+            Ok(()) => match self.store.store_with_audit(&snapshot, change.clone()).await {
+                Ok(version) => Ok(Some(version)),
+                Err(err) => {
+                    self.record(
+                        actor,
+                        action,
+                        current_version,
+                        change.before.as_ref(),
+                        change.after.as_ref(),
+                        "error",
+                        Some(err.code()),
+                    )
+                    .await;
+                    Err(err)
+                }
+            },
+            Err(err) => {
+                self.record(
+                    actor,
+                    action,
+                    current_version,
+                    change.before.as_ref(),
+                    change.after.as_ref(),
+                    "error",
+                    Some(err.code()),
+                )
+                .await;
+                Err(err)
+            }
         }
-        let version = self
-            .validate_apply_store(&snapshot, previous.as_ref())
-            .await?;
-        Ok(Some(version))
     }
 
     /// Shared validate → apply → store → audit path used by [`Self::replace`]
@@ -338,10 +415,23 @@ impl ConfigService {
         snapshot: &Value,
         previous: Option<&Value>,
     ) -> Result<i64, ControlApiError> {
+        self.validate_and_apply(snapshot, previous).await?;
+        self.store.store(snapshot).await
+    }
+
+    /// Validates `snapshot` and applies it to every configured module.
+    ///
+    /// Nothing is persisted; this is the pre-commit half of
+    /// [`Self::validate_apply_store`], also used before the transactional
+    /// store-and-audit path.
+    async fn validate_and_apply(
+        &self,
+        snapshot: &Value,
+        previous: Option<&Value>,
+    ) -> Result<(), ControlApiError> {
         validate_cross_module(snapshot)?;
         self.validate_modules(snapshot)?;
-        self.apply_with_replay(snapshot, previous).await?;
-        self.store.store(snapshot).await
+        self.apply_with_replay(snapshot, previous).await
     }
 
     /// Restores a stored version through the same atomic apply path.
@@ -990,7 +1080,111 @@ pub type SharedConfigService = Arc<ConfigService>;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime};
+
     use super::*;
+    use crate::clock::ManualClock;
+    use crate::storage::Db;
+
+    #[tokio::test]
+    async fn audited_mutation_rolls_back_when_the_audit_insert_fails() {
+        let clock = Arc::new(ManualClock::new(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        ));
+        let db = Db::open_in_memory(clock).await.unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER reject_ok_audit BEFORE INSERT ON audit_log
+                 WHEN NEW.result = 'ok'
+                 BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END;",
+            )
+            .map_err(crate::storage::db_err)
+        })
+        .await
+        .unwrap();
+        let service = ConfigService::new(
+            ConfigStore::new(db.clone()),
+            Audit::new(db.clone()),
+            ModuleAppliers::default(),
+            "node-a",
+        );
+        let actor = ConfigActor::new("tok", "token");
+
+        let err = service
+            .mutate_audited(
+                &actor,
+                "mcp.add_rule",
+                Some(json!({ "domain": "x.example.com" })),
+                |snapshot| {
+                    snapshot["filtering"]["marker"] = json!(true);
+                    Ok(Some(MutationAudit {
+                        before: None,
+                        after: json!({
+                            "domain": "x.example.com",
+                            "config_version": Value::Null,
+                        }),
+                    }))
+                },
+            )
+            .await
+            .expect_err("the audit insert fails");
+
+        assert_eq!(err.code(), "control_api.internal");
+        assert_eq!(
+            service.current().await.unwrap(),
+            (None, None),
+            "a failed audit insert rolls the config version back"
+        );
+        let rows = db.audit_list(10, 0).await.unwrap();
+        assert_eq!(rows.len(), 1, "only the best-effort failure audit lands");
+        assert_eq!(rows[0].action, "mcp.add_rule");
+        assert_eq!(rows[0].result, "error");
+        assert_eq!(rows[0].config_version, None);
+    }
+
+    #[tokio::test]
+    async fn audited_mutation_commits_one_audit_row_with_the_version() {
+        let clock = Arc::new(ManualClock::new(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        ));
+        let db = Db::open_in_memory(clock).await.unwrap();
+        let service = ConfigService::new(
+            ConfigStore::new(db.clone()),
+            Audit::new(db.clone()),
+            ModuleAppliers::default(),
+            "node-a",
+        );
+        let actor = ConfigActor::new("tok", "token");
+
+        let version = service
+            .mutate_audited(
+                &actor,
+                "mcp.add_rule",
+                None,
+                |snapshot| {
+                    snapshot["filtering"]["marker"] = json!(true);
+                    Ok(Some(MutationAudit {
+                        before: None,
+                        after: json!({
+                            "domain": "x.example.com",
+                            "config_version": Value::Null,
+                        }),
+                    }))
+                },
+            )
+            .await
+            .unwrap()
+            .expect("a version");
+
+        let rows = db.audit_list(10, 0).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].action, "mcp.add_rule");
+        assert_eq!(rows[0].result, "ok");
+        assert_eq!(rows[0].config_version, Some(version));
+        let after: Value = serde_json::from_str(rows[0].after.as_deref().unwrap()).unwrap();
+        assert_eq!(after["config_version"], version);
+    }
 
     #[test]
     fn tls_diff_names_the_changed_sub_blocks() {

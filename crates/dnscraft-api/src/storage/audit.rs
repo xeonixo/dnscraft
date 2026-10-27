@@ -101,6 +101,14 @@ fn list(conn: &Connection, limit: u32, offset: u32) -> Result<Vec<AuditRecord>, 
     rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
 }
 
+/// Appends one audit record on an open connection or transaction.
+pub(crate) fn audit_insert(
+    conn: &Connection,
+    record: &AuditRecord,
+) -> Result<i64, ControlApiError> {
+    insert(conn, record)
+}
+
 impl Db {
     /// Appends a record and returns its auto-assigned id.
     pub async fn audit_insert(&self, record: AuditRecord) -> Result<i64, ControlApiError> {
