@@ -629,8 +629,10 @@ pub(crate) fn engine_error(err: dnscraft_filtering::FilterError, set: &str) -> C
 
 /// Appends one MCP block rule to a filter set in `snapshot`.
 ///
-/// The cap counts only non-expired rules and is enforced here, inside the
-/// caller's config apply lock, so two concurrent adds cannot both pass.
+/// Expired entries are pruned first, so the stored array cannot grow without
+/// bound and the cap counts only rules that are still active. The cap is
+/// enforced here, inside the caller's config apply lock, so two concurrent
+/// adds cannot both pass.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn add_rule_to_snapshot(
     snapshot: &mut Value,
@@ -656,8 +658,8 @@ pub(crate) fn add_rule_to_snapshot(
         .ok_or_else(|| ControlApiError::Internal {
             message: "mcp_rules is not an array".to_owned(),
         })?;
-    let active = rules.iter().filter(|rule| active_rule(rule, now)).count();
-    if active >= cap {
+    rules.retain(|rule| active_rule(rule, now));
+    if rules.len() >= cap {
         return Err(mcp_error(
             "mcp.rule_limit_exceeded",
             json!({ "filter_set_id": set.as_str(), "max": cap }),

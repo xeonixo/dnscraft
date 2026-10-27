@@ -619,7 +619,8 @@ async fn add_custom_rule_rejects_protected_lifetime_unknown_set_and_cap() {
             .all(|record| record.actor_type == "token" && record.actor_id == "tok-add-rule")
     );
 
-    // Expired rules do not count toward the cap.
+    // Expired rules do not count toward the cap and are pruned from the stored
+    // array, so it cannot grow without bound.
     let expired = harness_with(
         McpConfig {
             max_custom_rules_per_set: 10,
@@ -640,6 +641,9 @@ async fn add_custom_rule_rejects_protected_lifetime_unknown_set_and_cap() {
         .await
         .expect("expired rules free the cap");
     assert_eq!(added.config_version, Some(2));
+    let stored = current_rules(&expired).await;
+    assert_eq!(stored.len(), 1, "expired rules are pruned, not accumulated");
+    assert_eq!(stored[0]["domain"], "free.example.com");
 }
 
 #[tokio::test]
