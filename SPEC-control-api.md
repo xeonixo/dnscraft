@@ -256,7 +256,22 @@ or secret token material. The `CertResolver` is passed to listeners as
 | GET/POST/PUT/DELETE | `/api/v1/filter-sets` | admin | filter set configuration | `filtering.config.*` |
 | GET/POST/PUT/DELETE | `/api/v1/filter-lists` | admin | URL list management | `filtering.*` |
 | GET/POST/PUT/DELETE | `/api/v1/listeners` | admin | listener CRUD | `listeners.config.*` |
-| GET/POST/PUT/DELETE | `/api/v1/tls` | admin | TLS config | `tls.config.*` |
+| GET/POST/PUT/DELETE | `/api/v1/tls` | admin | TLS config (including `acme`, `dyndns`, `dns_provider`, `notifications`) | `tls.config.*` |
+| GET | `/api/v1/tls/status` | viewer/admin | typed TLS status DTO (mode, fingerprint, expiry, chain, ARI, history, store health) | `control_api.not_ready` |
+| PUT | `/api/v1/tls/certificate` | admin | upload a PEM certificate + key (+ optional chain); switches to `tls_mode = manual`; returns `{ "mode": "manual" }` | `tls.cert.manual.invalid` |
+| GET | `/api/v1/tls/certificate` | admin | fullchain PEM export, **certificates only** (`{ "fullchain_pem": "..." }`) | `control_api.internal` |
+| POST | `/api/v1/tls/renew` | admin | trigger issuance/renewal now; returns `{ "started": true }` | `tls.acme.*`, `tls.store.*`, `tls.cert.*` |
+| POST | `/api/v1/tls/revoke` | admin | `{ "reason": "..." }`; revoke the active certificate | `tls.cert.revoked`, `tls.config.invalid` |
+| POST | `/api/v1/tls/rotate` | admin | force re-issue with a fresh key pair; returns `{ "rotated": true }` | `tls.cert.rotate.failed`, `tls.acme.*` |
+| POST | `/api/v1/tls/preflight` | admin | dry-run connectivity/config report (`{ "ok": bool, "checks": [...] }`) | `tls.acme.preflight.failed` |
+| POST | `/api/v1/tls/dyndns` | admin | trigger a DynDNS update; returns the pass report | `tls.dyndns.*`, `tls.dns.provider.*` |
+| GET | `/api/v1/tls/records` | admin | expected `dns.<domain>` / `*.dns.<domain>` record inventory and live check | `tls.dns.provider.zone` |
+| GET | `/api/v1/tls/account` | admin | ACME account status (EAB, ToS, rollover) | `tls.acme.account.*` |
+| GET | `/api/v1/tls/order` | admin | current ACME order / progress | `tls.acme.order_pending` |
+| GET | `/api/v1/tls/audit` | admin | DynDNS audit trail (bounded) | – |
+| GET | `/api/v1/cluster/nodes` | admin | list sub-nodes + status (role, reachability, applied version, lag) | `cluster.node.*` |
+| POST | `/api/v1/cluster/join-tokens` | admin | mint one-time join token bound to `node_id`, TTL default 15 min | `cluster.join.*` |
+| DELETE | `/api/v1/cluster/nodes/{id}` | admin | revoke/remove node | `cluster.node.revoked` |
 | GET | `/api/v1/query-log` | viewer/admin | query-log search / paginate | `control_api.query_log.*` |
 | GET | `/api/v1/query-log/{id}` | viewer/admin | single query-log record | `control_api.not_found` |
 | GET | `/api/v1/query-log/export.csv` | viewer/admin | CSV export of current filter | `control_api.query_log.export` |
@@ -926,6 +941,134 @@ References (to be re-checked in P1): OIDC Core
 <https://www.rfc-editor.org/rfc/rfc6749>, Argon2 RFC 9106
 <https://www.rfc-editor.org/rfc/rfc9106>.
 
+## TLS control surface
+
+TLS configuration remains the singleton `GET/PUT/DELETE /api/v1/tls` section.
+The operational surface below is read-mostly: it reports what the `tls` engine
+is doing and triggers the actions the engine already implements. Every mutating
+action is audited through the shared config-service audit path (action names
+`tls.certificate.upload`, `tls.cert.renew`, `tls.cert.revoke`,
+`tls.cert.rotate`, `tls.dyndns.update`).
+
+### `GET /api/v1/tls/status` DTO
+
+`GET /api/v1/tls/status` returns `{ "data": <TlsStatus> }`. `GET /api/v1/status`
+embeds the same object under `tls` when a TLS provider is attached. Fields are
+a typed projection of `dnscraft_tls::TlsStatus` (contract § B) merged with the
+listener-level `mode` and fingerprint. Timestamps are RFC 3339 UTC strings;
+`null`/absent means "not known yet". The DTO never contains private keys or
+Cloudflare token material; `chain` is fullchain PEM with certificates only.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `mode` | `"acme" \| "manual" \| "self_signed"` | certificate the API listener is serving |
+| `fingerprint` | string (64 hex) | SHA-256 of the served leaf |
+| `source` | `"acme" \| "manual"` | where the certificate came from |
+| `not_before` / `not_after` | RFC 3339 \| absent | leaf validity |
+| `days_to_expiry` | integer | whole days until `not_after` (negative when expired) |
+| `identifiers` | string[] | DNS SANs |
+| `issuer` / `subject` | RFC 4514 \| absent | distinguished names |
+| `serial` | colon-hex \| absent | leaf serial |
+| `signature_algorithm` | string \| absent | e.g. `ecdsa-with-SHA256` |
+| `key_usage` | string[] | `digitalSignature`, `keyCertSign`, … |
+| `chain` | string[] | fullchain PEM blocks, leaf first, certificates only |
+| `ari` | object \| absent | `{ suggested_window_start, suggested_window_end, certificate_id, supported }` |
+| `history` | array | bounded (last 10) `{ timestamp, outcome: "issued"\|"renewed"\|"failed", error?, serial? }` |
+| `last_issue` / `last_renew_attempt` | RFC 3339 \| absent | issuance timestamps |
+| `next_renew_at` / `next_dyndns_at` | RFC 3339 \| absent | scheduled runs |
+| `last_dyndns_success` | RFC 3339 \| absent | last successful DynDNS pass |
+| `acme_directory` | string | configured ACME directory URL |
+| `acme_enabled` | boolean | whether this node creates ACME orders |
+| `last_error` | `tls.*` \| absent | last stable TLS error code |
+| `cert_expiring` / `cert_expired` | boolean | expiry flags |
+| `revoked` | boolean | certificate revoked locally |
+| `dyndns_ipv4` / `dyndns_ipv6` | string \| absent | last published addresses |
+| `dyndns_last_change` | RFC 3339 \| absent | last record change |
+| `dyndns_stale` | boolean | last DynDNS pass failed |
+| `store` | object \| absent | `{ path, writable, last_write, corrupt }` |
+
+`GET /api/v1/tls/status` is viewer/admin (operational read); every other
+`/api/v1/tls/*` route is admin-only.
+
+### Manual certificate upload and export
+
+- `PUT /api/v1/tls/certificate` accepts
+  `{ "cert_pem": "...", "key_pem": "...", "chain_pem": "..."? }`. The key is
+  moved into a zeroizing `Secret` on receipt, persisted by the `tls` engine at
+  mode `0600`, and never echoed, logged or audited. The certificate and
+  optional chain must be PEM certificate blocks; anything else is
+  `tls.cert.manual.invalid` (HTTP 400). A successful upload switches the status
+  `mode` to `manual` and returns `{ "mode": "manual" }`.
+- `GET /api/v1/tls/certificate` returns
+  `{ "fullchain_pem": "-----BEGIN CERTIFICATE-----…" }` — certificates only.
+  The handler additionally rejects any export containing `PRIVATE KEY`.
+
+### TLS actions
+
+| Endpoint | Body | Response | Notes |
+|---|---|---|---|
+| `POST /api/v1/tls/renew` | – | `{ "started": true }` | single-flight with the scheduler; on failure the `tls.*` code is forwarded |
+| `POST /api/v1/tls/revoke` | `{ "reason": "..." }` | `{ "revoked": true }` | reason 1–256 chars |
+| `POST /api/v1/tls/rotate` | – | `{ "rotated": true }` | re-issue with a fresh key pair |
+| `POST /api/v1/tls/preflight` | – | `{ "ok": bool, "checks": [{ "name", "ok", "code"?, "message"? }] }` | dry run, no mutation, no audit |
+| `POST /api/v1/tls/dyndns` | – | DynDNS pass report (`ipv4`, `ipv6`, `skipped_no_route`, `changed`, `last_change`) | single-flight with the background loop |
+| `GET /api/v1/tls/records` | – | expected record inventory + live check | `dns.<domain>` / `*.dns.<domain>` |
+| `GET /api/v1/tls/account` | – | ACME account status (EAB, ToS, rollover) | – |
+| `GET /api/v1/tls/order` | – | current order / progress | – |
+| `GET /api/v1/tls/audit` | – | bounded DynDNS audit trail | – |
+
+Engine errors are forwarded unchanged (`ControlApiError::from_tls`), so the
+client sees the module's own `tls.*` code; a `Retry-After` from the CA/API is
+carried as the non-secret `params.retry_after` (seconds).
+
+### Per-node DynDNS
+
+`POST /api/v1/tls/dyndns` triggers the node's own DynDNS pass. The node's
+public entry and record names are part of `GET /api/v1/tls` and the status DTO.
+Full per-node inventory across a cluster (`GET /api/v1/nodes`, per-node
+`dyndns`) is deferred to `SPEC-cluster.md`, together with the cross-cluster
+certificate distribution fields (`cert_version`, `sync_lag`,
+`distribution_error`).
+
+### Per-sub-block TLS apply and rollback
+
+The generic atomic apply still treats `tls` as one module section, but the
+service computes a field diff before applying it and reports which sub-blocks
+changed: top-level TLS fields are reported as `tls`, plus `acme`, `dyndns`,
+`dns_provider`, `notifications` and `manual`. The diff is logged at debug level
+and, when the TLS apply fails, added to the forwarded module error under
+`params.changed_sub_blocks` without changing the module's stable code. Replay
+(rollback) re-applies the previous TLS section exactly as before, so a failure
+never leaves a half-applied TLS configuration.
+
+### Notifications
+
+`tls.notifications` controls the optional webhook:
+
+```json
+{ "webhook_url": "https://alerts.example/hooks/dnscraft",
+  "on_expiry": true, "on_dyndns_failure": true }
+```
+
+The control API sends one JSON `POST` (no SMTP in v1) on
+`tls.cert.expiring` (a renew attempt reports an expiring/expired certificate)
+and on a failed manual DynDNS trigger (`tls.dyndns.failure`). Webhook delivery
+failure is logged and never changes the TLS action's result. The client reuses
+the workspace `reqwest` build with rustls + ring and no redirects.
+
+## Decisions (2026-10-27)
+
+Resolves the six deferred TLS/DNS API questions (owner delegated to Claude).
+
+| # | Question | Decision | Reason |
+|---|---|---|---|
+| 1 | Typed TLS status DTO | Dedicated `GET /api/v1/tls/status` returning the full typed DTO above (mode, fingerprint, cert detail, ARI, history, scheduling, store health, revocation, source); `GET /api/v1/status` embeds the same object. Timestamps are RFC 3339, absent = unknown. | The UI binds to one authoritative shape; absence is explicit rather than a sentinel. |
+| 2 | Manual certificate upload | `PUT /api/v1/tls/certificate` (JSON PEM cert + key + optional chain) switches `tls_mode = manual`; `GET` exports fullchain PEM, certificates only. Key is zeroized, persisted `0600`, never returned or audited. | Covers air-gapped/enterprise CAs without weakening the no-key-export rule. |
+| 3 | Renew/DynDNS HTTP contract | `POST /api/v1/tls/renew` → `{ "started": true }` (actions are single-flight; the response confirms acceptance, status reports the outcome) and `POST /api/v1/tls/dyndns` → the pass report. Both audited and forward `tls.*` codes. | Matches the engine's single-flight semantics; polling status is already supported. |
+| 4 | DNS record-check endpoint | `GET /api/v1/tls/records` returns the expected `dns.<domain>` / `*.dns.<domain>` inventory plus a live check, with `tls.dns.provider.zone` on failure. | One read endpoint for the UI "records" panel; no mutation. |
+| 5 | Per-node DynDNS | The API exposes the local node's DynDNS trigger/status only (`/api/v1/tls/dyndns`, status DTO). Per-node inventory and cluster cert distribution are delegated to `SPEC-cluster.md`. | Cluster is a separate module; v1 has exactly one node's TLS state. |
+| 6 | Per-sub-block TLS apply/rollback | Keep the atomic whole-section apply; add a diff naming `tls`/`acme`/`dyndns`/`dns_provider`/`notifications`/`manual`, log it, and report `changed_sub_blocks` on failure while preserving the module code. Replay restores the previous section. | Partial application would leave inconsistent cert/DynDNS state; reporting the diff gives operators the missing detail. |
+
 ## Decisions (owner delegated, 2026-10-26)
 
 The owner delegated these to Claude ("whatever is most sensible"). They are
@@ -947,3 +1090,15 @@ certificate (status warning `control_api.tls.self_signed`, see Error codes);  th
 `GET /api/v1/query-log/export.ndjson` (error code
 `control_api.query_log.export`); the audit-log section stores redacted
 snapshots; session defaults are 12 h absolute / 60 min idle.
+
+## Open questions (non-TLS)
+
+1. **DoH/DoT Client-ID CRUD.** `SPEC-web-ui.md` reads client identity from
+   `policy/views`, but `SPEC-policy.md` removed `views[].client_ids`. No endpoint
+   stores, rotates or revokes Client IDs. Define a Client-ID resource
+   (list/create/rename/revoke) or revert the policy change.
+2. **Cluster administration endpoints.** `SPEC-cluster.md` requires
+   `/api/v1/cluster/join-tokens`, `/api/v1/cluster/nodes` and
+   `/api/v1/cluster/nodes/{id}` as "Required control-api additions"; the endpoint
+   table above now lists them but the request/response shapes (join token, node
+   detail fields) are still undefined.

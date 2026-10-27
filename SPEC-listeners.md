@@ -25,8 +25,10 @@ This module does **not** resolve, filter, select views (that is `policy`), obtai
 2. `tls::TlsEngine::resolver()` returns the shared `Arc<CertResolver>` (hot reload included);
    `tls::accept_public_sni` + `tls::ClientIdRegistry` decide public DoT/DoQ admission; `SniKind` tells a
    node hostname / apex apart from an unknown Client ID (no ban strike for those).
-3. Registered Client IDs are the ones the policy snapshot knows (`views[].client_ids`). Policy exposes a
-   cheap read-only check for them (small cross-module task L0 in the plan).
+3. Registered Client IDs are owned by control-api/policy; their storage is TBD
+   (`SPEC-policy.md` removed the `views[].client_ids` selection key, so this spec's
+   earlier reference is stale — see SPEC-control-api § Open questions). Policy
+   exposes a cheap read-only check for them (small cross-module task L0 in the plan).
 4. Real client source addresses reach the process (macvlan/ipvlan or host networking, SPEC.md).
 5. Linux is the production platform (amd64, arm64). Other platforms only need to compile.
 
@@ -133,6 +135,43 @@ Every query is admitted before policy sees it:
   for QUIC. A listener whose resolver has no certificate yet stays bound but rejects handshakes with
   `listeners.tls.no_cert` (status + counter) until `tls` installs one.
 
+### TLS protocol / cipher policy (Q23)
+
+Encrypted listeners (`dot`, `doh`, `doq`) accept an optional per-listener `tls_policy` block. Absent
+means the defaults below, which reproduce the pre-policy behaviour.
+
+```toml
+[[listeners]]
+id = "public-doh"
+protocol = "doh"
+address = "0.0.0.0:443"
+exposure = "public"
+h3 = true
+
+[listeners.tls_policy]
+min_version = "1.2"                 # "1.2" (default) | "1.3"; QUIC is always 1.3
+ciphersuites = [                    # optional; absent = ring defaults
+  "TLS13_AES_256_GCM_SHA384",
+  "TLS13_CHACHA20_POLY1305_SHA256",
+  "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+]
+alpn = ["h2", "http/1.1"]           # DoH over TCP; default ["h2", "http/1.1"]
+```
+
+- **min_version:** `"1.2"` enables TLS 1.2 + 1.3; `"1.3"` enables TLS 1.3 only. DoQ and DoH over HTTP/3
+  are TLS 1.3-only by protocol, so a smaller minimum cannot lower them; the configuration must retain
+  at least one TLS 1.3 suite for those listeners.
+- **ciphersuites:** optional allow-list of rustls/ring IANA suite names (as in
+  `rustls::CipherSuite`). Only the ring provider is used — no aws-lc, no new dependencies. Unknown
+  names, an empty list, or a list without a TLS 1.3 suite where TLS 1.3 is required are rejected.
+- **alpn:** ordered ALPN list for DoH over TCP. DoT and DoQ keep their protocol-mandated ALPN (`dot`,
+  `doq`); HTTP/3 keeps `h3`. Entries must be 1–255 ASCII bytes; an empty list is rejected.
+- **Where enforced:** the policy is validated by `ListenersConfig::validate` and applied when building
+  each `rustls::ServerConfig` (protocol versions, cipher-suite allow-list, DoH ALPN). Changing a
+  listener's policy changes its config and therefore reloads that listener on `apply_config`.
+- **Errors:** a policy on a plaintext listener (`udp53`, `tcp53`) is `listeners.tls.policy`; an unknown
+  version/suite or an invalid ALPN list is `listeners.config.invalid`.
+
 ### DDR (RFC 9462)
 
 - `_dns.resolver.arpa` `SVCB` queries arriving on a **local Do53** listener are answered by the listener
@@ -165,7 +204,8 @@ Every query is admitted before policy sees it:
 
 Every error has a stable `code()` (`listeners.<area>.<reason>`), covered by a uniqueness test, e.g.
 `listeners.config.invalid`, `listeners.config.public_plaintext`, `listeners.config.duplicate_id`,
-`listeners.bind`, `listeners.tls.no_cert`, `listeners.tls.handshake`, `listeners.admission.public_do53`,
+`listeners.bind`, `listeners.tls.no_cert`, `listeners.tls.handshake`, `listeners.tls.policy`,
+`listeners.admission.public_do53`,
 `listeners.admission.unknown_client_id`, `listeners.rate_limited`, `listeners.banned`,
 `listeners.doh.bad_request`, `listeners.doq.protocol`.
 
@@ -173,7 +213,8 @@ Every error has a stable `code()` (`listeners.<area>.<reason>`), covered by a un
 
 ```rust
 pub struct ListenersConfig { pub listeners: Vec<ListenerConfig>, pub limits: Limits, pub public: PublicConfig, pub ddr: DdrConfig }
-pub struct ListenerConfig { pub id: ListenerId, pub protocol: Protocol, pub address: SocketAddr, pub exposure: Exposure, pub h3: bool }
+pub struct ListenerConfig { pub id: ListenerId, pub protocol: Protocol, pub address: SocketAddr, pub exposure: Exposure, pub h3: bool, pub tls_policy: Option<TlsPolicy> }
+pub struct TlsPolicy { pub min_version: String, pub ciphersuites: Option<Vec<String>>, pub alpn: Vec<String> }
 pub trait QueryEventSink: Send + Sync { fn try_send(&self, event: QueryEvent) -> bool; }
 pub struct ListenerSet { /* … */ }
 impl ListenerSet {
@@ -198,6 +239,11 @@ id = "lan-tcp"        ; protocol = "tcp53" ; address = "0.0.0.0:53"
 id = "lan-dot"        ; protocol = "dot"   ; address = "[fd00::53]:853"
 [[listeners]]
 id = "public-doh"     ; protocol = "doh"   ; address = "0.0.0.0:443" ; exposure = "public" ; h3 = true
+
+[listeners.tls_policy]             # encrypted listeners only; optional (defaults shown)
+min_version = "1.2"                # "1.2" | "1.3"
+alpn = ["h2", "http/1.1"]          # DoH over TCP; DoT/DoQ use dot/doq
+# ciphersuites = ["TLS13_AES_256_GCM_SHA384"]   # optional ring allow-list
 
 [listeners_limits]
 udp_payload_max = 1232
@@ -228,7 +274,8 @@ target = "dns"                     # dns.<public_domain>; or a node hostname lab
 - Unit: source classification table, admission matrix (protocol × exposure × source class × Client ID
   state), token bucket and ban table with `ManualClock`, bounded-table eviction, message validation
   (FORMERR/NOTIMP/REFUSED/BADVERS), EDNS echo / ECS strip / padding sizes, UDP truncation, DoH request
-  parsing (GET/POST/errors), DDR SVCB encoding.
+  parsing (GET/POST/errors), DDR SVCB encoding, TLS policy validation (version, suites, ALPN) and
+  application to the built `rustls::ServerConfig`.
 - Integration (loopback only, real sockets, test certificates from `rcgen`): Do53 UDP + TCP (pipelining,
   out-of-order), DoT, DoH h2/h1.1/h3, DoQ end-to-end against a `PolicyEngine` built on the testkit DNS
   hierarchy; reply-source-address test on a wildcard UDP socket; hot cert reload during open DoT

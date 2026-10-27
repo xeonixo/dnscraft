@@ -283,6 +283,9 @@ body {
   border: 1px solid var(--separator); border-radius: var(--r-ctl); padding: 9px 12px; min-height: 40px;
 }
 .field input { border: 0; background: none; font: inherit; color: var(--label); outline: none; width: 100%; }
+.flabel { font-size:12.5px; color:var(--label-2); display:block; margin:0 0 4px; }
+.field-row { padding:12px 16px; }
+.field-row + .field-row { border-top:1px solid var(--separator); }
 .sheet .actions { display: flex; gap: 10px; margin-top: 18px; justify-content: flex-end; }
 .btn-sec {
   background: var(--surface-2); border: 1px solid var(--separator); color: var(--label);
@@ -451,9 +454,9 @@ body {
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h20M6 12v6M18 12v6M12 12v6"/><circle cx="4" cy="4" r="2"/><circle cx="20" cy="4" r="2"/><circle cx="12" cy="4" r="2"/></svg>
       Listener
     </button>
-    <button class="nav-item" data-target="screen-tls" data-title="TLS">
+    <button class="nav-item" data-target="screen-tls" data-title="Zertifikat & Domains">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-      TLS
+      Zertifikat & Domains
     </button>
 
     <button class="nav-item" data-target="screen-cluster" data-title="Knoten">
@@ -864,6 +867,16 @@ body {
             <div class="main"><div class="domain">Upstream</div><div class="meta">10.0.0.53:853 · 3 ms</div></div>
           </div>
         </div>
+        <label>Details</label>
+        <div class="group" style="margin-bottom:12px">
+          <div class="row"><div class="main"><b style="font-weight:500">Zone / Profil</b></div><div class="meta">LAN · Profil „Standard"</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Antwortquelle</b><div class="meta">answer_source</div></div><div class="verdict block">Blocklist</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Auswahlgrund</b><div class="meta">selection_cause</div></div><div class="meta">Liste „Ads" · Regel „ads.example.com"</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">DNSSEC</b></div><div class="meta">nicht geprüft (geblockt)</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Cache</b></div><div class="meta">cache_hit = false</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Quell- / Zielport</b></div><div class="meta mono">51234 → 443</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Node</b></div><div class="meta mono">node-1</div></div>
+        </div>
         <div class="actions">
           <button class="btn-sec" onclick="closeQueryDetail()">Schließen</button>
           <button class="btn-sec" onclick="closeQueryDetail();openAllowSheet()">Freigeben</button>
@@ -1000,26 +1013,61 @@ body {
         <div class="section-head">Listener</div>
         <div class="group">
           <div class="row" onclick="openListenerSheet()" style="cursor:pointer">
-            <div class="main"><b style="font-weight:500;color:var(--accent)">Listener hinzufügen</b><div class="meta">Adresse, Protokolle, Exposition</div></div>
+            <div class="main"><b style="font-weight:500;color:var(--accent)">Listener hinzufügen</b><div class="meta">Adresse, ein Protokoll, Exposition</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="row">
-            <div class="main"><div class="domain">intern</div><div class="meta"><span class="mono">192.0.2.1:53</span> · Do53 · DoH</div></div>
-            <span class="verdict allow">läuft</span>
+            <div class="main"><div class="domain">intern-udp53</div><div class="meta"><span class="mono">192.0.2.1:53</span> · udp53 · lokal</div></div>
+            <span class="verdict allow">gebunden</span>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="row">
-            <div class="main"><div class="domain">public</div><div class="meta"><span class="mono">198.51.100.7:853</span> · DoT · DoQ</div></div>
+            <div class="main"><div class="domain">intern-doh</div><div class="meta"><span class="mono">192.0.2.1:443</span> · doh · h3 · lokal</div></div>
+            <span class="verdict allow">gebunden</span>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+          <div class="row">
+            <div class="main"><div class="domain">public-dot</div><div class="meta"><span class="mono">198.51.100.7:853</span> · dot · öffentlich</div></div>
+            <span class="verdict block">nur Client-IDs</span>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+          <div class="row">
+            <div class="main"><div class="domain">public-doq</div><div class="meta"><span class="mono">198.51.100.7:853</span> · doq · öffentlich</div></div>
             <span class="verdict block">nur Client-IDs</span>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
         </div>
-        <div class="section-head">Rate-Limit</div>
+
+        <div class="section-head">Status</div>
         <div class="group">
-          <div class="row"><div class="main"><b style="font-weight:500">pro Quell-IP</b><div class="meta">Anfragen pro Sekunde</div></div><div class="meta mono">50</div></div>
-          <div class="row"><div class="main"><b style="font-weight:500">pro Client-ID</b><div class="meta">öffentliche Quellen</div></div><div class="meta mono">200</div></div>
+          <div class="row"><div class="main"><div class="domain">intern-udp53</div><div class="meta">1.204 Verbindungen · 38.219 Anfragen · 12 rate-limited · 0 gebannt</div></div></div>
+          <div class="row"><div class="main"><div class="domain">public-dot</div><div class="meta">47 Verbindungen · 2.901 Anfragen · 3 TLS-Fehler · 0 gebannt</div></div></div>
         </div>
-        <div class="footnote">Protokolle werden im Detail-Sheet einzeln aktiviert (Do53/DoT/DoH/DoQ).</div>
+
+        <div class="section-head">Limits (global)</div>
+        <div class="group">
+          <div class="row"><div class="main"><b style="font-weight:500">pro Quell-IP</b><div class="meta">Anfragen pro Sekunde</div></div><div class="meta mono">200</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">pro Client-ID</b><div class="meta">öffentliche Quellen</div></div><div class="meta mono">50</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">UDP-Payload max</b></div><div class="meta mono">1.232 B</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Query-Timeout</b></div><div class="meta mono">10 s</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">TCP-Idle</b></div><div class="meta mono">30 s</div></div>
+        </div>
+
+        <div class="section-head">Public-Admission</div>
+        <div class="group">
+          <div class="row"><div class="main"><b style="font-weight:500">Aktiviert</b><div class="meta">je Knoten</div></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Ban-Strikes</b></div><div class="meta mono">5</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Ban-Fenster / Dauer</b></div><div class="meta mono">1 h / 24 h</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Verfolgte Quellen</b></div><div class="meta mono">10.000</div></div>
+        </div>
+
+        <div class="section-head">DDR (RFC 9462)</div>
+        <div class="group">
+          <div class="row"><div class="main"><b style="font-weight:500">DDR aktiviert</b><div class="meta">nur auf lokalem Do53</div></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Ziel</b></div><div class="meta mono">dns.example.com</div></div>
+        </div>
+
+        <div class="footnote">Ein Listener bindet genau ein Protokoll (udp53/tcp53/dot/doh/doq); nur DoH hat eine h3-Unteroption. Öffentlich ist nur für verschlüsselte Protokolle erlaubt; öffentliches Do53 wird still verworfen. Status zeigt Bind-/Fehlercodes je Listener.</div>
       </div>
     </section>
 
@@ -1282,23 +1330,23 @@ body {
         <div class="section-head">Zonen</div>
         <div class="group">
           <div class="row" onclick="openZone('LAN')" style="cursor:pointer">
-            <div class="main"><div class="domain">LAN</div><div class="meta">2 Bereiche · 5 Datensätze · Profil „Standard"</div></div>
+            <div class="main"><div class="domain">LAN</div><div class="meta">2 Bereiche · Profil „Standard"</div></div>
             <span class="tag">Standard</span>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="row" onclick="openZone('Gäste')" style="cursor:pointer">
-            <div class="main"><div class="domain">Gäste</div><div class="meta">1 Bereich · 1 Datensatz · Profil „Gäste"</div></div>
+            <div class="main"><div class="domain">Gäste</div><div class="meta">1 Bereich · Profil „Gäste"</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="row" onclick="openZone('Kinder')" style="cursor:pointer">
-            <div class="main"><div class="domain">Kinder</div><div class="meta">1 Bereich · 2 Datensätze · Profil „Kinder"</div></div>
+            <div class="main"><div class="domain">Kinder</div><div class="meta">1 Bereich · Profil „Kinder"</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="row" onclick="openZoneSheet()" style="cursor:pointer">
             <div class="main"><b style="font-weight:500;color:var(--accent)">Zone anlegen</b><div class="meta">Name, Bereiche (Subnetze), Profil</div></div>
           </div>
         </div>
-        <div class="footnote">Genau eine Zone ist Standard. Auswahl über längstes Subnetz-Prefix; ohne Treffer greift die Standard-Zone. DoH-Clients werden über ihre Source-IP zugeordnet, nicht über die Client-ID.</div>
+        <div class="footnote">Genau eine Zone ist Standard (Pflicht); die Catch-all-Standard-Zone braucht keine Bereiche (leere Subnetz-Liste). Auswahl über längstes Subnetz-Prefix; ohne Treffer greift die Standard-Zone. DoH-Clients werden über ihre Source-IP zugeordnet, nicht über die Client-ID. Die letzte Standard-Zone kann nicht gelöscht/degradiert werden; zwei Standard-Zonen oder eine auf einem Node ungültige Standard-Zone sind ein Fehler.</div>
       </div>
     </section>
 
@@ -1360,12 +1408,20 @@ body {
 
     <section class="screen" id="screen-names" hidden>
       <div class="content">
-        <p class="lead">Lokale Namen gelten in allen Zonen. Weicht ein Wert in einer Zone ab, ist er als Überschreibung hinterlegt.</p>
+        <p class="lead">Lokale Namen gelten in allen Zonen. Weicht ein Wert in einer Zone ab, ist er als Überschreibung hinterlegt. Die Liste gruppiert nach Suffix — öffentliche TLDs getrennt von lokalen Suffixen (.lan, .local, .internal).</p>
         <div class="search">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
           <input type="search" placeholder="Name durchsuchen" aria-label="Namen durchsuchen">
         </div>
-        <div class="section-head">Namen</div>
+        <div class="section-head">Öffentliche TLDs</div>
+        <div class="group">
+          <div class="row" onclick="openName('wiki.example.com')" style="cursor:pointer">
+            <div class="main"><div class="domain">wiki.example.com</div><div class="meta">1 Eintrag</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+        </div>
+
+        <div class="section-head">Lokale Suffixe (.lan)</div>
         <div class="group">
           <div class="row" onclick="openName('nas.lan')" style="cursor:pointer">
             <div class="main"><div class="domain">nas.lan</div><div class="meta">2 Einträge · 2 Überschreibungen</div></div>
@@ -1388,7 +1444,7 @@ body {
             <div class="main"><b style="font-weight:500;color:var(--accent)">Name hinzufügen</b></div>
           </div>
         </div>
-        <div class="footnote">Überschreibungen gelten nur in der jeweiligen Zone; sonst greift der Standardwert.</div>
+        <div class="footnote">Namen sind ein globaler Namespace; die Liste gruppiert nur nach Suffix. Lokale Suffixe (.lan/.local/.internal) werden nie nach außen geleakt (NXDOMAIN). Überschreibungen gelten nur in der jeweiligen Zone; sonst greift der Standardwert.</div>
       </div>
     </section>
 
@@ -1445,7 +1501,7 @@ body {
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="row">
-            <div class="main"><div class="domain">internal.example.net</div><div class="meta">198.51.100.53 · reverse 100.51.198.in-addr.arpa · alle Profile</div></div>
+            <div class="main"><div class="domain">internal.example.net</div><div class="meta">198.51.100.53 · keine Reverse-Zone · alle Profile</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="row" onclick="openForwardZoneSheet()" style="cursor:pointer">
@@ -1453,7 +1509,7 @@ body {
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
         </div>
-        <div class="footnote">Forward-Zonen werden vor der Rekursion geprüft und können pro Profil eingeschränkt werden (allow-list).</div>
+        <div class="footnote">Forward-Zonen werden vor der Rekursion geprüft und können pro Profil eingeschränkt werden (allow-list). Reverse-Zonen sind optional und können mehrere/CIDR umfassen; ohne Reverse-Zone bleibt privates PTR lokal (NXDOMAIN).</div>
       </div>
     </section>
 
@@ -1496,7 +1552,14 @@ body {
         <div class="group">
           <div class="row"><div class="main"><b style="font-weight:500">Filter-Set</b></div><div class="domain">Kinder</div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
         </div>
-        <div class="section-head">Pause</div>
+        <div class="section-head">Globale Pause</div>
+        <div class="group">
+          <div class="row"><div class="main"><b style="font-weight:500">5 Minuten</b><div class="meta">alle Profile</div></div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">1 Stunde</b></div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Bis zur Wiederaufnahme</b></div></div>
+          <div class="row"><div class="main"><b style="font-weight:500;color:var(--accent)">Fortsetzen</b><div class="meta">Pause sofort beenden</div></div></div>
+        </div>
+        <div class="section-head">Pause (dieses Profil)</div>
         <div class="group">
           <div class="row"><div class="main"><b style="font-weight:500">5 Minuten</b><div class="meta">Filterung vorübergehend deaktivieren</div></div></div>
           <div class="row"><div class="main"><b style="font-weight:500">1 Stunde</b></div></div>
@@ -1510,15 +1573,22 @@ body {
         </div>
         <div class="section-head">Schutz</div>
         <div class="group">
-          <div class="row"><div class="main"><b style="font-weight:500">SafeSearch</b><div class="meta">Google · Bing · YouTube</div></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><b style="font-weight:500">SafeSearch</b><div class="meta">Google · YouTube · Bing · DuckDuckGo</div></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><b style="font-weight:500">YouTube-Modus</b><div class="meta">youtube_mode · nur bei SafeSearch</div></div><div class="seg"><button role="tab" aria-selected="true">strict</button><button role="tab" aria-selected="false">moderate</button></div></div>
           <div class="row"><div class="main"><b style="font-weight:500">Rebind-Schutz</b><div class="meta">private Antworten verwerfen</div></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
           <div class="row"><div class="main"><b style="font-weight:500">AAAA unterdrücken</b><div class="meta">nur IPv4-Antworten</div></div><label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label></div>
           <div class="row"><div class="main"><b style="font-weight:500">Firefox-Canary</b><div class="meta">use-application-dns.net → NXDOMAIN</div></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
           <div class="row"><div class="main"><b style="font-weight:500">iCloud Private Relay</b><div class="meta">mask.icloud.com steuern</div></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
         </div>
+        <div class="section-head">Rebind-Ausnahmen</div>
+        <div class="group">
+          <div class="row"><div class="main"><div class="domain">dns.example.com</div><div class="meta">privater Apex · nicht verwerfen</div></div></div>
+          <div class="row"><div class="main"><b style="font-weight:500;color:var(--accent)">Ausnahme hinzufügen</b></div></div>
+        </div>
         <div class="section-head">Forward-Zonen</div>
         <div class="group">
-          <div class="row"><div class="main"><div class="domain">alle erlaubt</div><div class="meta">optional auf bestimmte Zonen einschränken</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><div class="domain">alle erlaubt</div><div class="meta">None = alle Forward-Zonen erlaubt</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><b style="font-weight:500;color:var(--accent)">Auf Zonen beschränken</b><div class="meta">Some(ids) = nur ausgewählte Forward-Zonen</div></div></div>
         </div>
         <div class="footnote">Zeitpläne wechseln das aktive Filter-Set in definierten Zeitfenstern.</div>
       </div>
@@ -1606,6 +1676,10 @@ body {
         </div>
         <div class="section-head">Geräte</div>
         <div class="group">
+          <div class="row" onclick="openManualClientSheet()" style="cursor:pointer">
+            <div class="main"><b style="font-weight:500;color:var(--accent)">Gerät manuell hinzufügen</b><div class="meta">Name, IP/CIDR, MAC, optionale Domain</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
           <div class="row">
             <div class="main"><div class="domain">iPhone</div><div class="meta mono">192.0.2.11 · aa:bb:cc:00:00:11</div></div>
             <span class="tag">UniFi</span>
@@ -1636,7 +1710,7 @@ body {
           <div class="row"><div class="main"><b style="font-weight:500">Letzter Sync</b><div class="meta">vor 58 s · 37 Geräte · 2 Netzwerke</div></div><span class="verdict allow">ok</span></div>
           <div class="row"><div class="main"><b style="font-weight:500;color:var(--accent)">Jetzt synchronisieren</b></div></div>
         </div>
-        <div class="footnote">Quelle „UniFi" wird per Sync aktualisiert; Namen sind ungeprüfte Daten.</div>
+        <div class="footnote">Quelle „UniFi" wird per Sync aktualisiert; Namen sind ungeprüfte Daten. Manuelle Einträge (einzelne IP/CIDR) haben Vorrang; kollidierende UniFi-Einträge werden umetikettiert. VLAN wird als <span class="mono">Name (id)</span> angezeigt.</div>
       </div>
     </section>
 
@@ -1654,7 +1728,7 @@ body {
         <div class="group">
           <div class="row">
             <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
-            <div class="main"><div class="domain">iPhone</div><div class="meta mono">iphone-k7q2x9 · DoH · 192.0.2.11 → LAN</div></div>
+            <div class="main"><div class="domain">iPhone</div><div class="meta mono">iphone-k7q2x9 · DoH · 192.0.2.11 → LAN · zuletzt vor 2 min</div></div>
             <div class="tail"><div class="verdict allow">verifiziert</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
@@ -1688,7 +1762,7 @@ body {
           </div>
         </div>
 
-        <div class="footnote">Endpunkte: DoH <span class="mono">/dns-query/&lt;id&gt;</span> · DoT <span class="mono">&lt;id&gt;.dns.example.com</span>. Die Zone ergibt sich aus der Source-IP, nicht aus der Client-ID. Unbekannte Client-IDs werden abgelehnt (404 / Ban-Strike).</div>
+        <div class="footnote">Endpunkte: DoH <span class="mono">/dns-query/&lt;id&gt;</span> · DoT <span class="mono">&lt;id&gt;.dns.example.com</span>. Die Zone ergibt sich aus der Source-IP, nicht aus der Client-ID. Unbekannte Client-IDs werden abgelehnt (404 / Ban-Strike). Widerruf und Umbenennen einer Client-ID haben noch keinen Endpunkt (SPEC-control-api § Open questions); der Prototyp zeigt sie daher als „nicht impl.".</div>
       </div>
     </section>
 
@@ -1710,6 +1784,26 @@ body {
         <div class="actions">
           <button class="btn-sec" onclick="closeClientSheet()">Abbrechen</button>
           <button class="btn-primary" onclick="closeClientSheet()">Anlegen</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="sheet-scrim" id="manual-client-sheet" hidden onclick="closeManualClientSheet()">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <div class="grab"></div>
+        <h2>Gerät manuell anlegen</h2>
+        <label for="mc-name">Name</label>
+        <div class="field"><input id="mc-name" placeholder="Wohnzimmer-TV"></div>
+        <label for="mc-ip">IP oder CIDR</label>
+        <div class="field"><input id="mc-ip" placeholder="192.0.2.18 oder 192.0.2.0/24"></div>
+        <label for="mc-mac">MAC (optional)</label>
+        <div class="field"><input id="mc-mac" placeholder="aa:bb:cc:00:00:18"></div>
+        <label for="mc-domain">Domain (optional)</label>
+        <div class="field"><input id="mc-domain" placeholder="tv.lan"></div>
+        <div class="footnote" style="padding:10px 0 0">Manuelle Einträge haben Vorrang vor UniFi; bei Kollision wird der UniFi-Eintrag umetikettiert.</div>
+        <div class="actions">
+          <button class="btn-sec" onclick="closeManualClientSheet()">Abbrechen</button>
+          <button class="btn-primary" onclick="closeManualClientSheet()">Anlegen</button>
         </div>
       </div>
     </div>
@@ -1741,35 +1835,298 @@ body {
           <span class="ic"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
           <div class="body"><b>Selbstsigniertes Zertifikat aktiv</b><p>ACME-Zertifikat noch nicht vorhanden; die Verbindung ist bis dahin nicht vertrauenswürdig.</p><span class="fp">SHA-256&nbsp; 3A:9C:7F:11:DE:42:0B:88:65:01:EE:2A:94:C3:0D:77</span></div>
         </div>
+
+        <div class="seg" id="tls-tabs" role="tablist" aria-label="Bereich" style="width:100%">
+          <button role="tab" data-tab="overview" aria-selected="true" style="flex:1" onclick="switchTlsTab(this)">Übersicht</button>
+          <button role="tab" data-tab="cert" aria-selected="false" style="flex:1" onclick="switchTlsTab(this)">Zertifikat</button>
+          <button role="tab" data-tab="dns" aria-selected="false" style="flex:1" onclick="switchTlsTab(this)">DNS</button>
+        </div>
+
+        <div id="tls-tab-overview" style="display:flex;flex-direction:column;gap:18px">
         <div class="section-head">Zertifikat</div>
         <div class="group">
-          <div class="row"><div class="main"><b style="font-weight:500">Modus</b></div><div class="verdict block">self_signed</div></div>
-          <div class="row"><div class="main"><b style="font-weight:500">Öffentliche Domain</b><div class="meta">public_domain · für ACME und Cluster-Endpunkt</div></div><div class="meta mono">node1.dns.example.com</div></div>
-          <div class="row"><div class="main"><b style="font-weight:500">Gültig bis</b></div><div class="meta mono">2027-10-26</div></div>
-          <div class="row"><div class="main"><b style="font-weight:500">Vorlauf / Warnung</b><div class="meta">renew_before · expiry_warn</div></div><div class="meta mono">30 d · 14 d</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Modus</b><div class="meta">tls_mode</div></div><div class="verdict block">self_signed</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Aussteller</b><div class="meta">Issuer</div></div><div class="meta">DNScraft (selbstsigniert)</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Ausgestellt für</b><div class="meta">Subject</div></div><div class="meta mono">dns.example.com</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Gültig ab</b><div class="meta">not_before</div></div><div class="meta mono">2026-10-26</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Gültig bis</b><div class="meta">not_after</div></div><div class="meta mono">2027-10-26</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Läuft ab in</b><div class="meta">days_to_expiry</div></div><div class="verdict allow">364 Tage</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">SANs</b><div class="meta">Identifiers</div></div><div class="meta mono">dns.example.com · *.dns.example.com</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Schlüssel</b><div class="meta">key_type</div></div><div class="meta">ECDSA P-256</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Fingerprint</b><div class="meta">SHA-256</div></div><div class="meta mono">3A:9C:7F:11:DE:42:0B:88:65:01:EE:2A:94:C3:0D:77</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Letzte Ausstellung</b><div class="meta">last_issue</div></div><div class="meta mono">2026-10-26 11:02</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Letzter Erneuerungsversuch</b><div class="meta">last_renew_attempt</div></div><div class="meta">—</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Letzter Fehler</b><div class="meta">last_error</div></div><div class="meta">—</div></div>
         </div>
-        <div class="section-head">Cloudflare</div>
+
+        <div class="section-head">ACME-Konto</div>
         <div class="group">
-          <div class="row"><div class="main"><b style="font-weight:500">Zone</b></div><div class="meta mono">dns.example.com</div></div>
-          <div class="row"><div class="main"><b style="font-weight:500">API-Token</b><div class="meta">wird out-of-band gesetzt, nie über die API übertragen</div></div><div class="meta mono">••••••••••••••••</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Status</b></div><div class="verdict block">nicht eingerichtet</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Verzeichnis</b><div class="meta">acme.directory</div></div><div class="meta">—</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Kontakt-E-Mail</b></div><div class="meta">—</div></div>
         </div>
-        <div class="section-head">ACME (DNS-01)</div>
-        <div class="group">
-          <div class="row">
-            <div class="main"><b style="font-weight:500">ACME aktivieren</b><div class="meta">Provider Cloudflare · Wildcard für Client-IDs</div></div>
-            <label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label>
-          </div>
-        </div>
+
         <div class="section-head">DynDNS</div>
         <div class="group">
+          <div class="row"><div class="main"><b style="font-weight:500">Letzte IPv4</b></div><div class="meta mono">192.0.2.10</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Letzte IPv6</b></div><div class="meta mono">2001:db8::10</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Letzter Wechsel</b></div><div class="meta">vor 5 min</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Letzter Fehler</b></div><div class="meta">—</div></div>
+        </div>
+
+        <div class="section-head">Aktionen</div>
+        <div class="group">
+          <div class="row"><div class="main"><b style="font-weight:500;color:var(--label-3)">Jetzt erneuern</b><div class="meta">ACME-Erneuerung sofort anstoßen</div></div><span class="tag" style="color:var(--label-2);border-color:var(--separator)">nicht impl.</span></div>
+          <div class="row"><div class="main"><b style="font-weight:500;color:var(--label-3)">DynDNS jetzt</b><div class="meta">Öffentliche IP sofort aktualisieren</div></div><span class="tag" style="color:var(--label-2);border-color:var(--separator)">nicht impl.</span></div>
+        </div>
+        </div>
+
+        <div id="tls-tab-cert" hidden style="display:flex;flex-direction:column;gap:18px">
+        <div class="section-head">Quelle</div>
+        <div class="seg" id="tls-source" role="tablist" aria-label="Quelle" style="width:100%">
+          <button role="tab" data-src="selfsigned" aria-selected="true" style="flex:1" onclick="switchTlsSource(this)">Selbstsigniert</button>
+          <button role="tab" data-src="acme" aria-selected="false" style="flex:1" onclick="switchTlsSource(this)">ACME</button>
+          <button role="tab" data-src="manual" aria-selected="false" style="flex:1" onclick="switchTlsSource(this)">Eigenes Zertifikat</button>
+        </div>
+        <div class="footnote">„Eigenes Zertifikat" ist noch nicht implementiert (SPEC-control-api kennt nur self_signed | acme).</div>
+
+        <div id="tls-src-identity" style="display:flex;flex-direction:column;gap:18px">
+        <div class="section-head">Domain & SANs</div>
+        <div class="group">
+          <div class="field-row">
+            <label class="flabel" for="tls-domain">Öffentliche Domain</label>
+            <div class="field mono"><input id="tls-domain" value="example.com"></div>
+          </div>
+          <div class="field-row">
+            <label class="flabel">SANs (automatisch)</label>
+            <div class="field mono" style="flex-direction:column;align-items:flex-start;gap:3px">
+              <span id="tls-san-apex">dns.example.com</span>
+              <span id="tls-san-wildcard">*.dns.example.com</span>
+            </div>
+          </div>
+          <div class="field-row">
+            <label class="flabel" for="tls-sans">Zusätzliche SANs</label>
+            <div class="field mono"><input id="tls-sans" placeholder="kommagetrennt · optional"></div>
+          </div>
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Schlüsseltyp</b><div class="meta">key_type</div></div>
+            <div class="seg"><button role="tab" aria-selected="true">ECDSA P-256</button><button role="tab" aria-selected="false">ECDSA P-384</button></div>
+          </div>
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Erneuerung</b><div class="meta">renew_before</div></div>
+            <div class="field" style="width:76px;flex:0 0 auto"><input id="tls-renew" value="30d" style="text-align:right"></div>
+          </div>
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Warnung</b><div class="meta">expiry_warn</div></div>
+            <div class="field" style="width:76px;flex:0 0 auto"><input id="tls-warn" value="14d" style="text-align:right"></div>
+          </div>
+        </div>
+        </div>
+
+        <div id="tls-src-acme" hidden style="display:flex;flex-direction:column;gap:18px">
+        <div class="section-head">ACME</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Challenge</b><div class="meta">HTTP-01 wird nicht unterstützt (nur DNS-01)</div></div>
+            <div class="seg">
+              <button role="tab" aria-selected="true">DNS-01</button>
+              <button role="tab" disabled style="opacity:.4">HTTP-01</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="tls-ch-dns01" style="display:flex;flex-direction:column;gap:18px">
+        <div class="section-head">DNS-01</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Verzeichnis</b><div class="meta">acme.directory · auch eigene URL erlaubt</div></div>
+            <div class="seg"><button role="tab" aria-selected="true">Produktion</button><button role="tab" aria-selected="false">Staging</button></div>
+          </div>
+          <div class="field-row">
+            <label class="flabel" for="tls-acme-directory-url">Eigene Directory-URL</label>
+            <div class="field mono"><input id="tls-acme-directory-url" placeholder="https://… (statt Produktion/Staging)"></div>
+          </div>
+          <div class="field-row">
+            <label class="flabel" for="tls-acme-email">Kontakt-E-Mail</label>
+            <div class="field"><input id="tls-acme-email" type="email" placeholder="admin@example.com"></div>
+          </div>
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Propagation-Timeout</b><div class="meta">propagation_timeout</div></div>
+            <div class="field" style="width:76px;flex:0 0 auto"><input id="tls-prop-timeout" value="2m" style="text-align:right"></div>
+          </div>
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Propagation-Poll</b><div class="meta">propagation_poll</div></div>
+            <div class="field" style="width:76px;flex:0 0 auto"><input id="tls-prop-poll" value="5s" style="text-align:right"></div>
+          </div>
+        </div>
+
+        <div class="section-head">Cloudflare</div>
+        <div class="group">
+          <div class="field-row">
+            <label class="flabel" for="tls-cf-zone">Zone-ID</label>
+            <div class="field mono"><input id="tls-cf-zone" placeholder="optional · aus public_domain ableitbar"></div>
+          </div>
+          <div class="row"><div class="main"><b style="font-weight:500">API-Token</b><div class="meta">DNSCRAFT_CLOUDFLARE_API_TOKEN · out-of-band, nie über API</div></div><div class="meta mono">••••••••••••••••</div></div>
+        </div>
+        </div>
+        </div>
+
+        <div id="tls-src-manual" hidden>
+          <div class="section-head">Eigenes Zertifikat</div>
+          <div class="group">
+            <div class="row">
+              <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span>
+              <div class="main"><b style="font-weight:500">Zertifikat hochladen</b><div class="meta">Noch nicht implementiert — nicht in SPEC-control-api enthalten.</div></div>
+            </div>
+          </div>
+        </div>
+        </div>
+
+        <div id="tls-tab-dns" hidden style="display:flex;flex-direction:column;gap:18px">
+        <div class="section-head">DynDNS</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Knoten</b><div class="meta">DynDNS wird je Knoten konfiguriert</div></div>
+            <div class="seg" id="tls-dd-node">
+              <button role="tab" data-node="node1" aria-selected="true" onclick="switchDdNode(this)">node1</button>
+              <button role="tab" data-node="node2" aria-selected="false" onclick="switchDdNode(this)">node2</button>
+            </div>
+          </div>
           <div class="row">
             <div class="main"><b style="font-weight:500">DynDNS</b><div class="meta">hält public_domain aktuell (Cloudflare)</div></div>
             <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
           </div>
+          <div class="field-row">
+            <label class="flabel" for="tls-dd-hostname">Hostname</label>
+            <div class="field mono"><input id="tls-dd-hostname" value="node1.dns.example.com"></div>
+          </div>
+          <div class="field-row">
+            <label class="flabel" for="tls-dd-labels">Reservierte Labels</label>
+            <div class="field mono"><input id="tls-dd-labels" value="node1, node2"></div>
+          </div>
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Public Entry</b><div class="meta">pflegt *.dns.example.com + Apex · max. ein Knoten</div></div>
+            <label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label>
+          </div>
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Intervall</b><div class="meta">interval · ±10 % Jitter</div></div>
+            <div class="field" style="width:76px;flex:0 0 auto"><input id="tls-dd-interval" value="5m" style="text-align:right"></div>
+          </div>
+          <div class="field-row">
+            <label class="flabel" for="tls-dd-echo">Echo-URL</label>
+            <div class="field mono"><input id="tls-dd-echo" value="https://cloudflare.com/cdn-cgi/trace"></div>
+          </div>
+          <div class="row">
+            <div class="main"><b style="font-weight:500">IPv4</b><div class="meta">A-Record setzen</div></div>
+            <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
+          </div>
+          <div class="row">
+            <div class="main"><b style="font-weight:500">IPv6</b><div class="meta">AAAA-Record setzen</div></div>
+            <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
+          </div>
+          <div class="row">
+            <div class="main"><b style="font-weight:500">IPv6-Kennung</b><div class="meta">stabile lokale Kennung für die AAAA-Adresse</div></div>
+            <div class="seg" id="tls-dd-v6id">
+              <button role="tab" data-v6id="eui64" aria-selected="true" onclick="switchV6Id(this)">EUI-64</button>
+              <button role="tab" data-v6id="privacy" aria-selected="false" onclick="switchV6Id(this)">Privacy</button>
+              <button role="tab" data-v6id="static" aria-selected="false" onclick="switchV6Id(this)">Statisch</button>
+            </div>
+          </div>
+          <div class="field-row" id="tls-dd-mac-row">
+            <label class="flabel" for="tls-dd-mac">MAC-Adresse (EUI-64)</label>
+            <div class="field mono"><input id="tls-dd-mac" placeholder="aa:bb:cc:dd:ee:ff"></div>
+          </div>
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Proxied</b><div class="meta">für DoT/DoQ fest false (DNS-only)</div></div>
+            <div class="meta mono">false</div>
+          </div>
         </div>
-        <div class="footnote">Der Cloudflare-API-Token wird out-of-band gesetzt und nie über die API ausgelesen. Private Schlüssel werden nie angezeigt.</div>
+
+        <p class="lead">Diese Records müssen unter <span class="mono">dns.example.com</span> existieren. Es sind A/AAAA (kein CNAME) — die Wildcard deckt alle Client-IDs und Knoten-Hostnames ab.</p>
+
+        <div class="section-head">Erwartete Records</div>
+        <div class="group">
+          <div class="row">
+            <span class="rr-type">NS</span>
+            <div class="main"><div class="domain">dns.example.com</div><div class="meta">Delegation an Cloudflare-Nameserver · einmalig</div></div>
+            <span class="tag" style="color:var(--label-2);border-color:var(--separator)">manuell</span>
+          </div>
+          <div class="row">
+            <span class="rr-type">A/AAAA</span>
+            <div class="main"><div class="domain">dns.example.com</div><div class="meta">Apex · öffentliche IP des Public-Entry-Knotens</div></div>
+            <span class="tag">DynDNS</span>
+          </div>
+          <div class="row">
+            <span class="rr-type">A/AAAA</span>
+            <div class="main"><div class="domain">*.dns.example.com</div><div class="meta">Wildcard · alle Client-IDs und Knoten-Hostnames</div></div>
+            <span class="tag">DynDNS</span>
+          </div>
+          <div class="row">
+            <span class="rr-type">A/AAAA</span>
+            <div class="main"><div class="domain">node1.dns.example.com</div><div class="meta">Knoten-Hostname · über Wildcard abgedeckt</div></div>
+            <span class="tag" style="color:var(--label-2);border-color:var(--separator)">via Wildcard</span>
+          </div>
+          <div class="row">
+            <span class="rr-type">A/AAAA</span>
+            <div class="main"><div class="domain">node2.dns.example.com</div><div class="meta">Knoten-Hostname · über Wildcard abgedeckt</div></div>
+            <span class="tag" style="color:var(--label-2);border-color:var(--separator)">via Wildcard</span>
+          </div>
+          <div class="row">
+            <span class="rr-type">TXT</span>
+            <div class="main"><div class="domain">_acme-challenge.dns.example.com</div><div class="meta">DNS-01 Challenge · temporär, nach Validierung entfernt</div></div>
+            <span class="tag">ACME</span>
+          </div>
+        </div>
+
+        <div class="section-head">Record-Check</div>
+        <div class="group">
+          <div class="row">
+            <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
+            <div class="main"><div class="domain">dns.example.com</div><div class="meta">A · 192.0.2.10</div></div>
+            <div class="verdict allow">ok</div>
+          </div>
+          <div class="row">
+            <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span>
+            <div class="main"><div class="domain">*.dns.example.com</div><div class="meta">A · Wildcard fehlt</div></div>
+            <div class="verdict block">fehlt</div>
+          </div>
+          <div class="row">
+            <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span>
+            <div class="main"><div class="domain">_acme-challenge.dns.example.com</div><div class="meta">TXT · nur während der Ausstellung vorhanden</div></div>
+            <div class="verdict block">n. zutreffend</div>
+          </div>
+          <div class="row">
+            <div class="main"><b style="font-weight:500;color:var(--label-3)">Jetzt prüfen</b><div class="meta">DNS-Auflösung gegen autoritative Nameserver</div></div>
+            <span class="tag" style="color:var(--label-2);border-color:var(--separator)">nicht impl.</span>
+          </div>
+        </div>
+        <div class="footnote">Automatischer DNS-Check ist noch nicht implementiert (kein Endpunkt in SPEC-control-api). Manuell per „dig dns.example.com A @&lt;NS&gt;" prüfbar. Keine CNAMEs — Apex und Wildcard sind A/AAAA (DNS-only, proxied=false).</div>
+        </div>
+
+        <button class="btn-primary" onclick="openTlsConfirmSheet()">Speichern</button>
+        <div class="footnote">Cloudflare-Token wird out-of-band gesetzt (fehlt er → <span class="mono">tls.secret.missing</span>); private Schlüssel werden nie angezeigt. Nur ein Knoten darf <span class="mono">public_entry</span> setzen (<span class="mono">tls.dyndns.entry_conflict</span>). Speichern nutzt <span class="mono">If-Match</span>/<span class="mono">config_version</span> (Konflikt → 412). Viewer sehen die Seite read-only; nicht-leere <span class="mono">extra_sans</span> brauchen Owner-Freigabe.</div>
       </div>
     </section>
+
+    <div class="sheet-scrim" id="tls-confirm-sheet" hidden onclick="closeTlsConfirmSheet()">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <div class="grab"></div>
+        <h2>TLS-Änderung bestätigen</h2>
+        <div class="banner" role="status" style="margin-bottom:12px">
+          <span class="ic"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+          <div class="body"><b>Zertifikatswechsel geplant</b><p>Die Änderung kann bestehende DoT/DoH-Verbindungen kurzzeitig unterbrechen.</p></div>
+        </div>
+        <div class="group" style="margin:0">
+          <div class="row"><div class="main"><div class="domain">public_domain</div><div class="meta">example.com</div></div></div>
+          <div class="row"><div class="main"><div class="domain">acme.directory</div><div class="meta">staging → production</div></div></div>
+          <div class="row"><div class="main"><div class="domain">Fingerprint</div><div class="meta mono">SHA-256&nbsp; 3A:9C:7F:11:DE:42:0B:88:65:01:EE:2A:94:C3:0D:77</div></div></div>
+        </div>
+        <div class="actions">
+          <button class="btn-sec" onclick="closeTlsConfirmSheet()">Abbrechen</button>
+          <button class="btn-primary" style="background:var(--danger)" onclick="closeTlsConfirmSheet()">Bestätigen</button>
+        </div>
+      </div>
+    </div>
 
     <section class="screen" id="screen-cluster" hidden>
       <div class="content">
@@ -1779,26 +2136,67 @@ body {
           <div class="row"><div class="main"><div class="domain">node-1</div><div class="meta">Rolle: master · mTLS aktiviert · HTTP/2</div></div><span class="tag">Master</span></div>
           <div class="row"><div class="main"><b style="font-weight:500">Cluster-Endpunkt</b></div><div class="meta mono">https://node1.dns.example.com:8443</div></div>
           <div class="row"><div class="main"><b style="font-weight:500">Konfiguration</b></div><div class="meta mono">v12</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Cluster-CA</b></div><div class="meta mono">SHA-256&nbsp; 2F:6A:…:C1</div></div>
         </div>
         <div class="section-head">Sub-Knoten</div>
         <div class="group">
           <div class="row">
             <span class="status-ic allow"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
-            <div class="main"><div class="domain">node-2</div><div class="meta">online · Konfiguration v12 · synchronisiert</div></div>
+            <div class="main"><div class="domain">node-2</div><div class="meta">online · v12 · beigetreten 2026-10-24 · zuletzt vor 12 s · Warteschlange 0</div></div>
             <div class="tail"><div class="verdict allow">online</div></div>
             <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </div>
           <div class="row">
             <span class="status-ic block"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg></span>
-            <div class="main"><div class="domain">node-3</div><div class="meta">offline · Konfiguration v10 · Rückstand 2 Versionen</div></div>
+            <div class="main"><div class="domain">node-3</div><div class="meta">offline · v10 · Rückstand 2 Versionen · zuletzt 14:02</div></div>
             <div class="tail"><div class="verdict block">offline</div></div>
             <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </div>
-          <div class="row"><div class="main"><b style="font-weight:500;color:var(--accent)">Knoten hinzufügen</b><div class="meta">Beitritts-Token ausstellen</div></div></div>
+          <div class="row" onclick="openJoinTokenSheet()" style="cursor:pointer">
+            <div class="main"><b style="font-weight:500;color:var(--accent)">Knoten hinzufügen</b><div class="meta">Beitritts-Token ausstellen</div></div>
+          </div>
         </div>
-        <div class="footnote">Sub-Knoten verbinden sich selbst zum Master. Fällt der Master aus, beantworten sie DNS weiter aus der zuletzt angewendeten Konfiguration.</div>
+        <div class="section-head">Zertifikat-Verteilung</div>
+        <div class="group">
+          <div class="row"><div class="main"><div class="domain">TLS-Zertifikat</div><div class="meta">Master → Sub-Knoten · Sub-Knoten bestellt nie ACME</div></div><span class="verdict allow">verteilt</span></div>
+          <div class="row"><div class="main"><div class="domain">node-2</div><div class="meta">Zertifikat v12 · Fingerprint matcht</div></div><span class="verdict allow">ok</span></div>
+          <div class="row"><div class="main"><div class="domain">node-3</div><div class="meta">Zertifikat v10 · veraltet</div></div><span class="verdict block">veraltet</span></div>
+        </div>
+        <div class="section-head">Warnungen</div>
+        <div class="group">
+          <div class="row">
+            <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+            <div class="main"><div class="domain">Konfigurations-Lag</div><div class="meta">node-3 liegt 2 Versionen zurück (degradiert)</div></div>
+          </div>
+          <div class="row">
+            <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+            <div class="main"><div class="domain">Clock-Skew</div><div class="meta">node-3 · 4 min Abweichung</div></div>
+          </div>
+        </div>
+        <div class="footnote">Sub-Knoten verbinden sich selbst zum Master. Fällt der Master aus, beantworten sie DNS weiter aus der zuletzt angewendeten Konfiguration. Widerruf schließt Sessions und lehnt mit <span class="mono">cluster.node.revoked</span> ab; Query-Log/Statistik tragen eine <span class="mono">node_id</span>-Facette.</div>
       </div>
     </section>
+
+    <div class="sheet-scrim" id="join-token-sheet" hidden onclick="closeJoinTokenSheet()">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <div class="grab"></div>
+        <h2>Beitritts-Token ausstellen</h2>
+        <label for="jt-node">Vorgesehene node_id</label>
+        <div class="field"><input id="jt-node" placeholder="node-4"></div>
+        <label>TTL</label>
+        <div class="seg" role="tablist" aria-label="TTL" style="width:100%">
+          <button role="tab" aria-selected="true" style="flex:1">15 min</button>
+          <button role="tab" aria-selected="false" style="flex:1">1 h</button>
+        </div>
+        <label>Token (einmalig)</label>
+        <div class="field" style="font-family:var(--font-mono);font-size:12px;word-break:break-all">jt_live_8f2a…c1e · wird gehasht gespeichert</div>
+        <div class="footnote" style="padding:10px 0 0">Einmalig und an <span class="mono">node_id</span> gebunden; nach Ablauf oder Verwendung ungültig. Sub-Knoten erzeugt Key/CSR und trägt sich selbst ein.</div>
+        <div class="actions">
+          <button class="btn-sec" onclick="closeJoinTokenSheet()">Schließen</button>
+          <button class="btn-primary" onclick="closeJoinTokenSheet()">Kopieren</button>
+        </div>
+      </div>
+    </div>
 
     <section class="screen" id="screen-mcp" hidden>
       <div class="content">
@@ -1898,8 +2296,8 @@ body {
       <div class="field"><input id="fz-domain" placeholder="site-a.example.com"></div>
       <label for="fz-upstream">Upstream-Server</label>
       <div class="field"><input id="fz-upstream" placeholder="10.9.0.53"></div>
-      <label for="fz-reverse">Reverse-Zone</label>
-      <div class="field"><input id="fz-reverse" placeholder="0.9.10.in-addr.arpa"></div>
+      <label for="fz-reverse">Reverse-Zonen (optional)</label>
+      <div class="field"><input id="fz-reverse" placeholder="0.9.10.in-addr.arpa · mehrere/CIDR"></div>
       <label>Beschränkung auf Profile</label>
       <div class="seg" role="tablist" aria-label="Profile" style="width:100%">
         <button role="tab" aria-selected="true" style="flex:1">Alle</button>
@@ -1999,22 +2397,27 @@ body {
       <div class="grab"></div>
       <h2>Listener anlegen</h2>
       <label for="l-id">ID</label>
-      <div class="field"><input id="l-id" placeholder="intern2"></div>
+      <div class="field"><input id="l-id" placeholder="intern-doh"></div>
       <label for="l-addr">Adresse</label>
-      <div class="field"><input id="l-addr" placeholder="192.0.2.1:53"></div>
-      <label>Protokolle</label>
-      <div class="group" style="margin:0">
-        <div class="row"><div class="main"><b style="font-weight:500">Do53 (UDP)</b></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
-        <div class="row"><div class="main"><b style="font-weight:500">TCP53</b></div><label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label></div>
-        <div class="row"><div class="main"><b style="font-weight:500">DoT</b></div><label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label></div>
-        <div class="row"><div class="main"><b style="font-weight:500">DoH</b></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
-        <div class="row"><div class="main"><b style="font-weight:500">DoQ</b></div><label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label></div>
+      <div class="field"><input id="l-addr" placeholder="192.0.2.1:443"></div>
+      <label>Protokoll</label>
+      <div class="seg" role="tablist" aria-label="Protokoll" style="width:100%">
+        <button role="tab" aria-selected="true" style="flex:1">udp53</button>
+        <button role="tab" aria-selected="false" style="flex:1">tcp53</button>
+        <button role="tab" aria-selected="false" style="flex:1">dot</button>
+        <button role="tab" aria-selected="false" style="flex:1">doh</button>
+        <button role="tab" aria-selected="false" style="flex:1">doq</button>
+      </div>
+      <div class="row" style="padding:14px 0 0;border:0">
+        <div class="main"><b style="font-weight:500">HTTP/3 (h3)</b><div class="meta">nur für doh · gleicher Port</div></div>
+        <label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label>
       </div>
       <label>Exposition</label>
       <div class="seg" role="tablist" aria-label="Exposition" style="width:100%">
         <button role="tab" aria-selected="true" style="flex:1">lokal</button>
         <button role="tab" aria-selected="false" style="flex:1">öffentlich</button>
       </div>
+      <div class="footnote" style="padding:10px 0 0">Öffentlich nur für verschlüsselte Protokolle (dot/doh/doq); öffentliches Do53 wird still verworfen. Public-Admission gilt je Knoten.</div>
       <div class="actions">
         <button class="btn-sec" onclick="closeListenerSheet()">Abbrechen</button>
         <button class="btn-primary" onclick="closeListenerSheet()">Anlegen</button>
@@ -2147,6 +2550,8 @@ function openQueryDetail() { document.getElementById('query-detail-sheet').hidde
 function closeQueryDetail() { document.getElementById('query-detail-sheet').hidden = true; }
 function openClientSheet() { document.getElementById('client-sheet').hidden = false; }
 function closeClientSheet() { document.getElementById('client-sheet').hidden = true; }
+function openManualClientSheet() { document.getElementById('manual-client-sheet').hidden = false; }
+function closeManualClientSheet() { document.getElementById('manual-client-sheet').hidden = true; }
 function openZoneSheet() { document.getElementById('zone-sheet').hidden = false; }
 function closeZoneSheet() { document.getElementById('zone-sheet').hidden = true; }
 function openForwardZoneSheet() { document.getElementById('forward-zone-sheet').hidden = false; }
@@ -2159,12 +2564,52 @@ function openFilterSetSheet() { document.getElementById('filter-set-sheet').hidd
 function closeFilterSetSheet() { document.getElementById('filter-set-sheet').hidden = true; }
 function openListenerSheet() { document.getElementById('listener-sheet').hidden = false; }
 function closeListenerSheet() { document.getElementById('listener-sheet').hidden = true; }
+function openJoinTokenSheet() { document.getElementById('join-token-sheet').hidden = false; }
+function closeJoinTokenSheet() { document.getElementById('join-token-sheet').hidden = true; }
 function openTokenSheet() { document.getElementById('token-sheet').hidden = false; }
 function closeTokenSheet() { document.getElementById('token-sheet').hidden = true; }
 function openPauseSheet() { document.getElementById('pause-sheet').hidden = false; }
 function closePauseSheet() { document.getElementById('pause-sheet').hidden = true; }
 function openAllowSheet() { document.getElementById('allow-sheet').hidden = false; }
 function closeAllowSheet() { document.getElementById('allow-sheet').hidden = true; }
+function openTlsConfirmSheet() { document.getElementById('tls-confirm-sheet').hidden = false; }
+function closeTlsConfirmSheet() { document.getElementById('tls-confirm-sheet').hidden = true; }
+function switchTlsTab(btn) {
+  document.querySelectorAll('#tls-tabs button').forEach(function (b) {
+    b.setAttribute('aria-selected', String(b === btn));
+  });
+  var t = btn.dataset.tab;
+  document.getElementById('tls-tab-overview').hidden = t !== 'overview';
+  document.getElementById('tls-tab-cert').hidden = t !== 'cert';
+  document.getElementById('tls-tab-dns').hidden = t !== 'dns';
+}
+function switchTlsSource(btn) {
+  document.querySelectorAll('#tls-source button').forEach(function (b) {
+    b.setAttribute('aria-selected', String(b === btn));
+  });
+  var s = btn.dataset.src;
+  document.getElementById('tls-src-identity').hidden = s === 'manual';
+  document.getElementById('tls-src-acme').hidden = s !== 'acme';
+  document.getElementById('tls-src-manual').hidden = s !== 'manual';
+}
+function updateTlsSans() {
+  var d = document.getElementById('tls-domain').value.trim() || 'example.com';
+  document.getElementById('tls-san-apex').textContent = 'dns.' + d;
+  document.getElementById('tls-san-wildcard').textContent = '*.dns.' + d;
+}
+document.getElementById('tls-domain').addEventListener('input', updateTlsSans);
+function switchDdNode(btn) {
+  document.querySelectorAll('#tls-dd-node button').forEach(function (b) {
+    b.setAttribute('aria-selected', String(b === btn));
+  });
+  document.getElementById('tls-dd-hostname').value = btn.dataset.node + '.dns.example.com';
+}
+function switchV6Id(btn) {
+  document.querySelectorAll('#tls-dd-v6id button').forEach(function (b) {
+    b.setAttribute('aria-selected', String(b === btn));
+  });
+  document.getElementById('tls-dd-mac-row').hidden = btn.dataset.v6id === 'privacy';
+}
 
 var themeBtn = document.getElementById('theme-toggle');
 var icSun = document.getElementById('ic-sun');

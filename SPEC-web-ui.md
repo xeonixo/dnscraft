@@ -437,6 +437,7 @@ listed in [SPEC-control-api.md](SPEC-control-api.md) § Endpoint table.
 | `/filter-lists` | Filter list URLs | read: viewer via config; write: admin | `GET/POST/PUT/DELETE /api/v1/filter-lists`, `GET /api/v1/config` | Inset grouped list with status rows; add in the toolbar; edit in a sheet; per-list effectiveness is a gap (no endpoint) |
 | `/listeners` | DNS listeners | read: viewer via config/status; write: admin | `GET/POST/PUT/DELETE /api/v1/listeners`, `GET /api/v1/status`, `GET /api/v1/config` | Inset grouped list; switches per protocol; exposure warning banner; warn that public listeners expose only registered Client IDs |
 | `/tls` | TLS / ACME / DynDNS | read: viewer via config/status; write: admin | `GET/POST/PUT/DELETE /api/v1/tls`, `GET /api/v1/status`, `GET /api/v1/config` | Grouped status section plus grouped form; fingerprint in SF Mono; warning banner; destructive changes confirmed in a sheet; never render private keys |
+| `/cluster` | Cluster / node administration | read: viewer; write: admin (master only) | `GET /api/v1/cluster/nodes`, `POST /api/v1/cluster/join-tokens`, `DELETE /api/v1/cluster/nodes/{id}` | Inset grouped list of nodes; join-token issuance in a sheet (intended `node_id`, TTL, one-time token + copy, enrollment command); node detail (cert fingerprint, `joined_at`, `last_seen`, applied config version, lag, queue depth); revoke/remove with confirmation; cert-distribution status; standalone/sub-node role views; `node_id` as a query-log/stats facet |
 | `/mcp-rules` | MCP-managed rules, allows, pauses | read: viewer/admin; write: admin | `GET /api/v1/filtering/mcp-rules`, `DELETE /api/v1/filtering/custom-rules`, `POST /api/v1/filtering/pause`, `POST /api/v1/filtering/resume` | Segmented control for `kind` (rules / temporary allows / pauses); inset grouped list; expiry countdown; removal in a confirmation sheet; 404 degrades to "not available on this node" |
 | `/tokens` | API tokens | admin | `GET/POST /api/v1/auth/tokens`, `DELETE /api/v1/auth/tokens/{id}` | Inset grouped list; create in a sheet; one-time plaintext callout with copy; revoke confirmation; scope labels; self-signed confirmation before MCP tokens |
 | `/audit` | Audit log | admin (see Open questions) | `GET /api/v1/audit` | Search field plus inset grouped table; row detail sheet renders redacted before/after JSON in SF Mono; never secrets |
@@ -1085,6 +1086,19 @@ Deliberately not included:
     permission only on a user gesture and every push must show a notification; it also
     needs a trusted cert. Decide whether v1 includes any push (cert-expiry/outage
     alerts) or defers it. Recommendation: defer to v2.
+29. **Name grouping by TLD/domain.** `SPEC-policy.md` models Namen as a single
+    global name space with no grouping, and `local_nxdomain_suffixes = [local, lan,
+    internal]` exists only for NXDOMAIN synthesis. If the Namen list groups by public
+    TLD (excluding `.lan`/`.local`/`.internal`), that is a new design decision and
+    needs an explicit suffix list and a rule for where unknown/non-public suffixes land.
+30. **Listener model in the UI.** The inventory row for `/listeners` says "switches
+    per protocol", but `SPEC-listeners.md` models one listener per protocol (only DoH
+    has an `h3` sub-flag). Confirm the create-sheet shape: one protocol selector plus
+    a DoH `h3` toggle, not a multi-protocol switch group.
+31. **Settings consolidation.** Nav requires a single Einstellungen screen
+    (Allgemein, Konfiguration, MCP, API-Explorer as sections); the prototype still
+    splits them into separate nav entries. Confirm consolidation and the in-screen
+    section order.
 
 ### Required control-api additions (not invented here)
 
@@ -1112,3 +1126,24 @@ corresponding UI screen is implemented; nothing in this document assumes they ex
 - The documented `GET /api/v1/auth/tokens` response shape and scope labels.
 - A public (or unauthenticated) way for the login page to learn which auth methods
   are enabled, if probing is not acceptable.
+- A manual/custom certificate upload path (`tls_mode = manual` or an upload
+  endpoint) if the TLS screen offers „Eigenes Zertifikat"; `SPEC-control-api.md`
+  currently defines only `self_signed | acme`.
+- A DNS record-check endpoint (resolve the expected `dns.<domain>` /
+  `*.dns.<domain>` records and report ok/missing) if the TLS screen shows a
+  Record-Check.
+- A per-node DynDNS model and an IPv6 local identifier (MAC/EUI-64 vs privacy)
+  choice, if the DynDNS form offers them; `SPEC-tls.md` currently only says IPv4
+  and IPv6 are discovered separately.
+- Cluster administration endpoints (`GET /api/v1/cluster/nodes`, `POST
+  /api/v1/cluster/join-tokens`, `DELETE /api/v1/cluster/nodes/{id}`).
+  `SPEC-cluster.md` lists them as "Required control-api additions" but the
+  control-api endpoint table has no `/api/v1/cluster/*` rows.
+- DoH/DoT Client-ID CRUD (list/create/rename/revoke). This spec currently reads
+  client identity from `policy/views`, but `SPEC-policy.md` removed
+  `views[].client_ids` and no endpoint stores Client IDs.
+- Device-profile downloads (`.mobileconfig`, Android Private DNS) if the
+  DoH-Clients screen offers them.
+- Manual-client create/edit form shape (fields, manual-vs-UniFi precedence and
+  collision display); the API (`/api/v1/clients/manual`) exists but the form
+  contract is undefined.

@@ -343,7 +343,69 @@ proxied = false
 
 ## Open Questions
 
-None — owner decisions locked 2026-10-25.
+Deferred features surfaced by the web-UI prototype (2026-10-27), not yet specified
+here. Each needs an owner decision before implementation. Pairs with
+`SPEC-control-api.md` § Open questions.
+
+1. **Manual certificate mode** (`tls_mode = manual`): upload PEM cert + key + chain
+   and replace the ACME/self-signed material. No upload format, key/cert validation,
+   atomic swap, or error codes defined here or in SPEC-control-api.
+2. **Certificate detail in `TlsStatus`:** `issuer`, `subject`, `not_before`,
+   `serial`, signature algorithm, key usage and the served chain are not exposed —
+   only `not_after`, `days_to_expiry`, `identifiers`.
+3. **Generic DNS provider / manual DNS-01:** ACME DNS-01 is Cloudflare-only. A
+   non-Cloudflare provider, manual `_acme-challenge` TXT display/copy, or alias
+   (CNAME delegation) is not specified.
+4. **ARI renewal window in status:** ARI (RFC 9773) is used internally for renewal
+   scheduling, but `TlsStatus` exposes no suggested window, ARI certificate id, or
+   ARI-supported flag.
+5. **ACME account management:** Terms-of-Service state, external account binding
+   (EAB), account key rollover, deactivation and staging↔production migration are
+   undefined; only email + persisted `account.json` are specified.
+6. **ACME order/progress state:** no pending-order, authorization-list, challenge
+   progress, retry schedule or "next attempt at" surfaced; only `last_error`.
+7. **Rate-limit / quota visibility:** Let's Encrypt limits are documented and
+   `tls.acme.rate_limited` exists, but no remaining-quota or Retry-After status.
+8. **Issuance / renewal history:** only `last_issue` and `last_renew_attempt`; no
+   per-attempt history or certificate-change audit.
+9. **Revocation:** no revoke action/endpoint, revocation reason, or
+   `tls.cert.revoked` code.
+10. **Key rotation / re-key:** `key_type` is configurable but no forced re-issue or
+    rotation flow.
+11. **Preflight / dry-run:** no validate-before-apply or staging dry-run beyond the
+    global directory switch.
+12. **Certificate export / backup:** private keys must stay out of config exports,
+    but a certificate-only (fullchain PEM) export is unspecified.
+13. **Bootstrap self-signed cert status:** `TlsStatus` covers only the ACME cert;
+    the bootstrap cert's own `not_after`, regeneration and fingerprint history are
+    undefined.
+14. **Trust pinning:** the SHA-256 fingerprint is displayed, but there is no
+    accept/record-a-pinned-fingerprint flow or mismatch state.
+15. **Store health:** `tls.store.io` / `tls.store.corrupt` exist without status
+    detail (path, permissions, last successful write, recovery state).
+16. **Per-node DynDNS API model:** node-local `hostname`/`public_entry` exist, but
+    SPEC-control-api has no node inventory or per-node config/status surface.
+17. **IPv6 stable identifier:** only `ipv4`/`ipv6` booleans + echo discovery; no
+    MAC/EUI-64, privacy-address or static-identifier selection.
+18. **DynDNS `stale` flag:** § DynDNS says failures "set stale", but `TlsStatus`
+    omits the field.
+19. **Next/last scheduled run:** only last_attempt/last_change; no next-run or
+    last-success timestamp for renewal or DynDNS.
+20. **Multi-provider / multi-zone:** single Cloudflare token + one zone assumed.
+21. **Managed record inventory:** only A/AAAA/TXT upsert; no listing, adoption,
+    conflict detection or cleanup of pre-existing records.
+22. **IP discovery details:** echo-only; no interface selection, IPv6 prefix
+    delegation or per-family error state.
+23. **TLS protocol/cipher policy for DNS listeners:** no minimum TLS version,
+    cipher suites, ALPN or per-protocol crypto policy (this spec supplies cert
+    material only).
+24. **Certificate distribution status:** cert+key push to sub-nodes is delegated to
+    SPEC-cluster; per-node cert version, sync lag and distribution failure are
+    undefined.
+25. **DynDNS audit trail:** no record of which IP was written to which record at
+    what time; only last-change time.
+26. **Expiry / failure notifications:** Assumption 5 restricts alerts to status
+    fields; no email/webhook channel or delivery status is defined.
 
 ## Decisions (owner, 2026-10-25)
 
