@@ -188,7 +188,7 @@ async fn concurrent_matching_during_rebuild_never_blocks_and_never_half_built() 
         let mut n = 0u64;
         while !stop_m.load(Ordering::SeqCst) {
             let t0 = Instant::now();
-            let snap = eng_m.snapshot_arc();
+            let snap = eng_m.snapshot();
             let elapsed = t0.elapsed();
             if elapsed > max_lock {
                 max_lock = elapsed;
@@ -294,7 +294,7 @@ async fn schedule_with_manual_clock() {
     );
     cfg.update_interval = Duration::from_secs(100);
 
-    let eng = FilterEngine::open(cfg, store, Arc::clone(&clock) as Arc<dyn Clock>).unwrap();
+    let eng = FilterEngine::new(cfg, store, Arc::clone(&clock) as Arc<dyn Clock>).unwrap();
 
     assert_eq!(
         eng.match_name(&sid("default"), &dn("ads.example"), 1, t0())

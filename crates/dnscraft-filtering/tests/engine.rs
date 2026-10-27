@@ -311,7 +311,7 @@ fn temp_allow_on_target_unblocks_chain() {
 #[test]
 fn temp_allow_does_not_rebuild_snapshot() {
     let eng = engine(&[("a", "||ads.example^\n")], "");
-    let before = eng.snapshot_arc();
+    let before = eng.snapshot();
     eng.allow_temporarily(
         &sid("s"),
         TempAllow {
@@ -323,7 +323,7 @@ fn temp_allow_does_not_rebuild_snapshot() {
     )
     .unwrap();
     assert!(
-        Arc::ptr_eq(&before, &eng.snapshot_arc()),
+        Arc::ptr_eq(&before, &eng.snapshot()),
         "adding a temp allow must not replace the snapshot"
     );
 }

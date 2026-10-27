@@ -1,7 +1,7 @@
 //! Pure snapshot builder: manuals + UniFi observations → [`ClientLookup`] + [`State`].
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -583,12 +583,5 @@ fn merge_addresses(
 
 /// Whether an address is IPv6 link-local (`fe80::/10`) and must not be indexed.
 pub fn is_link_local(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V6(v6) => is_unicast_link_local(v6),
-        IpAddr::V4(_) => false,
-    }
-}
-
-fn is_unicast_link_local(v6: Ipv6Addr) -> bool {
-    (v6.segments()[0] & 0xffc0) == 0xfe80
+    matches!(ip, IpAddr::V6(v6) if v6.is_unicast_link_local())
 }

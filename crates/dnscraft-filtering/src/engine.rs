@@ -158,15 +158,6 @@ impl FilterEngine {
         Ok(eng)
     }
 
-    /// Alias for [`Self::new`] (name used since L3).
-    pub fn open(
-        config: FilterConfig,
-        store: ListStore,
-        clock: Arc<dyn Clock>,
-    ) -> Result<Arc<Self>, FilterError> {
-        Self::new(config, store, clock)
-    }
-
     /// Matching-only engine over a pre-built snapshot (no store, no scheduler).
     ///
     /// Test helper and callers that build snapshots themselves. Prefer
@@ -183,7 +174,7 @@ impl FilterEngine {
         }
     }
 
-    /// Same as [`Self::new`] / [`Self::open`] but does not start the background
+    /// Same as [`Self::new`] but does not start the background
     /// scheduler. Tests that drive updates manually use this.
     pub fn open_without_scheduler(
         config: FilterConfig,
@@ -248,11 +239,6 @@ impl FilterEngine {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         Arc::clone(&*guard)
-    }
-
-    /// Alias for [`Self::snapshot`].
-    pub fn snapshot_arc(&self) -> Arc<Snapshot> {
-        self.snapshot()
     }
 
     /// Current time from the injected clock, or the system clock when this
@@ -416,7 +402,7 @@ impl FilterEngine {
         qtype: u16,
         now: SystemTime,
     ) -> Result<Verdict, FilterError> {
-        let snap = self.snapshot_arc();
+        let snap = self.snapshot();
         if snap.shared_index(set).is_none() {
             return Err(FilterError::UnknownSet(set.to_string()));
         }
@@ -445,7 +431,7 @@ impl FilterEngine {
         ip: IpAddr,
         now: SystemTime,
     ) -> Result<Verdict, FilterError> {
-        let snap = self.snapshot_arc();
+        let snap = self.snapshot();
         let v = if self.effective_pause(&snap, set).is_some_and(|u| now < u) {
             Verdict::Pass
         } else {
@@ -470,7 +456,7 @@ impl FilterEngine {
         set: &SetId,
         until: Option<SystemTime>,
     ) -> Result<(), FilterError> {
-        if self.snapshot_arc().shared_index(set).is_none() {
+        if self.snapshot().shared_index(set).is_none() {
             return Err(FilterError::UnknownSet(set.to_string()));
         }
         let mut guard = self
@@ -491,7 +477,7 @@ impl FilterEngine {
     /// Effective pause deadline of `set`: the overlay or the configured
     /// `paused_until`, whichever ends later.
     pub fn paused_until(&self, set: &SetId) -> Option<SystemTime> {
-        self.effective_pause(&self.snapshot_arc(), set)
+        self.effective_pause(&self.snapshot(), set)
     }
 
     fn effective_pause(&self, snap: &Snapshot, set: &SetId) -> Option<SystemTime> {
@@ -512,7 +498,7 @@ impl FilterEngine {
     /// An existing allow for the same domain (regardless of
     /// `include_subdomains`) is replaced. Does not rebuild the snapshot.
     pub fn allow_temporarily(&self, set: &SetId, mut rule: TempAllow) -> Result<(), FilterError> {
-        if self.snapshot_arc().shared_index(set).is_none() {
+        if self.snapshot().shared_index(set).is_none() {
             return Err(FilterError::UnknownSet(set.to_string()));
         }
         let mut guard = self
@@ -539,7 +525,7 @@ impl FilterEngine {
         set: &SetId,
         domain: &DomainName,
     ) -> Result<bool, FilterError> {
-        if self.snapshot_arc().shared_index(set).is_none() {
+        if self.snapshot().shared_index(set).is_none() {
             return Err(FilterError::UnknownSet(set.to_string()));
         }
         let mut guard = self
@@ -561,7 +547,7 @@ impl FilterEngine {
         set: &SetId,
         now: SystemTime,
     ) -> Result<Vec<TempAllow>, FilterError> {
-        if self.snapshot_arc().shared_index(set).is_none() {
+        if self.snapshot().shared_index(set).is_none() {
             return Err(FilterError::UnknownSet(set.to_string()));
         }
         let mut guard = self
@@ -733,7 +719,7 @@ impl FilterEngine {
         qtype: u16,
         now: SystemTime,
     ) -> Result<Verdict, FilterError> {
-        let snap = self.snapshot_arc();
+        let snap = self.snapshot();
         if snap.shared_index(set).is_none() {
             return Err(FilterError::UnknownSet(set.to_string()));
         }
