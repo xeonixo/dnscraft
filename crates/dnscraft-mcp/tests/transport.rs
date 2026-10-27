@@ -414,6 +414,53 @@ async fn missing_or_unsupported_protocol_version_lists_supported_versions() {
 }
 
 #[tokio::test]
+async fn legacy_session_mode_still_requires_the_version_header_and_binds_headers() {
+    let config = McpConfig {
+        legacy_session_mode: true,
+        ..McpConfig::default()
+    };
+    let server = spawn_with(hostile_status(), config).await;
+    let client = reqwest::Client::new();
+
+    // The accepted version list is widened, but the header is not optional.
+    let missing = client
+        .post(&server.url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Mcp-Method", "tools/list")
+        .header("Authorization", format!("Bearer {TOKEN}"))
+        .body(request_body(12, "tools/list", json!({})))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 400);
+    let json: Value = serde_json::from_str(&missing.text().await.unwrap()).unwrap();
+    assert_eq!(json["error"]["code"], -32022);
+    assert_eq!(json["error"]["data"]["requested"], Value::Null);
+
+    // With the header present, rmcp's SEP-2243 binding still runs in legacy mode.
+    let mismatch = client
+        .post(&server.url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("MCP-Protocol-Version", VERSION)
+        .header("Mcp-Method", "tools/call")
+        .header("Mcp-Name", "get_status")
+        .header("Authorization", format!("Bearer {TOKEN}"))
+        .body(request_body(
+            13,
+            "tools/call",
+            json!({ "name": "remove_rule", "arguments": {} }),
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(mismatch.status(), 400);
+    let json: Value = serde_json::from_str(&mismatch.text().await.unwrap()).unwrap();
+    assert_eq!(json["error"]["code"], -32020);
+}
+
+#[tokio::test]
 async fn header_body_mismatches_are_32020_and_run_nothing() {
     let server = spawn(hostile_status()).await;
     let client = reqwest::Client::new();

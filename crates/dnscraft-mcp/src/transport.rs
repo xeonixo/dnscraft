@@ -58,9 +58,11 @@ pub struct RequestLimits<'a> {
     /// Origins accepted when an `Origin` header is present.
     pub allowed_origins: &'a [String],
     /// Protocol versions accepted in `MCP-Protocol-Version`.
+    ///
+    /// Legacy mode widens this list; the header itself is always required so
+    /// rmcp's SEP-2243 header/body binding can never be disabled by omitting
+    /// it.
     pub supported_versions: &'a [String],
-    /// Whether a missing `MCP-Protocol-Version` is accepted (legacy mode).
-    pub allow_missing_version: bool,
 }
 
 /// Why [`validate_mcp_request`] rejected a request.
@@ -81,9 +83,9 @@ pub enum RequestRejection {
     },
     /// `Origin` was present and not in the allow-list.
     InvalidOrigin,
-    /// `MCP-Protocol-Version` was missing (stateless mode), duplicated or
-    /// unsupported. `requested` echoes the header value, `None` when it was
-    /// absent or not valid UTF-8.
+    /// `MCP-Protocol-Version` was missing, duplicated or unsupported.
+    /// `requested` echoes the header value, `None` when it was absent or not
+    /// valid UTF-8.
     UnsupportedVersion {
         /// The version the client asked for, if it could be read.
         requested: Option<String>,
@@ -156,13 +158,16 @@ fn origin_allowed(headers: &HeaderMap, allowed: &[String]) -> bool {
 
 /// The requested version when the header is missing, duplicated or unsupported.
 ///
+/// The header is required in every mode. rmcp only runs its SEP-2243
+/// `Mcp-Method`/`Mcp-Name`-vs-body binding when the header is present, so
+/// accepting a missing header would disable that binding.
+///
 /// Returns `None` when the header passes validation, and `Some(None)` when the
 /// rejection has no readable requested value.
 fn version_rejection(headers: &HeaderMap, limits: &RequestLimits<'_>) -> Option<Option<String>> {
     let mut values = headers.get_all(VERSION_HEADER).iter();
     let Some(first) = values.next() else {
-        // Legacy handshakes may omit the header; stateless requests may not.
-        return (!limits.allow_missing_version).then_some(None);
+        return Some(None);
     };
     if values.next().is_some() {
         return Some(Some("<duplicate>".to_owned()));
@@ -237,7 +242,6 @@ impl Service<Request<Body>> for McpTransport {
                 max_body_bytes: this.config.max_request_body_size,
                 allowed_origins: &this.config.allowed_origins,
                 supported_versions: &this.supported_versions,
-                allow_missing_version: this.config.legacy_session_mode,
             };
             // The body is still streaming here; rmcp enforces the cap on the
             // bytes it reads, so only the declared length is known.
@@ -578,13 +582,11 @@ mod tests {
     fn limits<'a>(
         allowed_origins: &'a [String],
         supported_versions: &'a [String],
-        allow_missing_version: bool,
     ) -> RequestLimits<'a> {
         RequestLimits {
             max_body_bytes: 1024,
             allowed_origins,
             supported_versions,
-            allow_missing_version,
         }
     }
 
@@ -608,7 +610,7 @@ mod tests {
             ("Origin", "https://ui.example.com"),
         ]);
         assert_eq!(
-            validate_mcp_request("POST", &headers, 16, &limits(&origins, &versions, false)),
+            validate_mcp_request("POST", &headers, 16, &limits(&origins, &versions)),
             Ok(())
         );
     }
@@ -617,7 +619,7 @@ mod tests {
     fn rejects_non_post_before_anything_else() {
         let headers = headers(&[("Content-Length", "999999")]);
         assert_eq!(
-            validate_mcp_request("GET", &headers, 0, &limits(&[], &[], false)),
+            validate_mcp_request("GET", &headers, 0, &limits(&[], &[])),
             Err(RequestRejection::MethodNotAllowed {
                 method: "GET".to_owned()
             })
@@ -628,51 +630,53 @@ mod tests {
     fn rejects_declared_and_buffered_oversize_bodies() {
         let declared = headers(&[("Content-Length", "1025")]);
         assert_eq!(
-            validate_mcp_request("POST", &declared, 0, &limits(&[], &[], true)),
+            validate_mcp_request("POST", &declared, 0, &limits(&[], &[])),
             Err(RequestRejection::PayloadTooLarge { limit_bytes: 1024 })
         );
         assert_eq!(
-            validate_mcp_request("POST", &HeaderMap::new(), 1025, &limits(&[], &[], true)),
+            validate_mcp_request("POST", &HeaderMap::new(), 1025, &limits(&[], &[])),
             Err(RequestRejection::PayloadTooLarge { limit_bytes: 1024 })
         );
         // Non-numeric lengths are rmcp's problem, as before.
-        let bogus = headers(&[("Content-Length", "lots")]);
-        assert!(validate_mcp_request("POST", &bogus, 0, &limits(&[], &[], true)).is_ok());
+        let versions = ["2026-07-28".to_owned()];
+        let bogus = headers(&[
+            ("Content-Length", "lots"),
+            ("MCP-Protocol-Version", "2026-07-28"),
+        ]);
+        assert!(validate_mcp_request("POST", &bogus, 0, &limits(&[], &versions)).is_ok());
     }
 
     #[test]
     fn rejects_disallowed_origin_but_accepts_absent_and_allowed() {
         let origins = ["https://ui.example.com".to_owned()];
-        assert!(
-            validate_mcp_request("POST", &HeaderMap::new(), 0, &limits(&origins, &[], true))
-                .is_ok()
-        );
-        let allowed = headers(&[("Origin", "https://ui.example.com")]);
-        assert!(validate_mcp_request("POST", &allowed, 0, &limits(&origins, &[], true)).is_ok());
+        let versions = ["2026-07-28".to_owned()];
+        let absent = headers(&[("MCP-Protocol-Version", "2026-07-28")]);
+        assert!(validate_mcp_request("POST", &absent, 0, &limits(&origins, &versions)).is_ok());
+        let allowed = headers(&[
+            ("Origin", "https://ui.example.com"),
+            ("MCP-Protocol-Version", "2026-07-28"),
+        ]);
+        assert!(validate_mcp_request("POST", &allowed, 0, &limits(&origins, &versions)).is_ok());
         let rejected = headers(&[
             ("Origin", "https://ui.example.com"),
             ("Origin", "https://evil.example"),
         ]);
         assert_eq!(
-            validate_mcp_request("POST", &rejected, 0, &limits(&origins, &[], true)),
+            validate_mcp_request("POST", &rejected, 0, &limits(&origins, &versions)),
             Err(RequestRejection::InvalidOrigin)
         );
     }
 
     #[test]
-    fn versions_are_required_outside_legacy_mode_and_must_be_supported() {
+    fn versions_are_always_required_and_must_be_supported() {
         let versions = ["2026-07-28".to_owned()];
         assert_eq!(
-            validate_mcp_request("POST", &HeaderMap::new(), 0, &limits(&[], &versions, false)),
+            validate_mcp_request("POST", &HeaderMap::new(), 0, &limits(&[], &versions)),
             Err(RequestRejection::UnsupportedVersion { requested: None })
-        );
-        assert!(
-            validate_mcp_request("POST", &HeaderMap::new(), 0, &limits(&[], &versions, true))
-                .is_ok()
         );
         let unsupported = headers(&[("MCP-Protocol-Version", "2099-01-01")]);
         assert_eq!(
-            validate_mcp_request("POST", &unsupported, 0, &limits(&[], &versions, true)),
+            validate_mcp_request("POST", &unsupported, 0, &limits(&[], &versions)),
             Err(RequestRejection::UnsupportedVersion {
                 requested: Some("2099-01-01".to_owned())
             })
@@ -682,7 +686,7 @@ mod tests {
             ("MCP-Protocol-Version", "2026-07-28"),
         ]);
         assert_eq!(
-            validate_mcp_request("POST", &duplicate, 0, &limits(&[], &versions, true)),
+            validate_mcp_request("POST", &duplicate, 0, &limits(&[], &versions)),
             Err(RequestRejection::UnsupportedVersion {
                 requested: Some("<duplicate>".to_owned())
             })

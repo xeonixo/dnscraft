@@ -80,7 +80,7 @@ Tool descriptions are static and are never built from runtime data.
 | `max_pause_duration` | 1 h | 5 min–1 h | Lowers the fixed `PT5M`/`PT15M`/`PT1H` set |
 | `max_custom_rules_per_set` | 100 | 10–1000 | `add_rule` (non-expired rules per filter set) |
 | `max_block_rule_lifetime` | 30 d | 1–365 d | Server-set `expires_at` on every MCP-created rule |
-| `legacy_session_mode` | `false` | `true`/`false` | Protocol negotiation (stateless only by default) |
+| `legacy_session_mode` | `false` | `true`/`false` | Protocol negotiation; `MCP-Protocol-Version` is still required |
 | `write_tools_enabled` | `false` | `true`/`false` | Independent gate for the five write tools |
 
 `enabled` defaults to `false` as well: the endpoint is opt-in. Result lists default
