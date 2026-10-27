@@ -8,7 +8,11 @@ use std::sync::atomic::AtomicU64;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use dnscraft_filtering::{BlockMode, DomainName, FilterEngine, SetId, TempAllow, Verdict};
+use dnscraft_filtering::{
+    BlockMode, DomainName, FilterEngine, RecordTypeSel, RuleAction, RuleSpec, SetId, TempAllow,
+    Verdict, build_rule,
+};
+use dnscraft_mcp::ProtectedDomains;
 use dnscraft_mcp::backend::{BackendError, McpBackend};
 use dnscraft_mcp::dto::{
     AddRuleParams, AddRuleResult, AnswerRecord, AuditEntry, AuditResult, DnssecCounts,
@@ -50,9 +54,10 @@ pub(crate) struct McpBackendInner {
     pub node_id: String,
     pub version: String,
     pub start_time: std::time::Instant,
-    // Consumed by the M22/M23 write and runtime endpoints.
-    #[allow(dead_code)]
+    /// MCP limits, protected-domain additions and the write-tools gate.
     pub mcp_config: dnscraft_mcp::McpConfig,
+    /// OIDC issuer URL whose host is protected, when OIDC is enabled.
+    pub oidc_issuer: Option<String>,
 }
 
 pub(crate) struct ControlMcpBackend {
@@ -81,6 +86,39 @@ impl ControlMcpBackend {
                 message: "policy engine not configured".into(),
             })
     }
+
+    fn config_service(&self) -> Result<&Arc<ConfigService>, BackendError> {
+        self.inner
+            .config
+            .as_ref()
+            .ok_or_else(|| BackendError::Internal {
+                message: "config service not configured".into(),
+            })
+    }
+
+    /// The current stored config snapshot, if any.
+    async fn current_snapshot(&self) -> Result<Option<Value>, BackendError> {
+        match &self.inner.config {
+            Some(service) => Ok(service
+                .current()
+                .await
+                .map(|(_, snapshot)| snapshot)
+                .map_err(|e| BackendError::Internal {
+                    message: e.code().to_owned(),
+                })?),
+            None => Ok(None),
+        }
+    }
+
+    /// Protected domains from the current config plus the owner's additions.
+    fn protected(&self, snapshot: Option<&Value>) -> Result<ProtectedDomains, BackendError> {
+        protected_for(
+            snapshot,
+            self.inner.oidc_issuer.as_deref(),
+            self.inner.mcp_config.protected_domains.iter().cloned(),
+        )
+        .map_err(backend_error)
+    }
 }
 
 /// Builds a read-only backend over `query_log` for integration tests.
@@ -102,6 +140,42 @@ pub fn mcp_backend_for_test(query_log: Option<Arc<QueryLog>>) -> Arc<dyn McpBack
         version: "0.0.0".to_owned(),
         start_time: std::time::Instant::now(),
         mcp_config: dnscraft_mcp::McpConfig::default(),
+        oidc_issuer: None,
+    })))
+}
+
+/// Builds a fully-wired backend with the write-side services, for integration
+/// tests only.
+///
+/// [`mcp_backend_for_test`] deliberately leaves the write services unconfigured
+/// (the read tools never touch them). This variant wires the engines and stores
+/// the five write tools need, so the real backend can be exercised without a
+/// production assembler. Not part of the supported public API.
+#[doc(hidden)]
+pub fn mcp_backend_for_test_writes(
+    filter: Arc<FilterEngine>,
+    config: Arc<ConfigService>,
+    audit: Option<Arc<Audit>>,
+    tokens: Option<crate::api::auth::TokenStore>,
+    clock: Arc<dyn Clock>,
+    mcp_config: dnscraft_mcp::McpConfig,
+    oidc_issuer: Option<String>,
+) -> Arc<dyn McpBackend> {
+    Arc::new(ControlMcpBackend::new(Arc::new(McpBackendInner {
+        policy: None,
+        filter: Some(filter),
+        query_log: None,
+        tokens,
+        audit,
+        config: Some(config),
+        clock,
+        tls: None,
+        resolver_cache_size: Arc::new(AtomicU64::new(0)),
+        node_id: "test".to_owned(),
+        version: "0.0.0".to_owned(),
+        start_time: std::time::Instant::now(),
+        mcp_config,
+        oidc_issuer,
     })))
 }
 
@@ -347,11 +421,268 @@ fn backend_error(err: ControlApiError) -> BackendError {
     }
 }
 
-fn unknown_set(set: &SetId) -> ControlApiError {
+/// Builds a forwarded module error with non-secret `params`.
+pub(crate) fn mcp_error(code: &'static str, params: Value) -> ControlApiError {
     ControlApiError::Module {
-        code: "policy.config.unknown_filter_set",
-        params: Some(json!({ "filter_set_id": set.as_str() })),
+        code,
+        params: Some(params),
     }
+}
+
+/// `policy.config.unknown_filter_set` for `id`.
+pub(crate) fn unknown_set(id: &str) -> ControlApiError {
+    mcp_error(
+        "policy.config.unknown_filter_set",
+        json!({ "filter_set_id": id }),
+    )
+}
+
+/// Maps a filtering builder error onto its forwarded module code.
+pub(crate) fn build_error(err: dnscraft_filtering::BuildError) -> ControlApiError {
+    let params = err
+        .params()
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), Value::String(value)))
+        .collect::<serde_json::Map<_, _>>();
+    mcp_error(err.code(), Value::Object(params))
+}
+
+/// Strictly parses a write target set id (default `default`).
+///
+/// Unlike the read-side [`resolve_set`], an invalid id is an error: a write
+/// must never silently land in the default set.
+pub(crate) fn parse_set(id: Option<&str>) -> Result<SetId, ControlApiError> {
+    let raw = id.unwrap_or("default");
+    SetId::new(raw).map_err(|_| unknown_set(raw))
+}
+
+/// A mutable filter set from the stored snapshot, if it exists.
+pub(crate) fn set_mut<'a>(snapshot: &'a mut Value, id: &str) -> Option<&'a mut Value> {
+    snapshot
+        .get_mut("filtering")?
+        .get_mut("sets")?
+        .as_array_mut()?
+        .iter_mut()
+        .find(|set| set.get("id").and_then(Value::as_str) == Some(id))
+}
+
+/// Whether a stored rule has not expired at `now`.
+pub(crate) fn active_rule(rule: &Value, now: SystemTime) -> bool {
+    rule.get("expires_at")
+        .and_then(stored_time)
+        .is_none_or(|expires| expires > now)
+}
+
+/// Protected domains derived from `snapshot` plus the owner's additions.
+pub(crate) fn protected_for(
+    snapshot: Option<&Value>,
+    oidc_issuer: Option<&str>,
+    extra: impl IntoIterator<Item = String>,
+) -> Result<ProtectedDomains, ControlApiError> {
+    crate::protected_list::derive_protected_domains(snapshot, oidc_issuer, extra).map_err(|err| {
+        ControlApiError::Module {
+            code: err.code(),
+            params: err.params(),
+        }
+    })
+}
+
+/// Rejects a target covered by the protected-domain list.
+pub(crate) fn reject_protected(
+    protected: &ProtectedDomains,
+    domain: &str,
+    include: bool,
+) -> Result<(), ControlApiError> {
+    if let Some(hit) = protected.check(domain, include) {
+        return Err(mcp_error(
+            "mcp.protected_domain",
+            json!({ "domain": domain, "protected_domain": hit }),
+        ));
+    }
+    Ok(())
+}
+
+/// Canonicalises a temporary-allow target with the filtering builder.
+pub(crate) fn canonical_allow_domain(raw: &str) -> Result<DomainName, ControlApiError> {
+    let spec = RuleSpec {
+        action: RuleAction::Allow,
+        domain: raw.to_owned(),
+        include_subdomains: false,
+        record_types: RecordTypeSel::default(),
+        important: false,
+        rewrite: None,
+    }
+    .normalized()
+    .map_err(build_error)?;
+    let domain = DomainName::parse(&spec.domain)
+        .map_err(|_| mcp_error("filter_name.invalid_char", json!({ "domain": raw })))?;
+    if domain.label_count() < 2 {
+        return Err(mcp_error(
+            "mcp.domain_too_broad",
+            json!({ "domain": domain.as_str() }),
+        ));
+    }
+    Ok(domain)
+}
+
+/// Canonicalises a block-rule target and builds its rule text.
+///
+/// Returns the canonical domain and the `|`/`||` rule text the MCP tool
+/// reports, using the same filtering builder as the config path so the two
+/// cannot drift.
+pub(crate) fn canonical_block_rule(
+    raw: &str,
+    include_subdomains: bool,
+) -> Result<(DomainName, String), ControlApiError> {
+    let spec = RuleSpec {
+        action: RuleAction::Block,
+        domain: raw.to_owned(),
+        include_subdomains,
+        record_types: RecordTypeSel::default(),
+        important: false,
+        rewrite: None,
+    }
+    .normalized()
+    .map_err(build_error)?;
+    let domain = DomainName::parse(&spec.domain)
+        .map_err(|_| mcp_error("filter_name.invalid_char", json!({ "domain": spec.domain })))?;
+    if domain.label_count() < 2 {
+        return Err(mcp_error(
+            "mcp.invalid_input",
+            json!({ "reason": "a block rule needs a domain with at least two labels" }),
+        ));
+    }
+    let rule_text = build_rule(&spec).map_err(build_error)?;
+    Ok((domain, rule_text))
+}
+
+/// `mcp.duration_exceeds_maximum` for a requested and a configured maximum
+/// duration.
+pub(crate) fn duration_exceeds(requested: Duration, maximum: Duration) -> ControlApiError {
+    mcp_error(
+        "mcp.duration_exceeds_maximum",
+        json!({
+            "requested": iso_duration(requested),
+            "maximum": iso_duration(maximum),
+        }),
+    )
+}
+
+/// Rejects a fixed-set duration above the configured maximum.
+pub(crate) fn duration_error(requested_secs: u64, maximum: Duration) -> Option<ControlApiError> {
+    (requested_secs > maximum.as_secs())
+        .then(|| duration_exceeds(Duration::from_secs(requested_secs), maximum))
+}
+
+/// Renders a duration in its canonical ISO 8601 form.
+pub(crate) fn iso_duration(duration: Duration) -> String {
+    match duration.as_secs() {
+        300 => "PT5M".to_owned(),
+        900 => "PT15M".to_owned(),
+        3600 => "PT1H".to_owned(),
+        seconds => format!("PT{seconds}S"),
+    }
+}
+
+/// Maps a filtering engine error; anything but an unknown set is internal.
+pub(crate) fn engine_error(err: dnscraft_filtering::FilterError, set: &str) -> ControlApiError {
+    match err {
+        dnscraft_filtering::FilterError::UnknownSet(_) => unknown_set(set),
+        other => ControlApiError::Internal {
+            message: other.to_string(),
+        },
+    }
+}
+
+/// Appends one MCP block rule to a filter set in `snapshot`.
+///
+/// The cap counts only non-expired rules and is enforced here, inside the
+/// caller's config apply lock, so two concurrent adds cannot both pass.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn add_rule_to_snapshot(
+    snapshot: &mut Value,
+    set: &SetId,
+    domain: &DomainName,
+    include_subdomains: bool,
+    rule_id: &str,
+    created_secs: i64,
+    expires_secs: i64,
+    token_id: &str,
+    cap: usize,
+    now: SystemTime,
+) -> Result<(), ControlApiError> {
+    let set_value = set_mut(snapshot, set.as_str()).ok_or_else(|| unknown_set(set.as_str()))?;
+    let rules = set_value
+        .as_object_mut()
+        .ok_or_else(|| ControlApiError::Internal {
+            message: "filter set is not an object".to_owned(),
+        })?
+        .entry("mcp_rules")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| ControlApiError::Internal {
+            message: "mcp_rules is not an array".to_owned(),
+        })?;
+    let active = rules.iter().filter(|rule| active_rule(rule, now)).count();
+    if active >= cap {
+        return Err(mcp_error(
+            "mcp.rule_limit_exceeded",
+            json!({ "filter_set_id": set.as_str(), "max": cap }),
+        ));
+    }
+    rules.push(json!({
+        "id": rule_id,
+        "domain": domain.as_str(),
+        "include_subdomains": include_subdomains,
+        "created_at": created_secs,
+        "expires_at": expires_secs,
+        "token_id": token_id,
+    }));
+    Ok(())
+}
+
+/// Removes every stored MCP rule for `domain` from a filter set.
+///
+/// Returns whether anything was removed. Each matched rule is checked against
+/// `protected` with its own stored `include_subdomains` flag (not a caller
+/// value); one protected hit aborts the whole removal.
+pub(crate) fn remove_rule_from_snapshot(
+    snapshot: &mut Value,
+    set: &SetId,
+    domain: &DomainName,
+    protected: &ProtectedDomains,
+) -> Result<bool, ControlApiError> {
+    let set_value = set_mut(snapshot, set.as_str()).ok_or_else(|| unknown_set(set.as_str()))?;
+    let Some(rules) = set_value
+        .as_object_mut()
+        .and_then(|set| set.get_mut("mcp_rules"))
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(false);
+    };
+    let existing = std::mem::take(rules);
+    let mut kept = Vec::with_capacity(existing.len());
+    let mut removed = false;
+    for rule in existing {
+        let matches = rule
+            .get("domain")
+            .and_then(Value::as_str)
+            .and_then(|raw| DomainName::parse(raw).ok())
+            .is_some_and(|stored| stored.as_str() == domain.as_str());
+        if !matches {
+            kept.push(rule);
+            continue;
+        }
+        let include = rule
+            .get("include_subdomains")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        // The stored flag decides coverage, not the request.
+        reject_protected(protected, domain.as_str(), include)?;
+        removed = true;
+    }
+    *rules = kept;
+    Ok(removed)
 }
 
 fn paginate<T: Clone>(all: Vec<T>, limit: u32, offset: u32) -> (Vec<T>, bool, Option<u32>) {
@@ -398,7 +729,7 @@ pub(crate) fn explain(
     let set = resolve_set(profile_id);
     let verdict = filter
         .match_name(&set, &name, filter_qtype(qtype), now)
-        .map_err(|_| unknown_set(&set))?;
+        .map_err(|_| unknown_set(set.as_str()))?;
     let set_str = set_name(profile_id);
     let (verdict, reason) = match &verdict {
         Verdict::Pass | Verdict::Allowed(_) => ("allowed".to_owned(), None),
@@ -443,7 +774,7 @@ pub(crate) fn list_mcp_rules(
         "temporary_allows" => {
             let allows = filter
                 .list_temporary_allows(&set, now)
-                .map_err(|_| unknown_set(&set))?;
+                .map_err(|_| unknown_set(set.as_str()))?;
             let all: Vec<_> = allows
                 .into_iter()
                 .map(|allow| TempAllowInfo {
@@ -479,7 +810,7 @@ pub(crate) fn list_mcp_rules(
                     })
             });
             if snapshot.is_some() && stored.is_none() {
-                return Err(unknown_set(&set));
+                return Err(unknown_set(set.as_str()));
             }
             let all: Vec<_> = stored
                 .and_then(|set| set.get("mcp_rules"))
@@ -507,13 +838,22 @@ pub(crate) fn list_mcp_rules(
 
 /// Converts one stored `mcp_rules[]` entry, dropping expired or malformed ones.
 fn rule_info(rule: &Value, set_str: &str, now: SystemTime) -> Option<McpRuleInfo> {
-    let domain = DomainName::parse(rule.get("domain")?.as_str()?).ok()?;
-    let include_subdomains = rule.get("include_subdomains")?.as_bool()?;
-    let created_at = stored_time(rule.get("created_at")?)?;
     let expires_at = stored_time(rule.get("expires_at")?)?;
     if expires_at <= now {
         return None;
     }
+    stored_rule_info(rule, set_str)
+}
+
+/// Converts one stored `mcp_rules[]` entry regardless of expiry.
+///
+/// `find_mcp_rule` uses this so an expired rule can still be removed (the tool
+/// then checks its stored coverage flag before deleting it).
+fn stored_rule_info(rule: &Value, set_str: &str) -> Option<McpRuleInfo> {
+    let domain = DomainName::parse(rule.get("domain")?.as_str()?).ok()?;
+    let include_subdomains = rule.get("include_subdomains")?.as_bool()?;
+    let created_at = stored_time(rule.get("created_at")?)?;
+    let expires_at = stored_time(rule.get("expires_at")?)?;
     Some(McpRuleInfo {
         id: rule
             .get("id")
@@ -527,6 +867,40 @@ fn rule_info(rule: &Value, set_str: &str, now: SystemTime) -> Option<McpRuleInfo
         expires_at: rfc3339(expires_at),
         filter_set_id: set_str.to_owned(),
     })
+}
+
+/// Finds the stored rule for `domain` in `set`, expired or not.
+///
+/// An existing snapshot without the set is `policy.config.unknown_filter_set`,
+/// matching every other per-set operation. A snapshot with no set at all (a
+/// fresh install) simply has no rule.
+fn find_stored_rule<'a>(
+    snapshot: &'a Value,
+    set: &SetId,
+    domain: &DomainName,
+) -> Result<Option<&'a Value>, ControlApiError> {
+    let Some(stored_set) = snapshot
+        .get("filtering")
+        .and_then(|section| section.get("sets"))
+        .and_then(Value::as_array)
+        .and_then(|sets| {
+            sets.iter()
+                .find(|set_value| set_value.get("id").and_then(Value::as_str) == Some(set.as_str()))
+        })
+    else {
+        return Err(unknown_set(set.as_str()));
+    };
+    Ok(stored_set
+        .get("mcp_rules")
+        .and_then(Value::as_array)
+        .and_then(|rules| {
+            rules.iter().find(|rule| {
+                rule.get("domain")
+                    .and_then(Value::as_str)
+                    .and_then(|raw| DomainName::parse(raw).ok())
+                    .is_some_and(|stored| stored.as_str() == domain.as_str())
+            })
+        }))
 }
 
 /// Runs a dry-run query and returns the tool-shaped result plus the full
@@ -919,9 +1293,20 @@ impl McpBackend for ControlMcpBackend {
         &self,
         params: TempAllowParams,
     ) -> Result<TempAllowResult, BackendError> {
-        let set = resolve_set(params.filter_set_id.as_deref());
-        let domain = DomainName::parse(&params.domain)
-            .map_err(|_| code_err("filter_build.invalid_domain", &params.domain))?;
+        let filter = self.filter_engine()?;
+        if let Some(error) = duration_error(
+            params.duration.seconds(),
+            self.inner.mcp_config.max_temporary_allow_duration,
+        ) {
+            return Err(backend_error(error));
+        }
+        let domain = canonical_allow_domain(&params.domain).map_err(backend_error)?;
+        let snapshot = self.current_snapshot().await?;
+        let protected = self.protected(snapshot.as_ref())?;
+        reject_protected(&protected, domain.as_str(), params.include_subdomains)
+            .map_err(backend_error)?;
+
+        let set = parse_set(params.filter_set_id.as_deref()).map_err(backend_error)?;
         let now = self.inner.clock.now();
         let until = now + duration_secs(params.duration);
         let rule = TempAllow {
@@ -930,67 +1315,136 @@ impl McpBackend for ControlMcpBackend {
             until,
             created_at: now,
         };
-        self.filter_engine()?
+        filter
             .allow_temporarily(&set, rule)
-            .map_err(|_| BackendError::Coded {
-                code: "policy.config.unknown_filter_set".to_owned(),
-                params: Some(json!({ "filter_set_id": set.as_str() })),
-            })?;
+            .map_err(|err| backend_error(engine_error(err, set.as_str())))?;
         Ok(TempAllowResult {
             created_at: rfc3339(now),
             expires_at: rfc3339(until),
-            filter_set_id: set_name(params.filter_set_id.as_deref()),
+            filter_set_id: set.as_str().to_owned(),
         })
     }
 
     async fn add_custom_rule(&self, params: AddRuleParams) -> Result<AddRuleResult, BackendError> {
-        let now = SystemTime::now();
-        let expires_at = now + Duration::from_secs(params.lifetime_seconds);
-        let rule_text = format!(
-            "{}{}^",
-            if params.include_subdomains { "||" } else { "|" },
-            params.domain
-        );
+        let (domain, rule_text) = canonical_block_rule(&params.domain, params.include_subdomains)
+            .map_err(backend_error)?;
+        let set = parse_set(params.filter_set_id.as_deref()).map_err(backend_error)?;
+        let lifetime = self.inner.mcp_config.max_block_rule_lifetime;
+        let requested = Duration::from_secs(params.lifetime_seconds);
+        if requested.is_zero() || requested > lifetime {
+            return Err(backend_error(duration_exceeds(requested, lifetime)));
+        }
+        let now = self.inner.clock.now();
+        let expires_at = now + requested;
+
+        let service = self.config_service()?;
+        let rule_id = crate::query_log::new_id().map_err(backend_error)?;
+        let created_secs = crate::clock::unix_seconds(now);
+        let expires_secs = crate::clock::unix_seconds(expires_at);
+        let cap = self.inner.mcp_config.max_custom_rules_per_set as usize;
+        let include = params.include_subdomains;
+        let issuer = self.inner.oidc_issuer.clone();
+        let extra = self.inner.mcp_config.protected_domains.clone();
+        // Protected coverage and the cap are both evaluated against the
+        // snapshot read under the apply lock, not a stale pre-lock copy.
+        let version = service
+            .mutate_unrecorded(|snapshot| {
+                let protected = protected_for(Some(snapshot), issuer.as_deref(), extra)?;
+                reject_protected(&protected, domain.as_str(), include)?;
+                add_rule_to_snapshot(
+                    snapshot,
+                    &set,
+                    &domain,
+                    include,
+                    &rule_id,
+                    created_secs,
+                    expires_secs,
+                    // The mcp layer owns the token id and audits with it; the
+                    // AddRuleParams DTO does not carry it (see M24 report).
+                    "",
+                    cap,
+                    now,
+                )?;
+                Ok(true)
+            })
+            .await
+            .map_err(backend_error)?;
+        let version = version
+            .and_then(|version| u64::try_from(version).ok())
+            .ok_or_else(|| BackendError::Internal {
+                message: "custom-rule mutation stored no config version".into(),
+            })?;
         Ok(AddRuleResult {
-            rule_id: String::new(),
+            rule_id,
             rule_text,
-            filter_set_id: set_name(params.filter_set_id.as_deref()),
+            filter_set_id: set.as_str().to_owned(),
             created_at: rfc3339(now),
             expires_at: rfc3339(expires_at),
-            config_version: None,
+            config_version: Some(version),
         })
     }
 
     async fn find_mcp_rule(
         &self,
-        _domain: &str,
-        _filter_set_id: Option<&str>,
+        domain: &str,
+        filter_set_id: Option<&str>,
     ) -> Result<Option<dnscraft_mcp::dto::McpRuleInfo>, BackendError> {
-        Ok(None)
+        let set = parse_set(filter_set_id).map_err(backend_error)?;
+        let domain =
+            DomainName::parse(domain).map_err(|_| code_err("filter_name.invalid_char", domain))?;
+        let Some(snapshot) = self.current_snapshot().await? else {
+            return Ok(None);
+        };
+        let rule = find_stored_rule(&snapshot, &set, &domain).map_err(backend_error)?;
+        Ok(rule.and_then(|rule| stored_rule_info(rule, set.as_str())))
     }
 
     async fn remove_custom_rule(
         &self,
         params: RemoveRuleParams,
     ) -> Result<RemoveRuleResult, BackendError> {
+        let set = parse_set(params.filter_set_id.as_deref()).map_err(backend_error)?;
+        let domain = DomainName::parse(&params.domain)
+            .map_err(|_| code_err("filter_name.invalid_char", &params.domain))?;
+        let service = self.config_service()?;
+        let issuer = self.inner.oidc_issuer.clone();
+        let extra = self.inner.mcp_config.protected_domains.clone();
+        let version = service
+            .mutate_unrecorded(|snapshot| {
+                let protected = protected_for(Some(snapshot), issuer.as_deref(), extra)?;
+                remove_rule_from_snapshot(snapshot, &set, &domain, &protected)
+            })
+            .await
+            .map_err(backend_error)?;
+        let removed = version.is_some();
+        let config_version = version
+            .map(|version| {
+                u64::try_from(version).map_err(|_| BackendError::Internal {
+                    message: "negative config version".into(),
+                })
+            })
+            .transpose()?;
         Ok(RemoveRuleResult {
-            removed: true,
-            filter_set_id: set_name(params.filter_set_id.as_deref()),
-            config_version: None,
+            removed,
+            filter_set_id: set.as_str().to_owned(),
+            config_version,
         })
     }
 
     async fn pause_filter_set(&self, params: PauseParams) -> Result<PauseResult, BackendError> {
-        let set = resolve_set(params.filter_set_id.as_deref());
+        if let Some(error) = duration_error(
+            params.duration.seconds(),
+            self.inner.mcp_config.max_pause_duration,
+        ) {
+            return Err(backend_error(error));
+        }
+        let set = parse_set(params.filter_set_id.as_deref()).map_err(backend_error)?;
         let until = self.inner.clock.now() + duration_secs(params.duration);
         self.filter_engine()?
             .set_paused_until(&set, Some(until))
-            .map_err(|_| BackendError::Coded {
-                code: "policy.config.unknown_filter_set".to_owned(),
-                params: Some(json!({ "filter_set_id": set.as_str() })),
-            })?;
+            .map_err(|err| backend_error(engine_error(err, set.as_str())))?;
         Ok(PauseResult {
-            filter_set_id: set_name(params.filter_set_id.as_deref()),
+            filter_set_id: set.as_str().to_owned(),
             paused_until: rfc3339(until),
         })
     }
@@ -999,16 +1453,14 @@ impl McpBackend for ControlMcpBackend {
         &self,
         filter_set_id: Option<&str>,
     ) -> Result<ResumeResult, BackendError> {
-        let set = resolve_set(filter_set_id);
-        let was = self.filter_engine()?.paused_until(&set).map(rfc3339);
-        self.filter_engine()?
+        let set = parse_set(filter_set_id).map_err(backend_error)?;
+        let filter = self.filter_engine()?;
+        let was = filter.paused_until(&set).map(rfc3339);
+        filter
             .set_paused_until(&set, None)
-            .map_err(|_| BackendError::Coded {
-                code: "policy.config.unknown_filter_set".to_owned(),
-                params: Some(json!({ "filter_set_id": set.as_str() })),
-            })?;
+            .map_err(|err| backend_error(engine_error(err, set.as_str())))?;
         Ok(ResumeResult {
-            filter_set_id: set_name(filter_set_id),
+            filter_set_id: set.as_str().to_owned(),
             resumed: was.is_some(),
             was_paused_until: was,
         })
@@ -1022,7 +1474,11 @@ impl McpBackend for ControlMcpBackend {
             AuditResult::Success => "success".to_owned(),
             AuditResult::Error => "error".to_owned(),
         };
-        let _version = audit
+        // The audit DTO has no `config_version` field. A committed add/remove
+        // reports its new version inside `after`, so lift it into the stored
+        // record instead of losing it.
+        let config_version = entry.after.get("config_version").and_then(Value::as_i64);
+        audit
             .record_config_change(crate::audit::ConfigChangeRecord {
                 node_id: self.inner.node_id.clone(),
                 actor_id: entry.actor_id,
@@ -1030,7 +1486,7 @@ impl McpBackend for ControlMcpBackend {
                 action: entry.action,
                 before: entry.before,
                 after: Some(entry.after),
-                config_version: None,
+                config_version,
                 result,
                 error_code: entry.error_code,
             })

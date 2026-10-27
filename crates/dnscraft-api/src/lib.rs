@@ -50,7 +50,7 @@ pub use config::{
 pub use config_apply::{ConfigActor, ConfigService, RollbackOutcome, SharedConfigService};
 pub use error::ControlApiError;
 #[doc(hidden)]
-pub use mcp_backend::mcp_backend_for_test;
+pub use mcp_backend::{mcp_backend_for_test, mcp_backend_for_test_writes};
 pub use modules::{
     ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyTls, ModuleAppliers,
     ModuleFuture,

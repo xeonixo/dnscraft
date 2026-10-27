@@ -249,6 +249,41 @@ impl ConfigService {
             .map(Some)
     }
 
+    /// Same atomic apply path as [`Self::mutate`] but without an audit record.
+    ///
+    /// The MCP write tools audit through [`crate::mcp_backend`] with the
+    /// token-scoped entry the `dnscraft-mcp` layer supplies, so an internal
+    /// audit here would duplicate every mutation. The apply lock is still held
+    /// across read, mutation, validation, apply and store.
+    ///
+    /// `mutate` must return `Ok(false)` when it made no change; that stores no
+    /// version. `Ok(true)` takes the same validate → apply → store path as
+    /// [`Self::replace`], minus the audit record.
+    pub(crate) async fn mutate_unrecorded<F>(
+        &self,
+        mutate: F,
+    ) -> Result<Option<i64>, ControlApiError>
+    where
+        F: FnOnce(&mut Value) -> Result<bool, ControlApiError>,
+    {
+        let _guard = self.apply_lock.lock().await;
+        let current_version = self.store.current().await?;
+        let previous = match current_version {
+            Some(version) => self.store.load(version).await?,
+            None => None,
+        };
+        let mut snapshot = previous.clone().unwrap_or_else(empty_snapshot);
+        match mutate(&mut snapshot) {
+            Ok(true) => {}
+            Ok(false) => return Ok(None),
+            Err(err) => return Err(err),
+        }
+        let version = self
+            .validate_apply_store(&snapshot, previous.as_ref())
+            .await?;
+        Ok(Some(version))
+    }
+
     /// Shared validate → apply → store → audit path used by [`Self::replace`]
     /// and [`Self::mutate`].
     async fn commit(
@@ -259,58 +294,49 @@ impl ConfigService {
         previous: Option<&Value>,
         snapshot: &Value,
     ) -> Result<i64, ControlApiError> {
-        if let Err(err) = validate_cross_module(snapshot) {
-            self.record(
-                actor,
-                action,
-                previous_version,
-                previous,
-                Some(snapshot),
-                "error",
-                Some(err.code()),
-            )
-            .await;
-            return Err(err);
+        match self.validate_apply_store(snapshot, previous).await {
+            Ok(version) => {
+                self.record(
+                    actor,
+                    action,
+                    Some(version),
+                    previous,
+                    Some(snapshot),
+                    "ok",
+                    None,
+                )
+                .await;
+                Ok(version)
+            }
+            Err(err) => {
+                self.record(
+                    actor,
+                    action,
+                    previous_version,
+                    previous,
+                    Some(snapshot),
+                    "error",
+                    Some(err.code()),
+                )
+                .await;
+                Err(err)
+            }
         }
-        if let Err(err) = self.validate_modules(snapshot) {
-            self.record(
-                actor,
-                action,
-                previous_version,
-                previous,
-                Some(snapshot),
-                "error",
-                Some(err.code()),
-            )
-            .await;
-            return Err(err);
-        }
-        if let Err(err) = self.apply_with_replay(snapshot, previous).await {
-            self.record(
-                actor,
-                action,
-                previous_version,
-                previous,
-                Some(snapshot),
-                "error",
-                Some(err.code()),
-            )
-            .await;
-            return Err(err);
-        }
+    }
 
-        let version = self.store.store(snapshot).await?;
-        self.record(
-            actor,
-            action,
-            Some(version),
-            previous,
-            Some(snapshot),
-            "ok",
-            None,
-        )
-        .await;
-        Ok(version)
+    /// Validates and applies `snapshot`, then stores it as a new version.
+    ///
+    /// Apply failures replay `previous` for the modules already touched; the
+    /// failing module's error is returned unchanged.
+    async fn validate_apply_store(
+        &self,
+        snapshot: &Value,
+        previous: Option<&Value>,
+    ) -> Result<i64, ControlApiError> {
+        validate_cross_module(snapshot)?;
+        self.validate_modules(snapshot)?;
+        self.apply_with_replay(snapshot, previous).await?;
+        self.store.store(snapshot).await
     }
 
     /// Restores a stored version through the same atomic apply path.
