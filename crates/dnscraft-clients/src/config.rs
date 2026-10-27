@@ -43,6 +43,8 @@ pub enum TlsMode {
     Pin([u8; 32]),
     /// Trust a CA (or chain) loaded from this PEM file.
     CaFile(PathBuf),
+    /// Verify against the operating system's CA bundle (the default).
+    Secure,
     /// Accept any certificate. Opt-in only; never the default.
     Insecure,
 }
@@ -106,8 +108,8 @@ impl Default for UnifiConfig {
             site_id: None,
             poll_interval: DEFAULT_POLL_INTERVAL,
             classic_clients: true,
-            // Placeholder; validate rejects enabled UniFi without a real mode set by the caller.
-            tls: TlsMode::Insecure,
+            // Verify against the system CA bundle. Insecure is opt-in only.
+            tls: TlsMode::Secure,
         }
     }
 }
@@ -227,15 +229,16 @@ impl ClientsConfig {
             }
         }
         match &self.unifi.tls {
-            TlsMode::Pin(_) => {}
+            TlsMode::Pin(_) | TlsMode::Secure => {}
             TlsMode::CaFile(path) => {
                 if path.as_os_str().is_empty() {
                     return Err(ClientsError::config("unifi.ca_file is empty"));
                 }
             }
             TlsMode::Insecure => {
-                // Allowed only when explicitly configured; callers must set it.
-                // Engine will warn on apply (C8).
+                // Allowed only when explicitly configured. The default is
+                // `Secure`, so reaching this arm means the caller opted in.
+                // Engine warns when the TLS client is built.
             }
         }
         let _ = lookup(UNIFI_API_KEY_ENV)?;
@@ -303,29 +306,40 @@ pub(crate) fn normalise_domain(input: &str) -> Result<String, ClientsError> {
 }
 
 fn check_https_url(url: &str, allow_http_for_tests: bool, field: &str) -> Result<(), ClientsError> {
-    let lower = url.trim().to_ascii_lowercase();
-    let rest = if let Some(r) = lower.strip_prefix("https://") {
-        r
-    } else if allow_http_for_tests {
-        if let Some(r) = lower.strip_prefix("http://") {
-            if !is_loopback_host_str(r) {
-                return Err(ClientsError::config(format!(
-                    "{field} http:// is only allowed for loopback in tests"
-                )));
-            }
-            r
-        } else {
-            return Err(ClientsError::config(format!(
-                "{field} must be an https:// URL"
-            )));
-        }
-    } else {
+    let trimmed = url.trim();
+    let parsed = reqwest::Url::parse(trimmed)
+        .map_err(|e| ClientsError::config(format!("{field} is not a valid URL: {e}")))?;
+    let loopback_http = allow_http_for_tests
+        && parsed.scheme() == "http"
+        && parsed.host_str().is_some_and(is_loopback_host_str);
+    if parsed.scheme() != "https" && !loopback_http {
         return Err(ClientsError::config(format!(
             "{field} must be an https:// URL"
         )));
-    };
-    if rest.is_empty() || rest.starts_with('/') || rest.chars().any(char::is_whitespace) {
+    }
+    let Some(host) = parsed.host_str() else {
         return Err(ClientsError::config(format!("{field} has no valid host")));
+    };
+    if host.is_empty() {
+        return Err(ClientsError::config(format!("{field} has no valid host")));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(ClientsError::config(format!(
+            "{field} must not include credentials"
+        )));
+    }
+    if parsed.port() == Some(0) {
+        return Err(ClientsError::config(format!("{field} has an invalid port")));
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(ClientsError::config(format!(
+            "{field} must not include a query or fragment"
+        )));
+    }
+    if parsed.path() != "/" {
+        return Err(ClientsError::config(format!(
+            "{field} must be an origin URL without a path"
+        )));
     }
     Ok(())
 }
@@ -487,5 +501,64 @@ mod tests {
         cfg.allow_http_for_tests = true;
         cfg.unifi.base_url = "http://127.0.0.1:8443".into();
         cfg.validate_with_secret(ok_secret).expect("loopback http");
+    }
+
+    #[test]
+    fn default_tls_is_secure_not_insecure() {
+        let cfg = UnifiConfig::default();
+        assert_eq!(cfg.tls, TlsMode::Secure);
+        assert!(!matches!(cfg.tls, TlsMode::Insecure));
+    }
+
+    #[test]
+    fn enabled_config_with_defaults_does_not_use_insecure_tls() {
+        // `..Default::default()` must never opt into skip-verify.
+        let mut cfg = ClientsConfig {
+            unifi: UnifiConfig {
+                enabled: true,
+                base_url: "https://192.0.2.1".into(),
+                ..UnifiConfig::default()
+            },
+            ..ClientsConfig::default()
+        };
+        assert_eq!(cfg.unifi.tls, TlsMode::Secure);
+        cfg.validate_with_secret(ok_secret)
+            .expect("secure default is valid");
+    }
+
+    #[test]
+    fn explicit_insecure_tls_is_accepted() {
+        let mut cfg = example_config();
+        cfg.unifi.tls = TlsMode::Insecure;
+        cfg.validate_with_secret(ok_secret)
+            .expect("insecure is an explicit opt-in");
+    }
+
+    #[test]
+    fn malformed_or_unsafe_urls_rejected() {
+        for bad in [
+            "https://192.0.2.1/path",
+            "https://192.0.2.1?query=1",
+            "https://192.0.2.1#frag",
+            "https://user:pass@192.0.2.1",
+            "https://192.0.2.1:0",
+            "https://192.0.2.1:99999",
+            "https://",
+            "https://exa mple.example.com",
+        ] {
+            let mut cfg = example_config();
+            cfg.unifi.base_url = bad.into();
+            let err = cfg
+                .validate_with_secret(ok_secret)
+                .expect_err("malformed URL must be rejected");
+            assert_eq!(err.code(), "clients.config.invalid", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn ipv6_origin_url_accepted() {
+        let mut cfg = example_config();
+        cfg.unifi.base_url = "https://[2001:db8::1]:8443".into();
+        cfg.validate_with_secret(ok_secret).expect("ipv6 origin");
     }
 }

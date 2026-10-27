@@ -36,7 +36,8 @@ any certificate”.
 | Mode | When |
 |------|------|
 | `TlsMode::Pin([u8; 32])` | Preferred for self-signed |
-| `TlsMode::CaFile(path)` | Admin-installed CA / system trust |
+| `TlsMode::CaFile(path)` | Admin-installed CA bundle |
+| `TlsMode::Secure` | Default; verify against the OS CA bundle |
 | `TlsMode::Insecure` | Opt-in escape hatch only; logs `clients.tls.insecure` |
 
 Pin mismatch → `clients.tls.untrusted` (fail closed).

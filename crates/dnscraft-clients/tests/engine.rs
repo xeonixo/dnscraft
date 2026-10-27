@@ -692,6 +692,101 @@ async fn disable_unifi_clears_unifi_clients_keeps_manuals() {
 }
 
 #[tokio::test]
+async fn disabled_startup_does_not_serve_cached_unifi() {
+    // GC3: cached observations/networks used to be merged even when UniFi was
+    // disabled, so a manual-only engine still answered with stale UniFi rows.
+    let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+    seed(&mock).await;
+    let clock = Arc::new(ManualClock::new(start()));
+    let data = unique_data_dir();
+
+    let eng1 = ClientEngine::new_with_secret(
+        cfg_for(&mock, Duration::from_secs(3600)),
+        data.clone(),
+        Arc::clone(&clock) as Arc<_>,
+        Some(Secret::new(API_KEY)),
+    )
+    .unwrap();
+    eng1.sync_now().await.unwrap();
+    let phone = IpAddr::from_str("198.51.100.10").unwrap();
+    assert!(eng1.lookup().by_ip(phone).is_some());
+    drop(eng1);
+
+    let mut disabled = cfg_for(&mock, Duration::from_secs(3600));
+    disabled.unifi.enabled = false;
+    let eng2 =
+        ClientEngine::new_with_secret(disabled, data.clone(), Arc::clone(&clock) as Arc<_>, None)
+            .unwrap();
+
+    // Check before any await: the background task has not run yet, so this is
+    // the startup snapshot.
+    assert!(
+        eng2.lookup().by_ip(phone).is_none(),
+        "cached UniFi must not be served"
+    );
+    assert_eq!(unifi_client_count(&eng2), 0);
+    assert!(
+        eng2.lookup()
+            .by_ip(IpAddr::from_str("198.51.100.50").unwrap())
+            .is_some(),
+        "manual printer must remain"
+    );
+
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+async fn apply_config_enabling_unifi_reads_secret_at_apply_time() {
+    // GC4: the key used to be read only at construction. An engine started
+    // with UniFi disabled had no key, so enabling via apply_config always
+    // failed. The apply path must load the secret afresh.
+    let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+    seed(&mock).await;
+    let clock = Arc::new(ManualClock::new(start()));
+    let data = unique_data_dir();
+
+    let mut disabled = cfg_for(&mock, Duration::from_secs(3600));
+    disabled.unifi.enabled = false;
+    let eng = ClientEngine::new_with_secret(disabled, data.clone(), clock, None).unwrap();
+    assert_eq!(unifi_client_count(&eng), 0);
+
+    let enabled = cfg_for(&mock, Duration::from_secs(3600));
+    eng.apply_config_with_secret(enabled, |_| Ok(Secret::new(API_KEY)))
+        .await
+        .unwrap();
+
+    // The freshly loaded key was stored for sync.
+    eng.sync_now().await.unwrap();
+    assert_eq!(unifi_client_count(&eng), 1);
+
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+async fn apply_config_reports_missing_secret_when_enabling_without_one() {
+    let clock = Arc::new(ManualClock::new(start()));
+    let data = unique_data_dir();
+    let mut disabled = ClientsConfig::default();
+    disabled.unifi.enabled = false;
+    let eng = ClientEngine::new_with_secret(disabled, data.clone(), clock, None).unwrap();
+
+    let mut enabled = ClientsConfig::default();
+    enabled.unifi.enabled = true;
+    enabled.unifi.base_url = "https://192.0.2.1".into();
+    let err = eng
+        .apply_config_with_secret(enabled, |name| {
+            Err(dnscraft_clients::ClientsError::SecretMissing {
+                name: name.to_owned(),
+            })
+        })
+        .await
+        .expect_err("no secret");
+    assert_eq!(err.code(), "clients.secret.missing");
+
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
 async fn disable_unifi_during_slow_sync_discards_stale_fetch() {
     // Claude C12 probe: delay 400 ms, sync_now in flight, apply_config with
     // unifi.enabled = false → UniFi count must be 0 after apply and after the

@@ -492,3 +492,58 @@ fn too_many_clients_hard_cap() {
     let err = build(&[], &obs_list, &[], &State::default(), &cfg(), now).unwrap_err();
     assert_eq!(err.code(), "clients.too_many");
 }
+
+#[test]
+fn manual_ids_stable_across_reorder_and_restart() {
+    // GC6: ids used to be `manual-{index}`, so reordering shifted every id and
+    // could mis-attach persisted labels.
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(60_000);
+    let phone = manual_ip("phone", "198.51.100.10");
+    let printer = manual_ip("printer", "198.51.100.11");
+
+    let out1 = build(
+        &[phone.clone(), printer.clone()],
+        &[],
+        &[],
+        &State::default(),
+        &cfg(),
+        now,
+    )
+    .unwrap();
+    let phone_id = out1.lookup.by_name("phone.home.arpa").unwrap().id.clone();
+    let printer_id = out1.lookup.by_name("printer.home.arpa").unwrap().id.clone();
+    assert!(phone_id.as_str().starts_with("manual-"));
+    assert_ne!(phone_id, printer_id);
+
+    // Reverse order, same persisted state (simulated restart + reorder).
+    let out2 = build(&[printer, phone], &[], &[], &out1.state, &cfg(), now).unwrap();
+    assert_eq!(
+        out2.lookup.by_name("phone.home.arpa").unwrap().id.as_str(),
+        phone_id.as_str()
+    );
+    assert_eq!(
+        out2.lookup
+            .by_name("printer.home.arpa")
+            .unwrap()
+            .id
+            .as_str(),
+        printer_id.as_str()
+    );
+}
+
+#[test]
+fn manual_link_local_ip_is_not_indexed() {
+    // GC13: link-local exclusion applies to manuals too.
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(70_000);
+    let out = build(
+        &[manual_ip("v6-manual", "fe80::1234")],
+        &[],
+        &[],
+        &State::default(),
+        &cfg(),
+        now,
+    )
+    .unwrap();
+    assert!(out.lookup.by_ip(ip("fe80::1234")).is_none());
+    assert!(out.lookup.by_name("v6-manual.home.arpa").is_some());
+}

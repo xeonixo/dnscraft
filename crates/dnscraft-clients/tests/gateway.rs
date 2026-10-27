@@ -5,7 +5,6 @@
 #[path = "support/mock_gateway.rs"]
 mod mock_gateway;
 
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -220,9 +219,9 @@ async fn gateway_debug_redacts_key() {
 
 #[test]
 fn insecure_is_not_enabled_by_default() {
-    // Default UnifiConfig uses Insecure only as a placeholder while disabled;
-    // enabling UniFi without an explicit pin/CA is a deliberate admin choice.
+    // GC2: the default must verify certificates; skip-verify is opt-in only.
     let cfg = UnifiConfig::default();
     assert!(!cfg.enabled);
-    let _ = PathBuf::new();
+    assert_eq!(cfg.tls, TlsMode::Secure);
+    assert!(!matches!(cfg.tls, TlsMode::Insecure));
 }

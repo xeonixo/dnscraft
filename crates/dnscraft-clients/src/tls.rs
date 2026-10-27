@@ -1,7 +1,7 @@
 //! TLS client configuration for the UniFi gateway.
 //!
 //! Builds a rustls [`ClientConfig`] (ring provider) for each [`TlsMode`]:
-//! pin (SHA-256 of leaf DER), CA-file roots, or opt-in insecure.
+//! pin (SHA-256 of leaf DER), CA-file roots, system roots, or opt-in insecure.
 
 use std::fs;
 use std::sync::Arc;
@@ -22,6 +22,13 @@ use crate::error::ClientsError;
 
 /// Stable code logged when [`TlsMode::Insecure`] is applied.
 pub const INSECURE_WARN_CODE: &str = "clients.tls.insecure";
+
+/// CA bundle paths tried for [`TlsMode::Secure`], in order of preference.
+const SYSTEM_CA_BUNDLES: &[&str] = &[
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/cert.pem",
+];
 
 /// SHA-256 of a certificate's DER encoding (32 bytes). Used for pin bootstrap.
 pub fn leaf_sha256(der: &[u8]) -> [u8; 32] {
@@ -73,16 +80,9 @@ pub fn build_client_config(mode: &TlsMode) -> Result<ClientConfig, ClientsError>
                     path.display()
                 )));
             }
-            let verifier =
-                WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone())
-                    .build()
-                    .map_err(|e| ClientsError::config(format!("ca verifier: {e}")))?;
-            Ok(ClientConfig::builder_with_provider(provider)
-                .with_safe_default_protocol_versions()
-                .map_err(|e| ClientsError::config(format!("tls protocol versions: {e}")))?
-                .with_webpki_verifier(verifier)
-                .with_no_client_auth())
+            with_webpki_roots(roots, provider)
         }
+        TlsMode::Secure => with_webpki_roots(system_roots()?, provider),
         TlsMode::Insecure => {
             warn!(
                 code = INSECURE_WARN_CODE,
@@ -99,6 +99,39 @@ pub fn build_client_config(mode: &TlsMode) -> Result<ClientConfig, ClientsError>
                 .with_no_client_auth())
         }
     }
+}
+
+fn with_webpki_roots(
+    roots: RootCertStore,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+) -> Result<ClientConfig, ClientsError> {
+    let verifier = WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+        .build()
+        .map_err(|e| ClientsError::config(format!("ca verifier: {e}")))?;
+    Ok(ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| ClientsError::config(format!("tls protocol versions: {e}")))?
+        .with_webpki_verifier(verifier)
+        .with_no_client_auth())
+}
+
+/// Loads the first system CA bundle that contains certificates.
+fn system_roots() -> Result<RootCertStore, ClientsError> {
+    for path in SYSTEM_CA_BUNDLES {
+        let Ok(pem) = fs::read(path) else {
+            continue;
+        };
+        let mut roots = RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(&pem).flatten() {
+            let _ = roots.add(cert);
+        }
+        if !roots.is_empty() {
+            return Ok(roots);
+        }
+    }
+    Err(ClientsError::config(
+        "no system CA bundle found; set unifi.tls to pin or ca_file",
+    ))
 }
 
 /// Pin verifier: leaf DER SHA-256 must match; handshake signatures still checked.

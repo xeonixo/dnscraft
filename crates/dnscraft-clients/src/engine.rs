@@ -25,7 +25,7 @@ use crate::secret::Secret;
 use crate::state::State;
 use crate::status::ClientsStatus;
 use crate::sync::{self, SyncResult};
-use crate::types::ClientSource;
+use crate::types::{ClientSource, MacAddr};
 use tracing::warn;
 
 /// Base backoff after a 429 / 5xx (doubles each consecutive failure).
@@ -168,30 +168,48 @@ impl ClientEngine {
         });
 
         let (lookup, state, obs, nets, from_cache) = if let Some(payload) = cached {
-            match merge::build(
-                &config.manual,
-                &payload.observations,
-                &payload.networks,
-                &payload.state,
-                &config,
-                now,
-            ) {
-                Ok(built) => (
-                    built.lookup,
-                    built.state,
-                    payload.observations,
-                    payload.networks,
-                    true,
-                ),
-                Err(e) => {
-                    warn!(
-                        code = e.code(),
-                        "clients cache merge failed; starting manuals-only"
-                    );
-                    let built =
-                        merge::build(&config.manual, &[], &[], &State::default(), &config, now)?;
-                    (built.lookup, built.state, Vec::new(), Vec::new(), false)
+            if config.unifi.enabled {
+                match merge::build(
+                    &config.manual,
+                    &payload.observations,
+                    &payload.networks,
+                    &payload.state,
+                    &config,
+                    now,
+                ) {
+                    Ok(built) => (
+                        built.lookup,
+                        built.state,
+                        payload.observations,
+                        payload.networks,
+                        true,
+                    ),
+                    Err(e) => {
+                        warn!(
+                            code = e.code(),
+                            "clients cache merge failed; starting manuals-only"
+                        );
+                        let built = merge::build(
+                            &config.manual,
+                            &[],
+                            &[],
+                            &State::default(),
+                            &config,
+                            now,
+                        )?;
+                        (built.lookup, built.state, Vec::new(), Vec::new(), false)
+                    }
                 }
+            } else {
+                // UniFi disabled: cached observations/networks must not be
+                // served. Keep first-seen labels only; drop retained inventory
+                // so it cannot resurrect UniFi clients.
+                let mut prev = payload.state;
+                prev.retained.clear();
+                prev.last_unifi.clear();
+                prev.ipv6_last_seen.clear();
+                let built = merge::build(&config.manual, &[], &[], &prev, &config, now)?;
+                (built.lookup, built.state, Vec::new(), Vec::new(), false)
             }
         } else {
             let built = merge::build(&config.manual, &[], &[], &State::default(), &config, now)?;
@@ -317,26 +335,41 @@ impl ClientEngine {
     /// **labels** in [`State`] are kept so a later re-enable can reuse them;
     /// retained-offline inventory / IPv6 TTL maps are dropped with the
     /// observations (they would otherwise reappear as UniFi clients).
-    pub async fn apply_config(&self, mut config: ClientsConfig) -> Result<(), ClientsError> {
+    pub async fn apply_config(&self, config: ClientsConfig) -> Result<(), ClientsError> {
+        self.apply_config_with_secret(config, crate::secret::read_secret)
+            .await
+    }
+
+    /// Like [`Self::apply_config`], but uses `lookup` for the UniFi API key.
+    ///
+    /// Tests inject a fake lookup so they never mutate process environment.
+    /// When UniFi is being enabled the key is re-read through `lookup`; a key
+    /// loaded at construction is used only as a fallback.
+    pub async fn apply_config_with_secret(
+        &self,
+        mut config: ClientsConfig,
+        lookup: impl FnOnce(&str) -> Result<Secret, ClientsError>,
+    ) -> Result<(), ClientsError> {
         let _guard = self.inner.sync_lock.lock().await;
 
-        if config.unifi.enabled {
-            let key_guard = self
+        let fresh_key = if config.unifi.enabled {
+            let stored = self
                 .inner
                 .api_key
                 .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Some(k) = key_guard.as_ref() else {
-                return Err(ClientsError::SecretMissing {
-                    name: crate::secret::UNIFI_API_KEY_ENV.into(),
-                });
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let key = match lookup(crate::secret::UNIFI_API_KEY_ENV) {
+                Ok(k) => k,
+                Err(e) => stored.ok_or(e)?,
             };
-            let key = k.clone();
-            drop(key_guard);
-            config.validate_with_secret(move |_| Ok(key))?;
+            let for_validate = key.clone();
+            config.validate_with_secret(move |_| Ok(for_validate))?;
+            Some(key)
         } else {
             config.validate_with_secret(|_| Ok(Secret::new("unused")))?;
-        }
+            None
+        };
 
         let now = self.inner.clock.now();
         let unifi_on = config.unifi.enabled;
@@ -390,6 +423,13 @@ impl ClientEngine {
             .config
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = config;
+        if let Some(key) = fresh_key {
+            *self
+                .inner
+                .api_key
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(key);
+        }
         if unifi_changed {
             *self
                 .inner
@@ -866,8 +906,11 @@ fn hash_content(obs: &[UnifiObservation], nets: &[NetworkInfo], lookup: &ClientL
     obs_order.len().hash(&mut h);
     for o in obs_order {
         o.id.as_str().hash(&mut h);
+        o.display_name.hash(&mut h);
         o.online.hash(&mut h);
         o.network_id.hash(&mut h);
+        o.last_seen.hash(&mut h);
+        hash_macs(&o.macs, &mut h);
         let mut addrs = o.addresses.clone();
         addrs.sort();
         for a in addrs {
@@ -878,8 +921,11 @@ fn hash_content(obs: &[UnifiObservation], nets: &[NetworkInfo], lookup: &ClientL
     net_order.sort_by(|a, b| a.id.cmp(&b.id));
     for n in net_order {
         n.id.hash(&mut h);
+        n.name.hash(&mut h);
         n.domain_name.hash(&mut h);
         n.vlan_id.hash(&mut h);
+        n.ipv4_prefix.hash(&mut h);
+        n.ipv6_prefix.hash(&mut h);
     }
     // Fold lookup (manuals) with sorted clients so order never flaps.
     hash_lookup_into(lookup, &mut h);
@@ -892,14 +938,32 @@ fn hash_lookup_into(lookup: &ClientLookup, h: &mut DefaultHasher) {
     clients.len().hash(h);
     for c in clients {
         c.id.as_str().hash(h);
+        c.display_name.hash(h);
         c.dns_label.hash(h);
         c.local_domain.hash(h);
+        c.source.hash(h);
         c.online.hash(h);
+        c.last_seen.hash(h);
+        hash_macs(&c.macs, h);
+        c.vlan.is_some().hash(h);
+        if let Some(v) = &c.vlan {
+            v.id.hash(h);
+            v.name.hash(h);
+            v.domain_name.hash(h);
+        }
         let mut addrs: Vec<_> = c.addresses.iter().copied().collect();
         addrs.sort();
         for a in addrs {
             a.hash(h);
         }
+    }
+}
+
+fn hash_macs(macs: &[MacAddr], h: &mut DefaultHasher) {
+    let mut octets: Vec<[u8; 6]> = macs.iter().map(MacAddr::octets).collect();
+    octets.sort_unstable();
+    for m in octets {
+        m.hash(h);
     }
 }
 
@@ -911,7 +975,172 @@ fn count_addresses(lookup: &ClientLookup) -> usize {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use std::net::IpAddr;
     use std::time::{Duration, SystemTime};
+
+    use crate::config::ClientsConfig;
+    use crate::merge::{self, NetworkInfo, UnifiObservation};
+    use crate::state::State;
+    use crate::types::{ClientId, MacAddr};
+
+    fn sample_obs() -> UnifiObservation {
+        UnifiObservation {
+            id: ClientId::new("u1").unwrap(),
+            display_name: "Phone".into(),
+            macs: vec![MacAddr::from_octets([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01])],
+            addresses: vec!["198.51.100.10".parse().unwrap()],
+            network_id: Some("n1".into()),
+            last_seen: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(10)),
+            online: true,
+        }
+    }
+
+    fn sample_net() -> NetworkInfo {
+        NetworkInfo {
+            id: "n1".into(),
+            name: "IoT".into(),
+            vlan_id: Some(40),
+            ipv4_prefix: Some("198.51.100.0/24".parse().unwrap()),
+            ipv6_prefix: None,
+            domain_name: Some("iot.example.com".into()),
+        }
+    }
+
+    fn build_lookup(obs: &UnifiObservation, net: &NetworkInfo) -> ClientLookup {
+        let cfg = ClientsConfig::default();
+        merge::build(
+            &[],
+            std::slice::from_ref(obs),
+            std::slice::from_ref(net),
+            &State::default(),
+            &cfg,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(100),
+        )
+        .unwrap()
+        .lookup
+    }
+
+    fn hash(obs: &[UnifiObservation], nets: &[NetworkInfo], lookup: &ClientLookup) -> u64 {
+        hash_content(obs, nets, lookup)
+    }
+
+    #[test]
+    fn hash_includes_observation_fields() {
+        let net = sample_net();
+        let base_obs = sample_obs();
+        let lookup = build_lookup(&base_obs, &net);
+        let base = hash(
+            std::slice::from_ref(&base_obs),
+            std::slice::from_ref(&net),
+            &lookup,
+        );
+
+        let mut renamed = base_obs.clone();
+        renamed.display_name = "Renamed".into();
+        assert_ne!(
+            base,
+            hash(
+                std::slice::from_ref(&renamed),
+                std::slice::from_ref(&net),
+                &lookup
+            )
+        );
+
+        let mut remac = base_obs.clone();
+        remac.macs = vec![MacAddr::from_octets([1, 2, 3, 4, 5, 6])];
+        assert_ne!(
+            base,
+            hash(
+                std::slice::from_ref(&remac),
+                std::slice::from_ref(&net),
+                &lookup
+            )
+        );
+
+        let mut reseen = base_obs;
+        reseen.last_seen = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(99));
+        assert_ne!(
+            base,
+            hash(
+                std::slice::from_ref(&reseen),
+                std::slice::from_ref(&net),
+                &lookup
+            )
+        );
+    }
+
+    #[test]
+    fn hash_includes_network_fields() {
+        let obs = sample_obs();
+        let base_net = sample_net();
+        let lookup = build_lookup(&obs, &base_net);
+        let base = hash(
+            std::slice::from_ref(&obs),
+            std::slice::from_ref(&base_net),
+            &lookup,
+        );
+
+        let mut renamed = base_net.clone();
+        renamed.name = "LAN".into();
+        assert_ne!(
+            base,
+            hash(
+                std::slice::from_ref(&obs),
+                std::slice::from_ref(&renamed),
+                &lookup
+            )
+        );
+
+        let mut reprefixed = base_net;
+        reprefixed.ipv4_prefix = Some("192.0.2.0/24".parse().unwrap());
+        assert_ne!(base, hash(&[obs], &[reprefixed], &lookup));
+    }
+
+    #[test]
+    fn hash_includes_lookup_client_fields() {
+        // Fold lookup-only fields (display name, MACs, last-seen, VLAN) with
+        // empty observations/networks so only `hash_lookup_into` can differ.
+        let net = sample_net();
+        let obs = sample_obs();
+        let base_lookup = build_lookup(&obs, &net);
+        let base = hash(&[], &[], &base_lookup);
+
+        let mut renamed = obs.clone();
+        renamed.display_name = "Renamed".into();
+        assert_ne!(base, hash(&[], &[], &build_lookup(&renamed, &net)));
+
+        let mut remac = obs.clone();
+        remac.macs = vec![MacAddr::from_octets([1, 2, 3, 4, 5, 6])];
+        assert_ne!(base, hash(&[], &[], &build_lookup(&remac, &net)));
+
+        let mut reseen = obs;
+        reseen.last_seen = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(99));
+        assert_ne!(base, hash(&[], &[], &build_lookup(&reseen, &net)));
+
+        let mut renamed_net = net;
+        renamed_net.name = "LAN".into();
+        assert_ne!(
+            base,
+            hash(&[], &[], &build_lookup(&sample_obs(), &renamed_net))
+        );
+    }
+
+    #[test]
+    fn hash_ignores_address_order() {
+        let net = sample_net();
+        let mut a = sample_obs();
+        a.addresses = vec![
+            IpAddr::from([198, 51, 100, 10]),
+            IpAddr::from([198, 51, 100, 11]),
+        ];
+        let mut b = a.clone();
+        b.addresses.reverse();
+        let lookup = build_lookup(&a, &net);
+        assert_eq!(
+            hash(&[a], std::slice::from_ref(&net), &lookup),
+            hash(&[b], &[net], &lookup)
+        );
+    }
 
     #[test]
     fn jitter_stays_within_ten_percent() {

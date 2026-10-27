@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use ipnet::IpNet;
+use ring::digest::{Context, SHA256};
 use tracing::warn;
 
 use crate::config::{ClientsConfig, LocalDomainMode, ManualEntry, normalise_domain};
@@ -186,7 +187,7 @@ pub fn build(
 
     for (i, entry) in manuals.iter().enumerate() {
         let idx = clients.len() as u32;
-        let id = ClientId::new(format!("manual-{i:04}"))?;
+        let id = manual_client_id(entry)?;
         let domain = match &entry.domain {
             Some(d) => {
                 let n = normalise_domain(d)?;
@@ -207,8 +208,13 @@ pub fn build(
 
         let addresses: Arc<[IpAddr]> = match (entry.ip, entry.cidr) {
             (Some(ip), None) => {
-                by_manual_ip.entry(ip).or_insert(idx);
-                Arc::from([ip].as_slice())
+                if is_link_local(ip) {
+                    // Spec: link-local IPv6 must not be indexed, manuals included.
+                    Arc::from(Vec::new())
+                } else {
+                    by_manual_ip.entry(ip).or_insert(idx);
+                    Arc::from([ip].as_slice())
+                }
             }
             (None, Some(net)) => {
                 cidrs.push((net, idx));
@@ -408,6 +414,33 @@ struct UnifiMeta {
     online: bool,
     last_seen: Option<SystemTime>,
     addresses: Vec<IpAddr>,
+}
+
+/// Stable manual client id derived from config data, so inserting, removing or
+/// reordering entries does not shift identities (and persisted labels).
+fn manual_client_id(entry: &ManualEntry) -> Result<ClientId, ClientsError> {
+    let mut ctx = Context::new(&SHA256);
+    ctx.update(entry.name.as_bytes());
+    ctx.update(b"\0");
+    if let Some(domain) = &entry.domain {
+        ctx.update(domain.as_bytes());
+    }
+    ctx.update(b"\0");
+    match (entry.ip, entry.cidr) {
+        (Some(ip), _) => ctx.update(ip.to_string().as_bytes()),
+        (None, Some(net)) => ctx.update(net.to_string().as_bytes()),
+        (None, None) => {
+            return Err(ClientsError::config(
+                "manual entry must have exactly one of ip or cidr",
+            ));
+        }
+    }
+    let digest = ctx.finish();
+    let hex: String = digest.as_ref()[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    ClientId::new(format!("manual-{hex}"))
 }
 
 fn assign_label(
