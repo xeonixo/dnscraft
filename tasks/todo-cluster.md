@@ -72,12 +72,12 @@
 ## Checkpoints
 
 - [ ] Checkpoint 0 — Phase 0 spec reconciliation owner-approved.
-- [ ] Checkpoint 1 — control-api hooks/admin/data-model green (`cargo test -p dnscraft-api`).
+- [x] Checkpoint 1 — control-api hooks/admin/data-model green (`cargo test -p dnscraft-api`, 300 tests).
 - [x] Checkpoint 2 — join + mTLS transport (loopback, happy path + wrong-CA/missing/unregistered/revoked).
-- [ ] Checkpoint 3 — config sync converges under partition.
-- [ ] Checkpoint 4 — relay exactly-once; queue survives restart; no role escalation.
-- [ ] Checkpoint 5 — dedupe/backfill/gap; stats node_id.
-- [ ] Checkpoint 6 — cert push + offline token auth + quotas.
+- [x] Checkpoint 3 — config sync converges under partition.
+- [x] Checkpoint 4 — relay exactly-once; queue survives restart; no role escalation.
+- [x] Checkpoint 5 — dedupe/backfill/gap; stats node_id.
+- [x] Checkpoint 6 — cert push + offline token auth + quotas.
 - [ ] Checkpoint F — independent security review + owner approval + archive.
 
 Final gates: `cargo fmt --check` · `clippy --workspace --all-targets --locked -- -D warnings` ·

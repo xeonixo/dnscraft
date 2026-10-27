@@ -32,8 +32,12 @@ no multi-entry.
   streaming/backfill, cert/auth push, quotas/skew, with loopback integration suites. CL26 added the
   `cluster_join_token` / `cluster_log_batch` / `cluster_config` fuzz targets, the crate README and
   the success-criteria traceability; CL25 added the threat-model security suite (`tests/security.rs`)
-  and the fault-injection matrix (`tests/injection.rs`). **Remaining:** CL6/CL7 (control-api admin
-  routes + status fields), CL15 (sub-node apply/TLS/auth-snapshot/DNS wiring), Checkpoint F.
+  and the fault-injection matrix (`tests/injection.rs`). CL6/CL7 (control-api admin routes + status
+  fields) and CL15 (sub-node apply + trait wiring + transport startup) are now also implemented in
+  `dnscraft-api` (`cluster.rs`, `cluster_status.rs`, `cluster_endpoints.rs`), including audit
+  `node_id`, relay surface and master broadcast. **Remaining:** Checkpoint 0 (owner spec approval)
+  and Checkpoint F (independent security review + owner approval + archive); minor flagged gaps:
+  MCP write-tool broadcast, initial auth-snapshot push on connect, offline-write read fields.
 - `control-api` (`dnscraft-api`) COMPLETE (A0–A14, Checkpoint F owner-approved). Already provides:
   - Atomic apply path: `ConfigService` (`config_apply.rs:107`; `replace`/`mutate`/`mutate_unrecorded`/
     `rollback` under a serial `apply_lock`; `APPLY_ORDER` = filtering→clients→policy→listeners→tls).
