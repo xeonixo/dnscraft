@@ -50,7 +50,7 @@ pub(crate) struct ListenerBody {
 }
 
 impl ListenerBody {
-    fn into_json(self) -> Result<Value, ControlApiError> {
+    pub(crate) fn into_json(self) -> Result<Value, ControlApiError> {
         if !valid_id(&self.id) {
             return Err(module_error(
                 "listeners.config.invalid",

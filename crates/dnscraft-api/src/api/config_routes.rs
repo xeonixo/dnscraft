@@ -272,7 +272,7 @@ pub(crate) struct ViewBody {
 }
 
 impl ViewBody {
-    fn into_json(self, path_id: &str) -> Result<Value, ControlApiError> {
+    pub(crate) fn into_json(self, path_id: &str) -> Result<Value, ControlApiError> {
         if let Some(body_id) = &self.id
             && body_id != path_id
         {
@@ -403,7 +403,7 @@ pub(crate) struct ProfileBody {
 }
 
 impl ProfileBody {
-    fn into_json(self, path_id: &str) -> Result<Value, ControlApiError> {
+    pub(crate) fn into_json(self, path_id: &str) -> Result<Value, ControlApiError> {
         if let Some(body_id) = &self.id
             && body_id != path_id
         {

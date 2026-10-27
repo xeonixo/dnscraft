@@ -63,7 +63,7 @@ pub(crate) struct FilterSetBody {
 }
 
 impl FilterSetBody {
-    fn into_json(self) -> Result<Value, ControlApiError> {
+    pub(crate) fn into_json(self) -> Result<Value, ControlApiError> {
         if !valid_id(&self.id) {
             return Err(module_error(
                 "filter_id.invalid_char",
@@ -198,7 +198,7 @@ fn default_true() -> bool {
 }
 
 impl FilterListBody {
-    fn into_json(self) -> Result<Value, ControlApiError> {
+    pub(crate) fn into_json(self) -> Result<Value, ControlApiError> {
         if !valid_id(&self.id) {
             return Err(module_error(
                 "filter_id.invalid_char",

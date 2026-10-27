@@ -121,6 +121,56 @@ pub struct HeartbeatResponse {
     pub warnings: Vec<StatusWarning>,
 }
 
+/// A cheaply cloneable handle to the master's volatile broadcast channel.
+///
+/// Obtained from [`ClusterServer::broadcast_handle`] so a caller (for example
+/// the control-api cluster runtime) can push runtime commands, certificates and
+/// auth snapshots after the server has been moved into its owning runtime.
+#[derive(Clone)]
+pub struct ClusterBroadcast {
+    config_sync: Arc<ConfigSync>,
+    clock: Arc<dyn Clock>,
+}
+
+impl ClusterBroadcast {
+    /// Broadcasts a volatile runtime command to every connected node.
+    ///
+    /// Nothing is persisted or retried; nodes connecting later do not see it.
+    pub fn broadcast_runtime_command(&self, kind: &str, payload: &serde_json::Value) {
+        let command = RuntimeCommand {
+            kind: kind.to_owned(),
+            filter_set_id: None,
+            payload: payload.clone(),
+            issued_at: rfc3339(self.clock.now()),
+        };
+        self.config_sync
+            .broadcast(StreamRecord::RuntimeCommand(command));
+    }
+
+    /// Broadcasts a renewed certificate/key to every connected node.
+    ///
+    /// Best-effort: a node that is offline keeps its previous certificate. The
+    /// key travels only over the mTLS stream and is never logged.
+    pub fn push_cert(&self, chain_pem: &str, private_key: &Secret) {
+        self.config_sync.broadcast(StreamRecord::CertPush(CertPush {
+            protocol: PROTOCOL_VERSION,
+            chain_pem: chain_pem.to_owned(),
+            private_key: private_key.clone(),
+        }));
+    }
+
+    /// Broadcasts an auth snapshot to every connected node.
+    ///
+    /// Best-effort: offline nodes reconcile from the master's next snapshot.
+    pub fn push_auth_snapshot(&self, snapshot: &serde_json::Value) {
+        self.config_sync
+            .broadcast(StreamRecord::AuthSnapshotPush(AuthSnapshotPush {
+                protocol: PROTOCOL_VERSION,
+                snapshot: snapshot.clone(),
+            }));
+    }
+}
+
 /// A running master cluster listener.
 ///
 /// The server owns its own master certificate (issued by the cluster CA) so a
@@ -278,20 +328,22 @@ impl ClusterServer {
         Arc::clone(&self.config_sync)
     }
 
+    /// A cloneable broadcast handle for the master's volatile pushes.
+    pub fn broadcast_handle(&self) -> ClusterBroadcast {
+        ClusterBroadcast {
+            config_sync: Arc::clone(&self.config_sync),
+            clock: Arc::clone(&self.clock),
+        }
+    }
+
     /// Broadcasts a volatile runtime command to every connected node.
     ///
     /// Nothing is persisted or retried: nodes connect later do not see the
     /// command, and a command sent while a node is offline is lost (the
     /// caller re-issues it when needed).
     pub fn broadcast_runtime_command(&self, kind: &str, payload: &serde_json::Value) {
-        let command = RuntimeCommand {
-            kind: kind.to_owned(),
-            filter_set_id: None,
-            payload: payload.clone(),
-            issued_at: rfc3339(self.clock.now()),
-        };
-        self.config_sync
-            .broadcast(StreamRecord::RuntimeCommand(command));
+        self.broadcast_handle()
+            .broadcast_runtime_command(kind, payload);
     }
 
     /// Broadcasts a renewed certificate/key to every connected node.
@@ -300,22 +352,14 @@ impl ClusterServer {
     /// offline keeps its previous certificate. The key travels only over the
     /// mTLS stream and is never logged.
     pub fn push_cert(&self, chain_pem: &str, private_key: &Secret) {
-        self.config_sync.broadcast(StreamRecord::CertPush(CertPush {
-            protocol: PROTOCOL_VERSION,
-            chain_pem: chain_pem.to_owned(),
-            private_key: private_key.clone(),
-        }));
+        self.broadcast_handle().push_cert(chain_pem, private_key);
     }
 
     /// Broadcasts an encrypted auth snapshot to every connected node.
     ///
     /// Best-effort: offline nodes reconcile from the master's next snapshot.
     pub fn push_auth_snapshot(&self, snapshot: &serde_json::Value) {
-        self.config_sync
-            .broadcast(StreamRecord::AuthSnapshotPush(AuthSnapshotPush {
-                protocol: PROTOCOL_VERSION,
-                snapshot: snapshot.clone(),
-            }));
+        self.broadcast_handle().push_auth_snapshot(snapshot);
     }
 
     /// Stops accepting new connections and waits for the accept loop to exit.
@@ -665,6 +709,7 @@ async fn write_relay(
     match state
         .write_executor
         .execute(
+            &auth.0,
             relay.actor,
             relay.method,
             relay.path,

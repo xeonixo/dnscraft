@@ -49,7 +49,7 @@ pub(crate) struct ManualEntryBody {
 }
 
 impl ManualEntryBody {
-    fn into_json(self) -> Result<Value, ControlApiError> {
+    pub(crate) fn into_json(self) -> Result<Value, ControlApiError> {
         if self.name.is_empty() {
             return Err(module_error(
                 "clients.config.invalid",
@@ -106,7 +106,7 @@ fn identity(entry: &Value) -> Option<&str> {
     entry.get("identity").and_then(Value::as_str)
 }
 
-fn name(entry: &Value) -> Option<&str> {
+pub(crate) fn name(entry: &Value) -> Option<&str> {
     entry.get("name").and_then(Value::as_str)
 }
 
@@ -245,7 +245,7 @@ pub(crate) async fn sync_clients(
 ///
 /// `skip_name` excludes the entry being replaced, so a PUT may keep its own
 /// address.
-fn reject_conflict(
+pub(crate) fn reject_conflict(
     entries: &[Value],
     candidate: &Value,
     skip_name: Option<&str>,

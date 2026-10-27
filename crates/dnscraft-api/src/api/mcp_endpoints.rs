@@ -318,6 +318,15 @@ pub(crate) async fn allow_temporarily(
     service
         .record_action(&actor, "mcp.allow_temporarily", None, Some(&after), None)
         .await;
+    state.broadcast_runtime_command(
+        "temporary_allow",
+        &json!({
+            "filter_set_id": set.as_str(),
+            "domain": domain.as_str(),
+            "include_subdomains": body.include_subdomains,
+            "expires_at": rfc3339(until),
+        }),
+    );
     let _ = body.reason;
 
     Ok(success(json!({
@@ -383,6 +392,13 @@ pub(crate) async fn pause_filter_set(
             None,
         )
         .await;
+    state.broadcast_runtime_command(
+        "pause",
+        &json!({
+            "filter_set_id": set.as_str(),
+            "expires_at": rfc3339(until),
+        }),
+    );
 
     Ok(success(json!({
         "filter_set_id": set.as_str(),
@@ -426,6 +442,7 @@ pub(crate) async fn resume_filter_set(
     service
         .record_action(&actor, "mcp.resume_filter_set", None, Some(&after), None)
         .await;
+    state.broadcast_runtime_command("resume", &json!({ "filter_set_id": set.as_str() }));
 
     Ok(success(json!({
         "filter_set_id": set.as_str(),

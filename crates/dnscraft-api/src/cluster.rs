@@ -30,6 +30,7 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use axum::http::Method;
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
@@ -46,6 +47,13 @@ use dnscraft_common::secret::Secret;
 use dnscraft_tls::{CertResolver, CertStore};
 
 use crate::api::auth::{AuthSnapshot, AuthState, Scope, authorize, requirement};
+use crate::api::clients_routes::{ManualEntryBody, name as manual_name, reject_conflict};
+use crate::api::config_routes::{
+    ProfileBody, ViewBody, array_mut, module_error, remove_by_id, stored_snapshot, upsert_by_id,
+};
+use crate::api::filter_routes::{FilterListBody, FilterSetBody};
+use crate::api::listener_routes::ListenerBody;
+use crate::api::tls_routes::validate_tls;
 use crate::cluster_status::{ClusterStatus, ClusterStatusHandle};
 use crate::config_apply::{ConfigActor, ConfigService};
 use crate::error::ControlApiError;
@@ -246,6 +254,7 @@ impl ConfigWriteExecutor {
 
     async fn run(
         &self,
+        node_id: &str,
         actor: RelayedActor,
         method: &str,
         path: &str,
@@ -271,7 +280,7 @@ impl ConfigWriteExecutor {
             return error_response(error);
         }
 
-        let config_actor = ConfigActor::new(actor.actor_id, actor.actor_type);
+        let config_actor = ConfigActor::new(actor.actor_id, actor.actor_type).on_node(node_id);
         let result = match (http_method.as_str(), path) {
             ("PUT", "/api/v1/config") => self
                 .service
@@ -292,14 +301,363 @@ impl ConfigWriteExecutor {
                         })
                     })
             }
-            _ => Err(ControlApiError::NotFound {
-                what: path.to_owned(),
-            }),
+            _ => {
+                self.module_write(http_method.as_str(), path, body, &config_actor, if_match)
+                    .await
+            }
         };
         match result {
             Ok(body) => RelayResponse { status: 200, body },
             Err(error) => error_response(error),
         }
+    }
+
+    /// Dispatches a config-family write other than the full replace/rollback.
+    ///
+    /// Mirrors the canonical route handler: load the stored snapshot, apply the
+    /// same validated mutation, then run the shared atomic replace path
+    /// (validate → apply → store → audit). Routes that are not config writes
+    /// (auth, TLS engine actions, runtime commands, reads) remain unmapped and
+    /// return `control_api.not_found`.
+    async fn module_write(
+        &self,
+        method: &str,
+        path: &str,
+        body: Value,
+        actor: &ConfigActor,
+        if_match: Option<&str>,
+    ) -> Result<Value, ControlApiError> {
+        if path == "/api/v1/filter-sets" {
+            return match method {
+                "POST" | "PUT" => {
+                    let set = parse_body::<FilterSetBody>(body, "filtering.config.invalid")?
+                        .into_json()?;
+                    let id = required_str(&set, "id", "filtering.config.invalid")?;
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    let replaced = upsert_by_id(
+                        array_mut(&mut snapshot, "filtering", "sets")?,
+                        &id,
+                        set.clone(),
+                    );
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({
+                        "data": {
+                            "version": version,
+                            "filter_set": set,
+                            "created": !replaced,
+                        }
+                    }))
+                }
+                "DELETE" => {
+                    let id = required_str(&body, "id", "filtering.config.invalid")?;
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    remove_by_id(array_mut(&mut snapshot, "filtering", "sets")?, &id).ok_or_else(
+                        || ControlApiError::NotFound {
+                            what: format!("filter set {id}"),
+                        },
+                    )?;
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({
+                        "data": { "version": version, "deleted": true, "id": id }
+                    }))
+                }
+                _ => Err(method_not_allowed(method, path)),
+            };
+        }
+        if path == "/api/v1/filter-lists" {
+            return match method {
+                "POST" | "PUT" => {
+                    let list = parse_body::<FilterListBody>(body, "filtering.config.invalid")?
+                        .into_json()?;
+                    let id = required_str(&list, "id", "filtering.config.invalid")?;
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    let replaced = upsert_by_id(
+                        array_mut(&mut snapshot, "filtering", "lists")?,
+                        &id,
+                        list.clone(),
+                    );
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({
+                        "data": {
+                            "version": version,
+                            "filter_list": list,
+                            "created": !replaced,
+                        }
+                    }))
+                }
+                "DELETE" => {
+                    let id = required_str(&body, "id", "filtering.config.invalid")?;
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    remove_by_id(array_mut(&mut snapshot, "filtering", "lists")?, &id).ok_or_else(
+                        || ControlApiError::NotFound {
+                            what: format!("filter list {id}"),
+                        },
+                    )?;
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({
+                        "data": { "version": version, "deleted": true, "id": id }
+                    }))
+                }
+                _ => Err(method_not_allowed(method, path)),
+            };
+        }
+        if path == "/api/v1/listeners" {
+            return match method {
+                "POST" | "PUT" => {
+                    let listener = parse_body::<ListenerBody>(body, "listeners.config.invalid")?
+                        .into_json()?;
+                    let id = required_str(&listener, "id", "listeners.config.invalid")?;
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    let replaced = upsert_by_id(
+                        array_mut(&mut snapshot, "listeners", "listeners")?,
+                        &id,
+                        listener.clone(),
+                    );
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({
+                        "data": {
+                            "version": version,
+                            "listener": listener,
+                            "created": !replaced,
+                        }
+                    }))
+                }
+                "DELETE" => {
+                    let id = required_str(&body, "id", "listeners.config.invalid")?;
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    remove_by_id(array_mut(&mut snapshot, "listeners", "listeners")?, &id)
+                        .ok_or_else(|| ControlApiError::NotFound {
+                            what: format!("listener {id}"),
+                        })?;
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({
+                        "data": { "version": version, "deleted": true, "id": id }
+                    }))
+                }
+                _ => Err(method_not_allowed(method, path)),
+            };
+        }
+        if path == "/api/v1/tls" {
+            return match method {
+                "POST" | "PUT" => {
+                    let tls = body;
+                    validate_tls(&tls)?;
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    let section = snapshot
+                        .get_mut("tls")
+                        .and_then(Value::as_object_mut)
+                        .ok_or_else(malformed_snapshot)?;
+                    *section = tls.as_object().cloned().unwrap_or_default();
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({ "data": { "version": version, "tls": tls } }))
+                }
+                "DELETE" => {
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    let section = snapshot
+                        .get_mut("tls")
+                        .and_then(Value::as_object_mut)
+                        .ok_or_else(malformed_snapshot)?;
+                    let removed = !section.is_empty();
+                    section.clear();
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({ "data": { "version": version, "deleted": removed } }))
+                }
+                _ => Err(method_not_allowed(method, path)),
+            };
+        }
+        if path == "/api/v1/clients/manual" {
+            return match method {
+                "POST" => {
+                    let entry = parse_body::<ManualEntryBody>(body, "clients.config.invalid")?
+                        .into_json()?;
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    let entries = array_mut(&mut snapshot, "clients", "manual")?;
+                    let entry_name = manual_name(&entry).unwrap_or_default();
+                    if entries
+                        .iter()
+                        .any(|existing| manual_name(existing) == Some(entry_name))
+                    {
+                        return Err(module_error(
+                            "clients.name.collision",
+                            "a manual entry with that name already exists",
+                        ));
+                    }
+                    reject_conflict(entries, &entry, None)?;
+                    entries.push(entry.clone());
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({ "data": { "version": version, "entry": entry } }))
+                }
+                "PUT" => {
+                    let entry = parse_body::<ManualEntryBody>(body, "clients.config.invalid")?
+                        .into_json()?;
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    let entries = array_mut(&mut snapshot, "clients", "manual")?;
+                    let entry_name = manual_name(&entry).unwrap_or_default();
+                    reject_conflict(entries, &entry, Some(entry_name))?;
+                    let replaced = if let Some(existing) = entries
+                        .iter_mut()
+                        .find(|existing| manual_name(existing) == Some(entry_name))
+                    {
+                        *existing = entry.clone();
+                        true
+                    } else {
+                        entries.push(entry.clone());
+                        false
+                    };
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({
+                        "data": {
+                            "version": version,
+                            "entry": entry,
+                            "created": !replaced,
+                        }
+                    }))
+                }
+                "DELETE" => {
+                    let name = required_str(&body, "name", "clients.config.invalid")?;
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    let entries = array_mut(&mut snapshot, "clients", "manual")?;
+                    let index = entries
+                        .iter()
+                        .position(|entry| manual_name(entry) == Some(name.as_str()))
+                        .ok_or_else(|| ControlApiError::NotFound {
+                            what: format!("manual entry {name}"),
+                        })?;
+                    entries.remove(index);
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({
+                        "data": { "version": version, "deleted": true, "name": name }
+                    }))
+                }
+                _ => Err(method_not_allowed(method, path)),
+            };
+        }
+        if let Some(id) = sub_path(path, "/api/v1/policy/views/") {
+            return match method {
+                "POST" | "PUT" => {
+                    let view =
+                        parse_body::<ViewBody>(body, "policy.config.invalid")?.into_json(&id)?;
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    upsert_by_id(
+                        array_mut(&mut snapshot, "policy", "views")?,
+                        &id,
+                        view.clone(),
+                    );
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({ "data": { "version": version, "view": view } }))
+                }
+                "DELETE" => {
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    remove_by_id(array_mut(&mut snapshot, "policy", "views")?, &id).ok_or_else(
+                        || ControlApiError::NotFound {
+                            what: format!("view {id}"),
+                        },
+                    )?;
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({
+                        "data": { "version": version, "deleted": true, "id": id }
+                    }))
+                }
+                _ => Err(method_not_allowed(method, path)),
+            };
+        }
+        if let Some(id) = sub_path(path, "/api/v1/policy/profiles/") {
+            return match method {
+                "POST" | "PUT" => {
+                    let profile =
+                        parse_body::<ProfileBody>(body, "policy.config.invalid")?.into_json(&id)?;
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    upsert_by_id(
+                        array_mut(&mut snapshot, "policy", "profiles")?,
+                        &id,
+                        profile.clone(),
+                    );
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({ "data": { "version": version, "profile": profile } }))
+                }
+                "DELETE" => {
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    remove_by_id(array_mut(&mut snapshot, "policy", "profiles")?, &id).ok_or_else(
+                        || ControlApiError::NotFound {
+                            what: format!("profile {id}"),
+                        },
+                    )?;
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({
+                        "data": { "version": version, "deleted": true, "id": id }
+                    }))
+                }
+                _ => Err(method_not_allowed(method, path)),
+            };
+        }
+        if path == "/api/v1/policy/pause" {
+            return match method {
+                "POST" | "PUT" => {
+                    let pause = body;
+                    if !pause.is_object() {
+                        return Err(module_error(
+                            "policy.config.invalid",
+                            "pause state must be a JSON object",
+                        ));
+                    }
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    snapshot
+                        .get_mut("policy")
+                        .and_then(Value::as_object_mut)
+                        .ok_or_else(malformed_snapshot)?
+                        .insert("pause".to_owned(), pause.clone());
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({ "data": { "version": version, "pause": pause } }))
+                }
+                "DELETE" => {
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    let removed = snapshot
+                        .get_mut("policy")
+                        .and_then(Value::as_object_mut)
+                        .ok_or_else(malformed_snapshot)?
+                        .remove("pause")
+                        .is_some();
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({ "data": { "version": version, "deleted": removed } }))
+                }
+                _ => Err(method_not_allowed(method, path)),
+            };
+        }
+        Err(ControlApiError::NotFound {
+            what: path.to_owned(),
+        })
+    }
+}
+
+/// Parses a relayed JSON body as the canonical handler's typed body.
+fn parse_body<T: DeserializeOwned>(body: Value, code: &'static str) -> Result<T, ControlApiError> {
+    serde_json::from_value(body).map_err(|error| module_error(code, &error.to_string()))
+}
+
+/// Reads a required string field from a small JSON body.
+fn required_str(body: &Value, field: &str, code: &'static str) -> Result<String, ControlApiError> {
+    body.get(field)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| module_error(code, &format!("`{field}` is required")))
+}
+
+/// The single path segment following `prefix`, if it is exactly one segment.
+fn sub_path(path: &str, prefix: &str) -> Option<String> {
+    let id = path.strip_prefix(prefix)?;
+    (!id.is_empty() && !id.contains('/')).then(|| id.to_owned())
+}
+
+fn method_not_allowed(method: &str, path: &str) -> ControlApiError {
+    ControlApiError::MethodNotAllowed {
+        method: method.to_owned(),
+        path: path.to_owned(),
+    }
+}
+
+fn malformed_snapshot() -> ControlApiError {
+    ControlApiError::Internal {
+        message: "stored config snapshot is malformed".to_owned(),
     }
 }
 
@@ -307,6 +665,7 @@ impl ConfigWriteExecutor {
 impl WriteExecutor for ConfigWriteExecutor {
     async fn execute(
         &self,
+        node_id: &str,
         actor: RelayedActor,
         method: String,
         path: String,
@@ -320,7 +679,7 @@ impl WriteExecutor for ConfigWriteExecutor {
             return Ok(response);
         }
         let response = self
-            .run(actor, &method, &path, body, if_match.as_deref())
+            .run(node_id, actor, &method, &path, body, if_match.as_deref())
             .await;
         if let Some(key) = idempotency_key {
             self.remember(&key, &response);
@@ -477,6 +836,7 @@ static RELAY_COUNTER: AtomicU64 = AtomicU64::new(1);
 impl WriteExecutor for ClientWriteExecutor {
     async fn execute(
         &self,
+        _node_id: &str,
         actor: RelayedActor,
         method: String,
         path: String,
@@ -708,6 +1068,9 @@ impl ClusterRuntime {
         )
         .await?;
 
+        // Let the master's runtime-command endpoints push to connected nodes.
+        state.attach_cluster_broadcast(server.broadcast_handle());
+
         let (version, snapshot) = service.current().await?;
         self.status.set(ClusterStatus {
             role: "master".to_owned(),
@@ -756,6 +1119,34 @@ impl ClusterRuntime {
                 }
             }
         }));
+
+        // Push a fresh auth snapshot to sub-nodes whenever the master's token
+        // or local-account state changes. The notification is event-driven (a
+        // watch channel), never a poll loop.
+        if let Some(auth) = state.auth_state_arc() {
+            let broadcast = server.broadcast_handle();
+            let mut changes = auth.subscribe_changes();
+            let mut auth_shutdown = self.shutdown.subscribe();
+            self.tasks.push(tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        changed = changes.changed() => {
+                            if changed.is_err() {
+                                return;
+                            }
+                            let Ok(snapshot) = auth.auth_snapshot().await else {
+                                continue;
+                            };
+                            let Ok(value) = serde_json::to_value(&snapshot) else {
+                                continue;
+                            };
+                            broadcast.push_auth_snapshot(&value);
+                        }
+                        _ = auth_shutdown.changed() => return,
+                    }
+                }
+            }));
+        }
 
         self.store = Some(store);
         self.config_sync = Some(server.config_sync_handle());

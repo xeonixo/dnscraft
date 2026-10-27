@@ -77,6 +77,10 @@ pub struct ConfigActor {
     pub actor_id: String,
     /// `user` or `token`.
     pub actor_type: String,
+    /// Originating cluster node, when the write was relayed by a sub-node.
+    ///
+    /// `None` means the local node performed the action.
+    node_id: Option<String>,
 }
 
 impl ConfigActor {
@@ -85,7 +89,19 @@ impl ConfigActor {
         Self {
             actor_id: actor_id.into(),
             actor_type: actor_type.into(),
+            node_id: None,
         }
+    }
+
+    /// Attributes the change to the cluster node that originated it.
+    pub fn on_node(mut self, node_id: impl Into<String>) -> Self {
+        self.node_id = Some(node_id.into());
+        self
+    }
+
+    /// The originating node override, if any.
+    fn audit_node_id<'a>(&'a self, local: &'a str) -> &'a str {
+        self.node_id.as_deref().unwrap_or(local)
     }
 
     /// The actor used when the API is embedded without authentication.
@@ -384,7 +400,7 @@ impl ConfigService {
             }
         };
         let change = ConfigChangeRecord {
-            node_id: self.node_id.clone(),
+            node_id: actor.audit_node_id(&self.node_id).to_owned(),
             actor_id: actor.actor_id.clone(),
             actor_type: actor.actor_type.clone(),
             action: action.to_owned(),
@@ -704,7 +720,7 @@ impl ConfigService {
         error_code: Option<&str>,
     ) {
         let change = ConfigChangeRecord {
-            node_id: self.node_id.clone(),
+            node_id: actor.audit_node_id(&self.node_id).to_owned(),
             actor_id: actor.actor_id.clone(),
             actor_type: actor.actor_type.clone(),
             action: action.to_owned(),

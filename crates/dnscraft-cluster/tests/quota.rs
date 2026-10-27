@@ -42,6 +42,7 @@ struct MockWrites;
 impl WriteExecutor for MockWrites {
     async fn execute(
         &self,
+        _node_id: &str,
         _actor: RelayedActor,
         _method: String,
         _path: String,

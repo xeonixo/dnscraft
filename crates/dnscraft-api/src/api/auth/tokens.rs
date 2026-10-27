@@ -15,6 +15,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use tokio::sync::watch;
+
 use axum::Json;
 use axum::extract::{Extension, State};
 use axum::response::{IntoResponse, Response};
@@ -133,6 +135,9 @@ pub struct TokenStore {
     db: Db,
     max_ttl: Duration,
     epoch: Arc<AtomicU64>,
+    /// Set by [`AuthState`](super::AuthState) so mutations wake the master's
+    /// auth-snapshot push task.
+    notifier: Option<watch::Sender<u64>>,
 }
 
 impl TokenStore {
@@ -142,6 +147,7 @@ impl TokenStore {
             db,
             max_ttl,
             epoch: Arc::new(AtomicU64::new(0)),
+            notifier: None,
         }
     }
 
@@ -149,6 +155,20 @@ impl TokenStore {
     /// [`AuthState`](super::AuthState).
     pub(crate) fn set_epoch(&mut self, epoch: Arc<AtomicU64>) {
         self.epoch = epoch;
+    }
+
+    /// Shares the surrounding auth-change notifier.
+    pub(crate) fn set_notifier(&mut self, notifier: watch::Sender<u64>) {
+        self.notifier = Some(notifier);
+    }
+
+    fn notify(&self) {
+        if let Some(notifier) = &self.notifier {
+            // Drop the read guard before taking the write lock in
+            // `send_replace`; holding both deadlocks the watch.
+            let next = notifier.borrow().wrapping_add(1);
+            notifier.send_replace(next);
+        }
     }
 
     /// Issues a token for `actor_id` with `scope`.
@@ -204,6 +224,7 @@ impl TokenStore {
             })
             .await?;
 
+        self.notify();
         Ok(CreatedToken {
             plaintext,
             id,
@@ -333,6 +354,7 @@ impl TokenStore {
             return Err(ControlApiError::AuthUnknownToken);
         }
         self.epoch.fetch_add(1, Ordering::Relaxed);
+        self.notify();
         Ok(())
     }
 }

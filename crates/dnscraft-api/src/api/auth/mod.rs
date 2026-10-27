@@ -35,6 +35,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::watch;
 
 use crate::error::ControlApiError;
 use crate::server::AppState;
@@ -88,6 +89,9 @@ pub struct AuthState {
     local_accounts: Option<LocalAccountStore>,
     oidc: Arc<RwLock<Option<OidcSettings>>>,
     epoch: Arc<AtomicU64>,
+    /// Wake-up counter signalled by token/account mutations. The cluster
+    /// master watches this to push a fresh snapshot to sub-nodes.
+    changes: watch::Sender<u64>,
 }
 
 impl AuthState {
@@ -95,12 +99,15 @@ impl AuthState {
     pub fn new(sessions: Auth, mut tokens: TokenStore) -> Self {
         let epoch = Arc::new(AtomicU64::new(0));
         tokens.set_epoch(epoch.clone());
+        let (changes, _) = watch::channel(0);
+        tokens.set_notifier(changes.clone());
         Self {
             sessions,
             tokens,
             local_accounts: None,
             oidc: Arc::new(RwLock::new(None)),
             epoch,
+            changes,
         }
     }
 
@@ -108,6 +115,7 @@ impl AuthState {
     /// includes its hashes.
     pub fn with_local_accounts(mut self, mut store: LocalAccountStore) -> Self {
         store.set_epoch(self.epoch.clone());
+        store.set_notifier(self.changes.clone());
         self.local_accounts = Some(store);
         self
     }
@@ -130,6 +138,14 @@ impl AuthState {
     /// The bearer-token store.
     pub fn tokens(&self) -> &TokenStore {
         &self.tokens
+    }
+
+    /// Subscribes to token/account change notifications.
+    ///
+    /// Each mutation sends a new counter value. The value is only a wake-up
+    /// signal; the current snapshot is read with [`Self::auth_snapshot`].
+    pub fn subscribe_changes(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
     }
 
     /// Gathers the auth state a sub-node needs to authenticate bearer tokens

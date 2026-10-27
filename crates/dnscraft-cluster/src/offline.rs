@@ -398,6 +398,9 @@ impl OfflineWriteQueue {
             self.record_attempt(&row.relay.request_id).await?;
             let response = executor
                 .execute(
+                    // Transport-only caller: the master authenticates the
+                    // originating node from the mTLS certificate.
+                    "",
                     row.relay.actor.clone(),
                     row.relay.method.clone(),
                     row.relay.path.clone(),
@@ -664,6 +667,7 @@ mod tests {
     impl WriteExecutor for MockExecutor {
         async fn execute(
             &self,
+            _node_id: &str,
             _actor: RelayedActor,
             method: String,
             path: String,
@@ -698,6 +702,7 @@ mod tests {
     impl WriteExecutor for TransientOnceExecutor {
         async fn execute(
             &self,
+            _node_id: &str,
             _actor: RelayedActor,
             _method: String,
             _path: String,

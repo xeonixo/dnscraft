@@ -31,6 +31,7 @@ const TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
 
 /// One `execute` call recorded by [`MockExecutor`].
 struct Call {
+    node_id: String,
     actor: RelayedActor,
     method: String,
     path: String,
@@ -62,6 +63,7 @@ impl MockExecutor {
 impl WriteExecutor for MockExecutor {
     async fn execute(
         &self,
+        node_id: &str,
         actor: RelayedActor,
         method: String,
         path: String,
@@ -70,6 +72,7 @@ impl WriteExecutor for MockExecutor {
         idempotency_key: Option<String>,
     ) -> Result<RelayResponse, ClusterError> {
         self.calls.lock().unwrap().push(Call {
+            node_id: node_id.to_owned(),
             actor,
             method,
             path,
@@ -275,6 +278,8 @@ async fn relayed_write_reaches_the_executor_and_the_response_is_verbatim() {
     let calls = executor.calls();
     assert_eq!(calls.len(), 1);
     let call = &calls[0];
+    // The master derives the originating node from the mTLS certificate.
+    assert_eq!(call.node_id, "node-a");
     assert_eq!(call.actor, expected.actor);
     assert_eq!(call.method, expected.method);
     assert_eq!(call.path, expected.path);

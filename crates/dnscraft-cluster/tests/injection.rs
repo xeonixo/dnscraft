@@ -65,6 +65,7 @@ impl MasterExecutor {
 impl WriteExecutor for MasterExecutor {
     async fn execute(
         &self,
+        _node_id: &str,
         _actor: RelayedActor,
         _method: String,
         _path: String,
@@ -99,6 +100,7 @@ struct ClientExecutor {
 impl WriteExecutor for ClientExecutor {
     async fn execute(
         &self,
+        _node_id: &str,
         actor: RelayedActor,
         method: String,
         path: String,
@@ -133,6 +135,7 @@ struct AmbiguousAckExecutor {
 impl WriteExecutor for AmbiguousAckExecutor {
     async fn execute(
         &self,
+        _node_id: &str,
         _actor: RelayedActor,
         _method: String,
         _path: String,

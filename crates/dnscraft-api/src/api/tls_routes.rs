@@ -64,7 +64,7 @@ fn if_match(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// Validates the TLS config object, forwarding `tls.config.invalid`.
-fn validate_tls(value: &Value) -> Result<(), ControlApiError> {
+pub(crate) fn validate_tls(value: &Value) -> Result<(), ControlApiError> {
     let Some(map) = value.as_object() else {
         return Err(module_error(
             "tls.config.invalid",

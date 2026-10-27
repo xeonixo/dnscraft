@@ -16,6 +16,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use tokio::sync::watch;
+
 use argon2::Argon2;
 use argon2::password_hash::PasswordHasher as _;
 use argon2::password_hash::PasswordVerifier as _;
@@ -76,6 +78,9 @@ pub struct LocalAccountStore {
     max_attempts: u32,
     lock_window: Duration,
     epoch: Arc<AtomicU64>,
+    /// Set by [`AuthState`](super::AuthState) so account changes wake the
+    /// master's auth-snapshot push task.
+    notifier: Option<watch::Sender<u64>>,
 }
 
 impl LocalAccountStore {
@@ -87,6 +92,7 @@ impl LocalAccountStore {
             max_attempts,
             lock_window,
             epoch: Arc::new(AtomicU64::new(0)),
+            notifier: None,
         }
     }
 
@@ -94,6 +100,20 @@ impl LocalAccountStore {
     /// [`AuthState`](super::AuthState).
     pub(crate) fn set_epoch(&mut self, epoch: Arc<AtomicU64>) {
         self.epoch = epoch;
+    }
+
+    /// Shares the surrounding auth-change notifier.
+    pub(crate) fn set_notifier(&mut self, notifier: watch::Sender<u64>) {
+        self.notifier = Some(notifier);
+    }
+
+    fn notify(&self) {
+        if let Some(notifier) = &self.notifier {
+            // Drop the read guard before taking the write lock in
+            // `send_replace`; holding both deadlocks the watch.
+            let next = notifier.borrow().wrapping_add(1);
+            notifier.send_replace(next);
+        }
     }
 
     /// Lists every account (username, PHC hash and role) for an
@@ -204,6 +224,7 @@ impl LocalAccountStore {
             })
             .await?;
         self.epoch.fetch_add(1, Ordering::Relaxed);
+        self.notify();
         Ok(())
     }
 

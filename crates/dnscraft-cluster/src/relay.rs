@@ -128,8 +128,16 @@ impl fmt::Debug for RuntimeCommand {
 #[async_trait::async_trait]
 pub trait WriteExecutor: Send + Sync {
     /// Executes one relayed write and returns its status and response body.
+    ///
+    /// `node_id` is the authenticated identity of the node that originated the
+    /// write: the master's mTLS route passes the certificate SAN so the audit
+    /// row names the sub-node. A sub-node-side executor (live relay or offline
+    /// replay) is transport-only and may pass an empty value; the master
+    /// derives the authoritative identity from the client certificate.
+    #[allow(clippy::too_many_arguments)]
     async fn execute(
         &self,
+        node_id: &str,
         actor: RelayedActor,
         method: String,
         path: String,

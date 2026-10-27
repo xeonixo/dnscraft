@@ -141,6 +141,7 @@ struct NoWrites;
 impl WriteExecutor for NoWrites {
     async fn execute(
         &self,
+        _node_id: &str,
         _actor: RelayedActor,
         _method: String,
         _path: String,
@@ -694,6 +695,7 @@ async fn relayed_viewer_write_is_rejected_and_admin_write_applies_once() {
     };
     let response = executor
         .execute(
+            "node-a",
             viewer,
             "PUT".to_owned(),
             "/api/v1/config".to_owned(),
@@ -717,6 +719,7 @@ async fn relayed_viewer_write_is_rejected_and_admin_write_applies_once() {
     };
     let first = executor
         .execute(
+            "node-a",
             admin.clone(),
             "PUT".to_owned(),
             "/api/v1/config".to_owned(),
@@ -733,6 +736,7 @@ async fn relayed_viewer_write_is_rejected_and_admin_write_applies_once() {
     // does not create a second config version.
     let retry = executor
         .execute(
+            "node-a",
             admin,
             "PUT".to_owned(),
             "/api/v1/config".to_owned(),
@@ -744,6 +748,457 @@ async fn relayed_viewer_write_is_rejected_and_admin_write_applies_once() {
         .unwrap();
     assert_eq!(retry.body, first.body);
     assert_eq!(service.current().await.unwrap().0, Some(1));
+}
+
+#[tokio::test]
+async fn relayed_write_audits_the_originating_node_and_direct_writes_the_local_node() {
+    let (service, db) = service("master", ModuleAppliers::default()).await;
+    let executor =
+        ConfigWriteExecutor::new(Arc::clone(&service), Arc::new(ClusterClock::new(at(NOW))));
+    let admin = RelayedActor {
+        actor_id: "admin-a".to_owned(),
+        actor_type: "user".to_owned(),
+        scope: "admin".to_owned(),
+    };
+
+    let response = executor
+        .execute(
+            "node-b",
+            admin,
+            "PUT".to_owned(),
+            "/api/v1/config".to_owned(),
+            snapshot("relayed"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status, 200);
+
+    // A direct write on the master keeps the master's own identity.
+    let version = service
+        .replace(
+            snapshot("direct"),
+            &ConfigActor::new("admin-a", "user"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(version, 2);
+
+    let rows = db.audit_list(10, 0).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    // Newest first: the direct write, then the relayed write.
+    assert_eq!(rows[0].node_id, "master");
+    assert_eq!(rows[0].actor_id, "admin-a");
+    assert_eq!(rows[1].node_id, "node-b");
+    assert_eq!(rows[1].actor_id, "admin-a");
+}
+
+// ---------------------------------------------------------------------------
+// Relay surface
+// ---------------------------------------------------------------------------
+
+fn admin_actor() -> RelayedActor {
+    RelayedActor {
+        actor_id: "admin-a".to_owned(),
+        actor_type: "user".to_owned(),
+        scope: "admin".to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn relayed_module_writes_dispatch_through_the_config_service() {
+    let (service, db) = service("master", ModuleAppliers::default()).await;
+    let executor =
+        ConfigWriteExecutor::new(Arc::clone(&service), Arc::new(ClusterClock::new(at(NOW))));
+
+    let writes = [
+        (
+            "POST",
+            "/api/v1/filter-sets",
+            json!({
+                "id": "family",
+                "name": "Family",
+                "lists": [],
+                "custom_rules": "",
+                "services": [],
+                "block_mode": "nxdomain",
+            }),
+        ),
+        (
+            "POST",
+            "/api/v1/listeners",
+            json!({ "id": "l1", "protocol": "udp53", "address": "127.0.0.1:53" }),
+        ),
+        (
+            "PUT",
+            "/api/v1/policy/profiles/kids",
+            json!({ "filter_set": "family" }),
+        ),
+        (
+            "PUT",
+            "/api/v1/policy/views/kids",
+            json!({ "profile": "kids", "subnets": ["10.0.0.0/8"] }),
+        ),
+        (
+            "PUT",
+            "/api/v1/tls",
+            json!({ "public_domain": "dns.example.com" }),
+        ),
+        (
+            "POST",
+            "/api/v1/clients/manual",
+            json!({ "name": "laptop", "ip": "192.0.2.10" }),
+        ),
+        (
+            "PUT",
+            "/api/v1/policy/pause",
+            json!({ "until": "2026-01-01T00:00:00Z" }),
+        ),
+        ("DELETE", "/api/v1/policy/pause", json!({})),
+        ("DELETE", "/api/v1/listeners", json!({ "id": "l1" })),
+    ];
+    for (method, path, body) in writes {
+        let response = executor
+            .execute(
+                "node-b",
+                admin_actor(),
+                method.to_owned(),
+                path.to_owned(),
+                body,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status, 200, "{method} {path}: {:?}", response.body);
+        assert!(response.body["data"]["version"].is_i64(), "{path}");
+    }
+
+    let (version, snapshot) = service.current().await.unwrap();
+    assert_eq!(version, Some(9));
+    let snapshot = snapshot.unwrap();
+    assert_eq!(snapshot["filtering"]["sets"][0]["id"], "family");
+    assert_eq!(snapshot["listeners"]["listeners"], json!([]));
+    assert_eq!(snapshot["policy"]["profiles"][0]["id"], "kids");
+    assert_eq!(snapshot["policy"]["views"][0]["id"], "kids");
+    assert_eq!(snapshot["tls"]["public_domain"], "dns.example.com");
+    assert_eq!(snapshot["clients"]["manual"][0]["name"], "laptop");
+    assert!(snapshot["policy"].get("pause").is_none());
+
+    // Rollback is relayed through the same path and audits the sub-node too.
+    let rollback = executor
+        .execute(
+            "node-b",
+            admin_actor(),
+            "POST".to_owned(),
+            "/api/v1/config/versions/1/rollback".to_owned(),
+            json!({}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(rollback.status, 200);
+    assert_eq!(rollback.body["data"]["restored_from"], 1);
+    assert_eq!(service.current().await.unwrap().0, Some(10));
+
+    let rows = db.audit_list(100, 0).await.unwrap();
+    assert_eq!(rows.len(), 10);
+    assert!(rows.iter().all(|row| row.node_id == "node-b"), "{rows:?}");
+    assert!(rows.iter().all(|row| row.actor_id == "admin-a"));
+}
+
+#[tokio::test]
+async fn relayed_non_config_routes_are_rejected_without_applying() {
+    let (service, db) = service("master", ModuleAppliers::default()).await;
+    let executor =
+        ConfigWriteExecutor::new(Arc::clone(&service), Arc::new(ClusterClock::new(at(NOW))));
+
+    for path in [
+        "/api/v1/auth/tokens",
+        "/api/v1/tls/status",
+        "/api/v1/tls/renew",
+        "/api/v1/clients/sync",
+        "/api/v1/cluster/join-tokens",
+    ] {
+        let response = executor
+            .execute(
+                "node-b",
+                admin_actor(),
+                "POST".to_owned(),
+                path.to_owned(),
+                json!({}),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status, 404, "{path}: {:?}", response.body);
+        assert_eq!(response.body["error"]["code"], "control_api.not_found");
+    }
+    assert_eq!(service.current().await.unwrap().0, None);
+    assert!(db.audit_list(10, 0).await.unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Master broadcast triggers
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn master_runtime_command_endpoint_broadcasts_to_the_sub_node() {
+    use tower::ServiceExt as _;
+
+    let master_dir = TempDir::new("broadcast-master");
+    let node_dir = TempDir::new("broadcast-node");
+    let api_clock = Arc::new(ApiClock::new(at(NOW)));
+    let cluster_clock = Arc::new(ClusterClock::new(SystemTime::now()));
+
+    let master_filter = filter_engine(&master_dir);
+    let (master_service, _) = service("master", ModuleAppliers::default()).await;
+    let master_status = Arc::new(ClusterStatusHandle::new());
+    let master_state = AppState::new()
+        .with_config_service(Arc::clone(&master_service))
+        .with_cluster_status(master_status.clone())
+        .with_clock(api_clock.clone())
+        .with_filter_engine(Arc::clone(&master_filter));
+    let mut master_options = ClusterRuntimeOptions::new(master_dir.path());
+    master_options.clock = cluster_clock.clone();
+    master_options.status = master_status.clone();
+    let master = ClusterRuntime::start(
+        master_config(master_dir.path()),
+        &master_state,
+        master_options,
+    )
+    .await
+    .unwrap();
+
+    let url = format!("https://{}", master.listen_addr().unwrap());
+    let server_cert = master.server_cert_pem().unwrap().to_owned();
+    let token = master
+        .cluster_store()
+        .unwrap()
+        .mint_join_token("node-b")
+        .await
+        .unwrap();
+
+    let node_filter = filter_engine(&node_dir);
+    let (node_service, _) = service("node-b", ModuleAppliers::default()).await;
+    let node_status = Arc::new(ClusterStatusHandle::new());
+    let node_state = AppState::new()
+        .with_config_service(Arc::clone(&node_service))
+        .with_cluster_status(node_status.clone())
+        .with_clock(api_clock)
+        .with_filter_engine(Arc::clone(&node_filter));
+    let mut node_options = ClusterRuntimeOptions::new(node_dir.path());
+    node_options.clock = cluster_clock;
+    node_options.status = node_status.clone();
+    node_options.join_token = Some(Secret::new(token.expose()));
+    node_options.master_cert_pem = Some(server_cert);
+    let node = ClusterRuntime::start(
+        sub_node_config(node_dir.path(), &url),
+        &node_state,
+        node_options,
+    )
+    .await
+    .unwrap();
+
+    for _ in 0..20_000 {
+        if node_status
+            .status()
+            .is_some_and(|status| status.master_reachable)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        node_status
+            .status()
+            .is_some_and(|status| status.master_reachable),
+        "sub-node never connected"
+    );
+
+    let set = dnscraft_filtering::SetId::new("default").unwrap();
+    let post = |path: &str, body: Value| {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                40000,
+            ))))
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    };
+    let response = master_state
+        .clone()
+        .router()
+        .oneshot(post(
+            "/api/v1/filtering/pause",
+            json!({ "filter_set_id": "default", "duration": "PT5M" }),
+        ))
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        status,
+        axum::http::StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    for _ in 0..20_000 {
+        if node_filter.paused_until(&set).is_some() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        node_filter.paused_until(&set).is_some(),
+        "sub-node did not apply the broadcast pause"
+    );
+
+    let response = master_state
+        .clone()
+        .router()
+        .oneshot(post(
+            "/api/v1/filtering/resume",
+            json!({ "filter_set_id": "default" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    for _ in 0..20_000 {
+        if node_filter.paused_until(&set).is_none() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        node_filter.paused_until(&set).is_none(),
+        "sub-node did not apply the broadcast resume"
+    );
+
+    node.shutdown().await;
+    master.shutdown().await;
+}
+
+#[tokio::test]
+async fn master_auth_change_pushes_a_snapshot_the_sub_node_applies() {
+    let master_dir = TempDir::new("auth-master");
+    let node_dir = TempDir::new("auth-node");
+    let cluster_clock = Arc::new(ClusterClock::new(SystemTime::now()));
+
+    let master_auth = auth_state(
+        Db::open_in_memory(Arc::new(ApiClock::new(at(NOW))))
+            .await
+            .unwrap(),
+        false,
+    )
+    .await;
+    let (master_service, _) = service("master", ModuleAppliers::default()).await;
+    let master_status = Arc::new(ClusterStatusHandle::new());
+    let master_state = AppState::new()
+        .with_config_service(Arc::clone(&master_service))
+        .with_cluster_status(master_status.clone())
+        .with_auth(master_auth.clone());
+    let mut master_options = ClusterRuntimeOptions::new(master_dir.path());
+    master_options.clock = cluster_clock.clone();
+    master_options.status = master_status;
+    let master = ClusterRuntime::start(
+        master_config(master_dir.path()),
+        &master_state,
+        master_options,
+    )
+    .await
+    .unwrap();
+
+    let url = format!("https://{}", master.listen_addr().unwrap());
+    let server_cert = master.server_cert_pem().unwrap().to_owned();
+    let token = master
+        .cluster_store()
+        .unwrap()
+        .mint_join_token("node-b")
+        .await
+        .unwrap();
+
+    let node_auth = auth_state(
+        Db::open_in_memory(Arc::new(ApiClock::new(at(NOW))))
+            .await
+            .unwrap(),
+        false,
+    )
+    .await;
+    let (node_service, _) = service("node-b", ModuleAppliers::default()).await;
+    let node_status = Arc::new(ClusterStatusHandle::new());
+    let node_state = AppState::new()
+        .with_config_service(Arc::clone(&node_service))
+        .with_cluster_status(node_status.clone())
+        .with_auth(node_auth.clone());
+    let mut node_options = ClusterRuntimeOptions::new(node_dir.path());
+    node_options.clock = cluster_clock;
+    node_options.status = node_status.clone();
+    node_options.join_token = Some(Secret::new(token.expose()));
+    node_options.master_cert_pem = Some(server_cert);
+    let node = ClusterRuntime::start(
+        sub_node_config(node_dir.path(), &url),
+        &node_state,
+        node_options,
+    )
+    .await
+    .unwrap();
+
+    for _ in 0..20_000 {
+        if node_status
+            .status()
+            .is_some_and(|status| status.master_reachable)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        node_status
+            .status()
+            .is_some_and(|status| status.master_reachable),
+        "sub-node never connected"
+    );
+
+    let created = master_auth
+        .tokens()
+        .create(
+            "alice".to_owned(),
+            "ci".to_owned(),
+            dnscraft_api::Scope::Admin,
+            None,
+        )
+        .await
+        .unwrap();
+    let plaintext = created.plaintext().expose().to_owned();
+    for _ in 0..20_000 {
+        if node_auth.tokens().authenticate(&plaintext).await.is_ok() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let principal = node_auth
+        .tokens()
+        .authenticate(&plaintext)
+        .await
+        .expect("sub-node applied the pushed auth snapshot");
+    assert_eq!(principal.actor_id(), "alice");
+    assert_eq!(
+        node_auth.auth_snapshot().await.unwrap().session_epoch,
+        master_auth.auth_snapshot().await.unwrap().session_epoch
+    );
+
+    node.shutdown().await;
+    master.shutdown().await;
 }
 
 // ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ use crate::mcp_backend::McpBackendInner;
 use crate::query_log::QueryLog;
 use crate::tls::{TlsAdmin, TlsStatus, TlsStatusProvider};
 
-use dnscraft_cluster::{ClusterStore, OfflineWriteQueue};
+use dnscraft_cluster::{ClusterBroadcast, ClusterStore, OfflineWriteQueue};
 use dnscraft_filtering::FilterEngine;
 use dnscraft_mcp::McpConfig;
 use dnscraft_policy::PolicyEngine;
@@ -43,6 +43,7 @@ pub struct AppState {
     query_log: Option<Arc<QueryLog>>,
     cluster_store: Option<Arc<ClusterStore>>,
     cluster_status: Option<Arc<dyn ClusterStatusProvider>>,
+    cluster_broadcast: Arc<Mutex<Option<ClusterBroadcast>>>,
     offline_writes: Option<Arc<OfflineWriteQueue>>,
     mcp_backend: Option<Arc<McpBackendInner>>,
     mcp_config: McpConfig,
@@ -77,6 +78,7 @@ impl AppState {
             query_log: None,
             cluster_store: None,
             cluster_status: None,
+            cluster_broadcast: Arc::new(Mutex::new(None)),
             offline_writes: None,
             mcp_backend: None,
             mcp_config: McpConfig::default(),
@@ -186,6 +188,40 @@ impl AppState {
     /// The configured cluster status source, if any.
     pub(crate) fn cluster_status(&self) -> Option<&Arc<dyn ClusterStatusProvider>> {
         self.cluster_status.as_ref()
+    }
+
+    /// Attaches the master's volatile cluster broadcast handle.
+    ///
+    /// The cluster runtime attaches this after starting the master listener so
+    /// the runtime-command endpoints can push to connected sub-nodes. A
+    /// standalone or sub-node runtime leaves it unset and the push is a no-op.
+    pub fn with_cluster_broadcast(self, broadcast: ClusterBroadcast) -> Self {
+        self.attach_cluster_broadcast(broadcast);
+        self
+    }
+
+    /// Attaches the broadcast handle on the shared state (interior mutability).
+    pub(crate) fn attach_cluster_broadcast(&self, broadcast: ClusterBroadcast) {
+        *self
+            .cluster_broadcast
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(broadcast);
+    }
+
+    /// The master broadcast handle, if this node runs the master role.
+    pub(crate) fn cluster_broadcast(&self) -> Option<ClusterBroadcast> {
+        self.cluster_broadcast
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Broadcasts a volatile runtime command to connected sub-nodes, if this
+    /// node is the cluster master.
+    pub(crate) fn broadcast_runtime_command(&self, kind: &str, payload: &serde_json::Value) {
+        if let Some(broadcast) = self.cluster_broadcast() {
+            broadcast.broadcast_runtime_command(kind, payload);
+        }
     }
 
     /// Attaches the sub-node offline write queue read by
