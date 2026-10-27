@@ -15,7 +15,7 @@ use dnscraft_listeners::{
     ChannelSink, Clock, ListenerSet, ListenersStatus, NullSink, QueryEventSink, SystemClock,
 };
 use dnscraft_policy::PolicyEngine;
-use dnscraft_tls::CertResolver;
+use dnscraft_tls::{CertResolver, TlsEngine};
 use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
 
@@ -127,6 +127,9 @@ pub struct App {
     set: ListenerSet<PolicyEngine>,
     writer: Option<JoinHandle<()>>,
     sink: Arc<dyn QueryEventSink>,
+    /// Keeps the TLS engine (and its renewal / DynDNS tasks) alive with the
+    /// server. Reads use the shared [`CertResolver`] handed to the listeners.
+    _tls: Option<TlsEngine>,
 }
 
 impl App {
@@ -162,22 +165,27 @@ pub async fn build(
 ) -> Result<App, Error> {
     let listeners = config.listeners_config()?;
     let log = config.log_settings()?;
-    let engine = engine::build_engine(clock).await?;
+    let engine::Engines { policy, tls } = engine::build_engines(&config, clock).await?;
 
-    let certs = match tls_secrets_from_env()? {
-        Some(secrets) => {
-            let resolver = Arc::new(CertResolver::new());
-            resolver
-                .install(
-                    secrets.chain_pem.expose().as_bytes(),
-                    secrets.key_pem.expose().as_bytes(),
-                )
-                .map_err(|e| {
-                    Error::tls("dnscraft.tls.install", format!("certificate install: {e}"))
-                })?;
-            Some(resolver)
-        }
-        None => None,
+    // A configured `[tls]` engine owns certificate renewal; otherwise keep the
+    // environment-PEM bootstrap for encrypted listeners.
+    let certs = match tls.as_ref() {
+        Some(engine) => Some(engine.resolver()),
+        None => match tls_secrets_from_env()? {
+            Some(secrets) => {
+                let resolver = Arc::new(CertResolver::new());
+                resolver
+                    .install(
+                        secrets.chain_pem.expose().as_bytes(),
+                        secrets.key_pem.expose().as_bytes(),
+                    )
+                    .map_err(|e| {
+                        Error::tls("dnscraft.tls.install", format!("certificate install: {e}"))
+                    })?;
+                Some(resolver)
+            }
+            None => None,
+        },
     };
 
     let (sink, writer) = if log.queries {
@@ -195,7 +203,7 @@ pub async fn build(
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let set = ListenerSet::start(
         listeners,
-        engine,
+        policy,
         certs,
         listener_sink,
         clock,
@@ -221,7 +229,12 @@ pub async fn build(
         }
     }
 
-    Ok(App { set, writer, sink })
+    Ok(App {
+        set,
+        writer,
+        sink,
+        _tls: tls,
+    })
 }
 
 /// Loads `config_path`, builds and runs until SIGTERM/SIGINT, then shuts down.
@@ -306,7 +319,10 @@ mod tests {
             Error::config("dnscraft.config.tls_env_conflict", "x"),
             Error::startup("dnscraft.startup.bind", "x"),
             Error::startup("dnscraft.startup.resolver", "x"),
+            Error::startup("dnscraft.startup.filtering", "x"),
+            Error::startup("dnscraft.startup.clients", "x"),
             Error::startup("dnscraft.startup.policy", "x"),
+            Error::startup("dnscraft.startup.tls", "x"),
             Error::startup("dnscraft.startup.listeners", "x"),
             Error::tls("dnscraft.tls.install", "x"),
         ];
