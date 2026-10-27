@@ -52,6 +52,7 @@ use crate::ca::{ClusterCa, cert_fingerprint, node_id_from_der};
 use crate::config::ListenConfig;
 use crate::enroll::{PROTOCOL_VERSION, enroll as run_enroll};
 use crate::error::ClusterError;
+use crate::relay::{RuntimeCommand, WriteExecutor, WriteRelay};
 use crate::store::ClusterStore;
 use crate::sync::{ConfigAck, ConfigSync, Hello, StreamError, StreamRecord};
 
@@ -102,6 +103,7 @@ pub struct ClusterServer {
     ca_cert_pem: String,
     server_cert_pem: String,
     config_sync: Arc<ConfigSync>,
+    clock: Arc<dyn Clock>,
     shutdown: watch::Sender<bool>,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -110,14 +112,16 @@ impl ClusterServer {
     /// Binds the cluster listener and starts accepting mTLS HTTP/2 connections.
     ///
     /// `store` is shared with the caller (`ClusterStore` is cheaply cloneable)
-    /// so the admin surface can read the registry. The master certificate is
-    /// issued by `ca` for `config.server_name`; its fingerprint is exposed by
+    /// so the admin surface can read the registry. `write_executor` runs
+    /// relayed writes after re-checking RBAC. The master certificate is issued
+    /// by `ca` for `config.server_name`; its fingerprint is exposed by
     /// [`Self::server_cert_pem`] for bootstrap pinning.
     pub async fn start(
         config: ClusterServerConfig,
         ca: ClusterCa,
         store: ClusterStore,
         clock: Arc<dyn Clock>,
+        write_executor: Arc<dyn WriteExecutor>,
     ) -> Result<Self, ClusterError> {
         // Defence in depth: the cluster listener is never exposed publicly.
         if config.listen.bind.is_unspecified()
@@ -154,9 +158,10 @@ impl ClusterServer {
         let state = Arc::new(ServerState {
             ca,
             store,
-            clock,
+            clock: Arc::clone(&clock),
             node_cert_ttl: config.node_cert_ttl,
             config_sync: Arc::clone(&config_sync),
+            write_executor,
         });
         let router = router(Arc::clone(&state));
 
@@ -205,6 +210,7 @@ impl ClusterServer {
             ca_cert_pem: state.ca.cert_pem().to_owned(),
             server_cert_pem,
             config_sync,
+            clock,
             shutdown,
             handle: Some(handle),
         })
@@ -233,6 +239,22 @@ impl ClusterServer {
         self.config_sync.as_ref()
     }
 
+    /// Broadcasts a volatile runtime command to every connected node.
+    ///
+    /// Nothing is persisted or retried: nodes connect later do not see the
+    /// command, and a command sent while a node is offline is lost (the
+    /// caller re-issues it when needed).
+    pub fn broadcast_runtime_command(&self, kind: &str, payload: &serde_json::Value) {
+        let command = RuntimeCommand {
+            kind: kind.to_owned(),
+            filter_set_id: None,
+            payload: payload.clone(),
+            issued_at: rfc3339(self.clock.now()),
+        };
+        self.config_sync
+            .broadcast(StreamRecord::RuntimeCommand(command));
+    }
+
     /// Stops accepting new connections and waits for the accept loop to exit.
     ///
     /// Established connections finish on their own; dropping the server also
@@ -258,6 +280,7 @@ struct ServerState {
     clock: Arc<dyn Clock>,
     node_cert_ttl: Duration,
     config_sync: Arc<ConfigSync>,
+    write_executor: Arc<dyn WriteExecutor>,
 }
 
 /// Authenticated peer identity extracted from the client certificate chain.
@@ -286,7 +309,7 @@ fn router(state: Arc<ServerState>) -> Router {
         .route("/cluster/v1/ack", post(config_ack))
         .route("/cluster/v1/heartbeat", post(heartbeat))
         .route("/cluster/v1/logs", post(not_found))
-        .route("/cluster/v1/writes", post(not_found))
+        .route("/cluster/v1/writes", post(write_relay))
         .route_layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             authenticate,
@@ -472,6 +495,36 @@ async fn config_ack(
         .await
     {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+/// `POST /cluster/v1/writes` — executes a write relayed by a sub-node.
+///
+/// The same status and body the canonical handler produced are returned, so
+/// the sub-node can relay them verbatim. RBAC re-check, persistence, apply and
+/// idempotency belong to the [`WriteExecutor`].
+async fn write_relay(
+    State(state): State<Arc<ServerState>>,
+    Json(relay): Json<WriteRelay>,
+) -> Response {
+    match state
+        .write_executor
+        .execute(
+            relay.actor,
+            relay.method,
+            relay.path,
+            relay.body,
+            relay.if_match,
+            relay.idempotency_key,
+        )
+        .await
+    {
+        Ok(response) => {
+            let status =
+                StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            (status, Json(response.body)).into_response()
+        }
         Err(error) => error_response(&error),
     }
 }

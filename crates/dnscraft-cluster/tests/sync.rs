@@ -17,7 +17,8 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 use dnscraft_cluster::{
     ClusterCa, ClusterClient, ClusterError, ClusterServer, ClusterServerConfig, ClusterStore,
-    ConfigApplier, ConfigPush, ListenConfig, NodeIdentity, PendingNodeIdentity, TlsPaths,
+    ConfigApplier, ConfigPush, ListenConfig, NodeIdentity, PendingNodeIdentity, RelayResponse,
+    RelayedActor, TlsPaths, WriteExecutor,
 };
 use dnscraft_common::clock::ManualClock;
 use dnscraft_common::secret::Secret;
@@ -65,6 +66,26 @@ impl ConfigApplier for MockApplier {
             .unwrap()
             .push((version, snapshot.clone()));
         Ok(version)
+    }
+}
+
+/// Write relay is not exercised here.
+struct NoWrites;
+
+#[async_trait]
+impl WriteExecutor for NoWrites {
+    async fn execute(
+        &self,
+        _actor: RelayedActor,
+        _method: String,
+        _path: String,
+        _body: Value,
+        _if_match: Option<String>,
+        _idempotency_key: Option<String>,
+    ) -> Result<RelayResponse, ClusterError> {
+        Err(ClusterError::Internal {
+            message: "write relay not used in this test".to_owned(),
+        })
     }
 }
 
@@ -127,6 +148,7 @@ async fn start_master(name: &str) -> Master {
         ca,
         store.clone(),
         clock.clone(),
+        Arc::new(NoWrites),
     )
     .await
     .unwrap();

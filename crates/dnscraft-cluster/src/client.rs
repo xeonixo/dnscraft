@@ -28,6 +28,7 @@ use crate::config::{
 use crate::enroll::{EnrollRequest, EnrollResponse, PROTOCOL_VERSION};
 use crate::error::ClusterError;
 use crate::identity::NodeIdentity;
+use crate::relay::{RelayResponse, RuntimeCommand, RuntimeCommandApplier, WriteRelay};
 use crate::server::{HeartbeatRequest, HeartbeatResponse, PROTOCOL_HEADER};
 use crate::sync::{ConfigAck, ConfigApplier, ConfigPush, Hello, StreamError, StreamRecord};
 
@@ -35,6 +36,7 @@ const ENROLL_PATH: &str = "/cluster/v1/enroll";
 const STREAM_PATH: &str = "/cluster/v1/stream";
 const HEARTBEAT_PATH: &str = "/cluster/v1/heartbeat";
 const ACK_PATH: &str = "/cluster/v1/ack";
+const RELAY_PATH: &str = "/cluster/v1/writes";
 const NDJSON: &str = "application/x-ndjson";
 
 /// A sub-node's HTTP/2 mTLS client for the master's cluster listener.
@@ -201,6 +203,45 @@ impl ClusterClient {
         Ok(applied_version)
     }
 
+    /// Reads one stream record; applies a broadcast runtime command.
+    ///
+    /// Returns `true` when a command was applied, `false` for any other
+    /// record. The command is not queued: if the applier fails the error is
+    /// [`ClusterError::RuntimeCommandFailed`] and the command is dropped.
+    pub async fn apply_runtime_next(
+        &self,
+        stream: &mut ClusterStream,
+        applier: &dyn RuntimeCommandApplier,
+    ) -> Result<bool, ClusterError> {
+        match stream.next_record().await? {
+            StreamRecord::RuntimeCommand(command) => {
+                self.apply_runtime_command(&command, applier).await?;
+                Ok(true)
+            }
+            StreamRecord::Error { error } => Err(map_wire_error(&error)),
+            _ => Ok(false),
+        }
+    }
+
+    /// Applies one runtime command through `applier`.
+    ///
+    /// Any applier failure is reported as `cluster.runtime_command.failed`.
+    pub async fn apply_runtime_command(
+        &self,
+        command: &RuntimeCommand,
+        applier: &dyn RuntimeCommandApplier,
+    ) -> Result<(), ClusterError> {
+        applier
+            .apply_runtime_command(&command.kind, &command.payload)
+            .await
+            .map_err(|error| match error {
+                ClusterError::RuntimeCommandFailed { .. } => error,
+                other => ClusterError::RuntimeCommandFailed {
+                    message: other.to_string(),
+                },
+            })
+    }
+
     async fn post_ack(&self, applied_version: i64) -> Result<(), ClusterError> {
         let body = serde_json::to_vec(&StreamRecord::Ack(ConfigAck { applied_version })).map_err(
             |error| ClusterError::Internal {
@@ -245,6 +286,56 @@ impl ClusterClient {
             .await
             .map_err(master_unavailable)?;
         json_body(ensure_success(response).await?).await
+    }
+
+    /// Relays one write to the master and returns its response verbatim.
+    ///
+    /// Transport failures are retried with the same encoded [`WriteRelay`]
+    /// (same `request_id` and `Idempotency-Key`) using clock-driven backoff
+    /// until [`DEFAULT_MASTER_TIMEOUT`] elapses, then
+    /// [`ClusterError::WriteRelayFailed`]. A response from the master, including
+    /// a `4xx`/`5xx`, is returned unchanged and never retried. The sub-node
+    /// never applies the write locally.
+    pub async fn relay_write(&self, relay: WriteRelay) -> Result<RelayResponse, ClusterError> {
+        let body = serde_json::to_vec(&relay).map_err(|error| ClusterError::Internal {
+            message: format!("encode write relay: {error}"),
+        })?;
+        let deadline = add_duration(self.clock.now(), DEFAULT_MASTER_TIMEOUT);
+        let wake = tokio::sync::Notify::new();
+        let mut backoff = Backoff::new(DEFAULT_RECONNECT_BACKOFF, DEFAULT_RECONNECT_BACKOFF_MAX);
+        loop {
+            match self.post_relay(&body).await {
+                Ok(response) => return Ok(response),
+                Err(ClusterError::MasterUnavailable) => {
+                    let now = self.clock.now();
+                    let remaining = deadline.duration_since(now).unwrap_or(Duration::ZERO);
+                    if remaining.is_zero() {
+                        return Err(ClusterError::WriteRelayFailed);
+                    }
+                    let delay = backoff.next_delay().min(remaining);
+                    wait_until(self.clock.as_ref(), add_duration(now, delay), &wake).await;
+                    if self.clock.now() >= deadline {
+                        return Err(ClusterError::WriteRelayFailed);
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn post_relay(&self, body: &[u8]) -> Result<RelayResponse, ClusterError> {
+        let response = self
+            .http
+            .post(format!("{}{RELAY_PATH}", self.base_url))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.to_vec())
+            .send()
+            .await
+            .map_err(master_unavailable)?;
+        let status = response.status().as_u16();
+        let bytes = response.bytes().await.map_err(master_unavailable)?;
+        let body = serde_json::from_slice(&bytes).map_err(|_| ClusterError::WriteRelayFailed)?;
+        Ok(RelayResponse { status, body })
     }
 
     /// Opens the stream, retrying transient failures with exponential backoff.

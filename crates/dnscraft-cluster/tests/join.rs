@@ -13,9 +13,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use dnscraft_cluster::{
-    ClusterCa, ClusterClient, ClusterServer, ClusterServerConfig, ClusterStore, ListenConfig,
-    NodeIdentity, PROTOCOL_VERSION, PendingNodeIdentity, TlsPaths,
+    ClusterCa, ClusterClient, ClusterError, ClusterServer, ClusterServerConfig, ClusterStore,
+    ListenConfig, NodeIdentity, PROTOCOL_VERSION, PendingNodeIdentity, RelayResponse, RelayedActor,
+    TlsPaths, WriteExecutor,
 };
 use dnscraft_common::clock::{Clock, ManualClock};
 use dnscraft_common::secret::Secret;
@@ -31,6 +33,26 @@ use serde_json::Value;
 
 const NODE_CERT_TTL: Duration = Duration::from_secs(90 * 24 * 3600);
 const TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
+
+/// Write relay is not exercised here.
+struct NoWrites;
+
+#[async_trait]
+impl WriteExecutor for NoWrites {
+    async fn execute(
+        &self,
+        _actor: RelayedActor,
+        _method: String,
+        _path: String,
+        _body: Value,
+        _if_match: Option<String>,
+        _idempotency_key: Option<String>,
+    ) -> Result<RelayResponse, ClusterError> {
+        Err(ClusterError::Internal {
+            message: "write relay not used in this test".to_owned(),
+        })
+    }
+}
 
 /// A unique, self-cleaning temporary directory.
 struct TestDir(PathBuf);
@@ -93,6 +115,7 @@ async fn start_master(name: &str) -> Master {
         ca,
         store.clone(),
         clock.clone(),
+        Arc::new(NoWrites),
     )
     .await
     .unwrap();

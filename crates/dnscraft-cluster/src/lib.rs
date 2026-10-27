@@ -20,6 +20,11 @@
 //! - [`StreamRecord`] / [`Hello`] / [`ConfigPush`] / [`ConfigAck`] — the NDJSON
 //!   stream records, plus [`ConfigApplier`] and [`ConfigSync`] for full-snapshot
 //!   configuration push, digest verification, acknowledgement, lag, and retry.
+//! - [`WriteRelay`] / [`WriteExecutor`] / [`RelayResponse`] — live write relay
+//!   from a sub-node to the master (the caller re-checks RBAC and executes the
+//!   canonical handler).
+//! - [`RuntimeCommand`] / [`RuntimeCommandApplier`] — volatile runtime-command
+//!   broadcast to every connected node (never persisted or queued).
 
 #![deny(missing_docs)]
 
@@ -29,6 +34,7 @@ mod config;
 mod enroll;
 mod error;
 mod identity;
+mod relay;
 mod server;
 mod store;
 mod sync;
@@ -42,6 +48,9 @@ pub use config::{
 pub use enroll::{EnrollRequest, EnrollResponse, PROTOCOL_VERSION, enroll};
 pub use error::ClusterError;
 pub use identity::{NodeIdentity, PendingNodeIdentity};
+pub use relay::{
+    RelayResponse, RelayedActor, RuntimeCommand, RuntimeCommandApplier, WriteExecutor, WriteRelay,
+};
 pub use server::{ClusterServer, ClusterServerConfig, HeartbeatRequest, HeartbeatResponse};
 pub use store::{ClusterNode, ClusterStore, MintedJoinToken};
 pub use sync::{

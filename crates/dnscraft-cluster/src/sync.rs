@@ -26,6 +26,7 @@ use tokio::sync::{Notify, mpsc, watch};
 
 use crate::config::{DEFAULT_RECONNECT_BACKOFF, DEFAULT_RECONNECT_BACKOFF_MAX};
 use crate::error::ClusterError;
+use crate::relay::RuntimeCommand;
 
 /// A canonical, deterministic byte encoding of a snapshot.
 ///
@@ -186,7 +187,8 @@ pub struct StreamError {
 /// One NDJSON record exchanged over the cluster stream.
 ///
 /// Serialized as a single JSON object with a `type` tag
-/// (`hello`, `config_push`, `ack`, `error`) followed by a newline.
+/// (`hello`, `config_push`, `ack`, `runtime_command`, `error`) followed by a
+/// newline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamRecord {
@@ -197,6 +199,8 @@ pub enum StreamRecord {
     /// Applied-version acknowledgement.
     #[serde(rename = "ack")]
     Ack(ConfigAck),
+    /// Volatile runtime command (never persisted or queued).
+    RuntimeCommand(RuntimeCommand),
     /// Terminal stream error.
     Error {
         /// Error code and optional parameters.
@@ -382,6 +386,16 @@ impl ConfigSync {
     /// Removes a disconnected stream; retries for it stop.
     pub(crate) fn unregister(&self, node_id: &str) {
         self.lock().nodes.remove(node_id);
+    }
+
+    /// Sends one record to every connected node.
+    ///
+    /// Best-effort and never retried: a full node queue drops the record, which
+    /// is correct for volatile runtime commands (last command wins).
+    pub(crate) fn broadcast(&self, record: StreamRecord) {
+        for node in self.lock().nodes.values() {
+            let _ = node.tx.try_send(record.clone());
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, SyncState> {
