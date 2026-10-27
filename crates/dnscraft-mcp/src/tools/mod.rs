@@ -79,6 +79,53 @@ pub(crate) fn parse_arguments<T: DeserializeOwned>(
         .map_err(|_| invalid_input("arguments do not match the input schema"))
 }
 
+/// Parse and validate one tool's raw JSON input without performing I/O.
+///
+/// This is the fuzzing entry point (M26). `tool` is one of the 13 catalog
+/// names and `json` is the raw `arguments` object. It runs the same
+/// `serde_json` decode with `deny_unknown_fields` and the same per-tool value
+/// checks as dispatch. Backend, scope, write-gate and protected-domain checks
+/// are not input parsing and are not covered here; config-dependent duration
+/// maxima likewise stay in the handlers.
+///
+/// `get_status` takes no arguments, so any JSON object is accepted.
+///
+/// # Errors
+///
+/// Returns [`McpError::ToolNotFound`] for a name outside the catalog and
+/// [`McpError::InvalidInput`] for malformed JSON, a non-object document or
+/// arguments the tool's parser rejects. The detail is collapsed to a stable
+/// reason because this entry point has no tool-result envelope.
+#[doc(hidden)]
+pub fn parse_mcp_tool_input(tool: &str, json: &[u8]) -> Result<(), McpError> {
+    let value: Value =
+        serde_json::from_slice(json).map_err(|_| invalid_arguments("malformed JSON"))?;
+    let Value::Object(arguments) = value else {
+        return Err(invalid_arguments("arguments must be a JSON object"));
+    };
+    let valid = match tool {
+        "get_status" => true,
+        name if read::is_read_tool(name) => read::validate_arguments(name, Some(arguments)),
+        name if write::is_write_tool(name) => write::validate_arguments(name, Some(arguments)),
+        _ => {
+            return Err(McpError::ToolNotFound {
+                tool: tool.to_owned(),
+            });
+        }
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid_arguments("arguments do not match the input schema"))
+    }
+}
+
+fn invalid_arguments(reason: &'static str) -> McpError {
+    McpError::InvalidInput {
+        reason: reason.to_owned(),
+    }
+}
+
 /// A `mcp.invalid_input` tool result with a fixed reason.
 pub(crate) fn invalid_input(reason: &'static str) -> CallToolResult {
     tool_error(
@@ -185,5 +232,69 @@ impl ServerHandler for McpServer {
             )
         };
         Ok(result.into())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_a_valid_input_for_every_tool() {
+        let cases = [
+            ("search_query_log", r#"{"domain":"example.com","limit":10}"#),
+            (
+                "get_query",
+                r#"{"id":"123e4567-e89b-12d3-a456-426614174000"}"#,
+            ),
+            ("explain_block", r#"{"domain":"example.com","qtype":"A"}"#),
+            (
+                "test_query",
+                r#"{"domain":"example.net","source_ip":"192.0.2.1"}"#,
+            ),
+            (
+                "get_stats",
+                r#"{"from":"2026-01-01T00:00:00Z","to":"2026-01-02T00:00:00Z"}"#,
+            ),
+            ("list_clients", r#"{"limit":10,"source":"unifi"}"#),
+            ("list_mcp_rules", r#"{"kind":"pauses","limit":10}"#),
+            ("get_status", "{}"),
+            (
+                "allow_temporarily",
+                r#"{"domain":"example.com","duration":"PT15M"}"#,
+            ),
+            ("add_rule", r#"{"domain":"ads.example"}"#),
+            ("remove_rule", r#"{"domain":"example.com"}"#),
+            ("pause_filter_set", r#"{"duration":"PT1H"}"#),
+            ("resume_filter_set", r#"{"filter_set_id":"default"}"#),
+        ];
+        for (tool, json) in cases {
+            assert!(
+                parse_mcp_tool_input(tool, json.as_bytes()).is_ok(),
+                "{tool}: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_unknown_and_hostile_input() {
+        for json in [
+            r#"{"domain":"#,
+            "[1,2,3]",
+            r#"{"domain":"example.com","bogus":1}"#,
+            r#"{"domain":"example.com$dnsrewrite=127.0.0.1"}"#,
+            r#"{"domain":"||ads.example^"}"#,
+            r#"{"domain":"*.example.com"}"#,
+            r#"{"domain":""}"#,
+            r#"{"id":"not-a-uuid"}"#,
+            r#"{"limit":"fifty"}"#,
+        ] {
+            assert!(
+                parse_mcp_tool_input("add_rule", json.as_bytes()).is_err(),
+                "{json}"
+            );
+        }
+        assert!(parse_mcp_tool_input("nope", b"{}").is_err());
     }
 }

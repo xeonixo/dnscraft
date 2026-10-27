@@ -84,6 +84,8 @@ jobs:
           - rule_parse
           - listeners_handle_wire
           - listeners_doh_request
+          - mcp_request
+          - mcp_tool_input
     # Root rust-toolchain.toml pins stable; cargo-fuzz needs nightly (-Zsanitizer).
     # RUSTUP_TOOLCHAIN overrides that pin for this job only.
     # Use the gnu target: musl defaults to crt-static, which is incompatible with ASAN.

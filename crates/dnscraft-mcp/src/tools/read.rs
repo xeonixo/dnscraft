@@ -211,6 +211,37 @@ pub(crate) async fn call(
     }
 }
 
+/// Run one read tool's parse and value checks without I/O.
+///
+/// Mirrors the `parse_arguments` + `into_params`/`validate` calls in [`call`]
+/// so the fuzz entry point exercises production parsing.
+pub(crate) fn validate_arguments(name: &str, arguments: Option<JsonObject>) -> bool {
+    match name {
+        "search_query_log" => parse_arguments::<SearchArgs>(arguments)
+            .and_then(SearchArgs::into_params)
+            .is_ok(),
+        "get_query" => parse_arguments::<GetQueryArgs>(arguments)
+            .and_then(GetQueryArgs::into_id)
+            .is_ok(),
+        "explain_block" => parse_arguments::<ExplainArgs>(arguments)
+            .and_then(ExplainArgs::validate)
+            .is_ok(),
+        "test_query" => parse_arguments::<TestQueryArgs>(arguments)
+            .and_then(TestQueryArgs::validate)
+            .is_ok(),
+        "get_stats" => parse_arguments::<StatsArgs>(arguments)
+            .and_then(StatsArgs::into_params)
+            .is_ok(),
+        "list_clients" => parse_arguments::<ClientsArgs>(arguments)
+            .and_then(ClientsArgs::into_params)
+            .is_ok(),
+        "list_mcp_rules" => parse_arguments::<RulesArgs>(arguments)
+            .and_then(RulesArgs::into_params)
+            .is_ok(),
+        _ => false,
+    }
+}
+
 #[tool_router(vis = "pub(crate)")]
 impl McpServer {
     /// Current node status.

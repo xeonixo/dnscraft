@@ -13,6 +13,7 @@ dnscraft-proto = { path = "../crates/dnscraft-proto" }
 dnscraft-filtering = { path = "../crates/dnscraft-filtering" }
 dnscraft-policy = { path = "../crates/dnscraft-policy" }
 dnscraft-listeners = { path = "../crates/dnscraft-listeners" }
+dnscraft-mcp = { path = "../crates/dnscraft-mcp" }
 http = "1.5.0"
 tokio = { version = "1.54.1", features = ["rt"] }
 
@@ -54,6 +55,20 @@ bench = false
 [[bin]]
 name = "listeners_doh_request"
 path = "fuzz_targets/listeners_doh_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_request"
+path = "fuzz_targets/mcp_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_tool_input"
+path = "fuzz_targets/mcp_tool_input.rs"
 test = false
 doc = false
 bench = false

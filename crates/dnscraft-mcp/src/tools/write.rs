@@ -59,6 +59,30 @@ pub fn is_write_tool(name: &str) -> bool {
     WRITE_TOOL_NAMES.contains(&name)
 }
 
+/// Run one write tool's parse and value checks without I/O.
+///
+/// Mirrors the `parse_arguments` + domain/sanitizer work in the handlers.
+/// Config-dependent duration maxima and protected-domain checks stay in the
+/// handlers because they need a server handle; the fuzz entry point covers
+/// schema, enum and domain-syntax failures.
+pub(crate) fn validate_arguments(name: &str, arguments: Option<JsonObject>) -> bool {
+    match name {
+        "allow_temporarily" => parse_arguments::<AllowArgs>(arguments).is_ok_and(|args| {
+            let _ = sanitize_reason(args.reason.as_deref());
+            validate_domain(&args.domain).is_ok()
+        }),
+        "add_rule" => parse_arguments::<AddRuleArgs>(arguments).is_ok_and(|args| {
+            let _ = sanitize_reason(args.reason.as_deref());
+            validate_domain(&args.domain).is_ok()
+        }),
+        "remove_rule" => parse_arguments::<RemoveRuleArgs>(arguments)
+            .is_ok_and(|args| validate_domain(&args.domain).is_ok()),
+        "pause_filter_set" => parse_arguments::<PauseArgs>(arguments).is_ok(),
+        "resume_filter_set" => parse_arguments::<ResumeArgs>(arguments).is_ok(),
+        _ => false,
+    }
+}
+
 /// Static tool definitions (`tools/list`) for the write tools.
 pub fn tool_definitions() -> Vec<Tool> {
     vec![
