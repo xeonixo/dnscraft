@@ -13,7 +13,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dnscraft_api::{Audit, ConfigService, ConfigStore, Db, QueryLog, SharedConfigService};
+use dnscraft_api::{Audit, ConfigService, ConfigStore, Db, QueryLog};
 use dnscraft_listeners::{
     ChannelSink, Clock, ListenerSet, ListenersConfig, ListenersStatus, QueryEventSink, SystemClock,
 };
@@ -147,7 +147,7 @@ pub struct App {
     /// Engines kept alive for the control-api assembly.
     engines: Engines,
     /// Atomic config service; control-api attaches to this handle.
-    config_service: SharedConfigService,
+    config_service: Arc<ConfigService>,
     /// Control-api HTTP listener task (aborted on shutdown); `None` when it
     /// stopped during startup and the DNS listeners keep serving.
     api: Option<JoinHandle<Result<(), Error>>>,
@@ -160,7 +160,7 @@ impl App {
     }
 
     /// The shared atomic config service (control-api and MCP attach here).
-    pub fn config_service(&self) -> SharedConfigService {
+    pub fn config_service(&self) -> Arc<ConfigService> {
         Arc::clone(&self.config_service)
     }
 

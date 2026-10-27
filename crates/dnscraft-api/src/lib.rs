@@ -34,7 +34,7 @@ mod storage;
 mod tls;
 
 pub use api::auth::{
-    ActorType, Auth, AuthSnapshot, AuthState, Authenticated, CreatedSession, CreatedToken,
+    ActorType, AuthSnapshot, AuthState, Authenticated, CreatedSession, CreatedToken,
     EndpointFamily, LocalAccountSnapshot, LocalAccountStore, OidcSettings, OidcState, Principal,
     Requirement, Role, Scope, SessionStore, TokenPrincipal, TokenSnapshot, TokenStore,
     auth_middleware, authorize, rbac_middleware, requirement, secure_cookie, session_set_cookie,
@@ -54,7 +54,7 @@ pub use config::{
     DEFAULT_RETENTION_DAYS, DEFAULT_SESSION_ABSOLUTE_TIMEOUT, DEFAULT_SESSION_IDLE_TIMEOUT,
     DEFAULT_WRITE_PER_SECOND, IpTruncate, QueryLogConfig, RateLimitConfig,
 };
-pub use config_apply::{ConfigActor, ConfigService, RollbackOutcome, SharedConfigService};
+pub use config_apply::{ConfigActor, ConfigService, RollbackOutcome};
 pub use dnscraft_cluster::{ClusterStore, OfflineWriteQueue};
 pub use dnscraft_common::clock::{Clock, ManualClock, SystemClock};
 pub use dnscraft_common::secret::Secret;

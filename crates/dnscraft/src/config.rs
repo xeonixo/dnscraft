@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use dnscraft_api::ControlApiConfig;
+pub use dnscraft_api::IpTruncate;
 use dnscraft_clients::ClientsConfig;
 use dnscraft_filtering::FilterConfig;
 use dnscraft_listeners::{
@@ -236,37 +237,6 @@ impl Default for LogConfig {
 
 fn default_ip_truncate() -> String {
     "last_octet".to_owned()
-}
-
-/// Source-IP truncation for query-log lines.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum IpTruncate {
-    /// Keep the full source IP.
-    #[default]
-    None,
-    /// IPv4: zero the last octet (`x.x.x.0`).
-    LastOctet,
-    /// IPv6: keep the first 48 bits (`a:b:c::`).
-    LastGroup,
-}
-
-impl IpTruncate {
-    /// Renders `ip` with this truncation applied.
-    pub fn truncate(self, ip: std::net::IpAddr) -> String {
-        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-        match (self, ip) {
-            (Self::None, ip) => ip.to_string(),
-            (Self::LastOctet, IpAddr::V4(v4)) => {
-                let o = v4.octets();
-                Ipv4Addr::new(o[0], o[1], o[2], 0).to_string()
-            }
-            (Self::LastGroup, IpAddr::V6(v6)) => {
-                let s = v6.segments();
-                Ipv6Addr::new(s[0], s[1], s[2], 0, 0, 0, 0, 0).to_string()
-            }
-            (_, ip) => ip.to_string(),
-        }
-    }
 }
 
 /// Resolved query-log settings (validated values).

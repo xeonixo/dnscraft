@@ -97,6 +97,22 @@ impl IpTruncate {
             ))),
         }
     }
+
+    /// Renders `ip` with this truncation applied.
+    pub fn truncate(self, ip: IpAddr) -> String {
+        match (self, ip) {
+            (Self::None, ip) => ip.to_string(),
+            (Self::LastOctet, IpAddr::V4(v4)) => {
+                let o = v4.octets();
+                Ipv4Addr::new(o[0], o[1], o[2], 0).to_string()
+            }
+            (Self::LastGroup, IpAddr::V6(v6)) => {
+                let s = v6.segments();
+                Ipv6Addr::new(s[0], s[1], s[2], 0, 0, 0, 0, 0).to_string()
+            }
+            (_, ip) => ip.to_string(),
+        }
+    }
 }
 
 /// Authentication settings.
@@ -255,9 +271,85 @@ impl ControlApiConfig {
         if self.port == 0 {
             return Err(ControlApiError::config("port must be > 0"));
         }
-        validate_auth(&self.auth)?;
-        validate_query_log(&self.query_log)?;
-        validate_rate_limit(&self.rate_limit)?;
+        let auth = &self.auth;
+        if auth.local_login_max_attempts < MIN_LOCAL_LOGIN_MAX_ATTEMPTS
+            || auth.local_login_max_attempts > MAX_LOCAL_LOGIN_MAX_ATTEMPTS
+        {
+            return Err(ControlApiError::config(format!(
+                "auth.local_login_max_attempts must be {MIN_LOCAL_LOGIN_MAX_ATTEMPTS}..={MAX_LOCAL_LOGIN_MAX_ATTEMPTS}, got {}",
+                auth.local_login_max_attempts
+            )));
+        }
+        check_duration_range(
+            "auth.local_login_lock_window",
+            auth.local_login_lock_window,
+            MIN_LOCAL_LOGIN_LOCK_WINDOW,
+            MAX_LOCAL_LOGIN_LOCK_WINDOW,
+        )?;
+        check_duration_range(
+            "auth.oidc_token_skew",
+            auth.oidc_token_skew,
+            MIN_OIDC_TOKEN_SKEW,
+            MAX_OIDC_TOKEN_SKEW,
+        )?;
+        check_duration_range(
+            "auth.api_token_max_ttl",
+            auth.api_token_max_ttl,
+            MIN_API_TOKEN_MAX_TTL,
+            MAX_API_TOKEN_MAX_TTL,
+        )?;
+        check_duration_range(
+            "auth.session_idle_timeout",
+            auth.session_idle_timeout,
+            MIN_SESSION_IDLE_TIMEOUT,
+            MAX_SESSION_IDLE_TIMEOUT,
+        )?;
+        check_duration_range(
+            "auth.session_absolute_timeout",
+            auth.session_absolute_timeout,
+            MIN_SESSION_ABSOLUTE_TIMEOUT,
+            MAX_SESSION_ABSOLUTE_TIMEOUT,
+        )?;
+
+        let query_log = &self.query_log;
+        if query_log.retention_days < MIN_RETENTION_DAYS
+            || query_log.retention_days > MAX_RETENTION_DAYS
+        {
+            return Err(ControlApiError::config(format!(
+                "query_log.retention_days must be {MIN_RETENTION_DAYS}..={MAX_RETENTION_DAYS}, got {}",
+                query_log.retention_days
+            )));
+        }
+        if query_log.max_rows_per_request < MIN_MAX_ROWS_PER_REQUEST
+            || query_log.max_rows_per_request > MAX_MAX_ROWS_PER_REQUEST
+        {
+            return Err(ControlApiError::config(format!(
+                "query_log.max_rows_per_request must be {MIN_MAX_ROWS_PER_REQUEST}..={MAX_MAX_ROWS_PER_REQUEST}, got {}",
+                query_log.max_rows_per_request
+            )));
+        }
+
+        let rate_limit = &self.rate_limit;
+        if rate_limit.read_per_second == 0 {
+            return Err(ControlApiError::config(
+                "rate_limit.read_per_second must be > 0",
+            ));
+        }
+        if rate_limit.write_per_second == 0 {
+            return Err(ControlApiError::config(
+                "rate_limit.write_per_second must be > 0",
+            ));
+        }
+        if rate_limit.auth_per_second == 0 {
+            return Err(ControlApiError::config(
+                "rate_limit.auth_per_second must be > 0",
+            ));
+        }
+        if rate_limit.burst_factor == 0 {
+            return Err(ControlApiError::config(
+                "rate_limit.burst_factor must be > 0",
+            ));
+        }
         self.mcp.validate().map_err(|error| {
             ControlApiError::config(format!(
                 "mcp config invalid: {}",
@@ -271,90 +363,6 @@ impl ControlApiConfig {
         })?;
         Ok(())
     }
-}
-
-fn validate_auth(a: &AuthConfig) -> Result<(), ControlApiError> {
-    if a.local_login_max_attempts < MIN_LOCAL_LOGIN_MAX_ATTEMPTS
-        || a.local_login_max_attempts > MAX_LOCAL_LOGIN_MAX_ATTEMPTS
-    {
-        return Err(ControlApiError::config(format!(
-            "auth.local_login_max_attempts must be {MIN_LOCAL_LOGIN_MAX_ATTEMPTS}..={MAX_LOCAL_LOGIN_MAX_ATTEMPTS}, got {}",
-            a.local_login_max_attempts
-        )));
-    }
-    check_duration_range(
-        "auth.local_login_lock_window",
-        a.local_login_lock_window,
-        MIN_LOCAL_LOGIN_LOCK_WINDOW,
-        MAX_LOCAL_LOGIN_LOCK_WINDOW,
-    )?;
-    check_duration_range(
-        "auth.oidc_token_skew",
-        a.oidc_token_skew,
-        MIN_OIDC_TOKEN_SKEW,
-        MAX_OIDC_TOKEN_SKEW,
-    )?;
-    check_duration_range(
-        "auth.api_token_max_ttl",
-        a.api_token_max_ttl,
-        MIN_API_TOKEN_MAX_TTL,
-        MAX_API_TOKEN_MAX_TTL,
-    )?;
-    check_duration_range(
-        "auth.session_idle_timeout",
-        a.session_idle_timeout,
-        MIN_SESSION_IDLE_TIMEOUT,
-        MAX_SESSION_IDLE_TIMEOUT,
-    )?;
-    check_duration_range(
-        "auth.session_absolute_timeout",
-        a.session_absolute_timeout,
-        MIN_SESSION_ABSOLUTE_TIMEOUT,
-        MAX_SESSION_ABSOLUTE_TIMEOUT,
-    )?;
-    Ok(())
-}
-
-fn validate_query_log(q: &QueryLogConfig) -> Result<(), ControlApiError> {
-    if q.retention_days < MIN_RETENTION_DAYS || q.retention_days > MAX_RETENTION_DAYS {
-        return Err(ControlApiError::config(format!(
-            "query_log.retention_days must be {MIN_RETENTION_DAYS}..={MAX_RETENTION_DAYS}, got {}",
-            q.retention_days
-        )));
-    }
-    if q.max_rows_per_request < MIN_MAX_ROWS_PER_REQUEST
-        || q.max_rows_per_request > MAX_MAX_ROWS_PER_REQUEST
-    {
-        return Err(ControlApiError::config(format!(
-            "query_log.max_rows_per_request must be {MIN_MAX_ROWS_PER_REQUEST}..={MAX_MAX_ROWS_PER_REQUEST}, got {}",
-            q.max_rows_per_request
-        )));
-    }
-    Ok(())
-}
-
-fn validate_rate_limit(r: &RateLimitConfig) -> Result<(), ControlApiError> {
-    if r.read_per_second == 0 {
-        return Err(ControlApiError::config(
-            "rate_limit.read_per_second must be > 0",
-        ));
-    }
-    if r.write_per_second == 0 {
-        return Err(ControlApiError::config(
-            "rate_limit.write_per_second must be > 0",
-        ));
-    }
-    if r.auth_per_second == 0 {
-        return Err(ControlApiError::config(
-            "rate_limit.auth_per_second must be > 0",
-        ));
-    }
-    if r.burst_factor == 0 {
-        return Err(ControlApiError::config(
-            "rate_limit.burst_factor must be > 0",
-        ));
-    }
-    Ok(())
 }
 
 fn check_duration_range(

@@ -17,7 +17,6 @@
 //! silently dropped.
 
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 
@@ -1172,9 +1171,6 @@ fn annotate_tls_failure(error: ControlApiError, changed: &[&'static str]) -> Con
         other => other,
     }
 }
-
-/// Convenience alias so callers can build the service from an `Arc`.
-pub type SharedConfigService = Arc<ConfigService>;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
