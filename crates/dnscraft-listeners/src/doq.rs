@@ -4,8 +4,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::SystemTime;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use dnscraft_policy::DnsProtocol;
 use dnscraft_proto::{Message, Rcode};
@@ -20,6 +19,7 @@ use crate::bans::StrikeReason;
 use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Exposure, Limits, ListenerConfig};
 use crate::core::{QueryMeta, error_reply_from_wire, handle_wire};
+use crate::doh::{ConnActivity, release_per_source};
 use crate::error::ListenersError;
 use crate::events::{QueryEventSink, emit_optional};
 use crate::framing::{MAX_MESSAGE_LEN, write_frame};
@@ -270,7 +270,7 @@ where
     if !shared.certs.has_cert() {
         TlsStats::bump(&shared.tls_stats.no_cert);
         drop(conn_permit);
-        release_per_source(&shared, source);
+        release_per_source(&shared.per_source, source);
         incoming.refuse();
         return;
     }
@@ -284,7 +284,7 @@ where
             Err(_) => {
                 TlsStats::bump(&shared.tls_stats.handshake_fail);
                 strike_tls_handshake(&shared, exposure, source);
-                release_per_source(&shared, source);
+                release_per_source(&shared.per_source, source);
                 DoqStats::bump(&shared.stats.closed);
                 return;
             }
@@ -298,7 +298,7 @@ where
                 Err(_) => {
                     TlsStats::bump(&shared.tls_stats.handshake_fail);
                     strike_tls_handshake(&shared, exposure, source);
-                    release_per_source(&shared, source);
+                    release_per_source(&shared.per_source, source);
                     DoqStats::bump(&shared.stats.closed);
                     return;
                 }
@@ -306,7 +306,7 @@ where
             () = wait_until(shared.clock.as_ref(), deadline, &wake) => {
                 TlsStats::bump(&shared.tls_stats.handshake_timeouts);
                 strike_tls_handshake(&shared, exposure, source);
-                release_per_source(&shared, source);
+                release_per_source(&shared.per_source, source);
                 DoqStats::bump(&shared.stats.closed);
                 return;
             }
@@ -317,7 +317,7 @@ where
             Err(()) => {
                 // Public SNI reject: stats/strikes already applied; close quietly.
                 conn.close(DOQ_NO_ERROR, b"");
-                release_per_source(&shared, source);
+                release_per_source(&shared.per_source, source);
                 DoqStats::bump(&shared.stats.closed);
                 return;
             }
@@ -325,7 +325,7 @@ where
 
         DoqStats::bump(&shared.stats.accepted);
         serve_connection(Arc::clone(&shared), conn, peer, client_id).await;
-        release_per_source(&shared, source);
+        release_per_source(&shared.per_source, source);
         DoqStats::bump(&shared.stats.closed);
     });
 }
@@ -391,18 +391,13 @@ async fn serve_connection<H>(
         shared.limits.max_quic_streams_per_connection.max(1) as usize,
     ));
     let idle = shared.limits.tcp_idle_timeout;
-    let activity = Arc::new(ConnActivity {
-        last: Mutex::new(shared.clock.now()),
-        wake: Notify::new(),
-        // Streams currently answering a complete query (incomplete reads do not count).
-        answering: AtomicUsize::new(0),
-    });
+    let activity = Arc::new(ConnActivity::new(shared.clock.now()));
     let mut listener_shutdown = shared.shutdown.clone();
     let mut draining = *listener_shutdown.borrow();
 
     loop {
         let deadline = add_duration(activity.last_activity(), idle);
-        let answering_now = activity.answering.load(Ordering::Relaxed);
+        let answering_now = activity.in_flight();
         if draining && answering_now == 0 {
             conn.close(DOQ_NO_ERROR, b"shutdown");
             return;
@@ -459,10 +454,10 @@ async fn serve_connection<H>(
                 }
             }
             // Re-evaluate idle when answering count or last_activity changes.
-            () = activity.wake.notified() => {}
-            () = wait_until(shared.clock.as_ref(), deadline, &activity.wake),
+            () = activity.notified() => {}
+            () = wait_until(shared.clock.as_ref(), deadline, activity.wake()),
                 if answering_now == 0 && !draining => {
-                let still_idle = activity.answering.load(Ordering::Relaxed) == 0
+                let still_idle = activity.in_flight() == 0
                     && shared.clock.now() >= add_duration(activity.last_activity(), idle);
                 if still_idle {
                     DoqStats::bump(&shared.stats.idle_timeouts);
@@ -471,36 +466,6 @@ async fn serve_connection<H>(
                 }
             }
         }
-    }
-}
-
-/// Per-connection application activity for DoQ idle close.
-struct ConnActivity {
-    last: Mutex<SystemTime>,
-    wake: Notify,
-    answering: AtomicUsize,
-}
-
-impl ConnActivity {
-    fn last_activity(&self) -> SystemTime {
-        *self
-            .last
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    fn touch(&self, clock: &dyn Clock) {
-        *self
-            .last
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = clock.now();
-        self.wake.notify_waiters();
-    }
-
-    fn begin_answering(&self) -> AnsweringGuard<'_> {
-        self.answering.fetch_add(1, Ordering::Relaxed);
-        self.wake.notify_waiters();
-        AnsweringGuard { activity: self }
     }
 }
 
@@ -540,7 +505,8 @@ where
     };
 
     // Complete message → answering (blocks application idle until done).
-    let _answering_guard = activity.begin_answering();
+    activity.begin();
+    let _answering_guard = AnsweringGuard { activity };
 
     // RFC 9250 §4.2.1: Message ID must be 0.
     match Message::decode(&wire) {
@@ -648,8 +614,7 @@ struct AnsweringGuard<'a> {
 
 impl Drop for AnsweringGuard<'_> {
     fn drop(&mut self) {
-        self.activity.answering.fetch_sub(1, Ordering::Relaxed);
-        self.activity.wake.notify_waiters();
+        self.activity.finish();
     }
 }
 
@@ -703,17 +668,4 @@ fn strike_tls_handshake<H: ?Sized>(shared: &DoqShared<H>, exposure: Exposure, pe
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     apply_tls_handshake_strike(&mut adm, exposure, peer, shared.clock.now());
-}
-
-fn release_per_source<H: ?Sized>(shared: &DoqShared<H>, source: IpAddr) {
-    let mut map = shared
-        .per_source
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(c) = map.get_mut(&source) {
-        *c = c.saturating_sub(1);
-        if *c == 0 {
-            map.remove(&source);
-        }
-    }
 }

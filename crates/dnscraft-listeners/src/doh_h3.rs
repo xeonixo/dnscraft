@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU16, Ordering};
 
 use bytes::{Buf, Bytes};
 use dnscraft_tls::CertResolver;
@@ -18,7 +18,7 @@ use tokio::sync::{Notify, Semaphore, oneshot, watch};
 use crate::admission::Admission;
 use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Limits, ListenerConfig};
-use crate::doh::{DohShared, DohStats, process_doh_request};
+use crate::doh::{ConnActivity, DohShared, DohStats, process_doh_request, release_per_source};
 use crate::doh_request::MAX_DOH_HEADER_LIST_SIZE;
 use crate::error::ListenersError;
 use crate::events::QueryEventSink;
@@ -231,7 +231,7 @@ where
     if !shared.certs.has_cert() {
         TlsStats::bump(&shared.tls_stats.no_cert);
         drop(conn_permit);
-        release_per_source(&shared, source);
+        release_per_source(&shared.doh.per_source, source);
         incoming.refuse();
         return;
     }
@@ -245,7 +245,7 @@ where
             Err(_) => {
                 TlsStats::bump(&shared.tls_stats.handshake_fail);
                 strike_handshake(&shared, exposure, source);
-                release_per_source(&shared, source);
+                release_per_source(&shared.doh.per_source, source);
                 DohStats::bump(&shared.doh.stats.closed);
                 return;
             }
@@ -259,7 +259,7 @@ where
                 Err(_) => {
                     TlsStats::bump(&shared.tls_stats.handshake_fail);
                     strike_handshake(&shared, exposure, source);
-                    release_per_source(&shared, source);
+                    release_per_source(&shared.doh.per_source, source);
                     DohStats::bump(&shared.doh.stats.closed);
                     return;
                 }
@@ -267,7 +267,7 @@ where
             () = wait_until(shared.doh.clock.as_ref(), deadline, &wake) => {
                 TlsStats::bump(&shared.tls_stats.handshake_timeouts);
                 strike_handshake(&shared, exposure, source);
-                release_per_source(&shared, source);
+                release_per_source(&shared.doh.per_source, source);
                 DohStats::bump(&shared.doh.stats.closed);
                 return;
             }
@@ -275,7 +275,7 @@ where
 
         DohStats::bump(&shared.doh.stats.accepted);
         serve_h3(Arc::clone(&shared), conn, peer).await;
-        release_per_source(&shared, source);
+        release_per_source(&shared.doh.per_source, source);
         DohStats::bump(&shared.doh.stats.closed);
     });
 }
@@ -291,43 +291,6 @@ fn strike_handshake<H: ?Sized>(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     apply_tls_handshake_strike(&mut adm, exposure, source, shared.doh.clock.now());
-}
-
-fn release_per_source<H: ?Sized>(shared: &DohH3Shared<H>, source: IpAddr) {
-    let mut map = shared
-        .doh
-        .per_source
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(c) = map.get_mut(&source) {
-        *c = c.saturating_sub(1);
-        if *c == 0 {
-            map.remove(&source);
-        }
-    }
-}
-
-struct ConnActivity {
-    last: Mutex<std::time::SystemTime>,
-    wake: Notify,
-    in_flight: AtomicUsize,
-}
-
-impl ConnActivity {
-    fn touch(&self, clock: &dyn Clock) {
-        *self
-            .last
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = clock.now();
-        self.wake.notify_waiters();
-    }
-
-    fn last_activity(&self) -> std::time::SystemTime {
-        *self
-            .last
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
 }
 
 async fn serve_h3<H>(shared: Arc<DohH3Shared<H>>, conn: quinn::Connection, peer: SocketAddr)
@@ -351,17 +314,13 @@ where
         shared.doh.limits.max_quic_streams_per_connection.max(1) as usize,
     ));
     let idle = shared.doh.limits.tcp_idle_timeout;
-    let activity = Arc::new(ConnActivity {
-        last: Mutex::new(shared.doh.clock.now()),
-        wake: Notify::new(),
-        in_flight: AtomicUsize::new(0),
-    });
+    let activity = Arc::new(ConnActivity::new(shared.doh.clock.now()));
     let mut listener_shutdown = shared.doh.shutdown.clone();
     let mut draining = *listener_shutdown.borrow();
 
     loop {
         let deadline = add_duration(activity.last_activity(), idle);
-        let in_flight = activity.in_flight.load(Ordering::Relaxed);
+        let in_flight = activity.in_flight();
         if draining && in_flight == 0 {
             conn.close(VarInt::from_u32(0), b"shutdown");
             return;
@@ -384,14 +343,14 @@ where
                         let activity = Arc::clone(&activity);
                         tokio::spawn(async move {
                             let _permit = permit;
-                            activity.in_flight.fetch_add(1, Ordering::Relaxed);
+                            activity.begin();
                             let clock = Arc::clone(&shared.doh.clock);
                             let result =
                                 handle_h3_request(Arc::clone(&shared), resolver, peer.ip()).await;
                             if result.is_err() {
                                 DohStats::bump(&shared.doh.stats.request_errors);
                             }
-                            activity.in_flight.fetch_sub(1, Ordering::Relaxed);
+                            activity.finish();
                             activity.touch(clock.as_ref());
                         });
                     }
@@ -402,9 +361,9 @@ where
             // Re-evaluate idle when a request finishes (in_flight -> 0) or
             // activity changes, so a stalled request that just timed out does
             // not leave the connection blocked on accept() forever.
-            () = activity.wake.notified() => {}
-            () = wait_until(shared.doh.clock.as_ref(), deadline, &activity.wake), if in_flight == 0 && !draining => {
-                if activity.in_flight.load(Ordering::Relaxed) == 0
+            () = activity.notified() => {}
+            () = wait_until(shared.doh.clock.as_ref(), deadline, activity.wake()), if in_flight == 0 && !draining => {
+                if activity.in_flight() == 0
                     && shared.doh.clock.now() >= deadline
                 {
                     conn.close(VarInt::from_u32(0), b"idle");

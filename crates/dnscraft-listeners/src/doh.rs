@@ -18,9 +18,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use std::time::SystemTime;
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 use tokio::sync::{Notify, Semaphore, oneshot, watch};
-use tokio::time::Instant as TokioInstant;
 use tokio_rustls::TlsAcceptor;
 
 use crate::admission::{Admission, AdmitDecision, ClientIdState, public_client_id_required};
@@ -276,7 +276,7 @@ fn handle_accept<H>(
 
         if !certs.has_cert() {
             TlsStats::bump(&tls_stats.no_cert);
-            release_per_source(&shared, source);
+            release_per_source(&shared.per_source, source);
             DohStats::bump(&shared.stats.closed);
             return;
         }
@@ -302,7 +302,7 @@ fn handle_accept<H>(
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     apply_tls_handshake_strike(&mut adm, exposure, peer.ip(), shared.clock.now());
                 }
-                release_per_source(&shared, source);
+                release_per_source(&shared.per_source, source);
                 DohStats::bump(&shared.stats.closed);
                 return;
             }
@@ -311,17 +311,18 @@ fn handle_accept<H>(
         let io = TokioIo::new(tls);
         let idle_timeout = shared.limits.tcp_idle_timeout;
         let max_streams = shared.limits.max_queries_per_connection.max(1);
-        let activity = Arc::new(ConnActivity::new());
+        let activity = Arc::new(ConnActivity::new(shared.clock.now()));
         let svc_shared = Arc::clone(&shared);
         let peer_ip = peer.ip();
         let act = Arc::clone(&activity);
         let service = service_fn(move |req: Request<Incoming>| {
             let shared = Arc::clone(&svc_shared);
             let act = Arc::clone(&act);
+            let clock = Arc::clone(&svc_shared.clock);
             async move {
                 act.begin();
                 let resp = handle_http(shared, peer_ip, req).await;
-                act.end();
+                act.end(clock.as_ref());
                 Ok::<_, Infallible>(resp)
             }
         });
@@ -347,7 +348,7 @@ fn handle_accept<H>(
             conn.as_mut().graceful_shutdown();
         }
         loop {
-            let deadline = activity.idle_deadline(idle_timeout);
+            let deadline = add_duration(activity.last_activity(), idle_timeout);
             let in_flight = activity.in_flight();
             tokio::select! {
                 r = conn.as_mut() => {
@@ -361,8 +362,8 @@ fn handle_accept<H>(
                     }
                 }
                 () = activity.notified() => {}
-                () = tokio::time::sleep_until(deadline), if in_flight == 0 && !shutting_down => {
-                    if activity.in_flight() == 0 && TokioInstant::now() >= activity.last_end() + idle_timeout {
+                () = wait_until(shared.clock.as_ref(), deadline, activity.wake()), if in_flight == 0 && !shutting_down => {
+                    if activity.in_flight() == 0 && shared.clock.now() >= add_duration(activity.last_activity(), idle_timeout) {
                         shutting_down = true;
                         conn.as_mut().graceful_shutdown();
                     }
@@ -370,64 +371,77 @@ fn handle_accept<H>(
             }
         }
 
-        release_per_source(&shared, source);
+        release_per_source(&shared.per_source, source);
         DohStats::bump(&shared.stats.closed);
     });
 }
 
-/// Per-connection HTTP activity for application idle close (h1 keep-alive and h2).
-struct ConnActivity {
-    in_flight: AtomicUsize,
-    last_end: Mutex<TokioInstant>,
+/// Per-connection application activity for idle close (shared by DoH, DoH/3, DoQ).
+pub(crate) struct ConnActivity {
+    last: Mutex<SystemTime>,
     wake: Notify,
+    in_flight: AtomicUsize,
 }
 
 impl ConnActivity {
-    fn new() -> Self {
+    pub(crate) fn new(now: SystemTime) -> Self {
         Self {
-            in_flight: AtomicUsize::new(0),
-            last_end: Mutex::new(TokioInstant::now()),
+            last: Mutex::new(now),
             wake: Notify::new(),
+            in_flight: AtomicUsize::new(0),
         }
     }
 
-    fn begin(&self) {
+    pub(crate) fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::Relaxed)
+    }
+
+    /// Marks one request/stream started.
+    pub(crate) fn begin(&self) {
         self.in_flight.fetch_add(1, Ordering::Relaxed);
         self.wake.notify_waiters();
     }
 
-    fn end(&self) {
+    /// Marks one finished without stamping `last_activity`.
+    pub(crate) fn finish(&self) {
         self.in_flight.fetch_sub(1, Ordering::Relaxed);
-        *self
-            .last_end
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = TokioInstant::now();
         self.wake.notify_waiters();
     }
 
-    fn in_flight(&self) -> usize {
-        self.in_flight.load(Ordering::Relaxed)
+    /// Marks one finished and stamps `last_activity` from `clock`.
+    pub(crate) fn end(&self, clock: &dyn Clock) {
+        self.in_flight.fetch_sub(1, Ordering::Relaxed);
+        self.touch(clock);
     }
 
-    fn last_end(&self) -> TokioInstant {
+    /// Stamps `last_activity` from `clock` and wakes idle waiters.
+    pub(crate) fn touch(&self, clock: &dyn Clock) {
         *self
-            .last_end
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = clock.now();
+        self.wake.notify_waiters();
+    }
+
+    pub(crate) fn last_activity(&self) -> SystemTime {
+        *self
+            .last
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn idle_deadline(&self, idle: std::time::Duration) -> TokioInstant {
-        self.last_end() + idle
+    pub(crate) fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.wake.notified()
     }
 
-    fn notified(&self) -> tokio::sync::futures::Notified<'_> {
-        self.wake.notified()
+    pub(crate) fn wake(&self) -> &Notify {
+        &self.wake
     }
 }
 
-fn release_per_source<H: ?Sized>(shared: &DohShared<H>, source: IpAddr) {
-    let mut map = shared
-        .per_source
+/// Decrements (and prunes at zero) the per-source connection counter.
+pub(crate) fn release_per_source(per_source: &Mutex<HashMap<IpAddr, u32>>, source: IpAddr) {
+    let mut map = per_source
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(c) = map.get_mut(&source) {

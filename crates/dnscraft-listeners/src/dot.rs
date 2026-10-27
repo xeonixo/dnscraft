@@ -1,7 +1,7 @@
 //! DNS over TLS listener (RFC 7858): framed TCP over rustls.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -15,6 +15,7 @@ use crate::admission::Admission;
 use crate::clock::Clock;
 use crate::config::{Limits, ListenerConfig};
 use crate::conn::{ConnIdentity, FramedShared, FramedStats, run_framed_connection};
+use crate::doh::release_per_source;
 use crate::error::ListenersError;
 use crate::events::QueryEventSink;
 use crate::handler::QueryHandler;
@@ -226,20 +227,7 @@ fn handle_accept<H>(
             }
         }
 
-        release_per_source(&shared, source);
+        release_per_source(&shared.per_source, source);
         FramedStats::bump(&shared.stats.closed);
     });
-}
-
-fn release_per_source<H: ?Sized>(shared: &FramedShared<H>, source: IpAddr) {
-    let mut map = shared
-        .per_source
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(c) = map.get_mut(&source) {
-        *c = c.saturating_sub(1);
-        if *c == 0 {
-            map.remove(&source);
-        }
-    }
 }
