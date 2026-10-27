@@ -20,8 +20,8 @@
 - [x] CL3a `auth_snapshot()` (hashes + non-secret OIDC + session epoch) + make
       `requirement`/`authorize` public for the master RBAC re-check.
 - [x] CL3b `apply_runtime_command(kind, payload)` (pause/resume, temporary allow).
-- [ ] CL4 query-log outbox: `seq` + outbox/ack table, transactional enqueue in `QueryLog::insert_batch`.
-- [ ] CL5 stats `node_id` dimension in `stats_hourly`/`stats_daily` (migration + rollup SQL + `RollupRow`)
+- [x] CL4 query-log outbox: `seq` + outbox/ack table, transactional enqueue in `QueryLog::insert_batch`.
+- [x] CL5 stats `node_id` dimension in `stats_hourly`/`stats_daily` (migration + rollup SQL + `RollupRow`)
       + `node_id` filter on query-log/stats.
 - [ ] CL6 `GET /api/v1/status` cluster fields (role, master reachability, applied version, lag,
       queue depth, last sync).
