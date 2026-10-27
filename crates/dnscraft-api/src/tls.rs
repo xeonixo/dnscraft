@@ -700,25 +700,6 @@ mod rfc3339_opt {
     }
 }
 
-/// Asks the ACME certificate resolver first, falling back to the self-signed
-/// bootstrap certificate while no ACME certificate exists.
-trait AcmeResolver: Send + Sync {
-    /// The certificate to serve, if any.
-    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>>;
-    /// DER of the leaf certificate to serve, if any (for the status fingerprint).
-    fn leaf_der(&self) -> Option<Vec<u8>>;
-}
-
-impl AcmeResolver for dnscraft_tls::CertResolver {
-    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        ResolvesServerCert::resolve(self, client_hello)
-    }
-
-    fn leaf_der(&self) -> Option<Vec<u8>> {
-        dnscraft_tls::CertResolver::leaf_der(self)
-    }
-}
-
 /// The bootstrap certificate, ready to hand to rustls.
 struct SelfSignedCert {
     certified: Arc<CertifiedKey>,
@@ -728,7 +709,7 @@ struct SelfSignedCert {
 /// A [`ResolvesServerCert`] that returns the ACME certificate when present and
 /// the self-signed bootstrap certificate otherwise.
 struct FallbackResolver {
-    acme: Arc<dyn AcmeResolver>,
+    acme: Arc<dnscraft_tls::CertResolver>,
     self_signed: Arc<CertifiedKey>,
     self_signed_fingerprint: String,
 }
@@ -1102,36 +1083,17 @@ mod tests {
         }
     }
 
-    /// A fake ACME resolver that flips between "no cert" and "a cert".
-    struct FakeAcme {
-        cert: Mutex<Option<Arc<CertifiedKey>>>,
-    }
-
-    impl FakeAcme {
-        fn empty() -> Self {
-            Self {
-                cert: Mutex::new(None),
-            }
-        }
-
-        fn install(&self, cert: Arc<CertifiedKey>) {
-            *self.cert.lock().unwrap() = Some(cert);
-        }
-    }
-
-    impl AcmeResolver for FakeAcme {
-        fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-            self.cert.lock().unwrap().clone()
-        }
-
-        fn leaf_der(&self) -> Option<Vec<u8>> {
-            self.cert
-                .lock()
-                .unwrap()
-                .as_ref()
-                .and_then(|k| k.cert.first())
-                .map(|c| c.as_ref().to_vec())
-        }
+    /// Installs a self-signed certificate into `resolver` and returns its leaf DER.
+    fn install_cert(resolver: &dnscraft_tls::CertResolver, sans: &[&str]) -> Vec<u8> {
+        let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let params =
+            rcgen::CertificateParams::new(sans.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                .unwrap();
+        let cert = params.self_signed(&key_pair).unwrap();
+        resolver
+            .install(cert.pem().as_bytes(), key_pair.serialize_pem().as_bytes())
+            .unwrap();
+        cert.der().as_ref().to_vec()
     }
 
     /// A client cert verifier that accepts anything but records the leaf DER,
@@ -1301,29 +1263,26 @@ mod tests {
 
     #[test]
     fn status_flips_from_self_signed_to_acme() {
-        let fake = Arc::new(FakeAcme::empty());
+        let acme = Arc::new(dnscraft_tls::CertResolver::new());
         let resolver = FallbackResolver {
-            acme: fake.clone(),
+            acme: acme.clone(),
             self_signed: make_certified(&["node.example.com"]),
             self_signed_fingerprint: "self-signed-fp".to_owned(),
         };
         assert_eq!(resolver.status().mode, TlsMode::SelfSigned);
         assert_eq!(resolver.status().fingerprint, "self-signed-fp");
 
-        let acme = make_certified(&["node.example.com"]);
-        let acme_fingerprint = sha256_hex(acme.cert[0].as_ref());
-        fake.install(acme);
+        let leaf = install_cert(&acme, &["node.example.com"]);
         assert_eq!(resolver.status().mode, TlsMode::Acme);
-        assert_eq!(resolver.status().fingerprint, acme_fingerprint);
+        assert_eq!(resolver.status().fingerprint, sha256_hex(&leaf));
     }
 
     #[tokio::test]
     async fn handshake_serves_self_signed_then_switches_to_acme() {
         let self_signed = make_certified(&["node.example.com", "localhost"]);
-        let acme_cert = make_certified(&["node.example.com"]);
-        let fake = Arc::new(FakeAcme::empty());
+        let acme = Arc::new(dnscraft_tls::CertResolver::new());
         let fallback = FallbackResolver {
-            acme: fake.clone(),
+            acme: acme.clone(),
             self_signed: self_signed.clone(),
             self_signed_fingerprint: "fp".to_owned(),
         };
@@ -1332,9 +1291,9 @@ mod tests {
         let first = handshake_leaf(server_config.clone()).await;
         assert_eq!(first.as_slice(), self_signed.cert[0].as_ref());
 
-        fake.install(acme_cert.clone());
+        let acme_leaf = install_cert(&acme, &["node.example.com"]);
         let second = handshake_leaf(server_config).await;
-        assert_eq!(second.as_slice(), acme_cert.cert[0].as_ref());
+        assert_eq!(second, acme_leaf);
     }
 
     #[test]
