@@ -17,14 +17,15 @@ use axum::Json;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
-use axum::http::header::IF_MATCH;
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::Secret;
 use crate::api::auth::Authenticated;
-use crate::api::config_routes::{json_body, module_error, service, stored_snapshot};
+use crate::api::config_routes::{
+    actor, if_match, json_body, module_error, service, stored_snapshot,
+};
 use crate::api::response::success;
 use crate::config_apply::ConfigActor;
 use crate::error::ControlApiError;
@@ -51,17 +52,6 @@ const TLS_KEYS: [&str; 13] = [
 
 /// Keys accepted inside `tls.notifications`.
 const NOTIFICATION_KEYS: [&str; 3] = ["webhook_url", "on_expiry", "on_dyndns_failure"];
-
-fn actor(auth: Option<Extension<Authenticated>>) -> ConfigActor {
-    match auth {
-        Some(Extension(auth)) => ConfigActor::new(auth.actor_id(), auth.actor_type().as_str()),
-        None => ConfigActor::local(),
-    }
-}
-
-fn if_match(headers: &HeaderMap) -> Option<&str> {
-    headers.get(IF_MATCH).and_then(|value| value.to_str().ok())
-}
 
 /// Validates the TLS config object, forwarding `tls.config.invalid`.
 pub(crate) fn validate_tls(value: &Value) -> Result<(), ControlApiError> {

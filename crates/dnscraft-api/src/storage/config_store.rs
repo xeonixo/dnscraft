@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use super::{Db, audit as audit_store, db};
 use crate::audit::{ConfigChangeRecord, config_change_record, redact};
-use crate::error::ControlApiError;
+use crate::error::{ControlApiError, serialize_err};
 
 /// Stores and retrieves versioned, redacted config snapshots.
 ///
@@ -93,11 +93,5 @@ impl ConfigStore {
         offset: u64,
     ) -> Result<Vec<(i64, i64)>, ControlApiError> {
         self.db.config_version_list(limit, offset).await
-    }
-}
-
-fn serialize_err(err: serde_json::Error) -> ControlApiError {
-    ControlApiError::Internal {
-        message: err.to_string(),
     }
 }

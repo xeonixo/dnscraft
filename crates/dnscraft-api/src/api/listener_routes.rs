@@ -11,31 +11,18 @@ use axum::Json;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
-use axum::http::header::IF_MATCH;
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::api::auth::Authenticated;
 use crate::api::config_routes::{
-    array, array_mut, json_body, module_error, remove_by_id, service, stored_snapshot,
-    upsert_by_id, valid_id,
+    IdBody, actor, array, array_mut, if_match, json_body, module_error, remove_by_id, service,
+    stored_snapshot, upsert_by_id, valid_id,
 };
 use crate::api::response::success;
-use crate::config_apply::ConfigActor;
 use crate::error::ControlApiError;
 use crate::server::AppState;
-
-fn actor(auth: Option<Extension<Authenticated>>) -> ConfigActor {
-    match auth {
-        Some(Extension(auth)) => ConfigActor::new(auth.actor_id(), auth.actor_type().as_str()),
-        None => ConfigActor::local(),
-    }
-}
-
-fn if_match(headers: &HeaderMap) -> Option<&str> {
-    headers.get(IF_MATCH).and_then(|value| value.to_str().ok())
-}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -99,12 +86,6 @@ impl ListenerBody {
             "h3": self.h3,
         }))
     }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct IdBody {
-    id: String,
 }
 
 /// `GET /api/v1/listeners`.

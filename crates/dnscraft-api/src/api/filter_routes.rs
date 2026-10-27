@@ -16,26 +16,13 @@ use serde_json::{Value, json};
 
 use crate::api::auth::Authenticated;
 use crate::api::config_routes::{
-    array, array_mut, json_body, module_error, remove_by_id, service, stored_snapshot,
-    upsert_by_id, valid_id,
+    IdBody, actor, array, array_mut, if_match, json_body, module_error, remove_by_id, service,
+    stored_snapshot, upsert_by_id, valid_id,
 };
 use crate::api::response::success;
-use crate::config_apply::{ConfigActor, list_source_path_is_safe, list_source_url_is_safe};
+use crate::config_apply::{list_source_path_is_safe, list_source_url_is_safe};
 use crate::error::ControlApiError;
 use crate::server::AppState;
-
-fn actor(auth: Option<Extension<Authenticated>>) -> ConfigActor {
-    match auth {
-        Some(Extension(auth)) => ConfigActor::new(auth.actor_id(), auth.actor_type().as_str()),
-        None => ConfigActor::local(),
-    }
-}
-
-fn if_match(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(axum::http::header::IF_MATCH)
-        .and_then(|value| value.to_str().ok())
-}
 
 // ---------------------------------------------------------------------------
 // Filter sets
@@ -175,12 +162,6 @@ pub(crate) async fn delete_filter_set(
 // ---------------------------------------------------------------------------
 // Filter lists
 // ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct IdBody {
-    id: String,
-}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

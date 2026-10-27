@@ -277,6 +277,13 @@ impl From<dnscraft_cluster::ClusterError> for ControlApiError {
     }
 }
 
+/// Maps a JSON serialization failure to [`ControlApiError::Internal`].
+pub(crate) fn serialize_err(err: serde_json::Error) -> ControlApiError {
+    ControlApiError::Internal {
+        message: err.to_string(),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

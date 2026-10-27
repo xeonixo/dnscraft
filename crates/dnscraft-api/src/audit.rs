@@ -2,7 +2,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::error::ControlApiError;
+use crate::error::{ControlApiError, serialize_err};
 use crate::storage::{AuditRecord, Db};
 
 /// Secret name tokens that mark a JSON object key for redaction. Keys are
@@ -172,22 +172,6 @@ fn tokenize_key(key: &str) -> Vec<String> {
     tokens
 }
 
-/// Whether `value` contains the literal `"redacted"` placeholder string.
-///
-/// Used by the config-export path (A10) to assert that a serialized snapshot
-/// carries no plaintext secrets: after [`redact`], a secret-bearing snapshot
-/// must contain this placeholder. There is no non-test caller until A10 lands,
-/// hence the dead-code allow.
-#[allow(dead_code)]
-pub(crate) fn contains_redacted_placeholder(value: &Value) -> bool {
-    match value {
-        Value::String(s) => s == "redacted",
-        Value::Array(items) => items.iter().any(contains_redacted_placeholder),
-        Value::Object(map) => map.values().any(contains_redacted_placeholder),
-        _ => false,
-    }
-}
-
 /// SHA-256 hex digest of `bytes` (lowercase, 64 characters).
 pub(crate) use dnscraft_common::hash::sha256_hex;
 
@@ -251,12 +235,6 @@ fn write_canonical(value: &Value, out: &mut String) -> Result<(), ControlApiErro
         }
     }
     Ok(())
-}
-
-fn serialize_err(err: serde_json::Error) -> ControlApiError {
-    ControlApiError::Internal {
-        message: err.to_string(),
-    }
 }
 
 /// Input for recording one config change in the audit log.
@@ -432,18 +410,6 @@ mod tests {
         assert_eq!(out["tls"]["cert"], "redacted");
         assert_eq!(out["auth_header"], "redacted");
         assert_eq!(out["note"], "just a note");
-    }
-
-    #[test]
-    fn contains_redacted_placeholder_detects_nested() {
-        assert!(contains_redacted_placeholder(
-            &json!({ "a": { "b": "redacted" } })
-        ));
-        assert!(contains_redacted_placeholder(&json!(["x", "redacted"])));
-        assert!(!contains_redacted_placeholder(
-            &json!({ "a": { "b": "ok" } })
-        ));
-        assert!(!contains_redacted_placeholder(&json!(1)));
     }
 
     #[test]

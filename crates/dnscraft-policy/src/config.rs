@@ -34,6 +34,19 @@ pub enum DnsProtocol {
     DoQ,
 }
 
+impl DnsProtocol {
+    /// Wire / config name (`udp53`, `tcp53`, `dot`, `doh`, `doq`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Udp53 => "udp53",
+            Self::Tcp53 => "tcp53",
+            Self::DoT => "dot",
+            Self::DoH => "doh",
+            Self::DoQ => "doq",
+        }
+    }
+}
+
 /// Client message flags that influence policy and the resolver.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ClientFlags {

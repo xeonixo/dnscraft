@@ -49,8 +49,15 @@ pub(crate) fn service(state: &AppState) -> Result<&ConfigService, ControlApiErro
 }
 
 /// Parses an `If-Match` header value, if present and representable as UTF-8.
-fn if_match(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn if_match(headers: &HeaderMap) -> Option<&str> {
     headers.get(IF_MATCH).and_then(|value| value.to_str().ok())
+}
+
+/// Body carrying a single resource id (`{ "id": "..." }`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct IdBody {
+    pub(crate) id: String,
 }
 
 /// The snapshot mutations start from: the stored one, or five empty sections.

@@ -11,30 +11,18 @@ use axum::Json;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
-use axum::http::header::IF_MATCH;
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::api::auth::Authenticated;
 use crate::api::config_routes::{
-    array, array_mut, json_body, module_error, service, stored_snapshot,
+    actor, array, array_mut, if_match, json_body, module_error, service, stored_snapshot,
+    valid_ip_or_cidr,
 };
 use crate::api::response::success;
-use crate::config_apply::ConfigActor;
 use crate::error::ControlApiError;
 use crate::server::AppState;
-
-fn actor(auth: Option<Extension<Authenticated>>) -> ConfigActor {
-    match auth {
-        Some(Extension(auth)) => ConfigActor::new(auth.actor_id(), auth.actor_type().as_str()),
-        None => ConfigActor::local(),
-    }
-}
-
-fn if_match(headers: &HeaderMap) -> Option<&str> {
-    headers.get(IF_MATCH).and_then(|value| value.to_str().ok())
-}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,7 +52,7 @@ impl ManualEntryBody {
                 ip.to_owned()
             }
             (None, Some(cidr)) => {
-                if !valid_cidr(cidr) {
+                if cidr.split_once('/').is_none() || !valid_ip_or_cidr(cidr) {
                     return Err(module_error(
                         "clients.config.invalid",
                         "cidr is not a valid CIDR range",
@@ -87,19 +75,6 @@ impl ManualEntryBody {
             "identity": identity,
         }))
     }
-}
-
-fn valid_cidr(value: &str) -> bool {
-    let Some((address, prefix)) = value.split_once('/') else {
-        return false;
-    };
-    let Ok(address) = address.parse::<IpAddr>() else {
-        return false;
-    };
-    let Ok(prefix) = prefix.parse::<u8>() else {
-        return false;
-    };
-    prefix <= if address.is_ipv4() { 32 } else { 128 }
 }
 
 fn identity(entry: &Value) -> Option<&str> {

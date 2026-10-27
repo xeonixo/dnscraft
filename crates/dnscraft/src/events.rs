@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dnscraft_listeners::{QueryEvent, QueryEventSink};
-use dnscraft_policy::DnsProtocol;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -64,7 +63,7 @@ pub fn write_events_blocking(mut rx: mpsc::Receiver<QueryEvent>, ip_truncate: Ip
 fn event_json(event: &QueryEvent, ip_truncate: IpTruncate) -> Value {
     serde_json::json!({
         "time": unix_seconds(event.time),
-        "protocol": protocol_str(event.protocol),
+        "protocol": event.protocol.as_str(),
         "listener_id": event.listener_id.as_str(),
         "source": ip_truncate.truncate(event.source),
         "client_id": event.client_id.as_ref().map(|c| c.as_str()),
@@ -77,16 +76,6 @@ fn event_json(event: &QueryEvent, ip_truncate: IpTruncate) -> Value {
         "view_id": event.decision.view_id.as_str(),
         "profile_id": event.decision.profile_id.as_str(),
     })
-}
-
-fn protocol_str(protocol: DnsProtocol) -> &'static str {
-    match protocol {
-        DnsProtocol::Udp53 => "udp53",
-        DnsProtocol::Tcp53 => "tcp53",
-        DnsProtocol::DoT => "dot",
-        DnsProtocol::DoH => "doh",
-        DnsProtocol::DoQ => "doq",
-    }
 }
 
 fn unix_seconds(time: SystemTime) -> f64 {

@@ -20,9 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use dnscraft_filtering::{BlockMode, RuleSource};
 use dnscraft_listeners::{QueryEvent, QueryEventSink};
-use dnscraft_policy::{
-    AnswerOrigin, DecisionRecord, DecisionStep, DnsProtocol, FilterHit, SelectionCause,
-};
+use dnscraft_policy::{AnswerOrigin, DecisionRecord, DecisionStep, FilterHit, SelectionCause};
 use dnscraft_proto::Rcode;
 use dnscraft_resolver::{AnswerSource, DnssecStatus};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -992,7 +990,7 @@ fn prepare_row(
     let query_name = normalize_name(&event.query.name.to_string());
     let query_type = event.query.qtype.to_string();
     let query_class = event.query.qclass.to_string();
-    let protocol = protocol_str(event.protocol);
+    let protocol = event.protocol.as_str();
     let status = status_str(&event.decision, event.rcode);
     let answer_source = answer_origin_str(event.decision.answer_source);
     let rcode = event.rcode.to_string();
@@ -1103,16 +1101,6 @@ fn like_contains(raw: &str) -> String {
     }
     escaped.push('%');
     escaped
-}
-
-fn protocol_str(protocol: DnsProtocol) -> &'static str {
-    match protocol {
-        DnsProtocol::Udp53 => "udp53",
-        DnsProtocol::Tcp53 => "tcp53",
-        DnsProtocol::DoT => "dot",
-        DnsProtocol::DoH => "doh",
-        DnsProtocol::DoQ => "doq",
-    }
 }
 
 /// Serializes a decision record in the query-log shape (the full record used
@@ -1371,7 +1359,9 @@ mod tests {
     use super::*;
     use dnscraft_common::clock::ManualClock;
     use dnscraft_filtering::SetId;
-    use dnscraft_policy::{DecisionTimings, ListenerId, ProfileId, SelectionCause, ViewId};
+    use dnscraft_policy::{
+        DecisionTimings, DnsProtocol, ListenerId, ProfileId, SelectionCause, ViewId,
+    };
     use dnscraft_proto::{Class, Name, RecordType};
     use dnscraft_resolver::{DnssecStatus, Query};
 
