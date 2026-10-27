@@ -125,11 +125,11 @@ approval before Phase 0 code.
 - [x] **GT3** 🟠 [code] `apply_config` unconditionally re-uploads `config.manual` when present,
       reverting API uploads and clearing the `revoked` flag. *(engine.rs:306-309, 388-390)*
 - [x] **GT4** 🟡 [code] `acme_account_status().deactivated` hardcoded `false`. *(acme.rs:755-777)*
-- [ ] **GT5** 🟡 [code] Account-key rollover not exposed through `TlsEngine`. *(acme.rs:173-177; engine.rs)*
+- [x] **GT5** 🟡 [code] Account-key rollover not exposed through `TlsEngine`. *(acme.rs:173-177; engine.rs)*
 - [x] **GT6** 🟡 [code] `tls.dns.provider.zone` defined but never emitted (`CloudflareZone` used). *(error.rs:216, cloudflare.rs:161-179)*
 - [x] **GT7** 🟡 [code] `rate_limit_status()` goes stale when a later non-429 attempt fails. *(engine.rs:652-663)*
-- [ ] **GT8** 🟡 [code] Preflight omits ACME/DNS checks entirely when `acme.enabled=false`. *(engine.rs:492-537)*
-- [ ] **GT9** 🟡 [code] ACME-sourced revocation skips the CA when `acme.enabled==false`. *(engine.rs:411-421)*
+- [x] **GT8** 🟡 [code] Preflight omits ACME/DNS checks entirely when `acme.enabled=false`. *(engine.rs:492-537)*
+- [x] **GT9** 🟡 [code] ACME-sourced revocation skips the CA when `acme.enabled==false`. *(engine.rs:411-421)*
 - [x] **GT10** 🟡 [code] DynDNS echo transport failure treated as "no route"/success. *(dyndns.rs:90-96, 300-350)*
 - [x] **GT11** 🟡 [code] Audit entries for successful writes dropped if a later write in the same
       pass fails. *(dyndns.rs:355-362, engine.rs:702-708)*

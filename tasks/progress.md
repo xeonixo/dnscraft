@@ -238,6 +238,13 @@ the CL15 follow-up).
 
 ## Log
 
+- 2026-10-27 — **tls gaps GT5/GT8/GT9.** `TlsEngine::rollover_account_key()` exposes account-key
+  rollover (`tls.acme.account.rollover`); `preflight()` now always reports the ACME-account and
+  DNS-provider checks (no longer gated on `acme.enabled`); revocation of an ACME-sourced cert now
+  contacts the CA regardless of `acme.enabled` (manual certs stay local-only). Three tests with
+  `FakeAcmeDirectory` + `ManualClock` (no network). Gates: `fmt -p dnscraft-tls --check` clean,
+  `clippy -p dnscraft-tls --all-targets` clean, `cargo test -p dnscraft-tls` 168 passed / 0 failed.
+
 - 2026-10-27 — **filtering gap GF8: adblock golden fixture.** New `tests/data/adblock_excerpt.txt`
   (test-authored excerpt of the accepted list styles: block/allow, `$important`, hosts-file form,
   rcode + record `$dnsrewrite`, cosmetic, malformed lines) + `tests/golden_lists.rs` asserting exact

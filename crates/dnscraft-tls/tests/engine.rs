@@ -15,8 +15,9 @@ use std::time::{Duration, SystemTime};
 
 use dnscraft_proto::{Class, Message, RData, Record};
 use dnscraft_tls::{
-    AcmeConfig, AcmeDirectoryKind, CertMeta, CertStore, DynDnsConfig, EchoClient, EngineDeps,
-    FakeAcmeDirectory, KeyType, ManualCertConfig, ManualClock, Secret, TlsConfig, TlsEngine,
+    AcmeConfig, AcmeDirectoryKind, CertMeta, CertStore, DnsProviderKind, DynDnsConfig, EchoClient,
+    EngineDeps, FakeAcmeDirectory, KeyType, ManualCertConfig, ManualClock, RevocationReason,
+    Secret, TlsConfig, TlsEngine,
 };
 use mock_cloudflare::{MockCloudflare, MockZone};
 use mock_echo::{MockEcho, trace_body};
@@ -803,4 +804,133 @@ async fn drop_engine_drops_inner_for_background() {
         weak.upgrade().is_none(),
         "background must not keep EngineInner alive"
     );
+}
+
+#[tokio::test]
+async fn rollover_account_key_is_exposed_and_rewrites_account() {
+    let data = temp_dir("account-rollover");
+    let store = CertStore::open(&data).unwrap();
+    let (chain, key) = self_signed();
+    store.save(&chain, &key, &CertMeta::default()).unwrap();
+
+    let mut cfg = base_cfg();
+    cfg.dyndns.enabled = false;
+    cfg.validate_with_token(|_| Ok(Secret::new(TOKEN))).unwrap();
+
+    let acme = Arc::new(FakeAcmeDirectory::with_account_id("rolled"));
+    let engine = TlsEngine::open_with(
+        cfg,
+        &data,
+        clock(),
+        EngineDeps {
+            allow_http_for_tests: true,
+            acme,
+            cloudflare_base_url: Some("http://127.0.0.1:1/client/v4".into()),
+            echo: EchoClient::unbound().unwrap(),
+            token: Secret::new(TOKEN),
+        },
+    )
+    .unwrap();
+
+    assert!(!engine.acme_account_status().await.unwrap().exists);
+    engine
+        .rollover_account_key()
+        .await
+        .expect("account key rollover");
+    let status = engine.acme_account_status().await.unwrap();
+    assert!(status.exists);
+    assert_eq!(status.account_id.as_deref(), Some("rolled"));
+
+    drop(engine);
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+async fn preflight_checks_acme_and_dns_when_acme_is_disabled() {
+    let data = temp_dir("preflight-acme-off");
+    let mut cfg = base_cfg();
+    cfg.acme.enabled = false;
+    cfg.acme.account.tos_agreed = false;
+    cfg.dns_provider.kind = DnsProviderKind::None;
+    cfg.dyndns.enabled = false;
+    cfg.validate_with_token(|_| Ok(Secret::new(TOKEN))).unwrap();
+
+    let engine = TlsEngine::open_with(
+        cfg,
+        &data,
+        clock(),
+        EngineDeps {
+            allow_http_for_tests: true,
+            acme: Arc::new(FakeAcmeDirectory::new()),
+            cloudflare_base_url: Some("http://127.0.0.1:1/client/v4".into()),
+            echo: EchoClient::unbound().unwrap(),
+            token: Secret::new(TOKEN),
+        },
+    )
+    .unwrap();
+
+    let report = engine.preflight().await;
+    let acme = report
+        .checks
+        .iter()
+        .find(|c| c.name == "acme_account")
+        .expect("acme_account check must run when ACME is disabled");
+    assert!(!acme.ok);
+    assert_eq!(acme.code.as_deref(), Some("tls.acme.account.tos"));
+    let dns = report
+        .checks
+        .iter()
+        .find(|c| c.name == "dns_provider")
+        .expect("dns_provider check must run when ACME is disabled");
+    assert!(!dns.ok);
+    assert_eq!(dns.code.as_deref(), Some("tls.dns.provider.auth"));
+    assert!(!report.ok);
+
+    drop(engine);
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+async fn revoke_acme_cert_at_ca_when_acme_is_disabled() {
+    let data = temp_dir("revoke-acme-off");
+    let store = CertStore::open(&data).unwrap();
+    let (chain, key) = self_signed();
+    // `CertMeta::default()` marks the certificate as ACME-sourced.
+    store.save(&chain, &key, &CertMeta::default()).unwrap();
+
+    let mut cfg = base_cfg();
+    cfg.acme.enabled = false;
+    cfg.dyndns.enabled = false;
+    cfg.validate_with_token(|_| Ok(Secret::new(TOKEN))).unwrap();
+
+    let acme = Arc::new(FakeAcmeDirectory::new());
+    let engine = TlsEngine::open_with(
+        cfg,
+        &data,
+        clock(),
+        EngineDeps {
+            allow_http_for_tests: true,
+            acme: acme.clone(),
+            cloudflare_base_url: Some("http://127.0.0.1:1/client/v4".into()),
+            echo: EchoClient::unbound().unwrap(),
+            token: Secret::new(TOKEN),
+        },
+    )
+    .unwrap();
+    assert!(engine.resolver().has_cert());
+
+    engine
+        .revoke(Some("key_compromise"))
+        .await
+        .expect("ACME-sourced revoke");
+    assert_eq!(
+        acme.revocation_log(),
+        vec![RevocationReason::KeyCompromise],
+        "the CA must be told even when ACME issuance is disabled"
+    );
+    assert!(!engine.resolver().has_cert());
+    assert!(engine.status_async().await.revoked);
+
+    drop(engine);
+    let _ = fs::remove_dir_all(&data);
 }

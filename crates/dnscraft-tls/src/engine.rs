@@ -426,7 +426,7 @@ impl TlsEngine {
         let loaded = self.inner.store.load()?.ok_or(TlsError::CertAbsent)?;
         let parsed = RevocationReason::parse(reason.unwrap_or("unspecified"))?;
 
-        if loaded.meta.source == CertSource::Acme && cfg.acme.enabled {
+        if loaded.meta.source == CertSource::Acme {
             self.inner
                 .acme
                 .revoke_certificate(&self.inner.store, &cfg.acme, &loaded.chain_pem, parsed)
@@ -502,52 +502,50 @@ impl TlsEngine {
             });
         }
 
-        if cfg.acme.enabled {
-            let status = account_status(&self.inner.store, &cfg.acme).ok();
-            let ok = status.as_ref().is_some_and(|s| s.exists || s.tos_agreed);
-            checks.push(PreflightCheck {
-                name: "acme_account".into(),
-                ok,
-                code: (!ok).then(|| {
-                    TlsError::AcmeAccountTos {
+        let status = account_status(&self.inner.store, &cfg.acme).ok();
+        let ok = status.as_ref().is_some_and(|s| s.exists || s.tos_agreed);
+        checks.push(PreflightCheck {
+            name: "acme_account".into(),
+            ok,
+            code: (!ok).then(|| {
+                TlsError::AcmeAccountTos {
+                    message: String::new(),
+                }
+                .code()
+                .to_owned()
+            }),
+            message: status.map(|s| format!("exists={} directory={}", s.exists, s.directory)),
+        });
+
+        let (ok, code) = match cfg.dns_provider.kind {
+            DnsProviderKind::Cloudflare => (true, None),
+            DnsProviderKind::Manual => (
+                false,
+                Some(
+                    TlsError::DnsManual {
                         message: String::new(),
                     }
                     .code()
-                    .to_owned()
-                }),
-                message: status.map(|s| format!("exists={} directory={}", s.exists, s.directory)),
-            });
-
-            let (ok, code) = match cfg.dns_provider.kind {
-                DnsProviderKind::Cloudflare => (true, None),
-                DnsProviderKind::Manual => (
-                    false,
-                    Some(
-                        TlsError::DnsManual {
-                            message: String::new(),
-                        }
-                        .code()
-                        .to_owned(),
-                    ),
+                    .to_owned(),
                 ),
-                DnsProviderKind::None => (
-                    false,
-                    Some(
-                        TlsError::DnsProviderAuth {
-                            message: String::new(),
-                        }
-                        .code()
-                        .to_owned(),
-                    ),
+            ),
+            DnsProviderKind::None => (
+                false,
+                Some(
+                    TlsError::DnsProviderAuth {
+                        message: String::new(),
+                    }
+                    .code()
+                    .to_owned(),
                 ),
-            };
-            checks.push(PreflightCheck {
-                name: "dns_provider".into(),
-                ok,
-                code,
-                message: Some(format!("kind={:?}", cfg.dns_provider.kind)),
-            });
-        }
+            ),
+        };
+        checks.push(PreflightCheck {
+            name: "dns_provider".into(),
+            ok,
+            code,
+            message: Some(format!("kind={:?}", cfg.dns_provider.kind)),
+        });
 
         PreflightReport::from_checks(checks)
     }
@@ -586,6 +584,19 @@ impl TlsEngine {
     pub async fn acme_account_status(&self) -> Result<AcmeAccountStatus, TlsError> {
         let cfg = self.inner.config.read().await.clone();
         account_status(&self.inner.store, &cfg.acme)
+    }
+
+    /// Rolls the ACME account key and rewrites `account.json`.
+    ///
+    /// Works whether or not ACME issuance is currently enabled, as long as the
+    /// configured directory has (or can create) an account. A CA that does not
+    /// support rollover surfaces `tls.acme.account.rollover`.
+    pub async fn rollover_account_key(&self) -> Result<(), TlsError> {
+        let cfg = self.inner.config.read().await.clone();
+        self.inner
+            .acme
+            .rollover_key(&self.inner.store, &cfg.acme)
+            .await
     }
 
     /// Most recent ACME order progress snapshot.
