@@ -794,6 +794,7 @@ async fn flow3_protected_domains_from_node_config() {
             filter_set_id: None,
             lifetime_seconds: RULE_LIFETIME,
             token_id: String::new(),
+            reason: String::new(),
         })
         .await
         .expect_err("backend must reject a protected domain");

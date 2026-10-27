@@ -440,33 +440,12 @@ async fn add_rule(
         filter_set_id: filter_set_id.clone(),
         lifetime_seconds: server.config.max_block_rule_lifetime.as_secs(),
         token_id: token.token_id.clone(),
+        reason: reason.clone(),
     };
     match server.backend.add_custom_rule(params).await {
         Ok(result) => {
-            let after = json!({
-                "domain": SafeText::new(&domain, CAP_DOMAIN),
-                "include_subdomains": include_subdomains,
-                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
-                "reason": reason,
-                "rule_text": SafeText::new(&result.rule_text, CAP_RULE_TEXT),
-                "created_at": SafeText::new(&result.created_at, CAP_CLIENT_NAME),
-                "expires_at": SafeText::new(&result.expires_at, CAP_CLIENT_NAME),
-                "config_version": result.config_version,
-            });
-            if record(
-                server,
-                token,
-                "mcp.add_rule",
-                None,
-                Some(after),
-                AuditResult::Success,
-                None,
-            )
-            .await
-            .is_err()
-            {
-                return audit_failed("mcp.add_rule");
-            }
+            // The backend commits the rule and its audit entry in one
+            // transaction, so this layer never writes a second audit row.
             tool_ok(json!({
                 "rule_text": SafeText::new(&result.rule_text, CAP_RULE_TEXT),
                 "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
@@ -477,24 +456,10 @@ async fn add_rule(
             }))
         }
         Err(error) => {
+            // The backend audits every add_rule failure, including ones it
+            // rejects before mutating; forwarding the error is enough here.
             let code = error.code().to_owned();
             let params = error.params().unwrap_or_else(|| json!({}));
-            let after = rule_failure_after(
-                &domain,
-                include_subdomains,
-                filter_set_id.as_deref(),
-                &reason,
-            );
-            let _ = record(
-                server,
-                token,
-                "mcp.add_rule",
-                None,
-                Some(after),
-                AuditResult::Error,
-                Some(&code),
-            )
-            .await;
             tool_error(&code, params)
         }
     }
@@ -579,7 +544,7 @@ async fn remove_rule(
         return tool_error(error.code(), error.params().unwrap_or_else(|| json!({})));
     }
 
-    let Some(rule) = found else {
+    if found.is_none() {
         let after = json!({
             "domain": SafeText::new(&domain, CAP_DOMAIN),
             "filter_set_id": filter_set_id.as_deref().map(|id| SafeText::new(id, CAP_LIST_ID)),
@@ -601,35 +566,17 @@ async fn remove_rule(
             return audit_failed("mcp.remove_rule");
         }
         return tool_ok(json!({ "removed": false }));
-    };
+    }
 
     let params = RemoveRuleParams {
         domain: domain.clone(),
         filter_set_id: filter_set_id.clone(),
+        token_id: token.token_id.clone(),
     };
     match server.backend.remove_custom_rule(params).await {
         Ok(result) => {
-            let after = json!({
-                "domain": SafeText::new(&domain, CAP_DOMAIN),
-                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
-                "removed": result.removed,
-                "config_version": result.config_version,
-                "rule_id": SafeText::new(&rule.id, CAP_LIST_ID),
-            });
-            if record(
-                server,
-                token,
-                "mcp.remove_rule",
-                Some(before),
-                Some(after),
-                AuditResult::Success,
-                None,
-            )
-            .await
-            .is_err()
-            {
-                return audit_failed("mcp.remove_rule");
-            }
+            // The backend commits the removal and its audit entry atomically;
+            // this layer never writes a second audit row.
             if result.removed {
                 tool_ok(json!({
                     "removed": true,
@@ -641,18 +588,9 @@ async fn remove_rule(
             }
         }
         Err(error) => {
+            // The backend audits every remove_rule failure.
             let code = error.code().to_owned();
             let params = error.params().unwrap_or_else(|| json!({}));
-            let _ = record(
-                server,
-                token,
-                "mcp.remove_rule",
-                Some(before),
-                Some(json!({ "removed": false })),
-                AuditResult::Error,
-                Some(&code),
-            )
-            .await;
             tool_error(&code, params)
         }
     }

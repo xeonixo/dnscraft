@@ -85,12 +85,24 @@ async fn hostile_reasons_are_sanitized_before_the_audit_log() {
             let body = call(&server, name, arguments).await;
             assert_eq!(body["result"]["isError"], false, "{name}: {body}");
 
-            let audits = server.backend.audits();
-            let entry = audits.last().expect("every write audits");
-            assert_eq!(entry.action, format!("mcp.{name}"));
-            let stored = entry.after["reason"]
-                .as_str()
-                .expect("reason is a JSON string");
+            // add_rule's audit entry is written by the backend atomically with
+            // the config version; the tool forwards the sanitized reason there.
+            let stored = if name == "allow_temporarily" {
+                let audits = server.backend.audits();
+                let entry = audits.last().expect("every write audits");
+                assert_eq!(entry.action, "mcp.allow_temporarily");
+                entry.after["reason"]
+                    .as_str()
+                    .expect("reason is a JSON string")
+                    .to_owned()
+            } else {
+                server
+                    .backend
+                    .last_add()
+                    .expect("add_rule reached the backend")
+                    .reason
+                    .clone()
+            };
             assert_eq!(
                 stored,
                 sanitize(&reason, CAP_REASON),
@@ -201,6 +213,7 @@ async fn no_tool_can_create_an_allow_rule_or_rule_syntax() {
             "filter_set_id",
             "include_subdomains",
             "lifetime_seconds",
+            "reason",
             "token_id"
         ]
     );
@@ -378,7 +391,12 @@ async fn write_tools_never_expose_a_token_or_secret() {
     }
 
     let audits = server.backend.audits();
-    assert_eq!(audits.len(), 5, "one audit per successful write tool");
+    assert_eq!(
+        audits.len(),
+        4,
+        "allow, the not-found remove, pause and resume audit in the MCP layer; \
+         add_rule is audited by the backend"
+    );
     for entry in &audits {
         let serialized = serde_json::to_string(entry).unwrap();
         assert!(

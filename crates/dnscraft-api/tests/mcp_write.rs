@@ -173,6 +173,15 @@ fn add_params(domain: &str, include_subdomains: bool, lifetime_seconds: u64) -> 
         filter_set_id: None,
         lifetime_seconds,
         token_id: "tok-add-rule".to_owned(),
+        reason: "requested by test".to_owned(),
+    }
+}
+
+fn remove_params(domain: &str) -> RemoveRuleParams {
+    RemoveRuleParams {
+        domain: domain.to_owned(),
+        filter_set_id: None,
+        token_id: "tok-remove-rule".to_owned(),
     }
 }
 
@@ -489,10 +498,7 @@ async fn add_custom_rule_stores_structured_rule_and_a_config_version() {
 
     let removed = h
         .backend
-        .remove_custom_rule(RemoveRuleParams {
-            domain: "track.example.com".to_owned(),
-            filter_set_id: None,
-        })
+        .remove_custom_rule(remove_params("track.example.com"))
         .await
         .expect("remove");
     assert!(removed.removed);
@@ -502,10 +508,7 @@ async fn add_custom_rule_stores_structured_rule_and_a_config_version() {
 
     let again = h
         .backend
-        .remove_custom_rule(RemoveRuleParams {
-            domain: "track.example.com".to_owned(),
-            filter_set_id: None,
-        })
+        .remove_custom_rule(remove_params("track.example.com"))
         .await
         .expect("remove missing");
     assert!(!again.removed);
@@ -574,6 +577,7 @@ async fn add_custom_rule_rejects_protected_lifetime_unknown_set_and_cap() {
                 filter_set_id: Some("missing".to_owned()),
                 lifetime_seconds: 3600,
                 token_id: "tok-add-rule".to_owned(),
+                reason: "requested by test".to_owned(),
             })
             .await
             .expect_err("unknown set")
@@ -586,10 +590,33 @@ async fn add_custom_rule_rejects_protected_lifetime_unknown_set_and_cap() {
         version,
         "no rejected add versions"
     );
+    let rows = audits(&h).await;
     assert_eq!(
-        audits(&h).await.len(),
-        audit_count,
-        "the backend never audits a mutation itself"
+        rows.len(),
+        audit_count + 6,
+        "every rejected add is audited exactly once"
+    );
+    let mut codes: Vec<String> = rows
+        .iter()
+        .filter(|record| record.action == "mcp.add_rule")
+        .filter_map(|record| record.error_code.clone())
+        .collect();
+    codes.sort();
+    assert_eq!(
+        codes,
+        vec![
+            "mcp.duration_exceeds_maximum",
+            "mcp.duration_exceeds_maximum",
+            "mcp.protected_domain",
+            "mcp.protected_domain",
+            "mcp.rule_limit_exceeded",
+            "policy.config.unknown_filter_set",
+        ]
+    );
+    assert!(
+        rows.iter()
+            .filter(|record| record.action == "mcp.add_rule")
+            .all(|record| record.actor_type == "token" && record.actor_id == "tok-add-rule")
     );
 
     // Expired rules do not count toward the cap.
@@ -629,10 +656,7 @@ async fn remove_custom_rule_uses_the_stored_include_flag_for_protection() {
     .await;
     let err = included
         .backend
-        .remove_custom_rule(RemoveRuleParams {
-            domain: "example.net".to_owned(),
-            filter_set_id: None,
-        })
+        .remove_custom_rule(remove_params("example.net"))
         .await
         .expect_err("covering rule is protected");
     assert_eq!(err.code(), "mcp.protected_domain");
@@ -650,10 +674,7 @@ async fn remove_custom_rule_uses_the_stored_include_flag_for_protection() {
     .await;
     let removed = exact
         .backend
-        .remove_custom_rule(RemoveRuleParams {
-            domain: "example.net".to_owned(),
-            filter_set_id: None,
-        })
+        .remove_custom_rule(remove_params("example.net"))
         .await
         .expect("exact rule does not cover the protected subdomain");
     assert!(removed.removed);
@@ -679,10 +700,7 @@ async fn find_and_remove_still_see_expired_rules() {
     assert!(!found.include_subdomains);
     let removed = h
         .backend
-        .remove_custom_rule(RemoveRuleParams {
-            domain: "old.example.com".to_owned(),
-            filter_set_id: None,
-        })
+        .remove_custom_rule(remove_params("old.example.com"))
         .await
         .expect("remove");
     assert!(removed.removed);
@@ -799,43 +817,16 @@ async fn exactly_one_audit_row_per_committed_mutation() {
         .expect("add");
     assert_eq!(
         audits(&h).await.len(),
-        baseline,
-        "the backend mutation itself writes no audit row"
+        baseline + 1,
+        "the committed add writes exactly one row"
     );
-    h.backend
-        .record_audit(AuditEntry {
-            action: "mcp.add_rule".to_owned(),
-            actor_id: "tok-1".to_owned(),
-            before: None,
-            after: json!({
-                "domain": "audited.example.com",
-                "config_version": added.config_version,
-            }),
-            result: AuditResult::Success,
-            error_code: None,
-        })
-        .await
-        .expect("record");
-    assert_eq!(audits(&h).await.len(), baseline + 1);
 
-    h.backend
-        .remove_custom_rule(RemoveRuleParams {
-            domain: "audited.example.com".to_owned(),
-            filter_set_id: None,
-        })
+    let removed = h
+        .backend
+        .remove_custom_rule(remove_params("audited.example.com"))
         .await
         .expect("remove");
-    h.backend
-        .record_audit(AuditEntry {
-            action: "mcp.remove_rule".to_owned(),
-            actor_id: "tok-1".to_owned(),
-            before: Some(json!({ "domain": "audited.example.com" })),
-            after: json!({ "removed": true, "config_version": 3 }),
-            result: AuditResult::Success,
-            error_code: None,
-        })
-        .await
-        .expect("record");
+    assert!(removed.removed);
 
     let rows = audits(&h).await;
     assert_eq!(rows.len(), baseline + 2);
@@ -851,19 +842,42 @@ async fn exactly_one_audit_row_per_committed_mutation() {
             .count(),
         1
     );
+
     let add = rows
         .iter()
         .find(|record| record.action == "mcp.add_rule")
         .expect("add audit");
     assert_eq!(add.actor_type, "token");
-    assert_eq!(add.actor_id, "tok-1");
-    assert_eq!(add.result, "success");
+    assert_eq!(add.actor_id, "tok-add-rule");
+    assert_eq!(add.result, "ok");
     assert_eq!(add.config_version, Some(2));
+    assert_eq!(add.before, None);
+    let after: Value = serde_json::from_str(add.after.as_deref().expect("after")).expect("json");
+    assert_eq!(after["domain"], "audited.example.com");
+    assert_eq!(after["include_subdomains"], true);
+    assert_eq!(after["filter_set_id"], "default");
+    assert_eq!(after["reason"], "requested by test");
+    assert_eq!(after["rule_id"], added.rule_id);
+    assert_eq!(after["config_version"], 2);
+
     let remove = rows
         .iter()
         .find(|record| record.action == "mcp.remove_rule")
         .expect("remove audit");
+    assert_eq!(remove.actor_type, "token");
+    assert_eq!(remove.actor_id, "tok-remove-rule");
+    assert_eq!(remove.result, "ok");
     assert_eq!(remove.config_version, Some(3));
+    let before: Value =
+        serde_json::from_str(remove.before.as_deref().expect("before")).expect("json");
+    assert_eq!(before["domain"], "audited.example.com");
+    assert_eq!(before["include_subdomains"], true);
+    assert_eq!(before["filter_set_id"], "default");
+    assert_eq!(before["rule_id"], added.rule_id);
+    let after: Value = serde_json::from_str(remove.after.as_deref().expect("after")).expect("json");
+    assert_eq!(after["removed"], true);
+    assert_eq!(after["rule_id"], added.rule_id);
+    assert_eq!(after["config_version"], 3);
 }
 
 #[tokio::test]
@@ -980,7 +994,7 @@ async fn mcp_write_tool_runs_the_backend_and_writes_one_audit_row() {
     assert_eq!(add.len(), 1);
     assert_eq!(add[0].actor_type, "token");
     assert_eq!(add[0].config_version, Some(2));
-    assert_eq!(add[0].result, "success");
+    assert_eq!(add[0].result, "ok");
 }
 
 #[tokio::test]
@@ -1065,7 +1079,7 @@ async fn mcp_write_gate_and_scope_matrix() {
 }
 
 #[tokio::test]
-async fn audit_failure_after_a_committed_mutation_surfaces_as_mcp_audit_failed() {
+async fn audit_failure_after_a_runtime_mutation_surfaces_as_mcp_audit_failed() {
     let h = harness_with(McpConfig::default(), None, None, false).await;
     let token = write_token(&h).await;
     let router = mcp_router(
@@ -1080,19 +1094,24 @@ async fn audit_failure_after_a_committed_mutation_surfaces_as_mcp_audit_failed()
     let (status, body) = mcp_tool(
         &router,
         &token,
-        "add_rule",
-        json!({ "domain": "unrecorded.example.com" }),
+        "allow_temporarily",
+        json!({ "domain": "ads.example.com", "duration": "PT5M" }),
     )
     .await;
     assert_eq!(status, 200);
     assert!(tool_is_error(&body), "{body}");
     assert_eq!(tool_error_code(&body), "mcp.audit_failed");
 
+    assert!(
+        matches!(
+            verdict(&h.engine, "ads.example.com", NOW + 1),
+            Verdict::Allowed(_)
+        ),
+        "the runtime allow took effect before the audit write failed"
+    );
     assert_eq!(
         current_version(&h).await,
-        2,
-        "the rule was committed before the audit write failed"
+        1,
+        "a runtime allow creates no config version"
     );
-    assert_eq!(current_rules(&h).await.len(), 1);
-    assert!(blocked(&h.engine, "unrecorded.example.com", NOW + 1));
 }

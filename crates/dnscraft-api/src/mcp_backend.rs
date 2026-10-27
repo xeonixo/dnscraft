@@ -33,7 +33,7 @@ use crate::api::auth::roles::Scope;
 use crate::api::query_log_routes::parse_timestamp;
 use crate::audit::Audit;
 use crate::clock::Clock;
-use crate::config_apply::ConfigService;
+use crate::config_apply::{ConfigActor, ConfigService, MutationAudit};
 use crate::error::ControlApiError;
 use crate::query_log::{Order, OrderBy, QueryLog, QueryLogFilter};
 use crate::stats::TopBy;
@@ -457,6 +457,36 @@ pub(crate) fn build_error(err: dnscraft_filtering::BuildError) -> ControlApiErro
 pub(crate) fn parse_set(id: Option<&str>) -> Result<SetId, ControlApiError> {
     let raw = id.unwrap_or("default");
     SetId::new(raw).map_err(|_| unknown_set(raw))
+}
+
+/// Validates the non-snapshot parts of an `add_rule` request.
+///
+/// Returns the target set, canonical domain, reported rule text and the
+/// requested lifetime. Doing this before the audited mutation lets every
+/// rejection be audited by the caller.
+fn prepare_add(
+    params: &AddRuleParams,
+    maximum: Duration,
+) -> Result<(SetId, DomainName, String, Duration), ControlApiError> {
+    let set = parse_set(params.filter_set_id.as_deref())?;
+    let (domain, rule_text) = canonical_block_rule(&params.domain, params.include_subdomains)?;
+    let requested = Duration::from_secs(params.lifetime_seconds);
+    if requested.is_zero() || requested > maximum {
+        return Err(duration_exceeds(requested, maximum));
+    }
+    Ok((set, domain, rule_text, requested))
+}
+
+/// Validates the non-snapshot parts of a `remove_rule` request.
+fn prepare_remove(params: &RemoveRuleParams) -> Result<(SetId, DomainName), ControlApiError> {
+    let set = parse_set(params.filter_set_id.as_deref())?;
+    let domain = DomainName::parse(&params.domain).map_err(|_| {
+        mcp_error(
+            "filter_name.invalid_char",
+            json!({ "domain": params.domain }),
+        )
+    })?;
+    Ok((set, domain))
 }
 
 /// A mutable filter set from the stored snapshot, if it exists.
@@ -1329,45 +1359,89 @@ impl McpBackend for ControlMcpBackend {
     }
 
     async fn add_custom_rule(&self, params: AddRuleParams) -> Result<AddRuleResult, BackendError> {
-        let (domain, rule_text) = canonical_block_rule(&params.domain, params.include_subdomains)
-            .map_err(backend_error)?;
-        let set = parse_set(params.filter_set_id.as_deref()).map_err(backend_error)?;
-        let lifetime = self.inner.mcp_config.max_block_rule_lifetime;
-        let requested = Duration::from_secs(params.lifetime_seconds);
-        if requested.is_zero() || requested > lifetime {
-            return Err(backend_error(duration_exceeds(requested, lifetime)));
-        }
-        let now = self.inner.clock.now();
-        let expires_at = now + requested;
-
         let service = self.config_service()?;
-        let rule_id = crate::query_log::new_id().map_err(backend_error)?;
+        let actor = ConfigActor::new(params.token_id.clone(), "token");
+        let failure_after = json!({
+            "domain": params.domain.clone(),
+            "include_subdomains": params.include_subdomains,
+            "filter_set_id": params.filter_set_id.clone(),
+            "reason": params.reason.clone(),
+        });
+
+        // Everything before the mutation is validated up front so its failure
+        // can be audited; the mutation closure then only depends on the locked
+        // snapshot (protected coverage + cap).
+        let (set, domain, rule_text, lifetime) =
+            match prepare_add(&params, self.inner.mcp_config.max_block_rule_lifetime) {
+                Ok(prepared) => prepared,
+                Err(err) => {
+                    service
+                        .record_action(
+                            &actor,
+                            "mcp.add_rule",
+                            None,
+                            Some(&failure_after),
+                            Some(err.code()),
+                        )
+                        .await;
+                    return Err(backend_error(err));
+                }
+            };
+        let now = self.inner.clock.now();
+        let expires_at = now + lifetime;
         let created_secs = crate::clock::unix_seconds(now);
         let expires_secs = crate::clock::unix_seconds(expires_at);
+        let rule_id = crate::query_log::new_id().map_err(backend_error)?;
         let cap = self.inner.mcp_config.max_custom_rules_per_set as usize;
         let include = params.include_subdomains;
+        let token_id = params.token_id.clone();
+        let reason = params.reason.clone();
         let issuer = self.inner.oidc_issuer.clone();
         let extra = self.inner.mcp_config.protected_domains.clone();
-        // Protected coverage and the cap are both evaluated against the
-        // snapshot read under the apply lock, not a stale pre-lock copy.
+        let rule_id_for_audit = rule_id.clone();
+        let rule_text_for_audit = rule_text.clone();
+        let set_str = set.as_str().to_owned();
+        let set_for_audit = set_str.clone();
+        let domain_for_audit = domain.as_str().to_owned();
+        let created_for_audit = rfc3339(now);
+        let expires_for_audit = rfc3339(expires_at);
+
         let version = service
-            .mutate_unrecorded(|snapshot| {
-                let protected = protected_for(Some(snapshot), issuer.as_deref(), extra)?;
-                reject_protected(&protected, domain.as_str(), include)?;
-                add_rule_to_snapshot(
-                    snapshot,
-                    &set,
-                    &domain,
-                    include,
-                    &rule_id,
-                    created_secs,
-                    expires_secs,
-                    &params.token_id,
-                    cap,
-                    now,
-                )?;
-                Ok(true)
-            })
+            .mutate_audited(
+                &actor,
+                "mcp.add_rule",
+                Some(failure_after),
+                move |snapshot| {
+                    let protected = protected_for(Some(snapshot), issuer.as_deref(), extra)?;
+                    reject_protected(&protected, domain.as_str(), include)?;
+                    add_rule_to_snapshot(
+                        snapshot,
+                        &set,
+                        &domain,
+                        include,
+                        &rule_id_for_audit,
+                        created_secs,
+                        expires_secs,
+                        &token_id,
+                        cap,
+                        now,
+                    )?;
+                    Ok(Some(MutationAudit {
+                        before: None,
+                        after: json!({
+                            "domain": domain_for_audit,
+                            "include_subdomains": include,
+                            "filter_set_id": set_for_audit,
+                            "reason": reason,
+                            "rule_text": rule_text_for_audit,
+                            "rule_id": rule_id_for_audit,
+                            "created_at": created_for_audit,
+                            "expires_at": expires_for_audit,
+                            "config_version": Value::Null,
+                        }),
+                    }))
+                },
+            )
             .await
             .map_err(backend_error)?;
         let version = version
@@ -1378,7 +1452,7 @@ impl McpBackend for ControlMcpBackend {
         Ok(AddRuleResult {
             rule_id,
             rule_text,
-            filter_set_id: set.as_str().to_owned(),
+            filter_set_id: set_str,
             created_at: rfc3339(now),
             expires_at: rfc3339(expires_at),
             config_version: Some(version),
@@ -1404,17 +1478,75 @@ impl McpBackend for ControlMcpBackend {
         &self,
         params: RemoveRuleParams,
     ) -> Result<RemoveRuleResult, BackendError> {
-        let set = parse_set(params.filter_set_id.as_deref()).map_err(backend_error)?;
-        let domain = DomainName::parse(&params.domain)
-            .map_err(|_| code_err("filter_name.invalid_char", &params.domain))?;
         let service = self.config_service()?;
+        let actor = ConfigActor::new(params.token_id.clone(), "token");
+        let failure_after = json!({
+            "domain": params.domain.clone(),
+            "filter_set_id": params.filter_set_id.clone(),
+            "removed": false,
+            "config_version": Value::Null,
+        });
+        let (set, domain) = match prepare_remove(&params) {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                service
+                    .record_action(
+                        &actor,
+                        "mcp.remove_rule",
+                        None,
+                        Some(&failure_after),
+                        Some(err.code()),
+                    )
+                    .await;
+                return Err(backend_error(err));
+            }
+        };
+        let set_str = set.as_str().to_owned();
         let issuer = self.inner.oidc_issuer.clone();
         let extra = self.inner.mcp_config.protected_domains.clone();
         let version = service
-            .mutate_unrecorded(|snapshot| {
-                let protected = protected_for(Some(snapshot), issuer.as_deref(), extra)?;
-                remove_rule_from_snapshot(snapshot, &set, &domain, &protected)
-            })
+            .mutate_audited(
+                &actor,
+                "mcp.remove_rule",
+                Some(failure_after),
+                move |snapshot| {
+                    let protected = protected_for(Some(snapshot), issuer.as_deref(), extra)?;
+                    let stored = find_stored_rule(snapshot, &set, &domain)?;
+                    let before = stored.map(|rule| {
+                        json!({
+                            "domain": rule
+                                .get("domain")
+                                .and_then(Value::as_str)
+                                .unwrap_or(domain.as_str()),
+                            "include_subdomains": rule
+                                .get("include_subdomains")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                            "filter_set_id": set.as_str(),
+                            "rule_id": rule.get("id").and_then(Value::as_str).unwrap_or_default(),
+                        })
+                    });
+                    let removed = remove_rule_from_snapshot(snapshot, &set, &domain, &protected)?;
+                    if !removed {
+                        return Ok(None);
+                    }
+                    let rule_id = before
+                        .as_ref()
+                        .and_then(|before| before.get("rule_id"))
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    Ok(Some(MutationAudit {
+                        before,
+                        after: json!({
+                            "domain": domain.as_str(),
+                            "filter_set_id": set.as_str(),
+                            "removed": true,
+                            "rule_id": rule_id,
+                            "config_version": Value::Null,
+                        }),
+                    }))
+                },
+            )
             .await
             .map_err(backend_error)?;
         let removed = version.is_some();
@@ -1427,7 +1559,7 @@ impl McpBackend for ControlMcpBackend {
             .transpose()?;
         Ok(RemoveRuleResult {
             removed,
-            filter_set_id: set.as_str().to_owned(),
+            filter_set_id: set_str,
             config_version,
         })
     }

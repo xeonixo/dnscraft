@@ -691,6 +691,8 @@ pub struct AddRuleParams {
     pub lifetime_seconds: u64,
     /// MCP token that created the rule; stored with it for attribution.
     pub token_id: String,
+    /// Sanitized reason from the assistant, stored in the audit entry.
+    pub reason: String,
 }
 
 /// Result of `add_rule`.
@@ -717,6 +719,8 @@ pub struct RemoveRuleParams {
     pub domain: String,
     /// Filter set that owns the rule; the backend resolves the default.
     pub filter_set_id: Option<String>,
+    /// MCP token that removed the rule; recorded as the audit actor.
+    pub token_id: String,
 }
 
 /// Result of `remove_rule`.

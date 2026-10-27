@@ -531,7 +531,7 @@ async fn add_rule_schema_rejects_client_fields_and_injection() {
 }
 
 #[tokio::test]
-async fn add_rule_success_output_and_audit() {
+async fn add_rule_success_output_forwards_reason() {
     let server = spawn(write_config()).await;
     server.backend.set_add(Ok(AddRuleResult {
         rule_id: "rule-1".into(),
@@ -585,22 +585,14 @@ async fn add_rule_success_output_and_audit() {
         params.token_id, "tok-write",
         "the creating token's id reaches the backend"
     );
-
-    let audits = server.backend.audits();
-    assert_eq!(audits.len(), 1);
-    let entry = &audits[0];
-    assert_eq!(entry.action, "mcp.add_rule");
-    assert_eq!(entry.actor_id, "tok-write");
-    assert_eq!(entry.result, AuditResult::Success);
-    assert_eq!(entry.error_code, None);
-    assert_eq!(entry.after["domain"], "example.com");
-    assert_eq!(entry.after["include_subdomains"], true);
-    assert_eq!(entry.after["filter_set_id"], "default");
-    assert_eq!(entry.after["reason"], "phishing\u{FFFD}site");
-    assert_eq!(entry.after["rule_text"], "||example.com^");
-    assert_eq!(entry.after["created_at"], "2026-10-26T10:30:00Z");
-    assert_eq!(entry.after["expires_at"], "2026-11-25T10:30:00Z");
-    assert_eq!(entry.after["config_version"], 7);
+    assert_eq!(
+        params.reason, "phishing\u{FFFD}site",
+        "the sanitized reason reaches the backend for its audit entry"
+    );
+    assert!(
+        server.backend.audits().is_empty(),
+        "the backend owns the audit for add_rule; the tool must not double-write it"
+    );
 }
 
 #[tokio::test]
@@ -644,7 +636,7 @@ async fn add_rule_rejects_protected_domains() {
 }
 
 #[tokio::test]
-async fn add_rule_cap_error_is_forwarded_and_audited() {
+async fn add_rule_cap_error_is_forwarded() {
     let server = spawn(write_config()).await;
     server.backend.set_add(Err(BackendError::Coded {
         code: "mcp.rule_limit_exceeded".into(),
@@ -657,12 +649,9 @@ async fn add_rule_cap_error_is_forwarded_and_audited() {
         "mcp.rule_limit_exceeded",
         "{body}"
     );
-    let audits = server.backend.audits();
-    assert_eq!(audits.len(), 1);
-    assert_eq!(audits[0].result, AuditResult::Error);
-    assert_eq!(
-        audits[0].error_code.as_deref(),
-        Some("mcp.rule_limit_exceeded")
+    assert!(
+        server.backend.audits().is_empty(),
+        "the backend audits its own add_rule failure"
     );
 }
 
@@ -753,7 +742,7 @@ async fn remove_rule_is_idempotent_when_no_mcp_rule_matches() {
 }
 
 #[tokio::test]
-async fn remove_rule_success_output_and_audit_config_version() {
+async fn remove_rule_success_output_and_config_version() {
     let server = spawn(write_config()).await;
     server.backend.set_find(Ok(Some(mcp_rule(false))));
     server.backend.set_remove(Ok(RemoveRuleResult {
@@ -785,19 +774,14 @@ async fn remove_rule_success_output_and_audit_config_version() {
     let params = server.backend.last_remove().expect("remove was called");
     assert_eq!(params.domain, "example.net");
     assert_eq!(params.filter_set_id.as_deref(), Some("default"));
-
-    let audits = server.backend.audits();
-    assert_eq!(audits.len(), 1);
-    let entry = &audits[0];
-    assert_eq!(entry.action, "mcp.remove_rule");
-    assert_eq!(entry.actor_id, "tok-write");
-    assert_eq!(entry.result, AuditResult::Success);
     assert_eq!(
-        entry.before,
-        Some(json!({ "domain": "example.net", "filter_set_id": "default" }))
+        params.token_id, "tok-write",
+        "the removing token's id reaches the backend for the audit actor"
     );
-    assert_eq!(entry.after["removed"], true);
-    assert_eq!(entry.after["config_version"], 9);
+    assert!(
+        server.backend.audits().is_empty(),
+        "the backend owns the audit for remove_rule; the tool must not double-write it"
+    );
 }
 
 #[tokio::test]
@@ -1408,8 +1392,9 @@ async fn write_tool_matrix_gate_scope_and_backend_isolation() {
                 assert_eq!(server.backend.resume_calls(), 1);
                 assert_eq!(
                     server.backend.audits().len(),
-                    5,
-                    "every allowed write tool audits"
+                    4,
+                    "allow, the not-found remove, pause and resume audit in the MCP \
+                     layer; add_rule is audited by the backend"
                 );
             } else {
                 assert_eq!(write_backend_calls(&server), 0);
