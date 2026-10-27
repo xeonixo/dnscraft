@@ -454,6 +454,7 @@ impl OfflineWriteQueue {
                     // Transport-only caller: the master authenticates the
                     // originating node from the mTLS certificate.
                     "",
+                    &row.relay.request_id,
                     row.relay.actor.clone(),
                     row.relay.method.clone(),
                     row.relay.path.clone(),
@@ -731,6 +732,7 @@ mod tests {
         async fn execute(
             &self,
             _node_id: &str,
+            _request_id: &str,
             _actor: RelayedActor,
             method: String,
             path: String,
@@ -766,6 +768,7 @@ mod tests {
         async fn execute(
             &self,
             _node_id: &str,
+            _request_id: &str,
             _actor: RelayedActor,
             _method: String,
             _path: String,

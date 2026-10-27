@@ -36,11 +36,11 @@ use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 
 use dnscraft_cluster::{
-    ActorValidator, AuthSnapshotApplier, AuthSnapshotSource, CertInstaller, ClusterBroadcast,
-    ClusterCa, ClusterClient, ClusterConfig, ClusterError, ClusterServer, ClusterServerConfig,
-    ClusterStore, ConfigApplier, ConfigSync, LogIngest, LogOutbox, LogRecord, LogStreamer,
-    NodeIdentity, OfflineWriteQueue, PendingNodeIdentity, RelayResponse, RelayedActor, Role,
-    RuntimeCommandApplier, StreamRecord, WriteExecutor, WriteRelay,
+    ActorValidator, AuthSnapshotApplier, AuthSnapshotSource, Backfill, CertInstaller,
+    ClusterBroadcast, ClusterCa, ClusterClient, ClusterConfig, ClusterError, ClusterServer,
+    ClusterServerConfig, ClusterStore, ConfigApplier, ConfigSync, LogIngest, LogOutbox, LogRecord,
+    LogStreamer, NodeIdentity, OfflineWriteQueue, PendingNodeIdentity, RelayResponse, RelayedActor,
+    Role, RuntimeCommandApplier, StreamRecord, WriteExecutor, WriteRelay,
 };
 use dnscraft_common::clock::{Clock, add_duration, wait_until};
 use dnscraft_common::secret::Secret;
@@ -276,6 +276,9 @@ impl AuthSnapshotSource for StateAuthSnapshotSource {
 pub struct ConfigWriteExecutor {
     service: Arc<ConfigService>,
     clock: Arc<dyn Clock>,
+    // Keyed by `request_id` (and the optional `Idempotency-Key`). In-memory
+    // only: a master restart drops the cache, so a retry that spans the restart
+    // can apply twice. Persisting it is a separate follow-up.
     idempotency: Mutex<HashMap<String, (RelayResponse, SystemTime)>>,
 }
 
@@ -728,6 +731,7 @@ impl WriteExecutor for ConfigWriteExecutor {
     async fn execute(
         &self,
         node_id: &str,
+        request_id: &str,
         actor: RelayedActor,
         method: String,
         path: String,
@@ -735,6 +739,12 @@ impl WriteExecutor for ConfigWriteExecutor {
         if_match: Option<String>,
         idempotency_key: Option<String>,
     ) -> Result<RelayResponse, ClusterError> {
+        // `request_id` is always present and stable across retries (including
+        // keyless ones), so it is the primary dedupe key; the optional
+        // `Idempotency-Key` is kept for callers that reuse it across requests.
+        if let Some(response) = self.cached(request_id) {
+            return Ok(response);
+        }
         if let Some(key) = idempotency_key.as_deref()
             && let Some(response) = self.cached(key)
         {
@@ -743,6 +753,7 @@ impl WriteExecutor for ConfigWriteExecutor {
         let response = self
             .run(node_id, actor, &method, &path, body, if_match.as_deref())
             .await;
+        self.remember(request_id, &response);
         if let Some(key) = idempotency_key {
             self.remember(&key, &response);
         }
@@ -767,6 +778,27 @@ fn error_response(error: ControlApiError) -> RelayResponse {
         status: error.status().as_u16(),
         body,
     }
+}
+
+/// Resumes the query-log outbox after a (re)connect and reports a gap.
+///
+/// The master's highest contiguous sequence is the resume point. When the
+/// local buffer already dropped rows below it, [`Backfill::gap`] carries
+/// `cluster.log_gap` (also logged here) and streaming resumes from the oldest
+/// buffered row.
+pub async fn backfill_logs(
+    streamer: &LogStreamer,
+    master_highest: u64,
+) -> Result<Backfill, ClusterError> {
+    let backfill = streamer.backfill(master_highest).await?;
+    if let Some(gap) = backfill.gap() {
+        tracing::warn!(
+            code = %gap.code(),
+            missing = backfill.missing,
+            "cluster log backfill gap"
+        );
+    }
+    Ok(backfill)
 }
 
 /// Sub-node hook: the local query-log outbox cursor.
@@ -899,6 +931,7 @@ impl WriteExecutor for ClientWriteExecutor {
     async fn execute(
         &self,
         _node_id: &str,
+        request_id: &str,
         actor: RelayedActor,
         method: String,
         path: String,
@@ -906,9 +939,15 @@ impl WriteExecutor for ClientWriteExecutor {
         if_match: Option<String>,
         idempotency_key: Option<String>,
     ) -> Result<RelayResponse, ClusterError> {
-        let request_id = idempotency_key
-            .clone()
-            .unwrap_or_else(|| format!("relay-{}", RELAY_COUNTER.fetch_add(1, Ordering::Relaxed)));
+        // The offline queue supplies its persisted request_id, which is the
+        // master's dedupe key across replay attempts.
+        let request_id = if request_id.is_empty() {
+            idempotency_key.clone().unwrap_or_else(|| {
+                format!("relay-{}", RELAY_COUNTER.fetch_add(1, Ordering::Relaxed))
+            })
+        } else {
+            request_id.to_owned()
+        };
         self.client
             .relay_write(WriteRelay {
                 request_id,
@@ -1306,6 +1345,15 @@ impl ClusterRuntime {
         });
         let replay_executor = Arc::new(ClientWriteExecutor::new(Arc::clone(&client)));
         let replay_lock = Arc::new(tokio::sync::Mutex::new(()));
+        let log_streamer = state.query_log_arc().map(|log| {
+            Arc::new(LogStreamer::new(
+                Arc::new(QueryLogOutbox::new(log)),
+                Arc::clone(&client),
+                config.log.clone(),
+                clock.clone(),
+            ))
+        });
+        let connection_streamer = log_streamer.clone();
         let connection_client = Arc::clone(&client);
         self.tasks.push(tokio::spawn(async move {
             run_sub_node_loop(
@@ -1314,6 +1362,7 @@ impl ClusterRuntime {
                 auth_applier,
                 cert_installer,
                 runtime_applier,
+                connection_streamer,
                 status,
                 connection_clock,
                 connection_state,
@@ -1326,14 +1375,7 @@ impl ClusterRuntime {
             .await;
         }));
 
-        if let Some(log) = state.query_log_arc() {
-            let outbox = Arc::new(QueryLogOutbox::new(log));
-            let streamer = LogStreamer::new(
-                outbox,
-                Arc::clone(&client),
-                config.log.clone(),
-                clock.clone(),
-            );
+        if let Some(streamer) = log_streamer {
             let mut shutdown = self.shutdown.subscribe();
             let notify = Arc::clone(&self.notify);
             let stream_clock = clock.clone();
@@ -1399,6 +1441,7 @@ async fn run_sub_node_loop(
     auth_applier: Option<Arc<dyn AuthSnapshotApplier>>,
     cert_installer: Option<Arc<dyn CertInstaller>>,
     runtime_applier: Arc<StateRuntimeApplier>,
+    log_streamer: Option<Arc<LogStreamer>>,
     status: Arc<ClusterStatusHandle>,
     clock: Arc<dyn Clock>,
     state: AppState,
@@ -1441,6 +1484,16 @@ async fn run_sub_node_loop(
             _ = shutdown.changed() => return,
         };
         status.update(|status| status.master_reachable = true);
+
+        // Resume the query-log outbox from the master's cursor. A master
+        // sequence ahead of the local buffer means rows were dropped; the
+        // backfill reports the gap instead of silently skipping it.
+        if let (Some(streamer), Some(master_highest)) =
+            (log_streamer.as_deref(), stream.master_highest_log_seq())
+            && let Err(error) = backfill_logs(streamer, master_highest).await
+        {
+            tracing::warn!(error = %error, "cluster log backfill failed");
+        }
 
         // When auth is replicated, wait for the reconnect's first auth
         // snapshot before replaying: a token revoked while the node was

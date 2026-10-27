@@ -96,9 +96,10 @@ pub struct AuthState {
 
 impl AuthState {
     /// Bundles the cookie-session and bearer-token stores.
-    pub fn new(sessions: Auth, mut tokens: TokenStore) -> Self {
+    pub fn new(mut sessions: Auth, mut tokens: TokenStore) -> Self {
         let epoch = Arc::new(AtomicU64::new(0));
         tokens.set_epoch(epoch.clone());
+        sessions.set_epoch(epoch.clone());
         let (changes, _) = watch::channel(0);
         tokens.set_notifier(changes.clone());
         Self {
@@ -175,7 +176,8 @@ impl AuthState {
     /// Replaces the local auth state with a snapshot pushed by the master.
     ///
     /// Token and local-account rows are swapped in one transaction each;
-    /// OIDC settings and the session-invalidation epoch are adopted verbatim.
+    /// OIDC settings are adopted verbatim. The session-invalidation epoch only
+    /// moves forward: a stale or replayed snapshot cannot lower it.
     /// Only hashes and non-secret OIDC fields are ever carried, so no
     /// plaintext credential is written here.
     pub async fn apply_auth_snapshot(
@@ -195,7 +197,8 @@ impl AuthState {
             .oidc
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.oidc.clone();
-        self.epoch.store(snapshot.session_epoch, Ordering::Relaxed);
+        self.epoch
+            .fetch_max(snapshot.session_epoch, Ordering::Relaxed);
         Ok(())
     }
 
@@ -247,6 +250,11 @@ impl Auth {
     /// The session store backing this middleware.
     pub fn store(&self) -> &SessionStore {
         &self.store
+    }
+
+    /// Shares the auth state's session-invalidation epoch with the store.
+    pub(crate) fn set_epoch(&mut self, epoch: Arc<AtomicU64>) {
+        self.store.set_epoch(epoch);
     }
 }
 
@@ -485,5 +493,39 @@ mod tests {
 
         auth.invalidate_sessions();
         assert_eq!(auth.auth_snapshot().await.unwrap().session_epoch, 2);
+    }
+
+    #[tokio::test]
+    async fn session_epoch_invalidation_rejects_existing_sessions_and_never_decreases() {
+        let (auth, _created, _) = auth_state().await;
+        let session = auth
+            .sessions()
+            .store()
+            .create("alice".to_owned(), Role::Admin)
+            .await
+            .unwrap();
+        assert!(
+            auth.sessions()
+                .store()
+                .validate(session.cookie().expose())
+                .await
+                .is_ok()
+        );
+
+        // Bumping the epoch invalidates every session created before it.
+        auth.invalidate_sessions();
+        let error = auth
+            .sessions()
+            .store()
+            .validate(session.cookie().expose())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "control_api.auth.session_expired");
+
+        // A stale/replayed snapshot must not lower the local epoch.
+        let mut stale = auth.auth_snapshot().await.unwrap();
+        stale.session_epoch = 0;
+        auth.apply_auth_snapshot(&stale).await.unwrap();
+        assert_eq!(auth.auth_snapshot().await.unwrap().session_epoch, 1);
     }
 }

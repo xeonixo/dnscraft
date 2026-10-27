@@ -46,7 +46,7 @@ pub use audit::{Audit, ConfigChangeRecord};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use cluster::{
     ClusterRuntime, ClusterRuntimeOptions, ConfigWriteExecutor, QueryLogIngest, QueryLogOutbox,
-    StateAuthApplier, StateRuntimeApplier, SyncedConfigApplier, TlsCertInstaller,
+    StateAuthApplier, StateRuntimeApplier, SyncedConfigApplier, TlsCertInstaller, backfill_logs,
     node_scoped_views,
 };
 pub use cluster_status::{ClusterStatus, ClusterStatusHandle, ClusterStatusProvider};

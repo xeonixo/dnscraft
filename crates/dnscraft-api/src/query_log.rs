@@ -566,22 +566,17 @@ impl QueryLog {
             .await
     }
 
-    /// Highest outbox `seq` stored for `node_id` (`0` when none).
+    /// Highest contiguous outbox `seq` stored for `node_id` (`0` when none).
     ///
-    /// Used by the master when a sub-node reconnects to compute the backfill
-    /// cursor (`master_highest_log_seq`).
+    /// A gap (or a record dropped before insert) stops the cursor at the last
+    /// sequence before it, so the master never acknowledges rows it does not
+    /// have. Used by the master when a sub-node reconnects to compute the
+    /// backfill cursor (`master_highest_log_seq`).
     pub async fn highest_remote_seq(&self, node_id: &str) -> Result<u64, ControlApiError> {
         let node_id = node_id.to_owned();
         let seq: i64 = self
             .db
-            .with_conn(move |conn| {
-                conn.query_row(
-                    "SELECT COALESCE(MAX(seq), 0) FROM query_log WHERE node_id = ?1",
-                    params![node_id],
-                    |row| row.get(0),
-                )
-                .map_err(db_err)
-            })
+            .with_conn(move |conn| highest_contiguous_seq(conn, &node_id))
             .await?;
         Ok(u64::try_from(seq).unwrap_or_default())
     }
@@ -589,10 +584,12 @@ impl QueryLog {
     /// Inserts one contiguous log batch streamed by a sub-node.
     ///
     /// Records are re-inserted with the originating `node_id`, `time` and the
-    /// batch's per-node `seq`, deduplicating `(node_id, seq)` and the record
-    /// id (`ON CONFLICT DO NOTHING`). A repeated `seq` carrying a different
-    /// record id is rejected as `control_api.query_log.invalid`. Returns the
-    /// highest `seq` stored for the node after the batch.
+    /// batch's per-node `seq`, deduplicating on `(node_id, id)` and
+    /// `(node_id, seq)` (`ON CONFLICT DO NOTHING`); the same record id is
+    /// allowed on another node. A repeated `seq` carrying a different record
+    /// id is rejected as `control_api.query_log.invalid`. Returns the highest
+    /// *contiguous* `seq` stored for the node after the batch, so a gap never
+    /// acknowledges rows past it.
     pub async fn ingest_remote(
         &self,
         node_id: &str,
@@ -689,13 +686,7 @@ impl QueryLog {
                     )
                     .map_err(db_err)?;
                 }
-                let highest: i64 = tx
-                    .query_row(
-                        "SELECT COALESCE(MAX(seq), 0) FROM query_log WHERE node_id = ?1",
-                        params![node_for_tx],
-                        |row| row.get(0),
-                    )
-                    .map_err(db_err)?;
+                let highest = highest_contiguous_seq(&tx, &node_for_tx)?;
                 tx.commit().map_err(db_err)?;
                 Ok(u64::try_from(highest).unwrap_or_default())
             })
@@ -762,6 +753,26 @@ impl QueryLog {
 /// Builds a per-node outbox `kv` key.
 fn outbox_key(prefix: &str, node_id: &str) -> String {
     format!("{prefix}{node_id}")
+}
+
+/// Highest `seq` in the node's contiguous run starting at its lowest stored
+/// sequence (`0` when none).
+///
+/// Finds the first stored sequence with no `seq + 1` successor: a gap makes
+/// every later sequence non-contiguous, so it is not acknowledged. Uses the
+/// `(node_id, seq)` index and returns one row.
+fn highest_contiguous_seq(conn: &Connection, node_id: &str) -> Result<i64, ControlApiError> {
+    conn.query_row(
+        "SELECT COALESCE(MIN(q.seq), 0) FROM query_log q
+         WHERE q.node_id = ?1 AND q.seq IS NOT NULL
+           AND NOT EXISTS (
+               SELECT 1 FROM query_log n
+               WHERE n.node_id = q.node_id AND n.seq = q.seq + 1
+           )",
+        params![node_id],
+        |row| row.get(0),
+    )
+    .map_err(db_err)
 }
 
 /// Reads a persisted cursor value, or `default` when the key is absent.

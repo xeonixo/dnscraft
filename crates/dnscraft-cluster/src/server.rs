@@ -771,6 +771,7 @@ async fn write_relay(
         .write_executor
         .execute(
             &auth.0,
+            &relay.request_id,
             relay.actor,
             relay.method,
             relay.path,

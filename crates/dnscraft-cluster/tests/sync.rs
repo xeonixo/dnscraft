@@ -135,6 +135,7 @@ impl WriteExecutor for NoWrites {
     async fn execute(
         &self,
         _node_id: &str,
+        _request_id: &str,
         _actor: RelayedActor,
         _method: String,
         _path: String,

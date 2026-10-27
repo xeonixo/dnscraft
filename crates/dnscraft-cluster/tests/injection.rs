@@ -66,6 +66,7 @@ impl WriteExecutor for MasterExecutor {
     async fn execute(
         &self,
         _node_id: &str,
+        _request_id: &str,
         _actor: RelayedActor,
         _method: String,
         _path: String,
@@ -101,6 +102,7 @@ impl WriteExecutor for ClientExecutor {
     async fn execute(
         &self,
         _node_id: &str,
+        _request_id: &str,
         actor: RelayedActor,
         method: String,
         path: String,
@@ -136,6 +138,7 @@ impl WriteExecutor for AmbiguousAckExecutor {
     async fn execute(
         &self,
         _node_id: &str,
+        _request_id: &str,
         _actor: RelayedActor,
         _method: String,
         _path: String,

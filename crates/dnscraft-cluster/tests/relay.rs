@@ -64,6 +64,7 @@ impl WriteExecutor for MockExecutor {
     async fn execute(
         &self,
         node_id: &str,
+        _request_id: &str,
         actor: RelayedActor,
         method: String,
         path: String,

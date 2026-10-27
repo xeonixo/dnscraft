@@ -151,10 +151,14 @@ pub trait WriteExecutor: Send + Sync {
     /// row names the sub-node. A sub-node-side executor (live relay or offline
     /// replay) is transport-only and may pass an empty value; the master
     /// derives the authoritative identity from the client certificate.
+    ///
+    /// `request_id` is always present on the relay and stable across retries;
+    /// the master deduplicates on it, so a keyless retry applies once.
     #[allow(clippy::too_many_arguments)]
     async fn execute(
         &self,
         node_id: &str,
+        request_id: &str,
         actor: RelayedActor,
         method: String,
         path: String,

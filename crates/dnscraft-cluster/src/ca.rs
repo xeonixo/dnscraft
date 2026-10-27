@@ -83,12 +83,14 @@ impl ClusterCa {
 
     fn load(cert_path: &Path, key_path: &Path) -> Result<Self, ClusterError> {
         let cert_pem = fs::read_to_string(cert_path).map_err(io_error)?;
+        // Tighten before reading: the key must never be read while its mode is
+        // wider than 0600.
+        tighten_key_permissions(key_path)?;
         let key_pem = Secret::new(fs::read_to_string(key_path).map_err(io_error)?);
         // Reject a corrupt key now rather than at first signing.
         let key = KeyPair::from_pem(key_pem.expose()).map_err(|error| ClusterError::Internal {
             message: format!("invalid cluster CA key: {error}"),
         })?;
-        tighten_key_permissions(key_path)?;
         Ok(Self {
             cert_pem,
             key,
@@ -261,6 +263,23 @@ mod tests {
         let first = ClusterCa::load_or_generate(&cert_path).unwrap();
         let second = ClusterCa::load_or_generate(&cert_path).unwrap();
         assert_eq!(first.cert_pem(), second.cert_pem());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_widened_ca_key_is_tightened_before_load() {
+        let dir = temp_dir("ca-tighten");
+        let cert_path = dir.join("ca.pem");
+        let ca = ClusterCa::load_or_generate(&cert_path).unwrap();
+        let key_path = dir.join("ca.key");
+
+        // Simulate a manual copy that left the key group/world readable.
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o644)).unwrap();
+        let reloaded = ClusterCa::load_or_generate(&cert_path).unwrap();
+        assert_eq!(reloaded.cert_pem(), ca.cert_pem());
+        let mode = fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "load must tighten the key to 0600");
+
         let _ = fs::remove_dir_all(&dir);
     }
 

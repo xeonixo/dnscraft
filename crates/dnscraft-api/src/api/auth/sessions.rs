@@ -5,6 +5,8 @@
 //! and stored only as its SHA-256 hash (`ring::digest`). The plaintext never
 //! reaches SQLite; it is held in a [`Secret`] until the cookie is built.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use ring::digest::{SHA256, digest};
@@ -87,12 +89,25 @@ pub struct SessionStore {
     db: Db,
     idle: Duration,
     absolute: Duration,
+    /// Auth epoch shared with [`AuthState`](super::AuthState); a session
+    /// created under an older epoch is invalid.
+    epoch: Arc<AtomicU64>,
 }
 
 impl SessionStore {
     /// Creates a store over `db` with the given idle and absolute lifetimes.
     pub fn new(db: Db, idle: Duration, absolute: Duration) -> Self {
-        Self { db, idle, absolute }
+        Self {
+            db,
+            idle,
+            absolute,
+            epoch: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Shares the surrounding auth state's session-invalidation epoch.
+    pub(crate) fn set_epoch(&mut self, epoch: Arc<AtomicU64>) {
+        self.epoch = epoch;
     }
 
     /// Creates a session for `actor_id` with `role`.
@@ -105,14 +120,15 @@ impl SessionStore {
         let id_hash = hash_session_id(cookie.expose());
         let role_str = role.as_str().to_owned();
         let actor_for_db = actor_id.clone();
+        let epoch = i64::try_from(self.epoch.load(Ordering::Relaxed)).unwrap_or(i64::MAX);
         let now = self.db.now_unix();
         let expires_at = now.saturating_add(self.absolute.as_secs() as i64);
         self.db
             .with_conn(move |conn| {
                 conn.execute(
-                    "INSERT INTO sessions (id_hash, actor_id, role, created_at, last_active, expires_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![id_hash, actor_for_db, role_str, now, now, expires_at],
+                    "INSERT INTO sessions (id_hash, actor_id, role, created_at, last_active, expires_at, epoch)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![id_hash, actor_for_db, role_str, now, now, expires_at, epoch],
                 )
                 .map_err(db_err)?;
                 Ok(())
@@ -133,11 +149,12 @@ impl SessionStore {
         let id_hash = hash_session_id(cookie);
         let idle_secs = self.idle.as_secs() as i64;
         let now = self.db.now_unix();
+        let current_epoch = self.epoch.load(Ordering::Relaxed);
         self.db
             .with_conn(move |conn| {
                 let row = conn
                     .query_row(
-                        "SELECT actor_id, role, last_active, expires_at FROM sessions WHERE id_hash = ?1",
+                        "SELECT actor_id, role, last_active, expires_at, epoch FROM sessions WHERE id_hash = ?1",
                         params![id_hash],
                         |row| {
                             Ok((
@@ -145,15 +162,22 @@ impl SessionStore {
                                 row.get::<_, String>(1)?,
                                 row.get::<_, i64>(2)?,
                                 row.get::<_, i64>(3)?,
+                                row.get::<_, i64>(4)?,
                             ))
                         },
                     )
                     .optional()
                     .map_err(db_err)?;
-                let Some((actor_id, role_str, last_active, expires_at)) = row else {
+                let Some((actor_id, role_str, last_active, expires_at, epoch)) = row else {
                     return Err(ControlApiError::AuthSessionExpired);
                 };
-                if now >= expires_at || now >= last_active.saturating_add(idle_secs) {
+                // A session is valid only at or after the epoch it was created
+                // under: bumping the epoch (global sign-out/revocation)
+                // invalidates every older session.
+                if now >= expires_at
+                    || now >= last_active.saturating_add(idle_secs)
+                    || epoch < i64::try_from(current_epoch).unwrap_or(i64::MAX)
+                {
                     conn.execute("DELETE FROM sessions WHERE id_hash = ?1", params![id_hash])
                         .map_err(db_err)?;
                     return Err(ControlApiError::AuthSessionExpired);

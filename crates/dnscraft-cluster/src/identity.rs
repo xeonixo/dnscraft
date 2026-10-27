@@ -121,11 +121,13 @@ impl NodeIdentity {
     pub fn load(paths: &TlsPaths) -> Result<Self, ClusterError> {
         let ca_cert_pem = fs::read_to_string(&paths.ca_cert).map_err(io_error)?;
         let node_cert_pem = fs::read_to_string(&paths.node_cert).map_err(io_error)?;
+        // Tighten before reading so the private key is never read with a mode
+        // wider than 0600.
+        tighten_key_permissions(&paths.node_key)?;
         let key_pem = Secret::new(fs::read_to_string(&paths.node_key).map_err(io_error)?);
         let key = KeyPair::from_pem(key_pem.expose()).map_err(|error| ClusterError::Internal {
             message: format!("invalid node key: {error}"),
         })?;
-        tighten_key_permissions(&paths.node_key)?;
         Ok(Self {
             ca_cert_pem,
             node_cert_pem,

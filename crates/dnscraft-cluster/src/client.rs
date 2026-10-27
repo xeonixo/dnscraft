@@ -692,10 +692,19 @@ fn pinned_client(master_cert_pem: &str) -> Result<Client, ClusterError> {
     http_client(tls)
 }
 
-fn http_client(tls: rustls::ClientConfig) -> Result<Client, ClusterError> {
+/// Shared client construction for the mTLS and pinned clients.
+///
+/// Redirects are never followed: the node certificate must only ever be
+/// presented to the configured master, not to a host named by a redirect.
+fn base_client() -> reqwest::ClientBuilder {
     Client::builder()
-        .use_preconfigured_tls(tls)
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(DEFAULT_MASTER_TIMEOUT)
+}
+
+fn http_client(tls: rustls::ClientConfig) -> Result<Client, ClusterError> {
+    base_client()
+        .use_preconfigured_tls(tls)
         .build()
         .map_err(|error| ClusterError::TransportTls {
             message: format!("build cluster HTTP client: {error}"),
@@ -830,5 +839,64 @@ mod tests {
             }),
             ClusterError::ProtocolVersion
         );
+    }
+
+    #[tokio::test]
+    async fn cluster_http_client_never_follows_redirects() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // The redirect target counts hits; it must stay untouched.
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target.local_addr().unwrap();
+        let hits = Arc::new(AtomicU64::new(0));
+        let target_hits = Arc::clone(&hits);
+        let target_task = tokio::spawn(async move {
+            if let Ok((mut socket, _)) = target.accept().await {
+                target_hits.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+
+        let redirect = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let redirect_addr = redirect.local_addr().unwrap();
+        let redirect_task = tokio::spawn(async move {
+            if let Ok((mut socket, _)) = redirect.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://{target_addr}/\r\nContent-Length: 0\r\n\r\n"
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+
+        // Same builder the mTLS/pinned cluster clients use; a ring-backed TLS
+        // config is attached only because reqwest needs a provider at build
+        // time (plain HTTP never negotiates TLS).
+        let provider = Arc::new(ring_provider::default_provider());
+        let tls = rustls::ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .with_root_certificates(RootCertStore::empty())
+            .with_no_client_auth();
+        let client = base_client().use_preconfigured_tls(tls).build().unwrap();
+        let response = client
+            .get(format!("http://{redirect_addr}/"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "the cluster client followed a redirect"
+        );
+        redirect_task.await.unwrap();
+        target_task.abort();
     }
 }

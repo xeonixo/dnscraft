@@ -83,6 +83,7 @@ impl WriteExecutor for MasterExecutor {
     async fn execute(
         &self,
         _node_id: &str,
+        _request_id: &str,
         actor: RelayedActor,
         _method: String,
         _path: String,

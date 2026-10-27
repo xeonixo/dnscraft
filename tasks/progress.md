@@ -2,6 +2,36 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-27 — cluster: LOW/Info hardening from the security review
+
+- **A — relay exactly-once.** `ConfigWriteExecutor` now caches the relay response under
+  the always-present `request_id` (in addition to the optional `Idempotency-Key`), so a
+  keyless retry after a lost response applies once. `WriteExecutor::execute` gained a
+  `request_id` parameter (master route and offline replay pass it). Cache stays in-memory;
+  losing it across a master restart is a documented follow-up. Test:
+  `relayed_retry_with_the_same_request_id_applies_once` (one config version, one audit row).
+- **B — session epoch enforced.** `sessions` gained an `epoch` column (migration v7);
+  `SessionStore` shares the `AuthState` epoch and rejects/deletes a session created under an
+  older epoch. `apply_auth_snapshot` now uses `fetch_max`, so a stale/replayed snapshot never
+  lowers the epoch. Test: `session_epoch_invalidation_rejects_existing_sessions_and_never_decreases`.
+- **C — contiguous log ack + per-node dedupe.** `ingest_remote` and `highest_remote_seq`
+  compute the first stored `seq` with no `seq + 1` successor (a gap stops the ack) instead of
+  `MAX(seq)`. Migration v8 rebuilds `query_log` with `PRIMARY KEY (node_id, id)` and a unique
+  `(node_id, id)` index, so the same record id on another node no longer collides globally.
+  Test: `master_ingest_is_per_node_and_acks_only_contiguously`.
+- **D — backfill wired.** After each (re)connect the sub-node loop calls
+  `backfill_logs(streamer, stream.master_highest_log_seq())`; `Backfill::gap()` (`cluster.log_gap`)
+  is logged and returned. Test: `sub_node_backfill_reports_a_gap_after_reconnect`.
+- **E — redirects disabled.** The shared cluster client builder (`base_client`) sets
+  `redirect::Policy::none()` before the mTLS/pinned TLS config is layered on. Test:
+  `cluster_http_client_never_follows_redirects` (loopback 302, target never hit).
+- **F — tighten key mode before read.** `ClusterCa::load` and `NodeIdentity::load` call
+  `tighten_key_permissions` before reading the key PEM. Test:
+  `a_widened_ca_key_is_tightened_before_load` (0644 → 0600 on reload).
+- Gates: `cargo test -p dnscraft-cluster` 105, `cargo test -p dnscraft-api` 313 (all green);
+  clippy `--all-targets -D warnings` both; `cargo fmt --check` both; `cargo tree` has no
+  aws-lc-rs/openssl/native-tls. Deferred: durable (restart-surviving) relay idempotency cache.
+
 ## 2026-10-26 — S5: control-api spec/plan alignment with SPEC-mcp.md
 
 - SPEC-control-api.md token model now has the four fixed scopes from the start: `viewer`/`admin`

@@ -28,9 +28,9 @@ use dnscraft_api::{
 use dnscraft_cluster::{
     AuthSnapshotApplier, CertInstaller, ClusterCa, ClusterClient, ClusterConfig, ClusterServer,
     ClusterServerConfig, ClusterStore, ConfigApplier, JoinConfig, ListenConfig, LogConfig,
-    LogIngest, LogOutbox, LogRecord, NodeIdentity, OfflineWriteQueue, OfflineWritesConfig,
-    PendingNodeIdentity, QuotaConfig, RelayResponse, RelayedActor, Role, RuntimeCommandApplier,
-    TlsPaths, WriteExecutor, WriteRelay,
+    LogIngest, LogOutbox, LogRecord, LogStreamer, NodeIdentity, OfflineWriteQueue,
+    OfflineWritesConfig, PendingNodeIdentity, QuotaConfig, RelayResponse, RelayedActor, Role,
+    RuntimeCommandApplier, TlsPaths, WriteExecutor, WriteRelay,
 };
 use dnscraft_common::clock::ManualClock as ClusterClock;
 use dnscraft_common::secret::Secret;
@@ -146,6 +146,7 @@ impl WriteExecutor for NoWrites {
     async fn execute(
         &self,
         _node_id: &str,
+        _request_id: &str,
         _actor: RelayedActor,
         _method: String,
         _path: String,
@@ -177,6 +178,79 @@ impl LogIngest for NoLogs {
 
     async fn highest_seq(&self, _node_id: &str) -> Result<u64, dnscraft_cluster::ClusterError> {
         Ok(0)
+    }
+}
+
+/// Master log ingest that reports a fixed highest sequence and accepts batches.
+struct RecordingLogs {
+    highest: AtomicU64,
+}
+
+#[async_trait]
+impl LogIngest for RecordingLogs {
+    async fn ingest(
+        &self,
+        _node_id: &str,
+        _first_seq: u64,
+        last_seq: u64,
+        _records: &[LogRecord],
+    ) -> Result<u64, dnscraft_cluster::ClusterError> {
+        self.highest.store(last_seq, Ordering::SeqCst);
+        Ok(last_seq)
+    }
+
+    async fn highest_seq(&self, _node_id: &str) -> Result<u64, dnscraft_cluster::ClusterError> {
+        Ok(self.highest.load(Ordering::SeqCst))
+    }
+}
+
+/// Outbox with rows `first..=last`, resuming from `next`.
+struct MockLogOutbox {
+    rows: Vec<LogRecord>,
+    first: u64,
+    next: Mutex<u64>,
+}
+
+impl MockLogOutbox {
+    fn new(first: u64, last: u64, next: u64) -> Self {
+        let rows = (first..=last)
+            .map(|seq| LogRecord {
+                id: format!("r{seq}"),
+                record: json!({ "id": format!("r{seq}"), "seq": seq }),
+            })
+            .collect();
+        Self {
+            rows,
+            first,
+            next: Mutex::new(next),
+        }
+    }
+}
+
+#[async_trait]
+impl LogOutbox for MockLogOutbox {
+    async fn next_unacked_seq(&self) -> Result<u64, dnscraft_cluster::ClusterError> {
+        Ok(*self.next.lock().unwrap())
+    }
+
+    async fn fetch_batch(
+        &self,
+        from_seq: u64,
+        max_records: usize,
+    ) -> Result<Vec<LogRecord>, dnscraft_cluster::ClusterError> {
+        let start = from_seq.saturating_sub(self.first) as usize;
+        Ok(self
+            .rows
+            .iter()
+            .skip(start)
+            .take(max_records)
+            .cloned()
+            .collect())
+    }
+
+    async fn ack(&self, seq: u64) -> Result<(), dnscraft_cluster::ClusterError> {
+        *self.next.lock().unwrap() = seq + 1;
+        Ok(())
     }
 }
 
@@ -377,6 +451,76 @@ async fn sub_node_applies_a_master_push_and_acks_zero_lag() {
     // The client posted the ack, so the master reports zero lag.
     assert_eq!(server.config_sync().node_lag("node-b").unwrap().lag, 0);
 
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn sub_node_backfill_reports_a_gap_after_reconnect() {
+    let dir = TempDir::new("backfill-gap");
+    let clock = Arc::new(ClusterClock::new(SystemTime::now()));
+    let store = ClusterStore::open_in_memory(clock.clone(), TOKEN_TTL)
+        .await
+        .unwrap();
+    let ca = ClusterCa::load_or_generate(&dir.path().join("ca.pem")).unwrap();
+    let logs = Arc::new(RecordingLogs {
+        highest: AtomicU64::new(10),
+    });
+    let server = ClusterServer::start(
+        ClusterServerConfig {
+            listen: ListenConfig {
+                bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 0,
+            },
+            server_name: "127.0.0.1".to_owned(),
+            node_cert_ttl: NODE_CERT_TTL,
+            quota: QuotaConfig::default(),
+        },
+        ca,
+        store.clone(),
+        clock.clone(),
+        Arc::new(NoWrites),
+        logs,
+        None,
+    )
+    .await
+    .unwrap();
+    let url = format!("https://127.0.0.1:{}", server.addr().port());
+
+    let token = store.mint_join_token("node-b").await.unwrap();
+    let pending = PendingNodeIdentity::generate("node-b").unwrap();
+    let response = ClusterClient::enroll(
+        &url,
+        server.server_cert_pem(),
+        pending.request(Secret::new(token.expose())),
+    )
+    .await
+    .unwrap();
+    let paths = TlsPaths {
+        ca_cert: dir.path().join("node-b-ca.pem"),
+        node_cert: dir.path().join("node-b.pem"),
+        node_key: dir.path().join("node-b.key"),
+    };
+    let identity = pending.persist(&response, &paths).unwrap();
+
+    let client = ClusterClient::new(&url, &identity, clock.clone()).unwrap();
+    let notify = tokio::sync::Notify::new();
+    let stream = client.connect(&notify).await.unwrap();
+    assert_eq!(stream.master_highest_log_seq(), Some(10));
+
+    // The node's buffer already dropped 11..=49; reconnect must report the
+    // gap rather than silently resuming past it.
+    let outbox = Arc::new(MockLogOutbox::new(50, 60, 50));
+    let streamer = LogStreamer::new(outbox, Arc::new(client), LogConfig::default(), clock);
+    let backfill = dnscraft_api::backfill_logs(&streamer, 10).await.unwrap();
+    assert_eq!(backfill.from_seq, 50);
+    assert_eq!(backfill.missing, 39);
+    assert_eq!(
+        backfill.gap().expect("gap is reported").code(),
+        "cluster.log_gap"
+    );
+    assert_eq!(backfill.flushed.unwrap().last_seq, 60);
+
+    drop(stream);
     server.shutdown().await;
 }
 
@@ -701,6 +845,7 @@ async fn relayed_viewer_write_is_rejected_and_admin_write_applies_once() {
     let response = executor
         .execute(
             "node-a",
+            "req-viewer",
             viewer,
             "PUT".to_owned(),
             "/api/v1/config".to_owned(),
@@ -725,6 +870,7 @@ async fn relayed_viewer_write_is_rejected_and_admin_write_applies_once() {
     let first = executor
         .execute(
             "node-a",
+            "req-idem-1",
             admin.clone(),
             "PUT".to_owned(),
             "/api/v1/config".to_owned(),
@@ -742,6 +888,7 @@ async fn relayed_viewer_write_is_rejected_and_admin_write_applies_once() {
     let retry = executor
         .execute(
             "node-a",
+            "req-idem-2",
             admin,
             "PUT".to_owned(),
             "/api/v1/config".to_owned(),
@@ -756,6 +903,53 @@ async fn relayed_viewer_write_is_rejected_and_admin_write_applies_once() {
 }
 
 #[tokio::test]
+async fn relayed_retry_with_the_same_request_id_applies_once() {
+    let (service, db) = service("master", ModuleAppliers::default()).await;
+    let executor =
+        ConfigWriteExecutor::new(Arc::clone(&service), Arc::new(ClusterClock::new(at(NOW))));
+    let admin = RelayedActor {
+        actor_id: "admin-a".to_owned(),
+        actor_type: "user".to_owned(),
+        scope: "admin".to_owned(),
+    };
+
+    // No Idempotency-Key: the always-present request_id is the dedupe key, so
+    // a keyless retry after a lost response must not apply twice.
+    let first = executor
+        .execute(
+            "node-a",
+            "req-keyless",
+            admin.clone(),
+            "PUT".to_owned(),
+            "/api/v1/config".to_owned(),
+            snapshot("applied"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status, 200);
+    assert_eq!(first.body["data"]["version"], 1);
+
+    let retry = executor
+        .execute(
+            "node-a",
+            "req-keyless",
+            admin,
+            "PUT".to_owned(),
+            "/api/v1/config".to_owned(),
+            snapshot("applied"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(retry.body, first.body);
+    assert_eq!(service.current().await.unwrap().0, Some(1));
+    assert_eq!(db.audit_list(10, 0).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn relayed_unknown_actor_type_is_rejected_without_audit() {
     let (service, db) = service("master", ModuleAppliers::default()).await;
     let executor =
@@ -766,6 +960,7 @@ async fn relayed_unknown_actor_type_is_rejected_without_audit() {
     let response = executor
         .execute(
             "node-a",
+            "req-unknown-actor",
             actor,
             "PUT".to_owned(),
             "/api/v1/config".to_owned(),
@@ -801,6 +996,7 @@ async fn relayed_write_audits_the_originating_node_and_direct_writes_the_local_n
     let response = executor
         .execute(
             "node-b",
+            "req-audit",
             admin,
             "PUT".to_owned(),
             "/api/v1/config".to_owned(),
@@ -900,6 +1096,7 @@ async fn relayed_module_writes_dispatch_through_the_config_service() {
         let response = executor
             .execute(
                 "node-b",
+                &format!("req-{method}-{path}"),
                 admin_actor(),
                 method.to_owned(),
                 path.to_owned(),
@@ -928,6 +1125,7 @@ async fn relayed_module_writes_dispatch_through_the_config_service() {
     let rollback = executor
         .execute(
             "node-b",
+            "req-rollback",
             admin_actor(),
             "POST".to_owned(),
             "/api/v1/config/versions/1/rollback".to_owned(),
@@ -963,6 +1161,7 @@ async fn relayed_non_config_routes_are_rejected_without_applying() {
         let response = executor
             .execute(
                 "node-b",
+                &format!("req-nonconfig-{path}"),
                 admin_actor(),
                 "POST".to_owned(),
                 path.to_owned(),
@@ -1978,6 +2177,57 @@ async fn master_ingest_deduplicates_and_the_outbox_resumes_from_the_cursor() {
         .await
         .unwrap_err();
     assert_eq!(error.code(), "cluster.log_stream.invalid");
+}
+
+#[tokio::test]
+async fn master_ingest_is_per_node_and_acks_only_contiguously() {
+    let db = Db::open_in_memory(Arc::new(ApiClock::new(at(NOW))))
+        .await
+        .unwrap();
+    let log = Arc::new(QueryLog::new(
+        db,
+        dnscraft_api::QueryLogConfig::default(),
+        "master",
+    ));
+    let ingest = QueryLogIngest::new(Arc::clone(&log));
+
+    // The same record id on two different nodes must not collide: dedupe is
+    // per-node, so both rows are stored.
+    let shared = remote_record("shared-id", 1);
+    assert_eq!(
+        ingest
+            .ingest("node-a", 1, 1, std::slice::from_ref(&shared))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        ingest
+            .ingest("node-b", 1, 1, std::slice::from_ref(&shared))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(ingest.highest_seq("node-a").await.unwrap(), 1);
+    assert_eq!(ingest.highest_seq("node-b").await.unwrap(), 1);
+
+    // A gap at seq 2 must not advance node-a's ack past it.
+    let third = remote_record("a3", 3);
+    assert_eq!(
+        ingest
+            .ingest("node-a", 3, 3, std::slice::from_ref(&third))
+            .await
+            .unwrap(),
+        1
+    );
+    let second = remote_record("a2", 2);
+    assert_eq!(
+        ingest
+            .ingest("node-a", 2, 2, std::slice::from_ref(&second))
+            .await
+            .unwrap(),
+        3
+    );
 }
 
 #[tokio::test]

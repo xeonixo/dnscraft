@@ -150,6 +150,54 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         SELECT day, '', profile_id, protocol, answer_source, query_count FROM stats_daily;
     DROP TABLE stats_daily;
     ALTER TABLE stats_daily_v6 RENAME TO stats_daily;",
+    // v7: cookie sessions record the auth epoch they were created under, so a
+    // bumped epoch (global sign-out, revocation) invalidates existing sessions
+    // during validation. Existing rows default to epoch 0.
+    "ALTER TABLE sessions ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0;",
+    // v8: query-log dedupe is per node, not global. The original table used a
+    // global `id` PRIMARY KEY, which made a record id collide across nodes and
+    // silently drop one node's row; rebuild with `(node_id, id)` as the key and
+    // expose the documented `(node_id, id)` dedupe index. Existing indexes are
+    // recreated because rebuilding the table drops them.
+    "CREATE TABLE query_log_v8 (
+        id         TEXT NOT NULL,
+        time       INTEGER NOT NULL,
+        node_id    TEXT NOT NULL,
+        source_ip  TEXT NOT NULL,
+        query_name TEXT NOT NULL,
+        listener_id TEXT NOT NULL DEFAULT '',
+        protocol TEXT NOT NULL DEFAULT '',
+        source_ip_truncated INTEGER NOT NULL DEFAULT 0,
+        client_id TEXT,
+        client_name TEXT,
+        query_type TEXT NOT NULL DEFAULT '',
+        query_class TEXT NOT NULL DEFAULT '',
+        view_id TEXT NOT NULL DEFAULT '',
+        profile_id TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT '',
+        answer_source TEXT NOT NULL DEFAULT '',
+        rcode TEXT NOT NULL DEFAULT '',
+        record TEXT NOT NULL DEFAULT '{}',
+        seq INTEGER,
+        PRIMARY KEY (node_id, id)
+    );
+    INSERT INTO query_log_v8 (
+        id, time, node_id, source_ip, query_name, listener_id, protocol,
+        source_ip_truncated, client_id, client_name, query_type, query_class,
+        view_id, profile_id, status, answer_source, rcode, record, seq
+    )
+        SELECT
+            id, time, node_id, source_ip, query_name, listener_id, protocol,
+            source_ip_truncated, client_id, client_name, query_type, query_class,
+            view_id, profile_id, status, answer_source, rcode, record, seq
+        FROM query_log;
+    DROP TABLE query_log;
+    ALTER TABLE query_log_v8 RENAME TO query_log;
+    CREATE INDEX IF NOT EXISTS query_log_time_idx ON query_log(time);
+    CREATE INDEX IF NOT EXISTS query_log_client_idx ON query_log(client_id);
+    CREATE INDEX IF NOT EXISTS query_log_status_idx ON query_log(status);
+    CREATE UNIQUE INDEX IF NOT EXISTS query_log_node_seq_idx ON query_log(node_id, seq);
+    CREATE UNIQUE INDEX IF NOT EXISTS query_log_node_id_idx ON query_log(node_id, id);",
 ];
 
 /// Applies every migration newer than the recorded version, then records it.
@@ -185,7 +233,7 @@ mod tests {
     fn audit_log_rejects_update_and_delete_after_v2() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 6);
+        assert_eq!(schema_version(&conn).unwrap(), 8);
 
         conn.execute(
             "INSERT INTO audit_log (
