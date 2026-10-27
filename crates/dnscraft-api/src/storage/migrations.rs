@@ -117,6 +117,39 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS query_log_time_idx ON query_log(time);
     CREATE INDEX IF NOT EXISTS query_log_client_idx ON query_log(client_id);
     CREATE INDEX IF NOT EXISTS query_log_status_idx ON query_log(status);",
+    // v6: cluster log/stat aggregation (CL4/CL5). `seq` is the per-node
+    // outbox position allocated in the insert transaction; the unique index
+    // enforces the spec's `(node_id, seq)` dedupe key. Rollups gain the
+    // `node_id` dimension, which rebuilds both tables because SQLite cannot
+    // alter a primary key; existing rows are attributed to the empty node id.
+    "ALTER TABLE query_log ADD COLUMN seq INTEGER;
+    CREATE UNIQUE INDEX IF NOT EXISTS query_log_node_seq_idx ON query_log(node_id, seq);
+    CREATE TABLE stats_hourly_v6 (
+        hour          INTEGER NOT NULL,
+        node_id       TEXT NOT NULL,
+        profile_id    TEXT NOT NULL,
+        protocol      TEXT NOT NULL,
+        answer_source TEXT NOT NULL,
+        query_count   INTEGER NOT NULL,
+        PRIMARY KEY (hour, node_id, profile_id, protocol, answer_source)
+    );
+    INSERT INTO stats_hourly_v6 (hour, node_id, profile_id, protocol, answer_source, query_count)
+        SELECT hour, '', profile_id, protocol, answer_source, query_count FROM stats_hourly;
+    DROP TABLE stats_hourly;
+    ALTER TABLE stats_hourly_v6 RENAME TO stats_hourly;
+    CREATE TABLE stats_daily_v6 (
+        day           INTEGER NOT NULL,
+        node_id       TEXT NOT NULL,
+        profile_id    TEXT NOT NULL,
+        protocol      TEXT NOT NULL,
+        answer_source TEXT NOT NULL,
+        query_count   INTEGER NOT NULL,
+        PRIMARY KEY (day, node_id, profile_id, protocol, answer_source)
+    );
+    INSERT INTO stats_daily_v6 (day, node_id, profile_id, protocol, answer_source, query_count)
+        SELECT day, '', profile_id, protocol, answer_source, query_count FROM stats_daily;
+    DROP TABLE stats_daily;
+    ALTER TABLE stats_daily_v6 RENAME TO stats_daily;",
 ];
 
 /// Applies every migration newer than the recorded version, then records it.
@@ -152,7 +185,7 @@ mod tests {
     fn audit_log_rejects_update_and_delete_after_v2() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 5);
+        assert_eq!(schema_version(&conn).unwrap(), 6);
 
         conn.execute(
             "INSERT INTO audit_log (

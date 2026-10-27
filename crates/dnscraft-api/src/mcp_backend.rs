@@ -1121,6 +1121,7 @@ impl McpBackend for ControlMcpBackend {
         let filter = QueryLogFilter {
             from_us,
             to_us,
+            node_id: None,
             client_id: non_empty(params.client_id),
             client_name_substr: non_empty(params.client_name_substr),
             domain: non_empty(params.domain),
@@ -1241,19 +1242,19 @@ impl McpBackend for ControlMcpBackend {
             message: format!("{what}: {}", e.code()),
         };
         let overview = log
-            .stats_overview(from_us, to_us)
+            .stats_overview(from_us, to_us, None)
             .await
             .map_err(|e| stats_err("stats overview", e))?;
         let top_clients = log
-            .top_clients(from_us, to_us, 10, TopBy::Queries)
+            .top_clients(from_us, to_us, None, 10, TopBy::Queries)
             .await
             .map_err(|e| stats_err("stats top clients", e))?;
         let top_blocked = log
-            .top_blocked_domains(from_us, to_us, 10)
+            .top_blocked_domains(from_us, to_us, None, 10)
             .await
             .map_err(|e| stats_err("stats top blocked domains", e))?;
         let cache = log
-            .cache_stats(from_us, to_us)
+            .cache_stats(from_us, to_us, None)
             .await
             .map_err(|e| stats_err("stats cache", e))?;
         let count = |key: &str| overview.dnssec.get(key).copied().unwrap_or(0).max(0) as u64;

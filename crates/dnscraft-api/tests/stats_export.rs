@@ -14,7 +14,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{HeaderMap, Request, StatusCode, header};
-use dnscraft_api::{AppState, Db, ManualClock, QueryLog, QueryLogConfig, RollupWindow};
+use dnscraft_api::{
+    AppState, Db, ManualClock, QueryLog, QueryLogConfig, QueryLogFilter, RollupWindow,
+};
 use dnscraft_filtering::{BlockMode, ListId, Reason, RuleSource, SetId};
 use dnscraft_listeners::QueryEvent;
 use dnscraft_policy::{
@@ -327,6 +329,66 @@ async fn stats_export_rollups_populate_hourly_and_daily_and_prune_after_a_year()
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn stats_rollups_and_filters_carry_the_node_id_dimension() {
+    let clock = Arc::new(ManualClock::new(base_time()));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    let node_a = Arc::new(QueryLog::new(
+        db.clone(),
+        QueryLogConfig::default(),
+        "node-a",
+    ));
+    let node_b = Arc::new(QueryLog::new(db, QueryLogConfig::default(), "node-b"));
+    node_a
+        .insert_batch(vec![
+            Spec::new(at_secs(BASE_SECS - 20), "a1.example.com").event(),
+            Spec::new(at_secs(BASE_SECS - 10), "a2.example.com").event(),
+        ])
+        .await
+        .unwrap();
+    node_b
+        .insert_batch(vec![
+            Spec::new(at_secs(BASE_SECS - 10), "b1.example.com").event(),
+        ])
+        .await
+        .unwrap();
+
+    // Query-log list filter.
+    let page = node_a
+        .list(&QueryLogFilter {
+            node_id: Some("node-b".to_owned()),
+            limit: 10,
+            ..QueryLogFilter::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 1);
+    assert_eq!(page.records[0]["node_id"], "node-b");
+
+    // Rollups keep the node dimension instead of merging the two nodes.
+    node_a.run_rollup().await.unwrap();
+    let hourly = node_a.rollup_rows(RollupWindow::Hourly).await.unwrap();
+    assert!(
+        hourly
+            .iter()
+            .any(|row| row.node_id == "node-a" && row.query_count == 2)
+    );
+    assert!(
+        hourly
+            .iter()
+            .any(|row| row.node_id == "node-b" && row.query_count == 1)
+    );
+
+    // Both HTTP list endpoints accept the same filter.
+    let (status, _, body) = request(&node_a, "/api/v1/stats/overview?node_id=node-b").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["data"]["total"], 1);
+
+    let (status, _, body) = request(&node_a, "/api/v1/query-log?node_id=node-a").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["data"]["queries"].as_array().unwrap().len(), 2);
 }
 
 #[tokio::test]

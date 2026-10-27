@@ -26,6 +26,7 @@ use dnscraft_policy::{
 use dnscraft_proto::Rcode;
 use dnscraft_resolver::{AnswerSource, DnssecStatus};
 use ring::rand::{SecureRandom, SystemRandom};
+use rusqlite::Connection;
 use rusqlite::params;
 use rusqlite::params_from_iter;
 use rusqlite::types::Value;
@@ -35,7 +36,7 @@ use tokio::sync::mpsc;
 
 use crate::config::{IpTruncate, QueryLogConfig};
 use crate::error::ControlApiError;
-use crate::storage::{Db, db_err};
+use crate::storage::{Db, db_err, kv_get, kv_set};
 
 /// Largest batch drained from the channel before one SQLite transaction.
 const BATCH_MAX: usize = 1024;
@@ -43,6 +44,11 @@ const BATCH_MAX: usize = 1024;
 /// Milliseconds in a day, used to turn [`QueryLogConfig::retention_days`] into
 /// a microsecond window.
 const MICROS_PER_DAY: i64 = 86_400_000_000;
+
+/// `kv` key prefix for the next `seq` to allocate on a node.
+const SEQ_ALLOC_PREFIX: &str = "query_log.seq_alloc.";
+/// `kv` key prefix for the highest contiguously acknowledged `seq` on a node.
+const ACKED_SEQ_PREFIX: &str = "query_log.acked_seq.";
 
 /// Client-directory data attached to a query-log record.
 ///
@@ -111,6 +117,8 @@ pub struct QueryLogFilter {
     pub from_us: Option<i64>,
     /// Upper time bound (inclusive).
     pub to_us: Option<i64>,
+    /// Exact originating node id.
+    pub node_id: Option<String>,
     /// Exact client id (DoH/DoT client id or directory id).
     pub client_id: Option<String>,
     /// Case-insensitive substring of the client display name.
@@ -303,6 +311,11 @@ impl QueryLog {
             // keeps the window bounded without an extra timer task.
             tx.execute("DELETE FROM query_log WHERE time < ?1", params![cutoff])
                 .map_err(db_err)?;
+            // The per-node `seq` is allocated in this same transaction: a
+            // crash can roll the rows and the cursor back together, never
+            // leaving a logged query without an outbox position.
+            let seq_key = outbox_key(SEQ_ALLOC_PREFIX, &node_id);
+            let first_seq = read_counter(&tx, &seq_key, 1)?;
             {
                 let mut stmt = tx
                     .prepare(
@@ -310,14 +323,15 @@ impl QueryLog {
                              id, time, node_id, source_ip, query_name, listener_id,
                              protocol, source_ip_truncated, client_id, client_name,
                              query_type, query_class, view_id, profile_id, status,
-                             answer_source, rcode, record
+                             answer_source, rcode, record, seq
                          ) VALUES (
                              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
+                             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
                          )",
                     )
                     .map_err(db_err)?;
-                for row in &rows {
+                for (offset, row) in rows.iter().enumerate() {
+                    let seq = first_seq.saturating_add(i64::try_from(offset).unwrap_or(i64::MAX));
                     stmt.execute(params![
                         row.id,
                         row.time_us,
@@ -337,9 +351,15 @@ impl QueryLog {
                         row.answer_source,
                         row.rcode,
                         row.record,
+                        seq,
                     ])
                     .map_err(db_err)?;
                 }
+            }
+            if !rows.is_empty() {
+                let next_alloc =
+                    first_seq.saturating_add(i64::try_from(rows.len()).unwrap_or(i64::MAX));
+                kv_set(&tx, &seq_key, &next_alloc.to_string())?;
             }
             tx.commit().map_err(db_err)?;
             Ok(rows.len())
@@ -485,6 +505,63 @@ impl QueryLog {
             }
         }
     }
+
+    /// Returns the next unacknowledged outbox `seq` for this node.
+    ///
+    /// This is the value the log sender resumes from (`acked + 1`). It is `1`
+    /// before the first record is inserted.
+    pub async fn next_seq(&self) -> Result<i64, ControlApiError> {
+        let key = outbox_key(ACKED_SEQ_PREFIX, &self.node_id);
+        self.db
+            .with_conn(move |conn| Ok(read_counter(conn, &key, 0)?.saturating_add(1)))
+            .await
+    }
+
+    /// Marks every record up to `seq` as acknowledged and returns the new
+    /// contiguous cursor.
+    ///
+    /// The cursor only advances forward and never past the last allocated
+    /// `seq`; a stale or repeated acknowledgement is a no-op. A `seq` beyond
+    /// the last allocated record is rejected as `query_log.invalid`.
+    pub async fn ack(&self, seq: i64) -> Result<i64, ControlApiError> {
+        let node_id = self.node_id.clone();
+        self.db
+            .transaction(move |conn| {
+                let ack_key = outbox_key(ACKED_SEQ_PREFIX, &node_id);
+                let alloc_key = outbox_key(SEQ_ALLOC_PREFIX, &node_id);
+                let acked = read_counter(conn, &ack_key, 0)?;
+                if seq <= acked {
+                    return Ok(acked);
+                }
+                let next_alloc = read_counter(conn, &alloc_key, 1)?;
+                if seq >= next_alloc {
+                    return Err(ControlApiError::QueryLogInvalid {
+                        reason: format!(
+                            "ack seq {seq} exceeds the last allocated seq {}",
+                            next_alloc.saturating_sub(1)
+                        ),
+                    });
+                }
+                kv_set(conn, &ack_key, &seq.to_string())?;
+                Ok(seq)
+            })
+            .await
+    }
+}
+
+/// Builds a per-node outbox `kv` key.
+fn outbox_key(prefix: &str, node_id: &str) -> String {
+    format!("{prefix}{node_id}")
+}
+
+/// Reads a persisted cursor value, or `default` when the key is absent.
+fn read_counter(conn: &Connection, key: &str, default: i64) -> Result<i64, ControlApiError> {
+    match kv_get(conn, key)? {
+        None => Ok(default),
+        Some(raw) => raw.parse::<i64>().map_err(|_| ControlApiError::Internal {
+            message: format!("corrupt outbox cursor `{key}`"),
+        }),
+    }
 }
 
 /// Builds the shared `WHERE` conditions for a [`QueryLogFilter`].
@@ -502,6 +579,10 @@ fn filter_clause(filter: &QueryLogFilter) -> (String, Vec<Value>) {
     if let Some(to_us) = filter.to_us {
         sql.push_str(" AND time <= ?");
         values.push(Value::Integer(to_us));
+    }
+    if let Some(node_id) = &filter.node_id {
+        sql.push_str(" AND node_id = ?");
+        values.push(Value::Text(node_id.clone()));
     }
     if let Some(client_id) = &filter.client_id {
         sql.push_str(" AND client_id = ?");
@@ -953,4 +1034,107 @@ pub(crate) fn new_id() -> Result<String, ControlApiError> {
         bytes[14],
         bytes[15],
     ))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use super::*;
+    use crate::clock::ManualClock;
+    use dnscraft_filtering::SetId;
+    use dnscraft_policy::{DecisionTimings, ListenerId, ProfileId, SelectionCause, ViewId};
+    use dnscraft_proto::{Class, Name, RecordType};
+    use dnscraft_resolver::{DnssecStatus, Query};
+
+    fn event(name: &str, time: SystemTime) -> QueryEvent {
+        QueryEvent {
+            time,
+            protocol: DnsProtocol::Udp53,
+            listener_id: ListenerId::new("lan-udp").unwrap(),
+            source: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            client_id: None,
+            query: Query {
+                name: Name::from_ascii(&format!("{name}.example.com.")).unwrap(),
+                qtype: RecordType::A,
+                qclass: Class::IN,
+            },
+            rcode: Rcode::NOERROR,
+            answer_size: 100,
+            duration: Duration::from_millis(1),
+            decision: DecisionRecord {
+                view_id: ViewId::new("lan").unwrap(),
+                profile_id: ProfileId::new("default").unwrap(),
+                selection: SelectionCause::Default,
+                client_id: None,
+                filter_set: SetId::new("default").unwrap(),
+                steps: Vec::new(),
+                filter: None,
+                forward_zone: None,
+                dnssec: Some(DnssecStatus::Insecure),
+                answer_source: AnswerOrigin::Resolver,
+                timings: DecisionTimings {
+                    select_us: 0,
+                    filter_us: 0,
+                    resolve_us: 0,
+                    total_us: 0,
+                },
+                rcode: Rcode::NOERROR,
+            },
+            loggable: true,
+        }
+    }
+
+    async fn stored_seqs(db: &Db) -> Vec<i64> {
+        db.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT seq FROM query_log ORDER BY seq")
+                .map_err(db_err)?;
+            let rows = stmt.query_map([], |row| row.get(0)).map_err(db_err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn seq_is_monotonic_and_allocated_in_the_insert_transaction() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let db = Db::open_in_memory(Arc::new(ManualClock::new(now)))
+            .await
+            .unwrap();
+        let log = QueryLog::new(db.clone(), QueryLogConfig::default(), "node-a");
+
+        log.insert_batch(vec![event("a", now), event("b", now), event("c", now)])
+            .await
+            .unwrap();
+        assert_eq!(stored_seqs(&db).await, vec![1, 2, 3]);
+
+        // Fail the second batch mid-transaction: no row and no `seq`
+        // allocation may survive.
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_bad BEFORE INSERT ON query_log
+                 WHEN NEW.query_name = 'bad.example.com'
+                 BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+            )
+            .map_err(db_err)
+        })
+        .await
+        .unwrap();
+        assert!(
+            log.insert_batch(vec![event("d", now), event("bad", now), event("e", now)])
+                .await
+                .is_err()
+        );
+        assert_eq!(stored_seqs(&db).await, vec![1, 2, 3]);
+
+        // The rolled-back allocation is reused: the next batch starts at 4.
+        db.with_conn(|conn| conn.execute_batch("DROP TRIGGER fail_bad").map_err(db_err))
+            .await
+            .unwrap();
+        log.insert_batch(vec![event("f", now)]).await.unwrap();
+        assert_eq!(stored_seqs(&db).await, vec![1, 2, 3, 4]);
+    }
 }

@@ -384,6 +384,65 @@ async fn query_log_events_are_enriched_with_client_data_and_ip_truncated() {
 }
 
 #[tokio::test]
+async fn query_log_outbox_cursor_advances_only_contiguously() {
+    let (log, _clock) = harness(dnscraft_api::QueryLogConfig::default()).await;
+    assert_eq!(log.next_seq().await.unwrap(), 1);
+
+    log.insert_batch(vec![sample_event(at_secs(BASE_SECS - 3), 0)])
+        .await
+        .unwrap();
+    log.insert_batch(vec![
+        sample_event(at_secs(BASE_SECS - 2), 1),
+        sample_event(at_secs(BASE_SECS - 1), 2),
+    ])
+    .await
+    .unwrap();
+
+    // Three records allocated (seq 1..=3); nothing acknowledged yet.
+    assert_eq!(log.next_seq().await.unwrap(), 1);
+    assert_eq!(log.ack(2).await.unwrap(), 2);
+    assert_eq!(log.next_seq().await.unwrap(), 3);
+
+    // A stale acknowledgement never moves the cursor backwards.
+    assert_eq!(log.ack(1).await.unwrap(), 2);
+    assert_eq!(log.next_seq().await.unwrap(), 3);
+
+    // A seq past the last allocated record is rejected and changes nothing.
+    assert!(log.ack(4).await.is_err());
+    assert_eq!(log.next_seq().await.unwrap(), 3);
+
+    assert_eq!(log.ack(3).await.unwrap(), 3);
+    assert_eq!(log.next_seq().await.unwrap(), 4);
+}
+
+#[tokio::test]
+async fn query_log_outbox_cursors_are_per_node() {
+    let clock = Arc::new(ManualClock::new(base_time()));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    let node_a = QueryLog::new(
+        db.clone(),
+        dnscraft_api::QueryLogConfig::default(),
+        "node-a",
+    );
+    let node_b = QueryLog::new(db, dnscraft_api::QueryLogConfig::default(), "node-b");
+
+    node_a
+        .insert_batch(vec![sample_event(at_secs(BASE_SECS - 2), 0)])
+        .await
+        .unwrap();
+    node_b
+        .insert_batch(vec![sample_event(at_secs(BASE_SECS - 1), 1)])
+        .await
+        .unwrap();
+    assert_eq!(node_a.next_seq().await.unwrap(), 1);
+    assert_eq!(node_b.next_seq().await.unwrap(), 1);
+
+    node_a.ack(1).await.unwrap();
+    assert_eq!(node_a.next_seq().await.unwrap(), 2);
+    assert_eq!(node_b.next_seq().await.unwrap(), 1);
+}
+
+#[tokio::test]
 async fn query_log_retention_deletes_rows_outside_the_configured_window() {
     let (log, clock) = harness(dnscraft_api::QueryLogConfig {
         retention_days: 1,

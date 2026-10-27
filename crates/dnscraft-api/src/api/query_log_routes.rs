@@ -20,6 +20,7 @@ use crate::server::AppState;
 pub(crate) struct RawQueryLogParams {
     from: Option<String>,
     to: Option<String>,
+    node_id: Option<String>,
     client_id: Option<String>,
     client_name_substr: Option<String>,
     domain: Option<String>,
@@ -59,6 +60,7 @@ impl RawQueryLogParams {
         Ok(QueryLogFilter {
             from_us,
             to_us,
+            node_id: non_empty(self.node_id),
             client_id: non_empty(self.client_id),
             client_name_substr: non_empty(self.client_name_substr),
             domain: non_empty(self.domain),

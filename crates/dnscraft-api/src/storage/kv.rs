@@ -6,7 +6,7 @@ use super::{Db, db_err};
 use crate::error::ControlApiError;
 
 /// Looks up the value for `key`, or `None` when the key is absent.
-fn kv_get(conn: &Connection, key: &str) -> Result<Option<String>, ControlApiError> {
+pub(crate) fn kv_get(conn: &Connection, key: &str) -> Result<Option<String>, ControlApiError> {
     conn.query_row("SELECT value FROM kv WHERE key = ?1", params![key], |row| {
         row.get(0)
     })
@@ -15,7 +15,7 @@ fn kv_get(conn: &Connection, key: &str) -> Result<Option<String>, ControlApiErro
 }
 
 /// Inserts or replaces the value for `key`.
-fn kv_set(conn: &Connection, key: &str, value: &str) -> Result<(), ControlApiError> {
+pub(crate) fn kv_set(conn: &Connection, key: &str, value: &str) -> Result<(), ControlApiError> {
     conn.execute(
         "INSERT INTO kv (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",

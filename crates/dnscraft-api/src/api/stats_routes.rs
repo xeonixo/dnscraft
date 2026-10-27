@@ -23,11 +23,17 @@ use crate::stats::{ExportFormat, TOP_CLIENTS_MAX, TOP_DOMAINS_MAX, TopBy, export
 pub(crate) struct RawStatsParams {
     from: Option<String>,
     to: Option<String>,
+    node_id: Option<String>,
     limit: Option<String>,
     by: Option<String>,
 }
 
 impl RawStatsParams {
+    /// Exact `node_id` filter (`None` when absent or empty).
+    fn node_id(&self) -> Option<&str> {
+        self.node_id.as_deref().filter(|value| !value.is_empty())
+    }
+
     fn window(&self) -> Result<(Option<i64>, Option<i64>), ControlApiError> {
         let from = self
             .from
@@ -89,7 +95,9 @@ pub(crate) async fn stats_overview(
 ) -> Result<impl IntoResponse, ControlApiError> {
     let log = query_log(&state)?;
     let (from, to) = params.window()?;
-    Ok(success(log.stats_overview(from, to).await?))
+    Ok(success(
+        log.stats_overview(from, to, params.node_id()).await?,
+    ))
 }
 
 /// `GET /api/v1/stats/top_clients` — top N clients by queries or blocked count.
@@ -101,7 +109,10 @@ pub(crate) async fn stats_top_clients(
     let (from, to) = params.window()?;
     let limit = parse_limit(params.limit.as_deref(), TOP_CLIENTS_MAX, 10)?;
     let by = parse_top_by(params.by.as_deref())?;
-    Ok(success(log.top_clients(from, to, limit, by).await?))
+    Ok(success(
+        log.top_clients(from, to, params.node_id(), limit, by)
+            .await?,
+    ))
 }
 
 /// `GET /api/v1/stats/top_domains` — top N queried domains.
@@ -112,7 +123,9 @@ pub(crate) async fn stats_top_domains(
     let log = query_log(&state)?;
     let (from, to) = params.window()?;
     let limit = parse_limit(params.limit.as_deref(), TOP_DOMAINS_MAX, 10)?;
-    Ok(success(log.top_domains(from, to, limit).await?))
+    Ok(success(
+        log.top_domains(from, to, params.node_id(), limit).await?,
+    ))
 }
 
 /// `GET /api/v1/stats/cache` — cache hit ratio.
@@ -122,7 +135,7 @@ pub(crate) async fn stats_cache(
 ) -> Result<impl IntoResponse, ControlApiError> {
     let log = query_log(&state)?;
     let (from, to) = params.window()?;
-    Ok(success(log.cache_stats(from, to).await?))
+    Ok(success(log.cache_stats(from, to, params.node_id()).await?))
 }
 
 /// `GET /api/v1/query-log/export.ndjson` — streaming NDJSON export.

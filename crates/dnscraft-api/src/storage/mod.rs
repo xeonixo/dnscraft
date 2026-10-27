@@ -21,6 +21,8 @@ mod db;
 mod kv;
 mod migrations;
 
+pub(crate) use kv::{kv_get, kv_set};
+
 pub use audit::AuditRecord;
 pub use config_store::ConfigStore;
 pub use db::Db;
