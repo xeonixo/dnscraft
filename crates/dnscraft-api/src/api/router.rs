@@ -256,6 +256,14 @@ async fn status(State(state): State<AppState>) -> impl IntoResponse {
         // for clients written against the earlier, flatter shape.
         body.insert("tls".to_owned(), json!(tls));
     }
+    // Cluster fields are present only when a cluster role is active. A
+    // standalone node omits them entirely (no `cluster` key).
+    if let Some(cluster) = state
+        .cluster_status()
+        .and_then(|provider| provider.cluster_status())
+    {
+        body.insert("cluster".to_owned(), cluster.to_json());
+    }
     success(serde_json::Value::Object(body))
 }
 

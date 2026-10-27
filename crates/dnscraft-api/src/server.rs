@@ -14,6 +14,7 @@ use tower::service_fn;
 use crate::api::auth::{AuthState, LocalAccountStore, OidcState};
 use crate::api::rate_limit::RateLimiter;
 use crate::clock::{Clock, SystemClock};
+use crate::cluster_status::ClusterStatusProvider;
 use crate::config::{ControlApiConfig, RateLimitConfig, is_internal_bind};
 use crate::config_apply::ConfigService;
 use crate::error::ControlApiError;
@@ -41,6 +42,7 @@ pub struct AppState {
     config: Option<Arc<ConfigService>>,
     query_log: Option<Arc<QueryLog>>,
     cluster_store: Option<Arc<ClusterStore>>,
+    cluster_status: Option<Arc<dyn ClusterStatusProvider>>,
     offline_writes: Option<Arc<OfflineWriteQueue>>,
     mcp_backend: Option<Arc<McpBackendInner>>,
     mcp_config: McpConfig,
@@ -74,6 +76,7 @@ impl AppState {
             config: None,
             query_log: None,
             cluster_store: None,
+            cluster_status: None,
             offline_writes: None,
             mcp_backend: None,
             mcp_config: McpConfig::default(),
@@ -159,6 +162,20 @@ impl AppState {
     /// The configured cluster registry, if any.
     pub(crate) fn cluster_store(&self) -> Option<&Arc<ClusterStore>> {
         self.cluster_store.as_ref()
+    }
+
+    /// Attaches the live cluster status source read by `GET /api/v1/status`.
+    ///
+    /// A standalone node leaves this unset, so the six cluster fields are
+    /// omitted entirely.
+    pub fn with_cluster_status(mut self, status: Arc<dyn ClusterStatusProvider>) -> Self {
+        self.cluster_status = Some(status);
+        self
+    }
+
+    /// The configured cluster status source, if any.
+    pub(crate) fn cluster_status(&self) -> Option<&Arc<dyn ClusterStatusProvider>> {
+        self.cluster_status.as_ref()
     }
 
     /// Attaches the sub-node offline write queue read by
