@@ -137,14 +137,15 @@ approval before Phase 0 code.
 
 ## Policy (`SPEC-policy.md` ↔ `crates/dnscraft-policy`)
 
-- [ ] **GP1** 🔴 [owner] Client IDs are **not** selection keys per current spec, but the code still
+- [ ] **GP1** 🔴 [code] Client IDs are **not** selection keys per current spec, but the code still
       does `SelectionCause::ClientId` lookup (and listeners piggyback `is_client_id_registered` on it).
       *(select.rs:50-55, config.rs:173-174, snapshot.rs:105-106, engine.rs:100-109)* — spec was revised,
       crate never updated; also needs a separate listener-side ID source.
-- [ ] **GP2** 🔴 [owner] Local records should be a global name space with per-view `overrides`;
+- [ ] **GP2** 🔴 [code] Local records should be a global name space with per-view `overrides`;
       code has them per-view. *(config.rs:175-176, 217-230; snapshot.rs:241, 395-442; steps/local_records.rs:22-23)*
-- [ ] **GP3** 🟠 [owner] `nodes` / node validity not implemented (no `node_id` in
+- [ ] **GP3** 🟠 [code] `nodes` / node validity not implemented (no `node_id` in
       `RequestContext`/`PolicySnapshot::build`). *(grep node → 0 hits)*
+      Owner decision made 2026-10-27 → implement the revised spec. Plan: `plan-policy-model.md` · `todo-policy-model.md`.
 - [ ] **GP4** 🟠 [code] `DecisionTimings.filter_us` declared but never assigned (=0). *(decision.rs:150, engine.rs:204-459)*
 - [ ] **GP5** 🟡 [code] RFC 6724 / ULA note exists only in specs, no operator/first-run docs. *(grep 6724 → specs only)*
 - [ ] **GP6** 🟡 [code] `home.arpa` via resolver local zone has no policy-crate test. *(grep home.arpa → 0 in crate)*
