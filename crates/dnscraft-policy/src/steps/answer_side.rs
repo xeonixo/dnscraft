@@ -122,7 +122,7 @@ fn replace_blocked(
 /// Qname plus each CNAME target in answer order (owners followed within the section).
 fn collect_chain_names(qname: &Name, answers: &[Record]) -> Vec<DomainName> {
     let mut out = Vec::new();
-    if let Some(d) = DomainName::parse(&qname.to_string()).ok() {
+    if let Ok(d) = DomainName::parse(&qname.to_string()) {
         out.push(d);
     }
     let mut current = qname.clone();
@@ -133,7 +133,7 @@ fn collect_chain_names(qname: &Name, answers: &[Record]) -> Vec<DomainName> {
         let RData::CNAME(target) = &rec.rdata else {
             continue;
         };
-        if let Some(d) = DomainName::parse(&target.to_string()).ok() {
+        if let Ok(d) = DomainName::parse(&target.to_string()) {
             out.push(d);
         }
         current = target.clone();

@@ -7,6 +7,7 @@ use std::sync::{Mutex, PoisonError};
 
 use dnscraft_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
 
+use crate::BoxFuture;
 use crate::config::ResolverConfig;
 use crate::dnssec::nta;
 use crate::dnssec::status::{Status, Trust};
@@ -16,7 +17,6 @@ use crate::error::ResolveError;
 use crate::limits::{Budget, Limits};
 use crate::server_selection::ServerStats;
 use crate::transport::{self, TransportError};
-use crate::BoxFuture;
 
 /// A server to try: a known address, or a name server host still to resolve.
 #[derive(Debug)]

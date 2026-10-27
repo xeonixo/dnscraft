@@ -16,9 +16,9 @@ use super::{
     DelegationTrust, DsStatus, KeysOutcome, ValidatedKeys, VerifyFailure, ds_status,
     validate_dnskey_rrset_budgeted, validate_rrset_budgeted,
 };
+use crate::BoxFuture;
 use crate::error::ResolveError;
 use crate::iterate::{Candidate, Context};
-use crate::BoxFuture;
 
 /// Servers asked for a DNSKEY RRset: the one that just answered plus a few
 /// other known addresses of the zone.

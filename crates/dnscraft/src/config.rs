@@ -606,7 +606,6 @@ extra_sans = []
 key_type = "EcdsaP256"
 renew_before = "30d"
 expiry_warn = "14d"
-allow_http_for_tests = false
 
 [tls.acme]
 enabled = false
