@@ -46,7 +46,7 @@
 
 ## Phase 4 — Query-log pipeline + delivery
 
-- [ ] **AS12** Replace the stdout sink with `QueryLogSink` (SQLite retention/rollups), keeping the
+- [x] **AS12** Replace the stdout sink with `QueryLogSink` (SQLite retention/rollups), keeping the
       JSON-lines stdout writer as an optional debug flag. Closes the query-log half of G0.
 - [ ] **AS13** Delivery (gated on owner Q7): Dockerfile variants, compose, `HEALTHCHECK`, multi-arch
       `linux/amd64`/`linux/arm64`, musl static build. Closes the delivery findings.
