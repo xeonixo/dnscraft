@@ -1,8 +1,8 @@
 # ADR-0006: rmcp 3.7.0 for the stateless MCP server
 
-- Status: Proposed
+- Status: Accepted (the decision is technically settled; the owner's formal approval is recorded at Checkpoint F)
 - Date: 2026-10-26
-- Deciders: project owner (Checkpoint D0 — do not treat as approved until the owner logs it)
+- Deciders: project owner
 - Scope: `crates/dnscraft-mcp` transport layer (SPEC-mcp.md), new dependency `rmcp` 3.7.0
 
 ## Context
@@ -230,6 +230,36 @@ control-api envelope.
 - **Contradiction 3 remains.** An unparseable body is rmcp `415` with plain text. The wrapper keeps
   the status and replaces the body with `control_api.internal` + `{"reason":"http_415"}`, because
   control-api owns the code vocabulary and has no parse-error code.
+
+## M26 and final implementation findings
+
+The fuzz work (M26) closed the last open question about where the SEP-2243
+checks live, and the full crate confirms the M0/M8/M9 conclusions. Verified
+against the rmcp 3.7.0 source in the cargo registry
+(`~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rmcp-3.7.0`):
+
+- **`Mcp-Method` / `Mcp-Name` matching is rmcp's, not ours.** The implementation
+  is `validate_request_headers` in the private
+  `src/transport/common/mcp_headers.rs:323`. It rejects a missing or
+  body-mismatched `Mcp-Method` (`mcp_headers.rs:333-341`), a missing or
+  mismatched `Mcp-Name` (`mcp_headers.rs:344-355`), and mismatched or
+  unexpected `Mcp-Param-*` headers (`mcp_headers.rs:358-390`).
+- **Where it is invoked.** rmcp's tower layer calls it from
+  `validate_standard_headers` (`src/transport/streamable_http_server/tower.rs:849`),
+  which gates on the request declaring
+  `MCP-Protocol-Version >= STANDARD_HEADERS` (`tower.rs:854-865`); the call site
+  is `tower.rs:914`. The failure is turned into
+  `header_mismatch_jsonrpc_response` (`tower.rs:827`) and the `-32020` constant
+  `HEADER_MISMATCH` (`src/model.rs:637`), returned as HTTP 400.
+- **Therefore our `transport.rs` deliberately has no header/body comparison.**
+  Its `validate_mcp_request` covers only the checks control-api must wrap with
+  a stable envelope (405, 413, 403, protocol version); the header/body match is
+  left to rmcp. The `mcp_request` fuzz target documents this in its module
+  comment and exercises only the pure pre-checks, so the `-32020` path stays
+  covered by the end-to-end transport tests rather than by the fuzzer.
+- **Nothing else from M0 was left open.** The six unverified details are
+  answered above; the three spec/rmcp shape contradictions recorded at D0 were
+  implemented around as described in the M8/M9 sections.
 
 ## Alternatives considered
 

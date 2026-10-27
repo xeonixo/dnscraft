@@ -67,6 +67,7 @@ jobs:
           -p dnscraft-filtering
           -p dnscraft-policy
           -p dnscraft-listeners
+          -p dnscraft-mcp
           --locked
           --fail-under-lines 80
           --summary-only
