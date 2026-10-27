@@ -754,10 +754,10 @@ every tool's input parser) to the existing `fuzz/` workspace and the CI fuzz mat
 malformed JSON-RPC, header mismatches, hostile domains) are committed, generated corpus files are not.
 
 **Acceptance criteria:**
-- [ ] Both targets build with `cargo +nightly fuzz build`; seeds ≥ 15 per target, named by purpose.
-- [ ] 10 minutes per target on nightly, executions and `cov`/`ft` counters logged; any crash is a finding (fix
+- [x] Both targets build with `cargo +nightly fuzz build`; seeds ≥ 15 per target, named by purpose.
+- [x] 10 minutes per target on nightly, executions and `cov`/`ft` counters logged; any crash is a finding (fix
       with a regression test).
-- [ ] CI matrix entries added; `fuzz/README.md` updated.
+- [x] CI matrix entries added; `fuzz/README.md` updated.
 
 **Verification:** `cd fuzz && cargo +nightly fuzz run mcp_request -- -max_total_time=600` (and the second target)
 
@@ -778,12 +778,12 @@ success-criteria table in progress.md (every criterion of SPEC-mcp.md → named 
 marked as such).
 
 **Acceptance criteria:**
-- [ ] `cargo llvm-cov -p dnscraft-mcp --summary-only` ≥ 80 % lines recorded; CI job updated.
-- [ ] Success-criteria table complete with test names; no row without evidence.
-- [ ] README tool table matches the registered tools (a test compares README table names with `tools/list`
+- [x] `cargo llvm-cov -p dnscraft-mcp --summary-only` ≥ 80 % lines recorded; CI job updated.
+- [x] Success-criteria table complete with test names; no row without evidence.
+- [x] README tool table matches the registered tools (a test compares README table names with `tools/list`
       for the write-enabled configuration).
-- [ ] DoD green on the whole workspace; crypto trees empty; `cargo deny check` ok.
-- [ ] CAPABILITY-MAP `mcp` row: Spec linked, Status updated after owner approval only.
+- [x] DoD green on the whole workspace; crypto trees empty; `cargo deny check` ok.
+- [x] CAPABILITY-MAP `mcp` row: Spec linked, Status updated after owner approval only.
 
 **Verification:** `cargo llvm-cov -p dnscraft-mcp --summary-only`; `cargo test --workspace --locked`
 

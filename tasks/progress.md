@@ -123,7 +123,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
 | `listeners` | COMPLETE (Checkpoint D, 2026-10-26) | [plan](archive/listeners-plan.md) · [tasks](archive/listeners-todo.md) | [SPEC-listeners.md](../SPEC-listeners.md); crates `dnscraft-listeners` + `dnscraft` |
 | `control-api` | A0–A14 done (Checkpoint F, 2026-10-26); **owner approved** | [plan](plan-control-api.md) · [tasks](todo-control-api.md) | [SPEC-control-api.md](../SPEC-control-api.md); crate `dnscraft-api` |
-| `mcp` | M0–M25 done + reviewed (Checkpoint I, 2026-10-27); **next: Phase 4 (M26–M27) + owner decisions on 4 gaps** | [plan](plan-mcp.md) · [tasks](todo-mcp.md) | [SPEC-mcp.md](../SPEC-mcp.md); crates `dnscraft-mcp` + `dnscraft-api` |
+| `mcp` | M0–M27 done + reviewed (Checkpoint I 2026-10-27; fuzz + docs done); **next: Checkpoint F (security review + owner approval)** | [plan](plan-mcp.md) · [tasks](todo-mcp.md) | [SPEC-mcp.md](../SPEC-mcp.md); crates `dnscraft-mcp` + `dnscraft-api`; coverage 94.84 % |
 | `web-ui`, `cluster` | specs drafted (DRAFT, owner review pending; web-ui Apple-design revision in progress) | [SPEC-web-ui.md](../SPEC-web-ui.md) · [SPEC-cluster.md](../SPEC-cluster.md) | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
@@ -150,7 +150,35 @@ SPEC-listeners.md § Success Criteria → evidence (all met; N13 ticked 2026-10-
 | 7 | Query events for loggable queries only; a full sink never blocks answering | `tests/runtime.rs` |
 | 8 | Coverage ≥ 80 %; fuzz 10 min clean; DoD + `cargo deny` green | 85.32 % lines; fuzz 10.1 M / 13.2 M runs clean; gates green (N13 log entry) |
 
+## MCP success criteria
+
+SPEC-mcp.md § Success Criteria (19) → evidence (all met; M0–M27 done 2026-10-27):
+
+| # | Criterion | Evidence |
+|---|---|---|
+| 1 | 13 tools respond with valid JSON; `tools/list` 8 vs 13 | `dnscraft-mcp/tests/read_tools.rs`, `write_tools.rs`, `readme.rs` (13-name parity) |
+| 2 | Scope model (insufficient/invalid scope, 401) | `dnscraft-mcp/tests/auth.rs`, `dnscraft-api/tests/mcp_e2e.rs` (`flow4_scope_matrix_across_families`) |
+| 3 | Single tool-error shape (`isError` + `structuredContent.error`) | `read_tools.rs`, `write_tools.rs`, `src/result.rs` unit |
+| 4 | Write gate (not listed, `mcp.write_tools_disabled`) | `auth.rs`, `write_tools.rs`, `mcp_e2e.rs` (`flow4_write_gate_disabled`) |
+| 5 | Sanitizing + injection corpus | `src/sanitize.rs` unit, `read_tools.rs`, `injection.rs` |
+| 6 | Duration set / maximum / startup validation | `config.rs`, `write_tools.rs`, `dnscraft-api/tests/mcp_runtime_endpoints.rs` |
+| 7 | `add_rule` block-only, expiry, cap, canonical domain | `dnscraft-filtering/tests/mcp_rules.rs`, `mcp_rules_contract.rs`, `mcp_e2e.rs` (`flow1`/`flow3_cap_and_protected_domains`) |
+| 8 | Protected domains bidirectional + derivation | `src/protected.rs` unit, `src/protected_list.rs` unit, `mcp_runtime_endpoints.rs`, `mcp_e2e.rs` (`flow3_protected_domains_from_node_config`) |
+| 9 | `list_mcp_rules` | `read_tools.rs`, `mcp_read_endpoints.rs`, `mcp_backend_read.rs` |
+| 10 | `test_query` no log, no cache write | `dnscraft-policy/tests/test_query.rs`, `dnscraft-resolver/tests/no_cache_write.rs`, `mcp_e2e.rs` (`test_query_leaves_query_log_and_cache_unchanged`) |
+| 11 | Audit entries (`mcp.<tool>`, `actor_type`, `actor_id`, sanitized) | `mcp_write.rs`, `mcp_rules_contract.rs`, `mcp_runtime_endpoints.rs` |
+| 12 | Persistence (versioned rules, PUT merge, rollback, volatile allows/pauses) | `config_apply.rs` (A10 merge), `mcp_rules_contract.rs`, `mcp_e2e.rs` (`flow2`/`flow3`) |
+| 13 | Stateless transport conformance | `dnscraft-mcp/tests/transport.rs` |
+| 14 | Every HTTP rejection has a stable code | `transport.rs`, `auth.rs`, `mcp_read_endpoints.rs` |
+| 15 | `mcp.*` codes unique | `src/error.rs` / `config.rs` uniqueness tests |
+| 16 | Read tools idempotent; write tools `destructiveHint` | `read_tools.rs`, `write_tools.rs`, `readme.rs` |
+| 17 | No allow rules via MCP | `write_tools.rs`, `injection.rs` |
+| 18 | Structured input only, no `$` modifiers | `write_tools.rs`, `injection.rs` |
+| 19 | No internet in tests | all (global convention) |
+
 ## Log
+
+- 2026-10-27 — **mcp: gaps 1–2 fixed + Phase 4 (M26 fuzz, M27 docs/coverage) done.** Four commits: gap 1 `07d6f48` (thread `token_id` through `AddRuleParams` into `McpRule` — `AddRuleParams` gains `token_id`, `write.rs::add_rule` passes `token.token_id`, backend stores it; e2e flow1 asserts the stored rule's token id), gap 2 `40104ae` (`populate_mcp_protected_domains` derives the five infra sources + configured additions into `McpConfig.protected_domains` at `serve()` mount, so the mcp crate's pre-backend protected check sees the full list; the backend still re-derives per request), M26 `06cbf07` (two fuzz targets `mcp_request` + `mcp_tool_input` over new `pub` entry points `validate_mcp_request` and `parse_mcp_tool_input`; 23+26 named seeds; CI fuzz matrix + README updated; 10 min each clean — `mcp_request` 13.5 M runs cov 1596, `mcp_tool_input` 8.5 M runs cov 3597; the `Mcp-Method`/`Mcp-Name` header check is rmcp-internal `mcp_headers.rs`, documented in ADR-0006, not extractable), M27 `6895b47` (crate README with 13-row tool table + `readme.rs` parity test, ADR-0006 → Accepted, CAPABILITY-MAP row refreshed, `-p dnscraft-mcp` added to the CI coverage job). Coverage `cargo llvm-cov -p dnscraft-mcp --summary-only` = **94.84 % lines** (≥ 80 %). Gates: `cargo test -p dnscraft-mcp` 130 green; `cargo test -p dnscraft-api` 245 green; clippy/fmt/deny clean; crypto trees empty. **Spec/code notes:** `Mcp-Method`/`Mcp-Name` enforcement lives in rmcp 3.7.0 (`src/transport/common/mcp_headers.rs:323`), not our `transport.rs` — the `mcp_request` fuzz target covers only our pure pre-checks (documented). Pre-existing release-only flake in `declared_body_over_cap_is_payload_too_large` (client `ConnectionReset` while uploading an over-cap body, ~7/10 in release) reproduces on unmodified HEAD and is unrelated. Next: **Checkpoint F** — independent security review (`agent-skills:security-auditor`) + owner approval + archive.
 
 - 2026-10-27 — **mcp: Phase 3 (M20–M25) done + reviewed — integration into control-api.** Five commits: M20 `1a24253` (read endpoints `explain-block`/`test-query`/`mcp-rules`), M22 `0d07612` (`custom-rules` POST/DELETE + `mcp_rules` config contract), M23 `52abbee` (`temporary-allows`/`pause`/`resume` + protected-list derivation), M24 `13c770c` (write-side `McpBackend` + audit labels), M25 `4f8ac6a` (end-to-end). Every write path routes through `ConfigService` under its serialized apply lock; the double-audit between the REST-endpoint path and the mcp-crate `record_audit` is reconciled by a new `ConfigService::mutate_unrecorded` (validate→apply→store, no audit) so exactly one audit row is written per mutation (tested); injectable `Clock` throughout. New `src/api/mcp_endpoints.rs` (8 endpoints), `src/protected_list.rs` (five-source derivation reusing `dnscraft_mcp::ProtectedDomains`), `tests/mcp_write.rs` (15) + `tests/mcp_e2e.rs` (10: add/expire, allow/pause/resume/restart, config contract/rollback/cap/protected, scope matrix, `test_query` side-effect-free). Gates: `cargo test -p dnscraft-api` 244 green; clippy `-p dnscraft-api --all-targets -D warnings` clean; `cargo fmt -p dnscraft-api --check` clean (5 pre-existing unformatted files in other crates left alone); `cargo deny check` ok; crypto trees empty. **Checkpoint I review (Claude):** apply lock, single-audit, clock injection, protected-check-in-backend and error mapping verified. **Owner-visible gaps (SPEC not edited):** (1) `McpRule.token_id` stored empty — rmcp runs tool handlers on a different task than `validate_token` and `AddRuleParams`/`TempAllowParams` carry no token id, so a small mcp-crate DTO change is needed to thread `TokenInfo.token_id` (audit rows still record the token id correctly via `record_audit`); (2) `McpConfig.protected_domains` is not auto-populated from the derived list, so the mcp crate's pre-backend protected check sees only configured additions — the backend re-derives and re-checks (defence in depth), so protection holds end-to-end; (3) no production assembler — `AppState::with_mcp_backend` is never called in `serve` and `McpBackendInner` is `pub(crate)`/not test-constructible, so the e2e nests the transport outside the auth/rate-limit layers (production `build_router` does wrap `/mcp/v1`, but rate limiting on it is untested); (4) `AuditEntry` lacks `config_version` — the backend lifts it from `after["config_version"]`. Next: Phase 4 (M26 fuzz, M27 docs/coverage/traceability) + owner decisions on gaps 1–2.
 
