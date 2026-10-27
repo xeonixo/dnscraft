@@ -630,3 +630,93 @@ async fn internal_errors_do_not_leak_detail() {
     assert!(!body.contains("not configured"), "{body}");
     assert!(!body.contains("filter engine"), "{body}");
 }
+
+/// Cluster CL3b: the runtime hook applies all three command kinds directly to
+/// the local filter engine and forwards module error codes unchanged.
+#[tokio::test]
+async fn cluster_runtime_commands_reach_the_filter_engine() {
+    let h = harness().await;
+    let set = default_set();
+    let version_before = h.service.current().await.unwrap().0;
+    let audits_before = h.db.audit_list(20, 0).await.unwrap().len();
+
+    h.state
+        .apply_runtime_command(
+            "pause",
+            &json!({ "filter_set_id": "default", "duration": "PT15M" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(h.filter.paused_until(&set), Some(at(NOW + 900)));
+
+    h.state
+        .apply_runtime_command("resume", &json!({ "filter_set_id": "default" }))
+        .await
+        .unwrap();
+    assert_eq!(h.filter.paused_until(&set), None);
+
+    // The broadcast carries the master's absolute deadline.
+    h.state
+        .apply_runtime_command(
+            "temporary_allow",
+            &json!({
+                "filter_set_id": "default",
+                "domain": "ads.example.com",
+                "include_subdomains": true,
+                "expires_at": rfc3339(NOW + 900),
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        verify(&h.filter, "ads.example.com", NOW),
+        Verdict::Allowed(_)
+    ));
+    assert!(matches!(
+        verify(&h.filter, "child.ads.example.com", NOW),
+        Verdict::Allowed(_)
+    ));
+    assert_eq!(
+        h.filter.list_temporary_allows(&set, at(NOW)).unwrap().len(),
+        1
+    );
+
+    // Invalid payloads come back with the module's own code, not a new one.
+    let err = h
+        .state
+        .apply_runtime_command(
+            "pause",
+            &json!({ "filter_set_id": "default", "duration": "PT2M" }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "mcp.invalid_input");
+
+    let err = h
+        .state
+        .apply_runtime_command(
+            "temporary_allow",
+            &json!({
+                "filter_set_id": "missing",
+                "domain": "ads.example.com",
+                "expires_at": rfc3339(NOW + 300),
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "policy.config.unknown_filter_set");
+
+    let err = h
+        .state
+        .apply_runtime_command(
+            "pause",
+            &json!({ "filter_set_id": "default", "duration": "PT1H", "expires_at": rfc3339(NOW + 2 * 3600) }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "mcp.invalid_input");
+
+    // Volatile: no config version and no audit entry.
+    assert_eq!(h.service.current().await.unwrap().0, version_before);
+    assert_eq!(h.db.audit_list(20, 0).await.unwrap().len(), audits_before);
+}

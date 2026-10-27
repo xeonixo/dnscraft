@@ -35,6 +35,7 @@ use crate::clock::Clock;
 use crate::config_apply::{ConfigActor, ConfigService, MutationAudit};
 use crate::error::ControlApiError;
 use crate::query_log::{Order, OrderBy, QueryLog, QueryLogFilter};
+use crate::server::AppState;
 use crate::stats::TopBy;
 use crate::tls::TlsStatusProvider;
 
@@ -1693,6 +1694,202 @@ impl McpBackend for ControlMcpBackend {
                 message: "audit write failed".into(),
             })?;
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cluster runtime commands (volatile state, never a config version)
+// ---------------------------------------------------------------------------
+
+impl AppState {
+    /// Applies a volatile cluster runtime command to the local filter engine.
+    ///
+    /// `kind` is `"pause"`, `"resume"` or `"temporary_allow"`. `payload` carries
+    /// `filter_set_id` and, for `pause`/`temporary_allow`, a `duration`
+    /// (`PT5M`/`PT15M`/`PT1H`) and/or an absolute `expires_at`;
+    /// `temporary_allow` also carries `domain` and `include_subdomains`.
+    ///
+    /// Runtime commands change no config version and write no audit entry: they
+    /// are volatile, last-command-wins state applied straight to the
+    /// [`FilterEngine`], using the same limits and engine calls as the MCP
+    /// write tools. Module error codes are returned unchanged.
+    pub async fn apply_runtime_command(
+        &self,
+        kind: &str,
+        payload: &Value,
+    ) -> Result<(), ControlApiError> {
+        match kind {
+            "pause" => self.apply_runtime_pause(payload).await,
+            "resume" => self.apply_runtime_resume(payload),
+            "temporary_allow" => self.apply_runtime_temporary_allow(payload).await,
+            other => Err(mcp_error(
+                "mcp.invalid_input",
+                json!({ "reason": format!("unknown runtime command kind: {other}") }),
+            )),
+        }
+    }
+
+    fn runtime_filter(&self) -> Result<&Arc<FilterEngine>, ControlApiError> {
+        self.filter_engine()
+            .ok_or_else(|| ControlApiError::Internal {
+                message: "filter engine is not configured".to_owned(),
+            })
+    }
+
+    async fn apply_runtime_pause(&self, payload: &Value) -> Result<(), ControlApiError> {
+        let set = parse_set(payload.get("filter_set_id").and_then(Value::as_str))?;
+        let until = runtime_until(
+            payload,
+            self.clock().now(),
+            self.mcp_config().max_pause_duration,
+        )?;
+        self.runtime_filter()?
+            .set_paused_until(&set, Some(until))
+            .map_err(|err| engine_error(err, set.as_str()))
+    }
+
+    fn apply_runtime_resume(&self, payload: &Value) -> Result<(), ControlApiError> {
+        let set = parse_set(payload.get("filter_set_id").and_then(Value::as_str))?;
+        self.runtime_filter()?
+            .set_paused_until(&set, None)
+            .map_err(|err| engine_error(err, set.as_str()))
+    }
+
+    async fn apply_runtime_temporary_allow(&self, payload: &Value) -> Result<(), ControlApiError> {
+        let duration = runtime_duration(payload, self.mcp_config().max_temporary_allow_duration)?;
+        let domain = canonical_allow_domain(runtime_str(payload, "domain")?)?;
+        let include_subdomains = payload
+            .get("include_subdomains")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let set = parse_set(payload.get("filter_set_id").and_then(Value::as_str))?;
+        let until = runtime_until_with(
+            duration,
+            runtime_expires_at(payload)?,
+            self.clock().now(),
+            self.mcp_config().max_temporary_allow_duration,
+        )?;
+
+        // Same sequence as `ControlMcpBackend::allow_temporarily`: hold the
+        // apply lock across the snapshot read, the protected check and the
+        // engine mutation so a concurrent config replace cannot interleave.
+        let _guard = match self.config_service() {
+            Some(service) => Some(service.apply_guard().await),
+            None => None,
+        };
+        let snapshot = match self.config_service() {
+            Some(service) => service.current().await?.1,
+            None => None,
+        };
+        let protected = protected_for(
+            snapshot.as_ref(),
+            self.oidc_issuer(),
+            self.mcp_config().protected_domains.iter().cloned(),
+        )?;
+        reject_protected(&protected, domain.as_str(), include_subdomains)?;
+
+        let rule = TempAllow {
+            domain,
+            include_subdomains,
+            until,
+            created_at: self.clock().now(),
+        };
+        self.runtime_filter()?
+            .allow_temporarily(&set, rule)
+            .map_err(|err| engine_error(err, set.as_str()))
+    }
+}
+
+fn runtime_str<'a>(payload: &'a Value, field: &str) -> Result<&'a str, ControlApiError> {
+    payload.get(field).and_then(Value::as_str).ok_or_else(|| {
+        mcp_error(
+            "mcp.invalid_input",
+            json!({ "reason": format!("`{field}` is required") }),
+        )
+    })
+}
+
+/// Parses the fixed MCP duration set and applies the configured maximum.
+fn runtime_duration(
+    payload: &Value,
+    maximum: Duration,
+) -> Result<Option<PauseDuration>, ControlApiError> {
+    let Some(raw) = payload.get("duration") else {
+        return Ok(None);
+    };
+    let duration: PauseDuration = serde_json::from_value(raw.clone()).map_err(|_| {
+        mcp_error(
+            "mcp.invalid_input",
+            json!({ "reason": "`duration` must be one of PT5M, PT15M, PT1H" }),
+        )
+    })?;
+    if let Some(error) = duration_error(duration.seconds(), maximum) {
+        return Err(error);
+    }
+    Ok(Some(duration))
+}
+
+fn runtime_expires_at(payload: &Value) -> Result<Option<SystemTime>, ControlApiError> {
+    payload
+        .get("expires_at")
+        .map(|value| {
+            stored_time(value).ok_or_else(|| {
+                mcp_error(
+                    "mcp.invalid_input",
+                    json!({ "reason": "`expires_at` must be unix seconds or an RFC 3339 timestamp" }),
+                )
+            })
+        })
+        .transpose()
+}
+
+/// Resolves and validates the absolute deadline of a runtime command.
+fn runtime_until(
+    payload: &Value,
+    now: SystemTime,
+    maximum: Duration,
+) -> Result<SystemTime, ControlApiError> {
+    runtime_until_with(
+        runtime_duration(payload, maximum)?,
+        runtime_expires_at(payload)?,
+        now,
+        maximum,
+    )
+}
+
+/// `duration` is validated against `maximum` exactly like the MCP write tools.
+/// `expires_at` is the master's broadcast deadline; when both are present it
+/// may only shorten the local deadline, never extend it. Without a `duration`
+/// the remaining lifetime still has to fit the configured maximum.
+fn runtime_until_with(
+    duration: Option<PauseDuration>,
+    expires_at: Option<SystemTime>,
+    now: SystemTime,
+    maximum: Duration,
+) -> Result<SystemTime, ControlApiError> {
+    match (duration, expires_at) {
+        (Some(duration), Some(expires_at)) => {
+            let latest = now + Duration::from_secs(duration.seconds());
+            if expires_at > latest {
+                return Err(mcp_error(
+                    "mcp.invalid_input",
+                    json!({ "reason": "`expires_at` extends past `duration`" }),
+                ));
+            }
+            Ok(expires_at)
+        }
+        (Some(duration), None) => Ok(now + Duration::from_secs(duration.seconds())),
+        (None, Some(expires_at)) => {
+            let remaining = expires_at.duration_since(now).unwrap_or(Duration::ZERO);
+            if remaining > maximum {
+                return Err(duration_exceeds(remaining, maximum));
+            }
+            Ok(expires_at)
+        }
+        (None, None) => Err(mcp_error(
+            "mcp.invalid_input",
+            json!({ "reason": "`duration` or `expires_at` is required" }),
+        )),
     }
 }
 
