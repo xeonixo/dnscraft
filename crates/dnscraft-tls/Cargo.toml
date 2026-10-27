@@ -16,7 +16,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 idna = { workspace = true }
 tracing = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
@@ -38,6 +38,7 @@ zeroize = { workspace = true }
 time = { workspace = true, features = ["macros"] }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 proptest = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }

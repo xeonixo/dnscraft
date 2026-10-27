@@ -11,6 +11,9 @@ use crate::error::TlsError;
 /// Environment variable holding the Cloudflare API token (Zone → DNS → Edit).
 pub const CLOUDFLARE_API_TOKEN_ENV: &str = "DNSCRAFT_CLOUDFLARE_API_TOKEN";
 
+/// Marker written wherever a secret appears in serialized configuration.
+const REDACTED: &str = "[redacted]";
+
 /// An opaque secret value that never appears in [`Debug`] output and is wiped on drop.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Secret(Zeroizing<String>);
@@ -31,6 +34,25 @@ impl Secret {
 impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Secret([redacted])")
+    }
+}
+
+impl serde::Serialize for Secret {
+    /// Writes the literal `"[redacted]"` marker, never [`Secret::expose`].
+    ///
+    /// Config snapshots (e.g. the SQLite applied-config record) are therefore
+    /// safe to persist and log: the real value is re-supplied from the
+    /// environment when the config is applied.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(REDACTED)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Secret {
+    /// Wraps any string as a secret. Snapshots carry the `"[redacted]"`
+    /// marker, which the apply path replaces with the env-provided value.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self::new)
     }
 }
 

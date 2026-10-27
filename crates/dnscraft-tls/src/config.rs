@@ -8,6 +8,8 @@
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::{Duration, SystemTime};
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::TlsError;
 use crate::pem_util::certified_key_from_pem;
 use crate::secret::{CLOUDFLARE_API_TOKEN_ENV, Secret, read_secret};
@@ -26,8 +28,7 @@ pub const DEFAULT_DYNDNS_INTERVAL: Duration = Duration::from_secs(5 * 60);
 pub const DEFAULT_ECHO_URL: &str = "https://cloudflare.com/cdn-cgi/trace";
 
 /// ECDSA key type for issued certificates. RSA is not supported.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum KeyType {
     /// NIST P-256 (default).
     #[default]
@@ -37,8 +38,7 @@ pub enum KeyType {
 }
 
 /// Which ACME directory to use.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum AcmeDirectoryKind {
     /// Let's Encrypt production (`https://acme-v02.api.letsencrypt.org/directory`).
     #[default]
@@ -61,7 +61,7 @@ impl AcmeDirectoryKind {
 }
 
 /// External Account Binding (RFC 8555 §7.3.4).
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Eab {
     /// Key identifier issued by the CA.
     pub kid: String,
@@ -79,7 +79,7 @@ impl std::fmt::Debug for Eab {
 }
 
 /// ACME account policy (EAB, ToS, deactivation).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcmeAccountConfig {
     /// External Account Binding, when the CA requires one.
     pub eab: Option<Eab>,
@@ -90,7 +90,7 @@ pub struct AcmeAccountConfig {
 }
 
 /// ACME issuance settings.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcmeConfig {
     /// When false, this node never creates ACME orders (sub-node / import-only).
     pub enabled: bool,
@@ -123,7 +123,7 @@ impl Default for AcmeConfig {
 ///
 /// The key is persisted to `key.pem` (mode 0o600) by the store and is
 /// redacted in [`Debug`].
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManualCertConfig {
     /// Leaf certificate PEM.
     pub cert_pem: String,
@@ -158,7 +158,7 @@ impl ManualCertConfig {
 }
 
 /// Pinned leaf SHA-256 fingerprint (trust pinning).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustPin {
     /// Lower-case hex SHA-256 of the leaf DER.
     pub sha256: String,
@@ -168,14 +168,14 @@ pub struct TrustPin {
 
 /// Cloudflare zone settings. The API token is never stored here — see
 /// [`crate::secret::read_secret`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CloudflareConfig {
     /// Optional zone id; when empty it is resolved by `public_domain` name.
     pub zone_id: Option<String>,
 }
 
 /// One additionally configured zone (multi-zone DNS provider).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ZoneConfig {
     /// Zone apex name (e.g. `example.com`).
     pub name: String,
@@ -184,7 +184,7 @@ pub struct ZoneConfig {
 }
 
 /// Which DNS provider publishes ACME DNS-01 TXT records.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DnsProviderKind {
     /// Cloudflare API (the only provider that can publish automatically).
     #[default]
@@ -199,7 +199,7 @@ pub enum DnsProviderKind {
 ///
 /// One certificate order needs two distinct values at the same owner
 /// (`dns.<domain>` and `*.dns.<domain>`); configure one entry per value.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManualDns01Config {
     /// TXT owner name (e.g. `_acme-challenge.dns.example.com`).
     pub name: String,
@@ -208,7 +208,7 @@ pub struct ManualDns01Config {
 }
 
 /// DNS provider selection for ACME DNS-01.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DnsProvider {
     /// Provider implementation.
     pub kind: DnsProviderKind,
@@ -229,7 +229,7 @@ impl DnsProvider {
 }
 
 /// How the stable IPv6 address is chosen.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ipv6IdentifierMode {
     /// EUI-64 derived address (OS default).
     #[default]
@@ -241,7 +241,7 @@ pub enum Ipv6IdentifierMode {
 }
 
 /// IPv6 stable-identifier selection for DynDNS.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ipv6Identifier {
     /// Selection mode.
     pub mode: Ipv6IdentifierMode,
@@ -250,7 +250,7 @@ pub struct Ipv6Identifier {
 }
 
 /// Webhook notification settings (SMTP is deferred).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationsConfig {
     /// HTTPS webhook URL; `None` disables delivery.
     pub webhook_url: Option<String>,
@@ -261,7 +261,7 @@ pub struct NotificationsConfig {
 }
 
 /// DynDNS settings for this node's public hostname.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DynDnsConfig {
     /// When false, DynDNS tasks do not run.
     pub enabled: bool,
@@ -311,7 +311,7 @@ impl Default for DynDnsConfig {
 }
 
 /// Top-level TLS configuration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TlsConfig {
     /// Public registered domain (e.g. `example.com`). Cert SANs are
     /// `dns.<domain>` and `*.dns.<domain>`.
@@ -1060,5 +1060,81 @@ mod tests {
         cfg.allow_http_for_tests = true;
         cfg.notifications.webhook_url = Some("http://127.0.0.1/hook".into());
         cfg.validate_with_token(ok_token).expect("loopback hook");
+    }
+
+    /// Representative config carrying both `Secret`-typed fields.
+    fn serde_config() -> TlsConfig {
+        let mut cfg = example_config();
+        cfg.public_domain = "example.com".into();
+        cfg.acme.account.eab = Some(Eab {
+            kid: "kid-example".into(),
+            hmac_key: Secret::new("eab-hmac-key-plaintext"),
+        });
+        cfg.manual = Some(ManualCertConfig {
+            cert_pem: "-----BEGIN CERTIFICATE-----\nMIIBexample\n-----END CERTIFICATE-----\n"
+                .into(),
+            chain_pem: String::new(),
+            key_pem: Secret::new(
+                "-----BEGIN PRIVATE KEY-----\nMIIEkeyplaintext\n-----END PRIVATE KEY-----\n",
+            ),
+        });
+        cfg
+    }
+
+    #[test]
+    fn config_serde_round_trip_preserves_non_secret_fields() {
+        let cfg = serde_config();
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let back: TlsConfig = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(back.public_domain, cfg.public_domain);
+        assert_eq!(back.key_type, cfg.key_type);
+        assert_eq!(back.renew_before, cfg.renew_before);
+        assert_eq!(back.expiry_warn, cfg.expiry_warn);
+        assert_eq!(back.acme.directory, cfg.acme.directory);
+        assert_eq!(back.acme.email, cfg.acme.email);
+        assert_eq!(back.acme.propagation_poll, cfg.acme.propagation_poll);
+        assert_eq!(back.dns_provider, cfg.dns_provider);
+        assert_eq!(back.dyndns, cfg.dyndns);
+        assert_eq!(back.notifications, cfg.notifications);
+        assert_eq!(back.trust_pin, cfg.trust_pin);
+        assert_eq!(back.allow_http_for_tests, cfg.allow_http_for_tests);
+
+        let eab = back.acme.account.eab.expect("eab");
+        assert_eq!(eab.kid, "kid-example");
+        assert_eq!(eab.hmac_key, Secret::new("[redacted]"));
+        let manual = back.manual.expect("manual");
+        assert_eq!(
+            manual.cert_pem,
+            cfg.manual.as_ref().expect("manual").cert_pem
+        );
+        assert_eq!(manual.key_pem, Secret::new("[redacted]"));
+    }
+
+    #[test]
+    fn config_serde_never_contains_secret_plaintext() {
+        const HMAC: &str = "eab-hmac-key-plaintext";
+        const KEY: &str = "MIIEkeyplaintext";
+        let mut cfg = serde_config();
+        cfg.acme.account.eab = Some(Eab {
+            kid: "kid-example".into(),
+            hmac_key: Secret::new(HMAC),
+        });
+        cfg.manual = Some(ManualCertConfig {
+            cert_pem: "-----BEGIN CERTIFICATE-----\nMIIBexample\n-----END CERTIFICATE-----\n"
+                .into(),
+            chain_pem: String::new(),
+            key_pem: Secret::new(format!(
+                "-----BEGIN PRIVATE KEY-----\n{KEY}\n-----END PRIVATE KEY-----\n"
+            )),
+        });
+
+        let json = serde_json::to_string(&cfg).expect("serialize");
+
+        assert!(!json.contains(HMAC), "EAB HMAC key leaked: {json}");
+        assert!(!json.contains(KEY), "manual private key leaked: {json}");
+        // Only the marker appears, once per secret field.
+        assert_eq!(json.matches("[redacted]").count(), 2, "{json}");
+        assert!(json.contains("example.com"));
     }
 }
