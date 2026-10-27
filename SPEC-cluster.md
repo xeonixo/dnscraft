@@ -2,7 +2,7 @@
 
 > Module id `cluster` · crate `crates/dnscraft-cluster` · depends on: `control-api`
 > Project-wide decisions: [SPEC.md](SPEC.md)
-> Status: **DRAFT**
+> Status: **DRAFT — open questions resolved 2026-10-27; owner review at Checkpoint 0**
 
 ## Objective
 
@@ -37,10 +37,10 @@ write.
 ### Non-goals
 
 - No multi-master, no consensus/quorum, no automatic leader election or failover
-  in v1 (single master; see Open questions).
+  in v1 (single master; see § Decisions).
 - No full mesh, no node-to-node traffic between sub-nodes, no cross-node query
   forwarding. Each sub-node answers DNS locally from its last applied config.
-- No automatic node discovery (static `master_url` in v1; see Open questions).
+- No automatic node discovery (static `master_url` in v1; see § Decisions).
 - No replication of the resolver cache, in-flight queries, sessions, or live
   connection state.
 - No geo-distributed/multi-entry-node topology (deferred from SPEC-tls.md).
@@ -119,11 +119,10 @@ Join procedure:
    `last_seen` and `applied_config_version` in `cluster_nodes`. Every subsequent
    connection is rejected unless the client certificate chains to the cluster CA
    **and** its fingerprint is registered and not revoked.
-5. Bootstrap trust for step 3 is an Open question: the sub-node must validate
-   the master's certificate before it has the cluster CA. Options are pinning
-   the master's API certificate fingerprint in bootstrap config (recommended) or
-   relying on the public ACME certificate; the self-signed bootstrap certificate
-   of control-api must not be accepted silently.
+5. Bootstrap trust for step 3 (decided, see § Decisions): the sub-node pins the
+   master's certificate fingerprint in bootstrap config before it has the
+   cluster CA, then switches to the cluster CA after enrollment; the self-signed
+   bootstrap certificate of control-api must not be accepted silently.
 
 `node_id` is a lowercase DNS label, 1–63 characters
 (`[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?`), unique in the cluster and distinct from
@@ -201,12 +200,12 @@ still replicated so any node can adopt a view without a per-node diff.
 ### Conflicts
 
 - Optimistic concurrency stays `config_version` + `If-Match`, and a mismatch is
-  still `412` with `control_api.config.conflict` (see the note in Open
-  questions about the control-api table naming this `control_api.config.version`).
+  `409` with `control_api.config.version` (the shipped control-api returns 409;
+  the spec formerly wrote `412 control_api.config.conflict`, now aligned to the code).
 - Because **only the master writes**, there are no concurrent sub-node config
   writers and no tie-break rule is needed. Two cases remain:
   - **Forwarded live write**: the caller's `If-Match` is evaluated by the
-    master; the `412` is relayed unchanged. The caller re-reads and retries.
+    master; the `409` is relayed unchanged. The caller re-reads and retries.
   - **Offline-buffered write replayed after reconnect**: the master evaluates
     the original `If-Match` against its current version. If it no longer
     matches, the write is **not applied**; it is marked `conflict` and the
@@ -285,7 +284,7 @@ for **config-mutating** writes that carry both an `Idempotency-Key` and an
 - Replay on reconnect, strict FIFO:
   - each request is sent with its original `Idempotency-Key` and `If-Match`;
   - 2xx → mark `applied`, ack, continue;
-  - `412` → mark `conflict`, do **not** apply, and **stop replay** (head-of-line
+  - `409` → mark `conflict`, do **not** apply, and **stop replay** (head-of-line
     blocking): later queued writes were built on the conflicted version and are
     marked `blocked`; the caller must re-read and resubmit;
   - other 4xx → mark `failed`; 5xx/transport → retry with backoff until
@@ -295,7 +294,7 @@ for **config-mutating** writes that carry both an `Idempotency-Key` and an
 - The master deduplicates by `Idempotency-Key`, so a replay after an ambiguous
   ack is safe; the queue is effectively exactly-once for keyed requests.
 - Conflict/expiry reporting needs a read surface (`GET /api/v1/cluster/writes/{request_id}`
-  or the node status) — see Required control-api additions; until it exists,
+  or the node status) — see SPEC-control-api.md § Cluster contract; until it exists,
   queued state appears only as counters in `GET /api/v1/status`.
 
 ### Runtime-only and non-repeatable writes
@@ -404,7 +403,7 @@ logs are aggregated on the master only; sub-nodes keep a short local buffer
   them when the master is unreachable; when online it may serve the last
   master-pushed aggregate or its local view. The exact read model is an Open
   question; no new stats envelope is invented here.
-- Rollups gain a `node_id` dimension (Required control-api additions), because
+- Rollups gain a `node_id` dimension (SPEC-control-api.md § Cluster contract), because
   the current rollup key (`hour/day, profile, protocol, answer_source`) would
   merge nodes indistinguishably.
 - Master retention stays `control_api.query_log.retention_days` (default 30 d);
@@ -488,7 +487,7 @@ clock (ADR-0005) and loopback listeners only.
    - Config snapshot digest/version handling; apply failure rolls back and keeps
      the previous version.
    - Offline queue: FIFO order, `Idempotency-Key`/`If-Match` requirement,
-     capacity, expiry, and head-of-line blocking on 412.
+     capacity, expiry, and head-of-line blocking on 409.
    - Log batch: seq ordering, gap detection, dedupe, payload `node_id` mismatch,
      size caps.
    - Error-code uniqueness across `cluster.*`, `control_api.*` and module codes.
@@ -509,7 +508,7 @@ clock (ADR-0005) and loopback listeners only.
      resumes from `last_acked_seq`; queue survives restart.
 4. **Integration flows**
    - Join → config write on master → all sub-nodes apply and ack; write on a
-     sub-node → master applies, audit `node_id` is the sub-node; `412` relayed
+     sub-node → master applies, audit `node_id` is the sub-node; `409` relayed
      unchanged.
    - Master down → sub-node keeps answering DNS (query success against a
      pre-seeded config), local reads work, writes queue (202) or fail (503) as
@@ -530,7 +529,7 @@ clock (ADR-0005) and loopback listeners only.
 
 Stable `cluster.<area>.<reason>` codes, locale-neutral, in the same envelope as
 control-api. Codes owned by other modules are forwarded unchanged (for example
-`control_api.config.conflict`, `policy.config.invalid`,
+`control_api.config.version`, `policy.config.invalid`,
 `control_api.auth.insufficient_scope`).
 
 | Code | When / HTTP |
@@ -550,7 +549,7 @@ control-api. Codes owned by other modules are forwarded unchanged (for example
 | `cluster.write_relay_failed` | Forwarded write transport failed before a master response (`params.outcome = "unknown"`); `503` |
 | `cluster.offline_write_requires_idempotency` | Offline buffering requested without `Idempotency-Key` or `If-Match`; `400` |
 | `cluster.offline_write_queue_full` | Offline queue cap reached; `503` |
-| `cluster.offline_write_conflict` | Buffered write returned `412` on replay and was not applied |
+| `cluster.offline_write_conflict` | Buffered write returned `409` on replay and was not applied |
 | `cluster.offline_write_expired` | Buffered write exceeded `max_age` and was dropped |
 | `cluster.log_stream.invalid` | Malformed, oversized, out-of-order or `node_id`-mismatched log batch |
 | `cluster.log_buffer_dropped` | Sub-node dropped buffered log rows (informational/status count) |
@@ -657,7 +656,7 @@ node_key = "data/cluster/node.key"   # prefer env / *_FILE in deployed configura
    and returned with the master's status/envelope; the audit entry carries
    `node_id` = the originating sub-node, the actor, `config_version` and
    before/after digests.
-7. `If-Match` mismatch on a live relay returns `412 control_api.config.conflict`
+7. `If-Match` mismatch on a live relay returns `409 control_api.config.version`
    unchanged; no write is applied by the sub-node.
 8. Master unreachable: a sub-node with an applied snapshot keeps answering DNS
    on all listeners and serving local config reads; `readyz` stays ready with a
@@ -669,7 +668,7 @@ node_key = "data/cluster/node.key"   # prefer env / *_FILE in deployed configura
    `cluster.offline_write_queue_full`. Runtime-only, token and admin writes
    return `cluster.master_unavailable` and are never queued.
 10. On reconnect the queue replays in FIFO order with the original keys. A
-    `412` marks the write `conflict`, is not applied, and blocks later queued
+    `409` marks the write `conflict`, is not applied, and blocks later queued
     writes; expired entries produce `cluster.offline_write_expired`. No queued
     write is applied twice (verified by config-version count and audit count).
 11. Query logs stream from each sub-node to the master in per-node `seq` order;
@@ -701,172 +700,41 @@ node_key = "data/cluster/node.key"   # prefer env / *_FILE in deployed configura
 19. Every test runs on loopback with an injectable clock; no test contacts the
     internet, a real ACME server, Cloudflare or Authentik.
 
-## Open questions
+## Decisions
 
-### Required control-api additions
+Resolved 2026-10-27. The concrete control-api contract (transport routes, admin
+endpoints, internal hooks, status/stats extensions) is defined in
+[SPEC-control-api.md](SPEC-control-api.md) § Cluster contract; it supersedes the
+provisional "Required control-api additions" list that stood here.
 
-These do **not** exist in [SPEC-control-api.md](SPEC-control-api.md) today and
-are prerequisites for this spec. They must be planned and owner-approved before
-implementation; the cluster spec does not assume they already exist.
-
-- **Cluster transport routes** (internal-only, separate from `/api/v1`, mTLS):
-  - `POST /cluster/v1/enroll` — join token + CSR → cluster CA + node cert.
-  - `GET /cluster/v1/stream` — long-lived downstream NDJSON: config snapshots,
-    TLS `CertPush`, auth snapshot, runtime commands, acks.
-  - `POST /cluster/v1/logs` — ordered log batch upload, contiguous ack.
-  - `POST /cluster/v1/writes` — canonical write relay with actor context.
-  - `POST /cluster/v1/heartbeat` — liveness, applied version, queue depth.
-- **Admin API** on the master: `POST /api/v1/cluster/join-tokens`,
-  `GET /api/v1/cluster/nodes`, `DELETE /api/v1/cluster/nodes/{id}` (revoke), and
-  a read surface for offline-queued writes
-  (`GET /api/v1/cluster/writes/{request_id}` or equivalent).
-- **Internal hooks** for the cluster crate: `apply_synced_config(snapshot,
-  version)`, `auth_snapshot()`, `apply_runtime_command()`, a durable
-  query-log outbox cursor with transactional enqueue and contiguous ack, and an
-  actor-context read for a received request.
-- **Extensions to existing surfaces**: `GET /api/v1/status` gains cluster fields
-  (role, master reachability, applied version, lag, queue depth, last sync);
-  statistics rollups gain a `node_id` dimension and query-log/stats accept a
-  `node_id` filter.
-
-### 1. Node discovery and bootstrap trust
-
-**Question:** How does a sub-node find the master, and how does it trust the
-master's certificate before it has the cluster CA?
-
-**Recommendation:** Static `master_url` plus a one-time, `node_id`-bound join
-token in v1. For bootstrap trust, pin the master's certificate SHA-256
-fingerprint in the sub-node's local bootstrap config (the same mechanism the
-control-api status endpoint already exposes for the self-signed certificate),
-then switch to the cluster CA after enrollment. Automatic discovery (DNS SRV,
-mDNS) and a fully automated enrollment flow are later work; they add an attack
-surface before the cluster has a second node.
-
-### 2. Transport authentication: mTLS vs shared secret
-
-**Question:** Use a dedicated cluster CA with per-node certificates, or a single
-shared cluster secret over TLS?
-
-**Recommendation:** Per-node mTLS certificates (chosen above). A shared secret
-cannot distinguish nodes, cannot be revoked per node, and is replayable; the
-ACME wildcard key is shared by design and equally unsuitable as identity. The
-cost is a small CA and enrollment flow, both implementable with `rcgen` and the
-existing ring-only `rustls` stack.
-
-### 3. Master election and failover
-
-**Question:** What happens when the master is down for a long time? Is a
-sub-node promoted, and how is split-brain avoided?
-
-**Recommendation:** No election, no quorum and no automatic promotion in v1
-(single master, documented SPOF for writes and aggregation). Sub-nodes keep
-answering DNS read-only from their last applied config and buffer logs. If the
-owner needs failover, promote a node manually (`role = "master"` with the same
-data directory/CA) and revoke the old master; a real consensus design is a
-separate spec. This must be an explicit owner decision, because it sets the
-availability promise for configuration changes.
-
-### 4. Conflict resolution for offline writes
-
-**Question:** Last-write-wins, master-wins, or reject-and-retry when a buffered
-write's `If-Match` is stale?
-
-**Recommendation:** Reject-and-retry (chosen above). Administrative intent
-cannot be merged safely; applying a stale write silently is worse than telling
-the caller to re-read. Configuration divergence is master-wins only because a
-sub-node never writes config locally. Confirm that head-of-line blocking of the
-offline queue is acceptable; the alternative (skip the conflicted write and
-apply later ones) can reorder dependent changes.
-
-### 5. Offline write durability and reporting
-
-**Question:** Where does the offline queue live, how long, and how does the
-caller learn that a queued write was applied, conflicted or expired?
-
-**Recommendation:** SQLite in the node data directory (durable across restart),
-default 24 h and 100 entries, `202` on enqueue, FIFO replay with
-`Idempotency-Key`. Add the queued-write read endpoint listed above; until then
-the queue is only visible as status counters. Confirm whether 24 h is the right
-default given that the log buffer uses the same window.
-
-### 6. Auth-state replication
-
-**Question:** How do sub-nodes authenticate API tokens and local accounts while
-the master is unreachable, given that control-api deliberately excludes token
-material from config exports?
-
-**Recommendation:** Replicate a separate encrypted `AuthSnapshot` (token hashes,
-local-account hashes, OIDC settings, session-invalidation epoch) over the mTLS
-stream, treated as a control-api hook rather than part of the config snapshot.
-If the owner prefers not to replicate credential material, the documented
-degradation is: local OIDC/session reads keep working offline, bearer-token
-authentication requires the master, and offline writes must be issued through a
-session. This is a security trade-off and needs an explicit decision.
-
-### 7. Runtime-only state across nodes
-
-**Question:** Should pause/resume and temporary allows be cluster-wide, local to
-the node that received them, or rejected except on the master?
-
-**Recommendation:** Cluster-wide via a master broadcast (chosen above), because
-two nodes giving different answers for the same client is worse than a
-time-bounded command being slightly delayed. These commands stay volatile and
-are never queued offline. Confirm this interpretation; SPEC-control-api currently
-describes them only as local runtime state.
-
-### 8. Config-conflict code naming
-
-**Question:** SPEC-control-api.md § Cluster hooks says `412
-control_api.config.conflict`, while its error-code table lists
-`control_api.config.version` for "version conflict / invalid If-Match". Which is
-the stable code?
-
-**Recommendation:** Keep `control_api.config.version` in the table and treat
-`control_api.config.conflict` as the intended name, then fix one of them before
-implementation. This spec uses `control_api.config.conflict` because the cluster
-contract was written against § Cluster hooks; the owner should reconcile the
-control-api spec (and the error-code uniqueness test) so both modules agree.
-
-### 9. Read model on sub-nodes
-
-**Question:** When a sub-node is online, should query-log/statistics reads proxy
-to the master (cluster-wide, one source of truth) or serve the local view?
-
-**Recommendation:** Proxy read requests to the master when reachable and fall
-back to the local view offline, labelled with the node's scope in status. This
-keeps the dashboard consistent without a new statistics envelope. It needs a
-relay for reads in addition to writes, which is not currently specified; the
-cheaper alternative is "use the master's API for cluster-wide views", which is
-the v1 default until the owner decides.
-
-### 10. Certificate expiry on an isolated sub-node
-
-**Question:** If a sub-node is cut off for longer than the certificate lifetime,
-should encrypted listeners keep using the expired certificate, stop, or fall
-back to the self-signed bootstrap certificate?
-
-**Recommendation:** Keep serving with the expired certificate on private
-listeners and report a loud status warning; never silently fall back to a
-self-signed certificate for public listeners, because clients would see an
-untrusted certificate without an operator-visible reason. Confirm the desired
-behaviour for public DoH/DoT.
-
-### 11. Clock skew and timestamps
-
-**Question:** How much clock skew is acceptable between nodes, and does the
-master reject records whose `time` is far in the future/past?
-
-**Recommendation:** Warn above 5 minutes (`cluster.clock_skew`) and accept
-records either way (a resolver should not lose logs over clock drift). Display
-the originating `time` and the master `received_at`. Confirm the warning
-threshold and whether skewed records should be quarantined instead.
-
-### 12. Multi-entry-node and geo topology
-
-**Question:** Should the cluster support more than one public entry node or
-geo-distributed sub-nodes in v1?
-
-**Recommendation:** No. SPEC-tls.md already defers this; the hub-and-spoke,
-single-master design is the simplest model that meets the objective. Revisit
-only when there is a concrete multi-site requirement; it changes discovery,
-DynDNS ownership and possibly the write path.
+1. **Node discovery & bootstrap trust** — static `master_url` + a one-time,
+   `node_id`-bound join token. Bootstrap trust pins the master's certificate
+   SHA-256 fingerprint in the sub-node's bootstrap config; after enrollment the
+   sub-node switches to the cluster CA. No automatic discovery in v1.
+2. **Transport authentication** — per-node mTLS certificates under a dedicated
+   cluster CA (not a shared secret).
+3. **Master failover** — no election/quorum/auto-promotion in v1 (single master,
+   documented SPOF for writes and aggregation). Manual promotion =
+   `role = "master"` with the same data directory/CA + revoke the old master.
+4. **Offline-write conflict** — reject-and-retry: a stale `If-Match` is **not**
+   applied, marked `conflict`, and head-of-line-blocks the queue.
+5. **Offline-write durability** — SQLite in the node data directory, default
+   24 h / 100 entries, `202` on enqueue, FIFO replay with `Idempotency-Key`;
+   read via `GET /api/v1/cluster/writes/{request_id}`.
+6. **Auth-state replication** — replicate a separate encrypted `AuthSnapshot`
+   (token hashes, local-account hashes, OIDC settings, session-invalidation
+   epoch) so sub-nodes authenticate bearer tokens offline. **Owner: YES.**
+7. **Runtime-only state** — cluster-wide via a master broadcast (pause/resume,
+   temporary allows); volatile, never queued offline.
+8. **Config-conflict code** — `409 control_api.config.version` (matches the
+   shipped control-api); the former `412 control_api.config.conflict` wording
+   is removed everywhere.
+9. **Sub-node read model** — serve the local view offline; use the master's API
+   for cluster-wide views in v1 (no read relay).
+10. **Isolated-sub-node cert expiry** — keep serving the expired cert on private
+    listeners + loud status warning; never silently fall back to self-signed for
+    public listeners.
+11. **Clock skew** — warn above 5 min (`cluster.clock_skew`); accept records
+    either way; display originating `time` and master `received_at`.
+12. **Multi-entry / geo** — not in v1; revisit only with a concrete multi-site
+    requirement.

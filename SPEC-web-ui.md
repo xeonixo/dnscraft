@@ -140,8 +140,7 @@ The routing contract (owner of this layer is an open question; see below):
 - Requests use `Accept: application/json`; mutations use `Content-Type: application/json`
   and the CSRF header (see below).
 - The SPA sends `If-Match` with the last observed `config_version` on config writes
-  and handles `412` (`control_api.config.version` in the error table, named
-  `control_api.config.conflict` in § Configuration model / Cluster hooks).
+  and handles `409 control_api.config.version` on conflict.
 - Mutations that may be retried by the client send an `Idempotency-Key` (random UUID
   generated per user action, reused only for that retry).
 - Refresh model: dashboard/status poll on a modest interval, back off when the tab is
@@ -623,7 +622,7 @@ never renders a raw stack trace or a server message.
 | `control_api.not_ready` (503) | Onboarding/starting state with a link to the status screen; retry when `/readyz` succeeds |
 | `control_api.not_found` (404) | Empty/removed state (for example a query-log record outside retention); not a fatal error |
 | `control_api.config.invalid` / `config.apply` / `config.version` | Form-level message with field association; `config.apply` lists the failing module code; offer rollback |
-| `control_api.config.version` (412; `config.conflict` in § Configuration model) | Conflict dialog: reload the latest config version and show the diff before retrying |
+| `control_api.config.version` (409) | Conflict dialog: reload the latest config version and show the diff before retrying |
 | `control_api.config.unknown_version` | Rollback target gone; refresh the versions list |
 | `control_api.query_log.invalid` | Inline filter error on the offending field, preserving the rest of the form |
 | `control_api.query_log.read` / `query_log.export` | Inline error with retry; large exports fail without a partial-file download where possible |
@@ -1136,9 +1135,9 @@ corresponding UI screen is implemented; nothing in this document assumes they ex
   choice, if the DynDNS form offers them; `SPEC-tls.md` currently only says IPv4
   and IPv6 are discovered separately.
 - Cluster administration endpoints (`GET /api/v1/cluster/nodes`, `POST
-  /api/v1/cluster/join-tokens`, `DELETE /api/v1/cluster/nodes/{id}`).
-  `SPEC-cluster.md` lists them as "Required control-api additions" but the
-  control-api endpoint table has no `/api/v1/cluster/*` rows.
+  /api/v1/cluster/join-tokens`, `DELETE /api/v1/cluster/nodes/{id}`,
+  `GET /api/v1/cluster/writes/{request_id}`) — defined in
+  `SPEC-control-api.md` § Cluster contract.
 - DoH/DoT Client-ID CRUD (list/create/rename/revoke). This spec currently reads
   client identity from `policy/views`, but `SPEC-policy.md` removed
   `views[].client_ids` and no endpoint stores Client IDs.
