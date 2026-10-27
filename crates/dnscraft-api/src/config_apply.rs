@@ -151,6 +151,13 @@ impl ConfigService {
         Ok((version, snapshot))
     }
 
+    /// Holds the config apply lock across a volatile mutation that reads the
+    /// current snapshot and then mutates engine state (protected-domain check +
+    /// temporary allow), so a concurrent config replace cannot interleave.
+    pub(crate) async fn apply_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.apply_lock.lock().await
+    }
+
     /// Records a runtime action (temporary allow, pause, resume) in the audit
     /// log without creating a config version.
     ///

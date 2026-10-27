@@ -2,7 +2,6 @@
 //! the control-api services and module engines.
 
 use std::net::IpAddr;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -183,19 +182,6 @@ pub fn mcp_backend_for_test_writes(
 }
 
 // ---- helpers ----
-
-fn default_set() -> SetId {
-    SetId::from_str("default").unwrap_or_else(|_| unreachable!("default is a valid set id"))
-}
-
-fn resolve_set(id: Option<&str>) -> SetId {
-    id.and_then(|s| SetId::from_str(s).ok())
-        .unwrap_or_else(default_set)
-}
-
-fn set_name(id: Option<&str>) -> String {
-    id.unwrap_or("default").to_owned()
-}
 
 pub(crate) fn rfc3339(ts: SystemTime) -> String {
     let d = ts.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
@@ -521,15 +507,25 @@ pub(crate) fn protected_for(
 }
 
 /// Rejects a target covered by the protected-domain list.
+///
+/// The error names only the submitted target; the matched protected entry is
+/// logged server-side and never returned, so a derived infrastructure host
+/// (OIDC issuer, forward-zone apex, filter-list host, …) cannot be read back
+/// through the error `params`.
 pub(crate) fn reject_protected(
     protected: &ProtectedDomains,
     domain: &str,
     include: bool,
 ) -> Result<(), ControlApiError> {
     if let Some(hit) = protected.check(domain, include) {
+        tracing::warn!(
+            submitted = %domain,
+            matched = %hit,
+            "protected domain rejected"
+        );
         return Err(mcp_error(
             "mcp.protected_domain",
-            json!({ "domain": domain, "protected_domain": hit }),
+            json!({ "domain": domain }),
         ));
     }
     Ok(())
@@ -746,12 +742,57 @@ pub(crate) fn stored_time(value: &Value) -> Option<SystemTime> {
     }
 }
 
+/// Resolves `explain_block`'s `profile_id` to the filter set configured on that
+/// profile (the same `profile.filter_set` the policy engine applies).
+///
+/// A missing `profile_id` means the default filter set. An unknown or
+/// unparsable profile is `policy.config.invalid`; a profile whose `filter_set`
+/// is not a valid set id is `policy.config.unknown_filter_set`.
+fn explain_target(
+    snapshot: Option<&Value>,
+    profile_id: Option<&str>,
+) -> Result<(String, SetId), ControlApiError> {
+    let Some(profile_id) = profile_id else {
+        let set = parse_set(None)?;
+        let name = set.as_str().to_owned();
+        return Ok((name, set));
+    };
+    let profile = snapshot
+        .and_then(|snapshot| snapshot.get("policy"))
+        .and_then(|policy| policy.get("profiles"))
+        .and_then(Value::as_array)
+        .and_then(|profiles| {
+            profiles
+                .iter()
+                .find(|profile| profile.get("id").and_then(Value::as_str) == Some(profile_id))
+        })
+        .ok_or_else(|| {
+            mcp_error(
+                "policy.config.invalid",
+                json!({ "reason": "unknown profile", "id": profile_id }),
+            )
+        })?;
+    let raw = profile
+        .get("filter_set")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            mcp_error(
+                "policy.config.invalid",
+                json!({ "reason": "profile has no filter_set", "id": profile_id }),
+            )
+        })?;
+    let set = SetId::new(raw).map_err(|_| unknown_set(raw))?;
+    Ok((profile_id.to_owned(), set))
+}
+
 /// Explains a filtered name against the current filtering engine state.
 ///
 /// Shared by the MCP tool and `POST /api/v1/filtering/explain-block` so the two
-/// surfaces cannot drift.
+/// surfaces cannot drift. `profile_id` names a policy profile; its configured
+/// `filter_set` is what the engine is asked about.
 pub(crate) fn explain(
     filter: &FilterEngine,
+    snapshot: Option<&Value>,
     now: SystemTime,
     domain: &str,
     profile_id: Option<&str>,
@@ -761,11 +802,11 @@ pub(crate) fn explain(
         code: "filter_name.invalid_char",
         params: Some(json!({ "domain": domain })),
     })?;
-    let set = resolve_set(profile_id);
+    let (profile_out, set) = explain_target(snapshot, profile_id)?;
     let verdict = filter
         .match_name(&set, &name, filter_qtype(qtype), now)
         .map_err(|_| unknown_set(set.as_str()))?;
-    let set_str = set_name(profile_id);
+    let set_str = set.as_str().to_owned();
     let (verdict, reason) = match &verdict {
         Verdict::Pass | Verdict::Allowed(_) => ("allowed".to_owned(), None),
         Verdict::Blocked(reason) => (
@@ -781,7 +822,7 @@ pub(crate) fn explain(
     };
     Ok(ExplainBlockResult {
         domain: name.as_str().to_owned(),
-        profile_id: set_str.clone(),
+        profile_id: profile_out,
         filter_set_id: set_str,
         verdict,
         reason,
@@ -798,8 +839,8 @@ pub(crate) fn list_mcp_rules(
     now: SystemTime,
     params: &ListRulesParams,
 ) -> Result<ListRulesResult, ControlApiError> {
-    let set = resolve_set(params.filter_set_id.as_deref());
-    let set_str = set_name(params.filter_set_id.as_deref());
+    let set = parse_set(params.filter_set_id.as_deref())?;
+    let set_str = set.as_str().to_owned();
     let mut result = ListRulesResult {
         filter_set_id: set_str.clone(),
         kind: params.kind.clone(),
@@ -1162,8 +1203,10 @@ impl McpBackend for ControlMcpBackend {
         profile_id: Option<&str>,
         qtype: QType,
     ) -> Result<ExplainBlockResult, BackendError> {
+        let snapshot = self.current_snapshot().await?;
         explain(
             self.filter_engine()?,
+            snapshot.as_ref(),
             self.inner.clock.now(),
             domain,
             profile_id,
@@ -1336,12 +1379,32 @@ impl McpBackend for ControlMcpBackend {
             return Err(backend_error(error));
         }
         let domain = canonical_allow_domain(&params.domain).map_err(backend_error)?;
-        let snapshot = self.current_snapshot().await?;
+        let set = parse_set(params.filter_set_id.as_deref()).map_err(backend_error)?;
+
+        // Hold the config apply lock across the snapshot read, the protected
+        // check and the engine mutation, so a concurrent config replace cannot
+        // swap the snapshot between the check and the allow (TOCTOU).
+        let service = self.inner.config.as_ref();
+        let _guard = match service {
+            Some(service) => Some(service.apply_guard().await),
+            None => None,
+        };
+        let snapshot = match service {
+            Some(service) => {
+                service
+                    .current()
+                    .await
+                    .map_err(|e| BackendError::Internal {
+                        message: e.code().to_owned(),
+                    })?
+                    .1
+            }
+            None => None,
+        };
         let protected = self.protected(snapshot.as_ref())?;
         reject_protected(&protected, domain.as_str(), params.include_subdomains)
             .map_err(backend_error)?;
 
-        let set = parse_set(params.filter_set_id.as_deref()).map_err(backend_error)?;
         let now = self.inner.clock.now();
         let until = now + duration_secs(params.duration);
         let rule = TempAllow {

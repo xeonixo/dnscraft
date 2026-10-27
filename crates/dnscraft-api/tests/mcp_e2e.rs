@@ -799,6 +799,15 @@ async fn flow3_protected_domains_from_node_config() {
         .await
         .expect_err("backend must reject a protected domain");
     assert_eq!(error.code(), "mcp.protected_domain");
+    let params = error.params().expect("error params");
+    assert_eq!(
+        params.get("domain").and_then(Value::as_str),
+        Some("example.net")
+    );
+    assert!(
+        params.get("protected_domain").is_none(),
+        "the matched protected entry must not be disclosed: {params}"
+    );
 }
 
 // ---------------------------------------------------------------------------

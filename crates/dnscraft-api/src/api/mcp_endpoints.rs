@@ -58,8 +58,10 @@ pub(crate) async fn explain_block(
         .ok_or_else(|| ControlApiError::Internal {
             message: "filter engine is not configured".to_owned(),
         })?;
+    let snapshot = stored_snapshot(service(&state)?).await?;
     let result = mcp_backend::explain(
         filter,
+        Some(&snapshot),
         state.clock().now(),
         &body.domain,
         body.profile_id.as_deref(),
@@ -273,6 +275,9 @@ pub(crate) async fn allow_temporarily(
             message: "filter engine is not configured".to_owned(),
         })?;
     let service = service(&state)?;
+    // Hold the apply lock across the snapshot read, the protected check and
+    // the engine mutation so a concurrent config replace cannot interleave.
+    let _guard = service.apply_guard().await;
     let snapshot = stored_snapshot(service).await?;
     reject_protected(
         &protected_for(&state, &snapshot)?,

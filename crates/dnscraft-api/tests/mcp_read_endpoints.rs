@@ -53,11 +53,14 @@ fn filter_engine() -> Arc<FilterEngine> {
     let mut set = FilterSetConfig::new(sid("default"), "Default");
     set.custom_rules = "||ads.example.com^".to_owned();
     set.block_mode = BlockMode::NxDomain;
+    let mut strict = FilterSetConfig::new(sid("strict"), "Strict");
+    strict.custom_rules = "||ads.example.com^".to_owned();
+    strict.block_mode = BlockMode::NxDomain;
     Arc::new(FilterEngine::from_snapshot(
         SnapshotBuilder::new(Arc::new(EmptyBodies) as Arc<dyn ListBodies>)
             .build(&FilterConfig {
                 lists: Vec::new(),
-                sets: vec![set],
+                sets: vec![set, strict],
                 ..FilterConfig::default()
             })
             .unwrap(),
@@ -271,6 +274,84 @@ async fn filtering_read_explain_block_canonicalises_and_reports_reason() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
     assert_eq!(response["error"]["code"], "filter_name.invalid_char");
+}
+
+/// `explain_block` resolves `profile_id` through the stored policy profile to
+/// the configured `filter_set`, never by treating the profile id as a set id.
+#[tokio::test]
+async fn explain_block_resolves_a_profile_to_its_configured_filter_set() {
+    let h = harness().await;
+    for set in [
+        json!({ "id": "default", "name": "Default" }),
+        json!({ "id": "strict", "name": "Strict" }),
+    ] {
+        let (status, response) = send(
+            &h.state,
+            "PUT",
+            "/api/v1/filter-sets",
+            Some(&h.admin),
+            Some(set),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{response}");
+    }
+    let (status, response) = send(
+        &h.state,
+        "PUT",
+        "/api/v1/policy/profiles/kids",
+        Some(&h.admin),
+        Some(json!({ "filter_set": "strict" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+
+    let (status, response) = send(
+        &h.state,
+        "POST",
+        "/api/v1/filtering/explain-block",
+        Some(&h.viewer),
+        Some(json!({
+            "domain": "ads.example.com",
+            "profile_id": "kids",
+            "qtype": "A"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["data"]["profile_id"], "kids");
+    assert_eq!(response["data"]["filter_set_id"], "strict");
+    assert_eq!(response["data"]["verdict"], "blocked");
+
+    // An unknown profile is an error, never a silent fallback to the default.
+    let (status, response) = send(
+        &h.state,
+        "POST",
+        "/api/v1/filtering/explain-block",
+        Some(&h.viewer),
+        Some(json!({
+            "domain": "ads.example.com",
+            "profile_id": "missing",
+            "qtype": "A"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    assert_eq!(response["error"]["code"], "policy.config.invalid");
+
+    // An unparsable filter-set id on the listing endpoint is an error too.
+    let (status, response) = send(
+        &h.state,
+        "GET",
+        "/api/v1/filtering/mcp-rules?filter_set_id=bad%20id",
+        Some(&h.viewer),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    assert_eq!(
+        response["error"]["code"],
+        "policy.config.unknown_filter_set"
+    );
 }
 
 #[tokio::test]
