@@ -11,11 +11,12 @@ use tracing::{debug, info, warn};
 use crate::acme::{AcmeDirectory, AcmeOrder, Dns01Txt, challenge_txt_name, default_identifiers};
 use crate::clock::Clock;
 use crate::cloudflare::{CloudflareClient, TTL_ACME_TXT};
-use crate::config::TlsConfig;
+use crate::config::{DnsProviderKind, ManualDns01Config, TlsConfig};
 use crate::error::TlsError;
 use crate::propagation::{resolve_nameservers, wait_for_txt};
 use crate::resolver::CertResolver;
-use crate::store::{CertMeta, CertStore};
+use crate::status::{CertSource, IssueOutcome, IssueRecord};
+use crate::store::{CertMeta, CertStore, push_history};
 
 /// Issues (or renews) the certificate for `dns.<domain>` + `*.dns.<domain>`.
 ///
@@ -42,17 +43,40 @@ where
         return Err(TlsError::config("ACME is disabled"));
     }
     let attempted = clock.now();
+    let had_cert = store.load().ok().flatten().is_some();
     let result = issue_inner(acme, cloudflare, store, resolver, cfg, clock).await;
 
     let mut state = store.load_state();
     state.last_renew_attempt_unix = Some(unix_secs(attempted));
-    match &result {
+    let record = match &result {
         Ok(()) => {
             state.last_error = None;
             state.last_issue_unix = Some(unix_secs(clock.now()));
+            state.revoked = false;
+            state.revoked_reason = None;
+            let serial = store.load().ok().flatten().and_then(|c| c.detail.serial);
+            IssueRecord {
+                timestamp: attempted,
+                outcome: if had_cert {
+                    IssueOutcome::Renewed
+                } else {
+                    IssueOutcome::Issued
+                },
+                error: None,
+                serial,
+            }
         }
-        Err(e) => state.last_error = Some(e.code().to_owned()),
-    }
+        Err(e) => {
+            state.last_error = Some(e.code().to_owned());
+            IssueRecord {
+                timestamp: attempted,
+                outcome: IssueOutcome::Failed,
+                error: Some(e.code().to_owned()),
+                serial: None,
+            }
+        }
+    };
+    push_history(&mut state, record);
     if let Err(e) = store.save_state(&state) {
         warn!(code = e.code(), "could not persist issue state: {e}");
     }
@@ -82,9 +106,8 @@ where
     let challenge_name = challenge_txt_name(&identifiers[0]);
 
     // Orphan cleanup: drop any leftover `_acme-challenge` TXT from a prior run.
-    {
-        let _guard = cloudflare.write_guard().await;
-        cleanup_challenge_txt(cloudflare, &challenge_name).await;
+    if cfg.dns_provider.uses_cloudflare() {
+        cleanup_if_cloudflare(cfg, cloudflare, &challenge_name).await;
     }
 
     // Renewal: tell the CA which certificate this order replaces (ARI).
@@ -107,8 +130,7 @@ where
 
     if let Err(e) = publish_and_wait(cloudflare, &txts, &challenge_name, cfg, clock).await {
         acme.abort_order().await;
-        let _guard = cloudflare.write_guard().await;
-        cleanup_challenge_txt(cloudflare, &challenge_name).await;
+        cleanup_if_cloudflare(cfg, cloudflare, &challenge_name).await;
         return Err(e);
     }
 
@@ -127,25 +149,23 @@ where
     let meta = CertMeta {
         identifiers: identifiers.to_vec(),
         ari_cert_id: acme.certificate_id(&chain_pem),
+        source: CertSource::Acme,
         ..CertMeta::default()
     };
     if let Err(e) = store.save(&chain_pem, &key_pem, &meta) {
-        let _guard = cloudflare.write_guard().await;
-        cleanup_challenge_txt(cloudflare, &challenge_name).await;
+        cleanup_if_cloudflare(cfg, cloudflare, &challenge_name).await;
         return Err(e);
     }
     if let Err(e) = resolver.install(&chain_pem, &key_pem) {
         // Disk has the new cert; try to keep resolver in sync — if install
         // fails the previous in-memory cert remains (install is atomic swap).
         warn!("issued cert saved but resolver install failed: {e}");
-        let _guard = cloudflare.write_guard().await;
-        cleanup_challenge_txt(cloudflare, &challenge_name).await;
+        cleanup_if_cloudflare(cfg, cloudflare, &challenge_name).await;
         return Err(e);
     }
 
     {
-        let _guard = cloudflare.write_guard().await;
-        cleanup_challenge_txt(cloudflare, &challenge_name).await;
+        cleanup_if_cloudflare(cfg, cloudflare, &challenge_name).await;
     }
 
     info!(
@@ -156,6 +176,24 @@ where
 }
 
 async fn publish_and_wait(
+    cloudflare: &CloudflareClient,
+    txts: &[Dns01Txt],
+    challenge_name: &str,
+    cfg: &TlsConfig,
+    clock: &dyn Clock,
+) -> Result<(), TlsError> {
+    match cfg.dns_provider.kind {
+        DnsProviderKind::Cloudflare => {
+            publish_cloudflare(cloudflare, txts, challenge_name, cfg, clock).await
+        }
+        DnsProviderKind::Manual => publish_manual(cfg.dns_provider.manual_txt.as_ref(), txts),
+        DnsProviderKind::None => Err(TlsError::DnsProviderAuth {
+            message: "dns_provider.kind = none cannot publish ACME DNS-01 records".into(),
+        }),
+    }
+}
+
+async fn publish_cloudflare(
     cloudflare: &CloudflareClient,
     txts: &[Dns01Txt],
     challenge_name: &str,
@@ -175,7 +213,7 @@ async fn publish_and_wait(
         }
     }
 
-    let zone = cloudflare.zone().await?;
+    let zone = cloudflare.zone_for_name(challenge_name).await?;
     let nameservers = resolve_nameservers(&zone.name_servers).await?;
     wait_for_txt(
         challenge_name,
@@ -189,11 +227,53 @@ async fn publish_and_wait(
     Ok(())
 }
 
+/// Manual DNS-01: the operator asserts a TXT value is already published.
+fn publish_manual(
+    configured: Option<&ManualDns01Config>,
+    txts: &[Dns01Txt],
+) -> Result<(), TlsError> {
+    let covered = configured.is_some_and(|cfg| {
+        txts.iter()
+            .all(|t| t.name.eq_ignore_ascii_case(&cfg.name) && t.value == cfg.value)
+    });
+    if covered {
+        return Ok(());
+    }
+    let required = txts
+        .iter()
+        .map(|t| format!("{} {}", t.name, t.value))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(TlsError::DnsManual {
+        message: format!(
+            "publish the challenge TXT record(s) and set dns_provider.manual_txt: {required}"
+        ),
+    })
+}
+
+async fn cleanup_if_cloudflare(cfg: &TlsConfig, cloudflare: &CloudflareClient, name: &str) {
+    if !cfg.dns_provider.uses_cloudflare() {
+        return;
+    }
+    let _guard = cloudflare.write_guard().await;
+    cleanup_challenge_txt(cloudflare, name).await;
+}
+
 async fn cleanup_challenge_txt(cloudflare: &CloudflareClient, name: &str) {
+    let zone = match cloudflare.zone_for_name(name).await {
+        Ok(zone) => zone,
+        Err(e) => {
+            warn!(
+                code = e.code(),
+                "best-effort zone lookup for ACME TXT failed: {e}"
+            );
+            return;
+        }
+    };
     match cloudflare.list_records(name, "TXT").await {
         Ok(recs) => {
             for r in recs {
-                if let Err(e) = cloudflare.delete_record(&r.id).await {
+                if let Err(e) = cloudflare.delete_record_in(&zone.id, &r.id).await {
                     warn!(id = %r.id, "best-effort delete of ACME TXT failed: {e}");
                 }
             }

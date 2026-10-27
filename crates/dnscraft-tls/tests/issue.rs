@@ -120,8 +120,11 @@ async fn setup(key_type: KeyType, prop_timeout: Duration) -> Env {
             email: "admin@example.com".into(),
             propagation_timeout: prop_timeout,
             propagation_poll: Duration::from_secs(5),
+            account: dnscraft_tls::AcmeAccountConfig {
+                tos_agreed: true,
+                ..Default::default()
+            },
         },
-        cloudflare: CloudflareConfig { zone_id: None },
         dyndns: DynDnsConfig {
             enabled: false,
             ..DynDnsConfig::default()

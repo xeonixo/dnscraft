@@ -80,6 +80,36 @@ pub enum Exposure {
     Public,
 }
 
+/// TLS protocol / cipher policy for an encrypted listener.
+///
+/// Applied when building the rustls `ServerConfig`. `alpn` configures DoH over
+/// TCP only; DoT and DoQ keep their protocol-mandated ALPN (`dot`, `doq`, `h3`).
+/// Ring is the only provider (no aws-lc).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TlsPolicy {
+    /// Minimum TLS version: `"1.2"` (default) or `"1.3"`.
+    pub min_version: String,
+    /// Allowed rustls/ring cipher suites (IANA names); `None` = provider defaults.
+    pub ciphersuites: Option<Vec<String>>,
+    /// ALPN for DoH over TCP; default `["h2", "http/1.1"]`.
+    pub alpn: Vec<String>,
+}
+
+/// Default minimum TLS version for TCP listeners.
+pub const DEFAULT_TLS_MIN_VERSION: &str = "1.2";
+/// Default ALPN for DoH over TCP.
+pub const DEFAULT_TLS_ALPN: [&str; 2] = ["h2", "http/1.1"];
+
+impl Default for TlsPolicy {
+    fn default() -> Self {
+        Self {
+            min_version: DEFAULT_TLS_MIN_VERSION.to_owned(),
+            ciphersuites: None,
+            alpn: DEFAULT_TLS_ALPN.iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
+}
+
 /// One listener entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListenerConfig {
@@ -93,6 +123,8 @@ pub struct ListenerConfig {
     pub exposure: Exposure,
     /// When `protocol == Doh`, also serve HTTP/3 on UDP of the same port.
     pub h3: bool,
+    /// Optional TLS policy; absent = defaults. Rejected on plaintext protocols.
+    pub tls_policy: Option<TlsPolicy>,
 }
 
 /// Token-bucket rate: `N` tokens per second, burst capacity `2N` when parsed from `N/s`.
@@ -361,6 +393,21 @@ impl ListenersConfig {
                 return Err(ListenersError::config(
                     "h3 = true is only allowed on protocol = doh",
                 ));
+            }
+
+            if let Some(policy) = &listener.tls_policy {
+                if !matches!(
+                    listener.protocol,
+                    Protocol::Dot | Protocol::Doh | Protocol::Doq
+                ) {
+                    return Err(ListenersError::TlsPolicy {
+                        reason: format!(
+                            "tls_policy is only allowed on dot, doh or doq, got {}",
+                            listener.protocol.as_str()
+                        ),
+                    });
+                }
+                crate::tls::validate_tls_policy(policy, listener.protocol, listener.h3)?;
             }
 
             for &kind in socket_kinds(listener.protocol, listener.h3) {

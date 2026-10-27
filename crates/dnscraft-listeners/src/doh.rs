@@ -38,8 +38,8 @@ use crate::framing::MAX_MESSAGE_LEN;
 use crate::handler::QueryHandler;
 use crate::socket::bind_tcp;
 use crate::tls::{
-    ALPN_H2, ALPN_HTTP_1_1, ListenerCertResolver, SniGate, TlsStats, apply_tls_handshake_strike,
-    is_handshake_timeout, tcp_server_config, tls_acceptor, tls_handshake_timeout,
+    ListenerCertResolver, SniGate, TlsStats, apply_tls_handshake_strike, is_handshake_timeout,
+    tcp_server_config, tls_acceptor, tls_handshake_timeout,
 };
 
 /// Counters for one DoH listener.
@@ -164,7 +164,9 @@ where
 
     // Cert presence only — DoH Client ID is path-based (SPEC-listeners).
     let resolver = ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&tls_stats));
-    let tls_config: Arc<ServerConfig> = tcp_server_config(resolver, &[ALPN_H2, ALPN_HTTP_1_1]);
+    let tls_policy = listener.tls_policy.clone().unwrap_or_default();
+    let alpn: Vec<&[u8]> = tls_policy.alpn.iter().map(String::as_bytes).collect();
+    let tls_config: Arc<ServerConfig> = tcp_server_config(resolver, &alpn, &tls_policy);
     let acceptor = tls_acceptor(Arc::clone(&tls_config));
 
     let conn_cap = Arc::new(Semaphore::new(

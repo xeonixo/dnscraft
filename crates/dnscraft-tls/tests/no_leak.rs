@@ -73,6 +73,48 @@ fn all_errors() -> Vec<TlsError> {
         TlsError::DyndnsEntryConflict,
         TlsError::CertExpiring,
         TlsError::CertExpired,
+        TlsError::CertManualInvalid {
+            message: "key/cert mismatch".into(),
+        },
+        TlsError::CertRevoked,
+        TlsError::CertRotateFailed {
+            message: "finalize failed".into(),
+        },
+        TlsError::CertAbsent,
+        TlsError::AcmeAccountEab {
+            message: "eab kid rejected".into(),
+        },
+        TlsError::AcmeAccountTos {
+            message: "agree to the terms".into(),
+        },
+        TlsError::AcmeAccountRollover {
+            message: "rollover unsupported".into(),
+        },
+        TlsError::AcmeOrderPending {
+            message: "no pending order".into(),
+        },
+        TlsError::AcmePreflightFailed {
+            message: "failed checks: store".into(),
+        },
+        TlsError::StoreUnhealthy {
+            message: "not writable".into(),
+        },
+        TlsError::DnsProviderAuth {
+            message: "no token".into(),
+        },
+        TlsError::DnsProviderZone {
+            message: "no zone match".into(),
+        },
+        TlsError::DnsManual {
+            message: "_acme-challenge.dns.example.com value".into(),
+        },
+        TlsError::DyndnsIpv6 {
+            message: "no global address on eth0".into(),
+        },
+        TlsError::PinMismatch,
+        TlsError::NotifyFailed {
+            message: "HTTP 500".into(),
+        },
     ]
 }
 
@@ -112,6 +154,7 @@ fn loaded_cert_and_status_debug_have_no_pem_or_token() {
         not_after: now + Duration::from_secs(30 * 86_400),
         identifiers: vec!["dns.example.com".into()],
         meta: CertMeta::default(),
+        detail: dnscraft_tls::CertDetail::default(),
     };
     assert_clean("LoadedCert/Debug", &format!("{loaded:?}"));
 
@@ -119,6 +162,7 @@ fn loaded_cert_and_status_debug_have_no_pem_or_token() {
         last_error: Some("tls.acme.order".into()),
         last_issue_unix: Some(1_700_000_000),
         last_renew_attempt_unix: Some(1_700_000_100),
+        ..IssueState::default()
     };
     let status = TlsStatus::from_cert(
         Some(&loaded),
@@ -138,5 +182,5 @@ fn every_error_variant_has_unique_code() {
     for err in all_errors() {
         assert!(seen.insert(err.code()), "duplicate {}", err.code());
     }
-    assert_eq!(seen.len(), 17);
+    assert_eq!(seen.len(), 33);
 }

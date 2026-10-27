@@ -64,6 +64,10 @@ async fn pebble_account_create_and_reload() {
         email: "pebble-test@example.com".into(),
         propagation_timeout: Duration::from_secs(120),
         propagation_poll: Duration::from_secs(5),
+        account: dnscraft_tls::AcmeAccountConfig {
+            tos_agreed: true,
+            ..Default::default()
+        },
     };
 
     acme.ensure_account(&store, &cfg)
@@ -169,8 +173,11 @@ async fn pebble_issue_dns_example_com() {
             email: "pebble-issue@example.com".into(),
             propagation_timeout: Duration::from_secs(30),
             propagation_poll: Duration::from_secs(2),
+            account: dnscraft_tls::AcmeAccountConfig {
+                tos_agreed: true,
+                ..Default::default()
+            },
         },
-        cloudflare: CloudflareConfig { zone_id: None },
         dyndns: DynDnsConfig {
             enabled: false,
             ..DynDnsConfig::default()

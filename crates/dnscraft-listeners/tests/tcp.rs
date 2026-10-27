@@ -52,6 +52,7 @@ fn listener_cfg(addr: SocketAddr) -> ListenerConfig {
         address: addr,
         exposure: Exposure::Local,
         h3: false,
+        tls_policy: None,
     }
 }
 

@@ -36,7 +36,8 @@ mod status;
 mod store;
 
 pub use acme::{
-    AcmeBackend, AcmeDirectory, AcmeOrder, Dns01Txt, FakeAcmeDirectory, FakeAcmeFail, InstantAcme,
+    AcmeAccountStatus, AcmeBackend, AcmeDirectory, AcmeOrder, AcmeOrderStatus, ChallengeProgress,
+    Dns01Txt, FakeAcmeDirectory, FakeAcmeFail, InstantAcme, RevocationReason, account_status,
     ari_certificate_id, challenge_txt_name, default_identifiers,
 };
 pub use acme_http::ReqwestHttpClient;
@@ -45,18 +46,20 @@ pub use cloudflare::{
     CLOUDFLARE_API_BASE, CloudflareClient, DnsRecord, TTL_ACME_TXT, TTL_AUTO, ZoneInfo,
 };
 pub use config::{
-    AcmeConfig, AcmeDirectoryKind, CloudflareConfig, DEFAULT_DYNDNS_INTERVAL, DEFAULT_ECHO_URL,
-    DEFAULT_EXPIRY_WARN, DEFAULT_PROPAGATION_POLL, DEFAULT_PROPAGATION_TIMEOUT,
-    DEFAULT_RENEW_BEFORE, DynDnsConfig, KeyType, NodeEntry, TlsConfig, validate_public_entry,
+    AcmeAccountConfig, AcmeConfig, AcmeDirectoryKind, CloudflareConfig, DEFAULT_DYNDNS_INTERVAL,
+    DEFAULT_ECHO_URL, DEFAULT_EXPIRY_WARN, DEFAULT_PROPAGATION_POLL, DEFAULT_PROPAGATION_TIMEOUT,
+    DEFAULT_RENEW_BEFORE, DnsProvider, DnsProviderKind, DynDnsConfig, Eab, Ipv6Identifier,
+    Ipv6IdentifierMode, KeyType, ManualCertConfig, ManualDns01Config, NodeEntry,
+    NotificationsConfig, TlsConfig, TrustPin, ZoneConfig, validate_public_entry,
 };
 pub use dyndns::{
-    DynDnsResult, EchoClient, dyndns_interval, dyndns_interval_with_rng, dyndns_names, dyndns_once,
-    parse_trace_ip,
+    DynDnsResult, EchoClient, InventoryRecord, dyndns_interval, dyndns_interval_with_rng,
+    dyndns_names, dyndns_once, parse_trace_ip, record_inventory,
 };
 pub use engine::{EngineDeps, EngineInner, TlsEngine};
 pub use error::{TlsError, parse_retry_after_header};
 pub use issue::issue;
-pub use pem_util::KeyPem;
+pub use pem_util::{KeyPem, fingerprint_sha256};
 pub use propagation::{resolve_nameservers, wait_for_txt, wait_for_txt_with_query_timeout};
 pub use renew::{
     AriWindow, BACKOFF_BASE, BACKOFF_CAP, RenewFn, RenewFut, RenewScheduler, ScheduleFn, StatusFn,
@@ -69,5 +72,11 @@ pub use sni::{
     ClientIdRegistry, FIXED_RESERVED_LABELS, ReservedLabels, SniKind, accept_public_sni,
     parse_client_id_sni,
 };
-pub use status::{TlsStatus, cert_flags};
-pub use store::{CertMeta, CertStore, IssueState, LoadedCert, TLS_DIR_NAME};
+pub use status::{
+    AriStatus, CertDetail, CertSource, DynDnsAuditEntry, IssueOutcome, IssueRecord, PreflightCheck,
+    PreflightReport, RateLimitStatus, StoreHealth, TlsStatus, cert_flags,
+};
+pub use store::{
+    CertMeta, CertStore, DYNDNS_AUDIT_LIMIT, HISTORY_LIMIT, IssueState, LoadedCert, TLS_DIR_NAME,
+    push_dyndns_audit, push_history,
+};

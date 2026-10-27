@@ -68,6 +68,16 @@ impl CertResolver {
             .map(|c| c.as_ref().to_vec())
     }
 
+    /// Removes the installed certificate so new handshakes get none.
+    ///
+    /// Used after a successful revocation.
+    pub fn clear(&self) {
+        *self
+            .current
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
     /// Builds a [`CertifiedKey`] with the ring provider and swaps it in.
     ///
     /// Does not touch the disk store. On parse/key errors the previous cert

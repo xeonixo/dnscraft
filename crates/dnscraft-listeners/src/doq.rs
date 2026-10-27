@@ -142,8 +142,9 @@ where
     let _ = bound.send(local);
 
     let resolver = ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&tls_stats));
+    let tls_policy = listener.tls_policy.clone().unwrap_or_default();
     // DoQ-only: advertise `doq`, not `h3` (N12 owns HTTP/3 on the same port).
-    let mut rustls_cfg: RustlsServerConfig = (*quic_server_config(resolver)).clone();
+    let mut rustls_cfg: RustlsServerConfig = (*quic_server_config(resolver, &tls_policy)).clone();
     rustls_cfg.alpn_protocols = vec![ALPN_DOQ.to_vec()];
 
     let quic_crypto =

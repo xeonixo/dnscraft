@@ -27,7 +27,7 @@ use tokio_rustls::{LazyConfigAcceptor, TlsAcceptor};
 use crate::admission::{Admission, ClientIdState, public_client_id_required};
 use crate::bans::StrikeReason;
 use crate::clock::{Clock, add_duration, wait_until};
-use crate::config::Exposure;
+use crate::config::{Exposure, Protocol, TlsPolicy};
 use crate::error::ListenersError;
 
 /// ALPN for DNS over TLS (RFC 7858).
@@ -275,17 +275,121 @@ impl ResolvesServerCert for ListenerCertResolver {
     }
 }
 
-/// TCP-family server config: TLS 1.2+, ALPN set by the protocol family.
+/// Validates a [`TlsPolicy`] against the ring provider and the listener protocol.
 ///
-/// DoT passes only [`ALPN_DOT`]; DoH passes [`ALPN_H2`] + [`ALPN_HTTP_1_1`].
+/// Unknown version/suite, empty ALPN, and a TLS 1.3-only protocol without a
+/// TLS 1.3 suite are `listeners.config.invalid`. Use of a policy on a plaintext
+/// protocol is reported by [`crate::config::ListenersConfig::validate`].
+pub(crate) fn validate_tls_policy(
+    policy: &TlsPolicy,
+    protocol: Protocol,
+    h3: bool,
+) -> Result<(), ListenersError> {
+    if !matches!(policy.min_version.as_str(), "1.2" | "1.3") {
+        return Err(ListenersError::config(format!(
+            "tls_policy.min_version must be `1.2` or `1.3`, got `{}`",
+            policy.min_version
+        )));
+    }
+    if policy.alpn.is_empty() {
+        return Err(ListenersError::config(
+            "tls_policy.alpn must contain at least one protocol",
+        ));
+    }
+    for alpn in &policy.alpn {
+        if alpn.is_empty() || alpn.len() > 255 || !alpn.is_ascii() {
+            return Err(ListenersError::config(format!(
+                "tls_policy.alpn entry `{alpn}` must be 1..=255 ASCII bytes"
+            )));
+        }
+    }
+
+    let Some(names) = &policy.ciphersuites else {
+        return Ok(());
+    };
+    if names.is_empty() {
+        return Err(ListenersError::config(
+            "tls_policy.ciphersuites must contain at least one suite",
+        ));
+    }
+    let mut suites = Vec::with_capacity(names.len());
+    for name in names {
+        let suite = supported_cipher_suite(name).ok_or_else(|| {
+            ListenersError::config(format!(
+                "unknown TLS cipher suite `{name}` (ring supports: {})",
+                supported_cipher_suite_names().join(", ")
+            ))
+        })?;
+        suites.push(suite);
+    }
+
+    // QUIC (DoQ, DoH h3) is TLS 1.3-only, so the selection must retain a 1.3 suite.
+    let tls13_only = protocol == Protocol::Doq || (protocol == Protocol::Doh && h3);
+    if (tls13_only || policy.min_version == "1.3")
+        && !suites.iter().any(|suite| suite.tls13().is_some())
+    {
+        return Err(ListenersError::config(
+            "tls_policy.ciphersuites has no TLS 1.3 suite but the listener requires TLS 1.3",
+        ));
+    }
+    Ok(())
+}
+
+/// Ring cipher suite with the given IANA name (e.g. `TLS13_AES_256_GCM_SHA384`).
+fn supported_cipher_suite(name: &str) -> Option<rustls::SupportedCipherSuite> {
+    rustls::crypto::ring::ALL_CIPHER_SUITES
+        .iter()
+        .copied()
+        .find(|suite| suite.suite().as_str() == Some(name))
+}
+
+fn supported_cipher_suite_names() -> Vec<&'static str> {
+    rustls::crypto::ring::ALL_CIPHER_SUITES
+        .iter()
+        .filter_map(|suite| suite.suite().as_str())
+        .collect()
+}
+
+/// Ring provider restricted to the policy's suites and TLS versions.
+fn provider_for(policy: &TlsPolicy) -> Arc<rustls::crypto::CryptoProvider> {
+    let cipher_suites = match &policy.ciphersuites {
+        None => rustls::crypto::ring::DEFAULT_CIPHER_SUITES.to_vec(),
+        Some(names) => names
+            .iter()
+            .filter_map(|name| supported_cipher_suite(name))
+            .collect(),
+    };
+    Arc::new(rustls::crypto::CryptoProvider {
+        cipher_suites,
+        ..rustls::crypto::ring::default_provider()
+    })
+}
+
+/// Protocol versions for a policy: TLS 1.3 alone, or 1.3 + 1.2.
+fn versions_for(policy: &TlsPolicy) -> &'static [&'static rustls::SupportedProtocolVersion] {
+    const TLS13_ONLY: &[&rustls::SupportedProtocolVersion] = &[&rustls::version::TLS13];
+    const TLS12_PLUS: &[&rustls::SupportedProtocolVersion] =
+        &[&rustls::version::TLS13, &rustls::version::TLS12];
+    match policy.min_version.as_str() {
+        "1.3" => TLS13_ONLY,
+        "1.2" => TLS12_PLUS,
+        other => panic!("validated TLS policy has unknown min_version `{other}`"),
+    }
+}
+
+/// TCP-family server config: versions/ciphers from `policy`; ALPN from the caller.
+///
+/// DoT passes only [`ALPN_DOT`]; DoH passes the policy's `alpn` (default
+/// [`ALPN_H2`] + [`ALPN_HTTP_1_1`]). The policy must have passed
+/// [`validate_tls_policy`].
 pub fn tcp_server_config(
     resolver: Arc<dyn ResolvesServerCert + 'static>,
     alpn: &[&[u8]],
+    policy: &TlsPolicy,
 ) -> Arc<ServerConfig> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut cfg = ServerConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .unwrap_or_else(|e| panic!("ring provider supports default protocol versions: {e}"))
+    let mut cfg = ServerConfig::builder_with_provider(provider_for(policy))
+        .with_protocol_versions(versions_for(policy))
+        .unwrap_or_else(|e| panic!("validated TLS policy must have usable cipher suites: {e}"))
         .with_no_client_auth()
         .with_cert_resolver(resolver);
     cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
@@ -294,12 +398,16 @@ pub fn tcp_server_config(
     Arc::new(cfg)
 }
 
-/// QUIC-family server config: TLS 1.3 only, ALPN `doq` / `h3`, 0-RTT off.
-pub fn quic_server_config(resolver: Arc<dyn ResolvesServerCert + 'static>) -> Arc<ServerConfig> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut cfg = ServerConfig::builder_with_provider(provider)
+/// QUIC-family server config: TLS 1.3 only, policy ciphers, ALPN `doq` / `h3`, 0-RTT off.
+///
+/// The policy's `min_version` cannot lower this: QUIC requires TLS 1.3.
+pub fn quic_server_config(
+    resolver: Arc<dyn ResolvesServerCert + 'static>,
+    policy: &TlsPolicy,
+) -> Arc<ServerConfig> {
+    let mut cfg = ServerConfig::builder_with_provider(provider_for(policy))
         .with_protocol_versions(&[&rustls::version::TLS13])
-        .unwrap_or_else(|e| panic!("ring provider supports TLS 1.3: {e}"))
+        .unwrap_or_else(|e| panic!("validated TLS policy must retain a TLS 1.3 cipher suite: {e}"))
         .with_no_client_auth()
         .with_cert_resolver(resolver);
     cfg.alpn_protocols = vec![ALPN_DOQ.to_vec(), ALPN_H3.to_vec()];
@@ -493,4 +601,124 @@ fn record_handshake_failure(
 /// Convenience: [`TlsAcceptor`] from a server config (local / already gated).
 pub fn tls_acceptor(config: Arc<ServerConfig>) -> TlsAcceptor {
     TlsAcceptor::from(config)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn policy(min_version: &str, ciphersuites: Option<&[&str]>) -> TlsPolicy {
+        TlsPolicy {
+            min_version: min_version.into(),
+            ciphersuites: ciphersuites.map(|names| names.iter().map(|n| (*n).to_owned()).collect()),
+            ..TlsPolicy::default()
+        }
+    }
+
+    fn resolver() -> Arc<ListenerCertResolver> {
+        ListenerCertResolver::local(Arc::new(CertResolver::new()), Arc::new(TlsStats::default()))
+    }
+
+    #[test]
+    fn min_version_selects_protocol_versions() {
+        assert_eq!(
+            versions_for(&policy("1.3", None)),
+            [&rustls::version::TLS13].as_slice()
+        );
+        assert_eq!(versions_for(&policy("1.2", None)).len(), 2);
+    }
+
+    #[test]
+    fn ciphersuite_selection_filters_the_ring_provider() {
+        let p = policy("1.3", Some(&["TLS13_AES_128_GCM_SHA256"]));
+        let names: Vec<_> = provider_for(&p)
+            .cipher_suites
+            .iter()
+            .map(|s| s.suite().as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["TLS13_AES_128_GCM_SHA256"]);
+
+        let defaults = provider_for(&TlsPolicy::default());
+        assert_eq!(
+            defaults.cipher_suites.len(),
+            rustls::crypto::ring::DEFAULT_CIPHER_SUITES.len()
+        );
+    }
+
+    #[test]
+    fn validation_rejects_unknown_version_and_suite() {
+        let err = validate_tls_policy(&policy("1.1", None), Protocol::Dot, false).unwrap_err();
+        assert_eq!(err.code(), "listeners.config.invalid");
+
+        let err = validate_tls_policy(
+            &policy("1.2", Some(&["TLS_NOT_A_REAL_SUITE"])),
+            Protocol::Dot,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "listeners.config.invalid");
+
+        let err = validate_tls_policy(
+            &policy("1.2", Some(&["TLS13_AES_256_GCM_SHA384", "bogus"])),
+            Protocol::Doh,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "listeners.config.invalid");
+    }
+
+    #[test]
+    fn validation_rejects_empty_alpn_and_ciphersuites() {
+        let mut p = TlsPolicy::default();
+        p.alpn.clear();
+        assert_eq!(
+            validate_tls_policy(&p, Protocol::Doh, false)
+                .unwrap_err()
+                .code(),
+            "listeners.config.invalid"
+        );
+
+        let p = policy("1.2", Some(&[]));
+        assert_eq!(
+            validate_tls_policy(&p, Protocol::Dot, false)
+                .unwrap_err()
+                .code(),
+            "listeners.config.invalid"
+        );
+    }
+
+    #[test]
+    fn validation_requires_tls13_suite_for_quic_and_min_13() {
+        let tls12_only = ["TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"];
+        let err = validate_tls_policy(&policy("1.2", Some(&tls12_only)), Protocol::Doq, false)
+            .unwrap_err();
+        assert_eq!(err.code(), "listeners.config.invalid");
+
+        let err = validate_tls_policy(&policy("1.3", Some(&tls12_only)), Protocol::Dot, false)
+            .unwrap_err();
+        assert_eq!(err.code(), "listeners.config.invalid");
+
+        // DoH without h3 may run TLS 1.2 with only 1.2 suites.
+        assert!(
+            validate_tls_policy(&policy("1.2", Some(&tls12_only)), Protocol::Doh, false).is_ok()
+        );
+    }
+
+    #[test]
+    fn policy_applies_to_server_configs() {
+        let p = policy(
+            "1.3",
+            Some(&["TLS13_AES_256_GCM_SHA384", "TLS13_CHACHA20_POLY1305_SHA256"]),
+        );
+        let tcp = tcp_server_config(resolver(), &[ALPN_H2, ALPN_HTTP_1_1], &p);
+        assert_eq!(
+            tcp.alpn_protocols,
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+        );
+
+        let quic = quic_server_config(resolver(), &p);
+        assert_eq!(quic.max_early_data_size, 0);
+        assert_eq!(quic.alpn_protocols, vec![b"doq".to_vec(), b"h3".to_vec()]);
+    }
 }

@@ -182,6 +182,12 @@ fn requirement(method: &Method, path: &str) -> Requirement {
     if path == "/api/v1/filtering/explain-block" || path == "/api/v1/policy/test-query" {
         return Requirement::Api;
     }
+    // The TLS status DTO is operational state (mode, expiry, fingerprint), not
+    // configuration: viewers may read it even though `/api/v1/tls/*` is
+    // otherwise admin-only.
+    if path == "/api/v1/tls/status" {
+        return Requirement::Api;
+    }
     if is_config_path(path) {
         return Requirement::ApiAdmin;
     }
@@ -328,6 +334,19 @@ mod tests {
         assert_eq!(
             requirement(&Method::GET, "/api/v1/query-log"),
             Requirement::Api
+        );
+        // The TLS status DTO is viewer-readable; every other TLS route is admin.
+        assert_eq!(
+            requirement(&Method::GET, "/api/v1/tls/status"),
+            Requirement::Api
+        );
+        assert_eq!(
+            requirement(&Method::GET, "/api/v1/tls/certificate"),
+            Requirement::ApiAdmin
+        );
+        assert_eq!(
+            requirement(&Method::POST, "/api/v1/tls/renew"),
+            Requirement::ApiAdmin
         );
         // MCP dry-run reads are viewer-readable even though they are POSTs
         // under the config-family `/policy` prefix.

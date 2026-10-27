@@ -32,6 +32,10 @@ fn acme_cfg() -> AcmeConfig {
         email: "admin@example.com".into(),
         propagation_timeout: Duration::from_secs(120),
         propagation_poll: Duration::from_secs(5),
+        account: dnscraft_tls::AcmeAccountConfig {
+            tos_agreed: true,
+            ..Default::default()
+        },
     }
 }
 

@@ -12,9 +12,9 @@ use std::time::{Duration, SystemTime};
 
 use dnscraft_listeners::{
     AcceptEncrypted, Admission, ClientIdState, Exposure, Limits, ListenerCertResolver, ManualClock,
-    PolicyClientIds, PublicConfig, PublicSniOutcome, SniGate, SniRejectKind, SystemClock, TlsStats,
-    accept_encrypted, apply_sni_strike, client_id_state_local, inspect_public_sni,
-    quic_server_config, tcp_server_config,
+    PolicyClientIds, PublicConfig, PublicSniOutcome, SniGate, SniRejectKind, SystemClock,
+    TlsPolicy, TlsStats, accept_encrypted, apply_sni_strike, client_id_state_local,
+    inspect_public_sni, quic_server_config, tcp_server_config,
 };
 use dnscraft_policy::{ClientId, PolicyConfig};
 use dnscraft_tls::{CertResolver, ClientIdRegistry, ReservedLabels};
@@ -160,7 +160,11 @@ impl ServerHarness {
         resolver: Arc<ListenerCertResolver>,
     ) -> Self {
         let stats = Arc::clone(resolver.stats());
-        let config = tcp_server_config(resolver, &[dnscraft_listeners::ALPN_DOT]);
+        let config = tcp_server_config(
+            resolver,
+            &[dnscraft_listeners::ALPN_DOT],
+            &TlsPolicy::default(),
+        );
         let admission = if exposure == Exposure::Public {
             support::public_test_admission(&Limits::default(), &PublicConfig::default())
         } else {
@@ -326,6 +330,7 @@ fn inspect_public_sni_matrix() {
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 853)),
             exposure: Exposure::Public,
             h3: false,
+            tls_policy: None,
         },
         public_peer,
         &ClientIdState::Absent,
@@ -491,7 +496,11 @@ async fn cert_hot_reload_keeps_open_connection() {
     certs.install(&pem_a, &key_a).unwrap();
     let stats = Arc::new(TlsStats::default());
     let resolver = ListenerCertResolver::local(Arc::clone(&certs), stats);
-    let config = tcp_server_config(resolver, &[dnscraft_listeners::ALPN_DOT]);
+    let config = tcp_server_config(
+        resolver,
+        &[dnscraft_listeners::ALPN_DOT],
+        &TlsPolicy::default(),
+    );
 
     let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .await
@@ -624,7 +633,7 @@ fn quic_config_has_zero_early_data_and_tls13_alpn() {
     let certs = Arc::new(CertResolver::new());
     let stats = Arc::new(TlsStats::default());
     let resolver = ListenerCertResolver::local(certs, stats);
-    let cfg = quic_server_config(resolver);
+    let cfg = quic_server_config(resolver, &TlsPolicy::default());
     assert_eq!(cfg.max_early_data_size, 0);
     assert!(cfg.alpn_protocols.iter().any(|p| p == b"doq"));
     assert!(cfg.alpn_protocols.iter().any(|p| p == b"h3"));
@@ -638,6 +647,7 @@ fn tcp_config_alpn_is_per_protocol_family() {
     let dot = tcp_server_config(
         ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&stats)),
         &[dnscraft_listeners::ALPN_DOT],
+        &TlsPolicy::default(),
     );
     assert_eq!(dot.alpn_protocols, vec![b"dot".to_vec()]);
 
@@ -647,6 +657,7 @@ fn tcp_config_alpn_is_per_protocol_family() {
             dnscraft_listeners::ALPN_H2,
             dnscraft_listeners::ALPN_HTTP_1_1,
         ],
+        &TlsPolicy::default(),
     );
     assert_eq!(
         doh.alpn_protocols,

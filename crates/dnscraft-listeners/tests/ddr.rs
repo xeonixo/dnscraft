@@ -338,6 +338,7 @@ async fn ddr_udp_serve_end_to_end() {
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             exposure: Exposure::Local,
             h3: false,
+            tls_policy: None,
         },
         limits: Limits::default(),
         admission: support::admission_for(&Limits::default(), &PublicConfig::default()),

@@ -19,7 +19,7 @@ use crate::config_apply::ConfigService;
 use crate::error::ControlApiError;
 use crate::mcp_backend::McpBackendInner;
 use crate::query_log::QueryLog;
-use crate::tls::{TlsStatus, TlsStatusProvider};
+use crate::tls::{TlsAdmin, TlsStatus, TlsStatusProvider};
 
 use dnscraft_filtering::FilterEngine;
 use dnscraft_mcp::McpConfig;
@@ -32,6 +32,7 @@ use dnscraft_policy::PolicyEngine;
 pub struct AppState {
     readiness: Arc<Readiness>,
     tls: Option<Arc<dyn TlsStatusProvider>>,
+    tls_admin: Option<Arc<dyn TlsAdmin>>,
     rate_limiter: Arc<RateLimiter>,
     auth: Option<Arc<AuthState>>,
     local_login: Option<Arc<LocalAccountStore>>,
@@ -58,6 +59,7 @@ impl AppState {
         Self {
             readiness: Arc::new(Readiness::default()),
             tls: None,
+            tls_admin: None,
             rate_limiter: Arc::new(RateLimiter::new(
                 RateLimitConfig::default(),
                 Arc::new(SystemClock),
@@ -232,6 +234,14 @@ impl AppState {
         self
     }
 
+    /// Attaches the TLS engine admin surface used by `/api/v1/tls/*`.
+    ///
+    /// Without it the mutating TLS routes return `control_api.not_ready`.
+    pub fn with_tls_admin(mut self, admin: Arc<dyn TlsAdmin>) -> Self {
+        self.tls_admin = Some(admin);
+        self
+    }
+
     /// Attaches a caller-configured rate limiter (built from the validated
     /// config and the trusted-proxy list at startup).
     pub fn with_rate_limiter(mut self, rate_limiter: Arc<RateLimiter>) -> Self {
@@ -247,6 +257,22 @@ impl AppState {
     /// The current TLS status, if a provider is attached.
     pub fn tls_status(&self) -> Option<TlsStatus> {
         self.tls.as_ref().map(|provider| provider.status())
+    }
+
+    /// The current TLS status, read asynchronously.
+    ///
+    /// Prefer this from handlers: an engine-backed provider refreshes its
+    /// cached snapshot without blocking a runtime worker.
+    pub async fn tls_status_async(&self) -> Option<TlsStatus> {
+        match self.tls.as_ref() {
+            Some(provider) => Some(provider.status_async().await),
+            None => None,
+        }
+    }
+
+    /// The TLS admin surface, if one is attached.
+    pub(crate) fn tls_admin(&self) -> Option<&Arc<dyn TlsAdmin>> {
+        self.tls_admin.as_ref()
     }
 
     /// The readiness tracker (mark modules ready / not ready).
@@ -331,7 +357,7 @@ pub async fn serve(
     )));
     // Derive MCP allowed_origins from the configured TLS domain.
     let mcp_config = config.mcp.clone();
-    if let Some(tls_status) = state.tls_status()
+    if let Some(tls_status) = state.tls_status_async().await
         && !tls_status.fingerprint.is_empty()
     {
         // ponytail: derive origins from the TLS public domain (TLS module

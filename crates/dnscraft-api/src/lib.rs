@@ -24,6 +24,7 @@ mod config_apply;
 mod error;
 mod mcp_backend;
 mod modules;
+mod notifications;
 mod protected_list;
 mod query_log;
 mod secret;
@@ -67,4 +68,8 @@ pub use stats::{
     TOP_DOMAINS_MAX, TopBy, TopClient, TopClients, TopDomain, TopDomains,
 };
 pub use storage::{AuditRecord, ConfigStore, Db};
-pub use tls::{ControlApiTls, TlsMode, TlsStatus, TlsStatusProvider};
+pub use tls::{
+    AriStatus, CertSource, ControlApiTls, EngineStatusProvider, EngineTlsAdmin, IssueOutcome,
+    IssueRecord, StoreHealth, TlsActionFuture, TlsAdmin, TlsMode, TlsStatus, TlsStatusFuture,
+    TlsStatusProvider, TlsValueFuture,
+};

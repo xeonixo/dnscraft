@@ -1012,6 +1012,7 @@ dependencies = [
  "rand 0.10.3",
  "rcgen",
  "reqwest",
+ "ring",
  "rustls",
  "rustls-pki-types",
  "serde",

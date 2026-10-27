@@ -87,7 +87,8 @@ where
     let _ = bound.send(local);
 
     let resolver = ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&tls_stats));
-    let tls_config: Arc<ServerConfig> = tcp_server_config(resolver, &[ALPN_DOT]);
+    let tls_policy = listener.tls_policy.clone().unwrap_or_default();
+    let tls_config: Arc<ServerConfig> = tcp_server_config(resolver, &[ALPN_DOT], &tls_policy);
 
     let conn_cap_n = limits.max_connections_per_listener.max(1);
     let conn_cap = Arc::new(Semaphore::new(conn_cap_n as usize));

@@ -7,11 +7,13 @@
 
 use std::borrow::Cow;
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, CertificateIdentifier, ChallengeType,
-    Identifier, NewAccount, NewOrder, Order, OrderStatus, RetryPolicy,
+    ExternalAccountKey, Identifier, NewAccount, NewOrder, Order, OrderStatus, RetryPolicy,
+    RevocationReason as AcmeRevocationReason, RevocationRequest,
 };
 use rcgen::{
     CertificateParams, DistinguishedName, KeyPair, PKCS_ECDSA_P256_SHA256, PKCS_ECDSA_P384_SHA384,
@@ -34,12 +36,156 @@ pub struct Dns01Txt {
     pub value: String,
 }
 
+/// One DNS-01 challenge's progress.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChallengeProgress {
+    /// ACME identifier (`dns.x` / `*.dns.x`).
+    pub identifier: String,
+    /// TXT owner name (`_acme-challenge.…`).
+    pub txt_name: String,
+    /// Challenge state (`pending` / `valid` / `invalid`).
+    pub status: String,
+}
+
+/// Order/progress snapshot exposed by [`AcmeOrder::order_status`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AcmeOrderStatus {
+    /// `idle` / `pending` / `valid` / `invalid`.
+    pub state: String,
+    /// Ordered identifiers.
+    pub identifiers: Vec<String>,
+    /// Per-challenge progress.
+    pub challenges: Vec<ChallengeProgress>,
+    /// Scheduled next attempt, when a backoff is active.
+    pub next_attempt_at: Option<SystemTime>,
+    /// Last stable error code for this order.
+    pub last_error: Option<String>,
+}
+
+impl Default for AcmeOrderStatus {
+    fn default() -> Self {
+        Self {
+            state: "idle".into(),
+            identifiers: Vec::new(),
+            challenges: Vec::new(),
+            next_attempt_at: None,
+            last_error: None,
+        }
+    }
+}
+
+/// ACME account state exposed by [`crate::TlsEngine::acme_account_status`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AcmeAccountStatus {
+    /// `true` when a usable `account.json` exists for the configured directory.
+    pub exists: bool,
+    /// Configured directory URL.
+    pub directory: String,
+    /// Account id, when known.
+    pub account_id: Option<String>,
+    /// Config agreed to the CA terms of service.
+    pub tos_agreed: bool,
+    /// Config supplied an External Account Binding key.
+    pub eab_configured: bool,
+    /// Config deactivates the account when ACME is disabled.
+    pub auto_deactivate: bool,
+    /// `true` when the account was deactivated (credentials removed).
+    pub deactivated: bool,
+}
+
+/// Certificate revocation reason (RFC 5280 §5.3.1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RevocationReason {
+    /// No reason given.
+    #[default]
+    Unspecified,
+    /// Private key compromised.
+    KeyCompromise,
+    /// CA compromised.
+    CaCompromise,
+    /// Affiliation changed.
+    AffiliationChanged,
+    /// Certificate superseded.
+    Superseded,
+    /// Cessation of operation.
+    CessationOfOperation,
+    /// Certificate on hold.
+    CertificateHold,
+    /// Remove from CRL.
+    RemoveFromCrl,
+    /// Privilege withdrawn.
+    PrivilegeWithdrawn,
+    /// Attribute authority compromised.
+    AaCompromise,
+}
+
+impl RevocationReason {
+    /// Parses a locale-neutral reason string (`key_compromise`, `superseded`, …).
+    pub fn parse(input: &str) -> Result<Self, TlsError> {
+        let key: String = input
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        Ok(match key.as_str() {
+            "" | "unspecified" => Self::Unspecified,
+            "keycompromise" => Self::KeyCompromise,
+            "cacompromise" => Self::CaCompromise,
+            "affiliationchanged" => Self::AffiliationChanged,
+            "superseded" => Self::Superseded,
+            "cessationofoperation" => Self::CessationOfOperation,
+            "certificatehold" => Self::CertificateHold,
+            "removefromcrl" => Self::RemoveFromCrl,
+            "privilegewithdrawn" => Self::PrivilegeWithdrawn,
+            "aacompromise" => Self::AaCompromise,
+            _ => {
+                return Err(TlsError::ConfigInvalid {
+                    reason: format!("unknown revocation reason {input:?}"),
+                });
+            }
+        })
+    }
+
+    fn to_acme(self) -> AcmeRevocationReason {
+        match self {
+            Self::Unspecified => AcmeRevocationReason::Unspecified,
+            Self::KeyCompromise => AcmeRevocationReason::KeyCompromise,
+            Self::CaCompromise => AcmeRevocationReason::CaCompromise,
+            Self::AffiliationChanged => AcmeRevocationReason::AffiliationChanged,
+            Self::Superseded => AcmeRevocationReason::Superseded,
+            Self::CessationOfOperation => AcmeRevocationReason::CessationOfOperation,
+            Self::CertificateHold => AcmeRevocationReason::CertificateHold,
+            Self::RemoveFromCrl => AcmeRevocationReason::RemoveFromCrl,
+            Self::PrivilegeWithdrawn => AcmeRevocationReason::PrivilegeWithdrawn,
+            Self::AaCompromise => AcmeRevocationReason::AaCompromise,
+        }
+    }
+}
+
 /// ACME directory operations used by issuance and renewal.
 #[async_trait]
 pub trait AcmeDirectory: Send + Sync {
     /// Ensures an ACME account exists: loads `account.json` when present,
     /// otherwise creates one and persists credentials (mode 0600 via the store).
     async fn ensure_account(&self, store: &CertStore, cfg: &AcmeConfig) -> Result<(), TlsError>;
+
+    /// Rolls the ACME account key and persists the new credentials.
+    async fn rollover_key(&self, _store: &CertStore, _cfg: &AcmeConfig) -> Result<(), TlsError> {
+        Err(TlsError::AcmeAccountRollover {
+            message: "account key rollover is not supported by this backend".into(),
+        })
+    }
+
+    /// Deactivates the ACME account and removes `account.json`.
+    async fn deactivate_account(
+        &self,
+        _store: &CertStore,
+        _cfg: &AcmeConfig,
+    ) -> Result<(), TlsError> {
+        Err(TlsError::AcmeAccount {
+            message: "account deactivation is not supported by this backend".into(),
+        })
+    }
 }
 
 /// Combined ACME backend for [`crate::TlsEngine`] (object-safe).
@@ -96,6 +242,24 @@ pub trait AcmeOrder: Send + Sync {
         cfg: &AcmeConfig,
         chain_pem: &[u8],
     ) -> Option<AriWindow>;
+
+    /// Snapshot of the most recent order's progress.
+    fn order_status(&self) -> AcmeOrderStatus {
+        AcmeOrderStatus::default()
+    }
+
+    /// Revokes the leaf in `chain_pem` at the CA.
+    async fn revoke_certificate(
+        &self,
+        _store: &CertStore,
+        _cfg: &AcmeConfig,
+        _chain_pem: &[u8],
+        _reason: RevocationReason,
+    ) -> Result<(), TlsError> {
+        Err(TlsError::AcmeOrder {
+            message: "certificate revocation is not supported by this backend".into(),
+        })
+    }
 }
 
 /// ARI certificate id (`<base64url aki>.<base64url serial>`) of the first
@@ -123,6 +287,7 @@ fn parse_ari_id(id: &str) -> Option<CertificateIdentifier<'static>> {
 pub struct InstantAcme {
     http: ReqwestHttpClient,
     pending: Mutex<Option<Order>>,
+    progress: Mutex<AcmeOrderStatus>,
 }
 
 impl InstantAcme {
@@ -131,6 +296,7 @@ impl InstantAcme {
         Ok(Self {
             http: ReqwestHttpClient::new()?,
             pending: Mutex::new(None),
+            progress: Mutex::new(AcmeOrderStatus::default()),
         })
     }
 
@@ -139,6 +305,7 @@ impl InstantAcme {
         Ok(Self {
             http: ReqwestHttpClient::with_extra_roots(root_pem)?,
             pending: Mutex::new(None),
+            progress: Mutex::new(AcmeOrderStatus::default()),
         })
     }
 
@@ -173,25 +340,44 @@ impl InstantAcme {
         if stored.is_some() {
             info!(%directory_url, "stored ACME account is for another directory; creating a new one");
         }
+        if !cfg.account.tos_agreed {
+            return Err(TlsError::AcmeAccountTos {
+                message: "acme.account.tos_agreed must be true to create an account".into(),
+            });
+        }
         let mailto = format!("mailto:{}", cfg.email.trim());
         let new_account = NewAccount {
             contact: &[mailto.as_str()],
-            terms_of_service_agreed: true,
+            terms_of_service_agreed: cfg.account.tos_agreed,
             only_return_existing: false,
         };
+        let eab = cfg
+            .account
+            .eab
+            .as_ref()
+            .map(|e| ExternalAccountKey::new(e.kid.clone(), e.hmac_key.expose().as_bytes()));
         let (account, creds) = self
             .builder()
-            .create(&new_account, directory_url.clone(), None)
+            .create(&new_account, directory_url.clone(), eab.as_ref())
             .await
-            .map_err(map_acme_account)?;
+            .map_err(|e| match &eab {
+                Some(_) => TlsError::AcmeAccountEab {
+                    message: redact_acme_err(&e),
+                },
+                None => map_acme_account(e),
+            })?;
 
-        let json = serde_json::to_vec_pretty(&creds).map_err(|e| TlsError::AcmeAccount {
-            message: format!("serialize account credentials: {e}"),
-        })?;
-        store.save_account(&json)?;
+        save_account_credentials(store, &creds)?;
         info!(%directory_url, "created and persisted ACME account");
         Ok(account)
     }
+}
+
+fn save_account_credentials(store: &CertStore, creds: &AccountCredentials) -> Result<(), TlsError> {
+    let json = serde_json::to_vec_pretty(creds).map_err(|e| TlsError::AcmeAccount {
+        message: format!("serialize account credentials: {e}"),
+    })?;
+    store.save_account(&json)
 }
 
 #[async_trait]
@@ -202,6 +388,32 @@ impl AcmeDirectory for InstantAcme {
         }
         let _ = self.load_or_create_account(store, cfg).await?;
         Ok(())
+    }
+
+    async fn rollover_key(&self, store: &CertStore, cfg: &AcmeConfig) -> Result<(), TlsError> {
+        let mut account = self.load_or_create_account(store, cfg).await?;
+        let creds = account
+            .update_key()
+            .await
+            .map_err(|e| TlsError::AcmeAccountRollover {
+                message: redact_acme_err(&e),
+            })?;
+        save_account_credentials(store, &creds)
+    }
+
+    async fn deactivate_account(
+        &self,
+        store: &CertStore,
+        cfg: &AcmeConfig,
+    ) -> Result<(), TlsError> {
+        let account = self.load_or_create_account(store, cfg).await?;
+        account
+            .deactivate()
+            .await
+            .map_err(|e| TlsError::AcmeAccount {
+                message: redact_acme_err(&e),
+            })?;
+        store.clear_account()
     }
 }
 
@@ -269,59 +481,137 @@ impl AcmeOrder for InstantAcme {
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(order);
+        *self
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = AcmeOrderStatus {
+            state: "pending".into(),
+            identifiers: identifiers.to_vec(),
+            challenges: txts
+                .iter()
+                .map(|t| ChallengeProgress {
+                    identifier: t
+                        .name
+                        .strip_prefix("_acme-challenge.")
+                        .unwrap_or(&t.name)
+                        .to_owned(),
+                    txt_name: t.name.clone(),
+                    status: "pending".into(),
+                })
+                .collect(),
+            next_attempt_at: None,
+            last_error: None,
+        };
         Ok(txts)
     }
 
     async fn finish_dns01_order(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), TlsError> {
-        let mut order = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .ok_or_else(|| TlsError::AcmeOrder {
-                message: "no pending order".into(),
-            })?;
-
-        // Mark every DNS-01 challenge ready.
-        {
-            let mut authorizations = order.authorizations();
-            while let Some(result) = authorizations.next().await {
-                let mut authz =
-                    result.map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
-                if authz.status == AuthorizationStatus::Valid {
-                    continue;
-                }
-                let mut challenge = authz.challenge(ChallengeType::Dns01).ok_or_else(|| {
-                    TlsError::AcmeChallenge {
-                        message: "no dns-01 challenge to set ready".into(),
-                    }
+        let result = async {
+            let mut order = self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .ok_or_else(|| TlsError::AcmeOrderPending {
+                    message: "no pending order".into(),
                 })?;
-                challenge
-                    .set_ready()
-                    .await
-                    .map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
+
+            // Mark every DNS-01 challenge ready.
+            {
+                let mut authorizations = order.authorizations();
+                while let Some(result) = authorizations.next().await {
+                    let mut authz = result
+                        .map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
+                    if authz.status == AuthorizationStatus::Valid {
+                        continue;
+                    }
+                    let mut challenge = authz.challenge(ChallengeType::Dns01).ok_or_else(|| {
+                        TlsError::AcmeChallenge {
+                            message: "no dns-01 challenge to set ready".into(),
+                        }
+                    })?;
+                    challenge
+                        .set_ready()
+                        .await
+                        .map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
+                }
+            }
+
+            let status = order
+                .poll_ready(&RetryPolicy::default())
+                .await
+                .map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
+            if status != OrderStatus::Ready {
+                return Err(TlsError::AcmeChallenge {
+                    message: format!("order not ready: {status:?}"),
+                });
+            }
+
+            finalize_with_key_type(&mut order, key_type, &self.http).await
+        }
+        .await;
+        {
+            let mut progress = self
+                .progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &result {
+                Ok(_) => {
+                    progress.state = "valid".into();
+                    for challenge in &mut progress.challenges {
+                        challenge.status = "valid".into();
+                    }
+                }
+                Err(e) => {
+                    progress.state = "invalid".into();
+                    progress.last_error = Some(e.code().to_owned());
+                }
             }
         }
-
-        let status = order
-            .poll_ready(&RetryPolicy::default())
-            .await
-            .map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
-        if status != OrderStatus::Ready {
-            return Err(TlsError::AcmeChallenge {
-                message: format!("order not ready: {status:?}"),
-            });
-        }
-
-        let (chain_pem, key_pem) = finalize_with_key_type(&mut order, key_type, &self.http).await?;
-        Ok((chain_pem, key_pem))
+        result
     }
 
+    fn order_status(&self) -> AcmeOrderStatus {
+        self.progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    async fn revoke_certificate(
+        &self,
+        store: &CertStore,
+        cfg: &AcmeConfig,
+        chain_pem: &[u8],
+        reason: RevocationReason,
+    ) -> Result<(), TlsError> {
+        let certs = parse_cert_chain(chain_pem).map_err(|message| TlsError::AcmeOrder {
+            message: format!("revocation: {message}"),
+        })?;
+        let account = self.load_or_create_account(store, cfg).await?;
+        let request = RevocationRequest {
+            certificate: &certs[0],
+            reason: Some(reason.to_acme()),
+        };
+        account
+            .revoke(&request)
+            .await
+            .map_err(|e| TlsError::AcmeOrder {
+                message: format!("revocation: {}", redact_acme_err(&e)),
+            })
+    }
     async fn abort_order(&self) {
         *self
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        let mut progress = self
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if progress.state == "pending" {
+            progress.state = "invalid".into();
+        }
     }
 
     async fn renewal_window(
@@ -458,6 +748,34 @@ fn stored_directory_matches(account_json: &[u8], directory_url: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Reads ACME account state from `account.json` and `cfg.account`.
+///
+/// Never returns the account key. A stored account for another directory is
+/// reported as absent (a new account will be created on the next issuance).
+pub fn account_status(store: &CertStore, cfg: &AcmeConfig) -> Result<AcmeAccountStatus, TlsError> {
+    let directory = cfg.directory.url().to_owned();
+    let stored = store.load_account()?;
+    let account_id = stored
+        .as_deref()
+        .filter(|bytes| stored_directory_matches(bytes, &directory))
+        .and_then(|bytes| {
+            serde_json::from_slice::<serde_json::Value>(bytes)
+                .ok()?
+                .get("id")?
+                .as_str()
+                .map(str::to_owned)
+        });
+    Ok(AcmeAccountStatus {
+        exists: account_id.is_some(),
+        directory,
+        account_id,
+        tos_agreed: cfg.account.tos_agreed,
+        eab_configured: cfg.account.eab.is_some(),
+        auto_deactivate: cfg.account.auto_deactivate,
+        deactivated: false,
+    })
+}
+
 /// Where [`FakeAcmeDirectory`] should fail (for negative tests).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 
@@ -479,6 +797,8 @@ pub struct FakeAcmeDirectory {
     pub ari_window: Option<AriWindow>,
     pending: Mutex<Option<FakePending>>,
     replaces_log: Mutex<Vec<Option<String>>>,
+    progress: Mutex<AcmeOrderStatus>,
+    revocation_log: Mutex<Vec<RevocationReason>>,
 }
 
 #[derive(Debug)]
@@ -523,6 +843,14 @@ impl FakeAcmeDirectory {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
+
+    /// Revocation reasons accepted by this fake, in order.
+    pub fn revocation_log(&self) -> Vec<RevocationReason> {
+        self.revocation_log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 #[async_trait]
@@ -536,6 +864,11 @@ impl AcmeDirectory for FakeAcmeDirectory {
             && stored_directory_matches(&bytes, url)
         {
             return Ok(());
+        }
+        if !cfg.account.tos_agreed {
+            return Err(TlsError::AcmeAccountTos {
+                message: "acme.account.tos_agreed must be true".into(),
+            });
         }
         let id = if self.account_id.is_empty() {
             "fake"
@@ -552,6 +885,18 @@ impl AcmeDirectory for FakeAcmeDirectory {
         })?;
         store.save_account(&payload)?;
         Ok(())
+    }
+
+    async fn rollover_key(&self, store: &CertStore, cfg: &AcmeConfig) -> Result<(), TlsError> {
+        self.ensure_account(store, cfg).await
+    }
+
+    async fn deactivate_account(
+        &self,
+        store: &CertStore,
+        _cfg: &AcmeConfig,
+    ) -> Result<(), TlsError> {
+        store.clear_account()
     }
 }
 
@@ -583,6 +928,27 @@ impl AcmeOrder for FakeAcmeDirectory {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(FakePending {
             identifiers: identifiers.to_vec(),
         });
+        *self
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = AcmeOrderStatus {
+            state: "pending".into(),
+            identifiers: identifiers.to_vec(),
+            challenges: txts
+                .iter()
+                .map(|t| ChallengeProgress {
+                    identifier: t
+                        .name
+                        .strip_prefix("_acme-challenge.")
+                        .unwrap_or(&t.name)
+                        .to_owned(),
+                    txt_name: t.name.clone(),
+                    status: "pending".into(),
+                })
+                .collect(),
+            next_attempt_at: None,
+            last_error: None,
+        };
         Ok(txts)
     }
 
@@ -596,18 +962,36 @@ impl AcmeOrder for FakeAcmeDirectory {
                 message: "no pending fake order".into(),
             })?;
 
-        if self.fail_at == Some(FakeAcmeFail::Challenge) {
-            return Err(TlsError::AcmeChallenge {
+        let result = if self.fail_at == Some(FakeAcmeFail::Challenge) {
+            Err(TlsError::AcmeChallenge {
                 message: "fake challenge failure".into(),
-            });
-        }
-        if self.fail_at == Some(FakeAcmeFail::Finalize) {
-            return Err(TlsError::AcmeOrder {
+            })
+        } else if self.fail_at == Some(FakeAcmeFail::Finalize) {
+            Err(TlsError::AcmeOrder {
                 message: "fake finalize failure".into(),
-            });
+            })
+        } else {
+            mint_self_signed(&pending.identifiers, key_type)
+        };
+        {
+            let mut progress = self
+                .progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &result {
+                Ok(_) => {
+                    progress.state = "valid".into();
+                    for challenge in &mut progress.challenges {
+                        challenge.status = "valid".into();
+                    }
+                }
+                Err(e) => {
+                    progress.state = "invalid".into();
+                    progress.last_error = Some(e.code().to_owned());
+                }
+            }
         }
-
-        mint_self_signed(&pending.identifiers, key_type)
+        result
     }
 
     async fn abort_order(&self) {
@@ -615,6 +999,34 @@ impl AcmeOrder for FakeAcmeDirectory {
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        let mut progress = self
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if progress.state == "pending" {
+            progress.state = "invalid".into();
+        }
+    }
+
+    fn order_status(&self) -> AcmeOrderStatus {
+        self.progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    async fn revoke_certificate(
+        &self,
+        _store: &CertStore,
+        _cfg: &AcmeConfig,
+        _chain_pem: &[u8],
+        reason: RevocationReason,
+    ) -> Result<(), TlsError> {
+        self.revocation_log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(reason);
+        Ok(())
     }
 
     async fn renewal_window(
@@ -702,5 +1114,81 @@ mod tests {
         let err = map_acme_order(rate_limited_error(), None);
         assert_eq!(err.code(), "tls.acme.rate_limited");
         assert_eq!(err.retry_after(), None);
+    }
+
+    #[test]
+    fn revocation_reason_parses_common_spellings() {
+        assert_eq!(
+            RevocationReason::parse("key_compromise").unwrap(),
+            RevocationReason::KeyCompromise
+        );
+        assert_eq!(
+            RevocationReason::parse("KeyCompromise").unwrap(),
+            RevocationReason::KeyCompromise
+        );
+        assert_eq!(
+            RevocationReason::parse("cessation-of-operation").unwrap(),
+            RevocationReason::CessationOfOperation
+        );
+        assert_eq!(
+            RevocationReason::parse("").unwrap(),
+            RevocationReason::Unspecified
+        );
+        let err = RevocationReason::parse("because").expect_err("unknown");
+        assert_eq!(err.code(), "tls.config.invalid");
+    }
+
+    #[tokio::test]
+    async fn fake_account_status_reads_id_and_never_key() {
+        let dir = std::env::temp_dir().join(format!(
+            "dnscraft-tls-account-status-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = CertStore::open(&dir).unwrap();
+        let cfg = AcmeConfig {
+            directory: crate::config::AcmeDirectoryKind::Staging,
+            account: crate::config::AcmeAccountConfig {
+                tos_agreed: true,
+                ..Default::default()
+            },
+            ..AcmeConfig::default()
+        };
+        let before = account_status(&store, &cfg).unwrap();
+        assert!(!before.exists);
+
+        FakeAcmeDirectory::with_account_id("acct-7")
+            .ensure_account(&store, &cfg)
+            .await
+            .unwrap();
+        let after = account_status(&store, &cfg).unwrap();
+        assert!(after.exists);
+        assert_eq!(after.account_id.as_deref(), Some("acct-7"));
+        assert!(after.tos_agreed);
+        assert!(!after.eab_configured);
+        assert!(!format!("{after:?}").contains("key"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn fake_rejects_account_creation_without_tos() {
+        let dir = std::env::temp_dir().join(format!(
+            "dnscraft-tls-account-tos-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = CertStore::open(&dir).unwrap();
+        let cfg = AcmeConfig::default();
+        let err = FakeAcmeDirectory::new()
+            .ensure_account(&store, &cfg)
+            .await
+            .expect_err("tos not agreed");
+        assert_eq!(err.code(), "tls.acme.account.tos");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

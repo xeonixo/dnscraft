@@ -139,6 +139,7 @@ pub fn listener(protocol: Protocol, address: SocketAddr) -> ListenerConfig {
         address,
         exposure: Exposure::Local,
         h3: false,
+        tls_policy: None,
     }
 }
 

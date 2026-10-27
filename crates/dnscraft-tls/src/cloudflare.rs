@@ -14,7 +14,7 @@ use tokio::sync::{Mutex, MutexGuard};
 
 const JSON: HeaderValue = HeaderValue::from_static("application/json");
 
-use crate::config::CloudflareConfig;
+use crate::config::{CloudflareConfig, ZoneConfig};
 use crate::error::TlsError;
 use crate::secret::Secret;
 
@@ -67,8 +67,10 @@ pub struct CloudflareClient {
     base_url: String,
     configured_zone_id: Option<String>,
     public_domain: String,
+    zones: Vec<ZoneConfig>,
     write_lock: Arc<Mutex<()>>,
     cached_zone: Arc<Mutex<Option<ZoneInfo>>>,
+    cached_zones: Arc<Mutex<Vec<ZoneInfo>>>,
 }
 
 impl CloudflareClient {
@@ -105,9 +107,17 @@ impl CloudflareClient {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
             configured_zone_id: cfg.zone_id.clone(),
             public_domain: public_domain.into(),
+            zones: Vec::new(),
             write_lock: Arc::new(Mutex::new(())),
             cached_zone: Arc::new(Mutex::new(None)),
+            cached_zones: Arc::new(Mutex::new(Vec::new())),
         })
+    }
+
+    /// Adds additional zones, resolved by longest suffix match.
+    pub fn with_zones(mut self, zones: Vec<ZoneConfig>) -> Self {
+        self.zones = zones;
+        self
     }
 
     /// Shared mutex for record writers (issuance + DynDNS).
@@ -144,13 +154,37 @@ impl CloudflareClient {
         Ok(info)
     }
 
+    /// Resolves the zone that owns `name`.
+    ///
+    /// Uses the longest configured zone suffix match, falling back to
+    /// [`Self::zone`] (public domain / `cloudflare.zone_id`).
+    pub async fn zone_for_name(&self, name: &str) -> Result<ZoneInfo, TlsError> {
+        let Some(index) = pick_zone(&self.zones, name) else {
+            return self.zone().await;
+        };
+        let zone_name = self.zones[index].name.clone();
+        {
+            let cached = self.cached_zones.lock().await;
+            if let Some(info) = cached.iter().find(|z| z.name == zone_name) {
+                return Ok(info.clone());
+            }
+        }
+        let zone_id = self.zones[index].zone_id.clone();
+        let info = match zone_id {
+            Some(id) => self.fetch_zone_by_id(&id).await?,
+            None => self.fetch_zone_by_name(&zone_name).await?,
+        };
+        self.cached_zones.lock().await.push(info.clone());
+        Ok(info)
+    }
+
     /// Lists records filtered by owner name and type.
     pub async fn list_records(
         &self,
         name: &str,
         record_type: &str,
     ) -> Result<Vec<DnsRecord>, TlsError> {
-        let zone = self.zone().await?;
+        let zone = self.zone_for_name(name).await?;
         let url = format!("{}/zones/{}/dns_records", self.base_url, zone.id);
         let url = url_with_query(&url, &[("name", name), ("type", record_type)])?;
         let envelope: Envelope<Vec<ApiRecord>> = self.request(self.http.get(url)).await?;
@@ -170,7 +204,7 @@ impl CloudflareClient {
         content: &str,
         ttl: u32,
     ) -> Result<DnsRecord, TlsError> {
-        let zone = self.zone().await?;
+        let zone = self.zone_for_name(name).await?;
         let url = format!("{}/zones/{}/dns_records", self.base_url, zone.id);
         let body = json!({
             "type": "TXT",
@@ -192,13 +226,15 @@ impl CloudflareClient {
             .ok_or_else(|| TlsError::cloudflare_http("create TXT: empty result"))
     }
 
-    /// Deletes a record by id.
+    /// Deletes a record by id in the default (public-domain) zone.
     pub async fn delete_record(&self, record_id: &str) -> Result<(), TlsError> {
         let zone = self.zone().await?;
-        let url = format!(
-            "{}/zones/{}/dns_records/{record_id}",
-            self.base_url, zone.id
-        );
+        self.delete_record_in(&zone.id, record_id).await
+    }
+
+    /// Deletes a record by id in an explicit zone.
+    pub async fn delete_record_in(&self, zone_id: &str, record_id: &str) -> Result<(), TlsError> {
+        let url = format!("{}/zones/{zone_id}/dns_records/{record_id}", self.base_url);
         let _: Envelope<serde_json::Value> = self.request(self.http.delete(&url)).await?;
         Ok(())
     }
@@ -219,7 +255,7 @@ impl CloudflareClient {
             )));
         }
         let existing = self.list_records(name, record_type).await?;
-        let zone = self.zone().await?;
+        let zone = self.zone_for_name(name).await?;
         if let Some(prev) = existing.into_iter().next() {
             let url = format!(
                 "{}/zones/{}/dns_records/{}",
@@ -363,6 +399,20 @@ impl CloudflareClient {
     }
 }
 
+/// Index of the configured zone that owns `name` (longest suffix wins).
+fn pick_zone(zones: &[ZoneConfig], name: &str) -> Option<usize> {
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    zones
+        .iter()
+        .enumerate()
+        .filter(|(_, z)| {
+            let zone = z.name.trim_end_matches('.').to_ascii_lowercase();
+            name == zone || name.ends_with(&format!(".{zone}"))
+        })
+        .max_by_key(|(_, z)| z.name.len())
+        .map(|(i, _)| i)
+}
+
 /// Reads the body while enforcing [`MAX_BODY_BYTES`]: rejects early on an
 /// oversized `Content-Length` and aborts as soon as streamed chunks exceed the cap.
 /// Appends percent-encoded query parameters (reqwest 0.13 gates
@@ -452,5 +502,38 @@ impl From<ApiRecord> for DnsRecord {
             ttl: r.ttl,
             proxied: r.proxied,
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn zones() -> Vec<ZoneConfig> {
+        vec![
+            ZoneConfig {
+                name: "example.com".into(),
+                zone_id: None,
+            },
+            ZoneConfig {
+                name: "sub.example.com".into(),
+                zone_id: Some("z-sub".into()),
+            },
+        ]
+    }
+
+    #[test]
+    fn pick_zone_uses_longest_suffix() {
+        let zones = zones();
+        assert_eq!(
+            pick_zone(&zones, "_acme-challenge.dns.sub.example.com."),
+            Some(1)
+        );
+        assert_eq!(pick_zone(&zones, "dns.example.com"), Some(0));
+        assert_eq!(pick_zone(&zones, "example.com"), Some(0));
+        assert_eq!(pick_zone(&zones, "other.net"), None);
+        // A label that merely ends with the zone text is not a suffix match.
+        assert_eq!(pick_zone(&zones, "notexample.com"), None);
     }
 }

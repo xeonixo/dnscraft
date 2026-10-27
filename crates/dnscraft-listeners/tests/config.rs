@@ -12,7 +12,7 @@ use dnscraft_filtering::{
 };
 use dnscraft_listeners::{
     DdrConfig, Exposure, FakeHandler, Limits, ListenerConfig, ListenersConfig, Protocol,
-    PublicConfig, QueryHandler, TokenRate,
+    PublicConfig, QueryHandler, TlsPolicy, TokenRate,
 };
 use dnscraft_policy::{
     AnswerOrigin, ClientFlags, DecisionRecord, DecisionTimings, DnsProtocol, ListenerId, NoClients,
@@ -37,6 +37,7 @@ fn listener(id_s: &str, protocol: Protocol, address: SocketAddr) -> ListenerConf
         address,
         exposure: Exposure::Local,
         h3: false,
+        tls_policy: None,
     }
 }
 
@@ -63,6 +64,7 @@ fn config_spec_excerpt_validates() {
             address: SocketAddr::from((Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 0x53), 853)),
             exposure: Exposure::Local,
             h3: false,
+            tls_policy: None,
         },
         ListenerConfig {
             id: id("public-doh"),
@@ -70,6 +72,7 @@ fn config_spec_excerpt_validates() {
             address: addr_v4(443),
             exposure: Exposure::Public,
             h3: true,
+            tls_policy: None,
         },
     ]);
     assert!(cfg.validate().is_ok());
@@ -93,6 +96,7 @@ fn config_rejects_public_plaintext() {
         address: addr_v4(53),
         exposure: Exposure::Public,
         h3: false,
+        tls_policy: None,
     }]);
     cfg.public.enabled = true;
     let err = cfg.validate().unwrap_err();
@@ -107,6 +111,7 @@ fn config_rejects_public_when_disabled() {
         address: addr_v4(853),
         exposure: Exposure::Public,
         h3: false,
+        tls_policy: None,
     }]);
     cfg.public.enabled = false;
     let err = cfg.validate().unwrap_err();
@@ -121,6 +126,7 @@ fn config_rejects_h3_on_non_doh() {
         address: addr_v4(853),
         exposure: Exposure::Local,
         h3: true,
+        tls_policy: None,
     }]);
     let err = cfg.validate().unwrap_err();
     assert_eq!(err.code(), "listeners.config.invalid");
@@ -146,6 +152,7 @@ fn config_rejects_doh_h3_conflicting_with_udp() {
             address: addr_v4(443),
             exposure: Exposure::Local,
             h3: true,
+            tls_policy: None,
         },
     ]);
     let err = cfg.validate().unwrap_err();
@@ -195,6 +202,90 @@ fn config_rejects_empty_ddr_target() {
     cfg.ddr.target.clear();
     let err = cfg.validate().unwrap_err();
     assert_eq!(err.code(), "listeners.config.invalid");
+}
+
+fn with_policy(mut l: ListenerConfig, policy: TlsPolicy) -> ListenerConfig {
+    l.tls_policy = Some(policy);
+    l
+}
+
+#[test]
+fn config_accepts_tls_policy_on_encrypted_listeners() {
+    let cfg = valid_cfg(vec![
+        with_policy(
+            listener("dot", Protocol::Dot, addr_v4(853)),
+            TlsPolicy {
+                min_version: "1.3".into(),
+                ciphersuites: Some(vec!["TLS13_AES_256_GCM_SHA384".into()]),
+                ..TlsPolicy::default()
+            },
+        ),
+        with_policy(
+            ListenerConfig {
+                id: id("doh"),
+                protocol: Protocol::Doh,
+                address: addr_v4(443),
+                exposure: Exposure::Local,
+                h3: true,
+                tls_policy: None,
+            },
+            TlsPolicy {
+                alpn: vec!["h2".into()],
+                ciphersuites: Some(vec![
+                    "TLS13_AES_256_GCM_SHA384".into(),
+                    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256".into(),
+                ]),
+                ..TlsPolicy::default()
+            },
+        ),
+        with_policy(
+            listener("doq", Protocol::Doq, addr_v4(853)),
+            TlsPolicy::default(),
+        ),
+    ]);
+    assert!(cfg.validate().is_ok());
+}
+
+#[test]
+fn config_rejects_tls_policy_on_plaintext() {
+    for protocol in [Protocol::Udp53, Protocol::Tcp53] {
+        let cfg = valid_cfg(vec![with_policy(
+            listener("plain", protocol, addr_v4(53)),
+            TlsPolicy::default(),
+        )]);
+        let err = cfg.validate().unwrap_err();
+        assert_eq!(err.code(), "listeners.tls.policy");
+    }
+}
+
+#[test]
+fn config_rejects_bad_tls_policy_values() {
+    let bad_policies = [
+        TlsPolicy {
+            min_version: "1.1".into(),
+            ..TlsPolicy::default()
+        },
+        TlsPolicy {
+            ciphersuites: Some(vec!["TLS_NOT_A_SUITE".into()]),
+            ..TlsPolicy::default()
+        },
+        TlsPolicy {
+            ciphersuites: Some(Vec::new()),
+            ..TlsPolicy::default()
+        },
+        TlsPolicy {
+            alpn: Vec::new(),
+            ..TlsPolicy::default()
+        },
+    ];
+    for policy in bad_policies {
+        let cfg = valid_cfg(vec![with_policy(
+            listener("dot", Protocol::Dot, addr_v4(853)),
+            policy,
+        )]);
+        let err = cfg.validate().unwrap_err();
+        assert_eq!(err.code(), "listeners.config.invalid");
+    }
 }
 
 #[derive(Debug, Default)]

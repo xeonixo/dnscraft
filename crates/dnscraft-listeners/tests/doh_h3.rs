@@ -47,6 +47,7 @@ fn listener_doh(addr: SocketAddr, exposure: Exposure, h3: bool) -> ListenerConfi
         address: addr,
         exposure,
         h3,
+        tls_policy: None,
     }
 }
 
@@ -306,6 +307,7 @@ async fn h3_get_post_match_do53() {
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             exposure: Exposure::Local,
             h3: false,
+            tls_policy: None,
         },
         limits: Limits::default(),
         admission: support::fresh_admission(),

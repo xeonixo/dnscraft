@@ -150,10 +150,10 @@ impl TlsStatusProvider for FakeTls {
 
 #[tokio::test]
 async fn status_reports_tls_mode_fingerprint_and_self_signed_warning() {
-    let state = AppState::new().with_tls(Arc::new(FakeTls(TlsStatus {
-        mode: TlsMode::SelfSigned,
-        fingerprint: "ab".repeat(32),
-    })));
+    let state = AppState::new().with_tls(Arc::new(FakeTls(TlsStatus::new(
+        TlsMode::SelfSigned,
+        "ab".repeat(32),
+    ))));
     let res = state
         .router()
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))))

@@ -18,6 +18,7 @@ fn listener(protocol: Protocol, exposure: Exposure) -> ListenerConfig {
         address: "127.0.0.1:53".parse().unwrap(),
         exposure,
         h3: false,
+        tls_policy: None,
     }
 }
 

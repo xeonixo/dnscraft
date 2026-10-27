@@ -102,7 +102,8 @@ where
     let _ = bound.send(local);
 
     let resolver = ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&tls_stats));
-    let mut rustls_cfg: RustlsServerConfig = (*quic_server_config(resolver)).clone();
+    let tls_policy = listener.tls_policy.clone().unwrap_or_default();
+    let mut rustls_cfg: RustlsServerConfig = (*quic_server_config(resolver, &tls_policy)).clone();
     rustls_cfg.alpn_protocols = vec![ALPN_H3.to_vec()];
 
     let quic_crypto =

@@ -60,10 +60,42 @@ pub fn parse_private_key(pem: &[u8]) -> Result<PrivateKeyDer<'static>, String> {
     PrivateKeyDer::from_pem_slice(pem).map_err(|e| format!("key PEM: {e}"))
 }
 
-/// Leaf `notAfter` + identifiers from the first certificate in a PEM chain.
+/// Leaf `notAfter`, identifiers and cert detail from a PEM chain.
+///
+/// The detail's `chain` holds each certificate as a PEM block, leaf first;
+/// private keys are never included.
 pub fn parse_leaf_info(chain_pem: &[u8]) -> Result<LeafInfo, String> {
     let certs = parse_cert_chain(chain_pem)?;
-    leaf_info_from_der(certs[0].as_ref())
+    let mut info = leaf_info_from_der(certs[0].as_ref())?;
+    info.detail.chain = cert_pem_blocks(chain_pem);
+    Ok(info)
+}
+
+/// Splits a PEM bundle into certificate blocks (drops any non-cert section).
+fn cert_pem_blocks(pem: &[u8]) -> Vec<String> {
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    const END: &str = "-----END CERTIFICATE-----";
+    let text = String::from_utf8_lossy(pem);
+    let mut out = Vec::new();
+    let mut rest = text.as_ref();
+    while let Some(begin) = rest.find(BEGIN) {
+        let tail = &rest[begin..];
+        let Some(end) = tail.find(END) else {
+            break;
+        };
+        let end = end + END.len();
+        out.push(tail[..end].trim().to_owned());
+        rest = &tail[end..];
+    }
+    out
+}
+
+/// Lower-case hex SHA-256 of a DER blob (certificate fingerprint).
+///
+/// Used for trust pinning; never applied to private key material.
+pub fn fingerprint_sha256(der: &[u8]) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, der);
+    digest.as_ref().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Builds a ring-backed [`CertifiedKey`] from PEM, verifying the key matches
@@ -103,5 +135,30 @@ mod tests {
                 .any(|i| i == "dns.example.com" || i.contains("example.com"))
         );
         certified_key_from_pem(chain.as_bytes(), key.as_bytes()).unwrap();
+
+        let detail = parse_leaf_info(chain.as_bytes()).unwrap().detail;
+        assert_eq!(detail.chain, vec![chain.trim().to_owned()]);
+        assert!(!detail.chain[0].contains("PRIVATE KEY"));
+
+        let fp1 = fingerprint_sha256(parse_cert_chain(chain.as_bytes()).unwrap()[0].as_ref());
+        let fp2 = fingerprint_sha256(parse_cert_chain(chain.as_bytes()).unwrap()[0].as_ref());
+        assert_eq!(fp1, fp2);
+        assert_eq!(fp1.len(), 64);
+        assert!(
+            fp1.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
+    }
+
+    #[test]
+    fn cert_blocks_ignore_non_certificate_pem() {
+        let certified = generate_simple_self_signed(vec!["dns.example.com".into()]).unwrap();
+        let cert = certified.cert.pem();
+        let key = certified.signing_key.serialize_pem();
+        let bundle = format!("{key}\n{cert}");
+        let blocks = cert_pem_blocks(bundle.as_bytes());
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].starts_with("-----BEGIN CERTIFICATE-----"));
+        assert!(!blocks[0].contains("PRIVATE KEY"));
     }
 }

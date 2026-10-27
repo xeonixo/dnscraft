@@ -37,6 +37,8 @@
 //! | [`ControlApiError::PaginationInvalid`] | `control_api.pagination.invalid` |
 //! | [`ControlApiError::Module`] | the module's own code (for example `policy.config.invalid`) |
 
+use serde_json::json;
+
 /// Top-level error of the control-api module.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 
@@ -234,6 +236,22 @@ impl ControlApiError {
             reason: reason.into(),
         }
     }
+
+    /// Forwards a `tls.*` module error unchanged, with a non-secret
+    /// `retry_after` hint when the upstream supplied one.
+    ///
+    /// The TLS endpoints reuse [`ControlApiError::Module`] rather than defining
+    /// parallel variants, so the module's stable code reaches the client
+    /// exactly as `dnscraft-tls` produced it.
+    pub fn from_tls(error: &dnscraft_tls::TlsError) -> Self {
+        let params = error
+            .retry_after()
+            .map(|retry_after| json!({ "retry_after": retry_after.as_secs() }));
+        Self::Module {
+            code: error.code(),
+            params,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -366,5 +384,29 @@ mod tests {
         codes.sort_unstable();
         codes.dedup();
         assert_eq!(codes.len(), all.len(), "duplicate error codes");
+    }
+
+    #[test]
+    fn tls_module_codes_are_forwarded_unchanged() {
+        let error = ControlApiError::from_tls(&dnscraft_tls::TlsError::AcmePropagation);
+        assert_eq!(error.code(), "tls.acme.propagation");
+        assert_eq!(
+            ControlApiError::from_tls(&dnscraft_tls::TlsError::ConfigInvalid {
+                reason: "x".into(),
+            })
+            .code(),
+            "tls.config.invalid"
+        );
+        let rate_limited = ControlApiError::from_tls(&dnscraft_tls::TlsError::AcmeRateLimited {
+            message: "slow down".into(),
+            retry_after: Some(std::time::Duration::from_secs(30)),
+        });
+        assert_eq!(rate_limited.code(), "tls.acme.rate_limited");
+        match rate_limited {
+            ControlApiError::Module { params, .. } => {
+                assert_eq!(params, Some(serde_json::json!({ "retry_after": 30 })));
+            }
+            other => panic!("expected a forwarded module error, got {other:?}"),
+        }
     }
 }

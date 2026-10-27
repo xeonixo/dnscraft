@@ -52,6 +52,7 @@ fn listener_doh(addr: SocketAddr, exposure: Exposure) -> ListenerConfig {
         address: addr,
         exposure,
         h3: false,
+        tls_policy: None,
     }
 }
 
@@ -296,6 +297,7 @@ async fn get_post_match_do53_h2_and_h1() {
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             exposure: Exposure::Local,
             h3: false,
+            tls_policy: None,
         },
         limits: Limits::default(),
         admission: support::fresh_admission(),

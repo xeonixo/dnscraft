@@ -11,8 +11,11 @@
 
 use std::fmt;
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use rustls::crypto::ring::default_provider;
 use rustls::server::{ClientHello, ResolvesServerCert};
@@ -20,6 +23,7 @@ use rustls::sign::CertifiedKey;
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use crate::audit::sha256_hex;
 use crate::clock::{Clock, unix_seconds};
@@ -39,32 +43,303 @@ const KEY_FILE: &str = "tls-key.pem";
 const META_FILE: &str = "tls-meta.json";
 
 /// Which certificate the API listener is serving.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TlsMode {
     /// A real (ACME-issued) certificate from the `tls` module.
     Acme,
+    /// An operator-uploaded certificate (`tls.certificate`).
+    Manual,
     /// The persisted self-signed bootstrap certificate.
     SelfSigned,
 }
 
 impl TlsMode {
-    /// Wire / status name (`acme` | `self_signed`).
+    /// Wire / status name (`acme` | `manual` | `self_signed`).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Acme => "acme",
+            Self::Manual => "manual",
             Self::SelfSigned => "self_signed",
         }
     }
 }
 
-/// TLS state reported by the status endpoint.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Where the active certificate came from (contract § A).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CertSource {
+    /// Obtained automatically through ACME.
+    Acme,
+    /// Uploaded by an operator through `PUT /api/v1/tls/certificate`.
+    Manual,
+}
+
+/// ACME Renewal Information (ARI) window (contract § B, Q4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AriStatus {
+    /// Suggested start of the renewal window.
+    #[serde(with = "rfc3339_opt", skip_serializing_if = "Option::is_none")]
+    pub suggested_window_start: Option<SystemTime>,
+    /// Suggested end of the renewal window.
+    #[serde(with = "rfc3339_opt", skip_serializing_if = "Option::is_none")]
+    pub suggested_window_end: Option<SystemTime>,
+    /// ARI certificate id (`base64url` digest of the leaf).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub certificate_id: Option<String>,
+    /// Whether the CA advertises ARI.
+    pub supported: bool,
+}
+
+/// Outcome of one issuance attempt (contract § B, Q8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueOutcome {
+    /// A certificate was obtained for the first time.
+    Issued,
+    /// An existing certificate was renewed.
+    Renewed,
+    /// The attempt failed (see [`IssueRecord::error`]).
+    Failed,
+}
+
+/// One bounded issuance-history entry (contract § B, Q8).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IssueRecord {
+    /// When the attempt finished.
+    #[serde(with = "rfc3339")]
+    pub timestamp: SystemTime,
+    /// What happened.
+    pub outcome: IssueOutcome,
+    /// Stable `tls.*` code when the attempt failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Leaf serial (colon-hex), when a certificate exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+}
+
+/// Certificate-store health (contract § B, Q15).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StoreHealth {
+    /// Store directory the engine writes to.
+    pub path: String,
+    /// Whether the last write probe succeeded.
+    pub writable: bool,
+    /// Last successful write, if any.
+    #[serde(with = "rfc3339_opt", skip_serializing_if = "Option::is_none")]
+    pub last_write: Option<SystemTime>,
+    /// Whether the persisted state failed to parse.
+    pub corrupt: bool,
+}
+
+/// TLS state reported by `GET /api/v1/tls/status` (contract § B + § G).
+///
+/// `mode` and `fingerprint` describe the certificate the API listener is
+/// currently serving; every other field is a typed projection of the
+/// `dnscraft_tls::TlsStatus` snapshot. Private keys and Cloudflare token
+/// material are never part of this DTO.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TlsStatus {
-    /// Whether the ACME or the self-signed certificate is active.
+    /// Whether the ACME, manual or self-signed certificate is active.
     pub mode: TlsMode,
     /// SHA-256 fingerprint (lowercase hex) of the leaf certificate.
     pub fingerprint: String,
+    /// Certificate source (ACME or operator upload).
+    pub source: CertSource,
+    /// Leaf `notAfter`.
+    #[serde(with = "rfc3339_opt", skip_serializing_if = "Option::is_none")]
+    pub not_after: Option<SystemTime>,
+    /// Leaf `notBefore`.
+    #[serde(with = "rfc3339_opt", skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<SystemTime>,
+    /// Whole days remaining until `not_after` (negative when expired).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub days_to_expiry: Option<i64>,
+    /// DNS SANs from the leaf.
+    pub identifiers: Vec<String>,
+    /// Issuer distinguished name (RFC 4514).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    /// Subject distinguished name (RFC 4514).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// Leaf serial (colon-hex).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+    /// Signature algorithm (for example `ECDSA-P256-SHA256`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature_algorithm: Option<String>,
+    /// Leaf key-usage names.
+    pub key_usage: Vec<String>,
+    /// Fullchain PEM (leaf first), **certificates only — never a key**.
+    pub chain: Vec<String>,
+    /// ACME Renewal Information window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ari: Option<AriStatus>,
+    /// Bounded issuance history (last 10).
+    pub history: Vec<IssueRecord>,
+    /// Last successful issue/renew.
+    #[serde(with = "rfc3339_opt", skip_serializing_if = "Option::is_none")]
+    pub last_issue: Option<SystemTime>,
+    /// Last renew attempt (success or failure).
+    #[serde(with = "rfc3339_opt", skip_serializing_if = "Option::is_none")]
+    pub last_renew_attempt: Option<SystemTime>,
+    /// Next scheduled renewal.
+    #[serde(with = "rfc3339_opt", skip_serializing_if = "Option::is_none")]
+    pub next_renew_at: Option<SystemTime>,
+    /// Next scheduled DynDNS pass.
+    #[serde(with = "rfc3339_opt", skip_serializing_if = "Option::is_none")]
+    pub next_dyndns_at: Option<SystemTime>,
+    /// Last successful DynDNS pass.
+    #[serde(with = "rfc3339_opt", skip_serializing_if = "Option::is_none")]
+    pub last_dyndns_success: Option<SystemTime>,
+    /// ACME directory URL currently configured.
+    pub acme_directory: String,
+    /// Whether this node creates ACME orders.
+    pub acme_enabled: bool,
+    /// Last stable error code (`tls.*`), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// `true` when days-to-expiry is below the warn threshold.
+    pub cert_expiring: bool,
+    /// `true` when `not_after` is in the past.
+    pub cert_expired: bool,
+    /// `true` when the certificate was revoked.
+    pub revoked: bool,
+    /// Last DynDNS IPv4.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dyndns_ipv4: Option<String>,
+    /// Last DynDNS IPv6.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dyndns_ipv6: Option<String>,
+    /// Last successful DynDNS change.
+    #[serde(with = "rfc3339_opt", skip_serializing_if = "Option::is_none")]
+    pub dyndns_last_change: Option<SystemTime>,
+    /// `true` when the published records are known stale.
+    pub dyndns_stale: bool,
+    /// Certificate-store health.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<StoreHealth>,
+}
+
+impl TlsStatus {
+    /// An empty status carrying only the listener-level mode + fingerprint.
+    pub fn new(mode: TlsMode, fingerprint: impl Into<String>) -> Self {
+        Self {
+            mode,
+            fingerprint: fingerprint.into(),
+            source: match mode {
+                TlsMode::Manual => CertSource::Manual,
+                TlsMode::Acme | TlsMode::SelfSigned => CertSource::Acme,
+            },
+            not_after: None,
+            not_before: None,
+            days_to_expiry: None,
+            identifiers: Vec::new(),
+            issuer: None,
+            subject: None,
+            serial: None,
+            signature_algorithm: None,
+            key_usage: Vec::new(),
+            chain: Vec::new(),
+            ari: None,
+            history: Vec::new(),
+            last_issue: None,
+            last_renew_attempt: None,
+            next_renew_at: None,
+            next_dyndns_at: None,
+            last_dyndns_success: None,
+            acme_directory: String::new(),
+            acme_enabled: false,
+            last_error: None,
+            cert_expiring: false,
+            cert_expired: false,
+            revoked: false,
+            dyndns_ipv4: None,
+            dyndns_ipv6: None,
+            dyndns_last_change: None,
+            dyndns_stale: false,
+            store: None,
+        }
+    }
+
+    /// Projects an engine status onto the control-api DTO.
+    ///
+    /// The certificate-detail, ARI, history, scheduling, store-health, stale
+    /// and revocation fields are part of the extended `dnscraft_tls::TlsStatus`
+    /// (contract § B); they are merged here as the tls crate lands them.
+    pub fn from_engine(
+        engine: &dnscraft_tls::TlsStatus,
+        mode: TlsMode,
+        fingerprint: impl Into<String>,
+    ) -> Self {
+        let mut status = Self::new(mode, fingerprint);
+        status.not_after = engine.not_after;
+        status.not_before = engine.not_before;
+        status.issuer = engine.issuer.clone();
+        status.subject = engine.subject.clone();
+        status.serial = engine.serial.clone();
+        status.signature_algorithm = engine.signature_algorithm.clone();
+        status.key_usage = engine.key_usage.clone();
+        status.chain = engine.chain.clone();
+        status.days_to_expiry = engine.days_to_expiry;
+        status.identifiers = engine.identifiers.clone();
+        status.last_issue = engine.last_issue;
+        status.last_renew_attempt = engine.last_renew_attempt;
+        status.history = engine
+            .history
+            .iter()
+            .map(|record| IssueRecord {
+                timestamp: record.timestamp,
+                outcome: issue_outcome(&record.outcome),
+                error: record.error.clone(),
+                serial: record.serial.clone(),
+            })
+            .collect();
+        status.acme_directory = engine.acme_directory.clone();
+        status.acme_enabled = engine.acme_enabled;
+        status.ari = engine.ari.as_ref().map(|ari| AriStatus {
+            suggested_window_start: ari.suggested_window_start,
+            suggested_window_end: ari.suggested_window_end,
+            certificate_id: ari.certificate_id.clone(),
+            supported: ari.supported,
+        });
+        status.next_renew_at = engine.next_renew_at;
+        status.next_dyndns_at = engine.next_dyndns_at;
+        status.last_dyndns_success = engine.last_dyndns_success;
+        status.dyndns_stale = engine.dyndns_stale;
+        status.store = engine.store.as_ref().map(|store| StoreHealth {
+            path: store.path.clone(),
+            writable: store.writable,
+            last_write: store.last_write,
+            corrupt: store.corrupt,
+        });
+        status.revoked = engine.revoked;
+        status.last_error = engine.last_error.clone();
+        status.cert_expiring = engine.cert_expiring;
+        status.cert_expired = engine.cert_expired;
+        status.dyndns_ipv4 = engine.dyndns_ipv4.clone();
+        status.dyndns_ipv6 = engine.dyndns_ipv6.clone();
+        status.dyndns_last_change = engine.dyndns_last_change;
+        status
+    }
+}
+
+/// Maps the engine's issue outcome onto the DTO enum.
+///
+/// The tls crate's `IssueOutcome` is public on the value but not yet re-exported
+/// at the crate root (contract § B); compare its serialized name until it is.
+fn issue_outcome<T: Serialize>(outcome: &T) -> IssueOutcome {
+    match serde_json::to_value(outcome)
+        .ok()
+        .as_ref()
+        .and_then(Value::as_str)
+    {
+        Some("issued") => IssueOutcome::Issued,
+        Some("renewed") => IssueOutcome::Renewed,
+        _ => IssueOutcome::Failed,
+    }
 }
 
 /// Live source of [`TlsStatus`], read on every status request so a certificate
@@ -72,6 +347,356 @@ pub struct TlsStatus {
 pub trait TlsStatusProvider: Send + Sync {
     /// The current TLS status.
     fn status(&self) -> TlsStatus;
+
+    /// Async status read for providers backed by an async lock.
+    ///
+    /// The default delegates to [`Self::status`]; engine-backed providers
+    /// override it so they never block a runtime worker.
+    fn status_async(&self) -> TlsStatusFuture<'_> {
+        Box::pin(async move { self.status() })
+    }
+}
+
+/// Boxed future for an async status read.
+pub type TlsStatusFuture<'a> = Pin<Box<dyn Future<Output = TlsStatus> + Send + 'a>>;
+
+/// A [`TlsStatusProvider`] that merges the engine's certificate detail with the
+/// listener's active mode + fingerprint.
+///
+/// The listener provider (from [`ControlApiTls`]) wins for `mode` and
+/// `fingerprint` because it observes what a handshake actually serves; the
+/// engine supplies expiry, issuance and DynDNS state.
+///
+/// `TlsEngine::status()` takes a blocking read on a Tokio lock, so this provider
+/// caches the engine projection and refreshes it through [`TlsStatusProvider::status_async`]
+/// (used by the status endpoints). The synchronous `status()` never blocks.
+pub struct EngineStatusProvider {
+    engine: Arc<dnscraft_tls::TlsEngine>,
+    listener: Option<Arc<dyn TlsStatusProvider>>,
+    cached: std::sync::RwLock<TlsStatus>,
+}
+
+impl EngineStatusProvider {
+    /// Wraps an engine; mode/fingerprint default to `acme` + empty until a
+    /// listener provider is attached with [`Self::with_listener_status`].
+    pub fn new(engine: Arc<dnscraft_tls::TlsEngine>) -> Self {
+        Self {
+            engine,
+            listener: None,
+            cached: std::sync::RwLock::new(TlsStatus::new(TlsMode::Acme, "")),
+        }
+    }
+
+    /// Also reads the listener-level mode + fingerprint from `listener`.
+    pub fn with_listener_status(mut self, listener: Arc<dyn TlsStatusProvider>) -> Self {
+        self.listener = Some(listener);
+        self
+    }
+
+    /// Reads the engine status and updates the cache.
+    fn refresh(&self) -> TlsStatusFuture<'_> {
+        Box::pin(async move {
+            let (mode, fingerprint) = self.listener_mode();
+            let status =
+                TlsStatus::from_engine(&self.engine.status_async().await, mode, fingerprint);
+            *self
+                .cached
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = status.clone();
+            status
+        })
+    }
+
+    fn listener_mode(&self) -> (TlsMode, String) {
+        self.listener.as_ref().map_or_else(
+            || (TlsMode::Acme, String::new()),
+            |listener| {
+                let status = listener.status();
+                (status.mode, status.fingerprint)
+            },
+        )
+    }
+}
+
+impl TlsStatusProvider for EngineStatusProvider {
+    fn status(&self) -> TlsStatus {
+        let mut status = self
+            .cached
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let (mode, fingerprint) = self.listener_mode();
+        status.mode = mode;
+        status.fingerprint = fingerprint;
+        status
+    }
+
+    fn status_async(&self) -> TlsStatusFuture<'_> {
+        self.refresh()
+    }
+}
+
+/// Boxed future for a mutating TLS admin action.
+pub type TlsActionFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), ControlApiError>> + Send + 'a>>;
+
+/// Boxed future for a TLS admin action that returns a JSON report.
+pub type TlsValueFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Value, ControlApiError>> + Send + 'a>>;
+
+/// The engine operations exposed under `/api/v1/tls/*`.
+///
+/// Handlers depend on this narrow trait so tests can substitute a fake and the
+/// binary wires the real [`dnscraft_tls::TlsEngine`] once its admin methods land
+/// (contract § D). Implementations must never return private-key or token
+/// material.
+pub trait TlsAdmin: Send + Sync {
+    /// Installs an operator-uploaded certificate and switches to `manual` mode.
+    fn upload_manual_cert(
+        &self,
+        cert_pem: &str,
+        key_pem: &Secret,
+        chain_pem: Option<&str>,
+    ) -> TlsActionFuture<'_>;
+    /// Revokes the active certificate for `reason`.
+    fn revoke(&self, reason: &str) -> TlsActionFuture<'_>;
+    /// Forces a re-issue with a fresh key pair.
+    fn rotate_key(&self) -> TlsActionFuture<'_>;
+    /// Runs one issuance/renewal now.
+    fn renew_now(&self) -> TlsActionFuture<'_>;
+    /// Runs one DynDNS pass now and returns its report.
+    fn dyndns_now(&self) -> TlsValueFuture<'_>;
+    /// Dry-run connectivity / configuration preflight.
+    fn preflight(&self) -> TlsValueFuture<'_>;
+    /// Exports the fullchain PEM (certificates only, leaf first).
+    fn export_cert(&self) -> Result<String, ControlApiError>;
+    /// ACME account status (EAB, ToS, rollover).
+    fn account_status(&self) -> TlsValueFuture<'_>;
+    /// Current ACME order / progress.
+    fn order_status(&self) -> Result<Value, ControlApiError>;
+    /// Expected DNS record inventory and live check.
+    fn record_inventory(&self) -> TlsValueFuture<'_>;
+    /// DynDNS audit trail.
+    fn dyndns_audit(&self) -> TlsValueFuture<'_>;
+}
+
+/// [`TlsAdmin`] over the real engine.
+///
+/// `renew_now`, `dyndns_now` and the read reports are wired to the engine
+/// methods that already exist; the remaining operations land with the
+/// `dnscraft-tls` admin surface (contract § D).
+pub struct EngineTlsAdmin {
+    engine: Arc<dnscraft_tls::TlsEngine>,
+}
+
+impl EngineTlsAdmin {
+    /// Wraps the shared engine.
+    pub fn new(engine: Arc<dnscraft_tls::TlsEngine>) -> Self {
+        Self { engine }
+    }
+}
+
+impl TlsAdmin for EngineTlsAdmin {
+    fn upload_manual_cert(
+        &self,
+        cert_pem: &str,
+        key_pem: &Secret,
+        chain_pem: Option<&str>,
+    ) -> TlsActionFuture<'_> {
+        let cert = cert_pem.to_owned();
+        let key = dnscraft_tls::Secret::new(key_pem.expose());
+        let chain = chain_pem.unwrap_or("").to_owned();
+        Box::pin(async move {
+            self.engine
+                .upload_manual_cert(&cert, &key, &chain)
+                .await
+                .map_err(|error| ControlApiError::from_tls(&error))
+        })
+    }
+
+    fn revoke(&self, reason: &str) -> TlsActionFuture<'_> {
+        let reason = reason.to_owned();
+        Box::pin(async move {
+            self.engine
+                .revoke(Some(reason.as_str()))
+                .await
+                .map_err(|error| ControlApiError::from_tls(&error))
+        })
+    }
+
+    fn rotate_key(&self) -> TlsActionFuture<'_> {
+        Box::pin(async move {
+            self.engine
+                .rotate_key()
+                .await
+                .map_err(|error| ControlApiError::from_tls(&error))
+        })
+    }
+
+    fn renew_now(&self) -> TlsActionFuture<'_> {
+        Box::pin(async move {
+            self.engine
+                .renew_now()
+                .await
+                .map_err(|error| ControlApiError::from_tls(&error))
+        })
+    }
+
+    fn dyndns_now(&self) -> TlsValueFuture<'_> {
+        Box::pin(async move {
+            let result = self
+                .engine
+                .dyndns_now()
+                .await
+                .map_err(|error| ControlApiError::from_tls(&error))?;
+            Ok(json!({
+                "ipv4": result.ipv4.map(|ip| ip.to_string()),
+                "ipv6": result.ipv6.map(|ip| ip.to_string()),
+                "skipped_no_route": result.skipped_no_route,
+                "changed": result.changed,
+                "last_change": result.last_change.map(rfc3339),
+            }))
+        })
+    }
+
+    fn preflight(&self) -> TlsValueFuture<'_> {
+        Box::pin(async move {
+            let report = self.engine.preflight().await;
+            Ok(json!({
+                "ok": report.ok,
+                "checks": report
+                    .checks
+                    .into_iter()
+                    .map(|check| json!({
+                        "name": check.name,
+                        "ok": check.ok,
+                        "code": check.code,
+                        "message": check.message,
+                    }))
+                    .collect::<Vec<_>>(),
+            }))
+        })
+    }
+
+    fn export_cert(&self) -> Result<String, ControlApiError> {
+        self.engine
+            .export_cert()
+            .map_err(|error| ControlApiError::from_tls(&error))
+    }
+
+    fn account_status(&self) -> TlsValueFuture<'_> {
+        Box::pin(async move {
+            let account = self
+                .engine
+                .acme_account_status()
+                .await
+                .map_err(|error| ControlApiError::from_tls(&error))?;
+            Ok(json!({
+                "exists": account.exists,
+                "directory": account.directory,
+                "account_id": account.account_id,
+                "tos_agreed": account.tos_agreed,
+                "eab_configured": account.eab_configured,
+                "auto_deactivate": account.auto_deactivate,
+                "deactivated": account.deactivated,
+            }))
+        })
+    }
+
+    fn order_status(&self) -> Result<Value, ControlApiError> {
+        let order = self.engine.order_status();
+        Ok(json!({
+            "state": order.state,
+            "identifiers": order.identifiers,
+            "challenges": order
+                .challenges
+                .into_iter()
+                .map(|challenge| json!({
+                    "identifier": challenge.identifier,
+                    "txt_name": challenge.txt_name,
+                    "status": challenge.status,
+                }))
+                .collect::<Vec<_>>(),
+            "next_attempt_at": order.next_attempt_at.map(rfc3339),
+            "last_error": order.last_error,
+        }))
+    }
+
+    fn record_inventory(&self) -> TlsValueFuture<'_> {
+        Box::pin(async move {
+            let records = self
+                .engine
+                .record_inventory()
+                .await
+                .map_err(|error| ControlApiError::from_tls(&error))?;
+            Ok(json!({
+                "records": records
+                    .into_iter()
+                    .map(|record| json!({
+                        "name": record.name,
+                        "record_type": record.record_type,
+                        "content": record.content,
+                        "managed": record.managed,
+                        "conflict": record.conflict,
+                    }))
+                    .collect::<Vec<_>>(),
+            }))
+        })
+    }
+
+    fn dyndns_audit(&self) -> TlsValueFuture<'_> {
+        Box::pin(async move {
+            let entries = self.engine.dyndns_audit().await;
+            Ok(json!({
+                "entries": entries
+                    .into_iter()
+                    .map(|entry| json!({
+                        "timestamp": rfc3339(entry.timestamp),
+                        "name": entry.name,
+                        "record_type": entry.record_type,
+                        "content": entry.content,
+                    }))
+                    .collect::<Vec<_>>(),
+            }))
+        })
+    }
+}
+
+/// RFC 3339 (UTC, seconds precision) for a [`SystemTime`].
+fn rfc3339(time: SystemTime) -> String {
+    let datetime: chrono::DateTime<chrono::Utc> = time.into();
+    datetime.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// Serde `with` adapter: [`SystemTime`] ↔ RFC 3339 string.
+mod rfc3339 {
+    use std::time::SystemTime;
+
+    use serde::Serializer;
+
+    pub(super) fn serialize<S: Serializer>(
+        time: &SystemTime,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&super::rfc3339(*time))
+    }
+}
+
+/// Serde `with` adapter: `Option<SystemTime>` ↔ RFC 3339 string.
+mod rfc3339_opt {
+    use std::time::SystemTime;
+
+    use serde::Serializer;
+
+    pub(super) fn serialize<S: Serializer>(
+        time: &Option<SystemTime>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match time {
+            Some(time) => serializer.serialize_str(&super::rfc3339(*time)),
+            None => serializer.serialize_none(),
+        }
+    }
 }
 
 /// Asks the ACME certificate resolver first, falling back to the self-signed
@@ -110,14 +735,8 @@ struct FallbackResolver {
 impl FallbackResolver {
     fn status(&self) -> TlsStatus {
         match self.acme.leaf_der() {
-            Some(leaf) => TlsStatus {
-                mode: TlsMode::Acme,
-                fingerprint: sha256_hex(&leaf),
-            },
-            None => TlsStatus {
-                mode: TlsMode::SelfSigned,
-                fingerprint: self.self_signed_fingerprint.clone(),
-            },
+            Some(leaf) => TlsStatus::new(TlsMode::Acme, sha256_hex(&leaf)),
+            None => TlsStatus::new(TlsMode::SelfSigned, self.self_signed_fingerprint.clone()),
         }
     }
 }

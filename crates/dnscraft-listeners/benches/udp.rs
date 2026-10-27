@@ -165,6 +165,7 @@ fn bench_udp(c: &mut Criterion) {
         address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
         exposure: Exposure::Local,
         h3: false,
+        tls_policy: None,
     };
     rt.spawn(serve_udp(UdpServeParams {
         listener,

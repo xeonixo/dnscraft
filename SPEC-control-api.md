@@ -657,11 +657,70 @@ snapshot using the same atomic apply path. Rollback is itself audited.
 - Each config object carries a monotonically increasing `version` field
   (`config_version`) for optimistic concurrency.
 - Write requests may include `If-Match` header with the last observed version.
-  Conflict returns `412 control_api.config.conflict`.
+  Conflict returns `409 control_api.config.version`.
 - The cluster module can reuse `/api/v1/config` and `/api/v1/config/versions`
   as the canonical write interface.
-- Audit entries include `node_id`, `actor`, `config_version`, and
-  `before/after` digests.
+- Audit entries include `node_id`, `actor_id`, `actor_type`, `config_version`,
+  and `before/after` digests.
+
+### Cluster contract
+
+The contract `SPEC-cluster.md` depends on. The transport listener is a **second
+internal listener** (mTLS) mounted separately from `/api/v1`; the admin API is
+served on the normal control-api listener, `admin` scope only.
+
+#### Admin API (`/api/v1/cluster/*`, master only, `admin` scope)
+
+| Method | Path | Request | Response `data` |
+|---|---|---|---|
+| `POST` | `/api/v1/cluster/join-tokens` | `{ "node_id": "<label>" }` | `{ "token": "<plaintext, shown once>", "expires_at": "<rfc3339>" }` |
+| `GET` | `/api/v1/cluster/nodes` | – | `[{ "node_id", "role", "fingerprint", "joined_at", "last_seen", "applied_config_version", "revoked" }]` |
+| `DELETE` | `/api/v1/cluster/nodes/{node_id}` | – | `{ "node_id", "revoked": true }` |
+| `GET` | `/api/v1/cluster/writes/{request_id}` | – | `{ "request_id", "state", "queued_at", "expires_at", "result" }` (`state` ∈ pending / applied / conflict / failed / expired / blocked) |
+
+The join token is stored hashed (SHA-256); only the plaintext response is ever
+shown. `DELETE` revokes the node certificate, rejecting its next connection
+with `cluster.node.revoked`.
+
+#### Transport routes (`/cluster/v1/*`, mTLS listener, cluster-internal)
+
+- `POST /cluster/v1/enroll` `{ protocol, node_id, join_token, csr_pem }` →
+  `{ ca_cert_pem, node_cert_pem }`.
+- `GET /cluster/v1/stream` — long-lived NDJSON (one record per line) carrying
+  `hello`, `config_push`, `cert_push`, `auth_snapshot`, `runtime_command`,
+  `ack` records.
+- `POST /cluster/v1/logs` `{ node_id, protocol, first_seq, last_seq, records[] }`
+  → `{ acked_seq }` (highest contiguous).
+- `POST /cluster/v1/writes` `{ request_id, idempotency_key, if_match, method,
+  path, body, actor: { actor_id, actor_type, scope } }` → normal `{ data }` /
+  `{ error }` envelope.
+- `POST /cluster/v1/heartbeat` `{ protocol, applied_version, queue_depth }` →
+  `{ ok, received_at }`.
+
+`node_id` is always taken from the authenticated mTLS certificate, never from
+the payload.
+
+#### Internal hooks (control-api exposes for the cluster crate)
+
+- `apply_synced_config(snapshot, version) -> Result<i64, ControlApiError>` —
+  validate → persist the **explicit** master version (no local bump) → apply in
+  leaf order → roll back on failure; audited with `node_id`.
+- `auth_snapshot() -> Result<AuthSnapshot, _>` — encrypted token/account hashes,
+  OIDC settings, session-invalidation epoch.
+- `apply_runtime_command(kind, payload) -> Result<(), _>` — pause/resume and
+  temporary allows (volatile).
+- durable query-log outbox cursor: transactional enqueue + contiguous ack
+  (`next_seq`, `ack(seq)`).
+- actor-context read + a public `requirement`/`authorize` re-check for a relayed
+  request.
+
+#### Status & stats extensions
+
+- `GET /api/v1/status` adds `cluster.role`, `cluster.master_reachable`,
+  `cluster.applied_version`, `cluster.lag`, `cluster.queue_depth`,
+  `cluster.last_sync`.
+- Statistics rollups gain a `node_id` dimension; `/api/v1/query-log` and
+  `/api/v1/stats/*` accept a `node_id` filter.
 
 ## Configuration excerpt (TOML bootstrap)
 
@@ -1097,8 +1156,8 @@ snapshots; session defaults are 12 h absolute / 60 min idle.
    `policy/views`, but `SPEC-policy.md` removed `views[].client_ids`. No endpoint
    stores, rotates or revokes Client IDs. Define a Client-ID resource
    (list/create/rename/revoke) or revert the policy change.
-2. **Cluster administration endpoints.** `SPEC-cluster.md` requires
-   `/api/v1/cluster/join-tokens`, `/api/v1/cluster/nodes` and
-   `/api/v1/cluster/nodes/{id}` as "Required control-api additions"; the endpoint
-   table above now lists them but the request/response shapes (join token, node
-   detail fields) are still undefined.
+2. **Cluster administration endpoints.** Defined in § Cluster contract:
+   `/api/v1/cluster/join-tokens`, `/api/v1/cluster/nodes`,
+   `/api/v1/cluster/nodes/{id}` and `/api/v1/cluster/writes/{request_id}`, with
+   concrete request/response shapes. (Resolved 2026-10-27; formerly listed as an
+   open question because the shapes were undefined.)

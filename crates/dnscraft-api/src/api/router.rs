@@ -37,7 +37,11 @@ use super::response::{BODY_LIMIT_BYTES, error_response, success};
 use super::stats_routes::{
     export_csv, export_ndjson, stats_cache, stats_overview, stats_top_clients, stats_top_domains,
 };
-use super::tls_routes::{delete_tls, get_tls, put_tls};
+use super::tls_routes::{
+    delete_tls, get_tls, get_tls_account, get_tls_audit, get_tls_certificate, get_tls_order,
+    get_tls_records, get_tls_status, put_tls, put_tls_certificate, trigger_tls_dyndns,
+    trigger_tls_preflight, trigger_tls_renew, trigger_tls_revoke, trigger_tls_rotate,
+};
 use crate::error::ControlApiError;
 use crate::mcp_backend::ControlMcpBackend;
 use crate::server::AppState;
@@ -117,7 +121,21 @@ pub(crate) fn build_router(state: AppState) -> Router {
             .route(
                 "/tls",
                 get(get_tls).put(put_tls).post(put_tls).delete(delete_tls),
-            );
+            )
+            .route("/tls/status", get(get_tls_status))
+            .route(
+                "/tls/certificate",
+                get(get_tls_certificate).put(put_tls_certificate),
+            )
+            .route("/tls/renew", post(trigger_tls_renew))
+            .route("/tls/revoke", post(trigger_tls_revoke))
+            .route("/tls/rotate", post(trigger_tls_rotate))
+            .route("/tls/preflight", post(trigger_tls_preflight))
+            .route("/tls/dyndns", post(trigger_tls_dyndns))
+            .route("/tls/records", get(get_tls_records))
+            .route("/tls/account", get(get_tls_account))
+            .route("/tls/order", get(get_tls_order))
+            .route("/tls/audit", get(get_tls_audit));
     }
     if state.query_log().is_some() {
         // Viewer-accessible reads: the RBAC middleware maps non-config GETs
@@ -208,21 +226,25 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     )
 }
 
-/// Status: TLS mode, leaf fingerprint, and any active warnings (self-signed
-/// bootstrap certificate). Expanded further by A11 (version, features).
+/// Status: TLS mode, leaf fingerprint, the full typed TLS DTO, and any active
+/// warnings (self-signed bootstrap certificate). Expanded further by A11
+/// (version, features).
 ///
 /// When this process does not terminate TLS (reverse-proxy mode), the TLS
 /// fields are omitted entirely.
 async fn status(State(state): State<AppState>) -> impl IntoResponse {
     let mut body = serde_json::Map::new();
-    if let Some(tls) = state.tls_status() {
+    if let Some(tls) = state.tls_status_async().await {
         body.insert("tls_mode".to_owned(), json!(tls.mode.as_str()));
-        body.insert("tls_fingerprint".to_owned(), json!(tls.fingerprint));
+        body.insert("tls_fingerprint".to_owned(), json!(tls.fingerprint.clone()));
         let warnings: Vec<&str> = match tls.mode {
             TlsMode::SelfSigned => vec!["control_api.tls.self_signed"],
-            TlsMode::Acme => Vec::new(),
+            TlsMode::Acme | TlsMode::Manual => Vec::new(),
         };
         body.insert("warnings".to_owned(), json!(warnings));
+        // The full typed DTO (contract § G); `tls_mode`/`tls_fingerprint` stay
+        // for clients written against the earlier, flatter shape.
+        body.insert("tls".to_owned(), json!(tls));
     }
     success(serde_json::Value::Object(body))
 }

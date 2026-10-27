@@ -7,7 +7,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use dnscraft_listeners::{
-    DdrConfig, Exposure, Limits, ListenerConfig, ListenersConfig, Protocol, PublicConfig,
+    DdrConfig, Exposure, Limits, ListenerConfig, ListenersConfig, Protocol, PublicConfig, TlsPolicy,
 };
 use dnscraft_policy::ListenerId;
 use dnscraft_tls::Secret;
@@ -254,10 +254,43 @@ pub struct ListenerToml {
     /// DoH only: also serve HTTP/3 on the same UDP port.
     #[serde(default)]
     pub h3: bool,
+    /// Encrypted listeners only: TLS protocol / cipher policy.
+    #[serde(default)]
+    pub tls_policy: Option<TlsPolicyToml>,
+}
+
+/// `[listeners.tls_policy]` block (encrypted listeners only).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsPolicyToml {
+    /// `"1.2"` (default) or `"1.3"`.
+    #[serde(default = "default_min_tls_version")]
+    pub min_version: String,
+    /// Ring cipher suites by IANA name; absent = provider defaults.
+    #[serde(default)]
+    pub ciphersuites: Option<Vec<String>>,
+    /// ALPN for DoH over TCP; absent = `["h2", "http/1.1"]`.
+    #[serde(default)]
+    pub alpn: Option<Vec<String>>,
 }
 
 fn default_exposure() -> String {
     "local".to_owned()
+}
+
+fn default_min_tls_version() -> String {
+    dnscraft_listeners::DEFAULT_TLS_MIN_VERSION.to_owned()
+}
+
+impl TlsPolicyToml {
+    fn into_policy(self) -> TlsPolicy {
+        let defaults = TlsPolicy::default();
+        TlsPolicy {
+            min_version: self.min_version,
+            ciphersuites: self.ciphersuites,
+            alpn: self.alpn.unwrap_or(defaults.alpn),
+        }
+    }
 }
 
 impl Config {
@@ -301,6 +334,7 @@ impl Config {
                 address: listener.address,
                 exposure,
                 h3: listener.h3,
+                tls_policy: listener.tls_policy.clone().map(TlsPolicyToml::into_policy),
             });
         }
         let cfg = ListenersConfig {

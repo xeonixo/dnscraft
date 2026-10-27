@@ -19,12 +19,15 @@ resolver and small helpers those modules call.
    (`DNSCRAFT_CLOUDFLARE_API_TOKEN` / `*_FILE`) from env / Docker secrets only.
 2. Crypto stack matches the rest of the workspace: **rustls + ring**, no aws-lc
    (same decision as reqwest in filtering — see `tasks/archive/progress-2026-10.md`).
-3. ACME challenge is **DNS-01** via Cloudflare only (no HTTP-01; the node may
-   not be reachable on 80 from the internet).
+3. ACME challenge is **DNS-01** (no HTTP-01; the node may not be reachable on
+   80 from the internet). Publication goes through the configured
+   `dns_provider`: Cloudflare (automatic), `manual` (operator copies the TXT),
+   or `none` (issuance fails with a clear code).
 4. DDR (RFC 9462) answers are produced by `listeners`; this module only supplies
    the hostnames / certificate material those answers advertise.
-5. Alerts (cert expiry, DynDNS failure) are surfaced as status fields;
-   `control-api` / web-ui render them (SPEC.md Alerts — UI only, no push/email).
+5. Alerts (cert expiry, DynDNS failure) are surfaced as status fields **and**
+   optionally delivered to an HTTPS webhook; `control-api` / web-ui render the
+   status and own webhook dispatch (SPEC.md Alerts). SMTP/email is deferred.
 
 ## Requirements
 
@@ -72,6 +75,9 @@ resolver and small helpers those modules call.
 - Key type: **ECDSA only** — `ecdsa_p256` (default) or `ecdsa_p384`. No RSA.
 - One leaf + chain PEM on disk; private key separate file, never logged, never
   included in config export/backup (SPEC.md).
+- `tls_mode = manual` replaces ACME material with operator-uploaded
+  leaf+key+chain (see **Manual certificate mode**); `source` in status records
+  whether the served cert is `acme` or `manual`.
 - Staging switch: `acme.directory = "staging" | "production" | <url>` for tests.
 - Same certificate set is shared by **all** encrypted listeners (DoT/DoH/DoQ,
   ports 443 and 853).
@@ -220,6 +226,153 @@ pub fn accept_public_sni(
 - After writing `_acme-challenge` TXT, poll the zone’s Cloudflare authoritative
   nameservers every **5 s** until the expected TXT appears or **2 minutes**
   elapse → then `tls.acme.propagation`.
+- `dns_provider.kind = "manual"`: the operator publishes the TXT value returned
+  in `tls.dns.manual`; propagation polling is skipped (the CA still validates
+  on finalize). `kind = "none"` fails before ordering.
+
+### Resolved feature specifications (owner, 2026-10-27)
+
+Each numbered item below resolves the correspondingly numbered Open Question
+that appeared here before 2026-10-27. Config field, status field and error
+codes are the cross-crate contract (`tasks/plan-tls-api-gaps.md` § B–E).
+
+1. **Manual certificate mode (`tls_mode = manual`, Q1).**
+   Config: `manual = { cert_pem, chain_pem, key_pem }` (key is `Secret`).
+   API: `TlsEngine::upload_manual_cert(cert_pem, &Secret, chain_pem)` validates
+   leaf/key/chain together, persists via the store (`key.pem` 0o600), installs
+   atomically and records `meta.source = manual`. A bootstrap `manual` config is
+   imported on open **only when the store has no certificate** (an API upload is
+   never reverted by a restart). Status: `source: "acme" | "manual"`.
+   Errors: `tls.cert.manual.invalid` (bad PEM, key/cert mismatch),
+   `tls.cert.absent` (nothing stored).
+2. **Certificate detail in `TlsStatus` (Q2).** Parsed from the leaf with
+   `x509-parser` (DER already carried by rustls-pki-types): `not_before`,
+   `issuer` (RFC 4514), `subject` (RFC 4514), `serial` (colon-separated
+   upper-case hex), `signature_algorithm` (e.g. `ecdsa-with-SHA256`),
+   `key_usage` (basic flags) and `chain` (`Vec<String>`, PEM blocks leaf-first).
+   **Cert-only**: no private key ever appears in status, `Debug`, logs or export.
+3. **Generic DNS provider / manual DNS-01 (Q3, Q20).**
+   Config: `dns_provider = { kind = "cloudflare" | "manual" | "none",
+   cloudflare = { zone_id }, zones = [{ name, zone_id }],
+   manual_txt = { name, value } }`.
+   `cloudflare` publishes TXT records through the API; `manual` requires the
+   operator to publish the challenge value (issuance returns the required
+   name/value in the error); `none` always fails ACME/DynDNS validation.
+   Multi-zone: a record name resolves to the configured zone with the **longest
+   suffix match**, falling back to `cloudflare.zone_id` / `public_domain`.
+   DynDNS requires `kind = "cloudflare"`. Errors: `tls.dns.provider.auth`,
+   `tls.dns.provider.zone`, `tls.dns.manual`.
+4. **ARI renewal window in status (Q4).** `TlsStatus.ari =
+   { suggested_window_start, suggested_window_end, certificate_id, supported }`,
+   present when a certificate is stored; `supported` is true only when the CA
+   returned both bounds. Renewal still picks a uniform instant in the window and
+   sends `replaces`; ARI failures never fail renewal.
+5. **ACME account management (Q5).** Config:
+   `acme.account = { eab = { kid, hmac_key }, tos_agreed, auto_deactivate }`.
+   Account creation requires `tos_agreed = true` and passes EAB when configured.
+   `TlsEngine::acme_account_status()` returns `{ exists, directory,
+   account_id, tos_agreed, eab_configured, auto_deactivate, deactivated }`
+   (never the key). Account-key rollover uses `update_key` and rewrites
+   `account.json`; deactivation removes it. `auto_deactivate = true` deactivates
+   the account when ACME is turned off by config apply (best-effort). Errors:
+   `tls.acme.account.eab`, `tls.acme.account.tos`,
+   `tls.acme.account.rollover`.
+6. **ACME order / progress status (Q6).** `TlsEngine::order_status()` returns
+   `{ state: idle|pending|valid|invalid, identifiers, challenges = [{ identifier,
+   txt_name, status }], next_attempt_at, last_error }`. There is one in-flight
+   order per node (single-flight); a request to finish without one is
+   `tls.acme.order_pending`.
+7. **Rate-limit / quota visibility (Q7).** `TlsEngine::rate_limit_status()`
+   returns `{ limited, retry_after, retry_at }` from the most recent attempt;
+   `tls.acme.rate_limited` carries the structured `retry_after` (`Duration`)
+   parsed from `Retry-After`, and the renew scheduler backs off at least that
+   long (exponential, ±25 %, capped at 6 h).
+8. **Issuance / renewal history (Q8).** `state.json` keeps the last **10**
+   `IssueRecord { timestamp, outcome: issued|renewed|failed, error, serial }`;
+   exposed as `TlsStatus.history` (oldest first). Successful attempts clear
+   `last_error`; failures keep the previous certificate.
+9. **Revocation (Q9).** `TlsEngine::revoke(reason)` maps `unspecified`,
+   `key_compromise`, `ca_compromise`, `affiliation_changed`, `superseded`,
+   `cessation_of_operation`, `certificate_hold`, `remove_from_crl`,
+   `privilege_withdrawn`, `aa_compromise`. ACME-sourced certs are revoked at the
+   CA; manual certs are revoked locally. The resolver is cleared, `state.json`
+   records the reason, and `TlsStatus.revoked = true` with
+   `last_error = tls.cert.revoked`; a restart does not serve a revoked cert.
+   Unknown reasons → `tls.config.invalid`. A successful re-issue clears the flag.
+10. **Key rotation / re-key (Q10).** `TlsEngine::rotate_key()` forces a new
+    order with a freshly generated ECDSA key (same `key_type`) even when not
+    due. Any failure is surfaced as `tls.cert.rotate.failed`; the old cert is
+    kept. ACME-disabled nodes refuse rotation.
+11. **Preflight / dry-run (Q11).** `TlsEngine::preflight()` is offline (never
+    contacts the CA, Cloudflare or the echo service) and returns
+    `{ ok, checks = [{ name, ok, code, message }] }` for: store health,
+    certificate loadability, trust pin, ACME account (`exists || tos_agreed`)
+    and DNS provider kind. `PreflightReport::into_result()` maps a failing
+    report to `tls.acme.preflight.failed`.
+12. **Certificate export (Q12).** `TlsEngine::export_cert()` returns the stored
+    fullchain PEM (leaf first, certificates only). It refuses any bundle
+    containing `PRIVATE KEY` and errors `tls.cert.absent` when nothing is stored.
+13. **Bootstrap self-signed certificate status (Q13).** The self-signed
+    fallback is installed by the caller before ACME succeeds; it is included in
+    the same status fields (`not_before`, `not_after`, `days_to_expiry`,
+    `serial`, `chain`) and is replaced atomically on the first successful issue.
+    No separate fingerprint history is kept (only the current leaf).
+14. **Trust pinning (Q14).** Config: `trust_pin = { sha256, pinned_at }`
+    (64 hex chars; `:` separators and upper case are normalised). `preflight`
+    compares the SHA-256 of the leaf DER (ring) and reports
+    `tls.pin.mismatch`; a pin without a stored certificate also fails.
+15. **Store health (Q15).** `TlsStatus.store = { path, writable, last_write,
+    corrupt }`. Writability is probed with a private temp file in `<data>/tls/`;
+    `last_write` is the newest mtime of `cert.pem`/`state.json`; `corrupt` means
+    the stored ciphertext/PEM/key pair cannot be loaded
+    (`tls.store.corrupt` / `tls.store.permissions`). Preflight surfaces
+    `tls.store.unhealthy`.
+16. **Per-node DynDNS API model (Q16).** `control-api` exposes
+    `GET /api/v1/nodes` (minimal node list) and per-node `dyndns` under
+    `/api/v1/tls`; the full node inventory and conflict rules remain delegated
+    to `SPEC-cluster.md`. This crate keeps per-node `dyndns.hostname` and
+    `dyndns.public_entry`.
+17. **IPv6 stable identifier (Q17).** Config:
+    `dyndns.ipv6_identifier = { mode = "eui64" | "stable_privacy" | "static",
+    static_address }`. `static` publishes the configured address and rejects
+    non-IPv6 values; `eui64` / `stable_privacy` use the OS-selected address
+    (from the echo service, or from `dyndns.interfaces` when set). Errors:
+    `tls.dyndns.ipv6`.
+18. **DynDNS `stale` flag (Q18).** `TlsStatus.dyndns_stale` is `true` after a
+    failed pass and cleared by the next success; it never touches the cert path.
+19. **Next / last scheduled run (Q19).** `TlsStatus.next_renew_at` (from ARI or
+    `not_after - renew_before`), `next_dyndns_at` (last pass + jittered
+    interval) and `last_dyndns_success`.
+20. **Multi-provider / multi-zone (Q20).** Satisfied by `dns_provider.zones`
+    (longest-suffix resolution, deduplicated after normalisation); one token per
+    provider. Cross-provider fan-out is out of scope.
+21. **Managed record inventory (Q21).** Config `dyndns.record_inventory = true`.
+    `TlsEngine::record_inventory()` lists the A/AAAA records for the managed
+    names, each `{ name, record_type, content, managed, conflict }` where
+    `conflict` marks duplicate name+type records. This is read-only (no
+    adoption/cleanup in v1) and errors `tls.dns.provider.auth` when the provider
+    is not Cloudflare.
+22. **IP discovery details (Q22).** Config `dyndns.interfaces = []` (empty =
+    public-IP echo). When non-empty, the first global IPv6 address on those
+    interfaces is used (Linux `/proc/net/if_inet6`; link-local skipped).
+    Interface names are trimmed and deduplicated; an empty name is a config
+    error. If no address is found the pass fails with `tls.dyndns.ipv6`.
+23. **TLS protocol/cipher policy for DNS listeners (Q23).** Owned by
+    `SPEC-listeners.md` (L1/L2): `tls_policy = { min_version = "1.2"|"1.3",
+    ciphersuites = [], alpn = ["h2","http/1.1"] }`, error
+    `listeners.tls.policy`. This spec only supplies certificate material.
+24. **Certificate distribution status (Q24).** Delegated to `SPEC-cluster.md`;
+    per-node `cert_version`, `sync_lag` and `distribution_error` are specified
+    there. No cluster code is added to `dnscraft-tls` in this pass.
+25. **DynDNS audit trail (Q25).** Every write appends
+    `{ timestamp, name, record_type, content }` to `state.json` (last 50),
+    exposed by `TlsEngine::dyndns_audit()`; unchanged records produce no entry.
+26. **Expiry / failure notifications (Q26).** Config:
+    `notifications = { webhook_url, on_expiry, on_dyndns_failure }` (HTTPS only;
+    loopback `http://` only behind the test hatch). Delivery is performed by
+    `control-api` (A5) using this config; the TLS crate only exposes status.
+    A failed delivery is `tls.notify.failed`. **SMTP/email is deferred** — no
+    mail crate is added.
 
 ### Error codes
 
@@ -241,14 +394,37 @@ pub fn accept_public_sni(
 | `tls.dyndns.entry_conflict` | more than one node claims `public_entry` (config/cluster validation) |
 | `tls.cert.expiring` | status flag when days-to-expiry below warn threshold (default 14 d) |
 | `tls.cert.expired` | not_after in the past |
+| `tls.cert.manual.invalid` | manual upload: bad PEM, key/cert mismatch, or unusable chain |
+| `tls.cert.revoked` | status flag + `last_error` after a successful revocation |
+| `tls.cert.rotate.failed` | forced re-key/re-issue failed (old cert kept) |
+| `tls.cert.absent` | export/revoke requested with no stored certificate |
+| `tls.acme.account.eab` | EAB missing, malformed, or rejected by the CA |
+| `tls.acme.account.tos` | account creation without `tos_agreed = true` |
+| `tls.acme.account.rollover` | account-key rollover failed or unsupported |
+| `tls.acme.order_pending` | finish/abort requested with no in-flight order |
+| `tls.acme.preflight.failed` | one or more preflight checks failed |
+| `tls.store.unhealthy` | store not writable or corrupt (preflight/status) |
+| `tls.dns.provider.auth` | DNS provider credentials missing / `kind = none` |
+| `tls.dns.provider.zone` | no configured zone matches the record name |
+| `tls.dns.manual` | manual DNS-01: operator must publish the TXT value |
+| `tls.dyndns.ipv6` | static identifier invalid or no global address on the interfaces |
+| `tls.pin.mismatch` | leaf SHA-256 differs from `trust_pin.sha256` |
+| `tls.notify.failed` | webhook notification delivery failed (control-api) |
 
 ### Observability / alerts surface
 
-`TlsStatus`: cert `not_after`, `days_to_expiry`, identifiers, `last_issue`,
-`last_renew_attempt`, ACME directory (staging/prod), DynDNS last IPv4/IPv6 and
-last change time, `last_error` codes. Metrics: days to expiry (gauge), renew
-success/fail counters. Web UI alert when `tls.cert.expiring` /
-`tls.dyndns.update` / ACME failures are set.
+`TlsStatus` (additive over the original fields): `not_after`, `not_before`,
+`days_to_expiry`, `identifiers`, `issuer`, `subject`, `serial`,
+`signature_algorithm`, `key_usage`, `chain`, `source`, `last_issue`,
+`last_renew_attempt`, `history` (last 10), ACME directory (staging/prod),
+`acme_enabled`, `ari`, `next_renew_at`, `next_dyndns_at`,
+`last_dyndns_success`, `dyndns_stale`, `store` health, `revoked`, `last_error`
+codes, DynDNS last IPv4/IPv6 and last change time. `TlsEngine` additionally
+exposes `acme_account_status()`, `order_status()`, `rate_limit_status()`,
+`record_inventory()`, `dyndns_audit()`, `preflight()` and `export_cert()`.
+Metrics: days to expiry (gauge), renew success/fail counters. Web UI alert when
+`tls.cert.expiring` / `tls.cert.revoked` / `tls.dyndns.update` / ACME failures
+are set.
 
 ### Interface (sketch)
 
@@ -260,8 +436,24 @@ impl TlsEngine {
     pub fn resolver(&self) -> Arc<CertResolver>;
     pub fn status(&self) -> TlsStatus;
     pub async fn apply_config(&self, config: TlsConfig) -> Result<(), TlsError>;
+
+    // Unchanged signatures.
     pub async fn renew_now(&self) -> Result<(), TlsError>;
-    pub async fn dyndns_now(&self) -> Result<(), TlsError>;
+    pub async fn dyndns_now(&self) -> Result<DynDnsResult, TlsError>;
+
+    // Added 2026-10-27 (spec gaps).
+    pub async fn upload_manual_cert(
+        &self, cert_pem: &str, key_pem: &Secret, chain_pem: &str,
+    ) -> Result<(), TlsError>;
+    pub async fn revoke(&self, reason: Option<&str>) -> Result<(), TlsError>;
+    pub async fn preflight(&self) -> PreflightReport;
+    pub async fn rotate_key(&self) -> Result<(), TlsError>;
+    pub fn export_cert(&self) -> Result<String, TlsError>;
+    pub async fn acme_account_status(&self) -> Result<AcmeAccountStatus, TlsError>;
+    pub fn order_status(&self) -> AcmeOrderStatus;
+    pub async fn rate_limit_status(&self) -> RateLimitStatus;
+    pub async fn record_inventory(&self) -> Result<Vec<InventoryRecord>, TlsError>;
+    pub async fn dyndns_audit(&self) -> Vec<DynDnsAuditEntry>;
 }
 ```
 
@@ -276,16 +468,36 @@ renew_before = "30d"
 expiry_warn = "14d"
 
 [tls.acme]
-directory = "production"               # or "staging"
+directory = "production"               # or "staging" / custom URL
 # contact email: required in the UI / first-run (admin fills it in)
 email = "admin@example.com"
 propagation_timeout = "2m"
 propagation_poll = "5s"
+[tls.acme.account]
+tos_agreed = true                      # required to create an account
+auto_deactivate = false                # deactivate when ACME is turned off
+# eab = { kid = "...", hmac_key = "..." }  # when the CA requires EAB
 
-[tls.cloudflare]
+# Operator-uploaded certificate (bootstrap; normally uploaded via the UI/API).
+# [tls.manual]
+# cert_pem = "-----BEGIN CERTIFICATE-----..."
+# chain_pem = ""
+# key_pem = "-----BEGIN PRIVATE KEY-----..."   # Secret; never logged/exported
+
+# [tls.trust_pin]
+# sha256 = "0123...ef"                 # leaf SHA-256, 64 hex chars
+# pinned_at = "2026-10-27T00:00:00Z"
+
+[tls.dns_provider]
+kind = "cloudflare"                    # "cloudflare" | "manual" | "none"
+[tls.dns_provider.cloudflare]
 # token from DNSCRAFT_CLOUDFLARE_API_TOKEN / _FILE
 # zone_id optional if resolvable by public_domain
 zone_id = ""
+# Additional zones, resolved by longest suffix match.
+# zones = [{ name = "sub.example.com", zone_id = "..." }]
+# Operator-published TXT for kind = "manual":
+# manual_txt = { name = "_acme-challenge.dns.example.com", value = "..." }
 
 [tls.dyndns]
 enabled = true
@@ -300,6 +512,16 @@ echo_url = "https://cloudflare.com/cdn-cgi/trace"
 ipv4 = true
 ipv6 = true
 proxied = false
+# interfaces = ["eth0"]                # empty = public-IP echo
+# record_inventory = false             # enable GET /api/v1/tls/records
+[tls.dyndns.ipv6_identifier]
+mode = "eui64"                         # "eui64" | "stable_privacy" | "static"
+# static_address = "2001:db8::10"      # required for mode = "static"
+
+[tls.notifications]
+# webhook_url = "https://hooks.example.com/dnscraft"   # HTTPS only
+on_expiry = false
+on_dyndns_failure = false
 ```
 
 ## Testing
@@ -315,8 +537,10 @@ proxied = false
 
 ## Boundaries
 
-- Always: ring-only crypto features; last-good cert on failure; secrets via env/
-  `*_FILE`; private keys never in logs or exports; DNS-only DynDNS records.
+- Always: ring-only crypto features; last-good cert on failure (revoked certs
+  are removed from the resolver and never re-served); secrets via env/`*_FILE`;
+  private keys never in logs, status or exports; cert-only fullchain export;
+  DNS-only DynDNS records; offline preflight (no external calls).
 - Ask first: new dependencies (no ArcSwap — `RwLock<Arc<_>>`) beyond `instant-acme` (ring features), `rustls`,
   existing `reqwest`; adding non-empty `extra_sans`; changing master-only renew
   or per-node DynDNS.
@@ -340,72 +564,52 @@ proxied = false
 5. Feature flags on `instant-acme` do not pull aws-lc into the workspace
    (`cargo tree -i aws-lc-rs` empty).
 6. DoD gates green once implemented.
+7. A manual upload validates leaf+key+chain, persists `key.pem` 0o600, exposes
+   `source = manual`, and `export_cert` returns the fullchain without any key.
+8. `revoke` clears the resolver, persists `revoked`, survives restart (not
+   served again), and a later successful issue clears it.
+9. `status` carries cert detail, ARI window, bounded history, scheduling,
+   store health and `dyndns_stale`; `preflight` is fully offline.
 
-## Open Questions
+## Decisions (2026-10-27)
 
-Deferred features surfaced by the web-UI prototype (2026-10-27), not yet specified
-here. Each needs an owner decision before implementation. Pairs with
-`SPEC-control-api.md` § Open questions.
+Owner decision: **spec everything now**; all 26 former Open Questions are
+resolved by the feature specifications above and implemented in
+`crates/dnscraft-tls` (Phase 1, T1–T6). In order:
 
-1. **Manual certificate mode** (`tls_mode = manual`): upload PEM cert + key + chain
-   and replace the ACME/self-signed material. No upload format, key/cert validation,
-   atomic swap, or error codes defined here or in SPEC-control-api.
-2. **Certificate detail in `TlsStatus`:** `issuer`, `subject`, `not_before`,
-   `serial`, signature algorithm, key usage and the served chain are not exposed —
-   only `not_after`, `days_to_expiry`, `identifiers`.
-3. **Generic DNS provider / manual DNS-01:** ACME DNS-01 is Cloudflare-only. A
-   non-Cloudflare provider, manual `_acme-challenge` TXT display/copy, or alias
-   (CNAME delegation) is not specified.
-4. **ARI renewal window in status:** ARI (RFC 9773) is used internally for renewal
-   scheduling, but `TlsStatus` exposes no suggested window, ARI certificate id, or
-   ARI-supported flag.
-5. **ACME account management:** Terms-of-Service state, external account binding
-   (EAB), account key rollover, deactivation and staging↔production migration are
-   undefined; only email + persisted `account.json` are specified.
-6. **ACME order/progress state:** no pending-order, authorization-list, challenge
-   progress, retry schedule or "next attempt at" surfaced; only `last_error`.
-7. **Rate-limit / quota visibility:** Let's Encrypt limits are documented and
-   `tls.acme.rate_limited` exists, but no remaining-quota or Retry-After status.
-8. **Issuance / renewal history:** only `last_issue` and `last_renew_attempt`; no
-   per-attempt history or certificate-change audit.
-9. **Revocation:** no revoke action/endpoint, revocation reason, or
-   `tls.cert.revoked` code.
-10. **Key rotation / re-key:** `key_type` is configurable but no forced re-issue or
-    rotation flow.
-11. **Preflight / dry-run:** no validate-before-apply or staging dry-run beyond the
-    global directory switch.
-12. **Certificate export / backup:** private keys must stay out of config exports,
-    but a certificate-only (fullchain PEM) export is unspecified.
-13. **Bootstrap self-signed cert status:** `TlsStatus` covers only the ACME cert;
-    the bootstrap cert's own `not_after`, regeneration and fingerprint history are
-    undefined.
-14. **Trust pinning:** the SHA-256 fingerprint is displayed, but there is no
-    accept/record-a-pinned-fingerprint flow or mismatch state.
-15. **Store health:** `tls.store.io` / `tls.store.corrupt` exist without status
-    detail (path, permissions, last successful write, recovery state).
-16. **Per-node DynDNS API model:** node-local `hostname`/`public_entry` exist, but
-    SPEC-control-api has no node inventory or per-node config/status surface.
-17. **IPv6 stable identifier:** only `ipv4`/`ipv6` booleans + echo discovery; no
-    MAC/EUI-64, privacy-address or static-identifier selection.
-18. **DynDNS `stale` flag:** § DynDNS says failures "set stale", but `TlsStatus`
-    omits the field.
-19. **Next/last scheduled run:** only last_attempt/last_change; no next-run or
-    last-success timestamp for renewal or DynDNS.
-20. **Multi-provider / multi-zone:** single Cloudflare token + one zone assumed.
-21. **Managed record inventory:** only A/AAAA/TXT upsert; no listing, adoption,
-    conflict detection or cleanup of pre-existing records.
-22. **IP discovery details:** echo-only; no interface selection, IPv6 prefix
-    delegation or per-family error state.
-23. **TLS protocol/cipher policy for DNS listeners:** no minimum TLS version,
-    cipher suites, ALPN or per-protocol crypto policy (this spec supplies cert
-    material only).
-24. **Certificate distribution status:** cert+key push to sub-nodes is delegated to
-    SPEC-cluster; per-node cert version, sync lag and distribution failure are
-    undefined.
-25. **DynDNS audit trail:** no record of which IP was written to which record at
-    what time; only last-change time.
-26. **Expiry / failure notifications:** Assumption 5 restricts alerts to status
-    fields; no email/webhook channel or delivery status is defined.
+1. Manual certificate mode — specified (§ Resolved 1). `tls_mode = manual`.
+2. Certificate detail — issuers/subject/validity/serial/sig-alg/key-usage/chain
+   in `TlsStatus` (2), cert-only.
+3. Generic DNS provider + manual DNS-01 (3); Cloudflare remains the automatic
+   implementation.
+4. ARI window/id/supported in `TlsStatus.ari` (4).
+5. ACME account EAB/ToS/rollover/deactivate/auto-deactivate (5).
+6. Order/progress status + `tls.acme.order_pending` (6).
+7. Rate-limit `retry_after`/`retry_at` status (7).
+8. Bounded (10) issue/renew history (8).
+9. Revocation with reason + `tls.cert.revoked` (9).
+10. Forced key rotation via `rotate_key` (10).
+11. Offline preflight/dry-run report (11).
+12. Certificate-only fullchain export (12).
+13. Bootstrap self-signed cert uses the same status fields (13).
+14. Trust pin (`trust_pin`) with `tls.pin.mismatch` (14).
+15. Store health status + probe (15).
+16. Per-node DynDNS API surface; full inventory delegated to SPEC-cluster (16).
+17. IPv6 identifier `eui64`/`stable_privacy`/`static` (17).
+18. `dyndns_stale` status field (18).
+19. `next_renew_at` / `next_dyndns_at` / `last_dyndns_success` (19).
+20. Multi-zone provider config (20).
+21. Read-only record inventory with conflict flags (21).
+22. Interface-based IPv6 discovery (22).
+23. Listener TLS policy delegated to `SPEC-listeners.md` (23).
+24. Cross-node certificate distribution delegated to `SPEC-cluster.md` (24);
+    per-node `cert_version`/`sync_lag`/`distribution_error` specified there.
+25. Bounded (50) DynDNS audit trail (25).
+26. HTTPS webhook notification config; dispatch owned by control-api; SMTP
+    deferred (no mail crate) (26).
+
+Status: **approved by the owner 2026-10-27**; the 2026-10-25 decisions below
+remain in force.
 
 ## Decisions (owner, 2026-10-25)
 

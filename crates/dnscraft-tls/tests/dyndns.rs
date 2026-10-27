@@ -42,6 +42,9 @@ fn cfg(echo_url: &str) -> DynDnsConfig {
         ipv4: true,
         ipv6: false,
         proxied: false,
+        ipv6_identifier: dnscraft_tls::Ipv6Identifier::default(),
+        interfaces: Vec::new(),
+        record_inventory: false,
     }
 }
 

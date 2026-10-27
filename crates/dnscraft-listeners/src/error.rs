@@ -13,6 +13,7 @@
 //! | [`ListenersError::Bind`] | `listeners.bind` |
 //! | [`ListenersError::TlsNoCert`] | `listeners.tls.no_cert` |
 //! | [`ListenersError::TlsHandshake`] | `listeners.tls.handshake` |
+//! | [`ListenersError::TlsPolicy`] | `listeners.tls.policy` |
 //! | [`ListenersError::AdmissionPublicDo53`] | `listeners.admission.public_do53` |
 //! | [`ListenersError::AdmissionUnknownClientId`] | `listeners.admission.unknown_client_id` |
 //! | [`ListenersError::RateLimited`] | `listeners.rate_limited` |
@@ -61,6 +62,12 @@ pub enum ListenersError {
         /// Detail for logs.
         message: String,
     },
+    /// `tls_policy` is set on a plaintext protocol listener.
+    #[error("invalid TLS policy: {reason}")]
+    TlsPolicy {
+        /// Why the policy does not apply.
+        reason: String,
+    },
     /// Do53 query or connection from a public source (dropped / closed).
     #[error("Do53 from a public source")]
     AdmissionPublicDo53,
@@ -97,6 +104,7 @@ impl ListenersError {
             Self::Bind { .. } => "listeners.bind",
             Self::TlsNoCert => "listeners.tls.no_cert",
             Self::TlsHandshake { .. } => "listeners.tls.handshake",
+            Self::TlsPolicy { .. } => "listeners.tls.policy",
             Self::AdmissionPublicDo53 => "listeners.admission.public_do53",
             Self::AdmissionUnknownClientId => "listeners.admission.unknown_client_id",
             Self::RateLimited => "listeners.rate_limited",
@@ -151,6 +159,7 @@ mod tests {
             ListenersError::TlsHandshake {
                 message: "x".into(),
             },
+            ListenersError::TlsPolicy { reason: "x".into() },
             ListenersError::AdmissionPublicDo53,
             ListenersError::AdmissionUnknownClientId,
             ListenersError::RateLimited,

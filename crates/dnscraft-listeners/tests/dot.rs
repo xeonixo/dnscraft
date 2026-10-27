@@ -43,6 +43,7 @@ fn listener_dot(addr: SocketAddr, exposure: Exposure) -> ListenerConfig {
         address: addr,
         exposure,
         h3: false,
+        tls_policy: None,
     }
 }
 
@@ -53,6 +54,7 @@ fn listener_tcp(addr: SocketAddr) -> ListenerConfig {
         address: addr,
         exposure: Exposure::Local,
         h3: false,
+        tls_policy: None,
     }
 }
 

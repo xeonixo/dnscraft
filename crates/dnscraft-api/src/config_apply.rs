@@ -65,6 +65,11 @@ const MCP_RULE_KEYS: [&str; 6] = [
     "token_id",
 ];
 
+/// Sub-blocks of the `tls` section reported separately by the field diff
+/// (control-api Q6). Top-level TLS fields (`public_domain`, `key_type`, …) are
+/// reported as `tls`.
+const TLS_SUB_BLOCKS: [&str; 5] = ["acme", "dyndns", "dns_provider", "notifications", "manual"];
+
 /// The actor performing a config change (from the authenticated principal).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConfigActor {
@@ -443,15 +448,26 @@ impl ConfigService {
 
     /// Applies the snapshot; on failure replays `previous` up to the failed
     /// module and returns the original (failing module's) error.
+    ///
+    /// A TLS failure additionally reports which TLS sub-blocks changed
+    /// (`acme`, `dyndns`, …) under `changed_sub_blocks`, while keeping the
+    /// module's stable error code unchanged (control-api Q6).
     async fn apply_with_replay(
         &self,
         snapshot: &Value,
         previous: Option<&Value>,
     ) -> Result<(), ControlApiError> {
-        let (failed, error) = match self.apply_all(snapshot, usize::MAX).await {
+        let tls_diff = tls_changed_sub_blocks(previous, snapshot);
+        if !tls_diff.is_empty() {
+            tracing::debug!(changed = ?tls_diff, "tls sub-blocks changed");
+        }
+        let (failed, mut error) = match self.apply_all(snapshot, usize::MAX).await {
             Ok(()) => return Ok(()),
             Err(failure) => failure,
         };
+        if APPLY_ORDER[failed] == "tls" {
+            error = annotate_tls_failure(error, &tls_diff);
+        }
         if let Some(previous) = previous
             && let Err((_, replay)) = self.apply_all(previous, failed).await
         {
@@ -910,5 +926,116 @@ fn config_invalid(reason: impl Into<String>) -> ControlApiError {
     }
 }
 
+/// Names of the TLS sub-blocks that changed between two snapshots.
+///
+/// Returns `"tls"` for a top-level TLS field change (for example
+/// `public_domain` or `key_type`) and one entry per changed sub-block
+/// (`acme`, `dyndns`, `dns_provider`, `notifications`, `manual`). An unchanged
+/// TLS section returns an empty list.
+fn tls_changed_sub_blocks(previous: Option<&Value>, next: &Value) -> Vec<&'static str> {
+    let before = previous.and_then(|snapshot| snapshot.get("tls"));
+    let after = next.get("tls");
+    if before == after {
+        return Vec::new();
+    }
+    let before = before.and_then(Value::as_object);
+    let after = after.and_then(Value::as_object);
+
+    // Top-level TLS fields, excluding the sub-blocks reported separately.
+    let top_level = |map: Option<&Map<String, Value>>| {
+        map.map(|map| {
+            map.iter()
+                .filter(|(key, _)| !TLS_SUB_BLOCKS.contains(&key.as_str()))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<Map<_, _>>()
+        })
+        .unwrap_or_default()
+    };
+
+    let mut changed = Vec::new();
+    if top_level(before) != top_level(after) {
+        changed.push("tls");
+    }
+    for block in TLS_SUB_BLOCKS {
+        if before.and_then(|map| map.get(block)) != after.and_then(|map| map.get(block)) {
+            changed.push(block);
+        }
+    }
+    changed
+}
+
+/// Adds the changed TLS sub-blocks to a failed module error without changing
+/// its stable code, so a partial-failure report stays machine-readable.
+fn annotate_tls_failure(error: ControlApiError, changed: &[&'static str]) -> ControlApiError {
+    match error {
+        ControlApiError::Module { code, params } => {
+            let mut map = params
+                .as_ref()
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            map.insert("changed_sub_blocks".to_owned(), json!(changed));
+            ControlApiError::Module {
+                code,
+                params: Some(Value::Object(map)),
+            }
+        }
+        other => other,
+    }
+}
+
 /// Convenience alias so callers can build the service from an `Arc`.
 pub type SharedConfigService = Arc<ConfigService>;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tls_diff_names_the_changed_sub_blocks() {
+        let before = json!({"tls": {
+            "public_domain": "a.example",
+            "acme": {"enabled": true},
+            "dyndns": {"enabled": false},
+        }});
+        let after = json!({"tls": {
+            "public_domain": "b.example",
+            "acme": {"enabled": true},
+            "dyndns": {"enabled": true},
+        }});
+        assert_eq!(
+            tls_changed_sub_blocks(Some(&before), &after),
+            vec!["tls", "dyndns"]
+        );
+    }
+
+    #[test]
+    fn tls_diff_is_empty_for_an_unchanged_section() {
+        let snapshot = json!({"tls": {"public_domain": "a.example", "acme": {}}});
+        assert!(tls_changed_sub_blocks(Some(&snapshot), &snapshot).is_empty());
+        assert!(tls_changed_sub_blocks(None, &json!({"tls": {}})).is_empty());
+    }
+
+    #[test]
+    fn tls_failure_keeps_the_module_code_and_reports_blocks() {
+        let error = annotate_tls_failure(
+            ControlApiError::Module {
+                code: "tls.acme.order",
+                params: Some(json!({ "reason": "bad order" })),
+            },
+            &["acme"],
+        );
+        assert_eq!(error.code(), "tls.acme.order");
+        assert_eq!(
+            error,
+            ControlApiError::Module {
+                code: "tls.acme.order",
+                params: Some(json!({
+                    "reason": "bad order",
+                    "changed_sub_blocks": ["acme"],
+                })),
+            }
+        );
+    }
+}

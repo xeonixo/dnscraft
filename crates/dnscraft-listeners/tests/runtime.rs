@@ -29,6 +29,7 @@ fn udp_cfg(id: &str, addr: SocketAddr) -> ListenerConfig {
         address: addr,
         exposure: Exposure::Local,
         h3: false,
+        tls_policy: None,
     }
 }
 
@@ -39,6 +40,7 @@ fn tcp_cfg(id: &str, addr: SocketAddr) -> ListenerConfig {
         address: addr,
         exposure: Exposure::Local,
         h3: false,
+        tls_policy: None,
     }
 }
 
@@ -49,6 +51,7 @@ fn doh_cfg(id: &str, addr: SocketAddr, h3: bool) -> ListenerConfig {
         address: addr,
         exposure: Exposure::Local,
         h3,
+        tls_policy: None,
     }
 }
 
@@ -504,6 +507,7 @@ async fn runtime_reload_keeps_bans_across_rate_and_public_changes() {
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             exposure: Exposure::Public,
             h3: false,
+            tls_policy: None,
         }],
         limits: Limits {
             tls_handshake_timeout: Duration::from_millis(500),

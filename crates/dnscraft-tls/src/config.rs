@@ -5,10 +5,11 @@
 //! SPEC-tls.md (empty `extra_sans`, DNS-only DynDNS, hostname under
 //! `dns.<domain>`, ACME email when enabled, HTTPS-only URLs).
 
-use std::net::IpAddr;
-use std::time::Duration;
+use std::net::{IpAddr, Ipv6Addr};
+use std::time::{Duration, SystemTime};
 
 use crate::error::TlsError;
+use crate::pem_util::certified_key_from_pem;
 use crate::secret::{CLOUDFLARE_API_TOKEN_ENV, Secret, read_secret};
 
 /// Default renew-before window: 30 days.
@@ -59,6 +60,35 @@ impl AcmeDirectoryKind {
     }
 }
 
+/// External Account Binding (RFC 8555 §7.3.4).
+#[derive(Clone, PartialEq, Eq)]
+pub struct Eab {
+    /// Key identifier issued by the CA.
+    pub kid: String,
+    /// Raw HMAC key value (not base64-decoded); redacted in [`Debug`].
+    pub hmac_key: Secret,
+}
+
+impl std::fmt::Debug for Eab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Eab")
+            .field("kid", &self.kid)
+            .field("hmac_key", &self.hmac_key)
+            .finish()
+    }
+}
+
+/// ACME account policy (EAB, ToS, deactivation).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AcmeAccountConfig {
+    /// External Account Binding, when the CA requires one.
+    pub eab: Option<Eab>,
+    /// Operator accepted the CA's terms of service (required to create an account).
+    pub tos_agreed: bool,
+    /// Deactivate the ACME account when ACME is disabled by config apply.
+    pub auto_deactivate: bool,
+}
+
 /// ACME issuance settings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AcmeConfig {
@@ -72,6 +102,8 @@ pub struct AcmeConfig {
     pub propagation_timeout: Duration,
     /// How often to poll those nameservers.
     pub propagation_poll: Duration,
+    /// Account policy (EAB / ToS / auto-deactivate).
+    pub account: AcmeAccountConfig,
 }
 
 impl Default for AcmeConfig {
@@ -82,8 +114,56 @@ impl Default for AcmeConfig {
             email: String::new(),
             propagation_timeout: DEFAULT_PROPAGATION_TIMEOUT,
             propagation_poll: DEFAULT_PROPAGATION_POLL,
+            account: AcmeAccountConfig::default(),
         }
     }
+}
+
+/// Manually supplied certificate material (`tls_mode = manual`).
+///
+/// The key is persisted to `key.pem` (mode 0o600) by the store and is
+/// redacted in [`Debug`].
+#[derive(Clone, PartialEq, Eq)]
+pub struct ManualCertConfig {
+    /// Leaf certificate PEM.
+    pub cert_pem: String,
+    /// Intermediate chain PEM (may be empty).
+    pub chain_pem: String,
+    /// Private key PEM (redacted).
+    pub key_pem: Secret,
+}
+
+impl std::fmt::Debug for ManualCertConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManualCertConfig")
+            .field("cert_pem_len", &self.cert_pem.len())
+            .field("chain_pem_len", &self.chain_pem.len())
+            .field("key_pem", &self.key_pem)
+            .finish()
+    }
+}
+
+impl ManualCertConfig {
+    /// Leaf + chain as one PEM bundle, leaf first.
+    pub fn fullchain_pem(&self) -> String {
+        let mut out = self.cert_pem.trim().to_owned();
+        let chain = self.chain_pem.trim();
+        if !chain.is_empty() {
+            out.push('\n');
+            out.push_str(chain);
+        }
+        out.push('\n');
+        out
+    }
+}
+
+/// Pinned leaf SHA-256 fingerprint (trust pinning).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrustPin {
+    /// Lower-case hex SHA-256 of the leaf DER.
+    pub sha256: String,
+    /// When the pin was recorded.
+    pub pinned_at: SystemTime,
 }
 
 /// Cloudflare zone settings. The API token is never stored here — see
@@ -92,6 +172,88 @@ impl Default for AcmeConfig {
 pub struct CloudflareConfig {
     /// Optional zone id; when empty it is resolved by `public_domain` name.
     pub zone_id: Option<String>,
+}
+
+/// One additionally configured zone (multi-zone DNS provider).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZoneConfig {
+    /// Zone apex name (e.g. `example.com`).
+    pub name: String,
+    /// Optional Cloudflare zone id; resolved by name when empty.
+    pub zone_id: Option<String>,
+}
+
+/// Which DNS provider publishes ACME DNS-01 TXT records.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DnsProviderKind {
+    /// Cloudflare API (the only provider that can publish automatically).
+    #[default]
+    Cloudflare,
+    /// Operator publishes the challenge TXT manually; issuance reports it.
+    Manual,
+    /// No DNS provider; ACME DNS-01 cannot run.
+    None,
+}
+
+/// Operator-published `_acme-challenge` TXT record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManualDns01Config {
+    /// TXT owner name (e.g. `_acme-challenge.dns.example.com`).
+    pub name: String,
+    /// TXT value the operator published.
+    pub value: String,
+}
+
+/// DNS provider selection for ACME DNS-01.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DnsProvider {
+    /// Provider implementation.
+    pub kind: DnsProviderKind,
+    /// Cloudflare credentials/zone settings (used when `kind = cloudflare`).
+    pub cloudflare: CloudflareConfig,
+    /// Additional zones resolved by longest suffix match.
+    pub zones: Vec<ZoneConfig>,
+    /// Pre-published TXT value (used when `kind = manual`).
+    pub manual_txt: Option<ManualDns01Config>,
+}
+
+impl DnsProvider {
+    /// `true` when this provider can publish records via the Cloudflare API.
+    pub fn uses_cloudflare(&self) -> bool {
+        self.kind == DnsProviderKind::Cloudflare
+    }
+}
+
+/// How the stable IPv6 address is chosen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Ipv6IdentifierMode {
+    /// EUI-64 derived address (OS default).
+    #[default]
+    Eui64,
+    /// Stable-privacy address (OS default).
+    StablePrivacy,
+    /// Use [`Ipv6Identifier::static_address`] verbatim.
+    Static,
+}
+
+/// IPv6 stable-identifier selection for DynDNS.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Ipv6Identifier {
+    /// Selection mode.
+    pub mode: Ipv6IdentifierMode,
+    /// Fixed address, required when `mode = static`.
+    pub static_address: Option<String>,
+}
+
+/// Webhook notification settings (SMTP is deferred).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationsConfig {
+    /// HTTPS webhook URL; `None` disables delivery.
+    pub webhook_url: Option<String>,
+    /// Notify when the certificate is expiring/expired.
+    pub on_expiry: bool,
+    /// Notify when a DynDNS pass fails.
+    pub on_dyndns_failure: bool,
 }
 
 /// DynDNS settings for this node's public hostname.
@@ -117,6 +279,12 @@ pub struct DynDnsConfig {
     pub ipv6: bool,
     /// Must be `false` (DNS-only). Orange-cloud proxy would break DoT/DoQ.
     pub proxied: bool,
+    /// How the stable IPv6 address is selected.
+    pub ipv6_identifier: Ipv6Identifier,
+    /// Local interfaces to read IPv6 addresses from. Empty = public-IP echo.
+    pub interfaces: Vec<String>,
+    /// List/inspect managed records from the status API.
+    pub record_inventory: bool,
 }
 
 impl Default for DynDnsConfig {
@@ -131,6 +299,9 @@ impl Default for DynDnsConfig {
             ipv4: true,
             ipv6: true,
             proxied: false,
+            ipv6_identifier: Ipv6Identifier::default(),
+            interfaces: Vec::new(),
+            record_inventory: false,
         }
     }
 }
@@ -151,10 +322,16 @@ pub struct TlsConfig {
     pub expiry_warn: Duration,
     /// ACME settings.
     pub acme: AcmeConfig,
-    /// Cloudflare zone settings.
-    pub cloudflare: CloudflareConfig,
+    /// Manual certificate material (bootstrap / `tls_mode = manual`).
+    pub manual: Option<ManualCertConfig>,
+    /// Pinned leaf fingerprint (trust pinning).
+    pub trust_pin: Option<TrustPin>,
+    /// DNS provider for ACME DNS-01.
+    pub dns_provider: DnsProvider,
     /// DynDNS settings.
     pub dyndns: DynDnsConfig,
+    /// Webhook notification settings (delivery is control-api's job).
+    pub notifications: NotificationsConfig,
     /// Accept `http://` URLs for echo / custom ACME directory on loopback.
     /// Only for local mock servers in tests.
     #[doc(hidden)]
@@ -170,8 +347,11 @@ impl Default for TlsConfig {
             renew_before: DEFAULT_RENEW_BEFORE,
             expiry_warn: DEFAULT_EXPIRY_WARN,
             acme: AcmeConfig::default(),
-            cloudflare: CloudflareConfig::default(),
+            manual: None,
+            trust_pin: None,
+            dns_provider: DnsProvider::default(),
             dyndns: DynDnsConfig::default(),
+            notifications: NotificationsConfig::default(),
             allow_http_for_tests: false,
         }
     }
@@ -211,8 +391,12 @@ impl TlsConfig {
         }
 
         self.validate_acme()?;
+        self.validate_dns_provider()?;
         self.validate_dyndns()?;
-        if self.acme.enabled || self.dyndns.enabled {
+        self.validate_manual()?;
+        self.validate_trust_pin()?;
+        self.validate_notifications()?;
+        if self.dns_provider.uses_cloudflare() && (self.acme.enabled || self.dyndns.enabled) {
             let _ = lookup(CLOUDFLARE_API_TOKEN_ENV)?;
         }
         Ok(())
@@ -243,6 +427,93 @@ impl TlsConfig {
         if let AcmeDirectoryKind::Url(url) = &self.acme.directory {
             check_https_url(url, self.allow_http_for_tests, "acme.directory")?;
         }
+        if let Some(eab) = &mut self.acme.account.eab {
+            eab.kid = eab.kid.trim().to_owned();
+            if eab.kid.is_empty() || eab.hmac_key.expose().trim().is_empty() {
+                return Err(TlsError::AcmeAccountEab {
+                    message: "eab.kid and eab.hmac_key are required".into(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_dns_provider(&mut self) -> Result<(), TlsError> {
+        for zone in &mut self.dns_provider.zones {
+            zone.name = normalise_domain(&zone.name)?;
+            if zone.name.is_empty() {
+                return Err(TlsError::config("dns_provider.zones has an empty name"));
+            }
+        }
+        self.dns_provider.zones.sort_by(|a, b| a.name.cmp(&b.name));
+        self.dns_provider.zones.dedup_by(|a, b| a.name == b.name);
+        if let Some(txt) = &mut self.dns_provider.manual_txt {
+            txt.name = normalise_domain(&txt.name)?;
+            txt.value = txt.value.trim().to_owned();
+            if txt.name.is_empty() || txt.value.is_empty() {
+                return Err(TlsError::DnsManual {
+                    message: "manual_txt requires a non-empty name and value".into(),
+                });
+            }
+        }
+        match self.dns_provider.kind {
+            DnsProviderKind::None if self.acme.enabled => {
+                return Err(TlsError::DnsProviderAuth {
+                    message: "acme requires dns_provider.kind = cloudflare or manual".into(),
+                });
+            }
+            DnsProviderKind::None | DnsProviderKind::Manual if self.dyndns.enabled => {
+                return Err(TlsError::config(
+                    "dyndns requires dns_provider.kind = cloudflare",
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn validate_manual(&mut self) -> Result<(), TlsError> {
+        let Some(manual) = &self.manual else {
+            return Ok(());
+        };
+        let fullchain = manual.fullchain_pem();
+        certified_key_from_pem(fullchain.as_bytes(), manual.key_pem.expose().as_bytes()).map_err(
+            |message| TlsError::CertManualInvalid {
+                message: format!("manual certificate: {message}"),
+            },
+        )?;
+        Ok(())
+    }
+
+    fn validate_trust_pin(&mut self) -> Result<(), TlsError> {
+        let Some(pin) = &mut self.trust_pin else {
+            return Ok(());
+        };
+        let normalised: String = pin
+            .sha256
+            .chars()
+            .filter(|c| *c != ':' && !c.is_ascii_whitespace())
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        if normalised.len() != 64 || !normalised.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(TlsError::config(
+                "trust_pin.sha256 must be a SHA-256 hex fingerprint (64 hex chars)",
+            ));
+        }
+        pin.sha256 = normalised;
+        Ok(())
+    }
+
+    fn validate_notifications(&mut self) -> Result<(), TlsError> {
+        if let Some(url) = &self.notifications.webhook_url {
+            let url = url.trim().to_owned();
+            if url.is_empty() {
+                self.notifications.webhook_url = None;
+            } else {
+                check_https_url(&url, self.allow_http_for_tests, "notifications.webhook_url")?;
+                self.notifications.webhook_url = Some(url);
+            }
+        }
         Ok(())
     }
 
@@ -268,6 +539,52 @@ impl TlsConfig {
             self.allow_http_for_tests,
             "dyndns.echo_url",
         )?;
+
+        // IPv6 stable identifier: static mode needs a valid fixed address.
+        let static_addr = self.dyndns.ipv6_identifier.static_address.as_deref();
+        match self.dyndns.ipv6_identifier.mode {
+            Ipv6IdentifierMode::Static => {
+                let Some(addr) = static_addr else {
+                    return Err(TlsError::DyndnsIpv6 {
+                        message:
+                            "dyndns.ipv6_identifier.static_address is required for mode=static"
+                                .into(),
+                    });
+                };
+                addr.trim()
+                    .parse::<Ipv6Addr>()
+                    .map_err(|_| TlsError::DyndnsIpv6 {
+                        message: format!(
+                            "dyndns.ipv6_identifier.static_address {addr:?} is not IPv6"
+                        ),
+                    })?;
+            }
+            Ipv6IdentifierMode::Eui64 | Ipv6IdentifierMode::StablePrivacy => {
+                if static_addr.is_some() {
+                    return Err(TlsError::DyndnsIpv6 {
+                        message: "static_address is only valid with mode=static".into(),
+                    });
+                }
+            }
+        }
+        if let Some(addr) = &mut self.dyndns.ipv6_identifier.static_address {
+            *addr = addr.trim().to_owned();
+        }
+
+        // Normalise interface names (trim, drop empties, keep order).
+        let mut interfaces = Vec::with_capacity(self.dyndns.interfaces.len());
+        for name in &self.dyndns.interfaces {
+            let name = name.trim().to_owned();
+            if name.is_empty() {
+                return Err(TlsError::config(
+                    "dyndns.interfaces contains an empty interface name",
+                ));
+            }
+            if !interfaces.contains(&name) {
+                interfaces.push(name);
+            }
+        }
+        self.dyndns.interfaces = interfaces;
 
         // Normalise reserved labels (lower-case, trim).
         for label in &mut self.dyndns.reserved_labels {
@@ -430,8 +747,14 @@ mod tests {
                 email: "admin@example.com".into(),
                 propagation_timeout: DEFAULT_PROPAGATION_TIMEOUT,
                 propagation_poll: DEFAULT_PROPAGATION_POLL,
+                account: AcmeAccountConfig {
+                    tos_agreed: true,
+                    ..AcmeAccountConfig::default()
+                },
             },
-            cloudflare: CloudflareConfig { zone_id: None },
+            manual: None,
+            trust_pin: None,
+            dns_provider: DnsProvider::default(),
             dyndns: DynDnsConfig {
                 enabled: true,
                 hostname: "Node1.DNS.Example.COM.".into(),
@@ -442,7 +765,11 @@ mod tests {
                 ipv4: true,
                 ipv6: true,
                 proxied: false,
+                ipv6_identifier: Ipv6Identifier::default(),
+                interfaces: Vec::new(),
+                record_inventory: false,
             },
+            notifications: NotificationsConfig::default(),
             allow_http_for_tests: false,
         }
     }
@@ -595,5 +922,139 @@ mod tests {
         let shown = format!("{cfg:?}");
         assert!(!shown.contains("test-token-not-real"));
         assert!(!shown.contains("BEGIN"));
+    }
+
+    fn self_signed_pem() -> (String, String) {
+        let certified = rcgen::generate_simple_self_signed(vec!["dns.example.com".into()]).unwrap();
+        (certified.cert.pem(), certified.signing_key.serialize_pem())
+    }
+
+    #[test]
+    fn config_manual_cert_validates_and_redacts_key() {
+        let (cert, key) = self_signed_pem();
+        let mut cfg = example_config();
+        cfg.dns_provider.kind = DnsProviderKind::Cloudflare;
+        cfg.manual = Some(ManualCertConfig {
+            cert_pem: cert,
+            chain_pem: String::new(),
+            key_pem: Secret::new(key),
+        });
+        cfg.validate_with_token(ok_token).expect("manual valid");
+        assert!(!format!("{cfg:?}").contains("PRIVATE KEY"));
+
+        cfg.manual.as_mut().unwrap().key_pem = Secret::new("not a key");
+        let err = cfg.validate_with_token(ok_token).expect_err("bad key");
+        assert_eq!(err.code(), "tls.cert.manual.invalid");
+    }
+
+    #[test]
+    fn config_manual_provider_needs_no_cloudflare_token() {
+        let mut cfg = example_config();
+        cfg.dns_provider.kind = DnsProviderKind::Manual;
+        cfg.dyndns.enabled = false;
+        cfg.validate_with_token(|_| panic!("manual provider must not need a token"))
+            .expect("manual provider ok");
+    }
+
+    #[test]
+    fn config_none_provider_conflicts_with_acme() {
+        let mut cfg = example_config();
+        cfg.dns_provider.kind = DnsProviderKind::None;
+        let err = cfg.validate_with_token(ok_token).expect_err("none + acme");
+        assert_eq!(err.code(), "tls.dns.provider.auth");
+    }
+
+    #[test]
+    fn config_dyndns_requires_cloudflare_provider() {
+        let mut cfg = example_config();
+        cfg.dns_provider.kind = DnsProviderKind::Manual;
+        let err = cfg
+            .validate_with_token(ok_token)
+            .expect_err("manual + dyndns");
+        assert_eq!(err.code(), "tls.config.invalid");
+    }
+
+    #[test]
+    fn config_zones_are_normalised_and_deduplicated() {
+        let mut cfg = example_config();
+        cfg.dns_provider.zones = vec![
+            ZoneConfig {
+                name: "B.Example.COM.".into(),
+                zone_id: None,
+            },
+            ZoneConfig {
+                name: "b.example.com".into(),
+                zone_id: Some("z2".into()),
+            },
+            ZoneConfig {
+                name: "a.example.com".into(),
+                zone_id: None,
+            },
+        ];
+        cfg.validate_with_token(ok_token).expect("zones");
+        let names: Vec<_> = cfg
+            .dns_provider
+            .zones
+            .iter()
+            .map(|z| z.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["a.example.com", "b.example.com"]);
+    }
+
+    #[test]
+    fn config_ipv6_static_requires_valid_address_and_interfaces_normalise() {
+        let mut cfg = example_config();
+        cfg.dyndns.ipv6_identifier = Ipv6Identifier {
+            mode: Ipv6IdentifierMode::Static,
+            static_address: Some("not-an-ip".into()),
+        };
+        let err = cfg.validate_with_token(ok_token).expect_err("bad static");
+        assert_eq!(err.code(), "tls.dyndns.ipv6");
+
+        cfg.dyndns.ipv6_identifier.static_address = Some("2001:db8::10".into());
+        cfg.dyndns.interfaces = vec![" eth0 ".into(), "eth0".into(), "eth1".into()];
+        cfg.validate_with_token(ok_token).expect("valid static");
+        assert_eq!(cfg.dyndns.interfaces, vec!["eth0", "eth1"]);
+        assert_eq!(
+            cfg.dyndns.ipv6_identifier.static_address.as_deref(),
+            Some("2001:db8::10")
+        );
+
+        cfg.dyndns.ipv6_identifier.mode = Ipv6IdentifierMode::Eui64;
+        let err = cfg
+            .validate_with_token(ok_token)
+            .expect_err("static addr with eui64");
+        assert_eq!(err.code(), "tls.dyndns.ipv6");
+    }
+
+    #[test]
+    fn config_trust_pin_normalises_and_rejects_bad_length() {
+        let mut cfg = example_config();
+        cfg.trust_pin = Some(TrustPin {
+            sha256: "AB:CD".into(),
+            pinned_at: std::time::UNIX_EPOCH,
+        });
+        let err = cfg.validate_with_token(ok_token).expect_err("short pin");
+        assert_eq!(err.code(), "tls.config.invalid");
+
+        let fp = "ab".repeat(32);
+        cfg.trust_pin = Some(TrustPin {
+            sha256: fp.to_ascii_uppercase(),
+            pinned_at: std::time::UNIX_EPOCH,
+        });
+        cfg.validate_with_token(ok_token).expect("pin");
+        assert_eq!(cfg.trust_pin.as_ref().unwrap().sha256, fp);
+    }
+
+    #[test]
+    fn config_notifications_require_https() {
+        let mut cfg = example_config();
+        cfg.notifications.webhook_url = Some("http://127.0.0.1/hook".into());
+        let err = cfg.validate_with_token(ok_token).expect_err("http hook");
+        assert_eq!(err.code(), "tls.config.invalid");
+
+        cfg.allow_http_for_tests = true;
+        cfg.notifications.webhook_url = Some("http://127.0.0.1/hook".into());
+        cfg.validate_with_token(ok_token).expect("loopback hook");
     }
 }

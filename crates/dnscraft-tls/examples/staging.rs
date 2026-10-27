@@ -37,8 +37,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dnscraft_tls::{
-    AcmeConfig, AcmeDirectoryKind, CertStore, ClientIdRegistry, CloudflareConfig, DynDnsConfig,
-    KeyType, ReservedLabels, SystemClock, TlsConfig, TlsEngine, TlsStatus, accept_public_sni,
+    AcmeConfig, AcmeDirectoryKind, CertStore, ClientIdRegistry, DynDnsConfig, KeyType,
+    ReservedLabels, SystemClock, TlsConfig, TlsEngine, TlsStatus, accept_public_sni,
     parse_client_id_sni,
 };
 use rustls::ServerConfig;
@@ -95,8 +95,11 @@ fn build_config() -> TlsConfig {
             email,
             propagation_timeout: std::time::Duration::from_secs(180),
             propagation_poll: std::time::Duration::from_secs(5),
+            account: dnscraft_tls::AcmeAccountConfig {
+                tos_agreed: true,
+                ..Default::default()
+            },
         },
-        cloudflare: CloudflareConfig { zone_id: None },
         dyndns: DynDnsConfig {
             enabled: dyndns,
             hostname,

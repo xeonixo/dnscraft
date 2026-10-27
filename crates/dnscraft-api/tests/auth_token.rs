@@ -117,10 +117,7 @@ struct FakeTls(TlsMode);
 
 impl TlsStatusProvider for FakeTls {
     fn status(&self) -> TlsStatus {
-        TlsStatus {
-            mode: self.0,
-            fingerprint: "00".repeat(32),
-        }
+        TlsStatus::new(self.0, "00".repeat(32))
     }
 }
 

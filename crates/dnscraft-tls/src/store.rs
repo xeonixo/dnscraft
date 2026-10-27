@@ -30,9 +30,16 @@ use x509_parser::prelude::*;
 
 use crate::error::TlsError;
 use crate::pem_util::{KeyPem, certified_key_from_pem, parse_leaf_info};
+use crate::status::{CertDetail, CertSource, DynDnsAuditEntry, IssueRecord, StoreHealth};
 
 /// Directory name under the data directory.
 pub const TLS_DIR_NAME: &str = "tls";
+
+/// Maximum number of issue/renew history entries kept in `state.json`.
+pub const HISTORY_LIMIT: usize = 10;
+
+/// Maximum number of DynDNS audit entries kept in `state.json`.
+pub const DYNDNS_AUDIT_LIMIT: usize = 50;
 
 const CERT_FILE: &str = "cert.pem";
 const KEY_FILE: &str = "key.pem";
@@ -55,6 +62,9 @@ pub struct CertMeta {
     /// ACME ARI certificate id (`<aki>.<serial>`) of the stored leaf, when known.
     #[serde(default)]
     pub ari_cert_id: Option<String>,
+    /// Where the stored certificate came from.
+    #[serde(default)]
+    pub source: CertSource,
 }
 
 /// Outcome of the most recent issue/renew attempts (`state.json`).
@@ -72,6 +82,18 @@ pub struct IssueState {
     /// Unix seconds of the last attempt (success or failure).
     #[serde(default)]
     pub last_renew_attempt_unix: Option<i64>,
+    /// Bounded (last [`HISTORY_LIMIT`]) issue/renew history, oldest first.
+    #[serde(default)]
+    pub history: Vec<IssueRecord>,
+    /// `true` when the stored certificate was revoked locally.
+    #[serde(default)]
+    pub revoked: bool,
+    /// Revocation reason as supplied by the operator.
+    #[serde(default)]
+    pub revoked_reason: Option<String>,
+    /// Bounded (last [`DYNDNS_AUDIT_LIMIT`]) DynDNS write audit trail.
+    #[serde(default)]
+    pub dyndns_audit: Vec<DynDnsAuditEntry>,
 }
 
 /// Material loaded from the store.
@@ -87,6 +109,8 @@ pub struct LoadedCert {
     pub identifiers: Vec<String>,
     /// Cached metadata as last written (may lag the leaf).
     pub meta: CertMeta,
+    /// Parsed leaf detail (cert-only, never key material).
+    pub detail: CertDetail,
 }
 
 impl std::fmt::Debug for LoadedCert {
@@ -97,6 +121,7 @@ impl std::fmt::Debug for LoadedCert {
             .field("not_after", &self.not_after)
             .field("identifiers", &self.identifiers)
             .field("meta", &self.meta)
+            .field("detail", &self.detail)
             .finish()
     }
 }
@@ -157,6 +182,7 @@ impl CertStore {
             not_after: leaf_info.not_after,
             identifiers: leaf_info.identifiers,
             meta,
+            detail: leaf_info.detail,
         }))
     }
 
@@ -232,10 +258,79 @@ impl CertStore {
         atomic_write(&self.dir.join(STATE_FILE), &json)
     }
 
+    /// Removes `account.json` after an account deactivation.
+    ///
+    /// Missing file is not an error.
+    pub fn clear_account(&self) -> Result<(), TlsError> {
+        let path = self.dir.join(ACCOUNT_FILE);
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                sync_dir(&self.dir);
+                Ok(())
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(store_io("remove", &path, e)),
+        }
+    }
+
+    /// Probes store health: writability, last write time, and corrupt PEM.
+    ///
+    /// The write probe creates and removes a private temp file in the TLS
+    /// directory; it never touches the certificate, key, or metadata.
+    pub fn health(&self) -> StoreHealth {
+        let last_write = [CERT_FILE, STATE_FILE]
+            .iter()
+            .filter_map(|name| fs::metadata(self.dir.join(name)).ok()?.modified().ok())
+            .max();
+        let corrupt = matches!(
+            self.load(),
+            Err(TlsError::StoreCorrupt { .. } | TlsError::StorePermissions { .. })
+        );
+        StoreHealth {
+            path: self.dir.display().to_string(),
+            writable: probe_writable(&self.dir),
+            last_write,
+            corrupt,
+        }
+    }
+
     fn load_meta_file(&self) -> Option<CertMeta> {
         let path = self.dir.join(META_FILE);
         let bytes = fs::read(&path).ok()?;
         serde_json::from_slice(&bytes).ok()
+    }
+}
+
+/// Appends one issue record, keeping only the last [`HISTORY_LIMIT`].
+pub fn push_history(state: &mut IssueState, record: IssueRecord) {
+    state.history.push(record);
+    let excess = state.history.len().saturating_sub(HISTORY_LIMIT);
+    if excess > 0 {
+        state.history.drain(..excess);
+    }
+}
+
+/// Appends DynDNS audit entries, keeping only the last [`DYNDNS_AUDIT_LIMIT`].
+pub fn push_dyndns_audit(
+    state: &mut IssueState,
+    entries: impl IntoIterator<Item = DynDnsAuditEntry>,
+) {
+    state.dyndns_audit.extend(entries);
+    let excess = state.dyndns_audit.len().saturating_sub(DYNDNS_AUDIT_LIMIT);
+    if excess > 0 {
+        state.dyndns_audit.drain(..excess);
+    }
+}
+
+fn probe_writable(dir: &Path) -> bool {
+    let path = tmp_path(&dir.join("health"));
+    match create_private_new(&path) {
+        Ok(file) => {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            true
+        }
+        Err(_) => false,
     }
 }
 
@@ -245,20 +340,18 @@ fn system_time_unix(t: SystemTime) -> i64 {
         .unwrap_or(0)
 }
 
-/// Parses leaf `notAfter` and DNS identifiers from a PEM chain (first cert).
+/// Parses leaf `notAfter`, DNS identifiers and cert detail from a DER cert.
 pub(crate) struct LeafInfo {
     pub not_after: SystemTime,
     pub identifiers: Vec<String>,
+    pub detail: CertDetail,
 }
 
 pub(crate) fn leaf_info_from_der(der: &[u8]) -> Result<LeafInfo, String> {
     let (_, cert) = X509Certificate::from_der(der).map_err(|e| format!("x509 parse: {e}"))?;
-    let secs = cert.validity().not_after.timestamp();
-    let not_after = if secs >= 0 {
-        UNIX_EPOCH + Duration::from_secs(secs as u64)
-    } else {
-        return Err("certificate notAfter before Unix epoch".into());
-    };
+    let not_after = cert_time(cert.validity().not_after.timestamp())
+        .ok_or_else(|| "certificate notAfter before Unix epoch".to_owned())?;
+    let not_before = cert_time(cert.validity().not_before.timestamp());
 
     let mut identifiers = Vec::new();
     if let Ok(Some(san)) = cert.subject_alternative_name() {
@@ -280,10 +373,74 @@ pub(crate) fn leaf_info_from_der(der: &[u8]) -> Result<LeafInfo, String> {
         }
     }
 
+    let detail = CertDetail {
+        not_before,
+        issuer: Some(cert.issuer().to_string()),
+        subject: Some(cert.subject().to_string()),
+        serial: Some(colon_hex(cert.raw_serial())),
+        signature_algorithm: Some(signature_algorithm_name(&cert)),
+        key_usage: key_usage_names(&cert),
+        chain: Vec::new(),
+    };
+
     Ok(LeafInfo {
         not_after,
         identifiers,
+        detail,
     })
+}
+
+fn cert_time(secs: i64) -> Option<SystemTime> {
+    (secs >= 0).then(|| UNIX_EPOCH + Duration::from_secs(secs as u64))
+}
+
+/// Serial as colon-separated upper-case hex (OpenSSL style).
+fn colon_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// Maps the leaf signature OID to a stable short name.
+fn signature_algorithm_name(cert: &X509Certificate<'_>) -> String {
+    let oid = cert.signature_algorithm.algorithm.to_id_string();
+    match oid.as_str() {
+        "1.2.840.10045.4.3.2" => "ecdsa-with-SHA256".into(),
+        "1.2.840.10045.4.3.3" => "ecdsa-with-SHA384".into(),
+        "1.2.840.10045.4.3.4" => "ecdsa-with-SHA512".into(),
+        "1.2.840.113549.1.1.11" => "sha256WithRSAEncryption".into(),
+        "1.2.840.113549.1.1.12" => "sha384WithRSAEncryption".into(),
+        "1.2.840.113549.1.1.13" => "sha512WithRSAEncryption".into(),
+        "1.2.840.113549.1.1.5" => "sha1WithRSAEncryption".into(),
+        "1.3.101.112" => "Ed25519".into(),
+        _ => oid,
+    }
+}
+
+fn key_usage_names(cert: &X509Certificate<'_>) -> Vec<String> {
+    let Ok(Some(ku)) = cert.key_usage() else {
+        return Vec::new();
+    };
+    let ku = ku.value;
+    let mut names = Vec::new();
+    for (set, name) in [
+        (ku.digital_signature(), "digitalSignature"),
+        (ku.non_repudiation(), "nonRepudiation"),
+        (ku.key_encipherment(), "keyEncipherment"),
+        (ku.data_encipherment(), "dataEncipherment"),
+        (ku.key_agreement(), "keyAgreement"),
+        (ku.key_cert_sign(), "keyCertSign"),
+        (ku.crl_sign(), "cRLSign"),
+        (ku.encipher_only(), "encipherOnly"),
+        (ku.decipher_only(), "decipherOnly"),
+    ] {
+        if set {
+            names.push(name.to_owned());
+        }
+    }
+    names
 }
 
 /// Rejects a secret store file that is readable by group/other (must be `0600`).
@@ -402,5 +559,98 @@ fn sync_dir(dir: &Path) {
 fn store_io(op: &str, path: &Path, source: io::Error) -> TlsError {
     TlsError::StoreIo {
         message: format!("{op} {}: {source}", path.display()),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::status::{IssueOutcome, IssueRecord};
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dnscraft-tls-store-unit-{label}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn history_and_dyndns_audit_are_bounded() {
+        let mut state = IssueState::default();
+        for i in 0..(HISTORY_LIMIT + 5) as u64 {
+            push_history(
+                &mut state,
+                IssueRecord {
+                    timestamp: UNIX_EPOCH + Duration::from_secs(i),
+                    outcome: IssueOutcome::Renewed,
+                    error: None,
+                    serial: Some(i.to_string()),
+                },
+            );
+        }
+        assert_eq!(state.history.len(), HISTORY_LIMIT);
+        assert_eq!(state.history.first().unwrap().serial.as_deref(), Some("5"));
+
+        let entries = (0..(DYNDNS_AUDIT_LIMIT + 3)).map(|i| DynDnsAuditEntry {
+            timestamp: UNIX_EPOCH,
+            name: format!("n{i}"),
+            record_type: "A".into(),
+            content: "203.0.113.1".into(),
+        });
+        push_dyndns_audit(&mut state, entries);
+        assert_eq!(state.dyndns_audit.len(), DYNDNS_AUDIT_LIMIT);
+        assert_eq!(state.dyndns_audit.first().unwrap().name, "n3");
+    }
+
+    #[test]
+    fn health_reports_writable_and_corrupt() {
+        let dir = temp_dir("health");
+        let store = CertStore::open(&dir).unwrap();
+        let health = store.health();
+        assert!(health.writable, "{health:?}");
+        assert!(!health.corrupt);
+        assert!(health.path.ends_with(TLS_DIR_NAME));
+
+        fs::write(store.dir().join(CERT_FILE), b"NOT PEM").unwrap();
+        fs::write(store.dir().join(KEY_FILE), b"NOT PEM").unwrap();
+        assert!(store.health().corrupt);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn meta_source_and_cert_detail_round_trip() {
+        let dir = temp_dir("roundtrip");
+        let store = CertStore::open(&dir).unwrap();
+        let certified = rcgen::generate_simple_self_signed(vec!["dns.example.com".into()]).unwrap();
+        let chain = certified.cert.pem();
+        let key = certified.signing_key.serialize_pem();
+        store
+            .save(
+                chain.as_bytes(),
+                key.as_bytes(),
+                &CertMeta {
+                    source: CertSource::Manual,
+                    ..CertMeta::default()
+                },
+            )
+            .unwrap();
+
+        let loaded = store.load().unwrap().unwrap();
+        assert_eq!(loaded.meta.source, CertSource::Manual);
+        assert!(loaded.detail.not_before.is_some());
+        assert!(loaded.detail.serial.is_some());
+        assert_eq!(loaded.detail.chain.len(), 1);
+        assert!(!loaded.detail.chain[0].contains("PRIVATE KEY"));
+
+        store.save_account(b"{}").unwrap();
+        assert!(store.load_account().unwrap().is_some());
+        store.clear_account().unwrap();
+        assert!(store.load_account().unwrap().is_none());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

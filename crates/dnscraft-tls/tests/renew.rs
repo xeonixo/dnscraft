@@ -182,6 +182,7 @@ fn status_from_cert_sets_flags() {
         not_after: now + days(7),
         identifiers: vec!["dns.example.com".into()],
         meta: CertMeta::default(),
+        detail: dnscraft_tls::CertDetail::default(),
     };
     let status = TlsStatus::from_cert(
         Some(&loaded),

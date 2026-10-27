@@ -10,9 +10,10 @@ use rand::{Rng, RngExt};
 use reqwest::Client;
 use tracing::debug;
 
-use crate::cloudflare::CloudflareClient;
-use crate::config::DynDnsConfig;
+use crate::cloudflare::{CloudflareClient, DnsRecord};
+use crate::config::{DynDnsConfig, Ipv6IdentifierMode};
 use crate::error::TlsError;
+use crate::status::DynDnsAuditEntry;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -31,6 +32,23 @@ pub struct DynDnsResult {
     pub changed: bool,
     /// Wall time of the last successful content change, if any this pass.
     pub last_change: Option<SystemTime>,
+    /// Records written by this pass (audit trail).
+    pub audit: Vec<DynDnsAuditEntry>,
+}
+
+/// One managed record as seen by the DNS provider (record inventory).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InventoryRecord {
+    /// Record owner name.
+    pub name: String,
+    /// Record type (`A` / `AAAA`).
+    pub record_type: String,
+    /// Record content.
+    pub content: String,
+    /// `true` when the name is one this node maintains.
+    pub managed: bool,
+    /// `true` when more than one record of this name+type exists.
+    pub conflict: bool,
 }
 
 /// HTTP client pair for per-family public IP discovery.
@@ -177,6 +195,92 @@ pub fn dyndns_names(cfg: &DynDnsConfig, public_domain: &str) -> Vec<String> {
     names
 }
 
+/// Reads the first global IPv6 address on one of `interfaces`.
+///
+/// Linux uses `/proc/net/if_inet6`; other platforms return `None` (echo
+/// discovery remains the default there).
+fn interface_ipv6(interfaces: &[String]) -> Option<Ipv6Addr> {
+    #[cfg(target_os = "linux")]
+    {
+        let text = std::fs::read_to_string("/proc/net/if_inet6").ok()?;
+        return parse_if_inet6(&text, interfaces);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = interfaces;
+        None
+    }
+}
+
+/// Parses `/proc/net/if_inet6`, preferring the configured interface order and
+/// skipping link-local addresses.
+#[cfg(any(target_os = "linux", test))]
+fn parse_if_inet6(text: &str, interfaces: &[String]) -> Option<Ipv6Addr> {
+    for iface in interfaces {
+        for line in text.lines() {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 6 || !fields[5].eq_ignore_ascii_case(iface) {
+                continue;
+            }
+            let scope = u32::from_str_radix(fields[3], 16).unwrap_or(0);
+            // 0x20 = link-local; skip it so we publish a routable address.
+            if scope & 0x20 != 0 {
+                continue;
+            }
+            if let Some(addr) = parse_hex_ipv6(fields[0]) {
+                return Some(addr);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_hex_ipv6(hex: &str) -> Option<Ipv6Addr> {
+    if hex.len() != 32 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut octets = [0u8; 16];
+    for (i, byte) in octets.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(Ipv6Addr::from(octets))
+}
+
+/// Lists the A/AAAA records this node manages (record inventory).
+///
+/// Returns an empty list when `cfg.record_inventory` is false.
+pub async fn record_inventory(
+    cfg: &DynDnsConfig,
+    public_domain: &str,
+    cloudflare: &CloudflareClient,
+) -> Result<Vec<InventoryRecord>, TlsError> {
+    if !cfg.record_inventory {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for name in dyndns_names(cfg, public_domain) {
+        for record_type in ["A", "AAAA"] {
+            let records = cloudflare.list_records(&name, record_type).await?;
+            append_inventory(&mut out, records);
+        }
+    }
+    Ok(out)
+}
+
+fn append_inventory(out: &mut Vec<InventoryRecord>, records: Vec<DnsRecord>) {
+    let conflict = records.len() > 1;
+    for record in records {
+        out.push(InventoryRecord {
+            name: record.name,
+            record_type: record.record_type,
+            content: record.content,
+            managed: true,
+            conflict,
+        });
+    }
+}
+
 /// One DynDNS pass: echo → compare → upsert under the Cloudflare writer mutex.
 ///
 /// Does not touch certificates. When `cfg.enabled` is false, returns
@@ -201,10 +305,42 @@ pub async fn dyndns_once(
         }
     }
     if cfg.ipv6 {
-        match echo.discover(&cfg.echo_url, false).await? {
-            Some(IpAddr::V6(v6)) => result.ipv6 = Some(v6),
-            Some(IpAddr::V4(_)) => unreachable!("discover validates family"),
-            None => result.skipped_no_route.push("ipv6"),
+        match cfg.ipv6_identifier.mode {
+            Ipv6IdentifierMode::Static => {
+                let addr = cfg
+                    .ipv6_identifier
+                    .static_address
+                    .as_deref()
+                    .and_then(|s| s.trim().parse::<Ipv6Addr>().ok())
+                    .ok_or_else(|| TlsError::DyndnsIpv6 {
+                        message: "static IPv6 identifier is missing or invalid".into(),
+                    })?;
+                result.ipv6 = Some(addr);
+            }
+            // Named interfaces: read the OS-assigned (EUI-64 / stable-privacy)
+            // global address instead of asking the echo service.
+            Ipv6IdentifierMode::Eui64 | Ipv6IdentifierMode::StablePrivacy
+                if !cfg.interfaces.is_empty() =>
+            {
+                match interface_ipv6(&cfg.interfaces) {
+                    Some(addr) => result.ipv6 = Some(addr),
+                    None => {
+                        return Err(TlsError::DyndnsIpv6 {
+                            message: format!(
+                                "no global IPv6 address on interfaces {:?}",
+                                cfg.interfaces
+                            ),
+                        });
+                    }
+                }
+            }
+            Ipv6IdentifierMode::Eui64 | Ipv6IdentifierMode::StablePrivacy => {
+                match echo.discover(&cfg.echo_url, false).await? {
+                    Some(IpAddr::V6(v6)) => result.ipv6 = Some(v6),
+                    Some(IpAddr::V4(_)) => unreachable!("discover validates family"),
+                    None => result.skipped_no_route.push("ipv6"),
+                }
+            }
         }
     }
 
@@ -246,8 +382,15 @@ async fn ensure_address(
         .upsert_address(name, record_type, content)
         .await
         .map_err(map_update_err)?;
+    let now = SystemTime::now();
     result.changed = true;
-    result.last_change = Some(SystemTime::now());
+    result.last_change = Some(now);
+    result.audit.push(DynDnsAuditEntry {
+        timestamp: now,
+        name: name.to_owned(),
+        record_type: record_type.to_owned(),
+        content: content.to_owned(),
+    });
     Ok(())
 }
 
@@ -313,5 +456,46 @@ mod unit {
             let d = dyndns_interval_with_rng(base, &mut rng);
             assert!(d.as_secs() >= 270 && d.as_secs() <= 330, "{d:?}");
         }
+    }
+
+    #[test]
+    fn parse_if_inet6_skips_link_local_and_prefers_configured_order() {
+        // ifindex prefixlen scope flags name
+        let text = "\
+fe800000000000000020cafffe9f3f0a 02 40 20 80 eth1
+20010db8000000000000000000000010 03 40 00 00 eth1
+20010db8000000000000000000000020 02 40 00 00 eth0
+";
+        let addrs = vec!["eth0".to_owned(), "eth1".to_owned()];
+        assert_eq!(
+            parse_if_inet6(text, &addrs),
+            Some("2001:db8::20".parse().unwrap())
+        );
+        // Only eth1 configured: link-local is skipped, global wins.
+        assert_eq!(
+            parse_if_inet6(text, &["eth1".to_owned()]),
+            Some("2001:db8::10".parse().unwrap())
+        );
+        assert_eq!(parse_if_inet6(text, &["eth9".to_owned()]), None);
+        assert_eq!(parse_hex_ipv6("nothex"), None);
+    }
+
+    #[test]
+    fn inventory_marks_duplicate_records_as_conflicts() {
+        let record = |id: &str, content: &str| DnsRecord {
+            id: id.into(),
+            name: "node1.dns.example.com".into(),
+            record_type: "A".into(),
+            content: content.into(),
+            ttl: 1,
+            proxied: false,
+        };
+        let mut out = Vec::new();
+        append_inventory(
+            &mut out,
+            vec![record("1", "203.0.113.1"), record("2", "203.0.113.2")],
+        );
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|r| r.managed && r.conflict));
     }
 }

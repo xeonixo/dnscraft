@@ -22,11 +22,27 @@
 //! | [`TlsError::StoreIo`] | `tls.store.io` |
 //! | [`TlsError::StoreCorrupt`] | `tls.store.corrupt` |
 //! | [`TlsError::StorePermissions`] | `tls.store.permissions` |
+//! | [`TlsError::StoreUnhealthy`] | `tls.store.unhealthy` |
 //! | [`TlsError::DyndnsEcho`] | `tls.dyndns.echo` |
 //! | [`TlsError::DyndnsUpdate`] | `tls.dyndns.update` |
 //! | [`TlsError::DyndnsEntryConflict`] | `tls.dyndns.entry_conflict` |
+//! | [`TlsError::DyndnsIpv6`] | `tls.dyndns.ipv6` |
 //! | [`TlsError::CertExpiring`] | `tls.cert.expiring` |
 //! | [`TlsError::CertExpired`] | `tls.cert.expired` |
+//! | [`TlsError::CertManualInvalid`] | `tls.cert.manual.invalid` |
+//! | [`TlsError::CertRevoked`] | `tls.cert.revoked` |
+//! | [`TlsError::CertRotateFailed`] | `tls.cert.rotate.failed` |
+//! | [`TlsError::CertAbsent`] | `tls.cert.absent` |
+//! | [`TlsError::AcmeAccountEab`] | `tls.acme.account.eab` |
+//! | [`TlsError::AcmeAccountTos`] | `tls.acme.account.tos` |
+//! | [`TlsError::AcmeAccountRollover`] | `tls.acme.account.rollover` |
+//! | [`TlsError::AcmeOrderPending`] | `tls.acme.order_pending` |
+//! | [`TlsError::AcmePreflightFailed`] | `tls.acme.preflight.failed` |
+//! | [`TlsError::DnsProviderAuth`] | `tls.dns.provider.auth` |
+//! | [`TlsError::DnsProviderZone`] | `tls.dns.provider.zone` |
+//! | [`TlsError::DnsManual`] | `tls.dns.manual` |
+//! | [`TlsError::PinMismatch`] | `tls.pin.mismatch` |
+//! | [`TlsError::NotifyFailed`] | `tls.notify.failed` |
 
 use std::time::Duration;
 
@@ -135,6 +151,93 @@ pub enum TlsError {
     /// Status flag: `not_after` is in the past.
     #[error("certificate has expired")]
     CertExpired,
+    /// Manually uploaded certificate/key/chain is not valid or does not match.
+    #[error("invalid manual certificate: {message}")]
+    CertManualInvalid {
+        /// Detail for logs; never key material.
+        message: String,
+    },
+    /// The stored certificate has been revoked locally.
+    #[error("certificate has been revoked")]
+    CertRevoked,
+    /// Forced certificate key rotation failed.
+    #[error("certificate key rotation failed: {message}")]
+    CertRotateFailed {
+        /// Detail for logs.
+        message: String,
+    },
+    /// No certificate is stored yet.
+    #[error("no certificate is stored")]
+    CertAbsent,
+    /// External Account Binding is missing or rejected by the CA.
+    #[error("ACME external account binding error: {message}")]
+    AcmeAccountEab {
+        /// Detail for logs (no HMAC material).
+        message: String,
+    },
+    /// The operator has not agreed to the CA terms of service.
+    #[error("ACME terms of service not agreed: {message}")]
+    AcmeAccountTos {
+        /// Detail for logs.
+        message: String,
+    },
+    /// ACME account key rollover failed or is unsupported by the CA.
+    #[error("ACME account key rollover failed: {message}")]
+    AcmeAccountRollover {
+        /// Detail for logs.
+        message: String,
+    },
+    /// An ACME order is already in flight.
+    #[error("ACME order pending: {message}")]
+    AcmeOrderPending {
+        /// Detail for logs.
+        message: String,
+    },
+    /// Preflight / dry-run found one or more failing checks.
+    #[error("ACME preflight failed: {message}")]
+    AcmePreflightFailed {
+        /// Failed check names.
+        message: String,
+    },
+    /// The certificate store is corrupt or not writable.
+    #[error("TLS store unhealthy: {message}")]
+    StoreUnhealthy {
+        /// Detail for logs.
+        message: String,
+    },
+    /// DNS provider credentials are missing or unusable.
+    #[error("DNS provider auth error: {message}")]
+    DnsProviderAuth {
+        /// Detail for logs (never the token).
+        message: String,
+    },
+    /// No configured DNS zone matches the record name.
+    #[error("DNS provider zone error: {message}")]
+    DnsProviderZone {
+        /// Detail for logs.
+        message: String,
+    },
+    /// Manual DNS-01 requires the operator to publish the challenge TXT.
+    #[error("manual DNS-01: {message}")]
+    DnsManual {
+        /// Challenge names/values the operator must publish.
+        message: String,
+    },
+    /// IPv6 stable-identifier / interface discovery failed.
+    #[error("DynDNS IPv6 error: {message}")]
+    DyndnsIpv6 {
+        /// Detail for logs.
+        message: String,
+    },
+    /// The leaf fingerprint does not match the configured trust pin.
+    #[error("certificate fingerprint does not match trust pin")]
+    PinMismatch,
+    /// Webhook notification delivery failed.
+    #[error("notification delivery failed: {message}")]
+    NotifyFailed {
+        /// Detail for logs.
+        message: String,
+    },
 }
 
 impl TlsError {
@@ -158,6 +261,22 @@ impl TlsError {
             Self::DyndnsEntryConflict => "tls.dyndns.entry_conflict",
             Self::CertExpiring => "tls.cert.expiring",
             Self::CertExpired => "tls.cert.expired",
+            Self::CertManualInvalid { .. } => "tls.cert.manual.invalid",
+            Self::CertRevoked => "tls.cert.revoked",
+            Self::CertRotateFailed { .. } => "tls.cert.rotate.failed",
+            Self::CertAbsent => "tls.cert.absent",
+            Self::AcmeAccountEab { .. } => "tls.acme.account.eab",
+            Self::AcmeAccountTos { .. } => "tls.acme.account.tos",
+            Self::AcmeAccountRollover { .. } => "tls.acme.account.rollover",
+            Self::AcmeOrderPending { .. } => "tls.acme.order_pending",
+            Self::AcmePreflightFailed { .. } => "tls.acme.preflight.failed",
+            Self::StoreUnhealthy { .. } => "tls.store.unhealthy",
+            Self::DnsProviderAuth { .. } => "tls.dns.provider.auth",
+            Self::DnsProviderZone { .. } => "tls.dns.provider.zone",
+            Self::DnsManual { .. } => "tls.dns.manual",
+            Self::DyndnsIpv6 { .. } => "tls.dyndns.ipv6",
+            Self::PinMismatch => "tls.pin.mismatch",
+            Self::NotifyFailed { .. } => "tls.notify.failed",
         }
     }
 
@@ -290,6 +409,48 @@ mod tests {
             TlsError::DyndnsEntryConflict,
             TlsError::CertExpiring,
             TlsError::CertExpired,
+            TlsError::CertManualInvalid {
+                message: "x".into(),
+            },
+            TlsError::CertRevoked,
+            TlsError::CertRotateFailed {
+                message: "x".into(),
+            },
+            TlsError::CertAbsent,
+            TlsError::AcmeAccountEab {
+                message: "x".into(),
+            },
+            TlsError::AcmeAccountTos {
+                message: "x".into(),
+            },
+            TlsError::AcmeAccountRollover {
+                message: "x".into(),
+            },
+            TlsError::AcmeOrderPending {
+                message: "x".into(),
+            },
+            TlsError::AcmePreflightFailed {
+                message: "x".into(),
+            },
+            TlsError::StoreUnhealthy {
+                message: "x".into(),
+            },
+            TlsError::DnsProviderAuth {
+                message: "x".into(),
+            },
+            TlsError::DnsProviderZone {
+                message: "x".into(),
+            },
+            TlsError::DnsManual {
+                message: "x".into(),
+            },
+            TlsError::DyndnsIpv6 {
+                message: "x".into(),
+            },
+            TlsError::PinMismatch,
+            TlsError::NotifyFailed {
+                message: "x".into(),
+            },
         ];
         let mut seen = std::collections::HashSet::new();
         for err in &all {
@@ -297,15 +458,18 @@ mod tests {
             assert!(seen.insert(code), "duplicate code {code}");
             let (area, reason) = code.split_once('.').expect("area.reason");
             assert_eq!(area, "tls");
-            let ok =
-                |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+            let ok = |s: &str| {
+                !s.is_empty()
+                    && s.chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            };
             // reason may contain a further dot (e.g. config.invalid)
             for part in reason.split('.') {
                 assert!(ok(part), "{code}");
             }
             assert!(!err.to_string().is_empty());
         }
-        assert_eq!(seen.len(), 17);
+        assert_eq!(seen.len(), 33);
         assert_eq!(
             TlsError::CloudflareHttp {
                 message: "x".into(),
