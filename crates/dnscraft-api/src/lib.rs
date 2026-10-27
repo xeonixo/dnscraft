@@ -24,6 +24,7 @@ mod config_apply;
 mod error;
 mod mcp_backend;
 mod modules;
+mod protected_list;
 mod query_log;
 mod secret;
 mod server;
@@ -54,6 +55,7 @@ pub use modules::{
     ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyTls, ModuleAppliers,
     ModuleFuture,
 };
+pub use protected_list::derive_protected_domains;
 pub use query_log::{
     ClientEnricher, ClientView, Order, OrderBy, QueryLog, QueryLogFilter, QueryLogPage,
     QueryLogSink,

@@ -10,7 +10,7 @@
 //! `mcp.domain_too_broad`, `mcp.protected_domain`,
 //! `mcp.rule_limit_exceeded`, `mcp.duration_exceeds_maximum`.
 
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use axum::Json;
 use axum::extract::Extension;
@@ -27,12 +27,15 @@ use crate::api::response::success;
 use crate::clock::unix_seconds;
 use crate::error::ControlApiError;
 use crate::mcp_backend::{self, rfc3339, stored_time};
+use crate::protected_list::derive_protected_domains;
 use crate::query_log::new_id;
 use crate::server::AppState;
 
-use dnscraft_filtering::{DomainName, RecordTypeSel, RuleAction, RuleSpec, SetId, build_rule};
+use dnscraft_filtering::{
+    DomainName, FilterError, RecordTypeSel, RuleAction, RuleSpec, SetId, TempAllow, build_rule,
+};
 use dnscraft_mcp::ProtectedDomains;
-use dnscraft_mcp::dto::{ListRulesParams, QType, TestQueryParams};
+use dnscraft_mcp::dto::{ListRulesParams, PauseDuration, QType, TestQueryParams};
 
 /// `POST /api/v1/filtering/explain-block`.
 #[derive(Deserialize)]
@@ -241,15 +244,16 @@ fn active_rule(rule: &Value, now: SystemTime) -> bool {
         .is_none_or(|expires| expires > now)
 }
 
-/// Protected domains configured for MCP (`control_api.mcp.protected_domains`).
-///
-/// M23 extends this with the hosts derived from the real module config.
-fn protected_for(state: &AppState) -> Result<ProtectedDomains, ControlApiError> {
-    ProtectedDomains::new(state.mcp_config().protected_domains.iter().cloned()).map_err(|err| {
-        ControlApiError::Module {
-            code: err.code(),
-            params: err.params(),
-        }
+/// Protected domains derived from `snapshot` plus the owner's additions.
+fn protected_for(state: &AppState, snapshot: &Value) -> Result<ProtectedDomains, ControlApiError> {
+    derive_protected_domains(
+        Some(snapshot),
+        state.oidc_issuer(),
+        state.mcp_config().protected_domains.iter().cloned(),
+    )
+    .map_err(|err| ControlApiError::Module {
+        code: err.code(),
+        params: err.params(),
     })
 }
 
@@ -274,6 +278,265 @@ fn parse_expiry(value: &Value) -> Result<SystemTime, ControlApiError> {
             json!({ "reason": "expires_at must be unix seconds or an RFC 3339 timestamp" }),
         )
     })
+}
+
+// ---------------------------------------------------------------------------
+// Temporary allows and pauses (runtime state, never a config version)
+// ---------------------------------------------------------------------------
+
+/// Body of `POST /api/v1/filtering/temporary-allows`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TempAllowBody {
+    domain: String,
+    include_subdomains: bool,
+    duration: PauseDuration,
+    #[serde(default)]
+    filter_set_id: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// Body of `POST /api/v1/filtering/pause`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PauseBody {
+    #[serde(default)]
+    filter_set_id: Option<String>,
+    duration: PauseDuration,
+}
+
+/// Body of `POST /api/v1/filtering/resume`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ResumeBody {
+    #[serde(default)]
+    filter_set_id: Option<String>,
+}
+
+/// Canonicalises a temporary-allow target with the filtering builder.
+fn canonical_allow_domain(raw: &str) -> Result<DomainName, ControlApiError> {
+    let spec = RuleSpec {
+        action: RuleAction::Allow,
+        domain: raw.to_owned(),
+        include_subdomains: false,
+        record_types: RecordTypeSel::default(),
+        important: false,
+        rewrite: None,
+    }
+    .normalized()
+    .map_err(build_error)?;
+    let domain = DomainName::parse(&spec.domain)
+        .map_err(|_| mcp_error("filter_name.invalid_char", json!({ "domain": raw })))?;
+    if domain.label_count() < 2 {
+        return Err(mcp_error(
+            "mcp.domain_too_broad",
+            json!({ "domain": domain.as_str() }),
+        ));
+    }
+    Ok(domain)
+}
+
+/// Rejects a fixed-set duration above the configured maximum.
+fn duration_error(requested: PauseDuration, maximum: Duration) -> Option<ControlApiError> {
+    (requested.seconds() > maximum.as_secs()).then(|| {
+        mcp_error(
+            "mcp.duration_exceeds_maximum",
+            json!({ "requested": requested.as_str(), "maximum": iso_duration(maximum) }),
+        )
+    })
+}
+
+fn iso_duration(duration: Duration) -> String {
+    match duration.as_secs() {
+        300 => "PT5M".to_owned(),
+        900 => "PT15M".to_owned(),
+        3600 => "PT1H".to_owned(),
+        seconds => format!("PT{seconds}S"),
+    }
+}
+
+/// Maps a filtering engine error; anything but an unknown set is internal.
+fn engine_error(err: FilterError, set: &str) -> ControlApiError {
+    match err {
+        FilterError::UnknownSet(_) => unknown_set(set),
+        other => ControlApiError::Internal {
+            message: other.to_string(),
+        },
+    }
+}
+
+/// `POST /api/v1/filtering/temporary-allows`.
+pub(crate) async fn allow_temporarily(
+    State(state): State<AppState>,
+    auth: Option<Extension<Authenticated>>,
+    body: Result<Json<TempAllowBody>, JsonRejection>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let body = json_body(body, "mcp.invalid_input")?;
+    let actor = actor(auth);
+    if let Some(error) = duration_error(
+        body.duration,
+        state.mcp_config().max_temporary_allow_duration,
+    ) {
+        return Err(error);
+    }
+    let domain = canonical_allow_domain(&body.domain)?;
+    let filter = state
+        .filter_engine()
+        .ok_or_else(|| ControlApiError::Internal {
+            message: "filter engine is not configured".to_owned(),
+        })?;
+    let service = service(&state)?;
+    let snapshot = stored_snapshot(service).await?;
+    reject_protected(
+        protected_for(&state, &snapshot)?,
+        domain.as_str(),
+        body.include_subdomains,
+    )?;
+
+    let set = resolve_set(body.filter_set_id.as_deref())?;
+    let now = state.clock().now();
+    let until = now + Duration::from_secs(body.duration.seconds());
+    let rule = TempAllow {
+        domain: domain.clone(),
+        include_subdomains: body.include_subdomains,
+        until,
+        created_at: now,
+    };
+    let after = json!({
+        "domain": domain.as_str(),
+        "include_subdomains": body.include_subdomains,
+        "duration": body.duration.as_str(),
+        "created_at": rfc3339(now),
+        "expires_at": rfc3339(until),
+        "filter_set_id": set.as_str(),
+    });
+    if let Err(err) = filter.allow_temporarily(&set, rule) {
+        let mapped = engine_error(err, set.as_str());
+        service
+            .record_action(
+                &actor,
+                "mcp.allow_temporarily",
+                None,
+                Some(&after),
+                Some(mapped.code()),
+            )
+            .await;
+        return Err(mapped);
+    }
+    service
+        .record_action(&actor, "mcp.allow_temporarily", None, Some(&after), None)
+        .await;
+    let _ = body.reason;
+
+    Ok(success(json!({
+        "domain": domain.as_str(),
+        "include_subdomains": body.include_subdomains,
+        "created_at": rfc3339(now),
+        "expires_at": rfc3339(until),
+        "filter_set_id": set.as_str(),
+    })))
+}
+
+/// `POST /api/v1/filtering/pause`.
+pub(crate) async fn pause_filter_set(
+    State(state): State<AppState>,
+    auth: Option<Extension<Authenticated>>,
+    body: Result<Json<PauseBody>, JsonRejection>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let body = json_body(body, "mcp.invalid_input")?;
+    let actor = actor(auth);
+    if let Some(error) = duration_error(body.duration, state.mcp_config().max_pause_duration) {
+        return Err(error);
+    }
+    let filter = state
+        .filter_engine()
+        .ok_or_else(|| ControlApiError::Internal {
+            message: "filter engine is not configured".to_owned(),
+        })?;
+    let service = service(&state)?;
+    let set = resolve_set(body.filter_set_id.as_deref())?;
+    let now = state.clock().now();
+    let until = now + Duration::from_secs(body.duration.seconds());
+    let before = json!({
+        "filter_set_id": set.as_str(),
+        "paused_until": filter.paused_until(&set).map(rfc3339),
+    });
+    let after = json!({
+        "filter_set_id": set.as_str(),
+        "duration": body.duration.as_str(),
+        "paused_until": rfc3339(until),
+    });
+    if let Err(err) = filter.set_paused_until(&set, Some(until)) {
+        let mapped = engine_error(err, set.as_str());
+        service
+            .record_action(
+                &actor,
+                "mcp.pause_filter_set",
+                Some(&before),
+                Some(&after),
+                Some(mapped.code()),
+            )
+            .await;
+        return Err(mapped);
+    }
+    service
+        .record_action(
+            &actor,
+            "mcp.pause_filter_set",
+            Some(&before),
+            Some(&after),
+            None,
+        )
+        .await;
+
+    Ok(success(json!({
+        "filter_set_id": set.as_str(),
+        "paused_until": rfc3339(until),
+    })))
+}
+
+/// `POST /api/v1/filtering/resume`.
+pub(crate) async fn resume_filter_set(
+    State(state): State<AppState>,
+    auth: Option<Extension<Authenticated>>,
+    body: Result<Json<ResumeBody>, JsonRejection>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let body = json_body(body, "mcp.invalid_input")?;
+    let actor = actor(auth);
+    let filter = state
+        .filter_engine()
+        .ok_or_else(|| ControlApiError::Internal {
+            message: "filter engine is not configured".to_owned(),
+        })?;
+    let service = service(&state)?;
+    let set = resolve_set(body.filter_set_id.as_deref())?;
+    let was_paused_until = filter.paused_until(&set).map(rfc3339);
+    let after = json!({
+        "filter_set_id": set.as_str(),
+        "resumed": was_paused_until.is_some(),
+    });
+    if let Err(err) = filter.set_paused_until(&set, None) {
+        let mapped = engine_error(err, set.as_str());
+        service
+            .record_action(
+                &actor,
+                "mcp.resume_filter_set",
+                None,
+                Some(&after),
+                Some(mapped.code()),
+            )
+            .await;
+        return Err(mapped);
+    }
+    service
+        .record_action(&actor, "mcp.resume_filter_set", None, Some(&after), None)
+        .await;
+
+    Ok(success(json!({
+        "filter_set_id": set.as_str(),
+        "resumed": was_paused_until.is_some(),
+    })))
 }
 
 /// `POST /api/v1/filtering/custom-rules`.
@@ -303,8 +566,10 @@ pub(crate) async fn add_custom_rule(
         ));
     }
     let rule_text = build_rule(&spec).map_err(build_error)?;
+    let service = service(&state)?;
+    let snapshot = stored_snapshot(service).await?;
     reject_protected(
-        protected_for(&state)?,
+        protected_for(&state, &snapshot)?,
         domain.as_str(),
         body.include_subdomains,
     )?;
@@ -332,7 +597,7 @@ pub(crate) async fn add_custom_rule(
     let actor_id = actor.actor_id.clone();
     let stored_set = set_str.clone();
     let stored_domain = domain.as_str().to_owned();
-    let version = service(&state)?
+    let version = service
         .mutate(&actor, "mcp.add_rule", |snapshot| {
             let set = set_mut(snapshot, &stored_set).ok_or_else(|| unknown_set(&stored_set))?;
             let rules = set
@@ -392,11 +657,13 @@ pub(crate) async fn remove_custom_rule(
         .map_err(|_| mcp_error("filter_name.invalid_char", json!({ "domain": body.domain })))?;
     let set = resolve_set(body.filter_set_id.as_deref())?;
     let set_str = set.as_str().to_owned();
-    let protected = protected_for(&state)?;
+    let service = service(&state)?;
+    let snapshot = stored_snapshot(service).await?;
+    let protected = protected_for(&state, &snapshot)?;
     let stored_domain = domain.as_str().to_owned();
     let stored_set = set_str.clone();
     let mut removed = false;
-    let version = service(&state)?
+    let version = service
         .mutate(&actor, "mcp.remove_rule", |snapshot| {
             let set = set_mut(snapshot, &stored_set).ok_or_else(|| unknown_set(&stored_set))?;
             let Some(rules) = set

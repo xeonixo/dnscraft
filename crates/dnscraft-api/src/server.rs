@@ -40,6 +40,7 @@ pub struct AppState {
     query_log: Option<Arc<QueryLog>>,
     mcp_backend: Option<Arc<McpBackendInner>>,
     mcp_config: McpConfig,
+    oidc_issuer: Option<String>,
     clock: Arc<dyn Clock>,
     filter: Option<Arc<FilterEngine>>,
     policy: Option<Arc<PolicyEngine>>,
@@ -69,6 +70,7 @@ impl AppState {
             query_log: None,
             mcp_backend: None,
             mcp_config: McpConfig::default(),
+            oidc_issuer: None,
             clock: Arc::new(SystemClock),
             filter: None,
             policy: None,
@@ -163,6 +165,19 @@ impl AppState {
     /// The MCP config used by the endpoint gating and limits.
     pub(crate) fn mcp_config(&self) -> &McpConfig {
         &self.mcp_config
+    }
+
+    /// Attaches the OIDC issuer URL whose host becomes a protected domain.
+    ///
+    /// Callers set this only when OIDC is enabled (`control_api.auth`).
+    pub fn with_oidc_issuer(mut self, issuer: impl Into<String>) -> Self {
+        self.oidc_issuer = Some(issuer.into());
+        self
+    }
+
+    /// The configured OIDC issuer URL, if OIDC is enabled.
+    pub(crate) fn oidc_issuer(&self) -> Option<&str> {
+        self.oidc_issuer.as_deref()
     }
 
     /// Attaches the session and bearer-token stores.
@@ -326,6 +341,9 @@ pub async fn serve(
     // endpoints can read it, whether or not a backend is attached.
     let mut state = state;
     state.mcp_config = mcp_config;
+    if config.auth.oidc_enabled && !config.auth.oidc_issuer.is_empty() {
+        state.oidc_issuer = Some(config.auth.oidc_issuer.clone());
+    }
     let router = state.router();
     if config.tls {
         let server_config = tls.ok_or_else(|| ControlApiError::Internal {

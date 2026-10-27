@@ -134,6 +134,25 @@ impl ConfigService {
         Ok((version, snapshot))
     }
 
+    /// Records a runtime action (temporary allow, pause, resume) in the audit
+    /// log without creating a config version.
+    ///
+    /// The current version is recorded for context. An audit failure is logged
+    /// and never masks the outcome of the action itself.
+    pub(crate) async fn record_action(
+        &self,
+        actor: &ConfigActor,
+        action: &str,
+        before: Option<&Value>,
+        after: Option<&Value>,
+        error_code: Option<&str>,
+    ) {
+        let version = self.store.current().await.ok().flatten();
+        let result = if error_code.is_some() { "error" } else { "ok" };
+        self.record(actor, action, version, before, after, result, error_code)
+            .await;
+    }
+
     /// Lists stored versions newest first.
     pub async fn versions(
         &self,

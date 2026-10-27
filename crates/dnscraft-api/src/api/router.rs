@@ -28,7 +28,8 @@ use super::filter_routes::{
 };
 use super::listener_routes::{delete_listener, list_listeners, put_listener};
 use super::mcp_endpoints::{
-    add_custom_rule, explain_block, list_mcp_rules, remove_custom_rule, test_query,
+    add_custom_rule, allow_temporarily, explain_block, list_mcp_rules, pause_filter_set,
+    remove_custom_rule, resume_filter_set, test_query,
 };
 use super::query_log_routes::{get_query_log, list_query_log};
 use super::rate_limit::rate_limit;
@@ -52,6 +53,9 @@ pub(crate) fn build_router(state: AppState) -> Router {
             "/filtering/custom-rules",
             post(add_custom_rule).delete(remove_custom_rule),
         )
+        .route("/filtering/temporary-allows", post(allow_temporarily))
+        .route("/filtering/pause", post(pause_filter_set))
+        .route("/filtering/resume", post(resume_filter_set))
         .route("/policy/test-query", post(test_query));
     if state.config_service().is_some() {
         api = api

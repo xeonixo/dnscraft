@@ -319,6 +319,10 @@ mod tests {
                 params: None,
             },
             ControlApiError::Module {
+                code: "mcp.domain_too_broad",
+                params: None,
+            },
+            ControlApiError::Module {
                 code: "filter_build.invalid_domain",
                 params: None,
             },
