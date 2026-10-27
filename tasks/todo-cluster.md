@@ -19,7 +19,7 @@
       to `config_versions` / replicated-origin column); adopt master version without local bump.
 - [x] CL3a `auth_snapshot()` (hashes + non-secret OIDC + session epoch) + make
       `requirement`/`authorize` public for the master RBAC re-check.
-- [ ] CL3b `apply_runtime_command(kind, payload)` (pause/resume, temporary allow).
+- [x] CL3b `apply_runtime_command(kind, payload)` (pause/resume, temporary allow).
 - [ ] CL4 query-log outbox: `seq` + outbox/ack table, transactional enqueue in `QueryLog::insert_batch`.
 - [ ] CL5 stats `node_id` dimension in `stats_hourly`/`stats_daily` (migration + rollup SQL + `RollupRow`)
       + `node_id` filter on query-log/stats.
