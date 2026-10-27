@@ -27,6 +27,7 @@ use dnscraft_cluster::{ClusterBroadcast, ClusterStore, OfflineWriteQueue, Role};
 use dnscraft_filtering::FilterEngine;
 use dnscraft_mcp::McpConfig;
 use dnscraft_policy::PolicyEngine;
+use dnscraft_resolver::Resolver;
 
 /// Shared state handed to every handler (and cloned into the router).
 ///
@@ -54,6 +55,7 @@ pub struct AppState {
     clock: Arc<dyn Clock>,
     filter: Option<Arc<FilterEngine>>,
     policy: Option<Arc<PolicyEngine>>,
+    resolver: Option<Arc<Resolver>>,
 }
 
 impl Default for AppState {
@@ -91,6 +93,7 @@ impl AppState {
             clock: Arc::new(SystemClock),
             filter: None,
             policy: None,
+            resolver: None,
         }
     }
 
@@ -126,6 +129,18 @@ impl AppState {
     /// The configured policy engine, if any.
     pub(crate) fn policy_engine(&self) -> Option<&Arc<PolicyEngine>> {
         self.policy.as_ref()
+    }
+
+    /// Attaches the resolver read by `/api/v1/resolver/*` (upstream health and
+    /// cache flush). Without it those routes answer `control_api.not_ready`.
+    pub fn with_resolver(mut self, resolver: Arc<Resolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
+    }
+
+    /// The attached resolver, if any.
+    pub(crate) fn resolver(&self) -> Option<&Arc<Resolver>> {
+        self.resolver.as_ref()
     }
 
     /// Attaches the atomic config service.

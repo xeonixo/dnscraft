@@ -14,6 +14,7 @@ pub(crate) mod mcp_endpoints;
 pub(crate) mod pagination;
 pub(crate) mod query_log_routes;
 pub(crate) mod rate_limit;
+pub(crate) mod resolver_routes;
 pub(crate) mod response;
 pub(crate) mod router;
 pub(crate) mod stats_routes;

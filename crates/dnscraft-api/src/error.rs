@@ -394,6 +394,10 @@ mod tests {
                 code: "mcp.config.protected_domain",
                 params: None,
             },
+            ControlApiError::Module {
+                code: "control_api.resolver.flush.invalid_domain",
+                params: None,
+            },
         ];
         let mut codes: Vec<&str> = all.iter().map(ControlApiError::code).collect();
         for (error, code) in all.iter().zip(&codes) {

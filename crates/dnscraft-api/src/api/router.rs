@@ -36,6 +36,7 @@ use super::mcp_endpoints::{
 };
 use super::query_log_routes::{get_query_log, list_query_log};
 use super::rate_limit::rate_limit;
+use super::resolver_routes::{flush_cache, list_upstreams};
 use super::response::{BODY_LIMIT_BYTES, error_response, success};
 use super::stats_routes::{
     export_csv, export_ndjson, stats_cache, stats_overview, stats_top_clients, stats_top_domains,
@@ -63,7 +64,11 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/filtering/temporary-allows", post(allow_temporarily))
         .route("/filtering/pause", post(pause_filter_set))
         .route("/filtering/resume", post(resume_filter_set))
-        .route("/policy/test-query", post(test_query));
+        .route("/policy/test-query", post(test_query))
+        // Resolver admin: upstream health (viewer) and cache flush (admin).
+        // Unwired resolvers answer `control_api.not_ready`, as TLS does.
+        .route("/resolver/upstreams", get(list_upstreams))
+        .route("/resolver/cache/flush", post(flush_cache));
     if state.config_service().is_some() {
         api = api
             .route("/config", get(get_config).put(put_config))

@@ -138,6 +138,7 @@ pub(crate) async fn start(
         .with_config_service(Arc::clone(&config_service))
         .with_filter_engine(Arc::clone(&engines.filtering))
         .with_policy_engine(Arc::clone(&engines.policy))
+        .with_resolver(Arc::clone(&engines.resolver))
         .with_auth(auth_state)
         .with_query_log(Arc::clone(query_log))
         .with_mcp_config(mcp_config.clone());

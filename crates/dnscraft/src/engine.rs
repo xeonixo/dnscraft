@@ -34,6 +34,9 @@ pub struct Engines {
     pub filtering: Arc<FilterEngine>,
     /// Client directory engine.
     pub clients: Arc<ClientEngine>,
+    /// Recursive resolver, shared with the policy engine. Read by the
+    /// control API for upstream health and cache flush.
+    pub resolver: Arc<Resolver>,
     /// Policy engine wiring the resolver, filter, and client directory.
     pub policy: Arc<PolicyEngine>,
     /// TLS engine when `[tls]` is configured; its background renewal/DynDNS
@@ -143,7 +146,7 @@ pub(crate) async fn build_engines(
     let policy = PolicyEngine::new(
         policy_config,
         Arc::clone(&filter),
-        resolver,
+        Arc::clone(&resolver),
         clients,
         Arc::clone(&clock),
     )
@@ -163,6 +166,7 @@ pub(crate) async fn build_engines(
     Ok(Engines {
         filtering: filter,
         clients: clients_engine,
+        resolver,
         policy: Arc::new(policy),
         tls,
     })
