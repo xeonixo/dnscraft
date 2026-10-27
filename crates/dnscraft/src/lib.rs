@@ -13,10 +13,9 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dnscraft_api::{Audit, ConfigService, ConfigStore, Db, SharedConfigService};
+use dnscraft_api::{Audit, ConfigService, ConfigStore, Db, QueryLog, SharedConfigService};
 use dnscraft_listeners::{
-    ChannelSink, Clock, ListenerSet, ListenersConfig, ListenersStatus, NullSink, QueryEventSink,
-    SystemClock,
+    ChannelSink, Clock, ListenerSet, ListenersConfig, ListenersStatus, QueryEventSink, SystemClock,
 };
 use dnscraft_policy::PolicyEngine;
 use dnscraft_tls::CertResolver;
@@ -34,6 +33,11 @@ pub use engine::{Engines, build_engine};
 const CONFIG_DB_FILE: &str = "dnscraft.db";
 /// Audit node id for a standalone (non-cluster) assembler.
 const CONFIG_NODE_ID: &str = "local";
+/// Bounded query-log channel capacity; a full channel drops events and counts
+/// them as `control_api.query_log.dropped`.
+const QUERY_LOG_CHANNEL_CAPACITY: usize = 4096;
+/// Capacity of the opt-in stdout JSON-lines debug channel.
+const STDOUT_LOG_CHANNEL_CAPACITY: usize = 1024;
 
 /// Top-level startup/runtime error; every error maps to exit code 2.
 ///
@@ -132,10 +136,13 @@ pub(crate) fn parse_config(text: &str, source: &str) -> Result<Config, Error> {
     })
 }
 
-/// A running server: the listener set plus the JSON event writer task.
+/// A running server: the listener set, the SQLite query-log consumer and the
+/// optional stdout debug writer.
 pub struct App {
     set: Arc<ListenerSet<PolicyEngine>>,
     writer: Option<JoinHandle<()>>,
+    /// SQLite query-log consumer task.
+    query_log_task: Option<JoinHandle<()>>,
     sink: Arc<dyn QueryEventSink>,
     /// Engines kept alive for the control-api assembly.
     engines: Engines,
@@ -162,7 +169,7 @@ impl App {
         &self.engines
     }
 
-    /// Gracefully stops listeners and drains the event writer.
+    /// Gracefully stops listeners and drains both event consumers.
     pub async fn shutdown(self, grace: Duration) {
         if let Some(set) = Arc::into_inner(self.set) {
             set.shutdown(grace).await;
@@ -171,11 +178,17 @@ impl App {
             // dropped with their join handles.
             tracing::warn!("listener set still shared at shutdown");
         }
-        // The channel closes once every listener has dropped its sink, so the
-        // writer finishes soon after; the timeout is a backstop against a
-        // leaked sender holding the writer (and the process) open.
+        let dropped = self.sink.events_dropped();
+        // Release the app's sender so each consumer sees the channel close
+        // once every listener has dropped its clone, then drain. The timeout
+        // is a backstop against a leaked sender holding a task (and the
+        // process) open.
+        drop(self.sink);
         if let Some(writer) = self.writer {
             let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
+        }
+        if let Some(query_log) = self.query_log_task {
+            let _ = tokio::time::timeout(Duration::from_secs(2), query_log).await;
         }
         // `serve` has no shutdown hook, so the API listener is stopped by
         // aborting its task.
@@ -183,7 +196,6 @@ impl App {
             api.abort();
             let _ = api.await;
         }
-        let dropped = self.sink.events_dropped();
         if dropped > 0 {
             eprintln!("dnscraft: {dropped} query events dropped");
         }
@@ -191,10 +203,13 @@ impl App {
 }
 
 /// Builds a server from a parsed config, reading TLS secrets from the
-/// environment and emitting JSON-lines query events on stdout.
+/// environment.
 ///
-/// `clock` drives the policy engine (schedules, pauses). Production passes
-/// [`dnscraft_filtering::SystemClock`]; tests inject a manual clock.
+/// Query events go to the SQLite query log by default. When `[log] queries` is
+/// explicitly enabled, the same events are also teed to the JSON-lines stdout
+/// debug writer. `clock` drives the policy engine (schedules, pauses).
+/// Production passes [`dnscraft_filtering::SystemClock`]; tests inject a manual
+/// clock.
 pub async fn build(
     mut config: Config,
     clock: Arc<dyn dnscraft_filtering::Clock>,
@@ -215,6 +230,42 @@ pub async fn build(
     let store = ConfigStore::new(db.clone());
     seed_config_store(&store, &snapshot).await?;
 
+    // AS12: SQLite query-log consumer over the same database. The bounded
+    // sink keeps the answer path non-blocking; the consumer batch-inserts and
+    // applies retention. The client enricher comes from the live directory.
+    let query_log = Arc::new(
+        QueryLog::new(
+            db.clone(),
+            config.control_api.query_log.clone(),
+            CONFIG_NODE_ID,
+        )
+        .with_client_enricher(Arc::new(engine::EngineClients {
+            engine: Arc::clone(&engines.clients),
+        })),
+    );
+    let (query_sink, query_rx) = QueryLog::channel(QUERY_LOG_CHANNEL_CAPACITY);
+    let query_sink: Arc<dyn QueryEventSink> = query_sink;
+    let handle = tokio::runtime::Handle::try_current().map_err(|e| {
+        Error::startup(
+            "dnscraft.startup.query_log",
+            format!("query-log consumer: {e}"),
+        )
+    })?;
+    let query_log_task = Some(handle.spawn(Arc::clone(&query_log).run(query_rx)));
+
+    // The JSON-lines stdout writer is an explicit debug opt-in; the SQLite
+    // sink is always the primary sink.
+    let (sink, writer) = if log.queries {
+        let (stdout, rx) = ChannelSink::new(STDOUT_LOG_CHANNEL_CAPACITY);
+        let writer = tokio::task::spawn_blocking(move || {
+            events::write_events_blocking(rx, log.ip_truncate);
+        });
+        let sink: Arc<dyn QueryEventSink> = Arc::new(events::TeeSink::new(query_sink, stdout));
+        (sink, Some(writer))
+    } else {
+        (query_sink, None)
+    };
+
     // A configured `[tls]` engine owns certificate renewal; otherwise keep the
     // environment-PEM bootstrap for encrypted listeners.
     let certs = match engines.tls.as_ref() {
@@ -234,17 +285,6 @@ pub async fn build(
             }
             None => None,
         },
-    };
-
-    let (sink, writer) = if log.queries {
-        let (channel, rx) = ChannelSink::new(1024);
-        let sink: Arc<dyn QueryEventSink> = channel;
-        let writer = tokio::task::spawn_blocking(move || {
-            events::write_events_blocking(rx, log.ip_truncate);
-        });
-        (sink, Some(writer))
-    } else {
-        (Arc::new(NullSink) as Arc<dyn QueryEventSink>, None)
     };
 
     let listener_sink = Arc::clone(&sink);
@@ -297,6 +337,7 @@ pub async fn build(
         &engines,
         &db,
         &data_dir,
+        &query_log,
         Arc::clone(&config_service),
         api_acme,
     )
@@ -305,6 +346,7 @@ pub async fn build(
     Ok(App {
         set,
         writer,
+        query_log_task,
         sink,
         engines,
         config_service,
@@ -448,6 +490,7 @@ mod tests {
             Error::startup("dnscraft.startup.tls", "x"),
             Error::startup("dnscraft.startup.listeners", "x"),
             Error::startup("dnscraft.startup.store", "x"),
+            Error::startup("dnscraft.startup.query_log", "x"),
             Error::startup("dnscraft.startup.config_seed", "x"),
             Error::startup("dnscraft.startup.control_api", "x"),
             Error::startup("dnscraft.startup.control_api_tls", "x"),

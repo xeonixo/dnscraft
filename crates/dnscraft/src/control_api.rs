@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use dnscraft_api::{
     AppState, Audit, Auth, AuthState, ConfigService, ControlApiTls, Db, EngineStatusProvider,
-    EngineTlsAdmin, LocalAccountStore, OidcState, SessionStore, SystemClock, TlsStatusProvider,
-    TokenStore, mcp_backend_inner,
+    EngineTlsAdmin, LocalAccountStore, OidcState, QueryLog, SessionStore, SystemClock,
+    TlsStatusProvider, TokenStore, mcp_backend_inner,
 };
 use dnscraft_tls::CertResolver;
 use tokio::task::JoinHandle;
@@ -48,6 +48,7 @@ pub(crate) async fn start(
     engines: &Engines,
     db: &Db,
     data_dir: &Path,
+    query_log: &Arc<QueryLog>,
     config_service: Arc<ConfigService>,
     acme: Option<Arc<CertResolver>>,
 ) -> Result<ControlApi, Error> {
@@ -132,11 +133,13 @@ pub(crate) async fn start(
 
     // AS10: `AppState` from the config service, engines, auth, TLS and MCP
     // limits. `serve` fills the rate limiter and the derived protected list.
+    // AS12: the query log is attached so the query-log and stats routes mount.
     let mut state = AppState::new()
         .with_config_service(Arc::clone(&config_service))
         .with_filter_engine(Arc::clone(&engines.filtering))
         .with_policy_engine(Arc::clone(&engines.policy))
         .with_auth(auth_state)
+        .with_query_log(Arc::clone(query_log))
         .with_mcp_config(mcp_config.clone());
     if auth_config.local_login_enabled {
         state = state.with_local_login(local_accounts);
@@ -154,13 +157,13 @@ pub(crate) async fn start(
         state = state.with_tls_admin(Arc::new(EngineTlsAdmin::new(Arc::clone(engine))));
     }
 
-    // AS11: mount `/mcp/v1` when enabled. The query-log slot stays `None`
-    // until the AS12 consumer lands.
+    // AS11: mount `/mcp/v1` when enabled, wiring the AS12 query log so the
+    // log and stats tools read the live SQLite pipeline.
     if mcp_config.enabled {
         state = state.with_mcp_backend(mcp_backend_inner(
             Arc::clone(&engines.filtering),
             Arc::clone(&engines.policy),
-            None,
+            Some(Arc::clone(query_log)),
             Arc::clone(&config_service),
             Arc::new(Audit::new(db.clone())),
             mcp_tokens,

@@ -73,6 +73,9 @@ fn udp_query_logs_one_escaped_json_line() {
         "e2e",
         r#"public_domain = "example.com"
 
+[log]
+queries = true
+
 [[listeners]]
 id = "udp"
 protocol = "udp53"

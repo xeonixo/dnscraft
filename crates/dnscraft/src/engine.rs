@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dnscraft_clients::{ClientEngine, ClientLookup};
+use dnscraft_api::{ClientEnricher, ClientView};
+use dnscraft_clients::{ClientEngine, ClientLookup, ClientSource};
 use dnscraft_filtering::{
     Clock, FilterConfig, FilterEngine, FilterSetConfig, ListStore, SetId, StoreConfig,
 };
@@ -43,9 +44,10 @@ pub struct Engines {
 /// [`ClientDirectory`] over the live [`ClientEngine`] snapshot.
 ///
 /// Lives in the binary because it needs both the clients and policy crates.
+/// It also implements the query-log [`ClientEnricher`] over the same snapshot.
 #[derive(Debug)]
-struct EngineClients {
-    engine: Arc<ClientEngine>,
+pub(crate) struct EngineClients {
+    pub(crate) engine: Arc<ClientEngine>,
 }
 
 impl ClientDirectory for EngineClients {
@@ -62,6 +64,26 @@ impl ClientDirectory for EngineClients {
 
     fn local_domains(&self) -> Arc<[String]> {
         self.engine.lookup().local_domains()
+    }
+}
+
+/// Query-log view of a directory client: names, MACs, VLAN and parent domain.
+impl ClientEnricher for EngineClients {
+    fn by_ip(&self, ip: IpAddr) -> Option<ClientView> {
+        let client = self.engine.lookup().by_ip(ip)?;
+        let source = match client.source {
+            ClientSource::Manual => "manual",
+            ClientSource::Unifi => "unifi",
+        };
+        Some(ClientView {
+            id: client.id.as_str().to_owned(),
+            display_name: client.display_name.clone(),
+            source: source.to_owned(),
+            macs: client.macs.iter().map(ToString::to_string).collect(),
+            vlan_id: client.vlan.as_ref().map(|vlan| vlan.id),
+            vlan_name: client.vlan.as_ref().map(|vlan| vlan.name.clone()),
+            local_domain: (!client.local_domain.is_empty()).then(|| client.local_domain.clone()),
+        })
     }
 }
 

@@ -209,11 +209,15 @@ pub struct Config {
 }
 
 /// Query-log settings (`[log]`).
+///
+/// Persistence is controlled by `[control_api.query_log]`; this section only
+/// covers the optional stdout debug writer.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogConfig {
-    /// Write one JSON object per answered query to stdout. Default `true`.
-    #[serde(default = "default_true")]
+    /// Also write one JSON object per answered query to stdout. Default `false`
+    /// (the SQLite query log is the default sink; stdout is opt-in debug).
+    #[serde(default)]
     pub queries: bool,
     /// Source-IP truncation: `none`, `last_octet` or `last_group`.
     /// Default `last_octet` (D6).
@@ -224,14 +228,10 @@ pub struct LogConfig {
 impl Default for LogConfig {
     fn default() -> Self {
         Self {
-            queries: true,
+            queries: false,
             ip_truncate: default_ip_truncate(),
         }
     }
-}
-
-fn default_true() -> bool {
-    true
 }
 
 fn default_ip_truncate() -> String {
@@ -272,9 +272,9 @@ impl IpTruncate {
 /// Resolved query-log settings (validated values).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LogSettings {
-    /// Whether the query log is enabled.
+    /// Whether the stdout JSON-lines debug writer is enabled.
     pub queries: bool,
-    /// Source-IP truncation.
+    /// Source-IP truncation for the stdout lines.
     pub ip_truncate: IpTruncate,
 }
 
@@ -768,7 +768,7 @@ target = "dns"
         assert_eq!(cfg.data_dir(), None);
         assert!(cfg.listeners.is_empty());
         assert!(!cfg.allow_partial_bind);
-        assert!(cfg.log.queries);
+        assert!(!cfg.log.queries);
         assert_eq!(cfg.log.ip_truncate, "last_octet");
         assert_eq!(cfg.resolver.cache_size_mb, 64);
         assert_eq!(

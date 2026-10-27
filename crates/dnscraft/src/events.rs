@@ -1,14 +1,48 @@
 //! JSON-lines query-event output.
 
 use std::io::Write;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use dnscraft_listeners::QueryEvent;
+use dnscraft_listeners::{QueryEvent, QueryEventSink};
 use dnscraft_policy::DnsProtocol;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::config::IpTruncate;
+
+/// Forwards every event to two sinks.
+///
+/// Used only for the opt-in stdout debug writer: the SQLite query-log sink
+/// stays the primary sink and the JSON-lines channel is the secondary.
+pub(crate) struct TeeSink {
+    primary: Arc<dyn QueryEventSink>,
+    secondary: Arc<dyn QueryEventSink>,
+}
+
+impl TeeSink {
+    /// Forwards to `primary` and `secondary`, in that order.
+    pub(crate) fn new(
+        primary: Arc<dyn QueryEventSink>,
+        secondary: Arc<dyn QueryEventSink>,
+    ) -> Self {
+        Self { primary, secondary }
+    }
+}
+
+impl QueryEventSink for TeeSink {
+    fn try_send(&self, event: QueryEvent) -> bool {
+        let primary = self.primary.try_send(event.clone());
+        let secondary = self.secondary.try_send(event);
+        primary && secondary
+    }
+
+    fn events_dropped(&self) -> u64 {
+        self.primary
+            .events_dropped()
+            .saturating_add(self.secondary.events_dropped())
+    }
+}
 
 /// Writes each received event as one JSON object per line on stdout.
 ///
