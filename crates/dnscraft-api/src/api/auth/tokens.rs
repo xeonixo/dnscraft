@@ -286,6 +286,35 @@ impl TokenStore {
             .await
     }
 
+    /// Replaces every token row with `entries` (sub-node auth replication).
+    ///
+    /// Only stored hashes and metadata are written; plaintext token material
+    /// never exists in an [`AuthSnapshot`](super::AuthSnapshot).
+    pub async fn replace_all(&self, entries: &[TokenSnapshot]) -> Result<(), ControlApiError> {
+        let entries = entries.to_vec();
+        self.db
+            .transaction(move |conn| {
+                conn.execute("DELETE FROM tokens", []).map_err(db_err)?;
+                for entry in &entries {
+                    conn.execute(
+                        "INSERT INTO tokens (id_hash, name, scope, actor_id, created_at, expires_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        params![
+                            entry.id_hash,
+                            entry.name,
+                            entry.scope,
+                            entry.actor_id,
+                            entry.created_at,
+                            entry.expires_at,
+                        ],
+                    )
+                    .map_err(db_err)?;
+                }
+                Ok(())
+            })
+            .await
+    }
+
     /// Revokes a token by its id (the stored hash). Unknown ids yield
     /// [`ControlApiError::AuthUnknownToken`].
     ///

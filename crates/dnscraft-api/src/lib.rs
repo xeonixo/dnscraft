@@ -19,6 +19,7 @@
 mod api;
 mod audit;
 mod clock;
+mod cluster;
 mod cluster_status;
 mod config;
 mod config_apply;
@@ -43,6 +44,11 @@ pub use api::auth::{
 pub use api::rate_limit::{DEFAULT_MAX_TRACKED_SOURCES, RateLimiter};
 pub use audit::{Audit, ConfigChangeRecord};
 pub use clock::{Clock, ManualClock, SystemClock};
+pub use cluster::{
+    ClusterRuntime, ClusterRuntimeOptions, ConfigWriteExecutor, QueryLogIngest, QueryLogOutbox,
+    StateAuthApplier, StateRuntimeApplier, SyncedConfigApplier, TlsCertInstaller,
+    node_scoped_views,
+};
 pub use cluster_status::{ClusterStatus, ClusterStatusHandle, ClusterStatusProvider};
 pub use config::{
     AuthConfig, ControlApiConfig, DEFAULT_API_TOKEN_MAX_TTL, DEFAULT_AUTH_PER_SECOND, DEFAULT_BIND,

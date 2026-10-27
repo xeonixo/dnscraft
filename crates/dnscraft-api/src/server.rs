@@ -135,6 +135,11 @@ impl AppState {
         self.config.as_deref()
     }
 
+    /// A cloneable config-service handle for the cluster runtime.
+    pub(crate) fn config_service_arc(&self) -> Option<Arc<ConfigService>> {
+        self.config.clone()
+    }
+
     /// Attaches the query log created by the A12 consumer.
     ///
     /// With a query log configured, `GET /api/v1/query-log` and
@@ -147,6 +152,11 @@ impl AppState {
     /// The configured query log, if any.
     pub(crate) fn query_log(&self) -> Option<&Arc<QueryLog>> {
         self.query_log.as_ref()
+    }
+
+    /// A cloneable query-log handle for the cluster runtime.
+    pub(crate) fn query_log_arc(&self) -> Option<Arc<QueryLog>> {
+        self.query_log.clone()
     }
 
     /// Attaches the master's durable cluster registry.
@@ -188,6 +198,11 @@ impl AppState {
     /// The configured offline write queue, if any.
     pub(crate) fn offline_write_queue(&self) -> Option<&Arc<OfflineWriteQueue>> {
         self.offline_writes.as_ref()
+    }
+
+    /// A cloneable offline-write-queue handle for the cluster runtime.
+    pub(crate) fn offline_write_queue_arc(&self) -> Option<Arc<OfflineWriteQueue>> {
+        self.offline_writes.clone()
     }
 
     /// Attaches the MCP backend inner handle (engines, stores, status providers).
@@ -244,6 +259,11 @@ impl AppState {
     /// The configured auth stores, if any.
     pub(crate) fn auth_state(&self) -> Option<&AuthState> {
         self.auth.as_deref()
+    }
+
+    /// A cloneable auth-state handle for the cluster runtime.
+    pub(crate) fn auth_state_arc(&self) -> Option<Arc<AuthState>> {
+        self.auth.clone()
     }
 
     /// Attaches the local break-glass account store.

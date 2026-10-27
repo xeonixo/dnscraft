@@ -60,7 +60,7 @@ pub(crate) fn error_response(
 
 impl ControlApiError {
     /// The HTTP status for this error.
-    fn http_status(&self) -> StatusCode {
+    pub(crate) fn http_status(&self) -> StatusCode {
         use StatusCode as S;
         match self {
             ControlApiError::ConfigInvalid { .. } => S::BAD_REQUEST,
@@ -97,7 +97,7 @@ impl ControlApiError {
 
     /// The `params` object for the error envelope, when the variant carries
     /// non-secret context useful to a client.
-    fn http_params(&self) -> Option<Value> {
+    pub(crate) fn http_params(&self) -> Option<Value> {
         match self {
             ControlApiError::ConfigInvalid { reason } => Some(json!({ "reason": reason })),
             ControlApiError::NotFound { what } => Some(json!({ "what": what })),

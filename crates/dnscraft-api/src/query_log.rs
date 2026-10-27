@@ -27,6 +27,7 @@ use dnscraft_proto::Rcode;
 use dnscraft_resolver::{AnswerSource, DnssecStatus};
 use ring::rand::{SecureRandom, SystemRandom};
 use rusqlite::Connection;
+use rusqlite::OptionalExtension;
 use rusqlite::params;
 use rusqlite::params_from_iter;
 use rusqlite::types::Value;
@@ -506,14 +507,222 @@ impl QueryLog {
         }
     }
 
+    /// Returns up to `max` outbox rows starting at `from_seq`, ascending.
+    ///
+    /// Each tuple is `(seq, record id, wire document)`. The wire document is
+    /// the stored query-log record plus the denormalised columns the master
+    /// needs to re-insert it with the originating `node_id`, `time` and `seq`.
+    /// Rows below `from_seq` (already acked) are skipped; an empty result
+    /// means the local outbox has drained.
+    pub async fn outbox_rows(
+        &self,
+        from_seq: i64,
+        max: usize,
+    ) -> Result<Vec<(i64, String, Json)>, ControlApiError> {
+        let max = i64::try_from(max.max(1)).unwrap_or(i64::MAX);
+        self.db
+            .with_conn(move |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT seq, id, time, source_ip, query_name, listener_id, protocol,
+                                source_ip_truncated, client_id, client_name, query_type,
+                                query_class, view_id, profile_id, status, answer_source, rcode,
+                                record
+                         FROM query_log
+                         WHERE seq IS NOT NULL AND seq >= ?1
+                         ORDER BY seq LIMIT ?2",
+                    )
+                    .map_err(db_err)?;
+                let rows = stmt
+                    .query_map(params![from_seq, max], |row| {
+                        let seq: i64 = row.get(0)?;
+                        let id: String = row.get(1)?;
+                        let record: String = row.get(17)?;
+                        let document = json!({
+                            "id": id,
+                            "time_us": row.get::<_, i64>(2)?,
+                            "source_ip": row.get::<_, String>(3)?,
+                            "query_name": row.get::<_, String>(4)?,
+                            "listener_id": row.get::<_, String>(5)?,
+                            "protocol": row.get::<_, String>(6)?,
+                            "source_ip_truncated": row.get::<_, i64>(7)? != 0,
+                            "client_id": row.get::<_, Option<String>>(8)?,
+                            "client_name": row.get::<_, Option<String>>(9)?,
+                            "query_type": row.get::<_, String>(10)?,
+                            "query_class": row.get::<_, String>(11)?,
+                            "view_id": row.get::<_, String>(12)?,
+                            "profile_id": row.get::<_, String>(13)?,
+                            "status": row.get::<_, String>(14)?,
+                            "answer_source": row.get::<_, String>(15)?,
+                            "rcode": row.get::<_, String>(16)?,
+                            "record": serde_json::from_str::<Json>(&record)
+                                .unwrap_or(Json::String(record)),
+                        });
+                        Ok((seq, id, document))
+                    })
+                    .map_err(db_err)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+            })
+            .await
+    }
+
+    /// Highest outbox `seq` stored for `node_id` (`0` when none).
+    ///
+    /// Used by the master when a sub-node reconnects to compute the backfill
+    /// cursor (`master_highest_log_seq`).
+    pub async fn highest_remote_seq(&self, node_id: &str) -> Result<u64, ControlApiError> {
+        let node_id = node_id.to_owned();
+        let seq: i64 = self
+            .db
+            .with_conn(move |conn| {
+                conn.query_row(
+                    "SELECT COALESCE(MAX(seq), 0) FROM query_log WHERE node_id = ?1",
+                    params![node_id],
+                    |row| row.get(0),
+                )
+                .map_err(db_err)
+            })
+            .await?;
+        Ok(u64::try_from(seq).unwrap_or_default())
+    }
+
+    /// Inserts one contiguous log batch streamed by a sub-node.
+    ///
+    /// Records are re-inserted with the originating `node_id`, `time` and the
+    /// batch's per-node `seq`, deduplicating `(node_id, seq)` and the record
+    /// id (`ON CONFLICT DO NOTHING`). A repeated `seq` carrying a different
+    /// record id is rejected as `control_api.query_log.invalid`. Returns the
+    /// highest `seq` stored for the node after the batch.
+    pub async fn ingest_remote(
+        &self,
+        node_id: &str,
+        first_seq: u64,
+        last_seq: u64,
+        records: &[Json],
+    ) -> Result<u64, ControlApiError> {
+        let expected = last_seq
+            .checked_sub(first_seq)
+            .and_then(|span| span.checked_add(1));
+        if expected != Some(records.len() as u64) {
+            return Err(ControlApiError::QueryLogInvalid {
+                reason: "first_seq/last_seq do not match the record count".to_owned(),
+            });
+        }
+        let node_id = node_id.to_owned();
+        let rows = records
+            .iter()
+            .enumerate()
+            .map(|(offset, value)| {
+                let row: RemoteRow = serde_json::from_value(value.clone()).map_err(|error| {
+                    ControlApiError::QueryLogInvalid {
+                        reason: format!("invalid remote query-log record: {error}"),
+                    }
+                })?;
+                let seq = first_seq.checked_add(offset as u64).ok_or_else(|| {
+                    ControlApiError::QueryLogInvalid {
+                        reason: "log sequence number overflow".to_owned(),
+                    }
+                })?;
+                Ok((row, seq))
+            })
+            .collect::<Result<Vec<_>, ControlApiError>>()?;
+
+        let node_for_tx = node_id.clone();
+        self.db
+            .with_conn(move |conn| {
+                let tx = conn.transaction().map_err(db_err)?;
+                for (row, seq) in &rows {
+                    let seq =
+                        i64::try_from(*seq).map_err(|_| ControlApiError::QueryLogInvalid {
+                            reason: "log sequence number out of range".to_owned(),
+                        })?;
+                    let existing: Option<String> = tx
+                        .query_row(
+                            "SELECT id FROM query_log WHERE node_id = ?1 AND seq = ?2",
+                            params![node_for_tx, seq],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(db_err)?;
+                    if let Some(existing) = existing {
+                        if existing != row.id {
+                            return Err(ControlApiError::QueryLogInvalid {
+                                reason: format!(
+                                    "sequence {seq} already carries a different record id"
+                                ),
+                            });
+                        }
+                        continue;
+                    }
+                    tx.execute(
+                        "INSERT INTO query_log (
+                             id, time, node_id, source_ip, query_name, listener_id,
+                             protocol, source_ip_truncated, client_id, client_name,
+                             query_type, query_class, view_id, profile_id, status,
+                             answer_source, rcode, record, seq
+                         ) VALUES (
+                             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+                         ) ON CONFLICT DO NOTHING",
+                        params![
+                            row.id,
+                            row.time_us,
+                            node_for_tx,
+                            row.source_ip,
+                            row.query_name,
+                            row.listener_id,
+                            row.protocol,
+                            i64::from(row.source_ip_truncated),
+                            row.client_id,
+                            row.client_name,
+                            row.query_type,
+                            row.query_class,
+                            row.view_id,
+                            row.profile_id,
+                            row.status,
+                            row.answer_source,
+                            row.rcode,
+                            row.record.to_string(),
+                            seq,
+                        ],
+                    )
+                    .map_err(db_err)?;
+                }
+                let highest: i64 = tx
+                    .query_row(
+                        "SELECT COALESCE(MAX(seq), 0) FROM query_log WHERE node_id = ?1",
+                        params![node_for_tx],
+                        |row| row.get(0),
+                    )
+                    .map_err(db_err)?;
+                tx.commit().map_err(db_err)?;
+                Ok(u64::try_from(highest).unwrap_or_default())
+            })
+            .await
+    }
+
     /// Returns the next unacknowledged outbox `seq` for this node.
     ///
     /// This is the value the log sender resumes from (`acked + 1`). It is `1`
-    /// before the first record is inserted.
+    /// before the first record is inserted. When the buffer's oldest retained
+    /// row is already newer than `acked + 1` (the pruning dropped rows), the
+    /// oldest row wins so the gap is reported instead of retried forever.
     pub async fn next_seq(&self) -> Result<i64, ControlApiError> {
         let key = outbox_key(ACKED_SEQ_PREFIX, &self.node_id);
         self.db
-            .with_conn(move |conn| Ok(read_counter(conn, &key, 0)?.saturating_add(1)))
+            .with_conn(move |conn| {
+                let acked = read_counter(conn, &key, 0)?;
+                let oldest: Option<i64> = conn
+                    .query_row(
+                        "SELECT MIN(seq) FROM query_log WHERE seq IS NOT NULL",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(db_err)?;
+                Ok(oldest.map_or(acked.saturating_add(1), |oldest| {
+                    acked.saturating_add(1).max(oldest)
+                }))
+            })
             .await
     }
 
@@ -626,6 +835,39 @@ fn filter_clause(filter: &QueryLogFilter) -> (String, Vec<Value>) {
 }
 
 /// Denormalised insert row plus its full JSON record.
+/// One query-log row as streamed by a sub-node.
+///
+/// The shape is the wire document produced by [`QueryLog::outbox_rows`]: the
+/// denormalised columns plus the stored record document. `node_id` and `seq`
+/// come from the batch envelope, never from this payload.
+#[derive(serde::Deserialize)]
+struct RemoteRow {
+    id: String,
+    time_us: i64,
+    source_ip: String,
+    query_name: String,
+    listener_id: String,
+    protocol: String,
+    source_ip_truncated: bool,
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    client_name: Option<String>,
+    query_type: String,
+    query_class: String,
+    view_id: String,
+    profile_id: String,
+    status: String,
+    answer_source: String,
+    rcode: String,
+    #[serde(default = "empty_record")]
+    record: Json,
+}
+
+fn empty_record() -> Json {
+    json!({})
+}
+
 struct PreparedRow {
     id: String,
     time_us: i64,

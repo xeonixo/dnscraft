@@ -121,6 +121,41 @@ impl LocalAccountStore {
             .await
     }
 
+    /// Replaces every local account with `entries` (sub-node auth replication).
+    ///
+    /// Each entry carries an Argon2id PHC hash, never a plaintext password;
+    /// lockout counters are reset because the snapshot has none.
+    pub async fn replace_all(
+        &self,
+        entries: &[LocalAccountSnapshot],
+    ) -> Result<(), ControlApiError> {
+        let entries = entries.to_vec();
+        // Reject an unknown role before touching the table so a bad snapshot
+        // leaves the previous accounts intact.
+        for entry in &entries {
+            if Role::parse(&entry.role).is_none() {
+                return Err(ControlApiError::Internal {
+                    message: format!("unknown local account role in snapshot: {}", entry.role),
+                });
+            }
+        }
+        self.db
+            .transaction(move |conn| {
+                conn.execute("DELETE FROM local_accounts", []).map_err(db_err)?;
+                for entry in &entries {
+                    conn.execute(
+                        "INSERT INTO local_accounts
+                            (username, password_hash, role, failed_attempts, window_started, locked_until)
+                         VALUES (?1, ?2, ?3, 0, NULL, NULL)",
+                        params![entry.username, entry.password_hash, entry.role],
+                    )
+                    .map_err(db_err)?;
+                }
+                Ok(())
+            })
+            .await
+    }
+
     /// Creates or replaces a local account with `role`, storing only the
     /// Argon2id hash. Replacing an account clears its lockout state and bumps
     /// the session-invalidation epoch, so the change reaches the next

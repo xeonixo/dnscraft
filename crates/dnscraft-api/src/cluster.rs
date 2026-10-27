@@ -1,0 +1,1049 @@
+//! Cluster runtime wiring: the `dnscraft-cluster` hook implementations and the
+//! master/sub-node startup entry point.
+//!
+//! The cluster crate owns the transport, snapshot digests, ack/lag tracking and
+//! the offline queue. This module supplies the control-api side of each trait:
+//!
+//! - [`SyncedConfigApplier`] — applies a pushed snapshot through
+//!   [`ConfigService::apply_synced_config`](crate::ConfigService::apply_synced_config),
+//!   filtering node-scoped policy views first.
+//! - [`TlsCertInstaller`] — installs a pushed certificate through the TLS
+//!   hot-reload resolver and store.
+//! - [`StateAuthApplier`] — replaces local auth state with a pushed
+//!   [`AuthSnapshot`](crate::AuthSnapshot).
+//! - [`StateRuntimeApplier`] — applies a volatile runtime command to the local
+//!   filter engine.
+//! - [`ConfigWriteExecutor`] — re-checks RBAC and executes a relayed config
+//!   write on the master, with `Idempotency-Key` deduplication.
+//! - [`QueryLogOutbox`] / [`QueryLogIngest`] — the sub-node log cursor and the
+//!   master's deduplicating ingest.
+//!
+//! [`ClusterRuntime::start`] switches on [`Role`] and starts the mTLS listener
+//! (master) or the reconnect/apply loop plus log-streamer and offline-replay
+//! tasks (sub-node). It never opens a connection from the master to a sub-node.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
+
+use async_trait::async_trait;
+use axum::http::Method;
+use serde_json::{Value, json};
+use tokio::sync::{Notify, watch};
+use tokio::task::JoinHandle;
+
+use dnscraft_cluster::{
+    AuthSnapshotApplier, CertInstaller, ClusterCa, ClusterClient, ClusterConfig, ClusterError,
+    ClusterServer, ClusterServerConfig, ClusterStore, ConfigApplier, ConfigSync, LogIngest,
+    LogOutbox, LogRecord, LogStreamer, NodeIdentity, OfflineWriteQueue, PendingNodeIdentity,
+    RelayResponse, RelayedActor, Role, RuntimeCommandApplier, StreamRecord, WriteExecutor,
+    WriteRelay,
+};
+use dnscraft_common::clock::{Clock, add_duration, wait_until};
+use dnscraft_common::secret::Secret;
+use dnscraft_tls::{CertResolver, CertStore};
+
+use crate::api::auth::{AuthSnapshot, AuthState, Scope, authorize, requirement};
+use crate::cluster_status::{ClusterStatus, ClusterStatusHandle};
+use crate::config_apply::{ConfigActor, ConfigService};
+use crate::error::ControlApiError;
+use crate::query_log::QueryLog;
+use crate::server::AppState;
+
+/// How long a relayed write's response is kept for `Idempotency-Key` replay.
+const IDEMPOTENCY_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Delay between log-streamer retries after a transport failure.
+const LOG_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// Sub-node applier: node-scoped views → `apply_synced_config`.
+pub struct SyncedConfigApplier {
+    service: Arc<ConfigService>,
+    node_id: String,
+}
+
+impl SyncedConfigApplier {
+    /// Applies pushed snapshots for `node_id`.
+    pub fn new(service: Arc<ConfigService>, node_id: impl Into<String>) -> Self {
+        Self {
+            service,
+            node_id: node_id.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl ConfigApplier for SyncedConfigApplier {
+    async fn apply(&self, version: i64, snapshot: &Value) -> Result<i64, ClusterError> {
+        let snapshot = node_scoped_views(snapshot, &self.node_id)?;
+        self.service
+            .apply_synced_config(snapshot, version)
+            .await
+            .map_err(|error| ClusterError::ConfigApply {
+                message: format!("{}: {error}", error.code()),
+            })
+    }
+}
+
+/// Filters `policy.views` to those valid on `node_id`.
+///
+/// A view is valid when its `nodes` list is absent, `null` or empty, or
+/// contains `node_id`. A node that would lose its default view is rejected
+/// (`policy.config.invalid`) so every node keeps a reachable default. The rest
+/// of the snapshot is untouched.
+///
+/// The policy crate's typed `ViewConfig` has no `nodes` field yet, so this is
+/// enforced on the JSON snapshot before apply; the unknown field is otherwise
+/// ignored (and silently applied to every node) by the policy engine.
+pub fn node_scoped_views(snapshot: &Value, node_id: &str) -> Result<Value, ClusterError> {
+    let mut snapshot = snapshot.clone();
+    let Some(views) = snapshot
+        .get_mut("policy")
+        .and_then(|policy| policy.get_mut("views"))
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(snapshot);
+    };
+    let mut default_removed = false;
+    views.retain(|view| {
+        let valid = match view.get("nodes") {
+            None | Some(Value::Null) => true,
+            Some(Value::Array(nodes)) => {
+                nodes.is_empty() || nodes.iter().any(|node| node.as_str() == Some(node_id))
+            }
+            Some(_) => false,
+        };
+        if !valid && view.get("is_default").and_then(Value::as_bool) == Some(true) {
+            default_removed = true;
+        }
+        valid
+    });
+    if default_removed {
+        return Err(ClusterError::ConfigApply {
+            message: format!("policy.config.invalid: default view is not valid on node {node_id}"),
+        });
+    }
+    Ok(snapshot)
+}
+
+/// Sub-node applier: installs a pushed certificate through the hot-reload path.
+pub struct TlsCertInstaller {
+    resolver: Arc<CertResolver>,
+    store: CertStore,
+}
+
+impl TlsCertInstaller {
+    /// Wraps the live resolver and its on-disk store.
+    pub fn new(resolver: Arc<CertResolver>, store: CertStore) -> Self {
+        Self { resolver, store }
+    }
+}
+
+#[async_trait]
+impl CertInstaller for TlsCertInstaller {
+    async fn install(&self, chain_pem: &str, private_key: &Secret) -> Result<(), ClusterError> {
+        self.resolver
+            .import(
+                &self.store,
+                chain_pem.as_bytes(),
+                private_key.expose().as_bytes(),
+            )
+            .map_err(|error| ClusterError::CertPushFailed {
+                message: error.to_string(),
+            })
+    }
+}
+
+/// Sub-node applier: replaces local auth state with a pushed snapshot.
+pub struct StateAuthApplier {
+    auth: Arc<AuthState>,
+}
+
+impl StateAuthApplier {
+    /// Wraps the node's auth state.
+    pub fn new(auth: Arc<AuthState>) -> Self {
+        Self { auth }
+    }
+}
+
+#[async_trait]
+impl AuthSnapshotApplier for StateAuthApplier {
+    async fn apply(&self, snapshot: &Value) -> Result<(), ClusterError> {
+        let snapshot: AuthSnapshot =
+            serde_json::from_value(snapshot.clone()).map_err(|error| ClusterError::Internal {
+                message: format!("invalid auth snapshot: {error}"),
+            })?;
+        self.auth
+            .apply_auth_snapshot(&snapshot)
+            .await
+            .map_err(|error| ClusterError::Internal {
+                message: format!("{}: {error}", error.code()),
+            })
+    }
+}
+
+/// Sub-node applier: applies a volatile runtime command locally.
+pub struct StateRuntimeApplier {
+    state: AppState,
+}
+
+impl StateRuntimeApplier {
+    /// Wraps the node's shared state.
+    pub fn new(state: AppState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl RuntimeCommandApplier for StateRuntimeApplier {
+    async fn apply_runtime_command(&self, kind: &str, payload: &Value) -> Result<(), ClusterError> {
+        self.state
+            .apply_runtime_command(kind, payload)
+            .await
+            .map_err(|error| ClusterError::RuntimeCommandFailed {
+                message: format!("{}: {error}", error.code()),
+            })
+    }
+}
+
+/// Master hook: RBAC re-check + canonical config handler for a relayed write.
+pub struct ConfigWriteExecutor {
+    service: Arc<ConfigService>,
+    clock: Arc<dyn Clock>,
+    idempotency: Mutex<HashMap<String, (RelayResponse, SystemTime)>>,
+}
+
+impl ConfigWriteExecutor {
+    /// Wraps the master's config service.
+    pub fn new(service: Arc<ConfigService>, clock: Arc<dyn Clock>) -> Self {
+        Self {
+            service,
+            clock,
+            idempotency: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn cached(&self, key: &str) -> Option<RelayResponse> {
+        let now = self.clock.now();
+        let mut cache = self
+            .idempotency
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.retain(|_, (_, at)| {
+            now.duration_since(*at)
+                .map_or(true, |age| age < IDEMPOTENCY_TTL)
+        });
+        cache.get(key).map(|(response, _)| response.clone())
+    }
+
+    fn remember(&self, key: &str, response: &RelayResponse) {
+        self.idempotency
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key.to_owned(), (response.clone(), self.clock.now()));
+    }
+
+    async fn run(
+        &self,
+        actor: RelayedActor,
+        method: &str,
+        path: &str,
+        body: Value,
+        if_match: Option<&str>,
+    ) -> RelayResponse {
+        let Some(scope) = Scope::parse(&actor.scope) else {
+            return error_response(ControlApiError::AuthInvalidScope);
+        };
+        let Ok(http_method) = Method::from_bytes(method.as_bytes()) else {
+            return RelayResponse {
+                status: 405,
+                body: json!({
+                    "error": {
+                        "code": "control_api.method_not_allowed",
+                        "params": { "method": method, "path": path },
+                    }
+                }),
+            };
+        };
+        let path = path.trim_end_matches('/');
+        if let Err(error) = authorize(requirement(&http_method, path), scope) {
+            return error_response(error);
+        }
+
+        let config_actor = ConfigActor::new(actor.actor_id, actor.actor_type);
+        let result = match (http_method.as_str(), path) {
+            ("PUT", "/api/v1/config") => self
+                .service
+                .replace(body, &config_actor, if_match)
+                .await
+                .map(|version| json!({ "data": { "version": version } })),
+            ("POST", _) if rollback_version(path).is_some() => {
+                let target = rollback_version(path).unwrap_or(0);
+                self.service
+                    .rollback(target, &config_actor, if_match)
+                    .await
+                    .map(|outcome| {
+                        json!({
+                            "data": {
+                                "version": outcome.version,
+                                "restored_from": outcome.restored_from,
+                            }
+                        })
+                    })
+            }
+            _ => Err(ControlApiError::NotFound {
+                what: path.to_owned(),
+            }),
+        };
+        match result {
+            Ok(body) => RelayResponse { status: 200, body },
+            Err(error) => error_response(error),
+        }
+    }
+}
+
+#[async_trait]
+impl WriteExecutor for ConfigWriteExecutor {
+    async fn execute(
+        &self,
+        actor: RelayedActor,
+        method: String,
+        path: String,
+        body: Value,
+        if_match: Option<String>,
+        idempotency_key: Option<String>,
+    ) -> Result<RelayResponse, ClusterError> {
+        if let Some(key) = idempotency_key.as_deref()
+            && let Some(response) = self.cached(key)
+        {
+            return Ok(response);
+        }
+        let response = self
+            .run(actor, &method, &path, body, if_match.as_deref())
+            .await;
+        if let Some(key) = idempotency_key {
+            self.remember(&key, &response);
+        }
+        Ok(response)
+    }
+}
+
+/// Parses `/api/v1/config/versions/{version}/rollback`.
+fn rollback_version(path: &str) -> Option<u64> {
+    let rest = path
+        .strip_prefix("/api/v1/config/versions/")?
+        .strip_suffix("/rollback")?;
+    rest.parse().ok()
+}
+
+fn error_response(error: ControlApiError) -> RelayResponse {
+    let mut body = json!({ "error": { "code": error.code() } });
+    if let Some(params) = error.params() {
+        body["error"]["params"] = params;
+    }
+    RelayResponse {
+        status: error.status().as_u16(),
+        body,
+    }
+}
+
+/// Sub-node hook: the local query-log outbox cursor.
+pub struct QueryLogOutbox {
+    log: Arc<QueryLog>,
+}
+
+impl QueryLogOutbox {
+    /// Wraps the node's query log.
+    pub fn new(log: Arc<QueryLog>) -> Self {
+        Self { log }
+    }
+}
+
+#[async_trait]
+impl LogOutbox for QueryLogOutbox {
+    async fn next_unacked_seq(&self) -> Result<u64, ClusterError> {
+        self.log
+            .next_seq()
+            .await
+            .map(|seq| u64::try_from(seq.max(1)).unwrap_or(1))
+            .map_err(internal)
+    }
+
+    async fn fetch_batch(
+        &self,
+        from_seq: u64,
+        max_records: usize,
+    ) -> Result<Vec<LogRecord>, ClusterError> {
+        let from_seq = i64::try_from(from_seq).map_err(|_| ClusterError::LogStreamInvalid {
+            reason: "log sequence number out of range".to_owned(),
+        })?;
+        self.log
+            .outbox_rows(from_seq, max_records)
+            .await
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|(_, id, record)| LogRecord { id, record })
+                    .collect()
+            })
+            .map_err(internal)
+    }
+
+    async fn ack(&self, seq: u64) -> Result<(), ClusterError> {
+        let seq = i64::try_from(seq).map_err(|_| ClusterError::LogStreamInvalid {
+            reason: "log sequence number out of range".to_owned(),
+        })?;
+        self.log.ack(seq).await.map(|_| ()).map_err(internal)
+    }
+}
+
+/// Master hook: deduplicating query-log ingest.
+pub struct QueryLogIngest {
+    log: Arc<QueryLog>,
+}
+
+impl QueryLogIngest {
+    /// Wraps the master's query log.
+    pub fn new(log: Arc<QueryLog>) -> Self {
+        Self { log }
+    }
+}
+
+#[async_trait]
+impl LogIngest for QueryLogIngest {
+    async fn ingest(
+        &self,
+        node_id: &str,
+        first_seq: u64,
+        last_seq: u64,
+        records: &[LogRecord],
+    ) -> Result<u64, ClusterError> {
+        let records = records
+            .iter()
+            .map(|record| record.record.clone())
+            .collect::<Vec<_>>();
+        self.log
+            .ingest_remote(node_id, first_seq, last_seq, &records)
+            .await
+            .map_err(|error| match error {
+                ControlApiError::QueryLogInvalid { reason } => {
+                    ClusterError::LogStreamInvalid { reason }
+                }
+                other => internal(other),
+            })
+    }
+
+    async fn highest_seq(&self, node_id: &str) -> Result<u64, ClusterError> {
+        self.log.highest_remote_seq(node_id).await.map_err(internal)
+    }
+}
+
+/// Fallback ingest when the node has no query log configured.
+struct UnavailableLogIngest;
+
+#[async_trait]
+impl LogIngest for UnavailableLogIngest {
+    async fn ingest(
+        &self,
+        _node_id: &str,
+        _first_seq: u64,
+        _last_seq: u64,
+        _records: &[LogRecord],
+    ) -> Result<u64, ClusterError> {
+        Err(ClusterError::Internal {
+            message: "query log is not configured".to_owned(),
+        })
+    }
+
+    async fn highest_seq(&self, _node_id: &str) -> Result<u64, ClusterError> {
+        Ok(0)
+    }
+}
+
+/// Sub-node hook: relays buffered writes through the mTLS client.
+struct ClientWriteExecutor {
+    client: Arc<ClusterClient>,
+}
+
+impl ClientWriteExecutor {
+    fn new(client: Arc<ClusterClient>) -> Self {
+        Self { client }
+    }
+}
+
+static RELAY_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+#[async_trait]
+impl WriteExecutor for ClientWriteExecutor {
+    async fn execute(
+        &self,
+        actor: RelayedActor,
+        method: String,
+        path: String,
+        body: Value,
+        if_match: Option<String>,
+        idempotency_key: Option<String>,
+    ) -> Result<RelayResponse, ClusterError> {
+        let request_id = idempotency_key
+            .clone()
+            .unwrap_or_else(|| format!("relay-{}", RELAY_COUNTER.fetch_add(1, Ordering::Relaxed)));
+        self.client
+            .relay_write(WriteRelay {
+                request_id,
+                idempotency_key,
+                if_match,
+                method,
+                path,
+                body,
+                actor,
+            })
+            .await
+    }
+}
+
+/// Options for [`ClusterRuntime::start`].
+pub struct ClusterRuntimeOptions {
+    /// Node data directory (cluster CA, registry, offline queue, TLS store).
+    pub data_dir: PathBuf,
+    /// Clock used by the cluster transport and retry loops.
+    pub clock: Arc<dyn Clock>,
+    /// Status handle shared with [`AppState`]. Attach it before starting.
+    pub status: Arc<ClusterStatusHandle>,
+    /// Master certificate SAN; defaults to the configured bind address.
+    pub server_name: Option<String>,
+    /// One-time join token used only when the sub-node has no identity yet.
+    pub join_token: Option<Secret>,
+    /// Pinned master certificate (PEM) used only for first enrollment.
+    pub master_cert_pem: Option<String>,
+    /// Live TLS resolver a pushed certificate is installed into.
+    pub tls_resolver: Option<Arc<CertResolver>>,
+}
+
+impl ClusterRuntimeOptions {
+    /// Options with a fresh status handle and no enrollment material.
+    pub fn new(data_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            data_dir: data_dir.into(),
+            clock: Arc::new(dnscraft_common::clock::SystemClock),
+            status: Arc::new(ClusterStatusHandle::new()),
+            server_name: None,
+            join_token: None,
+            master_cert_pem: None,
+            tls_resolver: None,
+        }
+    }
+}
+
+/// A running cluster role.
+pub struct ClusterRuntime {
+    role: Role,
+    status: Arc<ClusterStatusHandle>,
+    store: Option<ClusterStore>,
+    config_sync: Option<Arc<ConfigSync>>,
+    shutdown: watch::Sender<bool>,
+    notify: Arc<Notify>,
+    tasks: Vec<JoinHandle<()>>,
+    server: Option<ClusterServer>,
+}
+
+impl ClusterRuntime {
+    /// Starts the cluster role configured in `config`.
+    ///
+    /// `standalone` returns an idle runtime that starts nothing. `master` opens
+    /// the mTLS listener, publishes the current snapshot, and republishes on
+    /// every config change. `sub_node` loads (or enrolls) its identity and
+    /// starts the reconnect/apply loop plus the log-streamer and offline-write
+    /// replay tasks.
+    ///
+    /// `state` is borrowed so the caller keeps ownership; after a master start,
+    /// attach [`Self::cluster_store`] with
+    /// [`AppState::with_cluster_store`](crate::AppState::with_cluster_store)
+    /// before serving the admin API.
+    pub async fn start(
+        config: ClusterConfig,
+        state: &AppState,
+        options: ClusterRuntimeOptions,
+    ) -> Result<Self, ControlApiError> {
+        let (shutdown, _) = watch::channel(false);
+        let notify = Arc::new(Notify::new());
+        let clock = Arc::clone(&options.clock);
+        match config.role {
+            Role::Standalone => Ok(Self {
+                role: config.role,
+                status: options.status,
+                store: None,
+                config_sync: None,
+                shutdown,
+                notify,
+                tasks: Vec::new(),
+                server: None,
+            }),
+            Role::Master => {
+                let mut runtime = Self {
+                    role: config.role,
+                    status: Arc::clone(&options.status),
+                    store: None,
+                    config_sync: None,
+                    shutdown,
+                    notify,
+                    tasks: Vec::new(),
+                    server: None,
+                };
+                runtime
+                    .start_master(&config, state, &options, clock)
+                    .await?;
+                Ok(runtime)
+            }
+            Role::SubNode => {
+                let mut runtime = Self {
+                    role: config.role,
+                    status: Arc::clone(&options.status),
+                    store: None,
+                    config_sync: None,
+                    shutdown,
+                    notify,
+                    tasks: Vec::new(),
+                    server: None,
+                };
+                runtime
+                    .start_sub_node(&config, state, &options, clock)
+                    .await?;
+                Ok(runtime)
+            }
+        }
+    }
+
+    /// The role this runtime started.
+    pub fn role(&self) -> Role {
+        self.role
+    }
+
+    /// The shared status handle.
+    pub fn status_handle(&self) -> Arc<ClusterStatusHandle> {
+        Arc::clone(&self.status)
+    }
+
+    /// The master's node registry (the same store the admin API uses).
+    pub fn cluster_store(&self) -> Option<ClusterStore> {
+        self.store.clone()
+    }
+
+    /// The master's config broadcast registry.
+    pub fn config_sync(&self) -> Option<Arc<ConfigSync>> {
+        self.config_sync.clone()
+    }
+
+    /// The master listener's bound address (useful when the port was `0`).
+    pub fn listen_addr(&self) -> Option<std::net::SocketAddr> {
+        self.server.as_ref().map(ClusterServer::addr)
+    }
+
+    /// The master's own server certificate (PEM), for bootstrap pinning.
+    pub fn server_cert_pem(&self) -> Option<&str> {
+        self.server.as_ref().map(ClusterServer::server_cert_pem)
+    }
+
+    /// Stops the listener and background tasks.
+    pub async fn shutdown(mut self) {
+        let _ = self.shutdown.send(true);
+        self.notify.notify_waiters();
+        for task in self.tasks.drain(..) {
+            let _ = task.await;
+        }
+        if let Some(server) = self.server.take() {
+            server.shutdown().await;
+        }
+    }
+
+    async fn start_master(
+        &mut self,
+        config: &ClusterConfig,
+        state: &AppState,
+        options: &ClusterRuntimeOptions,
+        clock: Arc<dyn Clock>,
+    ) -> Result<(), ControlApiError> {
+        let service = state
+            .config_service_arc()
+            .ok_or_else(|| ControlApiError::Internal {
+                message: "cluster master requires a config service".to_owned(),
+            })?;
+        let listen = config.listen.clone().ok_or_else(|| {
+            ControlApiError::from(ClusterError::RoleInvalid {
+                reason: "master requires cluster.listen".to_owned(),
+            })
+        })?;
+        let ca = ClusterCa::load_or_generate(&config.tls.ca_cert)?;
+        let store = ClusterStore::open(
+            &options.data_dir.join("cluster.db"),
+            clock.clone(),
+            config.join.token_ttl,
+        )
+        .await?;
+
+        let write_executor: Arc<dyn WriteExecutor> = Arc::new(ConfigWriteExecutor::new(
+            Arc::clone(&service),
+            clock.clone(),
+        ));
+        let log_ingest: Arc<dyn LogIngest> = match state.query_log_arc() {
+            Some(log) => Arc::new(QueryLogIngest::new(log)),
+            None => Arc::new(UnavailableLogIngest),
+        };
+        let server = ClusterServer::start(
+            ClusterServerConfig {
+                listen,
+                server_name: options.server_name.clone().unwrap_or_else(|| {
+                    config
+                        .listen
+                        .as_ref()
+                        .map_or_else(|| config.node_id.clone(), |listen| listen.bind.to_string())
+                }),
+                node_cert_ttl: config.join.node_cert_ttl,
+                quota: config.quota.clone(),
+            },
+            ca,
+            store.clone(),
+            clock.clone(),
+            write_executor,
+            log_ingest,
+        )
+        .await?;
+
+        let (version, snapshot) = service.current().await?;
+        self.status.set(ClusterStatus {
+            role: "master".to_owned(),
+            master_reachable: true,
+            applied_version: version,
+            lag: 0,
+            queue_depth: 0,
+            last_sync: None,
+        });
+        if let (Some(version), Some(snapshot)) = (version, snapshot) {
+            server.config_sync().publish(version, &snapshot)?;
+            self.status.update(|status| {
+                status.last_sync = Some(clock.now());
+            });
+        }
+
+        // Publish every later apply/rollback to the connected sub-nodes.
+        let sync = server.config_sync_handle();
+        let status = Arc::clone(&self.status);
+        let change_clock = clock.clone();
+        let mut shutdown = self.shutdown.subscribe();
+        let change_service = Arc::clone(&service);
+        // Subscribe before spawning: a send that races the task start would
+        // otherwise be folded into the receiver's initial value and missed.
+        let mut changes = change_service.subscribe();
+        self.tasks.push(tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    changed = changes.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        let Ok((Some(version), Some(snapshot))) = change_service.current().await else {
+                            continue;
+                        };
+                        if sync.publish(version, &snapshot).is_ok() {
+                            let lag = sync.lag().iter().map(|node| node.lag).max().unwrap_or(0);
+                            status.update(|status| {
+                                status.applied_version = Some(version);
+                                status.lag = lag;
+                                status.last_sync = Some(change_clock.now());
+                            });
+                        }
+                    }
+                    _ = shutdown.changed() => return,
+                }
+            }
+        }));
+
+        self.store = Some(store);
+        self.config_sync = Some(server.config_sync_handle());
+        self.server = Some(server);
+        Ok(())
+    }
+
+    async fn start_sub_node(
+        &mut self,
+        config: &ClusterConfig,
+        state: &AppState,
+        options: &ClusterRuntimeOptions,
+        clock: Arc<dyn Clock>,
+    ) -> Result<(), ControlApiError> {
+        let service = state
+            .config_service_arc()
+            .ok_or_else(|| ControlApiError::Internal {
+                message: "cluster sub-node requires a config service".to_owned(),
+            })?;
+        let master_url = config.master_url.clone().ok_or_else(|| {
+            ControlApiError::from(ClusterError::RoleInvalid {
+                reason: "sub_node requires master_url".to_owned(),
+            })
+        })?;
+        let identity = match NodeIdentity::load(&config.tls) {
+            Ok(identity) => identity,
+            Err(_) => enroll_identity(config, options).await?,
+        };
+        let client = Arc::new(ClusterClient::new(&master_url, &identity, clock.clone())?);
+
+        let applier = Arc::new(SyncedConfigApplier::new(
+            Arc::clone(&service),
+            config.node_id.clone(),
+        ));
+        let auth_applier: Option<Arc<dyn AuthSnapshotApplier>> = state
+            .auth_state_arc()
+            .map(|auth| Arc::new(StateAuthApplier::new(auth)) as Arc<dyn AuthSnapshotApplier>);
+        let cert_installer: Option<Arc<dyn CertInstaller>> = match (
+            options.tls_resolver.clone(),
+            CertStore::open(&options.data_dir),
+        ) {
+            (Some(resolver), Ok(store)) => Some(Arc::new(TlsCertInstaller::new(resolver, store))),
+            _ => None,
+        };
+        let runtime_applier = Arc::new(StateRuntimeApplier::new(state.clone()));
+
+        let (version, _) = service.current().await?;
+        let queue_depth = match state.offline_write_queue_arc() {
+            Some(queue) => queue
+                .status()
+                .await
+                .map(|status| status.pending)
+                .unwrap_or(0),
+            None => 0,
+        };
+        self.status.set(ClusterStatus {
+            role: "sub_node".to_owned(),
+            master_reachable: false,
+            applied_version: version,
+            lag: 0,
+            queue_depth,
+            last_sync: None,
+        });
+
+        let status = Arc::clone(&self.status);
+        let mut shutdown = self.shutdown.subscribe();
+        let notify = Arc::clone(&self.notify);
+        let connection_clock = clock.clone();
+        let connection_state = state.clone();
+        let queue = state.offline_write_queue_arc();
+        let replay_executor = Arc::new(ClientWriteExecutor::new(Arc::clone(&client)));
+        let replay_lock = Arc::new(tokio::sync::Mutex::new(()));
+        let connection_client = Arc::clone(&client);
+        self.tasks.push(tokio::spawn(async move {
+            run_sub_node_loop(
+                connection_client,
+                applier,
+                auth_applier,
+                cert_installer,
+                runtime_applier,
+                status,
+                connection_clock,
+                connection_state,
+                queue,
+                replay_executor,
+                replay_lock,
+                notify,
+                &mut shutdown,
+            )
+            .await;
+        }));
+
+        if let Some(log) = state.query_log_arc() {
+            let outbox = Arc::new(QueryLogOutbox::new(log));
+            let streamer = LogStreamer::new(
+                outbox,
+                Arc::clone(&client),
+                config.log.clone(),
+                clock.clone(),
+            );
+            let mut shutdown = self.shutdown.subscribe();
+            let notify = Arc::clone(&self.notify);
+            let stream_clock = clock.clone();
+            self.tasks.push(tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = shutdown.changed() => return,
+                        result = streamer.run(&notify) => {
+                            if *shutdown.borrow() {
+                                return;
+                            }
+                            if result.is_ok() {
+                                continue;
+                            }
+                            let deadline =
+                                add_duration(stream_clock.now(), LOG_RETRY_DELAY);
+                            tokio::select! {
+                                () = wait_until(stream_clock.as_ref(), deadline, &notify) => {}
+                                _ = shutdown.changed() => return,
+                            }
+                        }
+                    }
+                }
+            }));
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for ClusterRuntime {
+    fn drop(&mut self) {
+        let _ = self.shutdown.send(true);
+        self.notify.notify_waiters();
+    }
+}
+
+/// Loads a persisted identity or enrolls a new one with the join token.
+async fn enroll_identity(
+    config: &ClusterConfig,
+    options: &ClusterRuntimeOptions,
+) -> Result<NodeIdentity, ControlApiError> {
+    let (Some(token), Some(master_cert), Some(master_url)) = (
+        options.join_token.clone(),
+        options.master_cert_pem.clone(),
+        config.master_url.as_deref(),
+    ) else {
+        return Err(ControlApiError::from(ClusterError::RoleInvalid {
+            reason: "sub_node has no identity; provide join_token and master_cert_pem to enroll"
+                .to_owned(),
+        }));
+    };
+    let pending = PendingNodeIdentity::generate(&config.node_id)?;
+    let response = ClusterClient::enroll(master_url, &master_cert, pending.request(token)).await?;
+    Ok(pending.persist(&response, &config.tls)?)
+}
+
+/// The sub-node reconnect/apply loop.
+#[allow(clippy::too_many_arguments)]
+async fn run_sub_node_loop(
+    client: Arc<ClusterClient>,
+    applier: Arc<SyncedConfigApplier>,
+    auth_applier: Option<Arc<dyn AuthSnapshotApplier>>,
+    cert_installer: Option<Arc<dyn CertInstaller>>,
+    runtime_applier: Arc<StateRuntimeApplier>,
+    status: Arc<ClusterStatusHandle>,
+    clock: Arc<dyn Clock>,
+    state: AppState,
+    queue: Option<Arc<OfflineWriteQueue>>,
+    replay_executor: Arc<ClientWriteExecutor>,
+    replay_lock: Arc<tokio::sync::Mutex<()>>,
+    notify: Arc<Notify>,
+    shutdown: &mut watch::Receiver<bool>,
+) {
+    loop {
+        if *shutdown.borrow() {
+            return;
+        }
+        let last_applied = match state.config_service_arc() {
+            Some(service) => service
+                .current()
+                .await
+                .ok()
+                .and_then(|(version, _)| version),
+            None => None,
+        };
+        let last_acked = match state.query_log_arc() {
+            Some(log) => log
+                .next_seq()
+                .await
+                .ok()
+                .map(|seq| u64::try_from(seq.saturating_sub(1)).unwrap_or(0)),
+            None => None,
+        };
+        let mut stream = tokio::select! {
+            stream = client.connect_with(last_applied, last_acked, &notify) => match stream {
+                Ok(stream) => stream,
+                Err(_) if *shutdown.borrow() => return,
+                Err(error) => {
+                    tracing::warn!(error = %error, "cluster sub-node could not connect");
+                    status.update(|status| status.master_reachable = false);
+                    return;
+                }
+            },
+            _ = shutdown.changed() => return,
+        };
+        status.update(|status| status.master_reachable = true);
+
+        if let Some(queue) = queue.clone()
+            && let Ok(guard) = replay_lock.clone().try_lock_owned()
+        {
+            let executor = Arc::clone(&replay_executor);
+            tokio::spawn(async move {
+                let _guard = guard;
+                if let Err(error) = queue.replay_all(executor.as_ref()).await {
+                    tracing::warn!(error = %error, "offline write replay failed");
+                }
+            });
+        }
+
+        loop {
+            tokio::select! {
+                _ = shutdown.changed() => return,
+                record = stream.next_record() => match record {
+                    Ok(StreamRecord::ConfigPush(push)) => {
+                        match client.apply_push(&push, applier.as_ref()).await {
+                            Ok(applied) => status.update(|status| {
+                                status.applied_version = Some(applied);
+                                status.lag = (push.config_version - applied).max(0);
+                                status.last_sync = Some(clock.now());
+                            }),
+                            Err(error) => {
+                                tracing::warn!(error = %error, "cluster config apply failed");
+                                status.update(|status| {
+                                    status.lag = (push.config_version
+                                        - status.applied_version.unwrap_or(0))
+                                    .max(0);
+                                });
+                                return;
+                            }
+                        }
+                    }
+                    Ok(StreamRecord::CertPush(push)) => match &cert_installer {
+                        Some(installer) => {
+                            if let Err(error) = client.apply_cert(&push, installer.as_ref()).await {
+                                tracing::warn!(error = %error, "cluster cert install failed");
+                                return;
+                            }
+                        }
+                        None => tracing::warn!("cluster cert push ignored: no TLS resolver wired"),
+                    },
+                    Ok(StreamRecord::AuthSnapshotPush(push)) => match &auth_applier {
+                        Some(applier) => {
+                            if let Err(error) =
+                                client.apply_auth_snapshot(&push, applier.as_ref()).await
+                            {
+                                tracing::warn!(error = %error, "cluster auth snapshot failed");
+                                return;
+                            }
+                        }
+                        None => tracing::warn!("cluster auth snapshot ignored: no auth state wired"),
+                    },
+                    Ok(StreamRecord::RuntimeCommand(command)) => {
+                        if let Err(error) =
+                            client.apply_runtime_command(&command, runtime_applier.as_ref()).await
+                        {
+                            tracing::warn!(error = %error, "cluster runtime command failed");
+                        }
+                    }
+                    Ok(StreamRecord::Error { error }) => {
+                        tracing::warn!(code = %error.code, "cluster stream error");
+                        status.update(|status| status.master_reachable = false);
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::debug!(error = %error, "cluster stream disconnected");
+                        status.update(|status| status.master_reachable = false);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn internal(error: ControlApiError) -> ClusterError {
+    ClusterError::Internal {
+        message: format!("{}: {error}", error.code()),
+    }
+}

@@ -122,6 +122,7 @@ pub struct ConfigService {
     modules: ModuleAppliers,
     node_id: String,
     apply_lock: tokio::sync::Mutex<()>,
+    changes: tokio::sync::watch::Sender<Option<i64>>,
 }
 
 impl ConfigService {
@@ -138,7 +139,23 @@ impl ConfigService {
             modules,
             node_id: node_id.into(),
             apply_lock: tokio::sync::Mutex::new(()),
+            changes: tokio::sync::watch::channel(None).0,
         }
+    }
+
+    /// Subscribes to successful config-version changes.
+    ///
+    /// The cluster master runtime uses this to publish the new snapshot to
+    /// [`dnscraft_cluster::ConfigSync`] after every apply or rollback. Every
+    /// successful [`Self::replace`], [`Self::mutate`],
+    /// [`Self::mutate_audited`], [`Self::apply_synced_config`] and
+    /// [`Self::rollback`] sends the new version.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<Option<i64>> {
+        self.changes.subscribe()
+    }
+
+    fn notify_change(&self, version: i64) {
+        let _ = self.changes.send(Some(version));
     }
 
     /// The current version and its stored (already redacted) snapshot.
@@ -379,7 +396,10 @@ impl ConfigService {
         };
         match self.validate_and_apply(&snapshot, previous.as_ref()).await {
             Ok(()) => match self.store.store_with_audit(&snapshot, change.clone()).await {
-                Ok(version) => Ok(Some(version)),
+                Ok(version) => {
+                    self.notify_change(version);
+                    Ok(Some(version))
+                }
                 Err(err) => {
                     self.record(
                         actor,
@@ -466,10 +486,12 @@ impl ConfigService {
         version: Option<i64>,
     ) -> Result<i64, ControlApiError> {
         self.validate_and_apply(snapshot, previous).await?;
-        match version {
-            Some(version) => self.store.store_at(snapshot, version).await,
-            None => self.store.store(snapshot).await,
-        }
+        let version = match version {
+            Some(version) => self.store.store_at(snapshot, version).await?,
+            None => self.store.store(snapshot).await?,
+        };
+        self.notify_change(version);
+        Ok(version)
     }
 
     /// Validates `snapshot` and applies it to every configured module.
@@ -553,6 +575,7 @@ impl ConfigService {
         }
 
         let version = self.store.store(&snapshot).await?;
+        self.notify_change(version);
         self.record(
             actor,
             "config.rollback",

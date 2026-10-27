@@ -270,6 +270,14 @@ impl ClusterServer {
         self.config_sync.as_ref()
     }
 
+    /// A cheaply cloneable handle to the config broadcast registry.
+    ///
+    /// Lets a caller (for example the control-api cluster runtime) publish from
+    /// a spawned task without borrowing the server.
+    pub fn config_sync_handle(&self) -> Arc<ConfigSync> {
+        Arc::clone(&self.config_sync)
+    }
+
     /// Broadcasts a volatile runtime command to every connected node.
     ///
     /// Nothing is persisted or retried: nodes connect later do not see the

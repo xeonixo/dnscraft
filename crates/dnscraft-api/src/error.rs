@@ -195,6 +195,19 @@ pub enum ControlApiError {
 }
 
 impl ControlApiError {
+    /// The HTTP status this error maps to.
+    ///
+    /// Crate-internal so the cluster write relay can return the master's
+    /// status verbatim without re-implementing the table.
+    pub(crate) fn status(&self) -> axum::http::StatusCode {
+        self.http_status()
+    }
+
+    /// The non-secret `params` object for the error envelope.
+    pub(crate) fn params(&self) -> Option<serde_json::Value> {
+        self.http_params()
+    }
+
     /// Stable, locale-neutral code exposed through the API.
     pub fn code(&self) -> &'static str {
         match self {

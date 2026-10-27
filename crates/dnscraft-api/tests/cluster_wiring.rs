@@ -1,0 +1,882 @@
+//! CL6/CL15: control-api ↔ cluster wiring.
+//!
+//! Covers the trait implementations (config apply/rollback, auth snapshot,
+//! runtime command, cert install, relay RBAC, log outbox/ingest), the master
+//! publish hook, a real loopback master + sub-node convergence, the status
+//! fields, and node-scoped policy views. No wall-clock sleeps and no outbound
+//! network: loopback `127.0.0.1:0` only.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use std::net::{IpAddr, Ipv4Addr};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
+
+use async_trait::async_trait;
+use serde_json::{Value, json};
+
+use dnscraft_api::{
+    AppState, ApplyFiltering, Audit, Auth, AuthState, ClusterRuntime, ClusterRuntimeOptions,
+    ClusterStatusHandle, ConfigActor, ConfigService, ConfigStore, ConfigWriteExecutor,
+    ControlApiError, Db, LocalAccountStore, ManualClock as ApiClock, ModuleAppliers, ModuleFuture,
+    OidcState, QueryLog, QueryLogIngest, QueryLogOutbox, SessionStore, StateAuthApplier,
+    StateRuntimeApplier, SyncedConfigApplier, TlsCertInstaller, TokenStore, node_scoped_views,
+};
+use dnscraft_cluster::{
+    AuthSnapshotApplier, CertInstaller, ClusterCa, ClusterClient, ClusterConfig, ClusterServer,
+    ClusterServerConfig, ClusterStore, ConfigApplier, JoinConfig, ListenConfig, LogConfig,
+    LogIngest, LogOutbox, LogRecord, NodeIdentity, OfflineWritesConfig, PendingNodeIdentity,
+    QuotaConfig, RelayResponse, RelayedActor, Role, RuntimeCommandApplier, TlsPaths, WriteExecutor,
+};
+use dnscraft_common::clock::ManualClock as ClusterClock;
+use dnscraft_common::secret::Secret;
+
+const NOW: u64 = 1_700_000_000;
+const TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
+const NODE_CERT_TTL: Duration = Duration::from_secs(90 * 24 * 3600);
+const IDLE: Duration = Duration::from_secs(60 * 60);
+const ABSOLUTE: Duration = Duration::from_secs(12 * 3600);
+const MAX_TTL: Duration = Duration::from_secs(365 * 24 * 3600);
+
+fn at(seconds: u64) -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)
+}
+
+/// A unique, self-cleaning temporary directory.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(name: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "dnscraft-cluster-wiring-{name}-{}-{id}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+async fn service(node_id: &str, modules: ModuleAppliers) -> (Arc<ConfigService>, Db) {
+    let db = Db::open_in_memory(Arc::new(ApiClock::new(at(NOW))))
+        .await
+        .unwrap();
+    let service = Arc::new(ConfigService::new(
+        ConfigStore::new(db.clone()),
+        Audit::new(db.clone()),
+        modules,
+        node_id,
+    ));
+    (service, db)
+}
+
+fn snapshot(marker: &str) -> Value {
+    json!({
+        "filtering": { "lists": [], "sets": [], "marker": marker },
+        "clients": {},
+        "policy": {},
+        "listeners": {},
+        "tls": {},
+    })
+}
+
+fn master_config(dir: &Path) -> ClusterConfig {
+    ClusterConfig {
+        role: Role::Master,
+        node_id: "master".to_owned(),
+        master_url: None,
+        listen: Some(ListenConfig {
+            bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            port: 0,
+        }),
+        join: JoinConfig::default(),
+        timing: Default::default(),
+        offline_writes: OfflineWritesConfig::default(),
+        log: LogConfig::default(),
+        quota: QuotaConfig::default(),
+        tls: TlsPaths {
+            ca_cert: dir.join("ca.pem"),
+            node_cert: dir.join("node.pem"),
+            node_key: dir.join("node.key"),
+        },
+    }
+}
+
+fn sub_node_config(dir: &Path, url: &str) -> ClusterConfig {
+    ClusterConfig {
+        role: Role::SubNode,
+        node_id: "node-b".to_owned(),
+        master_url: Some(url.to_owned()),
+        listen: None,
+        join: JoinConfig::default(),
+        timing: Default::default(),
+        offline_writes: OfflineWritesConfig::default(),
+        log: LogConfig::default(),
+        quota: QuotaConfig::default(),
+        tls: TlsPaths {
+            ca_cert: dir.join("node-ca.pem"),
+            node_cert: dir.join("node.pem"),
+            node_key: dir.join("node.key"),
+        },
+    }
+}
+
+struct NoWrites;
+
+#[async_trait]
+impl WriteExecutor for NoWrites {
+    async fn execute(
+        &self,
+        _actor: RelayedActor,
+        _method: String,
+        _path: String,
+        _body: Value,
+        _if_match: Option<String>,
+        _idempotency_key: Option<String>,
+    ) -> Result<RelayResponse, dnscraft_cluster::ClusterError> {
+        Err(dnscraft_cluster::ClusterError::Internal {
+            message: "write relay is not used in this test".to_owned(),
+        })
+    }
+}
+
+struct NoLogs;
+
+#[async_trait]
+impl LogIngest for NoLogs {
+    async fn ingest(
+        &self,
+        _node_id: &str,
+        _first_seq: u64,
+        _last_seq: u64,
+        _records: &[LogRecord],
+    ) -> Result<u64, dnscraft_cluster::ClusterError> {
+        Err(dnscraft_cluster::ClusterError::Internal {
+            message: "log ingest is not used in this test".to_owned(),
+        })
+    }
+
+    async fn highest_seq(&self, _node_id: &str) -> Result<u64, dnscraft_cluster::ClusterError> {
+        Ok(0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ConfigApplier
+// ---------------------------------------------------------------------------
+
+struct ConditionalFiltering;
+
+impl ApplyFiltering for ConditionalFiltering {
+    fn apply<'a>(&'a self, config: &'a Value) -> ModuleFuture<'a> {
+        Box::pin(async move {
+            if config.get("fail").and_then(Value::as_bool) == Some(true) {
+                return Err(ControlApiError::Module {
+                    code: "filtering.config.invalid",
+                    params: Some(json!({ "reason": "injected" })),
+                });
+            }
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn config_applier_applies_the_pushed_version() {
+    let (service, _) = service("node-b", ModuleAppliers::default()).await;
+    let applier = SyncedConfigApplier::new(Arc::clone(&service), "node-b");
+
+    let applied = applier.apply(7, &snapshot("v7")).await.unwrap();
+    assert_eq!(applied, 7);
+    assert_eq!(service.current().await.unwrap().0, Some(7));
+}
+
+#[tokio::test]
+async fn config_applier_failure_rolls_back_and_reports_cluster_config_apply() {
+    let (service, _) = service(
+        "node-b",
+        ModuleAppliers {
+            filtering: Some(Arc::new(ConditionalFiltering)),
+            ..ModuleAppliers::default()
+        },
+    )
+    .await;
+    let applier = SyncedConfigApplier::new(Arc::clone(&service), "node-b");
+
+    applier.apply(5, &snapshot("old")).await.unwrap();
+    let error = applier
+        .apply(
+            6,
+            &snapshot("new-fail").merging(json!({ "filtering": { "fail": true } })),
+        )
+        .await
+        .expect_err("the injected module apply fails");
+
+    assert_eq!(error.code(), "cluster.config.apply");
+    assert!(
+        error.to_string().contains("filtering.config.invalid"),
+        "{error}"
+    );
+    // The sub-node stays on the previous version and snapshot.
+    let (version, stored) = service.current().await.unwrap();
+    assert_eq!(version, Some(5));
+    assert_eq!(stored.unwrap()["filtering"]["marker"], "old");
+}
+
+/// Tiny helper so the failing snapshot keeps the required sections.
+trait MergeJson {
+    fn merging(self, patch: Value) -> Value;
+}
+
+impl MergeJson for Value {
+    fn merging(mut self, patch: Value) -> Value {
+        let (Some(target), Some(patch)) = (self.as_object_mut(), patch.as_object()) else {
+            return self;
+        };
+        for (key, value) in patch {
+            target.insert(key.clone(), value.clone());
+        }
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Master publish hook
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn master_apply_publishes_to_config_sync() {
+    let dir = TempDir::new("publish");
+    let (service, _) = service("master", ModuleAppliers::default()).await;
+    let status = Arc::new(ClusterStatusHandle::new());
+    let state = AppState::new()
+        .with_config_service(Arc::clone(&service))
+        .with_cluster_status(status.clone());
+    let mut options = ClusterRuntimeOptions::new(dir.path());
+    options.clock = Arc::new(ClusterClock::new(SystemTime::now()));
+    options.status = Arc::clone(&status);
+    let runtime = ClusterRuntime::start(master_config(dir.path()), &state, options)
+        .await
+        .unwrap();
+
+    assert_eq!(runtime.role(), Role::Master);
+    let sync = runtime.config_sync().expect("master config sync");
+    assert_eq!(sync.current_version(), None);
+
+    let version = service
+        .replace(snapshot("published"), &ConfigActor::local(), None)
+        .await
+        .unwrap();
+    assert_eq!(version, 1);
+
+    // The publish hook is a spawned watch task; yield until it runs.
+    for _ in 0..200 {
+        if sync.current_version() == Some(version) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(sync.current_version(), Some(1));
+    let current = status.status().expect("master status");
+    assert_eq!(current.role, "master");
+    assert!(current.master_reachable);
+    assert_eq!(current.applied_version, Some(1));
+    assert!(current.last_sync.is_some());
+
+    runtime.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Real loopback master + sub-node convergence
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sub_node_applies_a_master_push_and_acks_zero_lag() {
+    let dir = TempDir::new("converge");
+    // rustls validates the freshly enrolled node certificate against the real
+    // clock, so the test clock starts at wall-clock now and never advances.
+    let clock = Arc::new(ClusterClock::new(SystemTime::now()));
+    let store = ClusterStore::open_in_memory(clock.clone(), TOKEN_TTL)
+        .await
+        .unwrap();
+    let ca = ClusterCa::load_or_generate(&dir.path().join("ca.pem")).unwrap();
+    let server = ClusterServer::start(
+        ClusterServerConfig {
+            listen: ListenConfig {
+                bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 0,
+            },
+            server_name: "127.0.0.1".to_owned(),
+            node_cert_ttl: NODE_CERT_TTL,
+            quota: QuotaConfig::default(),
+        },
+        ca,
+        store.clone(),
+        clock.clone(),
+        Arc::new(NoWrites),
+        Arc::new(NoLogs),
+    )
+    .await
+    .unwrap();
+    let url = format!("https://127.0.0.1:{}", server.addr().port());
+
+    let token = store.mint_join_token("node-b").await.unwrap();
+    let pending = PendingNodeIdentity::generate("node-b").unwrap();
+    let response = ClusterClient::enroll(
+        &url,
+        server.server_cert_pem(),
+        pending.request(Secret::new(token.expose())),
+    )
+    .await
+    .unwrap();
+    let paths = TlsPaths {
+        ca_cert: dir.path().join("node-b-ca.pem"),
+        node_cert: dir.path().join("node-b.pem"),
+        node_key: dir.path().join("node-b.key"),
+    };
+    let identity = pending.persist(&response, &paths).unwrap();
+    assert!(NodeIdentity::load(&paths).is_ok());
+
+    let (service, _) = service("node-b", ModuleAppliers::default()).await;
+    let applier = SyncedConfigApplier::new(Arc::clone(&service), "node-b");
+    let client = ClusterClient::new(&url, &identity, clock.clone()).unwrap();
+    let notify = tokio::sync::Notify::new();
+    let mut stream = client.connect(&notify).await.unwrap();
+
+    server
+        .config_sync()
+        .publish(3, &snapshot("converged"))
+        .unwrap();
+    let applied = client.apply_next(&mut stream, &applier).await.unwrap();
+    assert_eq!(applied, Some(3));
+    assert_eq!(service.current().await.unwrap().0, Some(3));
+    assert_eq!(
+        service.current().await.unwrap().1.unwrap()["filtering"]["marker"],
+        "converged"
+    );
+    // The client posted the ack, so the master reports zero lag.
+    assert_eq!(server.config_sync().node_lag("node-b").unwrap().lag, 0);
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn runtime_master_publishes_and_sub_node_converges_end_to_end() {
+    let master_dir = TempDir::new("runtime-master");
+    let node_dir = TempDir::new("runtime-node");
+    let clock = Arc::new(ClusterClock::new(SystemTime::now()));
+
+    let (master_service, _) = service("master", ModuleAppliers::default()).await;
+    let master_status = Arc::new(ClusterStatusHandle::new());
+    let master_state = AppState::new()
+        .with_config_service(Arc::clone(&master_service))
+        .with_cluster_status(master_status.clone());
+    let mut master_options = ClusterRuntimeOptions::new(master_dir.path());
+    master_options.clock = clock.clone();
+    master_options.status = master_status;
+    let master = ClusterRuntime::start(
+        master_config(master_dir.path()),
+        &master_state,
+        master_options,
+    )
+    .await
+    .unwrap();
+
+    let url = format!("https://{}", master.listen_addr().unwrap());
+    let server_cert = master.server_cert_pem().unwrap().to_owned();
+    let token = master
+        .cluster_store()
+        .unwrap()
+        .mint_join_token("node-b")
+        .await
+        .unwrap();
+
+    let (node_service, _) = service("node-b", ModuleAppliers::default()).await;
+    let node_status = Arc::new(ClusterStatusHandle::new());
+    let node_state = AppState::new()
+        .with_config_service(Arc::clone(&node_service))
+        .with_cluster_status(node_status.clone());
+    let mut node_options = ClusterRuntimeOptions::new(node_dir.path());
+    node_options.clock = clock;
+    node_options.status = node_status.clone();
+    node_options.join_token = Some(Secret::new(token.expose()));
+    node_options.master_cert_pem = Some(server_cert);
+    let node = ClusterRuntime::start(
+        sub_node_config(node_dir.path(), &url),
+        &node_state,
+        node_options,
+    )
+    .await
+    .unwrap();
+
+    // The sub-node connects and reports reachable (no wall-clock sleep: yield
+    // until the spawned connection task makes progress).
+    for _ in 0..20_000 {
+        if node_status
+            .status()
+            .is_some_and(|status| status.master_reachable)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        node_status
+            .status()
+            .is_some_and(|status| status.master_reachable),
+        "sub-node never connected: {:?}",
+        node_status.status()
+    );
+
+    // A config write on the master must reach the sub-node through the runtime.
+    let version = master_service
+        .replace(snapshot("e2e"), &ConfigActor::local(), None)
+        .await
+        .unwrap();
+    let sync = master.config_sync().unwrap();
+    for _ in 0..20_000 {
+        if sync.current_version() == Some(version) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        sync.current_version(),
+        Some(version),
+        "master watcher did not publish; node lag: {:?}",
+        sync.node_lag("node-b")
+    );
+    for _ in 0..20_000 {
+        if node_service.current().await.unwrap().0 == Some(version)
+            && node_status
+                .status()
+                .is_some_and(|status| status.applied_version == Some(version))
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(node_service.current().await.unwrap().0, Some(version));
+    let applied = node_status.status().unwrap();
+    assert_eq!(applied.role, "sub_node");
+    assert_eq!(applied.applied_version, Some(version));
+    assert_eq!(applied.lag, 0);
+    assert!(applied.last_sync.is_some());
+
+    for _ in 0..20_000 {
+        if sync.node_lag("node-b").is_some_and(|node| node.lag == 0) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(sync.node_lag("node-b").unwrap().lag, 0);
+
+    node.shutdown().await;
+    master.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Auth snapshot apply
+// ---------------------------------------------------------------------------
+
+fn oidc_state() -> OidcState {
+    use dnscraft_api::AuthConfig;
+    let config = AuthConfig {
+        oidc_enabled: true,
+        oidc_issuer: "https://id.example.com".to_owned(),
+        oidc_client_id: "dnscraft".to_owned(),
+        oidc_client_secret: dnscraft_api::Secret::new("super-secret-client"),
+        ..AuthConfig::default()
+    };
+    OidcState::from_config_with_clock(&config, Arc::new(ApiClock::new(at(NOW))))
+        .unwrap()
+        .unwrap()
+}
+
+async fn auth_state(db: Db, with_local: bool) -> AuthState {
+    let oidc = oidc_state();
+    let state = AuthState::new(
+        Auth::new(SessionStore::new(db.clone(), IDLE, ABSOLUTE)),
+        TokenStore::new(db.clone(), MAX_TTL),
+    )
+    .with_oidc(&oidc);
+    if with_local {
+        state.with_local_accounts(LocalAccountStore::new(db, 5, Duration::from_secs(15 * 60)))
+    } else {
+        state
+    }
+}
+
+#[tokio::test]
+async fn auth_snapshot_apply_replaces_local_state_with_hashes_only() {
+    // Master: one token, one break-glass account, OIDC settings.
+    let master_db = Db::open_in_memory(Arc::new(ApiClock::new(at(NOW))))
+        .await
+        .unwrap();
+    let master = auth_state(master_db.clone(), true).await;
+    let created = master
+        .tokens()
+        .create(
+            "alice".to_owned(),
+            "ci".to_owned(),
+            dnscraft_api::Scope::Admin,
+            None,
+        )
+        .await
+        .unwrap();
+    let plaintext = created.plaintext().expose().to_owned();
+    let accounts = LocalAccountStore::new(master_db.clone(), 5, Duration::from_secs(900));
+    accounts
+        .upsert("break-glass", "hunter2", dnscraft_api::Role::Admin)
+        .await
+        .unwrap();
+    let pushed = master.auth_snapshot().await.unwrap();
+    let wire = serde_json::to_value(&pushed).unwrap();
+    assert!(!wire.to_string().contains(&plaintext));
+    assert!(!wire.to_string().contains("hunter2"));
+    assert!(!wire.to_string().contains("super-secret-client"));
+
+    // Sub-node: an old token that must be replaced.
+    let sub_db = Db::open_in_memory(Arc::new(ApiClock::new(at(NOW))))
+        .await
+        .unwrap();
+    let sub = auth_state(sub_db, true).await;
+    let old = sub
+        .tokens()
+        .create(
+            "old".to_owned(),
+            "old".to_owned(),
+            dnscraft_api::Scope::Viewer,
+            None,
+        )
+        .await
+        .unwrap();
+    let old_plaintext = old.plaintext().expose().to_owned();
+    assert!(sub.tokens().authenticate(&old_plaintext).await.is_ok());
+
+    StateAuthApplier::new(Arc::new(sub.clone()))
+        .apply(&wire)
+        .await
+        .unwrap();
+
+    // The master token now authenticates locally; the old token is gone.
+    let principal = sub.tokens().authenticate(&plaintext).await.unwrap();
+    assert_eq!(principal.actor_id(), "alice");
+    assert_eq!(
+        sub.tokens()
+            .authenticate(&old_plaintext)
+            .await
+            .unwrap_err()
+            .code(),
+        "control_api.auth.unauthenticated"
+    );
+    let applied = sub.auth_snapshot().await.unwrap();
+    assert_eq!(applied.tokens, pushed.tokens);
+    assert_eq!(applied.local_accounts, pushed.local_accounts);
+    assert_eq!(applied.oidc, pushed.oidc);
+    assert_eq!(applied.session_epoch, pushed.session_epoch);
+}
+
+// ---------------------------------------------------------------------------
+// Runtime command
+// ---------------------------------------------------------------------------
+
+fn filter_engine(temp: &TempDir) -> Arc<dnscraft_filtering::FilterEngine> {
+    use dnscraft_filtering::{
+        BlockMode, Clock as FilterClock, FilterConfig, FilterEngine, FilterSetConfig, ListStore,
+        SetId, StoreConfig,
+    };
+    let clock: Arc<dyn FilterClock> = Arc::new(dnscraft_filtering::ManualClock::new(at(NOW)));
+    let mut set = FilterSetConfig::new(SetId::new("default").unwrap(), "Default");
+    set.block_mode = BlockMode::NxDomain;
+    let config = FilterConfig {
+        lists: Vec::new(),
+        sets: vec![set],
+        ..FilterConfig::default()
+    };
+    let store = ListStore::open_with(temp.path(), StoreConfig::default(), clock.clone()).unwrap();
+    FilterEngine::open_without_scheduler(config, store, clock).unwrap()
+}
+
+#[tokio::test]
+async fn runtime_applier_pauses_resumes_and_temporarily_allows() {
+    let temp = TempDir::new("runtime");
+    let filter = filter_engine(&temp);
+    let state = AppState::new()
+        .with_clock(Arc::new(ApiClock::new(at(NOW))))
+        .with_filter_engine(Arc::clone(&filter));
+    let applier = StateRuntimeApplier::new(state);
+    let set = dnscraft_filtering::SetId::new("default").unwrap();
+
+    applier
+        .apply_runtime_command(
+            "pause",
+            &json!({ "filter_set_id": "default", "duration": "PT5M" }),
+        )
+        .await
+        .unwrap();
+    assert!(filter.paused_until(&set).is_some());
+    applier
+        .apply_runtime_command("resume", &json!({ "filter_set_id": "default" }))
+        .await
+        .unwrap();
+    assert!(filter.paused_until(&set).is_none());
+    applier
+        .apply_runtime_command(
+            "temporary_allow",
+            &json!({
+                "filter_set_id": "default",
+                "domain": "allowed.example.com",
+                "duration": "PT5M",
+            }),
+        )
+        .await
+        .unwrap();
+    // An unknown kind is surfaced as `cluster.runtime_command.failed`.
+    let error = applier
+        .apply_runtime_command("nope", &json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "cluster.runtime_command.failed");
+}
+
+// ---------------------------------------------------------------------------
+// Cert install
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn cert_installer_installs_a_pushed_chain_without_restart() {
+    let dir = TempDir::new("cert");
+    let resolver = Arc::new(dnscraft_tls::CertResolver::new());
+    let store = dnscraft_tls::CertStore::open(dir.path()).unwrap();
+    let installer = TlsCertInstaller::new(Arc::clone(&resolver), store);
+
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+    let params = rcgen::CertificateParams::new(vec!["cert.example.com".to_owned()]).unwrap();
+    let cert = params.self_signed(&key).unwrap();
+    let expected_leaf = cert.der().as_ref().to_vec();
+
+    installer
+        .install(&cert.pem(), &Secret::new(key.serialize_pem()))
+        .await
+        .unwrap();
+    assert!(resolver.has_cert());
+    assert_eq!(resolver.leaf_der().unwrap(), expected_leaf);
+}
+
+// ---------------------------------------------------------------------------
+// RBAC relay
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn relayed_viewer_write_is_rejected_and_admin_write_applies_once() {
+    let (service, _) = service("master", ModuleAppliers::default()).await;
+    let executor =
+        ConfigWriteExecutor::new(Arc::clone(&service), Arc::new(ClusterClock::new(at(NOW))));
+    let viewer = RelayedActor {
+        actor_id: "viewer-a".to_owned(),
+        actor_type: "user".to_owned(),
+        scope: "viewer".to_owned(),
+    };
+    let response = executor
+        .execute(
+            viewer,
+            "PUT".to_owned(),
+            "/api/v1/config".to_owned(),
+            snapshot("denied"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status, 403);
+    assert_eq!(
+        response.body["error"]["code"],
+        "control_api.auth.insufficient_scope"
+    );
+    assert_eq!(service.current().await.unwrap().0, None);
+
+    let admin = RelayedActor {
+        actor_id: "admin-a".to_owned(),
+        actor_type: "user".to_owned(),
+        scope: "admin".to_owned(),
+    };
+    let first = executor
+        .execute(
+            admin.clone(),
+            "PUT".to_owned(),
+            "/api/v1/config".to_owned(),
+            snapshot("applied"),
+            None,
+            Some("idem-1".to_owned()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status, 200);
+    assert_eq!(first.body["data"]["version"], 1);
+
+    // A retry with the same Idempotency-Key returns the stored response and
+    // does not create a second config version.
+    let retry = executor
+        .execute(
+            admin,
+            "PUT".to_owned(),
+            "/api/v1/config".to_owned(),
+            snapshot("applied"),
+            None,
+            Some("idem-1".to_owned()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(retry.body, first.body);
+    assert_eq!(service.current().await.unwrap().0, Some(1));
+}
+
+// ---------------------------------------------------------------------------
+// Node-scoped policy views
+// ---------------------------------------------------------------------------
+
+fn views_snapshot() -> Value {
+    json!({
+        "filtering": { "lists": [], "sets": [] },
+        "clients": {},
+        "policy": {
+            "profiles": [
+                { "id": "prof" }
+            ],
+            "views": [
+                {
+                    "id": "all", "is_default": true,
+                    "subnets": ["0.0.0.0/0"], "client_ids": [],
+                    "records": [], "profile": "prof"
+                },
+                {
+                    "id": "node-a-only", "is_default": false,
+                    "nodes": ["node-a"],
+                    "subnets": ["10.0.0.0/8"], "client_ids": [],
+                    "records": [], "profile": "prof"
+                },
+                {
+                    "id": "node-b-only", "is_default": false,
+                    "nodes": ["node-b"],
+                    "subnets": ["10.0.0.0/8"], "client_ids": [],
+                    "records": [], "profile": "prof"
+                }
+            ]
+        },
+        "listeners": {},
+        "tls": {}
+    })
+}
+
+#[tokio::test]
+async fn node_scoped_views_are_filtered_per_node_at_apply_time() {
+    let filtered = node_scoped_views(&views_snapshot(), "node-a").unwrap();
+    let ids: Vec<&str> = filtered["policy"]["views"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|view| view["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["all", "node-a-only"]);
+
+    let (service, _) = service("node-b", ModuleAppliers::default()).await;
+    let applier = SyncedConfigApplier::new(Arc::clone(&service), "node-b");
+    applier.apply(2, &views_snapshot()).await.unwrap();
+    let stored = service.current().await.unwrap().1.unwrap();
+    let ids: Vec<&str> = stored["policy"]["views"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|view| view["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["all", "node-b-only"]);
+}
+
+#[tokio::test]
+async fn a_default_view_invalid_on_the_node_is_rejected() {
+    let mut snapshot = views_snapshot();
+    snapshot["policy"]["views"][0]["nodes"] = json!(["node-b"]);
+    let error = node_scoped_views(&snapshot, "node-a").unwrap_err();
+    assert_eq!(error.code(), "cluster.config.apply");
+    assert!(error.to_string().contains("policy.config.invalid"));
+}
+
+// ---------------------------------------------------------------------------
+// Log outbox / ingest
+// ---------------------------------------------------------------------------
+
+fn remote_record(id: &str, seq: u64) -> LogRecord {
+    LogRecord {
+        id: id.to_owned(),
+        record: json!({
+            "id": id,
+            "time_us": NOW * 1_000_000 + seq,
+            "source_ip": "192.0.2.10",
+            "query_name": format!("q{seq}.example.com"),
+            "listener_id": "l1",
+            "protocol": "udp53",
+            "source_ip_truncated": false,
+            "client_id": null,
+            "client_name": null,
+            "query_type": "A",
+            "query_class": "IN",
+            "view_id": "all",
+            "profile_id": "prof",
+            "status": "allowed",
+            "answer_source": "cache",
+            "rcode": "NOERROR",
+            "record": { "id": id, "node_id": "node-b" }
+        }),
+    }
+}
+
+#[tokio::test]
+async fn master_ingest_deduplicates_and_the_outbox_resumes_from_the_cursor() {
+    let db = Db::open_in_memory(Arc::new(ApiClock::new(at(NOW))))
+        .await
+        .unwrap();
+    let log = Arc::new(QueryLog::new(
+        db,
+        dnscraft_api::QueryLogConfig::default(),
+        "node-b",
+    ));
+    let ingest = QueryLogIngest::new(Arc::clone(&log));
+    let first = vec![remote_record("r1", 1), remote_record("r2", 2)];
+
+    assert_eq!(ingest.ingest("node-b", 1, 2, &first).await.unwrap(), 2);
+    // Replayed batch: deduplicated, no error, same cursor.
+    assert_eq!(ingest.ingest("node-b", 1, 2, &first).await.unwrap(), 2);
+    assert_eq!(ingest.highest_seq("node-b").await.unwrap(), 2);
+
+    let outbox = QueryLogOutbox::new(Arc::clone(&log));
+    let from = outbox.next_unacked_seq().await.unwrap();
+    assert_eq!(from, 1);
+    let batch = outbox.fetch_batch(from, 10).await.unwrap();
+    assert_eq!(batch.len(), 2);
+    assert_eq!(batch[0].id, "r1");
+    assert_eq!(batch[1].id, "r2");
+
+    // A repeated seq with a different record id is rejected.
+    let mut forged = remote_record("other", 2);
+    forged.record["time_us"] = json!(NOW * 1_000_000 + 2);
+    let error = ingest
+        .ingest("node-b", 2, 2, std::slice::from_ref(&forged))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "cluster.log_stream.invalid");
+}

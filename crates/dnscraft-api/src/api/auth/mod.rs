@@ -26,8 +26,8 @@ pub use sessions::{
 };
 pub use tokens::{CreatedToken, TokenPrincipal, TokenSnapshot, TokenStore};
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, header};
@@ -86,7 +86,7 @@ pub struct AuthState {
     sessions: Auth,
     tokens: TokenStore,
     local_accounts: Option<LocalAccountStore>,
-    oidc: Option<OidcSettings>,
+    oidc: Arc<RwLock<Option<OidcSettings>>>,
     epoch: Arc<AtomicU64>,
 }
 
@@ -99,7 +99,7 @@ impl AuthState {
             sessions,
             tokens,
             local_accounts: None,
-            oidc: None,
+            oidc: Arc::new(RwLock::new(None)),
             epoch,
         }
     }
@@ -114,8 +114,11 @@ impl AuthState {
 
     /// Attaches the OIDC settings so [`AuthState::auth_snapshot`] includes its
     /// non-secret fields.
-    pub fn with_oidc(mut self, oidc: &OidcState) -> Self {
-        self.oidc = Some(oidc.settings());
+    pub fn with_oidc(self, oidc: &OidcState) -> Self {
+        *self
+            .oidc
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(oidc.settings());
         self
     }
 
@@ -144,9 +147,40 @@ impl AuthState {
         Ok(AuthSnapshot {
             tokens: self.tokens.snapshot_entries().await?,
             local_accounts,
-            oidc: self.oidc.clone(),
+            oidc: self
+                .oidc
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
             session_epoch: self.epoch.load(Ordering::Relaxed),
         })
+    }
+
+    /// Replaces the local auth state with a snapshot pushed by the master.
+    ///
+    /// Token and local-account rows are swapped in one transaction each;
+    /// OIDC settings and the session-invalidation epoch are adopted verbatim.
+    /// Only hashes and non-secret OIDC fields are ever carried, so no
+    /// plaintext credential is written here.
+    pub async fn apply_auth_snapshot(
+        &self,
+        snapshot: &AuthSnapshot,
+    ) -> Result<(), ControlApiError> {
+        self.tokens.replace_all(&snapshot.tokens).await?;
+        if let Some(local) = &self.local_accounts {
+            local.replace_all(&snapshot.local_accounts).await?;
+        } else if !snapshot.local_accounts.is_empty() {
+            return Err(ControlApiError::Internal {
+                message: "local-account store is not configured; cannot apply auth snapshot"
+                    .to_owned(),
+            });
+        }
+        *self
+            .oidc
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.oidc.clone();
+        self.epoch.store(snapshot.session_epoch, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Invalidates every session derived from this auth state by advancing the

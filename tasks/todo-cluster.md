@@ -23,7 +23,7 @@
 - [x] CL4 query-log outbox: `seq` + outbox/ack table, transactional enqueue in `QueryLog::insert_batch`.
 - [x] CL5 stats `node_id` dimension in `stats_hourly`/`stats_daily` (migration + rollup SQL + `RollupRow`)
       + `node_id` filter on query-log/stats.
-- [ ] CL6 `GET /api/v1/status` cluster fields (role, master reachability, applied version, lag,
+- [x] CL6 `GET /api/v1/status` cluster fields (role, master reachability, applied version, lag,
       queue depth, last sync).
 - [x] CL7 admin endpoints `/api/v1/cluster/*` (admin-only, shapes from CL1).
 - [x] CL8 `cluster.*` error codes + uniqueness test; reconcile `config.version`/`config.conflict`.
@@ -42,7 +42,7 @@
 - [x] CL13 snapshot push `ConfigPush {version, sha256, snapshot}` on apply/rollback; digest check;
        ack; lag tracking; retry/backoff (never partial).
 - [x] CL14 reconnect `Hello {last_applied_version, last_acked_log_seq}` + reconciliation (master-wins).
-- [ ] CL15 sub-node apply via `apply_synced_config` (leaf-first); failure → rollback + keep answering
+- [x] CL15 sub-node apply via `apply_synced_config` (leaf-first); failure → rollback + keep answering
        + `cluster.config.apply`; node-scoped policy views filtered.
 
 ## Phase 4 — Write relay + offline queue + runtime broadcast
