@@ -2,7 +2,32 @@
 
 > Module id `web-ui` · directory `web/` · depends on: `control-api`
 > Project-wide decisions: [SPEC.md](SPEC.md)
-> Status: DRAFT
+> Status: DRAFT — aligned to the backend-complete state (2026-10-27); see "Current-state alignment".
+
+## Current-state alignment
+
+This draft was written while several backend pieces were still "MCP-phase" or
+unbuilt. As of 2026-10-27 every backend module is complete, so the UI can assume
+more than the original draft did. This section records the delta (tracking IDs
+refer to `tasks/todo-spec-gaps.md`):
+
+- **Resolved since the previous draft** (were open questions / "required additions"):
+  TLS actions (`/tls/renew`, `/tls/revoke`, `/tls/rotate`, `/tls/preflight`,
+  `/tls/dyndns`, `/tls/records`, `/tls/account`, `/tls/order`, `/tls/audit`),
+  `POST /api/v1/policy/test-query` (with `no_cache_write`), cluster administration
+  (`/cluster/nodes`, `/cluster/join-tokens`, `/cluster/nodes/{id}`,
+  `/cluster/writes/{request_id}`), and manual certificate upload
+  (`/tls/certificate`).
+- **Still missing and blocking whole screens** (GA1–GA4, GA6): `GET /api/v1/auth/me`
+  (role + login bootstrap), `GET`/`DELETE /api/v1/auth/tokens/{id}` (token table),
+  `GET /api/v1/audit` (audit screen), and a real `GET /api/v1/clients` (currently
+  hardcoded `[]`). These are the minimum control-api additions before their screens
+  can ship.
+- **Policy model drift** (GP1–GP3): the screen inventory below already describes the
+  *intended* model (source-IP selection, one global name space with per-zone
+  overrides), but the policy crate still does Client-ID selection and per-view
+  records. The UI must build against the intended model and treat the crate's
+  current behaviour as temporary.
 
 ## Objective
 
@@ -327,6 +352,44 @@ starting points; they are verified for contrast, not treated as immutable.
 - Reduced motion and reduced transparency are honored by every animated or
   translucent surface, not only the shell.
 
+## Usability principles (normative)
+
+Beyond the visual design language, these rules encode "clear usability": the
+interface must be understandable at a glance by a home-network owner and stay out of
+an expert's way. They are normative, not aspirational, and they deliberately avoid
+the dense, expert-only feel the reference products (Technitium above all) are
+criticised for.
+
+1. **Progressive disclosure — Basic and Expert mode.** Settings split into a curated
+   Basic view (what a home operator needs: pause protection, allow/block a domain,
+   pick filter lists, check status) and an Expert view (everything else: forward
+   zones, DNSSEC anchors, per-list caps, ACME details). Default is Basic; one
+   persistent switch reveals Expert in place. No feature is removed — Expert exposes
+   it where it already lives.
+2. **One task per screen, guided actions first.** Each screen does one job. The
+   primary path is a guided control (switch, segmented control, guided rule builder);
+   raw editors (CodeMirror) are the secondary, opt-in path. The user is never
+   required to type `\|`, `^`, `@@` or `$` to get a common result.
+3. **Act from context, never hunt.** The query log offers one-click allow/block and
+   "why blocked?"; the dashboard offers "pause for 5 min / 1 h"; a client row links
+   to its profile; a certificate-expiry alert links to the TLS screen. Every list
+   row carries its primary action inline.
+4. **Density is a choice, not a default.** Default to the sparse grouped-list density;
+   offer a "compact" table option for the query log and clients, but keep 44 pt
+   targets either way.
+5. **Destructive actions are reversible or confirmed.** Every delete/revoke/rollback
+   shows a confirmation sheet naming the exact target with an explicit verb; a
+   just-saved config can be reverted through versions; a created token or manual
+   client can be deleted. Nothing destructive happens silently.
+6. **State is visible.** Loading, empty, permission, not-ready, offline and error
+   states are explicit and translated (see Error handling). A long-running action
+   (filter-list update, ACME order) shows progress and announces its result
+   (`aria-live`).
+7. **Defaults are safe and explained.** Insecure or surprising defaults (self-signed
+   TLS, public listeners, UniFi skip-verify) are never pre-selected silently; a
+   footer explains the consequence and a warning banner persists while an unsafe
+   state is active.
+
 ## Authentication and authorization
 
 ### OIDC flow
@@ -440,12 +503,71 @@ listed in [SPEC-control-api.md](SPEC-control-api.md) § Endpoint table.
 | `/mcp-rules` | MCP-managed rules, allows, pauses | read: viewer/admin; write: admin | `GET /api/v1/filtering/mcp-rules`, `DELETE /api/v1/filtering/custom-rules`, `POST /api/v1/filtering/pause`, `POST /api/v1/filtering/resume` | Segmented control for `kind` (rules / temporary allows / pauses); inset grouped list; expiry countdown; removal in a confirmation sheet; 404 degrades to "not available on this node" |
 | `/tokens` | API tokens | admin | `GET/POST /api/v1/auth/tokens`, `DELETE /api/v1/auth/tokens/{id}` | Inset grouped list; create in a sheet; one-time plaintext callout with copy; revoke confirmation; scope labels; self-signed confirmation before MCP tokens |
 | `/audit` | Audit log | admin (see Open questions) | `GET /api/v1/audit` | Search field plus inset grouped table; row detail sheet renders redacted before/after JSON in SF Mono; never secrets |
-| `/settings` | Einstellungen / Allgemein | viewer/admin | `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`, client-side theme/locale storage | Grouped form; theme segmented control (light/dark/system); locale picker; privacy footers |
+| `/settings` | Einstellungen / Allgemein | viewer/admin | `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`, client-side theme/locale storage | Grouped form; theme segmented control (light/dark/system); locale picker; privacy footers; update notice and backup status live here (see "Feature coverage") |
+| `/alerts` | Alerts / notifications | viewer/admin | assembled from `/api/v1/status`, TLS status, filter-list status (no dedicated endpoint today — see Required additions) | Grouped list of active notices (cert expiry, failed list updates, node offline, DynDNS failure); each links to its screen; empty state when none |
+| `/blocked-services` | Blocked services (one-click catalog) | read: viewer via config; write: admin | (catalog download + per-profile toggle are a filtering+web-ui gap — see Required additions) | Grouped catalog with name/icon; per-profile toggle; runtime-downloaded `services.json` (GPL-3.0), never bundled |
+| `/feedback` | Bug report / feedback | viewer/admin | client-side assembly; diagnostics endpoint is a Required addition | Form: summary, expected vs actual, one fenced JSON diagnostics block; opens a pre-filled GitHub issue or copies markdown; never auto-submits |
 | `*` | Not found | any | none | Empty state with a back action; SPA fallback; unknown `/api/v1` paths stay JSON |
 
 The MCP server switch and limits (`control_api.mcp.enabled`, `write_tools_enabled`,
 durations, caps) are configuration, edited through `/config` (`GET/PUT
 /api/v1/config`); they are not a separate API endpoint.
+
+### Feature coverage beyond the core screens
+
+[SPEC.md](SPEC.md) § Feature scope lists capabilities that map onto the screens
+above plus a few that need their own surface. This section closes the gap between
+"every feature has a spec" and "every feature is reachable in the UI":
+
+- **Alerts** (`/alerts`, SPEC.md "Alerts"). Certificate expiry, failed filter-list
+  updates, a sub-node going offline and DynDNS failures are shown in the web UI only
+  (no push/email in v1). The screen is a grouped list of active notices, each with a
+  translated title, the affected module, a timestamp and a link to the relevant
+  screen (TLS, filter lists, cluster, DynDNS). An active count appears as a badge on
+  the Übersicht section and as a banner row on the dashboard. There is no alerts
+  endpoint today; the list is assembled from the module status sources the UI already
+  polls (`/status`, TLS status, filter-list status), plus a `control_api.alerts`
+  aggregate if one is added (Required additions).
+- **Update notice** (SPEC.md "Update notice"). `/settings` → Allgemein shows the
+  running `dnscraft_version` (from `/status`) and, when a GitHub release is newer, a
+  translated "update available" row with a release-notes link and an opt-out switch.
+  The version check needs a same-origin proxy endpoint — the SPA must not call
+  `github.com` directly, which would break the CSP (Required additions).
+- **Bug report / feedback** (SPEC.md "Bug report / feedback"). `/feedback` assembles
+  the structured report client-side: fixed English headings (`## Summary`,
+  `## Expected`, `## Actual`) with human prose, plus one fenced `json` Diagnostics
+  block (`schema_version`, `dnscraft_version`, `os`, `arch`, `node_role`, `locale`,
+  `error_codes[]`, opt-in `recent_log_lines[]`). It opens a pre-filled GitHub issue
+  in the browser or copies the markdown to the clipboard; the product never posts to
+  GitHub. `recent_log_lines[]` needs a diagnostics endpoint (Required additions) or
+  ships omitted.
+- **Automatic backups** (SPEC.md "Automatic backups"). `/settings` → Konfiguration
+  shows backup status (last run, path, retention) and the retention setting when the
+  control-api exposes them; today automatic backups have no endpoint, so the section
+  degrades to a documented note (Required additions).
+- **Blocked services** (SPEC.md "Blocked services"). `/blocked-services` is a grouped
+  catalog of one-click services (name, icon, translated names, per-profile toggle).
+  The catalog is downloaded at runtime like a filter list (GPL-3.0 `services.json` +
+  `services_i18n.json`) and never bundled. This depends on a filtering-crate catalog
+  capability that does not exist yet (Required additions).
+
+The following are **configuration toggles the relevant screens must surface**, not
+new screens. They are modelled by the policy/filtering configs, but the original
+draft did not enumerate them; for a complete, usable UI each is a guided control
+(switch / segmented control / picker) with a footer stating the consequence:
+
+- **Profile screen** (`/config/policy` → Profile): SafeSearch enforcement, schedules
+  (time windows switching filter sets/services), bypass control (Firefox
+  `use-application-dns.net` canary + iCloud Private Relay), DNS-rebind protection
+  with per-domain exceptions, selectable blocking mode, and pause state.
+- **Filter-sets screen**: blocking mode (`0.0.0.0`/`::`, NXDOMAIN, REFUSED, custom
+  IP), CNAME uncloaking, and per-set temporary allows (MCP-managed).
+- **Listeners screen**: per-client rate limit (queries/s per source IP) alongside
+  the protocol switches.
+
+Schedules are currently UTC week offsets (local-time windows are an open owner
+question — see `tasks/progress.md`); the UI renders them in the viewer's time zone
+via `Intl` and flags that DST-aware local windows are not yet supported.
 
 ### Navigation (sidebar)
 
@@ -455,11 +577,11 @@ administrative ("who can change things"):
 
 | Section | Screens |
 |---|---|
-| Übersicht | Dashboard (inkl. Statistik), Anfragen |
-| Filterung | Filtersätze, Filterlisten, Regeln & Freigaben |
+| Übersicht | Dashboard (inkl. Statistik), Anfragen, Alerts |
+| Filterung | Filtersätze, Filterlisten, Regeln & Freigaben, Blockierte Dienste |
 | DNS-Regelwerk | Zonen, Namen, Forward-Zonen, Profile, Test-Abfrage |
 | Netzwerk | Geräte, DoH-Clients, Listener, TLS, Knoten |
-| Einstellungen | Allgemein (Konto, Darstellung, Protokollierung, API-Tokens, Audit-Log), Konfiguration (Editor, Import/Export, Versionen, Backups), MCP, API-Explorer |
+| Einstellungen | Allgemein (Konto, Darstellung, Protokollierung, Update-Benachrichtigung, API-Tokens, Audit-Log), Konfiguration (Editor, Import/Export, Versionen, Backups), MCP, API-Explorer, Hilfe & Feedback |
 
 `/login` and `/setup` are public and appear outside the sidebar. The system-level
 configuration is consolidated into a single **Einstellungen** screen rather than split
@@ -963,6 +1085,18 @@ Deliberately not included:
     installed root); with the self-signed bootstrap it still runs as a home-screen app
     but does not advertise offline, and the service worker fails registration
     gracefully.
+24. **Progressive disclosure:** a Basic/Expert switch controls setting density; Basic
+    is the default and covers pause/allow/block/filter-lists/status, Expert reveals
+    everything else in place, and no setting is reachable only through a raw editor.
+25. **Complete feature coverage:** every [SPEC.md](SPEC.md) § Feature scope item is
+    reachable — the new Alerts, Blocked-services, Bug-report and Backup/Update-notice
+    surfaces, and the policy/filtering toggles (SafeSearch, schedules, bypass control,
+    rebind protection, blocking mode, CNAME uncloaking, per-client rate limit) — or
+    degrades to an explicit "not available / needs a control-api addition" state, never
+    silently missing.
+26. **Contextual one-click actions:** allow/block and "why blocked?" from the query
+    log, timed pause from the dashboard, and a linked fix-path from every alert row,
+    all tested in the Playwright flows.
 
 ## Open questions
 
@@ -1013,9 +1147,9 @@ Deliberately not included:
     configuration with no route. Decide: bootstrap the first admin from TOML/env only,
     or add an admin-account endpoint / expose accounts through `PUT /api/v1/config`
     with a defined secret-handling rule.
-11. **TLS actions.** `TlsEngine::renew_now` and `dyndns_now` exist in Rust, but there
-    is no HTTP endpoint for "renew now" or "update DynDNS now". The v1 screen shows
-    status and config only unless an endpoint is added.
+11. **TLS actions — resolved.** The control-api now exposes `/tls/renew`, `/tls/revoke`,
+    `/tls/rotate`, `/tls/preflight`, `/tls/dyndns`, `/tls/records`, `/tls/account`,
+    `/tls/order` and `/tls/audit`, so the TLS screen offers those actions directly.
 12. **API-token list shape.** The `GET /api/v1/auth/tokens` response fields
     (`id`, `scope`, `created_at`, `expires_at`, `last_used`, label?) are not
     specified. Define the response so the token table does not guess; plaintext must
@@ -1043,12 +1177,9 @@ Deliberately not included:
     error codes and route client-side, but recent server log lines have no endpoint.
     Decide whether to add a diagnostics endpoint, omit logs, or defer the feature.
 
-19. **Test-query screen.** [SPEC.md](SPEC.md) lists "What does client X get for
-    name Y, and why?" as a web-UI feature. The backing `POST /api/v1/policy/test-query`
-    is an MCP-phase endpoint in `SPEC-control-api.md` and needs the resolver's
-    `no_cache_write` flag, which does not exist yet. Decide whether this screen ships
-    with v1 (blocked on those prerequisites) or in the MCP phase; this spec leaves it
-    out of the v1 inventory.
+19. **Test-query screen — resolved.** `POST /api/v1/policy/test-query` is implemented
+    (with `no_cache_write`, proven by `policy/tests/test_query.rs` and
+    `resolver/tests/no_cache_write.rs`), so the Test-Abfrage screen ships in v1.
 20. **Icon set choice.** Lucide is recommended (ISC, ~1.5 px stroke); confirm the set
     and whether selected/active states need a second weight or a filled variant.
     Alternatives are Phosphor, Heroicons or project-owned inline SVG. SF Symbols must
@@ -1104,6 +1235,20 @@ Deliberately not included:
 These are capabilities the UI needs but that `SPEC-control-api.md` does not yet
 define. They must be added to the control-api spec and approved before the
 corresponding UI screen is implemented; nothing in this document assumes they exist.
+Items struck through below have since landed in the control-api and are kept only
+for traceability.
+
+**Blocking gaps — entire screens cannot render without these** (tracked as
+GA1–GA4/GA6 in `tasks/todo-spec-gaps.md`):
+
+- `GET /api/v1/auth/me` (role, display name, CSRF token) — login and every
+  role-gated route depend on it.
+- `GET /api/v1/auth/tokens` and `DELETE /api/v1/auth/tokens/{id}` — the token table
+  cannot list or revoke (only `POST` exists today).
+- `GET /api/v1/audit` — the audit screen (the storage read exists but is unwired).
+- `GET /api/v1/clients` returning the real directory — currently hardcoded `[]`.
+
+**Remaining additions:**
 
 - CSRF token issuance/contract (header, `auth/me` field or cookie) and the cookie
   name for the session.
@@ -1117,27 +1262,30 @@ corresponding UI screen is implemented; nothing in this document assumes they ex
   contribution), or an owner decision to omit that UI section.
 - An SSE live query-log endpoint, only if the live tail is kept in v1 (with event
   shape, filtering and heartbeat).
-- `POST /api/v1/tls/renew` and `POST /api/v1/tls/dyndns` (or equivalent), only if the
-  TLS screen offers those actions.
+- ~~`POST /api/v1/tls/renew` and `POST /api/v1/tls/dyndns` (or equivalent), only if the
+  TLS screen offers those actions.~~ Resolved: `/tls/renew`, `/tls/revoke`,
+  `/tls/rotate`, `/tls/preflight`, `/tls/dyndns`, `/tls/records`, `/tls/account`,
+  `/tls/order`, `/tls/audit` exist.
 - A defined first-run/local-admin provisioning path (bootstrap-only or an endpoint).
 - A locale-preference mechanism, only if per-user storage is chosen over the
   browser-local cookie.
 - The documented `GET /api/v1/auth/tokens` response shape and scope labels.
 - A public (or unauthenticated) way for the login page to learn which auth methods
   are enabled, if probing is not acceptable.
-- A manual/custom certificate upload path (`tls_mode = manual` or an upload
+- ~~A manual/custom certificate upload path (`tls_mode = manual` or an upload
   endpoint) if the TLS screen offers „Eigenes Zertifikat"; `SPEC-control-api.md`
-  currently defines only `self_signed | acme`.
+  currently defines only `self_signed | acme`.~~ Resolved: `/tls/certificate`
+  (`GET`/`PUT`) exists (see GA25 for the private-key-material caveat).
 - A DNS record-check endpoint (resolve the expected `dns.<domain>` /
   `*.dns.<domain>` records and report ok/missing) if the TLS screen shows a
   Record-Check.
 - A per-node DynDNS model and an IPv6 local identifier (MAC/EUI-64 vs privacy)
   choice, if the DynDNS form offers them; `SPEC-tls.md` currently only says IPv4
   and IPv6 are discovered separately.
-- Cluster administration endpoints (`GET /api/v1/cluster/nodes`, `POST
+- ~~Cluster administration endpoints (`GET /api/v1/cluster/nodes`, `POST
   /api/v1/cluster/join-tokens`, `DELETE /api/v1/cluster/nodes/{id}`,
   `GET /api/v1/cluster/writes/{request_id}`) — defined in
-  `SPEC-control-api.md` § Cluster contract.
+  `SPEC-control-api.md` § Cluster contract.~~ Resolved: all four routes exist.
 - DoH/DoT Client-ID CRUD (list/create/rename/revoke). This spec currently reads
   client identity from `policy/views`, but `SPEC-policy.md` removed
   `views[].client_ids` and no endpoint stores Client IDs.
@@ -1146,3 +1294,15 @@ corresponding UI screen is implemented; nothing in this document assumes they ex
 - Manual-client create/edit form shape (fields, manual-vs-UniFi precedence and
   collision display); the API (`/api/v1/clients/manual`) exists but the form
   contract is undefined.
+- An alerts aggregate endpoint (`GET /api/v1/alerts` or a status sub-field), only if
+  the Alerts screen is not assembled purely from the module status sources it already
+  polls.
+- A same-origin release-check proxy for the update notice (the SPA must not call
+  `github.com` directly under the strict CSP), or a decision to omit the hint.
+- A diagnostics endpoint returning recent structured log lines (opt-in) for the
+  bug-report Diagnostics block; otherwise `recent_log_lines[]` ships omitted.
+- Automatic-backup status/retention endpoints, or a decision to show a documented
+  note only in `/settings`.
+- A blocked-services catalog capability in the filtering crate (runtime
+  `services.json`/`services_i18n.json` download + per-profile toggle) — a filtering
+  feature, not a control-api route.

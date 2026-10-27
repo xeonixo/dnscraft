@@ -1,0 +1,55 @@
+# Todo: web-ui blocking control-api gaps (GA1–GA4, GA6)
+
+> Contract & ordering: `plan-webui-api-gaps.md`. Gaps: `todo-spec-gaps.md` § control-api.
+> One commit per task, `Co-Authored-By` line, Log entry in `progress.md`. Crate-scoped
+> gates (`cargo fmt --check`, `cargo clippy -p dnscraft-api --all-targets`,
+> `cargo test -p dnscraft-api`) per task.
+
+## Phase 0 — auth/me + CSRF (GA1)
+
+- [ ] **GA1** `GET /api/v1/auth/me`: `auth_me` handler returning
+      `{ role, actor_id, actor_type, csrf_token }` (D1); register `get(auth_me)` beside
+      the other auth routes. RBAC already maps it to `Requirement::Api`.
+      Tests: authenticated viewer/admin gets their role + a stable CSRF token matching
+      `csrf::csrf_token_for`; unauthenticated → `401`.
+
+## Phase 1 — token list + revoke (GA2, GA3)
+
+- [ ] **GA2** `GET /api/v1/auth/tokens`: `list_tokens` handler over
+      `TokenStore::snapshot_entries()` → array of
+      `{id, name, scope, actor_id, created_at, expires_at}` (D2, never plaintext);
+      register `get(list_tokens)`. Tests: admin lists; viewer `403`; response contains
+      no plaintext token.
+- [ ] **GA3** `DELETE /api/v1/auth/tokens/{id}`: `delete_token` handler over
+      `TokenStore::revoke(id)` (D3); register `delete(delete_token)`. Tests: admin
+      revokes → `200` + token stops authenticating; unknown id → `404
+      auth.unknown_token`; viewer → `403`.
+
+## Phase 2 — audit list (GA4)
+
+- [ ] **GA4** `GET /api/v1/audit`: `list_audit` handler over `Db::audit_list(limit,
+      offset)` with defaulted + capped `limit`/`offset` (D4); register `get(list_audit)`.
+      Tests: admin lists newest-first; viewer `403` (D4); redacted rows (no secret
+      material); read failure maps to `control_api.audit.read` (GA22).
+
+## Phase 3 — clients directory + sync (GA6)
+
+- [ ] **GA6a** `AppState::with_clients(Arc<ClientEngine>)` + accessor; `list_clients`
+      returns `engine.lookup().clients()` mapped to the D5 DTO (falls back to the
+      current manual-only/empty shape when no engine is wired). Tests: empty
+      directory, manual-only, mixed UniFi+manual.
+- [ ] **GA6b** `sync_clients` calls `engine.sync_now()` → `SyncReport`, mapping
+      errors to `clients.*` codes; keeps `clients.sync.not_configured` when no engine.
+      Tests: sync success + report, sync error mapping, no engine → `not_configured`.
+- [ ] **GA6c** Binary wiring: the assembler hands the built `ClientEngine` to
+      `AppState::with_clients` (reuses the `EngineClients` already built for the query
+      log). Gate: `cargo test -p dnscraft` green; a smoke config boots with clients
+      disabled.
+
+## Checkpoints
+
+- [ ] After GA1: `cargo test -p dnscraft-api` green; `auth/me` returns role + CSRF.
+- [ ] After GA1–GA3: token CRUD e2e (create → list → revoke → 401).
+- [ ] After GA1–GA4: auth + audit routes served; RBAC matrix green.
+- [ ] After GA6: `GET /clients` returns the real directory; `POST /clients/sync`
+      returns a report (or `not_configured` without UniFi); assembler boots.

@@ -170,6 +170,8 @@ approval before Phase 0 code.
 ## control-api (`SPEC-control-api.md` ↔ `crates/dnscraft-api`)
 
 > ⚠️ dnscraft-api is under active cluster work right now; dispatch these only after cluster CL6–CL8 land.
+> GA1–GA4/GA6 (the web-ui blockers) are planned in `plan-webui-api-gaps.md` ·
+> `todo-webui-api-gaps.md`. The cluster-work caveat above is resolved (CL6–CL8 landed).
 
 - [ ] **GA1** 🔴 [code] `GET /api/v1/auth/me` route missing. *(router.rs:153-168; roles.rs:184 reserves it)*
 - [ ] **GA2** 🔴 [code] `GET /api/v1/auth/tokens` missing (only POST). *(router.rs:155; tokens.rs:263-287 unused)*
