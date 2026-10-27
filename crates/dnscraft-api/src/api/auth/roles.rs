@@ -430,6 +430,10 @@ mod tests {
             requirement(&Method::POST, "/api/v1/auth/logout"),
             Requirement::Api
         );
+        assert_eq!(
+            requirement(&Method::GET, "/api/v1/auth/me"),
+            Requirement::Api
+        );
         assert_eq!(requirement(&Method::POST, "/mcp/v1"), Requirement::Mcp);
     }
 

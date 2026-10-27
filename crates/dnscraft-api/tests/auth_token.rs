@@ -498,3 +498,73 @@ async fn session_role_still_authorizes_api_and_is_enforced_by_rbac() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"]["code"], "control_api.auth.insufficient_scope");
 }
+
+#[tokio::test]
+async fn auth_me_reports_session_identity_and_csrf_token() {
+    let db = db(clock()).await;
+    let auth = auth_state(&db);
+    let session = auth
+        .sessions()
+        .create("alice".into(), Role::Admin)
+        .await
+        .unwrap();
+    let router = AppState::new()
+        .with_auth(auth)
+        .router()
+        .layer(MockConnectInfo(test_addr()));
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/auth/me")
+        .header(
+            header::COOKIE,
+            format!("dnscraft_session={}", session.cookie().expose()),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(router.clone(), req).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["role"], "admin");
+    assert_eq!(body["data"]["actor_id"], "alice");
+    assert_eq!(body["data"]["actor_type"], "user");
+    assert_eq!(
+        body["data"]["csrf_token"].as_str().unwrap(),
+        session.csrf_token().expose()
+    );
+
+    // Without credentials the route is 401, not 200-with-null.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/auth/me")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(router, req).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["code"], "control_api.auth.unauthenticated");
+}
+
+#[tokio::test]
+async fn auth_me_reports_bearer_identity_without_csrf() {
+    let db = db(clock()).await;
+    let token = tokens(&db)
+        .create("bob".into(), "ci".into(), Scope::Viewer, None)
+        .await
+        .unwrap();
+    let router = AppState::new()
+        .with_auth(auth_state(&db))
+        .router()
+        .layer(MockConnectInfo(test_addr()));
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/auth/me")
+        .header(header::AUTHORIZATION, bearer(token.plaintext().expose()))
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(router, req).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["role"], "viewer");
+    assert_eq!(body["data"]["actor_id"], "bob");
+    assert_eq!(body["data"]["actor_type"], "token");
+    assert!(body["data"]["csrf_token"].is_null());
+}

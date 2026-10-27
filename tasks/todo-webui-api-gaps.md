@@ -7,7 +7,7 @@
 
 ## Phase 0 — auth/me + CSRF (GA1)
 
-- [ ] **GA1** `GET /api/v1/auth/me`: `auth_me` handler returning
+- [x] **GA1** `GET /api/v1/auth/me`: `auth_me` handler returning
       `{ role, actor_id, actor_type, csrf_token }` (D1); register `get(auth_me)` beside
       the other auth routes. RBAC already maps it to `Requirement::Api`.
       Tests: authenticated viewer/admin gets their role + a stable CSRF token matching

@@ -238,6 +238,18 @@ the CL15 follow-up).
 
 ## Log
 
+- 2026-10-27 — **web-ui blocker GA1: `GET /api/v1/auth/me`.** New `auth_me` handler
+  returns `{ role, actor_id, actor_type, csrf_token }` for the authenticated principal;
+  the CSRF token is recomputed from the session cookie (`csrf::csrf_token_for`), and a
+  bearer-token principal reports `csrf_token: null` (no session). Route mounted beside
+  `/auth/logout` under the `auth_state` gate; RBAC already mapped `/auth/me` →
+  `Requirement::Api`, now locked by a `requirement_maps_routes_to_roles` assertion. Two
+  integration tests in `tests/auth_token.rs`: session identity + CSRF matches
+  `CreatedSession::csrf_token`, unauthenticated → `401 control_api.auth.unauthenticated`,
+  and bearer identity reports `actor_type="token"` with no CSRF. Gates: `fmt --check`
+  clean, `clippy -p dnscraft-api --all-targets` clean, `cargo test -p dnscraft-api` 313
+  passed / 0 failed (26 files).
+
 - 2026-10-27 — **G0 Phase 4 code done (query-log AS12).** `4482cf7` — `build()` constructs `QueryLog` over the same SQLite `Db` (`data_dir/dnscraft.db`), builds a bounded `QueryLogSink` (`QueryLog::channel` + `run` consumer), and hands it to the listeners instead of the stdout sink; `EngineClients` now also implements `ClientEnricher` (`by_ip` → `ClientView` with name/source/MACs/VLAN/local-domain). `AppState::with_query_log` + MCP backend `query_log: Some(..)` mount the query-log/stats routes and make MCP log/stats tools read SQLite. Stdout JSON-lines is now opt-in (`[log] queries = true`, default `false`) via a new `TeeSink`; `App::shutdown` drains both sinks + the query-log consumer then aborts the API task. Deferred: `resolver_cache_size` stays 0 (MCP `get_status` reports `primed=false`) because `McpBackendInner` hardcodes it with no setter — needs a small `dnscraft-api` change. Gates green. **Assembler code-complete; AS13 delivery is a separate gated plan (Q7).**
 
 - 2026-10-27 — **G0 Phase 3 done (control-api + MCP AS10–AS11).** `fac7cb5` — new `crates/dnscraft/src/control_api.rs` assembles `AppState` (`with_config_service`/`with_filter_engine`/`with_policy_engine`/`with_auth`/`with_local_login`/`with_oidc`/`with_tls`+`with_tls_admin` via `EngineStatusProvider`/`EngineTlsAdmin`/`with_mcp_config`/`with_mcp_backend`) and spawns `serve(config.control_api, state, tls_server_config)` alongside the DNS listeners; `App` owns + aborts the API task. D3: `McpBackendInner` is now `pub` with `pub(crate)` fields and a public `mcp_backend_inner(...)` constructor (no secret material); `with_mcp_backend` is public. `allowed_origins` is derived from the TLS/DynDNS hostname. Manual smoke test: `/healthz`+`/readyz` 200, `/mcp/v1` mount + origin check, SIGTERM clean. Decisions: an API bind failure (port in use) is logged, not fatal (two parallel CLI binaries share port 8080); invalid config/TLS/OIDC remain fatal. Deferred to AS12: `QueryLog`/`QueryLogSink` (query-log + stats routes not mounted; MCP log/stats tools report "not configured"), `resolver_cache_size` producer, readiness producers. Gates green (32 suites). **Next: Phase 4 AS12 (SQLite query-log pipeline); AS13 delivery is a separate gated plan (Q7).**

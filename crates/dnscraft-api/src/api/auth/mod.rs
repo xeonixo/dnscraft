@@ -29,7 +29,7 @@ pub use tokens::{CreatedToken, TokenPrincipal, TokenSnapshot, TokenStore};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use axum::extract::{Request, State};
+use axum::extract::{Extension, Request, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -377,6 +377,28 @@ pub(crate) async fn logout(
         response.headers_mut().insert(header::SET_COOKIE, value);
     }
     Ok(response)
+}
+
+/// `GET /api/v1/auth/me`: the authenticated principal for the current request.
+///
+/// RBAC has already authenticated the request (`Requirement::Api`), so this
+/// handler only reports the resolved identity. The CSRF token is recomputed from
+/// the session cookie so the SPA can echo it on mutations; a bearer-token
+/// principal has no session and therefore no CSRF token.
+pub(crate) async fn auth_me(
+    Extension(principal): Extension<Authenticated>,
+    headers: HeaderMap,
+) -> Result<Response, ControlApiError> {
+    let csrf_token = session_cookie_value(&headers)
+        .map(|cookie| csrf::csrf_token_for(&cookie).expose().to_owned());
+
+    Ok(crate::api::response::success(json!({
+        "role": principal.scope().as_str(),
+        "actor_id": principal.actor_id(),
+        "actor_type": principal.actor_type().as_str(),
+        "csrf_token": csrf_token,
+    }))
+    .into_response())
 }
 
 #[cfg(test)]
