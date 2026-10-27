@@ -30,7 +30,7 @@ use crate::error::ClusterError;
 use crate::identity::NodeIdentity;
 use crate::log::{LogAck, LogBatch};
 use crate::relay::{RelayResponse, RuntimeCommand, RuntimeCommandApplier, WriteRelay};
-use crate::server::{HeartbeatRequest, HeartbeatResponse, PROTOCOL_HEADER};
+use crate::server::{HeartbeatRequest, HeartbeatResponse, PROTOCOL_HEADER, rfc3339};
 use crate::sync::{
     AuthSnapshotApplier, AuthSnapshotPush, CertInstaller, CertPush, ConfigAck, ConfigApplier,
     ConfigPush, Hello, StreamError, StreamRecord,
@@ -367,7 +367,8 @@ impl ClusterClient {
     /// Sends one heartbeat; `applied_version`/`queue_depth` are reported as-is.
     ///
     /// The master derives `node_id` from the client certificate, never from
-    /// this body.
+    /// this body. The node's current clock time is included so the master can
+    /// flag `cluster.clock_skew`; it is advisory, never an authority.
     pub async fn heartbeat(
         &self,
         applied_version: Option<i64>,
@@ -377,6 +378,7 @@ impl ClusterClient {
             protocol: PROTOCOL_VERSION,
             applied_version,
             queue_depth,
+            time: Some(rfc3339(self.clock.now())),
         };
         let body = serde_json::to_vec(&request).map_err(|error| ClusterError::Internal {
             message: format!("encode heartbeat: {error}"),
@@ -559,6 +561,9 @@ fn map_wire_error(error: &StreamError) -> ClusterError {
                 .unwrap_or_default(),
         },
         "cluster.master_unavailable" => ClusterError::MasterUnavailable,
+        "cluster.internal" => ClusterError::Internal {
+            message: "rejected by the master".to_owned(),
+        },
         "cluster.transport.tls" => ClusterError::TransportTls {
             message: "rejected by the cluster listener".to_owned(),
         },

@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use dnscraft_cluster::{
     ClusterCa, ClusterClient, ClusterError, ClusterServer, ClusterServerConfig, ClusterStore,
     ListenConfig, LogIngest, LogRecord, NodeIdentity, PROTOCOL_VERSION, PendingNodeIdentity,
-    RelayResponse, RelayedActor, TlsPaths, WriteExecutor,
+    QuotaConfig, RelayResponse, RelayedActor, TlsPaths, WriteExecutor,
 };
 use dnscraft_common::clock::{Clock, ManualClock};
 use dnscraft_common::secret::Secret;
@@ -133,6 +133,7 @@ async fn start_master(name: &str) -> Master {
             },
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: NODE_CERT_TTL,
+            quota: QuotaConfig::default(),
         },
         ca,
         store.clone(),

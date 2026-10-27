@@ -46,6 +46,7 @@ mod error;
 mod identity;
 mod log;
 mod offline;
+mod quota;
 mod relay;
 mod server;
 mod store;
@@ -70,7 +71,9 @@ pub use offline::{
 pub use relay::{
     RelayResponse, RelayedActor, RuntimeCommand, RuntimeCommandApplier, WriteExecutor, WriteRelay,
 };
-pub use server::{ClusterServer, ClusterServerConfig, HeartbeatRequest, HeartbeatResponse};
+pub use server::{
+    ClusterServer, ClusterServerConfig, HeartbeatRequest, HeartbeatResponse, StatusWarning,
+};
 pub use store::{ClusterNode, ClusterStore, MintedJoinToken};
 pub use sync::{
     AuthSnapshotApplier, AuthSnapshotPush, CertInstaller, CertPush, ConfigAck, ConfigApplier,

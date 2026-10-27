@@ -44,16 +44,18 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
 use tokio_rustls::TlsAcceptor;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::ca::{ClusterCa, cert_fingerprint, node_id_from_der};
-use crate::config::ListenConfig;
+use crate::config::{ListenConfig, QuotaConfig};
 use crate::enroll::{PROTOCOL_VERSION, enroll as run_enroll};
 use crate::error::ClusterError;
 use crate::log::{LogAck, LogBatch, LogIngest};
+use crate::quota::QuotaLimiter;
 use crate::relay::{RuntimeCommand, WriteExecutor, WriteRelay};
 use crate::store::ClusterStore;
 use crate::sync::{
@@ -76,6 +78,8 @@ pub struct ClusterServerConfig {
     pub server_name: String,
     /// Lifetime of certificates issued to joining nodes (`[cluster.join]`).
     pub node_cert_ttl: Duration,
+    /// Per-node quotas enforced by the master (`[cluster.quota]`).
+    pub quota: QuotaConfig,
 }
 
 /// `POST /cluster/v1/heartbeat` request body.
@@ -85,8 +89,24 @@ pub struct HeartbeatRequest {
     pub protocol: u32,
     /// Last config version the node applied, if it has one.
     pub applied_version: Option<i64>,
-    /// Local queue depth reported for status (not persisted in this slice).
+    /// Local queue depth reported for status.
     pub queue_depth: u32,
+    /// Node wall-clock time when the heartbeat was sent (RFC 3339).
+    ///
+    /// Used only for the `cluster.clock_skew` status warning; absent or
+    /// malformed values are accepted without a skew check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<String>,
+}
+
+/// A non-fatal condition reported alongside a successful heartbeat.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct StatusWarning {
+    /// Stable `cluster.<area>.<reason>` code.
+    pub code: String,
+    /// Structured context (thresholds, counts); never secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
 }
 
 /// `POST /cluster/v1/heartbeat` response body.
@@ -96,6 +116,9 @@ pub struct HeartbeatResponse {
     pub ok: bool,
     /// Master clock time the heartbeat was processed (RFC 3339).
     pub received_at: String,
+    /// Non-fatal status warnings (`cluster.clock_skew`, queue over cap).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<StatusWarning>,
 }
 
 /// A running master cluster listener.
@@ -167,6 +190,7 @@ impl ClusterServer {
             clock: Arc::clone(&clock),
             node_cert_ttl: config.node_cert_ttl,
             config_sync: Arc::clone(&config_sync),
+            quotas: QuotaLimiter::new(config.quota),
             write_executor,
             log_ingest,
         });
@@ -311,6 +335,7 @@ struct ServerState {
     clock: Arc<dyn Clock>,
     node_cert_ttl: Duration,
     config_sync: Arc<ConfigSync>,
+    quotas: QuotaLimiter,
     write_executor: Arc<dyn WriteExecutor>,
     log_ingest: Arc<dyn LogIngest>,
 }
@@ -431,11 +456,49 @@ async fn heartbeat(
     {
         return error_response(&error);
     }
+    let now = state.clock.now();
+    let mut warnings = Vec::new();
+    if let Some(warning) = clock_skew_warning(
+        request.time.as_deref(),
+        now,
+        state.quotas.limits().clock_skew_warning,
+    ) {
+        warnings.push(warning);
+    }
+    let queue_cap = state.quotas.limits().max_queued_offline_writes;
+    if request.queue_depth > queue_cap {
+        warnings.push(StatusWarning {
+            code: ClusterError::OfflineWriteQueueFull.code().to_owned(),
+            params: Some(json!({
+                "queue_depth": request.queue_depth,
+                "max_queued_offline_writes": queue_cap,
+            })),
+        });
+    }
     Json(HeartbeatResponse {
         ok: true,
-        received_at: rfc3339(state.clock.now()),
+        received_at: rfc3339(now),
+        warnings,
     })
     .into_response()
+}
+
+/// Warns when the node's reported clock differs from the master's by more than
+/// `threshold`. A missing or unparseable timestamp is not fatal.
+fn clock_skew_warning(
+    reported: Option<&str>,
+    now: SystemTime,
+    threshold: Duration,
+) -> Option<StatusWarning> {
+    let reported = OffsetDateTime::parse(reported?, &Rfc3339).ok()?;
+    let reported = SystemTime::from(reported);
+    let skew = now
+        .duration_since(reported)
+        .unwrap_or_else(|error| error.duration());
+    (skew > threshold).then(|| StatusWarning {
+        code: ClusterError::ClockSkew.code().to_owned(),
+        params: Some(json!({ "skew_seconds": skew.as_secs() })),
+    })
 }
 
 /// Long-lived NDJSON downstream channel.
@@ -548,6 +611,15 @@ async fn log_batch(
     Extension(auth): Extension<AuthenticatedNode>,
     body: Bytes,
 ) -> Response {
+    // Charge the raw payload before parsing, so malformed floods are bounded
+    // too. Exceeding the per-node byte budget rejects the batch; the node keeps
+    // its contiguous sequence and can retry after the bucket refills.
+    if !state
+        .quotas
+        .allow_log_bytes(&auth.0, body.len() as u64, state.clock.now())
+    {
+        return error_response(&quota_exceeded(&auth.0, "log byte"));
+    }
     let batch: LogBatch = match serde_json::from_slice(&body) {
         Ok(batch) => batch,
         Err(_) => {
@@ -576,8 +648,12 @@ async fn log_batch(
 /// idempotency belong to the [`WriteExecutor`].
 async fn write_relay(
     State(state): State<Arc<ServerState>>,
+    Extension(auth): Extension<AuthenticatedNode>,
     Json(relay): Json<WriteRelay>,
 ) -> Response {
+    if !state.quotas.allow_relay(&auth.0, state.clock.now()) {
+        return error_response(&quota_exceeded(&auth.0, "relay request"));
+    }
     match state
         .write_executor
         .execute(
@@ -596,6 +672,17 @@ async fn write_relay(
             (status, Json(response.body)).into_response()
         }
         Err(error) => error_response(&error),
+    }
+}
+
+/// A node exceeded one of its `[cluster.quota]` rate limits.
+///
+/// The spec's error table has no rate-limit code, so this uses the
+/// `cluster.internal` fallback. See `SPEC-cluster.md` § Error codes: a
+/// dedicated `cluster.quota.exceeded` (ideally `429`) is the missing entry.
+fn quota_exceeded(node_id: &str, what: &str) -> ClusterError {
+    ClusterError::Internal {
+        message: format!("node {node_id} exceeded its {what} quota"),
     }
 }
 
@@ -762,8 +849,8 @@ fn tls_config_error(message: String) -> ClusterError {
 }
 
 /// RFC 3339 (UTC, seconds precision) for a [`SystemTime`].
-fn rfc3339(time: SystemTime) -> String {
+pub(crate) fn rfc3339(time: SystemTime) -> String {
     OffsetDateTime::from(time)
-        .format(&time::format_description::well_known::Rfc3339)
+        .format(&Rfc3339)
         .unwrap_or_default()
 }
