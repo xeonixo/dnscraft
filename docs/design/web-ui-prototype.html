@@ -432,7 +432,8 @@ body {
 
     <div class="sidebar-foot">
       <div class="node"><span class="node-dot"></span> node-1 · online</div>
-      <div style="margin-top:3px">DNScraft v0.1.0</div>
+      <div style="margin-top:3px">DNScraft v0.1.0 · <span style="color:var(--accent)">Update v0.1.1</span></div>
+      <button class="back-link" style="font-size:12.5px;margin-top:8px" onclick="openHelpSheet()">Hilfe &amp; Feedback</button>
     </div>
   </aside>
   <div class="scrim" onclick="closeNav()"></div>
@@ -444,6 +445,9 @@ body {
       </button>
       <h1 id="page-title">Übersicht</h1>
       <div class="spacer"></div>
+      <button class="icon-btn" aria-label="Hilfe und Feedback" onclick="openHelpSheet()">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </button>
       <button class="icon-btn" id="theme-toggle" aria-label="Darstellung umschalten">
         <svg id="ic-sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
         <svg id="ic-moon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" hidden><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
@@ -833,6 +837,31 @@ body {
         <div class="actions">
           <button class="btn-sec" onclick="closeRuleSheet()">Abbrechen</button>
           <button class="btn-primary" onclick="closeRuleSheet()">Hinzufügen</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="sheet-scrim" id="help-sheet" hidden onclick="closeHelpSheet()">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <div class="grab"></div>
+        <h2>Hilfe &amp; Feedback</h2>
+        <div class="group" style="margin:0 0 14px">
+          <div class="row">
+            <div class="main"><b style="font-weight:500;color:var(--accent)">Update v0.1.1 verfügbar</b><div class="meta">Änderungsprotokoll auf GitHub</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+          <div class="row"><div class="main"><div class="domain">Version</div><div class="meta">node-1 · master</div></div><div class="meta mono">v0.1.0</div></div>
+        </div>
+        <label for="bug-summary">Kurzbeschreibung</label>
+        <div class="field"><input id="bug-summary" placeholder="Was ist passiert?"></div>
+        <label for="bug-expected">Erwartet vs. tatsächlich</label>
+        <div class="field"><input id="bug-expected" placeholder="erwartet … / tatsächlich …"></div>
+        <label>Diagnostik</label>
+        <div class="field" style="font-family:var(--font-mono);font-size:11.5px;color:var(--label-2);min-height:52px;align-items:flex-start;padding-top:10px">{ "schema_version": 1, "error_codes": [], "node_role": "master" }</div>
+        <div class="footnote" style="margin-top:10px">DNScraft öffnet nur das GitHub-Issue, sendet nie automatisch. Offline → Markdown kopieren.</div>
+        <div class="actions">
+          <button class="btn-sec" onclick="closeHelpSheet()">Markdown kopieren</button>
+          <button class="btn-primary" onclick="closeHelpSheet()">GitHub-Issue öffnen</button>
         </div>
       </div>
     </div>
@@ -1808,6 +1837,8 @@ function openProfile(name) {
 }
 function openRuleSheet() { document.getElementById('rule-sheet').hidden = false; }
 function closeRuleSheet() { document.getElementById('rule-sheet').hidden = true; }
+function openHelpSheet() { document.getElementById('help-sheet').hidden = false; }
+function closeHelpSheet() { document.getElementById('help-sheet').hidden = true; }
 function openSheet() { document.getElementById('record-sheet').hidden = false; }
 function closeSheet() { document.getElementById('record-sheet').hidden = true; }
 function openFilterSheet() { document.getElementById('filter-sheet').hidden = false; }
