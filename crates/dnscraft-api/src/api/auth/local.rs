@@ -12,6 +12,8 @@
 //! attempt — appends one `auth.local.login` record to the A2 audit log. The
 //! password is never part of that record.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use argon2::Argon2;
@@ -23,7 +25,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use rusqlite::{OptionalExtension, params};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use zeroize::Zeroizing;
 
@@ -49,6 +51,20 @@ enum Attempt {
     Failure(ControlApiError),
 }
 
+/// One local break-glass account as replicated to a sub-node.
+///
+/// Only the Argon2id PHC hash is carried; the plaintext password is never
+/// stored and never part of a snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalAccountSnapshot {
+    /// Account username.
+    pub username: String,
+    /// Argon2id PHC password hash.
+    pub password_hash: String,
+    /// Account role wire name (`viewer` | `admin`).
+    pub role: String,
+}
+
 /// Persists Argon2id password hashes and per-account lockout state.
 ///
 /// Construct one from the shared [`Db`] and the validated `AuthConfig` limits,
@@ -59,6 +75,7 @@ pub struct LocalAccountStore {
     db: Db,
     max_attempts: u32,
     lock_window: Duration,
+    epoch: Arc<AtomicU64>,
 }
 
 impl LocalAccountStore {
@@ -69,11 +86,45 @@ impl LocalAccountStore {
             db,
             max_attempts,
             lock_window,
+            epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 
+    /// Shares the session-invalidation epoch owned by
+    /// [`AuthState`](super::AuthState).
+    pub(crate) fn set_epoch(&mut self, epoch: Arc<AtomicU64>) {
+        self.epoch = epoch;
+    }
+
+    /// Lists every account (username, PHC hash and role) for an
+    /// [`AuthSnapshot`](super::AuthSnapshot).
+    pub async fn snapshot_entries(&self) -> Result<Vec<LocalAccountSnapshot>, ControlApiError> {
+        self.db
+            .with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT username, password_hash, role
+                         FROM local_accounts ORDER BY username",
+                    )
+                    .map_err(db_err)?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok(LocalAccountSnapshot {
+                            username: row.get(0)?,
+                            password_hash: row.get(1)?,
+                            role: row.get(2)?,
+                        })
+                    })
+                    .map_err(db_err)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+            })
+            .await
+    }
+
     /// Creates or replaces a local account with `role`, storing only the
-    /// Argon2id hash. Replacing an account clears its lockout state.
+    /// Argon2id hash. Replacing an account clears its lockout state and bumps
+    /// the session-invalidation epoch, so the change reaches the next
+    /// [`AuthSnapshot`](super::AuthSnapshot).
     ///
     /// Account provisioning is not part of the v1 HTTP surface; the binary (or
     /// a later config endpoint) seeds accounts through this method.
@@ -116,7 +167,9 @@ impl LocalAccountStore {
                 .map_err(db_err)?;
                 Ok(())
             })
-            .await
+            .await?;
+        self.epoch.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Verifies `password` for `username`, enforcing lockout on the injected

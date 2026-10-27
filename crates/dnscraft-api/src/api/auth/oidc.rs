@@ -183,7 +183,34 @@ impl fmt::Debug for OidcState {
     }
 }
 
+/// Non-secret OIDC settings replicated to sub-nodes in an
+/// [`AuthSnapshot`](super::AuthSnapshot).
+///
+/// The client secret is deliberately absent: it stays on the master inside the
+/// [`ClientSecret`] wrapper and is never serialized or logged.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OidcSettings {
+    /// OIDC issuer URL (discovery base).
+    pub issuer: String,
+    /// OIDC client id.
+    pub client_id: String,
+    /// Group name that maps to the `admin` role.
+    pub admin_group: String,
+    /// Allowed clock skew when validating `iat`/`exp`, in seconds.
+    pub token_skew_secs: u64,
+}
+
 impl OidcState {
+    /// The non-secret settings sub-nodes need to validate OIDC logins.
+    pub fn settings(&self) -> OidcSettings {
+        OidcSettings {
+            issuer: self.issuer.as_str().to_owned(),
+            client_id: self.client_id.as_str().to_owned(),
+            admin_group: self.admin_group.clone(),
+            token_skew_secs: self.token_skew.as_secs(),
+        }
+    }
+
     /// Builds the OIDC state from `auth` using the real system clock.
     ///
     /// Returns `Ok(None)` when `oidc_enabled` is false or when neither an

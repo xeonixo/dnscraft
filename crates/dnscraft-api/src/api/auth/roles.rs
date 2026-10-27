@@ -149,8 +149,12 @@ impl Authenticated {
 }
 
 /// What a request path requires.
+///
+/// Exposed together with [`requirement`] and [`authorize`] so the cluster write
+/// relay can re-check a relayed request against the actor's own scope on the
+/// master, exactly as [`rbac_middleware`] does locally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Requirement {
+pub enum Requirement {
     /// No authentication required (health, status, login/OIDC).
     Public,
     /// Any authenticated `viewer`/`admin` principal.
@@ -163,7 +167,10 @@ enum Requirement {
 }
 
 /// Maps a request to its required permission.
-fn requirement(method: &Method, path: &str) -> Requirement {
+///
+/// Public so a cluster caller can evaluate a relayed method+path without
+/// re-implementing the route table; pair it with [`authorize`].
+pub fn requirement(method: &Method, path: &str) -> Requirement {
     let path = path.trim_end_matches('/');
     if path == "/api/v1/status"
         || path.starts_with("/api/v1/auth/oidc")
@@ -223,7 +230,11 @@ fn is_config_path(path: &str) -> bool {
 }
 
 /// Checks the scope against the requirement, returning the documented error.
-fn authorize(requirement: Requirement, scope: Scope) -> Result<(), ControlApiError> {
+///
+/// Public so a cluster caller can re-authorize a relayed write using the
+/// actor's replicated `scope`; a sub-node cannot escalate because the master
+/// evaluates the actor's original scope, never the node identity.
+pub fn authorize(requirement: Requirement, scope: Scope) -> Result<(), ControlApiError> {
     match requirement {
         Requirement::Public => Ok(()),
         Requirement::Api => match scope.family() {
@@ -428,5 +439,55 @@ mod tests {
         );
         assert!(authorize(Requirement::Mcp, Scope::McpRead).is_ok());
         assert!(authorize(Requirement::Mcp, Scope::McpWrite).is_ok());
+    }
+
+    #[test]
+    fn public_recheck_matches_middleware_decisions() {
+        // The same two steps `rbac_middleware` runs, using only the public
+        // requirement/authorize surface a cluster relay will call.
+        let viewer = Authenticated {
+            actor_id: "u1".to_owned(),
+            scope: Scope::Viewer,
+            actor_type: ActorType::User,
+        };
+        let admin = Authenticated {
+            actor_id: "u2".to_owned(),
+            scope: Scope::Admin,
+            actor_type: ActorType::Token,
+        };
+
+        for (method, path) in [
+            (Method::GET, "/api/v1/query-log"),
+            (Method::POST, "/api/v1/auth/logout"),
+        ] {
+            assert!(
+                authorize(requirement(&method, path), viewer.scope()).is_ok(),
+                "viewer must be allowed on {method} {path}"
+            );
+        }
+        for (method, path) in [
+            (Method::GET, "/api/v1/config"),
+            (Method::POST, "/api/v1/config"),
+            (Method::GET, "/api/v1/auth/tokens"),
+        ] {
+            let err = authorize(requirement(&method, path), viewer.scope()).unwrap_err();
+            assert_eq!(
+                err.code(),
+                "control_api.auth.insufficient_scope",
+                "viewer must be denied on {method} {path}"
+            );
+            assert!(
+                authorize(requirement(&method, path), admin.scope()).is_ok(),
+                "admin must be allowed on {method} {path}"
+            );
+        }
+        // Family mismatch is the documented invalid-scope error, same as the
+        // middleware.
+        assert_eq!(
+            authorize(requirement(&Method::POST, "/mcp/v1"), Scope::Viewer)
+                .unwrap_err()
+                .code(),
+            "control_api.auth.invalid_scope"
+        );
     }
 }

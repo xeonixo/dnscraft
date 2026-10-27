@@ -11,6 +11,8 @@
 //! [`Secret`] redacts `Debug` and `Serialize`, and the one-time plaintext is
 //! emitted only by the creation handler below.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::Json;
@@ -18,7 +20,7 @@ use axum::extract::{Extension, State};
 use axum::response::{IntoResponse, Response};
 use ring::rand::{SecureRandom, SystemRandom};
 use rusqlite::{OptionalExtension, params};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::Authenticated;
@@ -105,17 +107,48 @@ impl TokenPrincipal {
     }
 }
 
+/// One token row as replicated to a sub-node.
+///
+/// The persisted hash is the only token form that ever leaves the database;
+/// the plaintext is never stored and never part of a snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenSnapshot {
+    /// SHA-256 hash of the plaintext token (also the token id).
+    pub id_hash: String,
+    /// Human-readable token name.
+    pub name: String,
+    /// The token's fixed scope wire name (`viewer` | `admin` | ...).
+    pub scope: String,
+    /// The actor that owns the token.
+    pub actor_id: String,
+    /// Creation time (unix seconds).
+    pub created_at: i64,
+    /// Expiry time (unix seconds), or `None` for a non-expiring token.
+    pub expires_at: Option<i64>,
+}
+
 /// Issues and validates bearer tokens against the SQLite `tokens` table.
 #[derive(Clone)]
 pub struct TokenStore {
     db: Db,
     max_ttl: Duration,
+    epoch: Arc<AtomicU64>,
 }
 
 impl TokenStore {
     /// Creates a store whose issued tokens may live at most `max_ttl`.
     pub fn new(db: Db, max_ttl: Duration) -> Self {
-        Self { db, max_ttl }
+        Self {
+            db,
+            max_ttl,
+            epoch: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Shares the session-invalidation epoch owned by the surrounding
+    /// [`AuthState`](super::AuthState).
+    pub(crate) fn set_epoch(&mut self, epoch: Arc<AtomicU64>) {
+        self.epoch = epoch;
     }
 
     /// Issues a token for `actor_id` with `scope`.
@@ -225,8 +258,39 @@ impl TokenStore {
             .await
     }
 
+    /// Lists every stored token (hash and metadata, never plaintext) for an
+    /// [`AuthSnapshot`](super::AuthSnapshot).
+    pub async fn snapshot_entries(&self) -> Result<Vec<TokenSnapshot>, ControlApiError> {
+        self.db
+            .with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id_hash, name, scope, actor_id, created_at, expires_at
+                         FROM tokens ORDER BY id_hash",
+                    )
+                    .map_err(db_err)?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok(TokenSnapshot {
+                            id_hash: row.get(0)?,
+                            name: row.get(1)?,
+                            scope: row.get(2)?,
+                            actor_id: row.get(3)?,
+                            created_at: row.get(4)?,
+                            expires_at: row.get(5)?,
+                        })
+                    })
+                    .map_err(db_err)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+            })
+            .await
+    }
+
     /// Revokes a token by its id (the stored hash). Unknown ids yield
     /// [`ControlApiError::AuthUnknownToken`].
+    ///
+    /// A successful revocation bumps the session-invalidation epoch so the
+    /// change is visible in the next [`AuthSnapshot`](super::AuthSnapshot).
     pub async fn revoke(&self, id: &str) -> Result<(), ControlApiError> {
         let id = id.to_owned();
         let deleted = self
@@ -239,6 +303,7 @@ impl TokenStore {
         if deleted == 0 {
             return Err(ControlApiError::AuthUnknownToken);
         }
+        self.epoch.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 }

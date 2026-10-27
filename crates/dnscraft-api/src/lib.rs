@@ -34,9 +34,10 @@ mod storage;
 mod tls;
 
 pub use api::auth::{
-    ActorType, Auth, AuthState, Authenticated, CreatedSession, CreatedToken, EndpointFamily,
-    LocalAccountStore, OidcState, Principal, Role, Scope, SessionStore, TokenPrincipal, TokenStore,
-    auth_middleware, rbac_middleware, secure_cookie, session_set_cookie,
+    ActorType, Auth, AuthSnapshot, AuthState, Authenticated, CreatedSession, CreatedToken,
+    EndpointFamily, LocalAccountSnapshot, LocalAccountStore, OidcSettings, OidcState, Principal,
+    Requirement, Role, Scope, SessionStore, TokenPrincipal, TokenSnapshot, TokenStore,
+    auth_middleware, authorize, rbac_middleware, requirement, secure_cookie, session_set_cookie,
 };
 pub use api::rate_limit::{DEFAULT_MAX_TRACKED_SOURCES, RateLimiter};
 pub use audit::{Audit, ConfigChangeRecord};
