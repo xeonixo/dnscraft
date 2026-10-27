@@ -426,6 +426,7 @@ listed in [SPEC-control-api.md](SPEC-control-api.md) § Endpoint table.
 | `/config` | Full config editor / import-export | read: viewer; write: admin | `GET /api/v1/config`, `PUT /api/v1/config` | Grouped form sections with explanatory footers; save in the toolbar; diff presented in a sheet; `If-Match` with `config_version`; secrets never returned |
 | `/config/versions` | Config versions and rollback | list: viewer; rollback: admin | `GET /api/v1/config/versions`, `POST /api/v1/config/versions/{version}/rollback` | Inset grouped list; version rows with secondary metadata; rollback in a confirmation sheet |
 | `/config/policy` | **Zonen** (selection scopes), **Namen** (local records with per-zone overrides), **Profile** (behavior), **Test-Abfrage** (decision preview) | read: viewer via config; write: admin | `GET /api/v1/policy/views`, `GET /api/v1/policy/views/{id}`, `PUT/POST /api/v1/policy/views/{id}`, `DELETE /api/v1/policy/views/{id}`, `GET /api/v1/policy/records`, `PUT/POST /api/v1/policy/records`, `GET/POST/PUT/DELETE /api/v1/policy/profiles/{id}`, `GET/POST/PUT/DELETE /api/v1/policy/pause`, `POST /api/v1/policy/test-query` | **Zonen** editor: create/delete zones + their Bereiche (subnet ranges), node validity, profile link — no records here. **Namen** editor: one global name space, each name shows its records with a **default value plus per-zone overrides** (e.g. `nas.lan` resolves differently in Gäste vs VPN); records A/AAAA/CNAME/TXT/SRV/MX/PTR, exact names only, CNAME exclusivity, TTL default 60 s. Selection is source-IP only (longest-prefix → default, DoH/DoT clients included); test-query renders the ordered decision steps without writing the log |
+| `/forward-zones` | Forward zones (conditional forwarding) | read: viewer via config; write: admin | resolver config (`GET/PUT /api/v1/config` forward-zones section) | Inset grouped list; each zone shows domain, upstream server, reverse zone and optional profile allow-list; add/edit in a sheet |
 | `/query-log` | Query log | viewer/admin | `GET /api/v1/query-log`, `GET /api/v1/query-log/export.ndjson`, `GET /api/v1/query-log/export.csv` | Sidebar; search field plus filter sheet; inset grouped table on wide, card list on narrow; domain/client/ID in SF Mono; status as icon + color + text; pagination footer; export in the overflow menu |
 | `/query-log/:id` | Query detail ("why blocked?") | viewer/admin | `GET /api/v1/query-log/{id}` | Grouped detail sections; ordered decision steps; rule and list in SF Mono; toolbar allow action |
 | `/query-log` (action) | One-click temporary allow | admin | `POST /api/v1/filtering/temporary-allows` (MCP-phase endpoint) | Confirmation sheet with the domain, a subdomain switch and a duration segmented control; fall back to the guided rule builder if unavailable |
@@ -457,7 +458,7 @@ administrative ("who can change things"):
 | Übersicht | Dashboard |
 | Aktivität | Anfragen, Statistik |
 | Filterung | Filtersätze, Filterlisten, Regeln & Freigaben |
-| DNS-Regelwerk | Zonen, Namen, Profile, Test-Abfrage |
+| DNS-Regelwerk | Zonen, Namen, Forward-Zonen, Profile, Test-Abfrage |
 | Netzwerk | Geräte, DoH-Clients, Listener, TLS |
 | Cluster | Knoten |
 | Integrationen | MCP, API-Explorer |
