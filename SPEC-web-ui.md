@@ -440,7 +440,7 @@ listed in [SPEC-control-api.md](SPEC-control-api.md) § Endpoint table.
 | `/mcp-rules` | MCP-managed rules, allows, pauses | read: viewer/admin; write: admin | `GET /api/v1/filtering/mcp-rules`, `DELETE /api/v1/filtering/custom-rules`, `POST /api/v1/filtering/pause`, `POST /api/v1/filtering/resume` | Segmented control for `kind` (rules / temporary allows / pauses); inset grouped list; expiry countdown; removal in a confirmation sheet; 404 degrades to "not available on this node" |
 | `/tokens` | API tokens | admin | `GET/POST /api/v1/auth/tokens`, `DELETE /api/v1/auth/tokens/{id}` | Inset grouped list; create in a sheet; one-time plaintext callout with copy; revoke confirmation; scope labels; self-signed confirmation before MCP tokens |
 | `/audit` | Audit log | admin (see Open questions) | `GET /api/v1/audit` | Search field plus inset grouped table; row detail sheet renders redacted before/after JSON in SF Mono; never secrets |
-| `/settings` | Settings / account | viewer/admin | `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`, client-side theme/locale storage | Grouped form; theme segmented control (light/dark/system); locale picker; privacy footers |
+| `/settings` | Einstellungen / Allgemein | viewer/admin | `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`, client-side theme/locale storage | Grouped form; theme segmented control (light/dark/system); locale picker; privacy footers |
 | `*` | Not found | any | none | Empty state with a back action; SPA fallback; unknown `/api/v1` paths stay JSON |
 
 The MCP server switch and limits (`control_api.mcp.enabled`, `write_tools_enabled`,
@@ -459,10 +459,10 @@ administrative ("who can change things"):
 | Filterung | Filtersätze, Filterlisten, Regeln & Freigaben |
 | DNS-Regelwerk | Zonen, Namen, Forward-Zonen, Profile, Test-Abfrage |
 | Netzwerk | Geräte, DoH-Clients, Listener, TLS, Knoten |
-| System | System (Konto, Darstellung, Protokollierung, API-Tokens, Audit-Log), Konfiguration (Editor, Import/Export, Versionen, Backups), MCP, API-Explorer |
+| Einstellungen | Allgemein (Konto, Darstellung, Protokollierung, API-Tokens, Audit-Log), Konfiguration (Editor, Import/Export, Versionen, Backups), MCP, API-Explorer |
 
 `/login` and `/setup` are public and appear outside the sidebar. The system-level
-configuration is consolidated into a single **System** screen rather than split
+configuration is consolidated into a single **Einstellungen** screen rather than split
 across separate settings/config/tokens/audit entries; its sections are grouped
 inset lists within one scrollable screen. Admin-only sections (`/tokens`,
 `/audit`) are hidden — not merely disabled — for `viewer`, so the navigation never
