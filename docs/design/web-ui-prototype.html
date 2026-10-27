@@ -425,6 +425,10 @@ body {
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       System
     </button>
+    <button class="nav-item" data-target="screen-config" data-title="Konfiguration">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+      Konfiguration
+    </button>
 
     <div class="sidebar-foot">
       <div class="node"><span class="node-dot"></span> node-1 · online</div>
@@ -747,19 +751,19 @@ body {
         <p class="lead">Filtersätze bündeln Regeln und verknüpfen eine Filterliste. Jeder Satz wird einer Richtlinie zugewiesen.</p>
         <div class="section-head">Filtersätze</div>
         <div class="group">
-          <div class="row">
+          <div class="row" onclick="openSet('Standard')" style="cursor:pointer">
             <div class="main"><div class="domain">Standard</div><div class="meta">42 Regeln · 1 Liste</div></div>
             <span class="verdict allow">aktiv</span>
             <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="row">
+          <div class="row" onclick="openSet('Kinder')" style="cursor:pointer">
             <div class="main"><div class="domain">Kinder</div><div class="meta">17 Regeln · 1 Liste</div></div>
             <span class="verdict allow">aktiv</span>
             <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="row">
+          <div class="row" onclick="openSet('Gäste')" style="cursor:pointer">
             <div class="main"><div class="domain">Gäste</div><div class="meta">4 Regeln · keine Liste</div></div>
             <span class="verdict block">pausiert</span>
             <label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label>
@@ -767,6 +771,41 @@ body {
           </div>
         </div>
         <div class="footnote">Regeln und Roh-Editor öffnen sich in einem Sheet. Erstellen über „Neu" in der Symbolleiste.</div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-filter-set-detail" hidden>
+      <div class="content">
+        <button class="back-link" onclick="showScreen('screen-filter-sets','Filtersätze')">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 6 9 12 15 18"/></svg>
+          Filtersätze
+        </button>
+        <div class="section-head">Filtersatz „Standard"</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Aktiv</b><div class="meta">angewendet für zugewiesene Profile</div></div>
+            <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
+          </div>
+        </div>
+        <div class="section-head">Blocking-Mode</div>
+        <div class="group">
+          <div class="row"><div class="main"><b style="font-weight:500">0.0.0.0 / ::</b><div class="meta">Standard · Antwort auf geblockte Namen</div></div><span class="tag">aktiv</span></div>
+          <div class="row"><div class="main"><b style="font-weight:500">NXDOMAIN</b><div class="meta">Antwort wie „nicht vorhanden"</div></div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">REFUSED</b><div class="meta">Antwortcode REFUSED</div></div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Benutzerdefinierte IP</b><div class="meta">eigene A/AAAA-Adresse</div></div></div>
+        </div>
+        <div class="section-head">Blockierte Dienste</div>
+        <div class="group">
+          <div class="row"><div class="main"><div class="domain">YouTube</div><div class="meta">Katalog · ein Klick</div></div><label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><div class="domain">TikTok</div><div class="meta">Katalog · ein Klick</div></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><div class="domain">Instagram</div><div class="meta">Katalog · ein Klick</div></div><label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label></div>
+        </div>
+        <div class="section-head">Regeln</div>
+        <div class="group">
+          <div class="row"><div class="main"><div class="domain">42 Regeln · 1 Liste</div><div class="meta">Standard-Blockliste</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><b style="font-weight:500;color:var(--accent)">Regel hinzufügen</b><div class="meta">geführt (blockieren/erlauben) oder Roh-Editor</div></div></div>
+        </div>
+        <div class="footnote">Blocking-Mode und Dienste gelten pro Filtersatz; Regeln werden vor dem Speichern validiert.</div>
       </div>
     </section>
 
@@ -789,6 +828,11 @@ body {
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
         </div>
+        <div class="section-head">Rate-Limit</div>
+        <div class="group">
+          <div class="row"><div class="main"><b style="font-weight:500">pro Quell-IP</b><div class="meta">Anfragen pro Sekunde</div></div><div class="meta mono">50</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">pro Client-ID</b><div class="meta">öffentliche Quellen</div></div><div class="meta mono">200</div></div>
+        </div>
         <div class="footnote">Protokolle werden im Detail-Sheet einzeln aktiviert (Do53/DoT/DoH/DoQ).</div>
       </div>
     </section>
@@ -801,7 +845,7 @@ body {
             <div class="main"><div class="domain">admin</div><div class="meta">Rolle: Administrator · lokales Konto</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="row">
+          <div class="row" onclick="showScreen('screen-login','Anmelden')" style="cursor:pointer">
             <div class="main"><div class="domain" style="color:var(--danger)">Abmelden</div></div>
           </div>
         </div>
@@ -867,18 +911,10 @@ body {
 
         <div class="section-head">Konfiguration</div>
         <div class="group">
-          <div class="row"><div class="main"><div class="domain">Knoten</div><div class="meta">Name, Zeitzone, Datenverzeichnis</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
-          <div class="row"><div class="main"><div class="domain">Abfrage-Log</div><div class="meta">Aufbewahrung, IP-Kürzung, Limits</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
-          <div class="row"><div class="main"><div class="domain">Authentifizierung</div><div class="meta">OIDC, lokales Konto, Tokens</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
-          <div class="row"><div class="main"><div class="domain">MCP</div><div class="meta">aktiviert, Schreib-Tools, Limits</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
-          <div class="row"><div class="main"><div class="domain">Filterung</div><div class="meta">Sets, Listen, Regeln</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
-        </div>
-
-        <div class="section-head">Versionen</div>
-        <div class="group">
-          <div class="row"><div class="main"><div class="domain">v12</div><div class="meta">heute 14:02 · admin</div></div><span class="tag">aktuell</span></div>
-          <div class="row"><div class="main"><div class="domain">v11</div><div class="meta">gestern 18:44 · admin</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
-          <div class="row"><div class="main"><div class="domain">v10</div><div class="meta">gestern 09:15 · admin</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row" onclick="showScreen('screen-config','Konfiguration')" style="cursor:pointer">
+            <div class="main"><div class="domain">Vollständige Konfiguration</div><div class="meta">Abschnitte, Import/Export, Versionen &amp; Rollback</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
         </div>
 
         <div class="section-head">API-Tokens</div>
@@ -919,6 +955,73 @@ body {
         </div>
 
         <div class="footnote">Speichern nutzt If-Match mit config_version. Secrets werden redigiert; der Klartext eines Tokens erscheint nur einmal.</div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-config" hidden>
+      <div class="content">
+        <p class="lead">Vollständige Konfiguration als atomarer Snapshot. Änderungen werden vor dem Speichern als Diff angezeigt.</p>
+        <div class="section-head">Abschnitte</div>
+        <div class="group">
+          <div class="row"><div class="main"><div class="domain">Knoten</div><div class="meta">Name, Zeitzone, Datenverzeichnis</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><div class="domain">Abfrage-Log</div><div class="meta">Aufbewahrung, IP-Kürzung, Limits</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><div class="domain">Authentifizierung</div><div class="meta">OIDC, lokales Konto, Tokens</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><div class="domain">MCP</div><div class="meta">aktiviert, Schreib-Tools, Limits</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><div class="domain">Filterung</div><div class="meta">Sets, Listen, Regeln</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><div class="domain">Forward-Zonen</div><div class="meta">bedingtes Weiterleiten</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+        </div>
+        <div class="section-head">Import / Export</div>
+        <div class="group">
+          <div class="row"><div class="main"><div class="domain">Exportieren</div><div class="meta">JSON · ohne Secrets</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><div class="domain">Importieren</div><div class="meta">stellt die gesamte Konfiguration wieder her</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+        </div>
+        <div class="section-head">Automatische Backups</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Tägliches Backup</b><div class="meta">7 Tage aufbewahren · ohne Secrets</div></div>
+            <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
+          </div>
+        </div>
+        <div class="section-head">Versionen</div>
+        <div class="group">
+          <div class="row"><div class="main"><div class="domain">v12</div><div class="meta">heute 14:02 · admin</div></div><span class="tag">aktuell</span></div>
+          <div class="row"><div class="main"><div class="domain">v11</div><div class="meta">gestern 18:44 · admin</div></div><span style="color:var(--danger);font-size:13px;font-weight:500">Rollback</span></div>
+          <div class="row"><div class="main"><div class="domain">v10</div><div class="meta">gestern 09:15 · admin</div></div><span style="color:var(--danger);font-size:13px;font-weight:500">Rollback</span></div>
+        </div>
+        <div class="footnote">Speichern nutzt If-Match mit config_version; Rollback wird selbst auditiert. Secrets werden nie exportiert.</div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-login" hidden>
+      <div class="content" style="max-width:440px">
+        <div class="section-head">DNScraft</div>
+        <p class="lead">Bei deinem Resolver anmelden.</p>
+        <div class="group">
+          <div class="row" style="cursor:pointer">
+            <div class="main"><b style="font-weight:500;color:var(--accent)">Mit Authentik anmelden</b><div class="meta">OIDC · Standard-Anmeldung</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+        </div>
+        <div class="section-head">Lokales Konto (Break-glass)</div>
+        <div class="group">
+          <div class="row"><div class="main"><b style="font-weight:500">Benutzername</b></div><div class="meta mono">admin</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Passwort</b></div><div class="meta mono">••••••••</div></div>
+        </div>
+        <div class="footnote">Break-glass-Login ist nur aus privaten Netzen erreichbar. <span style="color:var(--accent);cursor:pointer" onclick="showScreen('screen-setup','Ersteinrichtung')">Ersteinrichtung</span></div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-setup" hidden>
+      <div class="content" style="max-width:600px">
+        <div class="section-head">Ersteinrichtung</div>
+        <p class="lead">Richte DNScraft in wenigen Schritten ein.</p>
+        <div class="group">
+          <div class="row"><div class="main"><div class="domain">1 · Admin-Konto</div><div class="meta">lokales Konto + Passwort</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><div class="domain">2 · Zonen &amp; Bereiche</div><div class="meta">Subnetze für deine Netzwerke</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><div class="domain">3 · Filterlisten</div><div class="meta">Blocklisten auswählen</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><div class="domain">4 · Optional: OIDC &amp; UniFi</div><div class="meta">Authentik, UniFi-Sync</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+        </div>
+        <div class="footnote">Jeder Schritt speichert atomar; du kannst später alles ändern.</div>
       </div>
     </section>
 
@@ -1609,6 +1712,12 @@ function openName(name) {
   showScreen('screen-name-detail', 'Name „' + name + '"');
   document.querySelectorAll('.nav-item').forEach(function (i) {
     i.classList.toggle('active', i.dataset.target === 'screen-names');
+  });
+}
+function openSet(name) {
+  showScreen('screen-filter-set-detail', 'Filtersatz „' + name + '"');
+  document.querySelectorAll('.nav-item').forEach(function (i) {
+    i.classList.toggle('active', i.dataset.target === 'screen-filter-sets');
   });
 }
 function openSheet() { document.getElementById('record-sheet').hidden = false; }

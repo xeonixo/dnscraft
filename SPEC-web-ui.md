@@ -462,7 +462,7 @@ administrative ("who can change things"):
 | Netzwerk | Geräte, DoH-Clients, Listener, TLS |
 | Cluster | Knoten |
 | Integrationen | MCP, API-Explorer |
-| System | System (Konto, Darstellung, Protokollierung, Konfiguration & Versionen, API-Tokens, Audit-Log) |
+| System | System (Konto, Darstellung, Protokollierung, API-Tokens, Audit-Log), Konfiguration (Editor, Import/Export, Versionen, Backups) |
 
 `/login` and `/setup` are public and appear outside the sidebar. The system-level
 configuration is consolidated into a single **System** screen rather than split
