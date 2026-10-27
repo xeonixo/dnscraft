@@ -38,6 +38,10 @@ how `ControlApiConfig` becomes `Deserialize`, how module appliers get wired into
 the MCP backend is constructed and mounted, how the client adapter feeds policy + query-log). This
 is a plan/spec task, not a per-crate fix. Deferred until the owner signs off on scope.
 
+→ **Plan + tasks written 2026-10-27:** [plan-assembler.md](plan-assembler.md) ·
+[todo-assembler.md](todo-assembler.md) (phases AS0–AS13, owner decisions D1–D6). Awaiting owner
+approval before Phase 0 code.
+
 ---
 
 ## Resolver (`SPEC-resolver.md` ↔ `crates/dnscraft-resolver`)
