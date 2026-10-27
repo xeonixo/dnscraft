@@ -340,10 +340,23 @@ pub async fn serve(
     // Store the MCP config on AppState so build_router and the filtering
     // endpoints can read it, whether or not a backend is attached.
     let mut state = state;
-    state.mcp_config = mcp_config;
     if config.auth.oidc_enabled && !config.auth.oidc_issuer.is_empty() {
         state.oidc_issuer = Some(config.auth.oidc_issuer.clone());
     }
+    // The MCP server builds its pre-backend protected list once, at mount
+    // time, so seed it with the full derived list. The backend re-derives it
+    // per request against the current snapshot, keeping protection fresh after
+    // a config apply.
+    let snapshot = match state.config_service() {
+        Some(service) => service.current().await?.1,
+        None => None,
+    };
+    let oidc_issuer = state.oidc_issuer().map(str::to_owned);
+    state.mcp_config = crate::protected_list::populate_mcp_protected_domains(
+        mcp_config,
+        snapshot.as_ref(),
+        oidc_issuer.as_deref(),
+    )?;
     let router = state.router();
     if config.tls {
         let server_config = tls.ok_or_else(|| ControlApiError::Internal {

@@ -55,7 +55,7 @@ pub use modules::{
     ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyTls, ModuleAppliers,
     ModuleFuture,
 };
-pub use protected_list::derive_protected_domains;
+pub use protected_list::{derive_protected_domains, populate_mcp_protected_domains};
 pub use query_log::{
     ClientEnricher, ClientView, Order, OrderBy, QueryLog, QueryLogFilter, QueryLogPage,
     QueryLogSink,

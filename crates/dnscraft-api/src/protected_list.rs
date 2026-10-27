@@ -20,7 +20,9 @@ use std::net::IpAddr;
 
 use serde_json::Value;
 
-use dnscraft_mcp::{McpError, ProtectedDomains};
+use dnscraft_mcp::{McpConfig, McpError, ProtectedDomains};
+
+use crate::error::ControlApiError;
 
 /// Derives the protected domains from `snapshot`, the OIDC issuer URL (only
 /// when OIDC is enabled) and the owner's additional entries.
@@ -124,6 +126,39 @@ pub fn derive_protected_domains(
     }
 
     ProtectedDomains::new(entries)
+}
+
+/// Returns `config` with its `protected_domains` replaced by the full derived
+/// list (the auto-derived infrastructure hosts plus the configured additions).
+///
+/// The mounted MCP service builds its pre-backend protected list once, at
+/// mount time. The list is derived here from that moment's snapshot; the MCP
+/// backend re-derives it per request, so a config apply stays visible without
+/// a restart.
+///
+/// # Errors
+///
+/// Returns a module error carrying [`McpError::ConfigProtectedDomain`] when a
+/// derived or configured entry is not a valid domain name.
+pub fn populate_mcp_protected_domains(
+    mut config: McpConfig,
+    snapshot: Option<&Value>,
+    oidc_issuer: Option<&str>,
+) -> Result<McpConfig, ControlApiError> {
+    let derived = derive_protected_domains(
+        snapshot,
+        oidc_issuer,
+        config.protected_domains.iter().cloned(),
+    )
+    .map_err(|err| ControlApiError::Module {
+        code: err.code(),
+        params: err.params(),
+    })?;
+    let mut entries = derived.entries().to_vec();
+    entries.sort_unstable();
+    entries.dedup();
+    config.protected_domains = entries;
+    Ok(config)
 }
 
 fn push(entries: &mut Vec<String>, value: impl Into<String>) {
@@ -309,5 +344,57 @@ mod tests {
             derive_protected_domains(Some(&json!({})), None, ["https://example.com".to_owned()])
                 .unwrap_err();
         assert_eq!(error.code(), "mcp.config.protected_domain");
+    }
+
+    #[test]
+    fn populated_mcp_config_contains_derived_and_configured_hosts() {
+        let snapshot = json!({
+            "tls": { "public_domain": "example.net" },
+            "filtering": {
+                "lists": [
+                    { "id": "ads", "source": { "url": "https://lists.example.com/ads.txt" } }
+                ]
+            },
+            "resolver": {
+                "forward_zones": [ { "zone": "site-b.internal" } ]
+            }
+        });
+        let config = McpConfig {
+            // `Example.NET.` canonicalises to the same entry as the derived
+            // `tls.public_domain`; the result must not contain it twice.
+            protected_domains: vec!["Example.NET.".to_owned(), "extra.example.org".to_owned()],
+            ..McpConfig::default()
+        };
+
+        let config = populate_mcp_protected_domains(config, Some(&snapshot), None).unwrap();
+
+        for expected in [
+            "example.net",
+            "dns.example.net",
+            "lists.example.com",
+            "site-b.internal",
+            "api.cloudflare.com",
+            "extra.example.org",
+        ] {
+            assert!(
+                config
+                    .protected_domains
+                    .iter()
+                    .any(|entry| entry == expected),
+                "missing {expected}: {:?}",
+                config.protected_domains
+            );
+        }
+        assert_eq!(
+            config
+                .protected_domains
+                .iter()
+                .filter(|entry| entry.as_str() == "example.net")
+                .count(),
+            1,
+            "canonical duplicates are removed: {:?}",
+            config.protected_domains
+        );
+        ProtectedDomains::new(config.protected_domains).unwrap();
     }
 }
