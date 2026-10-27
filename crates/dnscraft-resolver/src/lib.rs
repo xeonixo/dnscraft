@@ -20,6 +20,7 @@ mod config;
 pub mod dnssec;
 mod error;
 mod forward;
+mod health;
 mod hints;
 mod inflight;
 mod iterate;
@@ -45,6 +46,7 @@ use std::time::{Duration, Instant, SystemTime};
 use dnscraft_common::clock::wait_until;
 use dnscraft_proto::{Class, Message, Name, Rcode, Record, RecordType};
 use dnssec::status::Status;
+use health::Target;
 use local_zones::LocalZones;
 use server_selection::ServerStats;
 use stats::Counters;
@@ -53,11 +55,12 @@ use tokio::sync::{Notify, Semaphore};
 pub use config::{ForwardZone, ForwardZoneId, ResolverConfig};
 pub use dnscraft_common::clock::{Clock, ManualClock, SystemClock};
 pub use error::{ForwardZoneIdError, ResolveError, ResolverError};
+pub use health::{UpstreamHealth, UpstreamState};
 pub use hints::default_root_hints;
 pub use stats::ResolverStats;
 pub use types::{
-    Answer, AnswerSource, DnssecStatus, ExtendedError, FlushScope, PrimingStatus, Query,
-    RequestFlags, Route,
+    Answer, AnswerSource, DnssecStatus, ExtendedError, FlushReport, FlushScope, PrimingStatus,
+    Query, RequestFlags, Route,
 };
 
 /// In-memory answer cache, exposed only for the criterion microbench.
@@ -440,13 +443,47 @@ impl Resolver {
         drop(task);
     }
 
-    /// Removes cached answers.
+    /// Removes cached answers and reports how many entries were removed.
     ///
     /// [`FlushScope::Domain`] drops that name and every name below it. Locally
-    /// served zones are not cached.
-    pub fn flush(&self, scope: FlushScope) {
+    /// served zones are not cached. A resolution already running keeps its
+    /// result out of the cache.
+    pub fn flush(&self, scope: FlushScope) -> FlushReport {
         tracing::debug!(?scope, "flushing cache");
-        self.shared.cache.flush(&scope);
+        FlushReport {
+            evicted: self.shared.cache.flush(&scope),
+        }
+    }
+
+    /// Passive health of each forward target and of recursion, from the
+    /// exchanges made so far. Sends no probe.
+    pub fn upstreams(&self) -> Vec<UpstreamHealth> {
+        let now = self.shared.config.clock.instant();
+        let stats = &self.shared.stats;
+        let mut out = Vec::new();
+        for zone in &self.shared.config.forward_zones {
+            for &addr in &zone.targets {
+                let target = Target::Forward {
+                    zone: zone.zone.clone(),
+                    addr,
+                };
+                out.push(stats.upstream_health(
+                    &target,
+                    addr.to_string(),
+                    "forward_target",
+                    Some(zone.zone.to_string()),
+                    now,
+                ));
+            }
+        }
+        out.push(stats.upstream_health(
+            &Target::Recursion,
+            "recursion".to_owned(),
+            "recursion",
+            None,
+            now,
+        ));
+        out
     }
 
     /// Waits until every resolution and prefetch has finished. For tests.

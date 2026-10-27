@@ -10,7 +10,7 @@ use dnscraft_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
 use dnscraft_resolver::dnssec::TrustAnchors;
 use dnscraft_resolver::{
     AnswerSource, DnssecStatus, ForwardZone, ForwardZoneId, ManualClock, Query, RequestFlags,
-    ResolveError, Resolver, ResolverConfig,
+    ResolveError, Resolver, ResolverConfig, UpstreamState,
 };
 use dnscraft_testkit::Hierarchy;
 use tokio::net::UdpSocket;
@@ -577,7 +577,7 @@ async fn cancelling_the_first_caller_does_not_fail_the_others() {
 }
 
 #[tokio::test]
-async fn flush_during_a_resolution_keeps_its_result_out_of_the_cache() {
+async fn flush_during_inflight_does_not_repopulate() {
     let h = Hierarchy::start().await.unwrap();
     let slow = Target::spawn_with(
         Ipv4Addr::new(192, 0, 2, 60),
@@ -1168,4 +1168,133 @@ async fn forward_zone_for_returns_most_specific_allowed_zone() {
         ),
         None
     );
+}
+
+#[tokio::test]
+async fn upstream_unknown_below_three_samples() {
+    let h = Hierarchy::start().await.unwrap();
+    let target = Target::spawn(Ipv4Addr::new(192, 0, 2, 70)).await;
+    let mut config = config_for(&h);
+    config.forward_zones = vec![forward("corp.internal.", vec![target.addr])];
+    let resolver = Resolver::new(config).await.unwrap();
+    for name in ["a.corp.internal.", "b.corp.internal."] {
+        resolver
+            .resolve(&query(name, RecordType::A), RequestFlags::default())
+            .await
+            .unwrap();
+    }
+
+    let upstreams = resolver.upstreams();
+    let forward_row = &upstreams[0];
+    assert_eq!(forward_row.kind, "forward_target");
+    assert_eq!(forward_row.samples, 2);
+    assert_eq!(forward_row.state, UpstreamState::Unknown);
+    let recursion = upstreams.last().unwrap();
+    assert_eq!(recursion.kind, "recursion");
+    assert_eq!(recursion.zone, None);
+}
+
+#[tokio::test]
+async fn upstream_down_when_success_below_half() {
+    let h = Hierarchy::start().await.unwrap();
+    let (silent, _socket) = silent_addr().await;
+    let mut config = config_for(&h);
+    config.query_timeout = Duration::from_millis(50);
+    config.forward_zones = vec![forward("corp.internal.", vec![silent])];
+    let resolver = Resolver::new(config).await.unwrap();
+    for i in 0..10 {
+        let name = format!("n{i}.corp.internal.");
+        assert!(
+            resolver
+                .resolve(&query(&name, RecordType::A), RequestFlags::default())
+                .await
+                .is_err()
+        );
+    }
+
+    let row = &resolver.upstreams()[0];
+    assert!(row.samples >= 10);
+    assert_eq!(row.success_rate, Some(0.0));
+    assert_eq!(row.state, UpstreamState::Down);
+    assert_eq!(row.last_error, Some("upstream.timeout"));
+}
+
+#[tokio::test]
+async fn upstream_samples_outside_window_ignored() {
+    let h = Hierarchy::start().await.unwrap();
+    let target = Target::spawn(Ipv4Addr::new(192, 0, 2, 71)).await;
+    let clock = manual_clock();
+    let mut config = config_for(&h);
+    config.clock = clock.clone();
+    config.forward_zones = vec![forward("corp.internal.", vec![target.addr])];
+    let resolver = Resolver::new(config).await.unwrap();
+    for name in ["a.corp.internal.", "b.corp.internal.", "c.corp.internal."] {
+        resolver
+            .resolve(&query(name, RecordType::A), RequestFlags::default())
+            .await
+            .unwrap();
+    }
+    assert_eq!(resolver.upstreams()[0].samples, 3);
+
+    clock.advance(Duration::from_secs(301));
+    assert_eq!(resolver.upstreams()[0].samples, 0);
+    assert_eq!(resolver.upstreams()[0].state, UpstreamState::Unknown);
+    for name in ["d.corp.internal.", "e.corp.internal.", "f.corp.internal."] {
+        resolver
+            .resolve(&query(name, RecordType::A), RequestFlags::default())
+            .await
+            .unwrap();
+    }
+    let row = &resolver.upstreams()[0];
+    assert_eq!(row.samples, 3);
+    assert_eq!(row.state, UpstreamState::Up);
+}
+
+#[tokio::test]
+async fn upstream_last_error_is_stable_code() {
+    let h = Hierarchy::start().await.unwrap();
+    let target = Target::spawn_with(
+        Ipv4Addr::new(192, 0, 2, 72),
+        120,
+        Duration::ZERO,
+        Rcode::SERVFAIL,
+    )
+    .await;
+    let mut config = config_for(&h);
+    config.forward_zones = vec![forward("corp.internal.", vec![target.addr])];
+    let resolver = Resolver::new(config).await.unwrap();
+    for name in ["a.corp.internal.", "b.corp.internal.", "c.corp.internal."] {
+        let _ = resolver
+            .resolve(&query(name, RecordType::A), RequestFlags::default())
+            .await;
+    }
+
+    let row = &resolver.upstreams()[0];
+    assert_eq!(row.last_error, Some("upstream.servfail"));
+    assert_eq!(row.state, UpstreamState::Degraded);
+    assert!(row.last_checked.is_some());
+}
+
+#[tokio::test]
+async fn upstream_health_sends_no_probe_queries() {
+    let h = Hierarchy::start().await.unwrap();
+    let target = Target::spawn(Ipv4Addr::new(192, 0, 2, 73)).await;
+    let mut config = config_for(&h);
+    config.forward_zones = vec![forward("corp.internal.", vec![target.addr])];
+    let resolver = Resolver::new(config).await.unwrap();
+    resolver
+        .resolve(
+            &query("www.corp.internal.", RecordType::A),
+            RequestFlags::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(target.hits(), 1);
+    let sent = resolver.stats().outgoing_queries;
+
+    for _ in 0..3 {
+        let _ = resolver.upstreams();
+    }
+    assert_eq!(target.hits(), 1);
+    assert_eq!(resolver.stats().outgoing_queries, sent);
 }

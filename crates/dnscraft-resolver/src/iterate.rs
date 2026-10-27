@@ -14,6 +14,7 @@ use crate::dnssec::status::{Status, Trust};
 use crate::dnssec::walk::{self, TtlCap, apply_caps, covered_type};
 use crate::dnssec::wildcard_source;
 use crate::error::ResolveError;
+use crate::health::Target;
 use crate::limits::{Budget, Limits};
 use crate::server_selection::ServerStats;
 use crate::transport::{self, TransportError};
@@ -106,8 +107,20 @@ impl<'a> Context<'a> {
         self.budget.charge(name)?;
         self.total_sent.fetch_add(1, Ordering::Relaxed);
         let query = transport::build_query(name, qtype);
-        match transport::query_servers(&[server], &query, self.config.query_timeout, &self.stats)
-            .await
+        let clock = &self.config.clock;
+        let observe = |_, outcome| {
+            self.stats
+                .record_sample(Target::Recursion, clock.instant(), clock.now(), outcome);
+        };
+        match transport::query_servers_observed(
+            &[server],
+            &query,
+            self.config.query_timeout,
+            &self.stats,
+            |_| true,
+            observe,
+        )
+        .await
         {
             Ok(resp) => Ok(Some(resp.message)),
             Err(TransportError::Encode(e)) => Err(ResolveError::Encode(e)),

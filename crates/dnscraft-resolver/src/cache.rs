@@ -426,14 +426,17 @@ impl Cache {
         lock(&self.inner).epoch
     }
 
-    pub(crate) fn flush(&self, scope: &FlushScope) {
+    /// Removes entries in `scope`, expired ones included, and returns how many.
+    pub(crate) fn flush(&self, scope: &FlushScope) -> usize {
         let mut inner = lock(&self.inner);
         inner.epoch = inner.epoch.wrapping_add(1);
         match scope {
             FlushScope::All => {
+                let evicted = inner.map.len();
                 inner.map.clear();
                 inner.order.clear();
                 inner.used = 0;
+                evicted
             }
             FlushScope::Domain(name) => {
                 let keys: Vec<Key> = inner
@@ -442,9 +445,10 @@ impl Cache {
                     .filter(|key| name.zone_of(&key.name))
                     .cloned()
                     .collect();
-                for key in keys {
-                    inner.remove(&key);
+                for key in &keys {
+                    inner.remove(key);
                 }
+                keys.len()
             }
         }
     }

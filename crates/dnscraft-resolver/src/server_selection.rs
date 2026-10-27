@@ -5,9 +5,11 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use rand::RngExt;
+
+use crate::health::{self, Rings, Sample, Target, UpstreamHealth};
 
 /// Smoothing: `srtt = KEEP * old + (1 - KEEP) * sample`.
 const KEEP: f64 = 0.7;
@@ -41,6 +43,8 @@ struct Inner {
     srtt_ms: HashMap<SocketAddr, Entry>,
     tick: u64,
     ipv6_down_until: Option<Instant>,
+    /// Passive health samples per upstream (see [`crate::health`]).
+    samples: Rings,
 }
 
 impl Inner {
@@ -89,6 +93,7 @@ impl ServerStats {
                 srtt_ms: HashMap::new(),
                 tick: 0,
                 ipv6_down_until: None,
+                samples: Rings::new(),
             })),
             exploration: DEFAULT_EXPLORATION,
             ipv6_cooldown,
@@ -154,6 +159,34 @@ impl ServerStats {
             self.mark_ipv6_unavailable();
         }
         self.record_failure(server);
+    }
+
+    /// Records the outcome of one real exchange with `target` (WX3).
+    pub(crate) fn record_sample(
+        &self,
+        target: Target,
+        at: Instant,
+        wall: SystemTime,
+        outcome: Result<Duration, &'static str>,
+    ) {
+        health::push(
+            &mut self.lock().samples,
+            target,
+            Sample { at, wall, outcome },
+        );
+    }
+
+    /// Health of `target` at `now`, with the given display fields (WX3).
+    pub(crate) fn upstream_health(
+        &self,
+        target: &Target,
+        name: String,
+        kind: &'static str,
+        zone: Option<String>,
+        now: Instant,
+    ) -> UpstreamHealth {
+        let inner = self.lock();
+        health::summarise(name, kind, zone, inner.samples.get(target), now)
     }
 
     /// Orders `candidates` best first: ascending srtt (unknown servers get a

@@ -51,6 +51,7 @@ use crate::dnssec::{
     validate_rrset_budgeted,
 };
 use crate::error::ResolveError;
+use crate::health::Target;
 use crate::types::{Query, RequestFlags, Route};
 use crate::{Shared, transport};
 
@@ -214,12 +215,22 @@ impl Shared {
         // an error, the last one is passed on unchanged.
         let accept =
             |message: &Message| matches!(message.rcode(), Rcode::NOERROR | Rcode::NXDOMAIN);
-        match transport::query_servers_with(
+        let clock = &self.config.clock;
+        let observe = |addr: SocketAddr, outcome| {
+            let target = Target::Forward {
+                zone: zone.clone(),
+                addr,
+            };
+            self.stats
+                .record_sample(target, clock.instant(), clock.now(), outcome);
+        };
+        match transport::query_servers_observed(
             &targets,
             &query,
             self.config.query_timeout,
             &self.stats,
             accept,
+            observe,
         )
         .await
         {

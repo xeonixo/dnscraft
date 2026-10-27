@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::server_selection::ServerStats;
 
-use dnscraft_proto::{Edns, Message, Name, ProtoError, RecordType};
+use dnscraft_proto::{Edns, Message, Name, ProtoError, Rcode, RecordType};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::Instant;
@@ -183,6 +183,21 @@ pub async fn query_servers_with(
     stats: &ServerStats,
     accept: impl Fn(&Message) -> bool,
 ) -> Result<ServerResponse, TransportError> {
+    query_servers_observed(candidates, query, timeout, stats, accept, |_, _| {}).await
+}
+
+/// Like [`query_servers_with`], and reports every attempt to `observe`: the
+/// server, then its RTT or the stable code of its failure. A reply with
+/// SERVFAIL, REFUSED or another error rcode is a failure here even when
+/// `accept` takes it.
+pub async fn query_servers_observed(
+    candidates: &[SocketAddr],
+    query: &Message,
+    timeout: Duration,
+    stats: &ServerStats,
+    accept: impl Fn(&Message) -> bool,
+    observe: impl Fn(SocketAddr, Result<Duration, &'static str>),
+) -> Result<ServerResponse, TransportError> {
     let mut last_err = TransportError::NoServers;
     let mut lame: Option<ServerResponse> = None;
     for server in stats.order(candidates) {
@@ -191,6 +206,7 @@ pub async fn query_servers_with(
             Ok(message) => {
                 let rtt = start.elapsed();
                 stats.record_success(server, rtt);
+                observe(server, rcode_failure(&message).map_or(Ok(rtt), Err));
                 let resp = ServerResponse {
                     server,
                     message,
@@ -208,12 +224,38 @@ pub async fn query_servers_with(
                     TransportError::Io(io) => stats.record_io_error(server, io),
                     _ => stats.record_failure(server),
                 }
+                if let Some(code) = e.code() {
+                    observe(server, Err(code));
+                }
                 tracing::debug!(%server, error = %e, "server failed, trying next");
                 last_err = e;
             }
         }
     }
     lame.ok_or(last_err)
+}
+
+impl TransportError {
+    /// Stable code of this failure for upstream health. `None` for a local
+    /// fault (the query could not be encoded), which says nothing about the server.
+    fn code(&self) -> Option<&'static str> {
+        match self {
+            Self::Timeout => Some("upstream.timeout"),
+            Self::Io(_) => Some("upstream.network"),
+            Self::BadResponse(_) => Some("upstream.malformed"),
+            Self::Encode(_) | Self::NoServers => None,
+        }
+    }
+}
+
+/// Stable code when a reply's rcode says the server could not answer.
+fn rcode_failure(message: &Message) -> Option<&'static str> {
+    match message.rcode() {
+        Rcode::NOERROR | Rcode::NXDOMAIN => None,
+        Rcode::SERVFAIL => Some("upstream.servfail"),
+        Rcode::REFUSED => Some("upstream.refused"),
+        _ => Some("upstream.rcode"),
+    }
 }
 
 fn matches_query(query: &Message, resp: &Message) -> bool {

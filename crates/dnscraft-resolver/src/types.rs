@@ -137,6 +137,13 @@ pub enum FlushScope {
     Domain(Name),
 }
 
+/// Result of [`Resolver::flush`](crate::Resolver::flush).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct FlushReport {
+    /// Entries removed, expired ones kept for serve-stale included.
+    pub evicted: usize,
+}
+
 /// Outcome of root priming (RFC 8109).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PrimingStatus {

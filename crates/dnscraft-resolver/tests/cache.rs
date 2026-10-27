@@ -1094,3 +1094,117 @@ async fn stale_answer_of_a_secure_entry_is_indeterminate_with_ad_clear() {
         "the stale answer is counted as Indeterminate"
     );
 }
+
+#[tokio::test]
+async fn flush_all_reports_evicted_count() {
+    let h = Hierarchy::start().await.unwrap();
+    let r = Resolver::new(config_for(&h)).await.unwrap();
+    let _ = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    let _ = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::AAAA,
+        RequestFlags::default(),
+    )
+    .await;
+    let before = r.stats().cache_entries;
+    assert!(before >= 2);
+
+    let report = r.flush(FlushScope::All);
+    assert_eq!(u64::try_from(report.evicted).unwrap(), before);
+    assert_eq!(r.stats().cache_entries, 0);
+}
+
+#[tokio::test]
+async fn flush_domain_removes_subtree_only() {
+    let h = hierarchy_with(&[
+        ("mail.example.test.", Ipv4Addr::new(192, 0, 2, 10)),
+        ("sub.www.example.test.", Ipv4Addr::new(192, 0, 2, 11)),
+    ])
+    .await;
+    let r = Resolver::new(config_for(&h)).await.unwrap();
+    for name in [
+        "www.example.test.",
+        "sub.www.example.test.",
+        "mail.example.test.",
+    ] {
+        let _ = resolve(&r, name, RecordType::A, RequestFlags::default()).await;
+    }
+    let before = r.stats().cache_entries;
+
+    let report = r.flush(FlushScope::Domain(
+        Name::from_ascii("www.example.test.").unwrap(),
+    ));
+    assert!(report.evicted >= 2);
+    assert_eq!(
+        r.stats().cache_entries + u64::try_from(report.evicted).unwrap(),
+        before
+    );
+    let mail = resolve(
+        &r,
+        "mail.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(mail.source, AnswerSource::Cache);
+}
+
+#[tokio::test]
+async fn flush_removes_stale_entries() {
+    let h = Hierarchy::start().await.unwrap();
+    let clock = clock();
+    let mut config = config_for(&h);
+    config.clock = clock.clone();
+    let r = Resolver::new(config).await.unwrap();
+    let first = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    // Expired now, but still held for serve-stale.
+    clock.advance(Duration::from_secs(
+        u64::from(first.message.answers[0].ttl) + 1,
+    ));
+    let before = r.stats().cache_entries;
+    assert!(before > 0);
+
+    let report = r.flush(FlushScope::All);
+    assert_eq!(u64::try_from(report.evicted).unwrap(), before);
+    clear(&h, ZONES);
+    let again = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+    assert_eq!(again.source, AnswerSource::Recursion);
+}
+
+#[tokio::test]
+async fn flush_twice_is_noop_with_zero() {
+    let h = Hierarchy::start().await.unwrap();
+    let r = Resolver::new(config_for(&h)).await.unwrap();
+    let _ = resolve(
+        &r,
+        "www.example.test.",
+        RecordType::A,
+        RequestFlags::default(),
+    )
+    .await;
+
+    assert!(r.flush(FlushScope::All).evicted > 0);
+    assert_eq!(r.flush(FlushScope::All).evicted, 0);
+    let www = Name::from_ascii("www.example.test.").unwrap();
+    assert_eq!(r.flush(FlushScope::Domain(www)).evicted, 0);
+    assert_eq!(r.cached_bytes(), 0);
+}
