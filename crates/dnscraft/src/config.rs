@@ -2,15 +2,19 @@
 
 use std::env;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use dnscraft_api::ControlApiConfig;
+use dnscraft_clients::ClientsConfig;
+use dnscraft_filtering::FilterConfig;
 use dnscraft_listeners::{
     DdrConfig, Exposure, Limits, ListenerConfig, ListenersConfig, Protocol, PublicConfig, TlsPolicy,
 };
-use dnscraft_policy::ListenerId;
-use dnscraft_tls::Secret;
+use dnscraft_policy::{ListenerId, PolicyConfig};
+use dnscraft_resolver::ResolverConfig;
+use dnscraft_tls::{Secret, TlsConfig};
 
 use crate::Error;
 
@@ -151,11 +155,19 @@ fn key_file_permissions_warning(_path: &str) -> Option<String> {
 }
 
 /// Top-level configuration loaded from a TOML file.
-#[derive(Debug, Deserialize)]
+///
+/// Every module section is optional: an omitted section takes the module
+/// config type's [`Default`]. Present sections are deserialized field for
+/// field, so the module type governs which keys are required once its table
+/// appears.
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Public DNS domain for SNI / DDR (`dns.<domain>`).
     pub public_domain: String,
+    /// Directory for the SQLite store, TLS state and filter-list bodies.
+    #[serde(default)]
+    pub data_dir: Option<PathBuf>,
     /// Listeners to serve (at least one in practice).
     #[serde(default)]
     pub listeners: Vec<ListenerToml>,
@@ -167,6 +179,33 @@ pub struct Config {
     /// Query-log settings.
     #[serde(default)]
     pub log: LogConfig,
+    /// Recursive resolver settings (`[resolver]`).
+    #[serde(default)]
+    pub resolver: ResolverConfig,
+    /// Filter-list and filter-set settings (`[filtering]`).
+    #[serde(default)]
+    pub filtering: FilterConfig,
+    /// Client directory settings (`[clients]`).
+    #[serde(default)]
+    pub clients: ClientsConfig,
+    /// TLS management settings (`[tls]`).
+    #[serde(default)]
+    pub tls: TlsConfig,
+    /// Policy (views, profiles, records) settings (`[policy]`).
+    #[serde(default)]
+    pub policy: PolicyConfig,
+    /// Public-exposure gate and ban policy (`[listeners_public]`).
+    #[serde(default)]
+    pub listeners_public: PublicConfig,
+    /// Shared listener limits (`[listeners_limits]`).
+    #[serde(default)]
+    pub listeners_limits: Limits,
+    /// DDR discovery settings (`[listeners_ddr]`).
+    #[serde(default)]
+    pub listeners_ddr: DdrConfig,
+    /// Control API settings (`[control_api]`).
+    #[serde(default)]
+    pub control_api: ControlApiConfig,
 }
 
 /// Query-log settings (`[log]`).
@@ -177,6 +216,7 @@ pub struct LogConfig {
     #[serde(default = "default_true")]
     pub queries: bool,
     /// Source-IP truncation: `none`, `last_octet` or `last_group`.
+    /// Default `last_octet` (D6).
     #[serde(default = "default_ip_truncate")]
     pub ip_truncate: String,
 }
@@ -195,7 +235,7 @@ fn default_true() -> bool {
 }
 
 fn default_ip_truncate() -> String {
-    "none".to_owned()
+    "last_octet".to_owned()
 }
 
 /// Source-IP truncation for query-log lines.
@@ -294,12 +334,20 @@ impl TlsPolicyToml {
 }
 
 impl Config {
-    /// Maps this TOML config onto a [`ListenersConfig`] with security defaults
-    /// (shared [`Limits::default`], public exposure enabled only when a
-    /// listener explicitly opts in, DDR discovery on).
+    /// Directory for the SQLite store, TLS state and filter-list bodies.
+    pub fn data_dir(&self) -> Option<&Path> {
+        self.data_dir.as_deref()
+    }
+
+    /// Maps this TOML config onto a [`ListenersConfig`].
+    ///
+    /// `[listeners_limits]`, `[listeners_public]` and `[listeners_ddr]` are
+    /// embedded as-is. Public exposure is gated only by
+    /// `listeners_public.enabled` (GL2), never inferred from a listener's
+    /// `exposure`; [`ListenersConfig::validate`] rejects a public listener
+    /// when the gate is closed.
     pub fn listeners_config(&self) -> Result<ListenersConfig, Error> {
         let mut listeners = Vec::with_capacity(self.listeners.len());
-        let mut public = false;
         for listener in &self.listeners {
             let id = ListenerId::new(&listener.id).map_err(|_| {
                 Error::config(
@@ -325,9 +373,6 @@ impl Config {
                     ),
                 )
             })?;
-            if exposure == Exposure::Public {
-                public = true;
-            }
             listeners.push(ListenerConfig {
                 id,
                 protocol,
@@ -339,12 +384,9 @@ impl Config {
         }
         let cfg = ListenersConfig {
             listeners,
-            limits: Limits::default(),
-            public: PublicConfig {
-                enabled: public,
-                ..PublicConfig::default()
-            },
-            ddr: DdrConfig::default(),
+            limits: self.listeners_limits.clone(),
+            public: self.listeners_public.clone(),
+            ddr: self.listeners_ddr.clone(),
         };
         cfg.validate()
             .map_err(|e| Error::config("dnscraft.config.invalid_listener", e.to_string()))?;
@@ -489,12 +531,11 @@ mod tests {
     fn log_settings_rejects_unknown_ip_truncate() {
         let cfg = Config {
             public_domain: "example.com".into(),
-            listeners: vec![],
-            allow_partial_bind: false,
             log: LogConfig {
                 queries: true,
                 ip_truncate: "everything".into(),
             },
+            ..Config::default()
         };
         let err = cfg.log_settings().unwrap_err();
         assert_eq!(err.code(), "dnscraft.config.invalid_log");
@@ -515,5 +556,258 @@ mod tests {
             IpTruncate::LastGroup.truncate("2001:db8::1".parse::<IpAddr>().unwrap()),
             "2001:db8::"
         );
+    }
+
+    /// Every module section present, with documentation-range values and
+    /// human-readable durations.
+    const FULL_TOML: &str = r#"
+public_domain = "example.com"
+data_dir = "/var/lib/dnscraft"
+allow_partial_bind = true
+
+[[listeners]]
+id = "lan"
+protocol = "udp53"
+address = "192.0.2.10:53"
+exposure = "local"
+
+[[listeners]]
+id = "public-doh"
+protocol = "doh"
+address = "192.0.2.10:443"
+exposure = "public"
+h3 = true
+
+[log]
+queries = true
+ip_truncate = "last_octet"
+
+[resolver]
+root_hints = ["192.0.2.53:53"]
+query_timeout = "10s"
+max_referral_depth = 16
+max_queries_per_resolve = 64
+max_nested_depth = 4
+max_cname_chain = 16
+qname_minimisation = true
+negative_trust_anchors = ["example.com"]
+cache_size_mb = 64
+ttl_min = 0
+ttl_max = 86400
+serve_stale = "1d"
+prefetch = true
+ipv6_cooldown = "1m"
+outgoing_ipv6 = true
+forward_zones = []
+max_concurrent_resolutions = 1024
+allow_private_nameservers = false
+root_reprime_interval = "1d"
+resolve_deadline = "10s"
+
+[resolver.trust_anchors]
+anchors = []
+
+[resolver.nameserver_addr_overrides]
+
+[filtering]
+lists = []
+sets = []
+update_interval = "1d"
+max_list_size_mb = 64
+
+[clients]
+local_domain = "home.arpa"
+local_domain_mode = "UnifiThenConfig"
+offline_retain = "7d"
+ipv6_address_ttl = "1d"
+manual = []
+allow_http_for_tests = false
+
+[clients.unifi]
+enabled = false
+base_url = ""
+poll_interval = "1m"
+classic_clients = true
+tls = "Secure"
+
+[tls]
+public_domain = "example.com"
+extra_sans = []
+key_type = "EcdsaP256"
+renew_before = "30d"
+expiry_warn = "14d"
+allow_http_for_tests = false
+
+[tls.acme]
+enabled = false
+directory = "Production"
+email = ""
+propagation_timeout = "2m"
+propagation_poll = "5s"
+
+[tls.acme.account]
+tos_agreed = false
+auto_deactivate = false
+
+[tls.dns_provider]
+kind = "Cloudflare"
+zones = []
+manual_txt = []
+
+[tls.dns_provider.cloudflare]
+
+[tls.dyndns]
+enabled = false
+hostname = ""
+public_entry = false
+reserved_labels = []
+interval = "5m"
+echo_url = "https://example.com/"
+ipv4 = true
+ipv6 = true
+proxied = false
+interfaces = []
+record_inventory = false
+
+[tls.dyndns.ipv6_identifier]
+mode = "Eui64"
+
+[tls.notifications]
+on_expiry = false
+on_dyndns_failure = false
+
+[policy]
+default_rebind = true
+ptr_prefixes = ["192.0.2.0/24", "2001:db8::/32"]
+local_nxdomain_suffixes = ["example.com"]
+rebind_check_forward_zones = []
+views = []
+profiles = []
+
+[listeners_public]
+enabled = true
+ban_strikes = 5
+ban_window = "10m"
+ban_duration = "1h"
+max_tracked_sources = 10000
+
+[listeners_limits]
+udp_payload_max = 1232
+query_timeout = "5s"
+tcp_idle_timeout = "10s"
+tls_handshake_timeout = "5s"
+max_inflight_per_listener = 1000
+max_connections_per_listener = 1000
+max_connections_per_source = 50
+max_quic_streams_per_connection = 100
+max_queries_per_connection = 100
+rate_per_source = { per_second = 200, burst = 400 }
+rate_per_client_id = { per_second = 50, burst = 100 }
+
+[listeners_ddr]
+enabled = true
+target = "dns"
+
+[control_api]
+"#;
+
+    #[test]
+    fn full_toml_deserializes_all_sections() {
+        let cfg: Config = toml::from_str(FULL_TOML).unwrap();
+
+        assert_eq!(cfg.public_domain, "example.com");
+        assert_eq!(cfg.data_dir(), Some(Path::new("/var/lib/dnscraft")));
+        assert!(cfg.allow_partial_bind);
+        assert_eq!(cfg.listeners.len(), 2);
+        assert_eq!(cfg.listeners[0].protocol, "udp53");
+        assert_eq!(cfg.listeners[1].exposure, "public");
+        assert_eq!(cfg.log.ip_truncate, "last_octet");
+
+        assert_eq!(
+            cfg.resolver.query_timeout,
+            std::time::Duration::from_secs(10)
+        );
+        assert_eq!(
+            cfg.resolver.serve_stale,
+            std::time::Duration::from_secs(86_400)
+        );
+        assert_eq!(
+            cfg.filtering.update_interval,
+            std::time::Duration::from_secs(86_400)
+        );
+        assert_eq!(cfg.clients.local_domain, "home.arpa");
+        assert_eq!(
+            cfg.clients.offline_retain,
+            std::time::Duration::from_secs(7 * 24 * 3600)
+        );
+        assert_eq!(
+            cfg.tls.renew_before,
+            std::time::Duration::from_secs(30 * 24 * 3600)
+        );
+        assert_eq!(cfg.policy.ptr_prefixes.len(), 2);
+        assert!(cfg.listeners_public.enabled);
+        assert_eq!(
+            cfg.listeners_limits.query_timeout,
+            std::time::Duration::from_secs(5)
+        );
+        assert_eq!(cfg.listeners_ddr.target, "dns");
+        assert_eq!(cfg.control_api, ControlApiConfig::default());
+
+        // The embedded sections map straight onto the listener config.
+        let listeners = cfg.listeners_config().unwrap();
+        assert_eq!(listeners.listeners.len(), 2);
+        assert!(listeners.public.enabled);
+        assert_eq!(listeners.limits, cfg.listeners_limits);
+    }
+
+    #[test]
+    fn minimal_toml_takes_module_defaults() {
+        let cfg: Config = toml::from_str(r#"public_domain = "example.com""#).unwrap();
+
+        assert_eq!(cfg.public_domain, "example.com");
+        assert_eq!(cfg.data_dir(), None);
+        assert!(cfg.listeners.is_empty());
+        assert!(!cfg.allow_partial_bind);
+        assert!(cfg.log.queries);
+        assert_eq!(cfg.log.ip_truncate, "last_octet");
+        assert_eq!(cfg.resolver.cache_size_mb, 64);
+        assert_eq!(
+            cfg.resolver.query_timeout,
+            std::time::Duration::from_millis(1500)
+        );
+        assert_eq!(cfg.filtering, FilterConfig::default());
+        assert_eq!(cfg.clients, ClientsConfig::default());
+        assert_eq!(cfg.tls, TlsConfig::default());
+        assert_eq!(cfg.policy, PolicyConfig::default());
+        assert_eq!(cfg.listeners_public, PublicConfig::default());
+        assert_eq!(cfg.listeners_limits, Limits::default());
+        assert_eq!(cfg.listeners_ddr, DdrConfig::default());
+        assert_eq!(cfg.control_api, ControlApiConfig::default());
+    }
+
+    #[test]
+    fn public_listener_requires_public_gate() {
+        let cfg: Config = toml::from_str(
+            r#"
+public_domain = "example.com"
+
+[[listeners]]
+id = "public-doh"
+protocol = "doh"
+address = "192.0.2.10:443"
+exposure = "public"
+"#,
+        )
+        .unwrap();
+        assert!(!cfg.listeners_public.enabled);
+        let err = cfg.listeners_config().unwrap_err();
+        assert_eq!(err.code(), "dnscraft.config.invalid_listener");
+    }
+
+    #[test]
+    fn ip_truncate_defaults_to_last_octet() {
+        assert_eq!(LogConfig::default().ip_truncate, "last_octet");
+        let log: LogConfig = toml::from_str("").unwrap();
+        assert_eq!(log.ip_truncate, "last_octet");
     }
 }
