@@ -522,6 +522,12 @@ async fn flow1_add_rule_blocks_and_expires() {
     assert_eq!(rules[0]["domain"], "www.example.test");
     assert_eq!(rules[0]["expires_at"], rfc3339(NOW + RULE_LIFETIME));
 
+    // The stored rule records the MCP token that created it.
+    let (_, stored) = h.service.current().await.expect("current config");
+    let stored = stored.expect("stored snapshot");
+    let stored_rule = &stored["filtering"]["sets"][0]["mcp_rules"][0];
+    assert_eq!(stored_rule["token_id"], h.write.id());
+
     // At the exact expiry instant the rule is already inactive (strict).
     h.clock.set(at(NOW + RULE_LIFETIME));
     let test = h.test_query("www.example.test").await;
@@ -787,6 +793,7 @@ async fn flow3_protected_domains_from_node_config() {
             include_subdomains: false,
             filter_set_id: None,
             lifetime_seconds: RULE_LIFETIME,
+            token_id: String::new(),
         })
         .await
         .expect_err("backend must reject a protected domain");

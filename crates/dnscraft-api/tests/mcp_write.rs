@@ -172,6 +172,7 @@ fn add_params(domain: &str, include_subdomains: bool, lifetime_seconds: u64) -> 
         include_subdomains,
         filter_set_id: None,
         lifetime_seconds,
+        token_id: "tok-add-rule".to_owned(),
     }
 }
 
@@ -451,10 +452,7 @@ async fn add_custom_rule_stores_structured_rule_and_a_config_version() {
     assert_eq!(stored[0]["include_subdomains"], true);
     assert_eq!(stored[0]["created_at"], NOW);
     assert_eq!(stored[0]["expires_at"], NOW + 3600);
-    assert_eq!(
-        stored[0]["token_id"], "",
-        "the DTO carries no token id (reported gap)"
-    );
+    assert_eq!(stored[0]["token_id"], "tok-add-rule");
     assert!(blocked(&h.engine, "track.example.com", NOW + 1));
     assert!(blocked(&h.engine, "a.track.example.com", NOW + 1));
     assert!(
@@ -575,6 +573,7 @@ async fn add_custom_rule_rejects_protected_lifetime_unknown_set_and_cap() {
                 include_subdomains: true,
                 filter_set_id: Some("missing".to_owned()),
                 lifetime_seconds: 3600,
+                token_id: "tok-add-rule".to_owned(),
             })
             .await
             .expect_err("unknown set")

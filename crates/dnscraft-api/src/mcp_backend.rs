@@ -1362,9 +1362,7 @@ impl McpBackend for ControlMcpBackend {
                     &rule_id,
                     created_secs,
                     expires_secs,
-                    // The mcp layer owns the token id and audits with it; the
-                    // AddRuleParams DTO does not carry it (see M24 report).
-                    "",
+                    &params.token_id,
                     cap,
                     now,
                 )?;

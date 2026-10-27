@@ -415,6 +415,7 @@ async fn add_rule(
         include_subdomains,
         filter_set_id: filter_set_id.clone(),
         lifetime_seconds: server.config.max_block_rule_lifetime.as_secs(),
+        token_id: token.token_id.clone(),
     };
     match server.backend.add_custom_rule(params).await {
         Ok(result) => {

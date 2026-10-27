@@ -200,7 +200,8 @@ async fn no_tool_can_create_an_allow_rule_or_rule_syntax() {
             "domain",
             "filter_set_id",
             "include_subdomains",
-            "lifetime_seconds"
+            "lifetime_seconds",
+            "token_id"
         ]
     );
     assert!(!sent.to_string().contains('$'));

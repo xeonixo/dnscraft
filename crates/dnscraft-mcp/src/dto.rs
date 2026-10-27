@@ -689,6 +689,8 @@ pub struct AddRuleParams {
     pub filter_set_id: Option<String>,
     /// Server-assigned lifetime in seconds (`max_block_rule_lifetime`).
     pub lifetime_seconds: u64,
+    /// MCP token that created the rule; stored with it for attribution.
+    pub token_id: String,
 }
 
 /// Result of `add_rule`.

@@ -581,6 +581,10 @@ async fn add_rule_success_output_and_audit() {
         dnscraft_mcp::config::DEFAULT_MAX_BLOCK_RULE_LIFETIME.as_secs(),
         "the server assigns max_block_rule_lifetime"
     );
+    assert_eq!(
+        params.token_id, "tok-write",
+        "the creating token's id reaches the backend"
+    );
 
     let audits = server.backend.audits();
     assert_eq!(audits.len(), 1);
