@@ -325,6 +325,79 @@ to expose a `no_cache_write` flag; the current resolver public API has no such
 flag (verified 2026-10-26), so it is a prerequisite of the MCP phase, not an
 existing capability.
 
+### Web-UI extra endpoints (WX2–WX8, proposed 2026-10-27, not approved)
+
+Proposed by the web-UI feature list (`SPEC-web-ui.md` § Required control-api additions,
+tracked in `tasks/todo-webui-extra-features.md`). Same envelopes, auth middleware, audit
+and rate-limit buckets as the rest of `/api/v1`. Routes stay out of the v1 core table
+until the owner signs off each WX item.
+
+| Method | Path | Role | Request | Response | Errors |
+|---|---|---|---|---|---|
+| GET | `/api/v1/query-log/stream` | viewer/admin | same filter parameters as `GET /api/v1/query-log` (no `limit`/`offset`/`order`); `Accept: text/event-stream` | SSE: `event: row` (record DTO + `node_id`), `event: lagged` `{ "dropped": n }`, `: ping` every 15 s. Live only, no replay | `control_api.query_log.invalid` (400, before the stream opens), `control_api.query_log.stream_limit` (429), `control_api.auth.unauthenticated` (401) (WX2) |
+| GET | `/api/v1/resolver/upstreams` | viewer/admin | – | `{ "data": { "window_seconds", "items": [ { name, kind: forward_target \| recursion, zone?, address?, protocol, state: up \| degraded \| down \| unknown, rtt_ms: { p50, p95 } \| null, success_rate \| null, samples, last_error: { code } \| null, last_checked } ] } }` | `control_api.not_ready` (WX3) |
+| POST | `/api/v1/resolver/cache/flush` | admin | `{ "domain": "example.com" }`, or `{}` for all | `{ "data": { "scope": "all \| domain", "domain": "..." \| null, "evicted": 1234 } }`; audited | `control_api.resolver.flush.invalid_domain` (400) (WX4) |
+| GET | `/api/v1/stats/domains/{name}` | viewer/admin | path `name` (normalized DNS name); query `days` = `7 \| 30` (default 7) | `{ "data": { domain, retention_limited: true, first_seen, last_seen, counts: { total, blocked, allowed }, top_clients: [ max 10 ], daily: [ { day, total, blocked } ], last_decision: { id, time, status, rule_text, source } \| null } }` | `control_api.stats.invalid_domain` (400), `control_api.not_found` (404, not seen in retention) (WX5) |
+| POST | `/api/v1/config/validate` | admin | same body as `PUT /api/v1/config`; optional `If-Match` | `{ "data": { valid, config_version, errors: [ { code, path, params } ], warnings: [ ... ], diff: { changed_sections, added, removed, changed } } }`, HTTP 200 even when invalid; no version bump, not audited | `control_api.config.invalid` (400, malformed body only) (WX6) |
+| GET | `/api/v1/notifications` | viewer/admin | – | `{ "data": { "channels": [ { id, type: webhook \| ntfy, enabled, url? \| server?, topic?, has_secret, events: [...] } ], "event_catalog": [...] } }`; URL query and userinfo never returned, secrets never returned | – (WX7) |
+| PUT | `/api/v1/notifications` | admin | same shape; `secret` / `token` write-only (omitted = keep, `null` = clear) | `{ "data": { "config_version": 43 } }`; atomic config apply, audited | `control_api.notifications.invalid` (400), `control_api.notifications.host_not_allowed` (422), `control_api.config.version` (409), `control_api.config.apply` (WX7) |
+| POST | `/api/v1/notifications/test` | admin | `{ "channel_id": "ops-webhook" }` | `{ "data": { channel_id, delivered: true, status: 204, latency_ms: 180 } }`; audited | `control_api.notifications.delivery` (502), `control_api.notifications.egress_denied` (422), `control_api.notifications.unknown_channel` (404) (WX7) |
+| GET | `/api/v1/auth/sessions` | viewer/admin | query `scope = own \| all` (`all` admin only; default `own` for viewer, `all` for admin), `limit`, `offset` | `{ "data": { "items": [ { id, actor_id, actor_type, client_label, ip, created_at, last_seen, expires_at, current } ], has_more, next_offset } }` | `control_api.auth.insufficient_scope` (403, viewer with `scope=all`), `control_api.pagination.invalid` (WX8) |
+| DELETE | `/api/v1/auth/sessions/{id}` | viewer/admin (own); admin (others) | – | `{ "data": { id, revoked: true } }`; takes effect immediately; audited | `control_api.auth.unknown_session` (404; also for another actor's session when the caller is a viewer), `control_api.auth.session_current` (409), `control_api.auth.csrf` (403, cookie sessions) (WX8) |
+
+Decisions behind the rows:
+
+- **WX2 stream.** Authentication is the browser cookie session (`EventSource` cannot set
+  headers); bearer clients use a fetch stream with `Authorization`. A token in the query
+  string is never accepted. Fan-out reads the query-log sink through a non-blocking
+  broadcast: the DNS path never waits on a stream. Each subscriber has a bounded queue
+  (512 events); when it overflows, the server drops for that subscriber, increments a new
+  `query_log.stream_dropped` counter and sends `lagged` once the queue drains. Limits: 4
+  streams per principal and 32 per node (`stream_limit`); idle close after 30 min. Node-
+  local in v1: a master does not fan out to sub-nodes. Responses set
+  `Cache-Control: no-store` and `X-Accel-Buffering: no` for reverse proxies.
+- **WX3 upstreams.** Passive only: state comes from real traffic, no synthetic probes
+  are added. Window: rolling 5 min, at most 256 samples per target. Forward-zone targets
+  are listed one by one; the 13 root servers are one aggregate `recursion` row. Failure
+  means timeout, SERVFAIL, refusal, malformed reply or a `Bogus` validation result.
+  Default states (configurable in a later revision): `unknown` below 3 samples; `down`
+  below 50 % success with at least 10 samples; `degraded` below 95 % success or p95 above
+  1 s; otherwise `up`. `last_error.code` is the stable resolver `code()`.
+- **WX4 flush.** Node-local. Domain scope removes the name and everything below it, all
+  types, positive, negative and stale entries (existing resolver semantics). Repeating
+  the call is safe, so no `Idempotency-Key`. Invalid names are rejected before the
+  resolver is touched. Audit records `scope`, `domain` and `evicted`.
+- **WX5 domain detail.** Counts come from the raw query log, bounded by retention
+  (30 days). `first_seen` is therefore "first within retention" unless the owner approves
+  a per-domain first-seen index. The daily series needs a per-domain daily table for the
+  top-domains set (cap 10 000 domains per window, as in § Cardinality limits); domains
+  outside that set return only retention-based counts and `daily: []`. `ip` is truncated
+  with `query_log_ip_truncate`; client names are returned as data, never as markup.
+- **WX6 validate.** Runs the same module checks and cross-module pass as a write, then
+  stops before `apply_config`. No network reachability checks, no audit row, no
+  `config_version` change. Write-bucket rate limit because it costs CPU.
+- **WX7 notifications.** Stored as a config section, so writes get a new version,
+  audit and rollback like any other section. Egress (`webhook` and `ntfy`): HTTPS only;
+  redirects not followed (as the TLS webhook); connect and total timeouts of 5 s and 10 s.
+  The host must match `notifications.allowed_hosts` (exact or suffix match), otherwise
+  `host_not_allowed`. Every resolved address is checked: loopback, unspecified,
+  link-local, multicast, RFC 1918, CGNAT, ULA and IPv4-mapped addresses are denied unless
+  `notifications.allow_private_destinations = true` (default false). The connection is
+  pinned to the validated address, which blocks DNS rebinding. Payload: event id,
+  severity, module, `created_at`, stable event code, raw params; no domain or client
+  names unless the channel opts in (default off). Delivery failures are logged and do not
+  change the originating action's result. **OPEN:** the allow-list default (empty means
+  every write is rejected until a host is added, or any public host is allowed); the owner
+  decides.
+- **WX8 sessions.** Stored session rows keep only the truncated IP, written at login
+  time with the `query_log_ip_truncate` setting (default `last_octet`), and a parsed
+  browser label; the raw user agent is not stored. `id` is a public random identifier
+  separate from the cookie value, so the list never exposes a usable session secret.
+  Admin list shows all actors; a viewer sees their own only. Revoking the current
+  session is refused with `session_current`; logout is the path for it.
+
+Proposed error codes for these rows are in § Error codes (WX2–WX8).
+
 ## Query log
 
 ### Record schema
@@ -846,6 +919,23 @@ codes defined in SPEC-mcp.md; uniqueness is enforced workspace-wide.
 `control_api.auth.unauthenticated`, `control_api.auth.invalid_scope` and
 `control_api.auth.invalid_origin`; A0's error-code uniqueness test must cover
 them once A7 adds them.
+
+### Proposed codes (WX2–WX8, not yet in the table above)
+
+Each new code joins the workspace-wide uniqueness test when its WX task lands.
+
+| Code | When |
+|---|---|
+| `control_api.query_log.stream_limit` | more than 4 streams for one principal or 32 per node (HTTP 429) |
+| `control_api.resolver.flush.invalid_domain` | flush `domain` is not a valid normalized DNS name (HTTP 400) |
+| `control_api.stats.invalid_domain` | domain path segment invalid or `days` not 7 or 30 (HTTP 400) |
+| `control_api.notifications.invalid` | channel malformed, missing URL/topic, secret required (HTTP 400) |
+| `control_api.notifications.host_not_allowed` | channel host is not in `notifications.allowed_hosts` (HTTP 422) |
+| `control_api.notifications.egress_denied` | a resolved address is in a denied range (HTTP 422) |
+| `control_api.notifications.delivery` | test or event delivery failed; params carry `reason` and optional `status` (HTTP 502) |
+| `control_api.notifications.unknown_channel` | channel id not configured (HTTP 404) |
+| `control_api.auth.unknown_session` | session id unknown, or not visible to the caller (HTTP 404) |
+| `control_api.auth.session_current` | attempt to revoke the current session through the list (HTTP 409) |
 
 ## Security considerations
 

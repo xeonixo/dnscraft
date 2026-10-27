@@ -66,7 +66,33 @@ It knows nothing about filters, clients, or listeners; it takes a `Query` and re
 - Prefetch: popular entries are refreshed shortly before expiry.
 - Serve-stale (RFC 8767): expired entries up to 1 day when authoritative servers are unreachable.
 - Flush all or per domain through the module API (used later by `control-api`).
+- Flush returns a `FlushReport { evicted }` count (WX4, proposed 2026-10-27; today's
+  `flush` returns nothing). A domain scope removes the name and everything below it, all
+  types, positive, negative and stale entries. Answers still in flight when a flush runs
+  must not be written back into the cache (the existing epoch counter is the guard; a test
+  must cover it). Node-local; a repeated flush is a no-op with `evicted: 0`.
 - In-memory only; the cache is not persisted across restarts (decided: simplicity over warm start).
+
+### Upstream health (WX3, proposed 2026-10-27)
+
+Required observable state, read by `control-api` through `Resolver::upstreams()`.
+Owner: `resolver` (counters). Route and shape: `SPEC-control-api.md` § Web-UI extra endpoints.
+
+- Items: each forward-zone target one by one (`kind = forward_target`, with its zone and
+  configured address), plus one aggregate `kind = recursion` item for root-hint traffic.
+  Individual root servers are not reported in v1.
+- Passive only: samples come from real upstream exchanges. The resolver sends no extra
+  probe traffic for health.
+- Per target: a bounded ring of at most 256 samples within a rolling 5-minute window; the
+  success or failure of each exchange, its RTT, and the stable `code()` of the last
+  failure. A failure is a timeout, SERVFAIL, refusal, malformed reply, or a `Bogus`
+  validation result.
+- Derived fields: `rtt_ms` p50 and p95 over successful exchanges, `success_rate`,
+  `samples`, `last_checked`. State rule (defaults): `unknown` below 3 samples; `down`
+  below 50 % success with at least 10 samples; `degraded` below 95 % success or p95 above
+  1 s; otherwise `up`.
+- Memory is bounded by the target count times 256 samples. Counters are copied into a
+  read-only snapshot; no handle into the resolver is exposed.
 
 ### Interface (boundary towards `policy`)
 
@@ -76,8 +102,9 @@ pub struct Resolver { /* ... */ }
 impl Resolver {
     pub async fn new(config: ResolverConfig) -> Result<Self, ResolverError>;
     pub async fn resolve(&self, query: &Query, flags: RequestFlags) -> Result<Answer, ResolveError>;
-    pub fn flush(&self, scope: FlushScope);
+    pub fn flush(&self, scope: FlushScope) -> FlushReport;   // WX4: evicted count
     pub fn stats(&self) -> ResolverStats;   // cache hits, latencies, DNSSEC outcomes
+    pub fn upstreams(&self) -> Vec<UpstreamHealth>;          // WX3: passive, 5 min window
 }
 
 pub struct Answer {
@@ -138,6 +165,8 @@ which profile may use which forward zone (decided in `policy`), any user-facing 
 5. With authoritative servers taken offline in the testkit, an expired entry yields a stale answer.
 6. 50 concurrent identical queries produce only one outgoing resolution chain.
 7. A forward zone is resolved via its targets only (no root traffic), fails over when the first target is down, and a forwarding loop ends in `SERVFAIL` instead of hanging; a private-range PTR without forward zone is answered locally and never sent upstream.
+8. (WX3) Upstream health: a target whose exchanges all time out is reported `down` with `last_error` set; a target with fewer than 3 samples is `unknown`; samples older than 5 minutes are not counted; no probe query is sent to any upstream by the health code.
+9. (WX4) A domain flush removes the name and its subtree, returns the evicted count, and an answer that was in flight during the flush is not cached afterwards.
 8. Line coverage ≥ 80 %.
 
 ## Decisions

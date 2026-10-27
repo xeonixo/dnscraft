@@ -500,6 +500,7 @@ listed in [SPEC-control-api.md](SPEC-control-api.md) § Endpoint table.
 | `/query-log/:id` | Query detail ("why blocked?") | viewer/admin | `GET /api/v1/query-log/{id}` | Grouped detail sections; ordered decision steps; rule and list in SF Mono; toolbar allow action |
 | `/query-log` (action) | One-click temporary allow | admin | `POST /api/v1/filtering/temporary-allows` (MCP-phase endpoint) | Confirmation sheet with the domain, a subdomain switch and a duration segmented control; fall back to the guided rule builder if unavailable |
 | `/statistics` | Statistics dashboard | viewer/admin | `GET /api/v1/stats/overview`, `GET /api/v1/stats/top_clients`, `GET /api/v1/stats/top_domains`, `GET /api/v1/stats/cache` | Stat-tile row, period segmented control, inset grouped tables, inline SVG sparklines; rolls up to one year |
+| `/statistics/domains/:name` | Domain detail (WX5, proposed) | viewer/admin | `GET /api/v1/stats/domains/{name}`, `GET /api/v1/query-log/{id}` (last decision link) | Stat-tile row with first/last seen (labelled as retention-limited), inset grouped blocked/allowed split and top clients, daily sparkline; reached from the palette, top-domains table and query-log domain cell; empty state when not seen in retention |
 | `/clients` | Clients / device directory | list: viewer/admin; edit: admin | `GET /api/v1/clients`, `GET/POST/PUT/DELETE /api/v1/clients/manual`, `POST /api/v1/clients/sync` | Search field; inset grouped table on wide, card list on narrow; source badge; IP/MAC in SF Mono; edit in a sheet; names are untrusted data |
 | `/doh-clients` | Verified DoH/DoT clients (Client IDs) | read: viewer via config; write: admin | `GET /api/v1/policy/views` (reads client identity), `PUT/POST /api/v1/policy/views/{id}` | Inset grouped list grouped by the **source-IP derived** Zone (not the Client ID); create in a sheet with a generated Client ID and the DoH `/dns-query/<id>` + DoT `<id>.dns.<domain>` endpoints; unknown IDs are rejected by the listener; client ID and protocol are query-log facets |
 | `/filter-sets` | Filter sets | read: viewer via config; write: admin | `GET/POST/PUT/DELETE /api/v1/filter-sets`, `GET /api/v1/config` | Grouped form plus a guided rule-builder sheet and a CodeMirror raw-editor sheet; never require hard-to-type characters |
@@ -557,6 +558,81 @@ above plus a few that need their own surface. This section closes the gap betwee
   The catalog is downloaded at runtime like a filter list (GPL-3.0 `services.json` +
   `services_i18n.json`) and never bundled. This depends on a filtering-crate catalog
   capability that does not exist yet (Required additions).
+
+**Extra features (WX1–WX8, proposed 2026-10-27, not approved).** These go beyond the
+specs above. Each one is tracked as a task in `tasks/todo-webui-extra-features.md`; the
+endpoint shapes are in `SPEC-control-api.md` § Web-UI extra endpoints and the required
+resolver state in `SPEC-resolver.md` § Upstream health. Nothing here is implemented.
+
+- **WX1 Befehlspalette** (global, no route; web-ui only, no backend). Opens with
+  Cmd/Ctrl+K from every authenticated screen; ignored while focus sits in a text field
+  unless the modifier is held, and never overrides a browser-reserved shortcut. A modal
+  dialog (`role="dialog"`, `aria-modal`) with focus trapped and restored on close. The
+  input is a combobox (`role="combobox"`, `aria-expanded`, `aria-controls`,
+  `aria-activedescendant`, `aria-autocomplete="list"`) controlling a `role="listbox"`
+  of `role="option"` rows grouped by section (Navigation, Aktionen, Domains). Up/Down
+  move the active option, Home/End jump to the ends, Enter runs, Escape closes; the
+  result count is announced in a polite live region. Entries are the sidebar screens
+  (filtered by role, as in Navigation), admin actions that already exist elsewhere
+  (pause, temporary allow, cache flush, config validate) and a domain search. Matching
+  runs on translated labels and keywords in the client; the typed text is never sent to
+  the server. A domain hit opens `/query-log` with the existing `domain` filter and, for
+  an exact match, offers the WX5 detail. The domain value travels in router state rather
+  than the URL so browsing history does not end up in addresses or screenshots.
+  Recently used entries are kept in `localStorage` as a per-viewer convenience (try/catch;
+  the palette works without it). Domain and client text is untrusted and rendered as text.
+- **WX2 Live-Mitschnitt** (`/query-log`, "Live" toggle; viewer/admin; owner
+  `control-api`). Streams `GET /api/v1/query-log/stream` with the current filter
+  parameters, so the URL stays the source of truth. New rows are prepended with a
+  client-side cap of 500 rows; Pause keeps the connection and buffers up to the cap.
+  A `lagged` event (server-side drop count) shows the same "log may be incomplete"
+  notice as `control_api.query_log.dropped`. Reconnect uses exponential backoff with no
+  replay. The stream closes after 60 s in a hidden tab. On a cluster master the rows are
+  this node's only (a `node_id` badge is shown). CSP: the EventSource is same-origin, so
+  `connect-src 'self'` is sufficient; no third-party origin and no token in the URL.
+- **WX3 Upstream-Gesundheit** (`/statistics`, section "Upstreams"; read viewer/admin).
+  One row per forward-zone target plus one aggregate "Rekursion" row. Each row shows
+  name, protocol, a state badge (icon, colour and text: up / degraded / down / unknown),
+  RTT p50 and p95, success rate, the last error as a translated stable code and
+  `last_checked` as a relative time with an absolute tooltip. Polled every 30 s; no
+  stream. Empty state when no forward zones exist: only the recursion row.
+- **WX4 Cache leeren** (`/statistics`, cache card; admin). The button opens a
+  confirmation sheet with a segmented control "Gesamter Cache" / "Eine Domain" and a
+  validated domain field. A domain flush also removes everything below that name (the
+  resolver's existing semantics). The success toast reports the evicted count in a live
+  region. Viewers do not see the button.
+- **WX5 Domain-Detail** (`/statistics/domains/:name`, see the screen inventory). Header
+  in SF Mono with the domain. First and last seen are always labelled as limited to the
+  query-log retention window (30 days by default). Counts cover 7 or 30 days; blocked and
+  allowed are split; the top clients list is capped at 10 and shows truncated IPs and
+  client names as untrusted text; the daily series is rendered in the viewer's time zone.
+  "Last decision" links to `/query-log/:id`, and from there the existing one-click
+  temporary allow applies. Unseen domain: empty state, not an error toast.
+- **WX6 Konfig prüfen** (`/config`, toolbar "Prüfen" next to "Speichern"; admin). Posts
+  the editor content to `POST /api/v1/config/validate` and shows the result in the
+  existing diff sheet: blocking errors linked to their field, non-blocking warnings, and
+  the change summary. "Speichern" stays disabled while the last validation of the same
+  content reported errors. Validation does not bump `config_version` and is not audited;
+  the UI says so in the sheet footer. Network-dependent checks (filter-list reachability)
+  are not part of it.
+- **WX7 Benachrichtigungen** (`/alerts`, new section "Kanäle"; read viewer/admin, write
+  admin). Two channel types: a generic HTTPS webhook (JSON `POST`, optional HMAC-SHA256
+  signature header) and ntfy (topic on a configured server). Event toggles use the same
+  event names as the Alerts list. Secrets are write-only: the form shows "gesetzt" with
+  replace and remove actions and never the value. "Test senden" shows the delivery
+  result (HTTP status or stable error code). **OPEN owner decision:** the v1 scope says
+  no push or email (SPEC.md § Feature scope, Alerts row above), and `tls.notifications`
+  already offers a webhook (`SPEC-control-api.md` § Notifications). Decide whether WX7
+  replaces that section (migrating its keys, with the old key read-only as an alias) or
+  runs next to it; and whether ntfy is in v1 at all. Egress rules are in
+  `SPEC-control-api.md` § Web-UI extra endpoints (allow-list, no private ranges by default).
+- **WX8 Aktive Sitzungen** (`/settings`, section "Konto"; viewer/admin). Viewers see their
+  own sessions; admins see all sessions with an actor column (the scope is switchable).
+  Each row shows the browser label (parsed, not the raw user agent), the truncated IP,
+  created and last-seen times and a "Dieses Gerät" badge for the current session. Revoke
+  asks for confirmation. The current session is not revocable here; that is logout.
+  Revoking another user's session is admin-only; for a viewer, a foreign id looks the same
+  as an unknown one.
 
 The following are **configuration toggles the relevant screens must surface**, not
 new screens. They are modelled by the policy/filtering configs, but the original
@@ -1268,7 +1344,8 @@ GA1–GA4/GA6 in `tasks/todo-spec-gaps.md`):
 - A filter-list effectiveness read endpoint (per-list rules/hits/unique
   contribution), or an owner decision to omit that UI section.
 - An SSE live query-log endpoint, only if the live tail is kept in v1 (with event
-  shape, filtering and heartbeat).
+  shape, filtering and heartbeat). Proposal (WX2): `GET /api/v1/query-log/stream`, see
+  the extra-features list at the end of this section.
 - ~~`POST /api/v1/tls/renew` and `POST /api/v1/tls/dyndns` (or equivalent), only if the
   TLS screen offers those actions.~~ Resolved: `/tls/renew`, `/tls/revoke`,
   `/tls/rotate`, `/tls/preflight`, `/tls/dyndns`, `/tls/records`, `/tls/account`,
@@ -1342,3 +1419,46 @@ GA1–GA4/GA6 in `tasks/todo-spec-gaps.md`):
   sanitized before they reach the DOM (see § XSS). Open point: SPEC.md says the toggle
   is per profile, `SPEC-filtering.md` says per filter set; the route follows the
   filter-set model until the owner decides.
+
+**Extra features (proposed 2026-10-27, owner approval needed before the matching UI
+is built; tracked as WX1–WX8 in `tasks/todo-webui-extra-features.md`):**
+
+- WX1 command palette: no backend addition. Uses only the endpoints already listed.
+- WX2 live query-log stream: `GET /api/v1/query-log/stream`, role viewer/admin, owner
+  `control-api`. Same filter parameters as `GET /api/v1/query-log`. Event shape:
+  `event: row` carries the query-log record plus `node_id`; `event: lagged` carries
+  `{ "dropped": 37 }`; heartbeat is an SSE comment every 15 s. Live only, no replay.
+- WX3 upstream health: `GET /api/v1/resolver/upstreams`, role viewer/admin, owner
+  `resolver` (counters) with the route in `control-api`. Shape sketch:
+  `{ "data": { "window_seconds": 300, "items": [ { "name": "site-b.internal",
+  "kind": "forward_target", "zone": "site-b.internal", "address": "192.0.2.1:53",
+  "protocol": "udp", "state": "degraded", "rtt_ms": { "p50": 14.2, "p95": 1180.0 },
+  "success_rate": 0.91, "samples": 212, "last_error": { "code": "resolver.timeout" },
+  "last_checked": "..." } ] } }`. The recursion row uses `"kind": "recursion"` and
+  `"name": "recursion"`.
+- WX4 cache flush: `POST /api/v1/resolver/cache/flush`, role admin, audited, owner
+  `resolver` with the route in `control-api`. Body `{ "domain": "example.com" }`, or `{}`
+  to flush everything. Response `{ "data": { "scope": "domain", "domain": "example.com",
+  "evicted": 12 } }`.
+- WX5 domain detail: `GET /api/v1/stats/domains/{name}`, role viewer/admin, owner
+  `control-api` over the query log and statistics. Shape sketch:
+  `{ "data": { "domain": "example.com", "retention_limited": true, "first_seen": "...",
+  "last_seen": "...", "counts": { "total": 512, "blocked": 40, "allowed": 472 },
+  "top_clients": [ { "ip": "192.0.2.0", "client_name": "...", "count": 300 } ],
+  "daily": [ { "day": "2026-10-20", "total": 70, "blocked": 5 } ], "last_decision":
+  { "id": "...", "time": "...", "status": "blocked", "rule_text": "||ads.example^",
+  "source": "list:adguard-dns:line 1234" } } }`.
+- WX6 config validation: `POST /api/v1/config/validate`, role admin, owner `control-api`.
+  Same body as `PUT /api/v1/config`. Shape sketch:
+  `{ "data": { "valid": false, "config_version": 42, "errors": [ { "code":
+  "policy.config.unknown_filter_set", "path": "policy.profiles[0].filter_set", "params":
+  {} } ], "warnings": [], "diff": { "changed_sections": ["policy"], "added": 0,
+  "removed": 0, "changed": 3 } } }`. Errors come back as data with HTTP 200.
+- WX7 notifications: `GET/PUT /api/v1/notifications` and `POST /api/v1/notifications/test`,
+  role viewer/admin read and admin write, owner `control-api` (delivery module in
+  `dnscraft-api`). Shape sketch in `SPEC-control-api.md`. Open owner decision on overlap
+  with `tls.notifications` and on ntfy in v1 (see the feature list above).
+- WX8 sessions: `GET /api/v1/auth/sessions` and `DELETE /api/v1/auth/sessions/{id}`,
+  owner `control-api`. Fields: `id` (public identifier, not the cookie value), `actor_id`,
+  `actor_type`, `client_label`, `ip` (truncated), `created_at`, `last_seen`,
+  `expires_at`, `current`.
