@@ -237,6 +237,9 @@ impl AppState {
 
     /// Attaches the broadcast handle on the shared state (interior mutability).
     pub(crate) fn attach_cluster_broadcast(&self, broadcast: ClusterBroadcast) {
+        if let Some(inner) = self.mcp_backend.as_ref() {
+            inner.attach_cluster_broadcast(broadcast.clone());
+        }
         *self
             .cluster_broadcast
             .lock()
@@ -283,6 +286,11 @@ impl AppState {
     // Wired by the binary that assembles the MCP engines.
     #[allow(dead_code)]
     pub(crate) fn with_mcp_backend(mut self, inner: Arc<McpBackendInner>) -> Self {
+        // The runtime may already have attached its broadcast handle; share it
+        // with the MCP backend so write tools broadcast like the HTTP routes.
+        if let Some(broadcast) = self.cluster_broadcast() {
+            inner.attach_cluster_broadcast(broadcast);
+        }
         self.mcp_backend = Some(inner);
         self
     }

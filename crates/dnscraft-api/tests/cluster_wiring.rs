@@ -10,8 +10,8 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
@@ -22,7 +22,8 @@ use dnscraft_api::{
     ClusterStatusHandle, ConfigActor, ConfigService, ConfigStore, ConfigWriteExecutor,
     ControlApiError, Db, LocalAccountStore, ManualClock as ApiClock, ModuleAppliers, ModuleFuture,
     OidcState, QueryLog, QueryLogIngest, QueryLogOutbox, SessionStore, StateAuthApplier,
-    StateRuntimeApplier, SyncedConfigApplier, TlsCertInstaller, TokenStore, node_scoped_views,
+    StateRuntimeApplier, SyncedConfigApplier, TlsCertInstaller, TokenStore,
+    mcp_backend_for_test_writes_with_broadcast, node_scoped_views,
 };
 use dnscraft_cluster::{
     AuthSnapshotApplier, CertInstaller, ClusterCa, ClusterClient, ClusterConfig, ClusterServer,
@@ -33,6 +34,8 @@ use dnscraft_cluster::{
 };
 use dnscraft_common::clock::ManualClock as ClusterClock;
 use dnscraft_common::secret::Secret;
+use dnscraft_mcp::McpConfig;
+use dnscraft_mcp::dto::{PauseDuration, PauseParams};
 
 const NOW: u64 = 1_700_000_000;
 const TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
@@ -1123,6 +1126,268 @@ async fn master_runtime_command_endpoint_broadcasts_to_the_sub_node() {
 }
 
 #[tokio::test]
+async fn sub_node_retries_after_a_failed_config_apply_and_recovers() {
+    let master_dir = TempDir::new("retry-master");
+    let node_dir = TempDir::new("retry-node");
+    let api_clock = Arc::new(ApiClock::new(at(NOW)));
+    let cluster_clock = Arc::new(ClusterClock::new(SystemTime::now()));
+
+    let (master_service, _) = service("master", ModuleAppliers::default()).await;
+    let master_status = Arc::new(ClusterStatusHandle::new());
+    let master_state = AppState::new()
+        .with_config_service(Arc::clone(&master_service))
+        .with_cluster_status(master_status.clone())
+        .with_clock(api_clock.clone());
+    let mut master_options = ClusterRuntimeOptions::new(master_dir.path());
+    master_options.clock = cluster_clock.clone();
+    master_options.status = master_status.clone();
+    let master = ClusterRuntime::start(
+        master_config(master_dir.path()),
+        &master_state,
+        master_options,
+    )
+    .await
+    .unwrap();
+
+    let url = format!("https://{}", master.listen_addr().unwrap());
+    let server_cert = master.server_cert_pem().unwrap().to_owned();
+    let token = master
+        .cluster_store()
+        .unwrap()
+        .mint_join_token("node-b")
+        .await
+        .unwrap();
+
+    let (node_service, _) = service("node-b", ModuleAppliers::default()).await;
+    let node_status = Arc::new(ClusterStatusHandle::new());
+    let node_state = AppState::new()
+        .with_config_service(Arc::clone(&node_service))
+        .with_cluster_status(node_status.clone())
+        .with_clock(api_clock)
+        .with_filter_engine(filter_engine(&node_dir));
+    let mut node_options = ClusterRuntimeOptions::new(node_dir.path());
+    node_options.clock = cluster_clock;
+    node_options.status = node_status.clone();
+    node_options.join_token = Some(Secret::new(token.expose()));
+    node_options.master_cert_pem = Some(server_cert);
+    let node = ClusterRuntime::start(
+        sub_node_config(node_dir.path(), &url),
+        &node_state,
+        node_options,
+    )
+    .await
+    .unwrap();
+
+    for _ in 0..20_000 {
+        if node_status
+            .status()
+            .is_some_and(|status| status.master_reachable)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        node_status
+            .status()
+            .is_some_and(|status| status.master_reachable),
+        "sub-node never connected"
+    );
+
+    // Watch for the transient `master_reachable = false` the apply failure
+    // must set while the node tears down and reconnects.
+    let saw_disconnect = Arc::new(AtomicBool::new(false));
+    let watcher = {
+        let status = Arc::clone(&node_status);
+        let flag = Arc::clone(&saw_disconnect);
+        tokio::spawn(async move {
+            loop {
+                if status
+                    .status()
+                    .is_some_and(|status| !status.master_reachable)
+                {
+                    flag.store(true, Ordering::SeqCst);
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+    };
+
+    // Version 1 carries a default view valid only on node-a, so node-b's
+    // apply must fail.
+    let mut invalid = snapshot("invalid");
+    invalid["policy"] = json!({
+        "views": [{ "id": "only-a", "is_default": true, "nodes": ["node-a"] }],
+    });
+    let actor = ConfigActor::new("test", "user");
+    master_service
+        .replace(invalid, &actor, None)
+        .await
+        .expect("master stores the invalid snapshot");
+
+    for _ in 0..20_000 {
+        if saw_disconnect.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        saw_disconnect.load(Ordering::SeqCst),
+        "the failed apply never reported the master as unreachable"
+    );
+
+    // A later healthy version must still reach the node: the loop retried
+    // instead of dying on the first apply error.
+    master_service
+        .replace(snapshot("healthy"), &actor, None)
+        .await
+        .expect("master stores the healthy snapshot");
+    for _ in 0..40_000 {
+        if node_service.current().await.unwrap().0 == Some(2) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        node_service.current().await.unwrap(),
+        (Some(2), Some(snapshot("healthy"))),
+        "the sub-node stayed stranded after a config apply failure"
+    );
+    watcher.abort();
+
+    node.shutdown().await;
+    master.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_runtime_tools_broadcast_to_the_sub_node() {
+    let master_dir = TempDir::new("mcp-broadcast-master");
+    let node_dir = TempDir::new("mcp-broadcast-node");
+    let api_clock = Arc::new(ApiClock::new(at(NOW)));
+    let cluster_clock = Arc::new(ClusterClock::new(SystemTime::now()));
+
+    let master_filter = filter_engine(&master_dir);
+    let (master_service, _) = service("master", ModuleAppliers::default()).await;
+    let master_status = Arc::new(ClusterStatusHandle::new());
+    let master_state = AppState::new()
+        .with_config_service(Arc::clone(&master_service))
+        .with_cluster_status(master_status.clone())
+        .with_clock(api_clock.clone())
+        .with_filter_engine(Arc::clone(&master_filter));
+    let mut master_options = ClusterRuntimeOptions::new(master_dir.path());
+    master_options.clock = cluster_clock.clone();
+    master_options.status = master_status.clone();
+    let master = ClusterRuntime::start(
+        master_config(master_dir.path()),
+        &master_state,
+        master_options,
+    )
+    .await
+    .unwrap();
+
+    // The MCP backend is built independently of `AppState`; share the master
+    // broadcast handle explicitly, as the production assembly does.
+    let broadcast = Arc::new(Mutex::new(None));
+    let backend_clock = Arc::clone(&api_clock) as Arc<dyn dnscraft_api::Clock>;
+    let backend = mcp_backend_for_test_writes_with_broadcast(
+        Arc::clone(&master_filter),
+        None,
+        None,
+        Arc::clone(&master_service),
+        None,
+        None,
+        backend_clock,
+        McpConfig::default(),
+        None,
+        Arc::clone(&broadcast),
+    );
+
+    let url = format!("https://{}", master.listen_addr().unwrap());
+    let server_cert = master.server_cert_pem().unwrap().to_owned();
+    let token = master
+        .cluster_store()
+        .unwrap()
+        .mint_join_token("node-b")
+        .await
+        .unwrap();
+
+    let node_filter = filter_engine(&node_dir);
+    let (node_service, _) = service("node-b", ModuleAppliers::default()).await;
+    let node_status = Arc::new(ClusterStatusHandle::new());
+    let node_state = AppState::new()
+        .with_config_service(Arc::clone(&node_service))
+        .with_cluster_status(node_status.clone())
+        .with_clock(api_clock)
+        .with_filter_engine(Arc::clone(&node_filter));
+    let mut node_options = ClusterRuntimeOptions::new(node_dir.path());
+    node_options.clock = cluster_clock;
+    node_options.status = node_status.clone();
+    node_options.join_token = Some(Secret::new(token.expose()));
+    node_options.master_cert_pem = Some(server_cert);
+    let node = ClusterRuntime::start(
+        sub_node_config(node_dir.path(), &url),
+        &node_state,
+        node_options,
+    )
+    .await
+    .unwrap();
+
+    for _ in 0..20_000 {
+        if node_status
+            .status()
+            .is_some_and(|status| status.master_reachable)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        node_status
+            .status()
+            .is_some_and(|status| status.master_reachable),
+        "sub-node never connected"
+    );
+    *broadcast
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = master.broadcast_handle();
+
+    let set = dnscraft_filtering::SetId::new("default").unwrap();
+    backend
+        .pause_filter_set(PauseParams {
+            filter_set_id: None,
+            duration: PauseDuration::Pt5M,
+        })
+        .await
+        .expect("MCP pause");
+    for _ in 0..20_000 {
+        if node_filter.paused_until(&set).is_some() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        node_filter.paused_until(&set).is_some(),
+        "sub-node did not apply the MCP broadcast pause"
+    );
+
+    backend.resume_filter_set(None).await.expect("MCP resume");
+    for _ in 0..20_000 {
+        if node_filter.paused_until(&set).is_none() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        node_filter.paused_until(&set).is_none(),
+        "sub-node did not apply the MCP broadcast resume"
+    );
+
+    node.shutdown().await;
+    master.shutdown().await;
+}
+
+#[tokio::test]
 async fn admin_revoke_closes_a_connected_sub_node_stream() {
     use tower::ServiceExt as _;
 
@@ -1713,4 +1978,56 @@ async fn master_ingest_deduplicates_and_the_outbox_resumes_from_the_cursor() {
         .await
         .unwrap_err();
     assert_eq!(error.code(), "cluster.log_stream.invalid");
+}
+
+#[tokio::test]
+async fn master_rejects_remote_log_rows_with_invalid_fields_before_inserting() {
+    let db = Db::open_in_memory(Arc::new(ApiClock::new(at(NOW))))
+        .await
+        .unwrap();
+    let log = Arc::new(QueryLog::new(
+        db,
+        dnscraft_api::QueryLogConfig::default(),
+        "node-b",
+    ));
+    let ingest = QueryLogIngest::new(Arc::clone(&log));
+
+    let mut long_name = remote_record("r1", 1);
+    long_name.record["query_name"] = json!("a".repeat(256));
+    let error = ingest
+        .ingest("node-b", 1, 1, std::slice::from_ref(&long_name))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "cluster.log_stream.invalid");
+
+    let mut bad_ip = remote_record("r2", 2);
+    bad_ip.record["source_ip"] = json!("not-an-ip");
+    let error = ingest
+        .ingest("node-b", 2, 2, std::slice::from_ref(&bad_ip))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "cluster.log_stream.invalid");
+
+    let mut bad_status = remote_record("r3", 3);
+    bad_status.record["status"] = json!("totally-made-up");
+    let error = ingest
+        .ingest("node-b", 3, 3, std::slice::from_ref(&bad_status))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "cluster.log_stream.invalid");
+
+    assert_eq!(
+        ingest.highest_seq("node-b").await.unwrap(),
+        0,
+        "invalid rows must be rejected before any insert"
+    );
+
+    // A valid batch still ingests after the rejected ones.
+    assert_eq!(
+        ingest
+            .ingest("node-b", 1, 1, &[remote_record("ok", 1)])
+            .await
+            .unwrap(),
+        1
+    );
 }

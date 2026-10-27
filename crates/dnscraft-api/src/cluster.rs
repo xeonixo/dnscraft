@@ -36,10 +36,10 @@ use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 
 use dnscraft_cluster::{
-    ActorValidator, AuthSnapshotApplier, AuthSnapshotSource, CertInstaller, ClusterCa,
-    ClusterClient, ClusterConfig, ClusterError, ClusterServer, ClusterServerConfig, ClusterStore,
-    ConfigApplier, ConfigSync, LogIngest, LogOutbox, LogRecord, LogStreamer, NodeIdentity,
-    OfflineWriteQueue, PendingNodeIdentity, RelayResponse, RelayedActor, Role,
+    ActorValidator, AuthSnapshotApplier, AuthSnapshotSource, CertInstaller, ClusterBroadcast,
+    ClusterCa, ClusterClient, ClusterConfig, ClusterError, ClusterServer, ClusterServerConfig,
+    ClusterStore, ConfigApplier, ConfigSync, LogIngest, LogOutbox, LogRecord, LogStreamer,
+    NodeIdentity, OfflineWriteQueue, PendingNodeIdentity, RelayResponse, RelayedActor, Role,
     RuntimeCommandApplier, StreamRecord, WriteExecutor, WriteRelay,
 };
 use dnscraft_common::clock::{Clock, add_duration, wait_until};
@@ -1067,6 +1067,11 @@ impl ClusterRuntime {
         self.server.as_ref().map(ClusterServer::server_cert_pem)
     }
 
+    /// The master's volatile broadcast handle, when this runtime is the master.
+    pub fn broadcast_handle(&self) -> Option<ClusterBroadcast> {
+        self.server.as_ref().map(ClusterServer::broadcast_handle)
+    }
+
     /// Stops the listener and background tasks.
     pub async fn shutdown(mut self) {
         let _ = self.shutdown.send(true);
@@ -1474,11 +1479,12 @@ async fn run_sub_node_loop(
                             Err(error) => {
                                 tracing::warn!(error = %error, "cluster config apply failed");
                                 status.update(|status| {
+                                    status.master_reachable = false;
                                     status.lag = (push.config_version
                                         - status.applied_version.unwrap_or(0))
                                     .max(0);
                                 });
-                                return;
+                                break;
                             }
                         }
                     }
@@ -1486,7 +1492,8 @@ async fn run_sub_node_loop(
                         Some(installer) => {
                             if let Err(error) = client.apply_cert(&push, installer.as_ref()).await {
                                 tracing::warn!(error = %error, "cluster cert install failed");
-                                return;
+                                status.update(|status| status.master_reachable = false);
+                                break;
                             }
                         }
                         None => tracing::warn!("cluster cert push ignored: no TLS resolver wired"),
@@ -1498,7 +1505,8 @@ async fn run_sub_node_loop(
                                     client.apply_auth_snapshot(&push, applier.as_ref()).await
                                 {
                                     tracing::warn!(error = %error, "cluster auth snapshot failed");
-                                    return;
+                                    status.update(|status| status.master_reachable = false);
+                                    break;
                                 }
                             }
                             None => {
@@ -1517,7 +1525,7 @@ async fn run_sub_node_loop(
                     Ok(StreamRecord::Error { error }) => {
                         tracing::warn!(code = %error.code, "cluster stream error");
                         status.update(|status| status.master_reachable = false);
-                        return;
+                        break;
                     }
                     Ok(_) => {}
                     Err(error) => {

@@ -188,7 +188,7 @@ impl ClusterBroadcast {
     /// unregisters itself. Called after a node is revoked so a compromised
     /// node stops receiving config, auth and certificate pushes immediately.
     pub fn disconnect(&self, node_id: &str) {
-        self.config_sync.unregister(node_id);
+        self.config_sync.remove(node_id);
     }
 }
 
@@ -635,7 +635,7 @@ async fn stream(
             snapshot,
         }));
     }
-    state
+    let generation = state
         .config_sync
         .register(&auth.0, last_applied_version, records);
 
@@ -681,7 +681,7 @@ async fn stream(
                 () = tx.closed() => break,
             }
         }
-        config_sync.unregister(&node_id);
+        config_sync.unregister(&node_id, generation);
     });
 
     let mut response = Body::from_stream(ReceiverStream::new(rx)).into_response();

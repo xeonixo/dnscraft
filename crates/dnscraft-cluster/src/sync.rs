@@ -335,9 +335,13 @@ pub struct ConfigSync {
 struct SyncState {
     current: Option<Arc<ConfigPush>>,
     nodes: HashMap<String, NodeSync>,
+    next_generation: u64,
 }
 
 struct NodeSync {
+    /// Per-registration identity, so a stale stream's `unregister` cannot
+    /// remove a newer registration for the same node.
+    generation: u64,
     tx: mpsc::Sender<StreamRecord>,
     pushed_version: i64,
     acked_version: i64,
@@ -435,6 +439,9 @@ impl ConfigSync {
 
     /// Registers a newly connected stream and reconciles its version.
     ///
+    /// Returns the registration's generation; pass it to [`Self::unregister`]
+    /// so a stale stream cannot remove a newer registration.
+    ///
     /// - master newer (or the node has none) → push the current snapshot;
     /// - equal → nothing;
     /// - sub-node newer → the master is authoritative and pushes its snapshot
@@ -444,11 +451,14 @@ impl ConfigSync {
         node_id: &str,
         last_applied_version: Option<i64>,
         tx: mpsc::Sender<StreamRecord>,
-    ) {
+    ) -> u64 {
         let now = self.clock.now();
         let mut state = self.lock();
         let applied = last_applied_version.unwrap_or(0);
+        let generation = state.next_generation;
+        state.next_generation = state.next_generation.wrapping_add(1);
         let mut node = NodeSync {
+            generation,
             tx,
             pushed_version: applied,
             acked_version: applied,
@@ -467,10 +477,30 @@ impl ConfigSync {
         state.nodes.insert(node_id.to_owned(), node);
         drop(state);
         self.wake.notify_one();
+        generation
     }
 
     /// Removes a disconnected stream; retries for it stop.
-    pub(crate) fn unregister(&self, node_id: &str) {
+    ///
+    /// A reconnecting node can register a new stream before the old one notices
+    /// the disconnect. The old stream must not then delete the new
+    /// registration, so the entry is removed only when its generation matches.
+    pub(crate) fn unregister(&self, node_id: &str, generation: u64) {
+        let mut state = self.lock();
+        if state
+            .nodes
+            .get(node_id)
+            .is_some_and(|node| node.generation == generation)
+        {
+            state.nodes.remove(node_id);
+        }
+    }
+
+    /// Forcibly removes a node's stream regardless of which registration it is.
+    ///
+    /// Used by the admin revoke path, which must terminate the node even if a
+    /// reconnect raced the revocation.
+    pub(crate) fn remove(&self, node_id: &str) {
         self.lock().nodes.remove(node_id);
     }
 
@@ -676,6 +706,30 @@ mod tests {
         assert_eq!(
             push.verify_digest().unwrap_err().code(),
             "cluster.config.apply"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stale_stream_unregister_keeps_the_newer_registration() {
+        let sync = ConfigSync {
+            clock: Arc::new(dnscraft_common::clock::ManualClock::new(
+                std::time::SystemTime::UNIX_EPOCH,
+            )),
+            state: Mutex::new(SyncState::default()),
+            wake: Notify::new(),
+        };
+        let (old_tx, _old_rx) = mpsc::channel(8);
+        let (new_tx, mut new_rx) = mpsc::channel(8);
+        let old_generation = sync.register("node-b", Some(0), old_tx);
+        sync.register("node-b", Some(0), new_tx);
+
+        // The old stream notices its disconnect after the reconnect registered.
+        sync.unregister("node-b", old_generation);
+        sync.publish(1, &json!({ "a": 1 })).unwrap();
+
+        assert!(
+            matches!(new_rx.try_recv(), Ok(StreamRecord::ConfigPush(_))),
+            "the live stream must keep receiving pushes"
         );
     }
 }

@@ -61,7 +61,9 @@ pub use config_apply::{ConfigActor, ConfigService, RollbackOutcome, SharedConfig
 pub use dnscraft_cluster::{ClusterStore, OfflineWriteQueue};
 pub use error::ControlApiError;
 #[doc(hidden)]
-pub use mcp_backend::{mcp_backend_for_test, mcp_backend_for_test_writes};
+pub use mcp_backend::{
+    mcp_backend_for_test, mcp_backend_for_test_writes, mcp_backend_for_test_writes_with_broadcast,
+};
 pub use modules::{
     ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyTls, ModuleAppliers,
     ModuleFuture,

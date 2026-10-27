@@ -13,8 +13,11 @@
 //! ambiguous acknowledgement is deduplicated by the master.
 //!
 //! Request bodies and actors are opaque: they are stored and forwarded
-//! verbatim, never logged. The HTTP status mapping (`202`/`400`/`503`) belongs
-//! to the caller; the queue only reports what happened.
+//! verbatim, never logged. Routes whose body carries credential material
+//! (currently `PUT /api/v1/tls`) are refused rather than queued, because the
+//! queue cannot redact a body without corrupting its replay. The HTTP status
+//! mapping (`202`/`400`/`503`) belongs to the caller; the queue only reports
+//! what happened.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -34,6 +37,17 @@ use crate::store::{ClusterStore, db_err, duration_seconds};
 
 /// The `409` code the master returns when `If-Match` is stale.
 const CONFIG_VERSION_CONFLICT: &str = "control_api.config.version";
+
+/// Write routes whose bodies carry credential material the queue must never
+/// persist. `PUT /api/v1/tls` embeds provider credentials (ACME, DNS,
+/// notification secrets); the queue stores bodies verbatim, so such a write is
+/// refused instead of stored in plaintext. Redacting it is not an option: the
+/// replayed body would then apply wrong credentials on the master.
+const SECRET_BEARING_PATHS: [&str; 1] = ["/api/v1/tls"];
+
+fn carries_secrets(method: &str, path: &str) -> bool {
+    method.eq_ignore_ascii_case("PUT") && SECRET_BEARING_PATHS.contains(&path.trim_end_matches('/'))
+}
 
 /// Lifecycle state of a buffered offline write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -106,7 +120,8 @@ pub enum EnqueueOutcome {
     Queued(QueuedWrite),
     /// Offline buffering is disabled; relay and report `cluster.master_unavailable`.
     Disabled,
-    /// Missing `Idempotency-Key` or `If-Match`.
+    /// Missing `Idempotency-Key` or `If-Match`, or a secret-bearing route that
+    /// must never be persisted (see [`SECRET_BEARING_PATHS`]).
     Rejected,
     /// `queue_max_entries` reached.
     Full,
@@ -213,6 +228,9 @@ impl OfflineWriteQueue {
             return Ok(EnqueueOutcome::Disabled);
         }
         if relay.idempotency_key.is_none() || relay.if_match.is_none() {
+            return Ok(EnqueueOutcome::Rejected);
+        }
+        if carries_secrets(&relay.method, &relay.path) {
             return Ok(EnqueueOutcome::Rejected);
         }
 
@@ -796,6 +814,24 @@ mod tests {
         assert_eq!(queued.state, OfflineWriteState::Pending);
         assert_eq!(queued.queued_at, NOW);
         assert_eq!(queued.expires_at, NOW + MAX_AGE.as_secs() as i64);
+    }
+
+    #[tokio::test]
+    async fn secret_bearing_tls_write_is_never_persisted() {
+        let (queue, _clock) = queue(10).await;
+        let mut write = relay("tls");
+        write.path = "/api/v1/tls".to_owned();
+        write.body = json!({
+            "dns_provider": { "api_token": "super-secret" },
+        });
+
+        assert_eq!(
+            queue.enqueue(write).await.unwrap(),
+            EnqueueOutcome::Rejected,
+            "a credential-bearing body must not enter the plaintext queue"
+        );
+        assert_eq!(queue.status().await.unwrap(), OfflineQueueStatus::default());
+        assert!(queue.get("tls").await.unwrap().is_none());
     }
 
     #[tokio::test]

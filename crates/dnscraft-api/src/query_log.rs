@@ -618,6 +618,7 @@ impl QueryLog {
                         reason: format!("invalid remote query-log record: {error}"),
                     }
                 })?;
+                row.validate()?;
                 let seq = first_seq.checked_add(offset as u64).ok_or_else(|| {
                     ControlApiError::QueryLogInvalid {
                         reason: "log sequence number overflow".to_owned(),
@@ -862,6 +863,79 @@ struct RemoteRow {
     rcode: String,
     #[serde(default = "empty_record")]
     record: Json,
+}
+
+/// Per-field limits for a streamed log row. A faulty or malicious node must
+/// not be able to bloat the master's database with oversized strings or a
+/// deeply padded record document.
+const MAX_REMOTE_ID: usize = 64;
+const MAX_REMOTE_QUERY_NAME: usize = 255;
+const MAX_REMOTE_LABEL: usize = 128;
+const MAX_REMOTE_RECORD_BYTES: usize = 64 * 1024;
+
+impl RemoteRow {
+    /// Rejects a row whose fields exceed the documented bounds or carry a
+    /// value outside the protocol's enums.
+    fn validate(&self) -> Result<(), ControlApiError> {
+        let invalid = |reason: &str| ControlApiError::QueryLogInvalid {
+            reason: reason.to_owned(),
+        };
+        if self.id.len() > MAX_REMOTE_ID {
+            return Err(invalid("remote log id is too long"));
+        }
+        if self.source_ip.parse::<IpAddr>().is_err() {
+            return Err(invalid("remote log source_ip is not an IP address"));
+        }
+        if self.query_name.len() > MAX_REMOTE_QUERY_NAME {
+            return Err(invalid("remote log query_name is too long"));
+        }
+        for (name, value) in [
+            ("listener_id", &self.listener_id),
+            ("query_type", &self.query_type),
+            ("query_class", &self.query_class),
+            ("view_id", &self.view_id),
+            ("profile_id", &self.profile_id),
+            ("answer_source", &self.answer_source),
+            ("rcode", &self.rcode),
+        ] {
+            if value.len() > MAX_REMOTE_LABEL {
+                return Err(invalid(&format!("remote log {name} is too long")));
+            }
+        }
+        if self
+            .client_id
+            .as_ref()
+            .is_some_and(|value| value.len() > MAX_REMOTE_LABEL)
+        {
+            return Err(invalid("remote log client_id is too long"));
+        }
+        if self
+            .client_name
+            .as_ref()
+            .is_some_and(|value| value.len() > MAX_REMOTE_LABEL)
+        {
+            return Err(invalid("remote log client_name is too long"));
+        }
+        if !matches!(
+            self.protocol.as_str(),
+            "udp53" | "tcp53" | "dot" | "doh" | "doq"
+        ) {
+            return Err(invalid("remote log protocol is not a known protocol"));
+        }
+        if !matches!(
+            self.status.as_str(),
+            "blocked" | "servfail" | "dnssec_bogus" | "allowed"
+        ) {
+            return Err(invalid("remote log status is not a known status"));
+        }
+        let record_size = serde_json::to_string(&self.record)
+            .map_err(|_| invalid("remote log record is not serializable"))?
+            .len();
+        if record_size > MAX_REMOTE_RECORD_BYTES {
+            return Err(invalid("remote log record is too large"));
+        }
+        Ok(())
+    }
 }
 
 fn empty_record() -> Json {

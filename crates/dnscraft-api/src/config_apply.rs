@@ -277,6 +277,13 @@ impl ConfigService {
     ) -> Result<i64, ControlApiError> {
         let _guard = self.apply_lock.lock().await;
         let previous_version = self.store.current().await?;
+        // A lost ack makes the master redeliver the same version after the
+        // sub-node has already stored it. Re-inserting would hit the
+        // `config_versions` primary key; the snapshot is already applied, so
+        // the redelivery is a successful no-op.
+        if previous_version == Some(version) {
+            return Ok(version);
+        }
         let previous = match previous_version {
             Some(previous) => self.store.load(previous).await?,
             None => None,
@@ -1395,6 +1402,40 @@ mod tests {
         assert_eq!(rows[0].node_id, "node-b");
         assert_eq!(rows[0].config_version, Some(8));
         assert_eq!(rows[0].result, "ok");
+    }
+
+    #[tokio::test]
+    async fn apply_synced_config_is_idempotent_for_an_already_stored_version() {
+        let clock = Arc::new(ManualClock::new(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        ));
+        let db = Db::open_in_memory(clock).await.unwrap();
+        let service = ConfigService::new(
+            ConfigStore::new(db.clone()),
+            Audit::new(db.clone()),
+            ModuleAppliers::default(),
+            "node-b",
+        );
+        let snapshot = synced_snapshot("v7", false);
+
+        assert_eq!(
+            service
+                .apply_synced_config(snapshot.clone(), 7)
+                .await
+                .unwrap(),
+            7
+        );
+        // The master redelivers the same version after a lost ack: no PK
+        // conflict, no second audit row, same current snapshot.
+        assert_eq!(
+            service
+                .apply_synced_config(snapshot.clone(), 7)
+                .await
+                .unwrap(),
+            7
+        );
+        assert_eq!(service.current().await.unwrap(), (Some(7), Some(snapshot)));
+        assert_eq!(db.audit_list(10, 0).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

@@ -2,8 +2,8 @@
 //! the control-api services and module engines.
 
 use std::net::IpAddr;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -39,6 +39,12 @@ use crate::server::AppState;
 use crate::stats::TopBy;
 use crate::tls::TlsStatusProvider;
 
+/// Master broadcast handle shared with [`AppState`](crate::AppState).
+///
+/// Starts empty: a standalone node or sub-node never attaches a handle, and
+/// every broadcast is then a no-op.
+pub(crate) type SharedClusterBroadcast = Arc<Mutex<Option<dnscraft_cluster::ClusterBroadcast>>>;
+
 /// Service handles the MCP backend needs.
 #[derive(Clone)]
 pub(crate) struct McpBackendInner {
@@ -58,6 +64,30 @@ pub(crate) struct McpBackendInner {
     pub mcp_config: dnscraft_mcp::McpConfig,
     /// OIDC issuer URL whose host is protected, when OIDC is enabled.
     pub oidc_issuer: Option<String>,
+    /// Master broadcast handle; `None` on a standalone or sub-node runtime.
+    pub cluster_broadcast: SharedClusterBroadcast,
+}
+
+impl McpBackendInner {
+    /// Attaches (or replaces) the master broadcast handle.
+    pub(crate) fn attach_cluster_broadcast(&self, broadcast: dnscraft_cluster::ClusterBroadcast) {
+        *self
+            .cluster_broadcast
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(broadcast);
+    }
+
+    /// Pushes a volatile runtime command to connected sub-nodes, if master.
+    fn broadcast_runtime_command(&self, kind: &str, payload: &Value) {
+        let broadcast = self
+            .cluster_broadcast
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(broadcast) = broadcast {
+            broadcast.broadcast_runtime_command(kind, payload);
+        }
+    }
 }
 
 pub(crate) struct ControlMcpBackend {
@@ -141,6 +171,7 @@ pub fn mcp_backend_for_test(query_log: Option<Arc<QueryLog>>) -> Arc<dyn McpBack
         start_time: std::time::Instant::now(),
         mcp_config: dnscraft_mcp::McpConfig::default(),
         oidc_issuer: None,
+        cluster_broadcast: Arc::new(Mutex::new(None)),
     })))
 }
 
@@ -164,6 +195,36 @@ pub fn mcp_backend_for_test_writes(
     mcp_config: dnscraft_mcp::McpConfig,
     oidc_issuer: Option<String>,
 ) -> Arc<dyn McpBackend> {
+    mcp_backend_for_test_writes_with_broadcast(
+        filter,
+        policy,
+        query_log,
+        config,
+        audit,
+        tokens,
+        clock,
+        mcp_config,
+        oidc_issuer,
+        Arc::new(Mutex::new(None)),
+    )
+}
+
+/// [`mcp_backend_for_test_writes`] sharing a caller-supplied broadcast handle,
+/// so a test master can attach its [`ClusterBroadcast`](dnscraft_cluster::ClusterBroadcast).
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn mcp_backend_for_test_writes_with_broadcast(
+    filter: Arc<FilterEngine>,
+    policy: Option<Arc<dnscraft_policy::PolicyEngine>>,
+    query_log: Option<Arc<QueryLog>>,
+    config: Arc<ConfigService>,
+    audit: Option<Arc<Audit>>,
+    tokens: Option<crate::api::auth::TokenStore>,
+    clock: Arc<dyn Clock>,
+    mcp_config: dnscraft_mcp::McpConfig,
+    oidc_issuer: Option<String>,
+    cluster_broadcast: Arc<Mutex<Option<dnscraft_cluster::ClusterBroadcast>>>,
+) -> Arc<dyn McpBackend> {
     Arc::new(ControlMcpBackend::new(Arc::new(McpBackendInner {
         policy,
         filter: Some(filter),
@@ -179,6 +240,7 @@ pub fn mcp_backend_for_test_writes(
         start_time: std::time::Instant::now(),
         mcp_config,
         oidc_issuer,
+        cluster_broadcast,
     })))
 }
 
@@ -1410,7 +1472,7 @@ impl McpBackend for ControlMcpBackend {
         let now = self.inner.clock.now();
         let until = now + duration_secs(params.duration);
         let rule = TempAllow {
-            domain,
+            domain: domain.clone(),
             include_subdomains: params.include_subdomains,
             until,
             created_at: now,
@@ -1418,6 +1480,15 @@ impl McpBackend for ControlMcpBackend {
         filter
             .allow_temporarily(&set, rule)
             .map_err(|err| backend_error(engine_error(err, set.as_str())))?;
+        self.inner.broadcast_runtime_command(
+            "temporary_allow",
+            &json!({
+                "filter_set_id": set.as_str(),
+                "domain": domain.as_str(),
+                "include_subdomains": params.include_subdomains,
+                "expires_at": rfc3339(until),
+            }),
+        );
         Ok(TempAllowResult {
             created_at: rfc3339(now),
             expires_at: rfc3339(until),
@@ -1643,6 +1714,13 @@ impl McpBackend for ControlMcpBackend {
         self.filter_engine()?
             .set_paused_until(&set, Some(until))
             .map_err(|err| backend_error(engine_error(err, set.as_str())))?;
+        self.inner.broadcast_runtime_command(
+            "pause",
+            &json!({
+                "filter_set_id": set.as_str(),
+                "expires_at": rfc3339(until),
+            }),
+        );
         Ok(PauseResult {
             filter_set_id: set.as_str().to_owned(),
             paused_until: rfc3339(until),
@@ -1659,6 +1737,8 @@ impl McpBackend for ControlMcpBackend {
         filter
             .set_paused_until(&set, None)
             .map_err(|err| backend_error(engine_error(err, set.as_str())))?;
+        self.inner
+            .broadcast_runtime_command("resume", &json!({ "filter_set_id": set.as_str() }));
         Ok(ResumeResult {
             filter_set_id: set.as_str().to_owned(),
             resumed: was.is_some(),
