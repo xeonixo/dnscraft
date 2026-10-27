@@ -30,6 +30,7 @@ use crate::dto::{
     TestQueryParams, TestQueryResult, TopClient, TopDomain,
 };
 use crate::error::McpError;
+use crate::protected::canonicalize;
 use crate::result::{tool_error, tool_ok};
 use crate::sanitize::{CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_RULE_TEXT, SafeText};
 
@@ -386,28 +387,6 @@ fn parse_time(value: &str) -> Result<OffsetDateTime, CallToolResult> {
     OffsetDateTime::parse(value, &Rfc3339).map_err(|_| invalid_input("timestamps must be RFC 3339"))
 }
 
-/// Validate and canonicalise a DNS name (trimmed of one trailing dot,
-/// lowercased, ASCII labels only).
-fn canonical_domain(input: &str) -> Result<String, CallToolResult> {
-    let name = input.strip_suffix('.').unwrap_or(input);
-    let valid = !name.is_empty()
-        && name.len() <= 253
-        && name.is_ascii()
-        && name.split('.').all(|label| {
-            !label.is_empty()
-                && label.len() <= 63
-                && !label.starts_with('-')
-                && !label.ends_with('-')
-                && label
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        });
-    if !valid {
-        return Err(invalid_input("invalid domain"));
-    }
-    Ok(name.to_ascii_lowercase())
-}
-
 fn canonical_uuid(input: &str) -> Result<String, CallToolResult> {
     let bytes = input.as_bytes();
     let valid = bytes.len() == 36
@@ -445,7 +424,9 @@ impl SearchArgs {
     fn into_params(self) -> Result<QueryLogSearch, CallToolResult> {
         check_time_range(self.from.as_deref(), self.to.as_deref())?;
         let domain = match self.domain {
-            Some(domain) => Some(canonical_domain(&domain)?),
+            Some(domain) => {
+                Some(canonicalize(&domain).map_err(|_| invalid_input("invalid domain"))?)
+            }
             None => None,
         };
         Ok(QueryLogSearch {
@@ -503,7 +484,7 @@ impl ExplainArgs {
             ));
         }
         Ok(ExplainParams {
-            domain: canonical_domain(&self.domain)?,
+            domain: canonicalize(&self.domain).map_err(|_| invalid_input("invalid domain"))?,
             profile_id: self.profile_id,
             qtype,
         })
@@ -522,7 +503,7 @@ struct TestQueryArgs {
 
 impl TestQueryArgs {
     fn validate(self) -> Result<TestQueryParams, CallToolResult> {
-        let domain = canonical_domain(&self.domain)?;
+        let domain = canonicalize(&self.domain).map_err(|_| invalid_input("invalid domain"))?;
         let source_ip = match self.source_ip {
             Some(ref value) => Some(
                 value

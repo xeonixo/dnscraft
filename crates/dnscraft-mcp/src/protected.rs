@@ -116,7 +116,9 @@ pub(crate) fn canonicalize(raw: &str) -> Result<String, &'static str> {
             || label.len() > 63
             || label.starts_with('-')
             || label.ends_with('-')
-            || !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            || !label
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
             return Err("domain has an invalid label");
         }
@@ -199,6 +201,14 @@ mod tests {
             );
         }
         assert_eq!(list.entries(), ["xn--bcher-kva.example"]);
+    }
+
+    #[test]
+    fn canonicalisation_accepts_underscore_labels() {
+        assert_eq!(
+            canonicalize("_dmarc.Example.COM."),
+            Ok("_dmarc.example.com".into())
+        );
     }
 
     #[test]

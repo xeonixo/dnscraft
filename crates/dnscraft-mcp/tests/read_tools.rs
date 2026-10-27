@@ -392,7 +392,7 @@ async fn explain_block_schema_rejects_invalid_arguments() {
         json!({ "domain": "example..com" }),
         json!({ "domain": "exa\u{0000}mple.com" }),
         json!({ "domain": too_long }),
-        json!({ "domain": "exämple.com" }),
+        json!({ "domain": "exa\u{FFFD}mple.com" }),
         json!({ "domain": "example.com", "qtype": "HTTPS" }),
         json!({ "domain": "example.com", "qtype": "a" }),
         json!({ "domain": "example.com", "profile_id": 5 }),

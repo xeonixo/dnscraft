@@ -55,6 +55,10 @@ fn sorted(names: &[&str]) -> Vec<String> {
 }
 
 async fn assert_invalid_input(server: &TestServer, name: &str, arguments: Value) {
+    assert_error_code(server, name, arguments, "mcp.invalid_input").await;
+}
+
+async fn assert_error_code(server: &TestServer, name: &str, arguments: Value, code: &str) {
     let body = call(server, name, arguments.clone()).await;
     assert_eq!(
         body["result"]["isError"], true,
@@ -62,7 +66,7 @@ async fn assert_invalid_input(server: &TestServer, name: &str, arguments: Value)
     );
     assert_eq!(
         harness::error_code(&body),
-        "mcp.invalid_input",
+        code,
         "{name} {arguments}: {body}"
     );
 }
@@ -85,7 +89,7 @@ async fn allow_temporarily_schema_rejects_invalid_arguments() {
         json!({ "domain": "bad domain", "duration": "PT5M" }),
         json!({ "domain": "*.example.com", "duration": "PT5M" }),
         json!({ "domain": "192.0.2.1", "duration": "PT5M" }),
-        json!({ "domain": "com", "duration": "PT5M" }),
+        json!({ "domain": "-com", "duration": "PT5M" }),
         json!({ "domain": "example.com$dnsrewrite=NOERROR;A;192.0.2.1", "duration": "PT5M" }),
         json!({ "domain": "||ads.example^", "duration": "PT5M" }),
         json!({ "domain": "example.com/path", "duration": "PT5M" }),
@@ -94,6 +98,13 @@ async fn allow_temporarily_schema_rejects_invalid_arguments() {
     ] {
         assert_invalid_input(&server, "allow_temporarily", arguments).await;
     }
+    assert_error_code(
+        &server,
+        "allow_temporarily",
+        json!({ "domain": "com", "duration": "PT5M" }),
+        "mcp.domain_too_broad",
+    )
+    .await;
     assert_eq!(
         server.backend.allow_calls(),
         0,
@@ -306,7 +317,7 @@ async fn allow_temporarily_backend_failure_is_audited() {
 }
 
 #[tokio::test]
-async fn allow_temporarily_audit_failure_does_not_change_the_result() {
+async fn allow_temporarily_audit_failure_is_reported_after_committed_mutation() {
     let server = spawn(write_config()).await;
     server.backend.set_allow(Ok(TempAllowResult {
         created_at: "2026-10-26T10:30:00Z".into(),
@@ -323,8 +334,14 @@ async fn allow_temporarily_audit_failure_does_not_change_the_result() {
         json!({ "domain": "example.com", "duration": "PT5M" }),
     )
     .await;
-    assert_eq!(body["result"]["isError"], false, "{body}");
-    assert_eq!(harness::tool_output(&body)["domain"], "example.com");
+    assert_eq!(body["result"]["isError"], true, "{body}");
+    assert_eq!(harness::error_code(&body), "mcp.audit_failed", "{body}");
+    assert_eq!(
+        body["result"]["structuredContent"]["error"]["params"]["action"], "mcp.allow_temporarily",
+        "{body}"
+    );
+    // The mutation was committed and is never rolled back.
+    assert_eq!(server.backend.allow_calls(), 1);
 }
 
 #[tokio::test]
@@ -494,7 +511,7 @@ async fn add_rule_schema_rejects_client_fields_and_injection() {
         json!({ "domain": "example.com$dnsrewrite=NOERROR;A;192.0.2.1" }),
         json!({ "domain": "||ads.example^" }),
         json!({ "domain": "*.example.com" }),
-        json!({ "domain": "com" }),
+        json!({ "domain": "-com" }),
         json!({ "domain": "192.0.2.1" }),
         json!({ "domain": "example.com/path" }),
         json!({ "domain": "bad domain" }),
@@ -503,6 +520,13 @@ async fn add_rule_schema_rejects_client_fields_and_injection() {
     ] {
         assert_invalid_input(&server, "add_rule", arguments).await;
     }
+    assert_error_code(
+        &server,
+        "add_rule",
+        json!({ "domain": "com" }),
+        "mcp.domain_too_broad",
+    )
+    .await;
     assert_eq!(server.backend.add_calls(), 0);
 }
 
@@ -649,11 +673,18 @@ async fn remove_rule_schema_rejects_client_fields_and_injection() {
         json!({ "domain": "example.com$dnsrewrite=NOERROR;A;192.0.2.1" }),
         json!({ "domain": "||ads.example^" }),
         json!({ "domain": "*.example.com" }),
-        json!({ "domain": "com" }),
         json!({ "domain": "192.0.2.1" }),
+        json!({ "domain": "example.com/path" }),
     ] {
         assert_invalid_input(&server, "remove_rule", arguments).await;
     }
+    assert_error_code(
+        &server,
+        "remove_rule",
+        json!({ "domain": "com" }),
+        "mcp.domain_too_broad",
+    )
+    .await;
     assert_eq!(server.backend.find_calls(), 0);
 }
 

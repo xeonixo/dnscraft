@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 
 const VERSION: &str = "2026-07-28";
 const TOKEN: &str = "raw-secret-token-never-log";
+const TOKEN_B: &str = "second-secret-token-never-log";
 
 fn install_crypto() {
     static ONCE: Once = Once::new();
@@ -354,6 +355,21 @@ async fn wait_for_status_calls(server: &TestServer, expected: usize) {
     .expect("backend call should start");
 }
 
+/// Release every gated `get_status` until none is still running.
+///
+/// `Notify` stores at most one permit, so wake in a loop rather than counting
+/// notifications.
+async fn release_all(server: &TestServer) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while server.backend.active_status_calls() > 0 {
+            server.backend.release_status();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("gated backend calls should complete");
+}
+
 #[tokio::test]
 async fn in_flight_cap_rejects_n_plus_one_and_releases_on_completion() {
     let server = spawn(capped_config(), Ok(support::write_token())).await;
@@ -480,6 +496,82 @@ async fn in_flight_slot_is_released_on_client_disconnect() {
     gate.notify_one();
     let (status, body) = tool_call(&client, &server.url, TOKEN, 2, "get_status").await;
     assert_eq!(status, 200, "{body}");
+}
+
+#[tokio::test]
+async fn in_flight_cap_is_per_token() {
+    let server = spawn(capped_config(), Ok(support::write_token())).await;
+    let gate = Arc::new(tokio::sync::Notify::new());
+    server.backend.delay_status_until(Arc::clone(&gate));
+    let client = reqwest::Client::new();
+
+    // A second token with the same cap and a distinct token id.
+    server.backend.set_token_for(
+        TOKEN_B,
+        TokenInfo {
+            token_id: "tok-b".into(),
+            scope: support::write_token().scope,
+            actor_id: "actor-b".into(),
+        },
+    );
+
+    // Token A's first request occupies A's only slot.
+    let url = server.url.clone();
+    let slow_client = client.clone();
+    let slow_a =
+        tokio::spawn(async move { tool_call(&slow_client, &url, TOKEN, 1, "get_status").await });
+    wait_for_status_calls(&server, 1).await;
+
+    // Token B is admitted on its own cap while A is at its limit.
+    let url = server.url.clone();
+    let slow_client = client.clone();
+    let slow_b =
+        tokio::spawn(async move { tool_call(&slow_client, &url, TOKEN_B, 2, "get_status").await });
+    wait_for_status_calls(&server, 2).await;
+
+    // Token A's second request exceeds A's cap.
+    let (status, body) = tool_call(&client, &server.url, TOKEN, 3, "get_status").await;
+    assert_eq!(status, 429, "token A's second request is rejected: {body}");
+    assert_eq!(body["error"]["code"], "control_api.rate_limited");
+    assert_eq!(body["error"]["params"]["limit"], 1);
+
+    // Both admitted requests finish normally.
+    release_all(&server).await;
+    let (first_status, first_body) = slow_a.await.unwrap();
+    assert_eq!(first_status, 200, "{first_body}");
+    let (second_status, second_body) = slow_b.await.unwrap();
+    assert_eq!(second_status, 200, "{second_body}");
+    assert_eq!(second_body["result"]["isError"], false);
+}
+
+#[tokio::test]
+async fn default_in_flight_cap_admits_five_and_rejects_the_sixth() {
+    let server = spawn(McpConfig::default(), Ok(support::write_token())).await;
+    let gate = Arc::new(tokio::sync::Notify::new());
+    server.backend.delay_status_until(Arc::clone(&gate));
+    let client = reqwest::Client::new();
+
+    let mut slow = Vec::new();
+    for id in 1..=5 {
+        let url = server.url.clone();
+        let slow_client = client.clone();
+        slow.push(tokio::spawn(async move {
+            tool_call(&slow_client, &url, TOKEN, id, "get_status").await
+        }));
+    }
+    wait_for_status_calls(&server, 5).await;
+
+    let (status, body) = tool_call(&client, &server.url, TOKEN, 6, "get_status").await;
+    assert_eq!(status, 429, "the sixth request is rejected: {body}");
+    assert_eq!(body["error"]["code"], "control_api.rate_limited");
+    assert_eq!(body["error"]["params"]["limit"], 5);
+
+    release_all(&server).await;
+    for request in slow {
+        let (status, body) = request.await.unwrap();
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["result"]["isError"], false);
+    }
 }
 
 #[tokio::test]

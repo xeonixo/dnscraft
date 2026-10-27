@@ -5,6 +5,7 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -65,6 +66,8 @@ fn paginate<T: Clone>(items: &[T], offset: u32, limit: u32) -> Page<T> {
 pub struct MockBackend {
     status: Mutex<Option<Result<NodeStatus, BackendError>>>,
     token: Mutex<Option<Result<TokenInfo, BackendError>>>,
+    /// Per-secret results keyed by the raw bearer token, checked first.
+    tokens_by_secret: Mutex<HashMap<String, TokenInfo>>,
     status_delay: Mutex<Option<Arc<Notify>>>,
     /// Number of `get_status` calls started.
     pub status_calls: AtomicUsize,
@@ -165,6 +168,18 @@ impl MockBackend {
     pub fn set_token(&self, value: Result<TokenInfo, BackendError>) {
         if let Ok(mut slot) = self.token.lock() {
             *slot = Some(value);
+        }
+    }
+
+    /// Answer `validate_token` for one raw bearer secret.
+    pub fn set_token_for(&self, secret: &str, info: TokenInfo) {
+        slot(&self.tokens_by_secret).insert(secret.to_owned(), info);
+    }
+
+    /// Wake one waiting `get_status` (a `Notify` stores at most one permit).
+    pub fn release_status(&self) {
+        if let Some(gate) = self.delay() {
+            gate.notify_one();
         }
     }
 
@@ -418,8 +433,11 @@ impl MockBackend {
 
 #[async_trait::async_trait]
 impl McpBackend for MockBackend {
-    async fn validate_token(&self, _token: &str) -> Result<TokenInfo, BackendError> {
+    async fn validate_token(&self, token: &str) -> Result<TokenInfo, BackendError> {
         self.token_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(info) = slot(&self.tokens_by_secret).get(token) {
+            return Ok(info.clone());
+        }
         self.token_result()
     }
 

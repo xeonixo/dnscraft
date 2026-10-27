@@ -3,8 +3,10 @@
 //! All five tools share one check order (gate, scope, schema, backend call,
 //! audit); duration maxima and protected domains are checked where they apply.
 //! Failures that know their arguments are audited with `result: "error"` and
-//! the stable code; a failed audit write is logged and never replaces the tool
-//! result.
+//! the stable code; a failed audit write in an error path is logged and never
+//! replaces the tool result. A failed audit write after a committed mutation
+//! is logged and reported to the caller as `mcp.audit_failed`, because the
+//! mutation happened but has no audit record.
 //!
 //! Strings from the assistant (`reason`) and from the backend are untrusted
 //! and leave through [`SafeText`]. Tool descriptions are static.
@@ -264,7 +266,7 @@ async fn allow_temporarily(
             filter_set_id.as_deref(),
             &reason,
         );
-        record(
+        let _ = record(
             server,
             token,
             "mcp.allow_temporarily",
@@ -285,7 +287,7 @@ async fn allow_temporarily(
             filter_set_id.as_deref(),
             &reason,
         );
-        record(
+        let _ = record(
             server,
             token,
             "mcp.allow_temporarily",
@@ -315,7 +317,7 @@ async fn allow_temporarily(
                 "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
                 "reason": reason,
             });
-            record(
+            if record(
                 server,
                 token,
                 "mcp.allow_temporarily",
@@ -324,7 +326,11 @@ async fn allow_temporarily(
                 AuditResult::Success,
                 None,
             )
-            .await;
+            .await
+            .is_err()
+            {
+                return audit_failed("mcp.allow_temporarily");
+            }
             tool_ok(json!({
                 "domain": SafeText::new(&domain, CAP_DOMAIN),
                 "include_subdomains": include_subdomains,
@@ -343,7 +349,7 @@ async fn allow_temporarily(
                 filter_set_id.as_deref(),
                 &reason,
             );
-            record(
+            let _ = record(
                 server,
                 token,
                 "mcp.allow_temporarily",
@@ -391,7 +397,7 @@ async fn add_rule(
             filter_set_id.as_deref(),
             &reason,
         );
-        record(
+        let _ = record(
             server,
             token,
             "mcp.add_rule",
@@ -422,7 +428,7 @@ async fn add_rule(
                 "expires_at": SafeText::new(&result.expires_at, CAP_CLIENT_NAME),
                 "config_version": result.config_version,
             });
-            record(
+            if record(
                 server,
                 token,
                 "mcp.add_rule",
@@ -431,7 +437,11 @@ async fn add_rule(
                 AuditResult::Success,
                 None,
             )
-            .await;
+            .await
+            .is_err()
+            {
+                return audit_failed("mcp.add_rule");
+            }
             tool_ok(json!({
                 "rule_text": SafeText::new(&result.rule_text, CAP_RULE_TEXT),
                 "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
@@ -450,7 +460,7 @@ async fn add_rule(
                 filter_set_id.as_deref(),
                 &reason,
             );
-            record(
+            let _ = record(
                 server,
                 token,
                 "mcp.add_rule",
@@ -514,7 +524,7 @@ async fn remove_rule(
         Err(error) => {
             let code = error.code().to_owned();
             let params = error.params().unwrap_or_else(|| json!({}));
-            record(
+            let _ = record(
                 server,
                 token,
                 "mcp.remove_rule",
@@ -531,7 +541,7 @@ async fn remove_rule(
     if let Some(rule) = &found
         && let Err(error) = protected_violation(server, &domain, rule.include_subdomains)
     {
-        record(
+        let _ = record(
             server,
             token,
             "mcp.remove_rule",
@@ -551,7 +561,7 @@ async fn remove_rule(
             "removed": false,
             "config_version": Value::Null,
         });
-        record(
+        if record(
             server,
             token,
             "mcp.remove_rule",
@@ -560,7 +570,11 @@ async fn remove_rule(
             AuditResult::Success,
             None,
         )
-        .await;
+        .await
+        .is_err()
+        {
+            return audit_failed("mcp.remove_rule");
+        }
         return tool_ok(json!({ "removed": false }));
     };
 
@@ -577,7 +591,7 @@ async fn remove_rule(
                 "config_version": result.config_version,
                 "rule_id": SafeText::new(&rule.id, CAP_LIST_ID),
             });
-            record(
+            if record(
                 server,
                 token,
                 "mcp.remove_rule",
@@ -586,7 +600,11 @@ async fn remove_rule(
                 AuditResult::Success,
                 None,
             )
-            .await;
+            .await
+            .is_err()
+            {
+                return audit_failed("mcp.remove_rule");
+            }
             if result.removed {
                 tool_ok(json!({
                     "removed": true,
@@ -600,7 +618,7 @@ async fn remove_rule(
         Err(error) => {
             let code = error.code().to_owned();
             let params = error.params().unwrap_or_else(|| json!({}));
-            record(
+            let _ = record(
                 server,
                 token,
                 "mcp.remove_rule",
@@ -635,7 +653,7 @@ async fn pause_filter_set(
 
     if let Some(error) = duration_error(args.duration, server.config.max_pause_duration) {
         let after = pause_failure_after(filter_set_id.as_deref(), args.duration);
-        record(
+        let _ = record(
             server,
             token,
             "mcp.pause_filter_set",
@@ -658,7 +676,7 @@ async fn pause_filter_set(
                 "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
                 "paused_until": SafeText::new(&result.paused_until, CAP_CLIENT_NAME),
             });
-            record(
+            if record(
                 server,
                 token,
                 "mcp.pause_filter_set",
@@ -667,7 +685,11 @@ async fn pause_filter_set(
                 AuditResult::Success,
                 None,
             )
-            .await;
+            .await
+            .is_err()
+            {
+                return audit_failed("mcp.pause_filter_set");
+            }
             tool_ok(json!({
                 "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
                 "paused_until": SafeText::new(&result.paused_until, CAP_CLIENT_NAME),
@@ -677,7 +699,7 @@ async fn pause_filter_set(
             let code = error.code().to_owned();
             let params = error.params().unwrap_or_else(|| json!({}));
             let after = pause_failure_after(filter_set_id.as_deref(), args.duration);
-            record(
+            let _ = record(
                 server,
                 token,
                 "mcp.pause_filter_set",
@@ -733,7 +755,7 @@ async fn resume_filter_set(
                     .as_deref()
                     .map(|until| SafeText::new(until, CAP_CLIENT_NAME)),
             });
-            record(
+            if record(
                 server,
                 token,
                 "mcp.resume_filter_set",
@@ -742,7 +764,11 @@ async fn resume_filter_set(
                 AuditResult::Success,
                 None,
             )
-            .await;
+            .await
+            .is_err()
+            {
+                return audit_failed("mcp.resume_filter_set");
+            }
             tool_ok(json!({
                 "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
                 "resumed": result.resumed,
@@ -757,7 +783,7 @@ async fn resume_filter_set(
                     .map(|id| SafeText::new(id, CAP_LIST_ID)),
                 "was_paused_until": Value::Null,
             });
-            record(
+            let _ = record(
                 server,
                 token,
                 "mcp.resume_filter_set",
@@ -802,7 +828,13 @@ fn validate_domain(raw: &str) -> Result<String, CallToolResult> {
         return Err(invalid_input("IP addresses are not allowed"));
     }
     if !canonical.contains('.') {
-        return Err(invalid_input("single-label domains are not allowed"));
+        return Err(tool_error(
+            McpError::DomainTooBroad {
+                domain: canonical.clone(),
+            }
+            .code(),
+            json!({ "domain": canonical }),
+        ));
     }
     Ok(canonical)
 }
@@ -847,7 +879,8 @@ fn protected_violation(
     }
 }
 
-/// Best-effort audit write; a failure is logged and never replaces the result.
+/// Audit write; a failure is logged and returned so a post-mutation success
+/// path can surface the missing audit record as `mcp.audit_failed`.
 async fn record(
     server: &McpServer,
     token: &TokenInfo,
@@ -856,7 +889,7 @@ async fn record(
     after: Option<Value>,
     result: AuditResult,
     error_code: Option<&str>,
-) {
+) -> Result<(), ()> {
     let entry = AuditEntry {
         action: action.to_owned(),
         actor_id: token.token_id.clone(),
@@ -866,6 +899,17 @@ async fn record(
         error_code: error_code.map(str::to_owned),
     };
     if let Err(error) = server.backend.record_audit(entry).await {
-        tracing::warn!(action, code = error.code(), "audit write failed");
+        tracing::error!(
+            action,
+            code = error.code(),
+            "audit write failed — mutation was committed without an audit record"
+        );
+        return Err(());
     }
+    Ok(())
+}
+
+/// Report a committed mutation whose audit write failed.
+fn audit_failed(action: &str) -> CallToolResult {
+    tool_error("mcp.audit_failed", json!({ "action": action }))
 }
