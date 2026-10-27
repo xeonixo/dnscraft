@@ -11,6 +11,7 @@ publish = false
 workspace = true
 
 [dependencies]
+dnscraft-common = { path = "../dnscraft-common" }
 dnscraft-proto = { path = "../dnscraft-proto" }
 dnscraft-resolver = { path = "../dnscraft-resolver" }
 dnscraft-filtering = { path = "../dnscraft-filtering" }

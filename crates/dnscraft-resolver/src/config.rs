@@ -148,6 +148,7 @@ pub struct ResolverConfig {
     /// Root server addresses used for priming and as fallback.
     pub root_hints: Vec<SocketAddr>,
     /// How long to wait for one answer from one server.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub query_timeout: Duration,
     /// Maximum number of referrals followed for one lookup.
     pub max_referral_depth: u8,
@@ -184,6 +185,7 @@ pub struct ResolverConfig {
     /// How long after an entry expires it may still be served when no
     /// authoritative server can be reached (RFC 8767). [`Duration::ZERO`]
     /// disables serve-stale. Default: one day.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub serve_stale: Duration,
     /// Refresh popular cache entries shortly before they expire, without
     /// making the client wait. Default on.
@@ -204,6 +206,7 @@ pub struct ResolverConfig {
     pub cache_capacity_bytes: Option<u64>,
     /// How long IPv6 name servers are deprioritised after an IPv6 send failed
     /// with network-unreachable.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub ipv6_cooldown: Duration,
     /// Send queries over IPv6 as well as IPv4. When off, IPv6 addresses are
     /// never contacted (no IPv6 glue, AAAA name server lookups are skipped,
@@ -233,12 +236,14 @@ pub struct ResolverConfig {
     /// How often the root server set is refreshed by priming again
     /// (RFC 8109), checked when a resolution starts. [`Duration::ZERO`]
     /// primes only once at start-up. Default: 24 hours.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub root_reprime_interval: Duration,
     /// Upper bound on the time of one upstream resolution (everything from
     /// the first query to the final answer, including nested lookups and
     /// validation). On expiry the question fails like an unreachable zone
     /// (SERVFAIL; serve-stale may apply). Must be greater than zero.
     /// Default: 10 seconds.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub resolve_deadline: Duration,
 }
 
@@ -345,6 +350,23 @@ mod tests {
         assert_eq!(config.root_reprime_interval, Duration::from_secs(86_400));
         assert_eq!(config.resolve_deadline, Duration::from_secs(10));
         assert!(config.outgoing_ipv6);
+    }
+
+    #[test]
+    fn duration_fields_use_human_strings() {
+        let mut value = serde_json::to_value(ResolverConfig::default()).unwrap();
+        value["query_timeout"] = "90s".into();
+        value["serve_stale"] = "1d".into();
+        let config: ResolverConfig = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(config.query_timeout, Duration::from_secs(90));
+        assert_eq!(config.serve_stale, Duration::from_secs(86_400));
+
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["query_timeout"], "90s");
+        assert_eq!(json["serve_stale"], "1d");
+
+        value["serve_stale"] = "1x".into();
+        assert!(serde_json::from_value::<ResolverConfig>(value).is_err());
     }
 
     #[test]

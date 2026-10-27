@@ -165,10 +165,13 @@ pub struct Limits {
     /// EDNS UDP payload maximum advertised and enforced.
     pub udp_payload_max: u16,
     /// Per-query deadline.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub query_timeout: Duration,
     /// TCP / DoT idle timeout.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub tcp_idle_timeout: Duration,
     /// TLS handshake timeout.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub tls_handshake_timeout: Duration,
     /// Max concurrent in-flight queries per listener.
     pub max_inflight_per_listener: u32,
@@ -299,8 +302,10 @@ pub struct PublicConfig {
     /// Strikes within [`Self::ban_window`] before a ban.
     pub ban_strikes: u32,
     /// Sliding window for ban strikes.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub ban_window: Duration,
     /// How long a ban lasts.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub ban_duration: Duration,
     /// LRU cap for rate buckets and the ban table.
     pub max_tracked_sources: u32,
@@ -551,7 +556,31 @@ mod tests {
         };
 
         let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"query_timeout\":\"5s\""), "{json}");
+        assert!(json.contains("\"ban_window\":\"30s\""), "{json}");
+        assert!(json.contains("\"ban_duration\":\"10m\""), "{json}");
         let decoded: ListenersConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, cfg);
+    }
+
+    #[test]
+    fn duration_fields_parse_human_strings() {
+        let mut value = serde_json::to_value(Limits::default()).unwrap();
+        value["query_timeout"] = "1d".into();
+        value["tls_handshake_timeout"] = "90s".into();
+        let limits: Limits = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(limits.query_timeout, Duration::from_secs(86_400));
+        assert_eq!(limits.tls_handshake_timeout, Duration::from_secs(90));
+        value["query_timeout"] = "1x".into();
+        assert!(serde_json::from_value::<Limits>(value).is_err());
+
+        let mut value = serde_json::to_value(PublicConfig::default()).unwrap();
+        value["ban_window"] = "1d".into();
+        value["ban_duration"] = "90s".into();
+        let public: PublicConfig = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(public.ban_window, Duration::from_secs(86_400));
+        assert_eq!(public.ban_duration, Duration::from_secs(90));
+        value["ban_window"] = "1x".into();
+        assert!(serde_json::from_value::<PublicConfig>(value).is_err());
     }
 }

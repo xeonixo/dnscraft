@@ -977,6 +977,7 @@ name = "dnscraft-policy"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "dnscraft-common",
  "dnscraft-filtering",
  "dnscraft-proto",
  "dnscraft-resolver",
@@ -1005,6 +1006,7 @@ name = "dnscraft-resolver"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "dnscraft-common",
  "dnscraft-proto",
  "dnscraft-testkit",
  "hickory-proto",

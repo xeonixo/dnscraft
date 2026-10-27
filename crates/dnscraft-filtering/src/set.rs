@@ -170,6 +170,7 @@ pub struct FilterConfig {
     /// All filter sets.
     pub sets: Vec<FilterSetConfig>,
     /// How often lists are refreshed.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub update_interval: Duration,
     /// Maximum accepted size of one list body, in MiB (spec
     /// `filtering.max_list_size_mb`, default 64 MiB). This is the counterpart
@@ -357,8 +358,24 @@ mod tests {
         };
 
         let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"update_interval\":\"12h\""), "{json}");
         let back: FilterConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back, config);
+    }
+
+    #[test]
+    fn duration_field_parses_human_strings() {
+        let mut value = serde_json::to_value(FilterConfig::default()).unwrap();
+        value["update_interval"] = "1d".into();
+        let config: FilterConfig = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(config.update_interval, Duration::from_secs(86_400));
+
+        value["update_interval"] = "90s".into();
+        let config: FilterConfig = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(config.update_interval, Duration::from_secs(90));
+
+        value["update_interval"] = "1x".into();
+        assert!(serde_json::from_value::<FilterConfig>(value).is_err());
     }
 
     #[test]

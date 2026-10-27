@@ -159,8 +159,10 @@ pub struct ScheduleConfig {
     #[serde(with = "serde_ids")]
     pub filter_set: SetId,
     /// Inclusive start of the window within a week, from Monday 00:00 UTC.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub start: Duration,
     /// Exclusive end of the window within a week, from Monday 00:00 UTC.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub end: Duration,
 }
 
@@ -482,7 +484,28 @@ mod tests {
         };
 
         let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"start\":\"8h\""), "{json}");
+        assert!(json.contains("\"end\":\"15h\""), "{json}");
         let decoded: PolicyConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, cfg);
+    }
+
+    #[test]
+    fn duration_fields_parse_human_strings() {
+        let schedule = ScheduleConfig {
+            id: Arc::from("school"),
+            filter_set: SetId::new("strict").unwrap(),
+            start: Duration::from_secs(8 * 3600),
+            end: Duration::from_secs(15 * 3600),
+        };
+        let mut value = serde_json::to_value(&schedule).unwrap();
+        value["start"] = "1d".into();
+        value["end"] = "90s".into();
+        let back: ScheduleConfig = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(back.start, Duration::from_secs(86_400));
+        assert_eq!(back.end, Duration::from_secs(90));
+
+        value["start"] = "1x".into();
+        assert!(serde_json::from_value::<ScheduleConfig>(value).is_err());
     }
 }

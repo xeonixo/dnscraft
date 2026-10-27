@@ -99,8 +99,10 @@ pub struct AcmeConfig {
     /// Contact email required by the CA when [`Self::enabled`] is true.
     pub email: String,
     /// How long to wait for TXT visibility on authoritative nameservers.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub propagation_timeout: Duration,
     /// How often to poll those nameservers.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub propagation_poll: Duration,
     /// Account policy (EAB / ToS / auto-deactivate).
     pub account: AcmeAccountConfig,
@@ -274,6 +276,7 @@ pub struct DynDnsConfig {
     /// The hostname's leftmost label must be one of these.
     pub reserved_labels: Vec<String>,
     /// How often to check and update records (±10 % jitter applied later).
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub interval: Duration,
     /// Public IP echo URL (HTTPS).
     pub echo_url: String,
@@ -321,8 +324,10 @@ pub struct TlsConfig {
     /// Leaf key type.
     pub key_type: KeyType,
     /// Renew when `not_after - now` falls below this (unless ARI says sooner).
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub renew_before: Duration,
     /// Status flag [`crate::TlsError::CertExpiring`] below this remaining time.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub expiry_warn: Duration,
     /// ACME settings.
     pub acme: AcmeConfig,
@@ -1109,6 +1114,31 @@ mod tests {
             cfg.manual.as_ref().expect("manual").cert_pem
         );
         assert_eq!(manual.key_pem, Secret::new("[redacted]"));
+    }
+
+    #[test]
+    fn duration_fields_parse_human_strings() {
+        let mut value = serde_json::to_value(serde_config()).expect("serialize");
+        value["renew_before"] = "90s".into();
+        value["expiry_warn"] = "1d".into();
+        value["acme"]["propagation_timeout"] = "1d".into();
+        value["acme"]["propagation_poll"] = "500ms".into();
+        value["dyndns"]["interval"] = "5m".into();
+        let cfg: TlsConfig = serde_json::from_value(value.clone()).expect("deserialize");
+        assert_eq!(cfg.renew_before, Duration::from_secs(90));
+        assert_eq!(cfg.expiry_warn, Duration::from_secs(86_400));
+        assert_eq!(cfg.acme.propagation_timeout, Duration::from_secs(86_400));
+        assert_eq!(cfg.acme.propagation_poll, Duration::from_millis(500));
+        assert_eq!(cfg.dyndns.interval, Duration::from_secs(300));
+
+        let json = serde_json::to_value(&cfg).expect("serialize");
+        assert_eq!(json["renew_before"], "90s");
+        assert_eq!(json["expiry_warn"], "1d");
+        assert_eq!(json["acme"]["propagation_poll"], "500ms");
+        assert_eq!(json["dyndns"]["interval"], "5m");
+
+        value["renew_before"] = "1x".into();
+        assert!(serde_json::from_value::<TlsConfig>(value).is_err());
     }
 
     #[test]

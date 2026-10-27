@@ -117,6 +117,7 @@ pub struct UnifiConfig {
     /// Optional Integration site UUID; required when more than one site exists.
     pub site_id: Option<String>,
     /// How often to poll (±10 % jitter applied by the engine).
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub poll_interval: Duration,
     /// Fetch the classic client feed for complete IPv6 (default on).
     pub classic_clients: bool,
@@ -160,8 +161,10 @@ pub struct ClientsConfig {
     /// How `local_domain` interacts with UniFi per-network domains.
     pub local_domain_mode: LocalDomainMode,
     /// How long to keep a client after it disappears from a successful sync.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub offline_retain: Duration,
     /// How long to keep previously observed UniFi IPv6 addresses.
+    #[serde(with = "dnscraft_common::duration::serde")]
     pub ipv6_address_ttl: Duration,
     /// UniFi gateway settings.
     pub unifi: UnifiConfig,
@@ -623,8 +626,26 @@ mod tests {
         };
 
         let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"offline_retain\":\"1w\""), "{json}");
+        assert!(json.contains("\"ipv6_address_ttl\":\"1d\""), "{json}");
+        assert!(json.contains("\"poll_interval\":\"1m\""), "{json}");
         let back: ClientsConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back, config);
+    }
+
+    #[test]
+    fn duration_fields_parse_human_strings() {
+        let mut value = serde_json::to_value(ClientsConfig::default()).unwrap();
+        value["offline_retain"] = "1d".into();
+        value["ipv6_address_ttl"] = "90s".into();
+        value["unifi"]["poll_interval"] = "1m".into();
+        let config: ClientsConfig = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(config.offline_retain, Duration::from_secs(86_400));
+        assert_eq!(config.ipv6_address_ttl, Duration::from_secs(90));
+        assert_eq!(config.unifi.poll_interval, Duration::from_secs(60));
+
+        value["offline_retain"] = "1x".into();
+        assert!(serde_json::from_value::<ClientsConfig>(value).is_err());
     }
 
     #[test]
