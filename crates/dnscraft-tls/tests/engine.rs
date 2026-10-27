@@ -79,7 +79,6 @@ fn base_cfg() -> TlsConfig {
             reserved_labels: vec!["node1".into()],
             ..DynDnsConfig::default()
         },
-        allow_http_for_tests: true,
         ..TlsConfig::default()
     }
 }
@@ -147,6 +146,7 @@ async fn open_serves_stored_cert_when_cloudflare_unreachable() {
         &data,
         clock(),
         EngineDeps {
+            allow_http_for_tests: true,
             acme: acme.clone(),
             cloudflare_base_url: Some("http://127.0.0.1:1/client/v4".into()),
             echo: EchoClient::unbound().unwrap(),
@@ -187,7 +187,6 @@ async fn renew_now_and_dyndns_now_against_mocks() {
     cfg.dyndns.echo_url = echo.url();
     cfg.dyndns.ipv4 = true;
     cfg.dyndns.ipv6 = false;
-    cfg.validate_with_token(|_| Ok(Secret::new(TOKEN))).unwrap();
 
     let acme = Arc::new(FakeAcmeDirectory::new());
     let engine = TlsEngine::open_with(
@@ -195,6 +194,7 @@ async fn renew_now_and_dyndns_now_against_mocks() {
         &data,
         clock(),
         EngineDeps {
+            allow_http_for_tests: true,
             acme: acme.clone(),
             cloudflare_base_url: Some(mock.base_url()),
             echo: EchoClient::unbound().unwrap(),
@@ -230,6 +230,7 @@ async fn concurrent_renew_now_is_single_flight() {
         &data,
         clock(),
         EngineDeps {
+            allow_http_for_tests: true,
             acme: acme.clone(),
             cloudflare_base_url: Some(mock.base_url()),
             echo: EchoClient::unbound().unwrap(),
@@ -277,6 +278,7 @@ async fn open_with_world_readable_key_refuses_serve_and_reports_permissions() {
         &data,
         clock(),
         EngineDeps {
+            allow_http_for_tests: true,
             acme: Arc::new(FakeAcmeDirectory::new()),
             cloudflare_base_url: Some("http://127.0.0.1:1/client/v4".into()),
             echo: EchoClient::unbound().unwrap(),
@@ -322,6 +324,7 @@ async fn open_key_with_acme_on_reissues_and_writes_0600() {
         &data,
         clock(),
         EngineDeps {
+            allow_http_for_tests: true,
             acme: acme.clone(),
             cloudflare_base_url: Some(mock.base_url()),
             echo: EchoClient::unbound().unwrap(),
@@ -384,6 +387,7 @@ async fn open_with_world_readable_account_reports_permissions_keeps_cert() {
         &data,
         clock(),
         EngineDeps {
+            allow_http_for_tests: true,
             acme: Arc::new(FakeAcmeDirectory::new()),
             cloudflare_base_url: Some("http://127.0.0.1:1/client/v4".into()),
             echo: EchoClient::unbound().unwrap(),
@@ -419,6 +423,7 @@ async fn manual_upload_export_revoke_and_restart_do_not_serve_revoked() {
         &data,
         clock(),
         EngineDeps {
+            allow_http_for_tests: true,
             acme: Arc::new(FakeAcmeDirectory::new()),
             cloudflare_base_url: Some("http://127.0.0.1:1/client/v4".into()),
             echo: EchoClient::unbound().unwrap(),
@@ -482,6 +487,7 @@ async fn manual_upload_export_revoke_and_restart_do_not_serve_revoked() {
         &data,
         clock(),
         EngineDeps {
+            allow_http_for_tests: true,
             acme: Arc::new(FakeAcmeDirectory::new()),
             cloudflare_base_url: Some("http://127.0.0.1:1/client/v4".into()),
             echo: EchoClient::unbound().unwrap(),
@@ -512,6 +518,7 @@ async fn status_reports_ari_schedule_store_health_and_order_progress() {
         &data,
         clock(),
         EngineDeps {
+            allow_http_for_tests: true,
             acme: acme.clone(),
             cloudflare_base_url: Some(mock.base_url()),
             echo: EchoClient::unbound().unwrap(),
@@ -561,13 +568,13 @@ async fn rotate_key_maps_failure_and_dyndns_records_audit_and_inventory() {
     cfg.dyndns.record_inventory = true;
     cfg.dyndns.echo_url = echo.url();
     cfg.dyndns.ipv6 = false;
-    cfg.validate_with_token(|_| Ok(Secret::new(TOKEN))).unwrap();
 
     let engine = TlsEngine::open_with(
         cfg,
         &data,
         clock(),
         EngineDeps {
+            allow_http_for_tests: true,
             acme: Arc::new(FakeAcmeDirectory::failing(
                 dnscraft_tls::FakeAcmeFail::Finalize,
             )),
@@ -622,6 +629,7 @@ async fn apply_config_does_not_revert_upload_or_unrevoke() {
         &data,
         clock(),
         EngineDeps {
+            allow_http_for_tests: true,
             acme: Arc::new(FakeAcmeDirectory::new()),
             cloudflare_base_url: Some("http://127.0.0.1:1/client/v4".into()),
             echo: EchoClient::unbound().unwrap(),
@@ -682,6 +690,7 @@ async fn unreachable_echo_marks_dyndns_stale_with_echo_error() {
         &data,
         clock(),
         EngineDeps {
+            allow_http_for_tests: true,
             acme: Arc::new(FakeAcmeDirectory::new()),
             cloudflare_base_url: Some("http://127.0.0.1:1/client/v4".into()),
             echo: EchoClient::unbound().unwrap(),
@@ -694,9 +703,6 @@ async fn unreachable_echo_marks_dyndns_stale_with_echo_error() {
     enabled.dyndns.enabled = true;
     enabled.dyndns.ipv6 = false;
     enabled.dyndns.echo_url = format!("http://{addr}/cdn-cgi/trace");
-    enabled
-        .validate_with_token(|_| Ok(Secret::new(TOKEN)))
-        .unwrap();
     engine.apply_config(enabled).await.unwrap();
 
     let err = engine.dyndns_now().await.expect_err("echo unreachable");
@@ -730,6 +736,7 @@ async fn partial_dyndns_write_failure_keeps_audit_for_successful_writes() {
         &data,
         clock(),
         EngineDeps {
+            allow_http_for_tests: true,
             acme: Arc::new(FakeAcmeDirectory::new()),
             cloudflare_base_url: Some(mock.base_url()),
             echo: EchoClient::unbound().unwrap(),
@@ -743,9 +750,6 @@ async fn partial_dyndns_write_failure_keeps_audit_for_successful_writes() {
     enabled.dyndns.public_entry = true;
     enabled.dyndns.ipv6 = false;
     enabled.dyndns.echo_url = echo.url();
-    enabled
-        .validate_with_token(|_| Ok(Secret::new(TOKEN)))
-        .unwrap();
     engine.apply_config(enabled).await.unwrap();
 
     // Requests: zone lookup, two node1 lists + create, then fail the wildcard
@@ -780,6 +784,7 @@ async fn drop_engine_drops_inner_for_background() {
         &data,
         clock(),
         EngineDeps {
+            allow_http_for_tests: true,
             acme: Arc::new(FakeAcmeDirectory::new()),
             cloudflare_base_url: Some("http://127.0.0.1:1/client/v4".into()),
             echo: EchoClient::unbound().unwrap(),

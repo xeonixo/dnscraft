@@ -19,7 +19,7 @@ use dnscraft_tls::{
     CloudflareClient, CloudflareConfig, DEFAULT_EXPIRY_WARN, DnsProviderKind, DynDnsConfig,
     FakeAcmeDirectory, FakeAcmeFail, KeyType, ManualClock, ManualDns01Config, Secret, TlsConfig,
     TlsError, TlsStatus, ari_certificate_id, challenge_txt_name, current_ari_window, issue,
-    plan_renewal,
+    next_renewal,
 };
 use mock_cloudflare::{MockCloudflare, MockZone};
 use tokio::net::UdpSocket;
@@ -53,6 +53,16 @@ fn new_clock() -> Arc<ManualClock> {
     Arc::new(ManualClock::new(
         SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000),
     ))
+}
+
+async fn planned_renewal(acme: &FakeAcmeDirectory, env: &Env, now: SystemTime) -> SystemTime {
+    let Some(loaded) = env.store.load().ok().flatten() else {
+        return now;
+    };
+    let ari = acme
+        .renewal_window(&env.store, &env.cfg.acme, &loaded.chain_pem)
+        .await;
+    next_renewal(Some(loaded.not_after), env.cfg.renew_before, ari, now)
 }
 
 async fn setup(key_type: KeyType, prop_timeout: Duration) -> Env {
@@ -130,7 +140,6 @@ async fn setup(key_type: KeyType, prop_timeout: Duration) -> Env {
             enabled: false,
             ..DynDnsConfig::default()
         },
-        allow_http_for_tests: true,
         ..TlsConfig::default()
     };
     cfg.validate_with_token(|_| Ok(Secret::new(TOKEN))).unwrap();
@@ -528,7 +537,6 @@ async fn manual_provider_succeeds_with_both_published_values() {
             enabled: false,
             ..DynDnsConfig::default()
         },
-        allow_http_for_tests: true,
         ..TlsConfig::default()
     };
     cfg.dns_provider.kind = DnsProviderKind::Manual;
@@ -598,7 +606,7 @@ async fn ari_window_from_ca_drives_the_schedule() {
     let acme = FakeAcmeDirectory::with_ari_window(window);
 
     // No cert yet: issue immediately, no ARI lookup.
-    assert_eq!(plan_renewal(&acme, &env.store, &env.cfg, now).await, now);
+    assert_eq!(planned_renewal(&acme, &env, now).await, now);
     assert_eq!(
         current_ari_window(&acme, &env.store, &env.cfg.acme).await,
         None
@@ -610,7 +618,7 @@ async fn ari_window_from_ca_drives_the_schedule() {
         current_ari_window(&acme, &env.store, &env.cfg.acme).await,
         Some(window)
     );
-    let due = plan_renewal(&acme, &env.store, &env.cfg, now).await;
+    let due = planned_renewal(&acme, &env, now).await;
     assert!(
         due >= window.start && due <= window.end,
         "due {} outside ARI window",
@@ -620,7 +628,7 @@ async fn ari_window_from_ca_drives_the_schedule() {
     // CA without ARI: fall back to not_after - renew_before.
     let no_ari = FakeAcmeDirectory::new();
     let loaded = env.store.load().unwrap().unwrap();
-    let due = plan_renewal(&no_ari, &env.store, &env.cfg, now).await;
+    let due = planned_renewal(&no_ari, &env, now).await;
     assert_eq!(due, loaded.not_after - env.cfg.renew_before);
     let _ = fs::remove_dir_all(&env.data);
 }

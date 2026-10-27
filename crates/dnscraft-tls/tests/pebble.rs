@@ -182,7 +182,6 @@ async fn pebble_issue_dns_example_com() {
             enabled: false,
             ..DynDnsConfig::default()
         },
-        allow_http_for_tests: true,
         ..TlsConfig::default()
     };
     cfg.validate_with_token(|_| Ok(Secret::new(TOKEN))).unwrap();

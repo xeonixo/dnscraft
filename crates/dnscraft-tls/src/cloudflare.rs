@@ -373,7 +373,9 @@ impl CloudflareClient {
             .and_then(|v| v.to_str().ok())
             .and_then(crate::error::parse_retry_after_header);
 
-        let bytes = read_capped(response, token).await?;
+        let bytes = read_capped(response, MAX_BODY_BYTES)
+            .await
+            .map_err(|m| TlsError::cloudflare_http(redact_token(&m, token)))?;
 
         let envelope: Envelope<T> = serde_json::from_slice(&bytes).map_err(|e| {
             TlsError::cloudflare_http_status(
@@ -427,8 +429,6 @@ fn pick_zone(zones: &[ZoneConfig], name: &str) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// Reads the body while enforcing [`MAX_BODY_BYTES`]: rejects early on an
-/// oversized `Content-Length` and aborts as soon as streamed chunks exceed the cap.
 /// Appends percent-encoded query parameters (reqwest 0.13 gates
 /// `RequestBuilder::query` behind the `query` feature, which we do not enable).
 fn url_with_query(url: &str, params: &[(&str, &str)]) -> Result<reqwest::Url, TlsError> {
@@ -436,26 +436,28 @@ fn url_with_query(url: &str, params: &[(&str, &str)]) -> Result<reqwest::Url, Tl
         .map_err(|e| TlsError::cloudflare_http(format!("build request URL: {e}")))
 }
 
-async fn read_capped(mut response: reqwest::Response, token: &str) -> Result<Vec<u8>, TlsError> {
-    let too_large = |what: String| {
-        TlsError::cloudflare_http(format!("response body {what} exceeds {MAX_BODY_BYTES} cap"))
-    };
+/// Reads an HTTP body while enforcing `max`: rejects early on an oversized
+/// `Content-Length` and aborts as soon as streamed chunks exceed the cap.
+pub(crate) async fn read_capped(
+    mut response: reqwest::Response,
+    max: usize,
+) -> Result<Vec<u8>, String> {
     if let Some(len) = response.content_length()
-        && len > MAX_BODY_BYTES as u64
+        && len > max as u64
     {
-        return Err(too_large(format!("{len} bytes (Content-Length)")));
+        return Err(format!("body {len} bytes exceeds {max} cap"));
     }
     let mut body = Vec::new();
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|e| TlsError::cloudflare_http(redact_token(&format!("read body: {e}"), token)))?
+        .map_err(|e| format!("read body: {e}"))?
     {
-        if body.len() + chunk.len() > MAX_BODY_BYTES {
-            return Err(too_large(format!(
-                "over {} bytes",
+        if body.len() + chunk.len() > max {
+            return Err(format!(
+                "body over {} bytes exceeds {max} cap",
                 body.len() + chunk.len()
-            )));
+            ));
         }
         body.extend_from_slice(&chunk);
     }

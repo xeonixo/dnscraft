@@ -63,8 +63,8 @@ pub use pem_util::{KeyPem, fingerprint_sha256};
 pub use propagation::{resolve_nameservers, wait_for_txt, wait_for_txt_with_query_timeout};
 pub use renew::{
     AriWindow, BACKOFF_BASE, BACKOFF_CAP, RenewFn, RenewFut, RenewScheduler, ScheduleFn, StatusFn,
-    apply_cert_flags, backoff_delay, backoff_delay_with_rng, current_ari_window,
-    is_transient_renew_error, next_renewal, next_renewal_with_rng, plan_renewal,
+    backoff_delay, backoff_delay_with_rng, current_ari_window, is_transient_renew_error,
+    next_renewal, next_renewal_with_rng,
 };
 pub use resolver::CertResolver;
 

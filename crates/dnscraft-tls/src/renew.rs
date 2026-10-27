@@ -17,9 +17,9 @@ use tracing::{debug, info, warn};
 
 use crate::acme::AcmeOrder;
 use crate::clock::Clock;
-use crate::config::{AcmeConfig, TlsConfig};
+use crate::config::AcmeConfig;
 use crate::error::TlsError;
-use crate::status::{TlsStatus, cert_flags};
+use crate::status::TlsStatus;
 use crate::store::CertStore;
 
 /// Cap for exponential renew backoff (6 hours).
@@ -105,32 +105,6 @@ where
 {
     let loaded = store.load().ok().flatten()?;
     acme.renewal_window(store, cfg, &loaded.chain_pem).await
-}
-
-/// Computes when the stored certificate should next be renewed, consulting ARI.
-///
-/// This is the async half of the schedule input: [`ScheduleFn`] is synchronous,
-/// so L10 should call this after startup and after every successful renewal
-/// (and periodically, since the CA may move the window), cache the returned
-/// instant or the window from [`current_ari_window`], and have its `ScheduleFn`
-/// return `next_renewal(not_after, cfg.renew_before, cached_window, now)`.
-/// No certificate → `now`.
-pub async fn plan_renewal<A>(
-    acme: &A,
-    store: &CertStore,
-    cfg: &TlsConfig,
-    now: SystemTime,
-) -> SystemTime
-where
-    A: AcmeOrder + ?Sized,
-{
-    let Some(loaded) = store.load().ok().flatten() else {
-        return now;
-    };
-    let ari = acme
-        .renewal_window(store, &cfg.acme, &loaded.chain_pem)
-        .await;
-    next_renewal(Some(loaded.not_after), cfg.renew_before, ari, now)
 }
 
 /// Delay before the next renew attempt after a transient failure.
@@ -370,22 +344,5 @@ async fn wait_or_kick(clock: &dyn Clock, deadline: SystemTime, tick: &Notify, st
                 () = kick => return,
             }
         }
-    }
-}
-
-/// Convenience: refresh expiring/expired flags on a status value in place.
-pub fn apply_cert_flags(status: &mut TlsStatus, now: SystemTime, expiry_warn: Duration) {
-    if let Some(not_after) = status.not_after {
-        let (expiring, expired) = cert_flags(not_after, now, expiry_warn);
-        status.cert_expiring = expiring;
-        status.cert_expired = expired;
-        status.days_to_expiry = Some(match not_after.duration_since(now) {
-            Ok(d) => (d.as_secs() / 86_400) as i64,
-            Err(e) => -((e.duration().as_secs() / 86_400) as i64),
-        });
-    } else {
-        status.cert_expiring = false;
-        status.cert_expired = false;
-        status.days_to_expiry = None;
     }
 }

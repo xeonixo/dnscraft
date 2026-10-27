@@ -40,6 +40,9 @@ pub struct EngineDeps {
     pub echo: EchoClient,
     /// Cloudflare API token.
     pub token: Secret,
+    /// Accept loopback `http://` URLs during validation (tests only).
+    #[doc(hidden)]
+    pub allow_http_for_tests: bool,
 }
 
 /// Owns the certificate store, hot-reload resolver, and background tasks.
@@ -75,6 +78,7 @@ pub struct EngineInner {
     dyndns_lock: Mutex<()>,
     acme_enabled: Arc<AtomicBool>,
     dyndns_enabled: Arc<AtomicBool>,
+    allow_http_for_tests: bool,
 }
 
 impl Drop for TlsEngine {
@@ -111,6 +115,7 @@ impl TlsEngine {
             cloudflare_base_url: None,
             echo: EchoClient::new()?,
             token,
+            allow_http_for_tests: false,
         };
         Self::open_with(config, data_dir, clock, deps)
     }
@@ -123,7 +128,7 @@ impl TlsEngine {
         deps: EngineDeps,
     ) -> Result<Self, TlsError> {
         let token_for_validate = deps.token.clone();
-        config.validate_with_token(|_| Ok(token_for_validate))?;
+        config.validate_with_token_impl(|_| Ok(token_for_validate), deps.allow_http_for_tests)?;
 
         let store = CertStore::open(data_dir)?;
         let resolver = Arc::new(CertResolver::new());
@@ -226,6 +231,7 @@ impl TlsEngine {
             dyndns_lock: Mutex::new(()),
             acme_enabled: Arc::clone(&acme_enabled),
             dyndns_enabled: Arc::clone(&dyndns_enabled),
+            allow_http_for_tests: deps.allow_http_for_tests,
         });
 
         let stop = Arc::new(Notify::new());
@@ -274,7 +280,7 @@ impl TlsEngine {
     /// after `renew_now` finishes).
     pub async fn apply_config(&self, mut config: TlsConfig) -> Result<(), TlsError> {
         let token = self.inner.token.read().await.clone();
-        config.validate_with_token(|_| Ok(token.clone()))?;
+        config.validate_with_token_impl(|_| Ok(token.clone()), self.inner.allow_http_for_tests)?;
 
         let old_domain = self.inner.config.read().await.public_domain.clone();
         let domain_changed = old_domain != config.public_domain;

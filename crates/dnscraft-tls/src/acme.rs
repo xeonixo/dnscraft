@@ -362,7 +362,7 @@ impl InstantAcme {
             .await
             .map_err(|e| match &eab {
                 Some(_) => TlsError::AcmeAccountEab {
-                    message: redact_acme_err(&e),
+                    message: e.to_string(),
                 },
                 None => map_acme_account(e),
             })?;
@@ -482,7 +482,7 @@ impl AcmeDirectory for InstantAcme {
             .update_key()
             .await
             .map_err(|e| TlsError::AcmeAccountRollover {
-                message: redact_acme_err(&e),
+                message: e.to_string(),
             })?;
         save_account_credentials(store, &creds)
     }
@@ -497,7 +497,7 @@ impl AcmeDirectory for InstantAcme {
             .deactivate()
             .await
             .map_err(|e| TlsError::AcmeAccount {
-                message: redact_acme_err(&e),
+                message: e.to_string(),
             })?;
         store.clear_account()?;
         mark_account_deactivated(store)
@@ -647,7 +647,7 @@ impl AcmeOrder for InstantAcme {
             .revoke(&request)
             .await
             .map_err(|e| TlsError::AcmeOrder {
-                message: format!("revocation: {}", redact_acme_err(&e)),
+                message: format!("revocation: {e}"),
             })
     }
     async fn abort_order(&self) {
@@ -740,19 +740,19 @@ async fn finalize_with_key_type(
 
 fn map_acme_account(e: instant_acme::Error) -> TlsError {
     TlsError::AcmeAccount {
-        message: redact_acme_err(&e),
+        message: e.to_string(),
     }
 }
 
 fn map_acme_order(e: instant_acme::Error, retry_after: Option<std::time::Duration>) -> TlsError {
     if is_rate_limited(&e) {
         return TlsError::AcmeRateLimited {
-            message: redact_acme_err(&e),
+            message: e.to_string(),
             retry_after,
         };
     }
     TlsError::AcmeOrder {
-        message: redact_acme_err(&e),
+        message: e.to_string(),
     }
 }
 
@@ -762,12 +762,12 @@ fn map_acme_challenge(
 ) -> TlsError {
     if is_rate_limited(&e) {
         return TlsError::AcmeRateLimited {
-            message: redact_acme_err(&e),
+            message: e.to_string(),
             retry_after,
         };
     }
     TlsError::AcmeChallenge {
-        message: redact_acme_err(&e),
+        message: e.to_string(),
     }
 }
 
@@ -782,12 +782,6 @@ fn is_rate_limited(e: &instant_acme::Error) -> bool {
             s.contains("rateLimited") || s.contains("rate limit")
         }
     }
-}
-
-fn redact_acme_err(e: &instant_acme::Error) -> String {
-    // Errors must never carry private key material; instant-acme messages are
-    // problem documents / status text only.
-    e.to_string()
 }
 
 /// True when the stored `account.json` was created for `directory_url`.

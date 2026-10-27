@@ -108,7 +108,9 @@ impl EchoClient {
             });
         }
 
-        let bytes = read_echo_body(response).await?;
+        let bytes = crate::cloudflare::read_capped(response, MAX_ECHO_BYTES)
+            .await
+            .map_err(|message| TlsError::DyndnsEcho { message })?;
         let body = String::from_utf8_lossy(&bytes);
         let ip = parse_trace_ip(&body).ok_or_else(|| TlsError::DyndnsEcho {
             message: format!("no ip= line in echo body ({family})"),
@@ -161,28 +163,6 @@ fn build_client(local: Option<SocketAddr>) -> Result<Client, TlsError> {
     b.build().map_err(|e| TlsError::DyndnsEcho {
         message: format!("build HTTP client: {e}"),
     })
-}
-
-async fn read_echo_body(mut response: reqwest::Response) -> Result<Vec<u8>, TlsError> {
-    if let Some(len) = response.content_length()
-        && len > MAX_ECHO_BYTES as u64
-    {
-        return Err(TlsError::DyndnsEcho {
-            message: format!("echo body {len} bytes exceeds {MAX_ECHO_BYTES} cap"),
-        });
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|e| TlsError::DyndnsEcho {
-        message: format!("read echo body: {e}"),
-    })? {
-        if body.len() + chunk.len() > MAX_ECHO_BYTES {
-            return Err(TlsError::DyndnsEcho {
-                message: format!("echo body exceeds {MAX_ECHO_BYTES} bytes"),
-            });
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
 }
 
 /// Parses the `ip=` line from a Cloudflare `cdn-cgi/trace` body.

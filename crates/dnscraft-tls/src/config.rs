@@ -349,10 +349,6 @@ pub struct TlsConfig {
     pub dyndns: DynDnsConfig,
     /// Webhook notification settings (delivery is control-api's job).
     pub notifications: NotificationsConfig,
-    /// Accept `http://` URLs for echo / custom ACME directory on loopback.
-    /// Only for local mock servers in tests.
-    #[doc(hidden)]
-    pub allow_http_for_tests: bool,
 }
 
 impl Default for TlsConfig {
@@ -369,7 +365,6 @@ impl Default for TlsConfig {
             dns_provider: DnsProvider::default(),
             dyndns: DynDnsConfig::default(),
             notifications: NotificationsConfig::default(),
-            allow_http_for_tests: false,
         }
     }
 }
@@ -380,7 +375,7 @@ impl TlsConfig {
     /// When ACME or DynDNS is enabled, also requires
     /// [`CLOUDFLARE_API_TOKEN_ENV`] (or its `_FILE` form).
     pub fn validate(&mut self) -> Result<(), TlsError> {
-        self.validate_with_token(read_secret)
+        self.validate_with_token_impl(read_secret, false)
     }
 
     /// Like [`Self::validate`], but uses `lookup` for the Cloudflare token.
@@ -390,6 +385,15 @@ impl TlsConfig {
     pub fn validate_with_token(
         &mut self,
         lookup: impl FnOnce(&str) -> Result<Secret, TlsError>,
+    ) -> Result<(), TlsError> {
+        self.validate_with_token_impl(lookup, false)
+    }
+
+    /// Shared validation; `allow_http` lets tests accept loopback `http://` URLs.
+    pub(crate) fn validate_with_token_impl(
+        &mut self,
+        lookup: impl FnOnce(&str) -> Result<Secret, TlsError>,
+        allow_http: bool,
     ) -> Result<(), TlsError> {
         self.public_domain = normalise_domain(&self.public_domain).map_err(TlsError::config)?;
         if self.public_domain.is_empty() {
@@ -407,19 +411,19 @@ impl TlsConfig {
             return Err(TlsError::config("expiry_warn must be positive"));
         }
 
-        self.validate_acme()?;
+        self.validate_acme(allow_http)?;
         self.validate_dns_provider()?;
-        self.validate_dyndns()?;
+        self.validate_dyndns(allow_http)?;
         self.validate_manual()?;
         self.validate_trust_pin()?;
-        self.validate_notifications()?;
+        self.validate_notifications(allow_http)?;
         if self.dns_provider.uses_cloudflare() && (self.acme.enabled || self.dyndns.enabled) {
             let _ = lookup(CLOUDFLARE_API_TOKEN_ENV)?;
         }
         Ok(())
     }
 
-    fn validate_acme(&mut self) -> Result<(), TlsError> {
+    fn validate_acme(&mut self, allow_http: bool) -> Result<(), TlsError> {
         if !self.acme.enabled {
             return Ok(());
         }
@@ -442,8 +446,7 @@ impl TlsConfig {
             return Err(TlsError::config("acme.propagation_poll must be positive"));
         }
         if let AcmeDirectoryKind::Url(url) = &self.acme.directory {
-            check_https_url(url, self.allow_http_for_tests, "acme.directory")
-                .map_err(TlsError::config)?;
+            check_https_url(url, allow_http, "acme.directory").map_err(TlsError::config)?;
         }
         if let Some(eab) = &mut self.acme.account.eab {
             eab.kid = eab.kid.trim().to_owned();
@@ -522,13 +525,13 @@ impl TlsConfig {
         Ok(())
     }
 
-    fn validate_notifications(&mut self) -> Result<(), TlsError> {
+    fn validate_notifications(&mut self, allow_http: bool) -> Result<(), TlsError> {
         if let Some(url) = &self.notifications.webhook_url {
             let url = url.trim().to_owned();
             if url.is_empty() {
                 self.notifications.webhook_url = None;
             } else {
-                check_https_url(&url, self.allow_http_for_tests, "notifications.webhook_url")
+                check_https_url(&url, allow_http, "notifications.webhook_url")
                     .map_err(TlsError::config)?;
                 self.notifications.webhook_url = Some(url);
             }
@@ -536,7 +539,7 @@ impl TlsConfig {
         Ok(())
     }
 
-    fn validate_dyndns(&mut self) -> Result<(), TlsError> {
+    fn validate_dyndns(&mut self, allow_http: bool) -> Result<(), TlsError> {
         if self.dyndns.proxied {
             return Err(TlsError::config(
                 "dyndns.proxied must be false (DNS-only; orange-cloud breaks DoT/DoQ)",
@@ -553,12 +556,8 @@ impl TlsConfig {
                 "dyndns must enable at least one of ipv4 or ipv6",
             ));
         }
-        check_https_url(
-            &self.dyndns.echo_url,
-            self.allow_http_for_tests,
-            "dyndns.echo_url",
-        )
-        .map_err(TlsError::config)?;
+        check_https_url(&self.dyndns.echo_url, allow_http, "dyndns.echo_url")
+            .map_err(TlsError::config)?;
 
         // IPv6 stable identifier: static mode needs a valid fixed address.
         let static_addr = self.dyndns.ipv6_identifier.static_address.as_deref();
@@ -660,8 +659,6 @@ impl TlsConfig {
 /// applying config. The TLS crate itself does not discover peers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeEntry {
-    /// Node name (diagnostics only).
-    pub name: String,
     /// Whether this node maintains the wildcard and apex records.
     pub public_entry: bool,
 }
@@ -727,7 +724,6 @@ mod tests {
                 record_inventory: false,
             },
             notifications: NotificationsConfig::default(),
-            allow_http_for_tests: false,
         }
     }
 
@@ -835,22 +831,16 @@ mod tests {
     #[test]
     fn config_allows_loopback_http_with_test_hatch() {
         let mut cfg = example_config();
-        cfg.allow_http_for_tests = true;
         cfg.dyndns.echo_url = "http://127.0.0.1:9/trace".into();
-        cfg.validate_with_token(ok_token).expect("loopback hatch");
+        cfg.validate_with_token_impl(ok_token, true)
+            .expect("loopback hatch");
     }
 
     #[test]
     fn config_validate_public_entry_rejects_two_nodes() {
         let nodes = [
-            NodeEntry {
-                name: "a".into(),
-                public_entry: true,
-            },
-            NodeEntry {
-                name: "b".into(),
-                public_entry: true,
-            },
+            NodeEntry { public_entry: true },
+            NodeEntry { public_entry: true },
         ];
         let err = validate_public_entry(&nodes).expect_err("conflict");
         assert_eq!(err.code(), "tls.dyndns.entry_conflict");
@@ -859,12 +849,8 @@ mod tests {
     #[test]
     fn config_validate_public_entry_allows_one() {
         let nodes = [
+            NodeEntry { public_entry: true },
             NodeEntry {
-                name: "a".into(),
-                public_entry: true,
-            },
-            NodeEntry {
-                name: "b".into(),
                 public_entry: false,
             },
         ];
@@ -1010,9 +996,9 @@ mod tests {
         let err = cfg.validate_with_token(ok_token).expect_err("http hook");
         assert_eq!(err.code(), "tls.config.invalid");
 
-        cfg.allow_http_for_tests = true;
         cfg.notifications.webhook_url = Some("http://127.0.0.1/hook".into());
-        cfg.validate_with_token(ok_token).expect("loopback hook");
+        cfg.validate_with_token_impl(ok_token, true)
+            .expect("loopback hook");
     }
 
     /// Representative config carrying both `Secret`-typed fields.
@@ -1051,7 +1037,6 @@ mod tests {
         assert_eq!(back.dyndns, cfg.dyndns);
         assert_eq!(back.notifications, cfg.notifications);
         assert_eq!(back.trust_pin, cfg.trust_pin);
-        assert_eq!(back.allow_http_for_tests, cfg.allow_http_for_tests);
 
         let eab = back.acme.account.eab.expect("eab");
         assert_eq!(eab.kid, "kid-example");
