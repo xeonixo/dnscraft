@@ -195,6 +195,11 @@ pub fn requirement(method: &Method, path: &str) -> Requirement {
     if path == "/api/v1/tls/status" {
         return Requirement::Api;
     }
+    // The audit log exposes every actor's actions and redacted config
+    // snapshots: admin-only, even for reads.
+    if path == "/api/v1/audit" || path.starts_with("/api/v1/audit/") {
+        return Requirement::ApiAdmin;
+    }
     if is_config_path(path) {
         return Requirement::ApiAdmin;
     }
@@ -434,6 +439,11 @@ mod tests {
             requirement(&Method::GET, "/api/v1/auth/me"),
             Requirement::Api
         );
+        // The audit log is admin-only, even for reads.
+        assert_eq!(
+            requirement(&Method::GET, "/api/v1/audit"),
+            Requirement::ApiAdmin
+        );
         assert_eq!(requirement(&Method::POST, "/mcp/v1"), Requirement::Mcp);
     }
 
@@ -492,6 +502,7 @@ mod tests {
             (Method::GET, "/api/v1/config"),
             (Method::POST, "/api/v1/config"),
             (Method::GET, "/api/v1/auth/tokens"),
+            (Method::GET, "/api/v1/audit"),
         ] {
             let err = authorize(requirement(&method, path), viewer.scope()).unwrap_err();
             assert_eq!(

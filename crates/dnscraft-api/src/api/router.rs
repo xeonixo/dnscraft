@@ -11,9 +11,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use serde_json::json;
 
+use super::audit_routes::list_audit;
 use super::auth::local::local_login;
 use super::auth::oidc::{oidc_authorize_url, oidc_callback};
-use super::auth::tokens::create_token;
+use super::auth::tokens::{create_token, delete_token, list_tokens};
 use super::auth::{auth_me, auth_middleware, logout, rbac_middleware};
 use super::clients_routes::{
     create_manual, delete_manual, list_clients, list_manual, put_manual, sync_clients,
@@ -138,6 +139,11 @@ pub(crate) fn build_router(state: AppState) -> Router {
             .route("/tls/order", get(get_tls_order))
             .route("/tls/audit", get(get_tls_audit));
     }
+    if state.db().is_some() {
+        // Admin-only reads: the audit log exposes every actor's actions and
+        // redacted config snapshots (RBAC maps the path to ApiAdmin).
+        api = api.route("/audit", get(list_audit));
+    }
     if state.query_log().is_some() {
         // Viewer-accessible reads: the RBAC middleware maps non-config GETs
         // under `/api/v1` to `Requirement::Api`.
@@ -166,7 +172,11 @@ pub(crate) fn build_router(state: AppState) -> Router {
         // cannot issue credentials of its own; a standalone node is its own
         // master. Account provisioning has no HTTP route.
         if !state.is_cluster_sub_node() {
-            api = api.route("/auth/tokens", post(create_token));
+            // Token management (mint, list, revoke) is master-only for the same
+            // reason: a sub-node must not manage credentials.
+            api = api
+                .route("/auth/tokens", get(list_tokens).post(create_token))
+                .route("/auth/tokens/{id}", delete(delete_token));
         }
         // The current principal (role + actor + CSRF token) for the SPA.
         api = api.route("/auth/me", get(auth_me));

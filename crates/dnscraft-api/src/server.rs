@@ -19,6 +19,7 @@ use crate::config_apply::ConfigService;
 use crate::error::ControlApiError;
 use crate::mcp_backend::McpBackendInner;
 use crate::query_log::QueryLog;
+use crate::storage::Db;
 use crate::tls::{TlsAdmin, TlsStatus, TlsStatusProvider};
 use dnscraft_common::clock::{Clock, SystemClock};
 
@@ -40,6 +41,7 @@ pub struct AppState {
     local_login: Option<Arc<LocalAccountStore>>,
     oidc: Option<Arc<OidcState>>,
     config: Option<Arc<ConfigService>>,
+    db: Option<Db>,
     query_log: Option<Arc<QueryLog>>,
     cluster_store: Option<Arc<ClusterStore>>,
     cluster_status: Option<Arc<dyn ClusterStatusProvider>>,
@@ -76,6 +78,7 @@ impl AppState {
             local_login: None,
             oidc: None,
             config: None,
+            db: None,
             query_log: None,
             cluster_store: None,
             cluster_status: None,
@@ -142,6 +145,19 @@ impl AppState {
     /// A cloneable config-service handle for the cluster runtime.
     pub(crate) fn config_service_arc(&self) -> Option<Arc<ConfigService>> {
         self.config.clone()
+    }
+
+    /// Attaches the shared database handle used by `GET /api/v1/audit`.
+    ///
+    /// With a database configured, the audit-log read route is mounted.
+    pub fn with_db(mut self, db: Db) -> Self {
+        self.db = Some(db);
+        self
+    }
+
+    /// The shared database handle, if any.
+    pub(crate) fn db(&self) -> Option<&Db> {
+        self.db.as_ref()
     }
 
     /// Attaches the query log created by the A12 consumer.

@@ -146,9 +146,9 @@ approval before Phase 0 code.
 - [ ] **GP3** 🟠 [code] `nodes` / node validity not implemented (no `node_id` in
       `RequestContext`/`PolicySnapshot::build`). *(grep node → 0 hits)*
       Owner decision made 2026-10-27 → implement the revised spec. Plan: `plan-policy-model.md` · `todo-policy-model.md`.
-- [ ] **GP4** 🟠 [code] `DecisionTimings.filter_us` declared but never assigned (=0). *(decision.rs:150, engine.rs:204-459)*
-- [ ] **GP5** 🟡 [code] RFC 6724 / ULA note exists only in specs, no operator/first-run docs. *(grep 6724 → specs only)*
-- [ ] **GP6** 🟡 [code] `home.arpa` via resolver local zone has no policy-crate test. *(grep home.arpa → 0 in crate)*
+- [x] **GP4** 🟠 [code] `DecisionTimings.filter_us` declared but never assigned (=0). *(decision.rs:150, engine.rs:204-459)*
+- [x] **GP5** 🟡 [code] RFC 6724 / ULA note exists only in specs, no operator/first-run docs. *(grep 6724 → specs only)*
+- [x] **GP6** 🟡 [code] `home.arpa` via resolver local zone has no policy-crate test. *(grep home.arpa → 0 in crate)*
 
 ## Listeners (`SPEC-listeners.md` ↔ `crates/dnscraft-listeners`)
 
@@ -175,9 +175,9 @@ approval before Phase 0 code.
 > `todo-webui-api-gaps.md`. The cluster-work caveat above is resolved (CL6–CL8 landed).
 
 - [ ] **GA1** 🔴 [code] `GET /api/v1/auth/me` route missing. *(router.rs:153-168; roles.rs:184 reserves it)*
-- [ ] **GA2** 🔴 [code] `GET /api/v1/auth/tokens` missing (only POST). *(router.rs:155; tokens.rs:263-287 unused)*
-- [ ] **GA3** 🔴 [code] `DELETE /api/v1/auth/tokens/{id}` missing; `revoke` lacks owner check. *(router.rs; tokens.rs:294-308)*
-- [ ] **GA4** 🔴 [code] `GET /api/v1/audit` missing (`Db::audit_list` + `AuditRead` exist but unwired). *(storage/audit.rs:118-125; error.rs:154-159)*
+- [x] **GA2** 🔴 [code] `GET /api/v1/auth/tokens` missing (only POST). *(router.rs:155; tokens.rs:263-287 unused)*
+- [x] **GA3** 🔴 [code] `DELETE /api/v1/auth/tokens/{id}` missing; `revoke` lacks owner check. *(router.rs; tokens.rs:294-308)*
+- [x] **GA4** 🔴 [code] `GET /api/v1/audit` missing (`Db::audit_list` + `AuditRead` exist but unwired). *(storage/audit.rs:118-125; error.rs:154-159)*
 - [ ] **GA5** 🔴 [owner] `Apply*` traits have no production impl → `PUT /config` persists but applies nothing. *(modules.rs:49-60)* — belongs to G0.
 - [ ] **GA6** 🟠 [code] `GET /api/v1/clients` hardcodes `[]`; `POST /clients/sync` always `not_configured`. *(clients_routes.rs:129-138, 230-242)*
 - [ ] **GA7** 🟠 [code] Idempotency-Key not read or stored anywhere. *(grep Idempotency → 0)*

@@ -238,6 +238,21 @@ the CL15 follow-up).
 
 ## Log
 
+- 2026-10-27 — **control-api gaps GA2/GA3/GA4.** `GET /auth/tokens` (list metadata, never
+  plaintext), `DELETE /auth/tokens/{id}` (revoke → 404 `auth.unknown_token` on unknown id), and
+  `GET /audit` (paginated, redacted, admin-only) are mounted. Token list/revoke join minting as
+  master-only (sub-node 404). `AuthUnknownToken` maps 401→404 (it is only produced by revocation,
+  never authentication). Added `AppState::with_db` to reach the audit store — the assembler must
+  call it to expose `/audit` (follow-up). Gates: `fmt --check` clean,
+  `clippy -p dnscraft-api --all-targets` clean, `cargo test -p dnscraft-api` 316 passed / 0 failed.
+
+- 2026-10-27 — **policy gaps GP4/GP5/GP6.** `timed_filter()` accumulates the filter-engine call
+  time (steps 4/6/8/9) into `DecisionTimings.filter_us`; README gains an RFC 6724/ULA operator
+  note; new golden test asserts an unknown `home.arpa` name falls through to the resolver local
+  zone (NXDOMAIN, `AnswerOrigin::Resolver`, no `SpecialUseNxdomain` step, no root traffic).
+  Gates: `fmt --check` clean, `clippy -p dnscraft-policy --all-targets` clean,
+  `cargo test -p dnscraft-policy` 188 passed / 0 failed.
+
 - 2026-10-27 — **tls gaps GT5/GT8/GT9.** `TlsEngine::rollover_account_key()` exposes account-key
   rollover (`tls.acme.account.rollover`); `preflight()` now always reports the ACME-account and
   DNS-provider checks (no longer gated on `acme.enabled`); revocation of an ACME-sourced cert now

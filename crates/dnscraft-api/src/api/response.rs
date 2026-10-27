@@ -79,7 +79,7 @@ impl ControlApiError {
             ControlApiError::AuthLocal => S::UNAUTHORIZED,
             ControlApiError::AuthLocked => S::LOCKED,
             ControlApiError::TlsSelfSigned => S::OK,
-            ControlApiError::AuthUnknownToken => S::UNAUTHORIZED,
+            ControlApiError::AuthUnknownToken => S::NOT_FOUND,
             ControlApiError::AuthUnauthenticated => S::UNAUTHORIZED,
             ControlApiError::AuthInvalidScope => S::FORBIDDEN,
             ControlApiError::AuthInvalidOrigin => S::FORBIDDEN,

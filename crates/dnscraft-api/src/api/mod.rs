@@ -3,6 +3,7 @@
 //! The router is assembled in [`router`] from the reusable pieces here. The
 //! network entry point (bind, TLS) lives in [`crate::server`].
 
+pub(crate) mod audit_routes;
 pub(crate) mod auth;
 pub(crate) mod clients_routes;
 pub(crate) mod cluster_endpoints;

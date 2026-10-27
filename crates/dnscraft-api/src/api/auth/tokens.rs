@@ -18,7 +18,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 use axum::Json;
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Path, State};
 use axum::response::{IntoResponse, Response};
 use ring::rand::{SecureRandom, SystemRandom};
 use rusqlite::{OptionalExtension, params};
@@ -379,12 +379,7 @@ pub(crate) async fn create_token(
     Extension(principal): Extension<Authenticated>,
     Json(req): Json<CreateTokenRequest>,
 ) -> Result<Response, ControlApiError> {
-    let tokens = state
-        .auth_state()
-        .map(|auth| auth.tokens().clone())
-        .ok_or_else(|| ControlApiError::Internal {
-            message: "token authentication is not configured".to_owned(),
-        })?;
+    let tokens = token_store(&state)?;
     let scope = Scope::parse(&req.scope).ok_or_else(|| {
         ControlApiError::config(format!(
             "scope must be one of viewer, admin, mcp:read, mcp:write; got `{}`",
@@ -415,6 +410,54 @@ pub(crate) async fn create_token(
         "warnings": warnings,
     }))
     .into_response())
+}
+
+/// `GET /api/v1/auth/tokens`: list stored tokens (hash and metadata only).
+///
+/// The RBAC middleware restricts this route to `admin` principals. The
+/// persisted SHA-256 id and metadata are returned; plaintext token material
+/// never leaves [`TokenStore::create`].
+pub(crate) async fn list_tokens(
+    State(state): State<AppState>,
+) -> Result<Response, ControlApiError> {
+    let entries = token_store(&state)?.snapshot_entries().await?;
+    let tokens: Vec<_> = entries
+        .into_iter()
+        .map(|entry| {
+            json!({
+                "id": entry.id_hash,
+                "name": entry.name,
+                "scope": entry.scope,
+                "actor_id": entry.actor_id,
+                "created_at": entry.created_at,
+                "expires_at": entry.expires_at,
+            })
+        })
+        .collect();
+    Ok(crate::api::response::success(json!({ "tokens": tokens })).into_response())
+}
+
+/// `DELETE /api/v1/auth/tokens/{id}`: revoke a token by its stored id.
+///
+/// The RBAC middleware restricts this route to `admin` principals. An unknown
+/// id yields `control_api.auth.unknown_token` (404); revocation takes effect
+/// on the next request.
+pub(crate) async fn delete_token(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, ControlApiError> {
+    token_store(&state)?.revoke(&id).await?;
+    Ok(crate::api::response::success(json!({ "deleted": true })).into_response())
+}
+
+/// The configured token store; the auth routes are only mounted with auth.
+fn token_store(state: &AppState) -> Result<TokenStore, ControlApiError> {
+    state
+        .auth_state()
+        .map(|auth| auth.tokens().clone())
+        .ok_or_else(|| ControlApiError::Internal {
+            message: "token authentication is not configured".to_owned(),
+        })
 }
 
 /// Generates a 256-bit random token as lowercase hex.

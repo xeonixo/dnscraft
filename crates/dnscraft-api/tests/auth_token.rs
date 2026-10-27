@@ -82,6 +82,14 @@ async fn post_req(router: &axum::Router, uri: &str, auth: Option<&str>) -> (Stat
     send(router.clone(), builder.body(Body::empty()).unwrap()).await
 }
 
+async fn delete_req(router: &axum::Router, uri: &str, auth: Option<&str>) -> (StatusCode, Value) {
+    let mut builder = Request::builder().method("DELETE").uri(uri);
+    if let Some(auth) = auth {
+        builder = builder.header(header::AUTHORIZATION, auth);
+    }
+    send(router.clone(), builder.body(Body::empty()).unwrap()).await
+}
+
 /// A router with one read and one write `/api/v1` route plus one `/mcp/v1`
 /// route, wrapped in the same two middleware layers the production router uses.
 fn rbac_router(app: AppState, sessions: SessionStore) -> axum::Router {
@@ -541,6 +549,136 @@ async fn auth_me_reports_session_identity_and_csrf_token() {
     let (status, body) = send(router, req).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"]["code"], "control_api.auth.unauthenticated");
+}
+
+#[tokio::test]
+async fn admin_lists_tokens_without_plaintext_and_viewer_is_denied() {
+    let db = db(clock()).await;
+    let store = tokens(&db);
+    let app = AppState::new().with_auth(auth_state(&db));
+    let router = app.router().layer(MockConnectInfo(test_addr()));
+
+    let admin = store
+        .create("admin".into(), "admin".into(), Scope::Admin, None)
+        .await
+        .unwrap();
+    let first = store
+        .create("alice".into(), "laptop".into(), Scope::Viewer, None)
+        .await
+        .unwrap();
+    let second = store
+        .create(
+            "bob".into(),
+            "ci".into(),
+            Scope::McpRead,
+            Some(Duration::from_secs(3600)),
+        )
+        .await
+        .unwrap();
+
+    let (status, body) = get_req(
+        &router,
+        "/api/v1/auth/tokens",
+        Some(&bearer(admin.plaintext().expose())),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rows = body["data"]["tokens"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+
+    // Each token is listed by stored hash and metadata only.
+    for created in [&first, &second] {
+        let row = rows
+            .iter()
+            .find(|row| row["id"] == created.id())
+            .unwrap_or_else(|| panic!("{} not listed", created.name()));
+        assert_eq!(row["name"], created.name());
+        assert_eq!(row["scope"], created.scope().as_str());
+        assert_eq!(row["actor_id"], created.actor_id());
+        assert_eq!(row["created_at"], json!(created.created_at()));
+        assert_eq!(row["expires_at"], json!(created.expires_at()));
+    }
+
+    // No plaintext token ever appears in the list response.
+    let text = body.to_string();
+    for created in [&admin, &first, &second] {
+        assert!(
+            !text.contains(created.plaintext().expose()),
+            "plaintext leaked for {}",
+            created.name()
+        );
+    }
+
+    // A viewer cannot list tokens.
+    let viewer = store
+        .create("v".into(), "viewer".into(), Scope::Viewer, None)
+        .await
+        .unwrap();
+    let (status, body) = get_req(
+        &router,
+        "/api/v1/auth/tokens",
+        Some(&bearer(viewer.plaintext().expose())),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "control_api.auth.insufficient_scope");
+}
+
+#[tokio::test]
+async fn admin_revokes_token_and_unknown_or_viewer_is_rejected() {
+    let db = db(clock()).await;
+    let store = tokens(&db);
+    let app = AppState::new().with_auth(auth_state(&db));
+    let router = app.router().layer(MockConnectInfo(test_addr()));
+
+    let admin = store
+        .create("admin".into(), "admin".into(), Scope::Admin, None)
+        .await
+        .unwrap();
+    let target = store
+        .create("bob".into(), "ci".into(), Scope::Viewer, None)
+        .await
+        .unwrap();
+    let target_header = bearer(target.plaintext().expose());
+
+    // The token authenticates before revocation.
+    let (status, _) = get_req(&router, "/api/v1/auth/me", Some(&target_header)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let uri = format!("/api/v1/auth/tokens/{}", target.id());
+    let (status, body) = delete_req(&router, &uri, Some(&bearer(admin.plaintext().expose()))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["deleted"], true);
+
+    // Revocation takes effect on the very next request.
+    let (status, body) = get_req(&router, "/api/v1/auth/me", Some(&target_header)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["code"], "control_api.auth.unauthenticated");
+
+    // An unknown id is a 404, not an authentication failure.
+    let (status, body) = delete_req(
+        &router,
+        "/api/v1/auth/tokens/does-not-exist",
+        Some(&bearer(admin.plaintext().expose())),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "control_api.auth.unknown_token");
+
+    // A viewer cannot revoke any token.
+    let viewer = store
+        .create("v".into(), "viewer".into(), Scope::Viewer, None)
+        .await
+        .unwrap();
+    let victim = store
+        .create("c".into(), "victim".into(), Scope::Viewer, None)
+        .await
+        .unwrap();
+    let uri = format!("/api/v1/auth/tokens/{}", victim.id());
+    let (status, body) =
+        delete_req(&router, &uri, Some(&bearer(viewer.plaintext().expose()))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "control_api.auth.insufficient_scope");
 }
 
 #[tokio::test]

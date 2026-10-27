@@ -262,6 +262,21 @@ async fn token_minting_is_master_only() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(response["error"]["code"], "control_api.not_found");
+
+    // Listing and revocation are master-only too.
+    let (status, response) = send(&h, "GET", "/api/v1/auth/tokens", Some(&h.admin), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(response["error"]["code"], "control_api.not_found");
+    let (status, response) = send(
+        &h,
+        "DELETE",
+        "/api/v1/auth/tokens/unknown",
+        Some(&h.admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(response["error"]["code"], "control_api.not_found");
 }
 
 #[tokio::test]
