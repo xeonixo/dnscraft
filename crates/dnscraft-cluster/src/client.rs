@@ -561,6 +561,16 @@ fn map_wire_error(error: &StreamError) -> ClusterError {
                 .unwrap_or_default(),
         },
         "cluster.master_unavailable" => ClusterError::MasterUnavailable,
+        "cluster.quota.exceeded" => ClusterError::QuotaExceeded {
+            node_id,
+            what: error
+                .params
+                .as_ref()
+                .and_then(|params| params.get("what"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("quota")
+                .to_owned(),
+        },
         "cluster.internal" => ClusterError::Internal {
             message: "rejected by the master".to_owned(),
         },

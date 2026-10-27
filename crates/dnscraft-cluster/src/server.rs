@@ -675,14 +675,11 @@ async fn write_relay(
     }
 }
 
-/// A node exceeded one of its `[cluster.quota]` rate limits.
-///
-/// The spec's error table has no rate-limit code, so this uses the
-/// `cluster.internal` fallback. See `SPEC-cluster.md` § Error codes: a
-/// dedicated `cluster.quota.exceeded` (ideally `429`) is the missing entry.
+/// A node exceeded one of its `[cluster.quota]` rate limits (HTTP 429).
 fn quota_exceeded(node_id: &str, what: &str) -> ClusterError {
-    ClusterError::Internal {
-        message: format!("node {node_id} exceeded its {what} quota"),
+    ClusterError::QuotaExceeded {
+        node_id: node_id.to_owned(),
+        what: what.to_owned(),
     }
 }
 
@@ -729,6 +726,7 @@ fn error_response(error: &ClusterError) -> Response {
         | ClusterError::LogStreamInvalid { .. }
         | ClusterError::LogGap { .. } => StatusCode::BAD_REQUEST,
         ClusterError::MasterUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+        ClusterError::QuotaExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     let mut body = json!({ "error": { "code": error.code() } });
@@ -744,6 +742,9 @@ fn error_response(error: &ClusterError) -> Response {
         }
         ClusterError::LogGap { missing } => {
             body["error"]["params"] = json!({ "missing": missing });
+        }
+        ClusterError::QuotaExceeded { node_id, what } => {
+            body["error"]["params"] = json!({ "node_id": node_id, "what": what });
         }
         _ => {}
     }

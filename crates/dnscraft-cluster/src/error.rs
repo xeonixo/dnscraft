@@ -110,6 +110,14 @@ pub enum ClusterError {
     /// Node clock skew above the threshold (status warning).
     #[error("cluster clock skew detected")]
     ClockSkew,
+    /// A node exceeded one of its `[cluster.quota]` rate limits (HTTP 429).
+    #[error("quota exceeded for node {node_id}: {what}")]
+    QuotaExceeded {
+        /// The node that exceeded the quota.
+        node_id: String,
+        /// Which quota (`relay request` / `log byte`).
+        what: String,
+    },
     /// Backend failure (filesystem, rcgen, SQLite). Crate-internal fallback.
     #[error("cluster internal error: {message}")]
     Internal {
@@ -145,6 +153,7 @@ impl ClusterError {
             Self::RuntimeCommandFailed { .. } => "cluster.runtime_command.failed",
             Self::CertPushFailed { .. } => "cluster.cert_push.failed",
             Self::ClockSkew => "cluster.clock_skew",
+            Self::QuotaExceeded { .. } => "cluster.quota.exceeded",
             Self::Internal { .. } => "cluster.internal",
         }
     }
@@ -196,6 +205,10 @@ mod tests {
                 message: "x".into(),
             },
             ClusterError::ClockSkew,
+            ClusterError::QuotaExceeded {
+                node_id: "node-a".into(),
+                what: "relay request".into(),
+            },
             ClusterError::Internal {
                 message: "x".into(),
             },

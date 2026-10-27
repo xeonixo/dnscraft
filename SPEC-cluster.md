@@ -535,6 +535,7 @@ control-api. Codes owned by other modules are forwarded unchanged (for example
 | Code | When / HTTP |
 |---|---|
 | `cluster.internal` | Backend failure (filesystem, rcgen, SQLite) with no more specific code |
+| `cluster.quota.exceeded` | A node exceeded one of its `[cluster.quota]` rate limits; `429` |
 | `cluster.role.invalid` | Role/config mismatch (e.g. sub-node without `master_url`) at startup; `500`/startup error |
 | `cluster.master_unavailable` | Sub-node cannot reach the master for an operation that cannot be buffered (runtime/token/admin write); `503` |
 | `cluster.master_conflict` | A second master or a node version ahead of the master is detected; connection refused |

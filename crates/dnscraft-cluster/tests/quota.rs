@@ -275,8 +275,8 @@ async fn relay_flood_is_rejected_per_node_and_refills_with_the_clock() {
     node.relay_write(relay("a2")).await.unwrap();
     // `relay_write` returns the master's status and body verbatim.
     let rejected = node.relay_write(relay("a3")).await.unwrap();
-    assert_eq!(rejected.status, 500);
-    assert_eq!(rejected.body["error"]["code"], "cluster.internal");
+    assert_eq!(rejected.status, 429);
+    assert_eq!(rejected.body["error"]["code"], "cluster.quota.exceeded");
 
     // The limit is per node: another node still has its full bucket.
     let other = enroll_node(&master, "node-b").await;
@@ -310,7 +310,7 @@ async fn log_byte_flood_is_rejected_and_refills_with_the_clock() {
     // The burst budget is exactly one serialized batch.
     node.post_logs(&payload).await.unwrap();
     let error = node.post_logs(&payload).await.unwrap_err();
-    assert_eq!(error.code(), "cluster.internal");
+    assert_eq!(error.code(), "cluster.quota.exceeded");
 
     master.clock.advance(Duration::from_secs(1));
     node.post_logs(&payload).await.unwrap();
