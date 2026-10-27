@@ -26,6 +26,7 @@ use crate::state::State;
 use crate::status::ClientsStatus;
 use crate::sync::{self, SyncResult};
 use crate::types::{ClientSource, MacAddr};
+use dnscraft_common::config::jittered;
 use tracing::warn;
 
 /// Base backoff after a 429 / 5xx (doubles each consecutive failure).
@@ -866,35 +867,6 @@ fn start_scheduler(engine: Weak<ClientEngine>, clock: Arc<dyn Clock>) -> SyncSch
     SyncScheduler {
         handle: Some(handle),
     }
-}
-
-/// Interval ±10 %, never below one second (unless base is below one second —
-/// then floor at `base` so short test intervals still work).
-pub(crate) fn jittered(base: Duration, salt: std::time::SystemTime) -> Duration {
-    if base.is_zero() {
-        return Duration::from_secs(1);
-    }
-    let nanos = base.as_nanos().min(u128::from(u64::MAX)) as u64;
-    let span = nanos / 10;
-    let mix = salt
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    let signed = (mix as i64) >> 32;
-    let max = span as i64;
-    let delta = if max == 0 {
-        0
-    } else {
-        signed.rem_euclid(max.saturating_mul(2).saturating_add(1)) - max
-    };
-    let floor = if base >= Duration::from_secs(1) {
-        1_000_000_000u64
-    } else {
-        base.as_nanos() as u64
-    };
-    let adjusted = nanos.saturating_add_signed(delta).max(floor);
-    Duration::from_nanos(adjusted)
 }
 
 fn hash_content(obs: &[UnifiObservation], nets: &[NetworkInfo], lookup: &ClientLookup) -> u64 {

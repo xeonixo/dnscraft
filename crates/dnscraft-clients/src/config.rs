@@ -12,6 +12,8 @@ use ipnet::IpNet;
 
 use crate::error::ClientsError;
 use crate::{Secret, UNIFI_API_KEY_ENV, read_secret};
+use dnscraft_common::config::normalise_domain;
+use dnscraft_common::net::is_loopback_host_str;
 
 /// serde adapter for an optional [`IpNet`], which has no serde implementation
 /// used by this crate. Uses the CIDR presentation form (`192.0.2.0/24`).
@@ -206,7 +208,7 @@ impl ClientsConfig {
         &mut self,
         lookup: impl FnOnce(&str) -> Result<Secret, ClientsError>,
     ) -> Result<(), ClientsError> {
-        self.local_domain = normalise_domain(&self.local_domain)?;
+        self.local_domain = normalise_domain(&self.local_domain).map_err(ClientsError::config)?;
         if self.local_domain.is_empty() {
             return Err(ClientsError::config("local_domain is empty"));
         }
@@ -296,7 +298,7 @@ fn validate_manual(entry: &mut ManualEntry, index: usize) -> Result<(), ClientsE
         }
     }
     if let Some(domain) = &mut entry.domain {
-        let normalised = normalise_domain(domain)?;
+        let normalised = normalise_domain(domain).map_err(ClientsError::config)?;
         if normalised.is_empty() {
             return Err(ClientsError::config(format!(
                 "manual[{index}].domain is empty"
@@ -305,32 +307,6 @@ fn validate_manual(entry: &mut ManualEntry, index: usize) -> Result<(), ClientsE
         *domain = normalised;
     }
     Ok(())
-}
-
-/// Normalises a domain: UTS 46 → ASCII, lower-case, no trailing dot.
-pub(crate) fn normalise_domain(input: &str) -> Result<String, ClientsError> {
-    let trimmed = input.trim().trim_end_matches('.');
-    if trimmed.is_empty() {
-        return Ok(String::new());
-    }
-    let ascii = idna::domain_to_ascii_cow(trimmed.as_bytes(), idna::AsciiDenyList::URL)
-        .map_err(|_| ClientsError::config(format!("invalid domain {input:?}")))?;
-    let s = ascii.into_owned().to_ascii_lowercase();
-    if s.is_empty() || s.starts_with('.') || s.contains("..") || s.ends_with('.') {
-        return Err(ClientsError::config(format!("invalid domain {input:?}")));
-    }
-    for label in s.split('.') {
-        if label.is_empty() || label.len() > 63 {
-            return Err(ClientsError::config(format!("invalid domain {input:?}")));
-        }
-    }
-    if s.len() > 253 {
-        return Err(ClientsError::config(format!(
-            "domain too long ({})",
-            s.len()
-        )));
-    }
-    Ok(s)
 }
 
 fn check_https_url(url: &str, allow_http_for_tests: bool, field: &str) -> Result<(), ClientsError> {
@@ -370,21 +346,6 @@ fn check_https_url(url: &str, allow_http_for_tests: bool, field: &str) -> Result
         )));
     }
     Ok(())
-}
-
-fn is_loopback_host_str(rest: &str) -> bool {
-    let host_port = rest.split('/').next().unwrap_or(rest);
-    let host = if host_port.starts_with('[') {
-        host_port
-            .trim_start_matches('[')
-            .split(']')
-            .next()
-            .unwrap_or("")
-    } else {
-        host_port.split(':').next().unwrap_or(host_port)
-    };
-    host.eq_ignore_ascii_case("localhost")
-        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 #[cfg(test)]

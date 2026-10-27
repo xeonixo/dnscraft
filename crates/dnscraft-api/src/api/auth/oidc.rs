@@ -46,10 +46,11 @@ use serde_json::json;
 use super::Role;
 use super::ensure_same_origin;
 use super::sessions::{secure_cookie, session_set_cookie};
-use crate::clock::{Clock, SystemClock, unix_seconds};
+use crate::clock::{Clock, SystemClock};
 use crate::config::AuthConfig;
 use crate::error::ControlApiError;
 use crate::server::AppState;
+use dnscraft_common::clock::unix_seconds;
 
 /// Callback for the authorization URL endpoint.
 const CALLBACK_PATH: &str = "/api/v1/auth/oidc/callback";

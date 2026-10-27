@@ -9,12 +9,13 @@ use ipnet::IpNet;
 use ring::digest::{Context, SHA256};
 use tracing::warn;
 
-use crate::config::{ClientsConfig, LocalDomainMode, ManualEntry, normalise_domain};
+use crate::config::{ClientsConfig, LocalDomainMode, ManualEntry};
 use crate::error::ClientsError;
 use crate::label::{fqdn, normalise_label, suffixed};
 use crate::lookup::ClientLookup;
 use crate::state::{RetainedClient, State};
 use crate::types::{ClientId, ClientInfo, ClientSource, MacAddr, VlanInfo};
+use dnscraft_common::config::normalise_domain;
 
 /// Soft warn threshold (SPEC-clients.md).
 pub const WARN_CLIENT_COUNT: usize = 2_000;
@@ -89,7 +90,7 @@ pub fn build(
     cfg: &ClientsConfig,
     now: SystemTime,
 ) -> Result<MergeOutput, ClientsError> {
-    let default_domain = normalise_domain(&cfg.local_domain)?;
+    let default_domain = normalise_domain(&cfg.local_domain).map_err(ClientsError::config)?;
     if default_domain.is_empty() {
         return Err(ClientsError::config("local_domain is empty"));
     }
@@ -190,7 +191,7 @@ pub fn build(
         let id = manual_client_id(entry)?;
         let domain = match &entry.domain {
             Some(d) => {
-                let n = normalise_domain(d)?;
+                let n = normalise_domain(d).map_err(ClientsError::config)?;
                 if n.is_empty() {
                     return Err(ClientsError::config(format!("manual[{i}].domain is empty")));
                 }

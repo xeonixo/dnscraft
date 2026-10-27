@@ -7,9 +7,9 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use crate::config::normalise_domain;
 use crate::error::ClientsError;
 use crate::types::ClientId;
+use dnscraft_common::config::normalise_domain;
 
 /// Maximum DNS label length in octets (RFC 1035).
 pub const MAX_LABEL_LEN: usize = 63;
@@ -54,7 +54,7 @@ pub fn is_normalised_label(label: &str) -> bool {
 /// [`is_normalised_label`]); this rejects dots, upper case, and other bytes
 /// so a tampered cache cannot leak into FQDNs / PTR names.
 pub fn fqdn(label: &str, domain: &str) -> Result<String, ClientsError> {
-    let domain = normalise_domain(domain)?;
+    let domain = normalise_domain(domain).map_err(ClientsError::config)?;
     if domain.is_empty() {
         return Err(ClientsError::config("fqdn domain is empty"));
     }

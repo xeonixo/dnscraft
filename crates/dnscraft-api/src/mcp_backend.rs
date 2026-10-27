@@ -1575,8 +1575,8 @@ impl McpBackend for ControlMcpBackend {
             };
         let now = self.inner.clock.now();
         let expires_at = now + lifetime;
-        let created_secs = crate::clock::unix_seconds(now);
-        let expires_secs = crate::clock::unix_seconds(expires_at);
+        let created_secs = dnscraft_common::clock::unix_seconds(now);
+        let expires_secs = dnscraft_common::clock::unix_seconds(expires_at);
         let rule_id = crate::query_log::new_id().map_err(backend_error)?;
         let cap = self.inner.mcp_config.max_custom_rules_per_set as usize;
         let include = params.include_subdomains;

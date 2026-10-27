@@ -18,10 +18,11 @@ use axum::http::{HeaderMap, Method};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-use crate::clock::{Clock, unix_seconds};
+use crate::clock::Clock;
 use crate::config::RateLimitConfig;
 use crate::error::ControlApiError;
 use crate::server::AppState;
+use dnscraft_common::clock::unix_seconds;
 
 /// Default maximum number of distinct sources tracked before LRU eviction.
 pub const DEFAULT_MAX_TRACKED_SOURCES: usize = 10_000;

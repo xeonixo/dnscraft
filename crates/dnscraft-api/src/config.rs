@@ -377,22 +377,17 @@ fn check_duration_range(
 /// Whether an address may host the internal-only API (loopback/private/ULA, never wildcard).
 pub(crate) fn is_internal_bind(ip: IpAddr) -> bool {
     match ip.to_canonical() {
-        IpAddr::V4(v4) => is_private_v4(v4),
+        // The shared helper also treats `0.0.0.0/8` and broadcast as private;
+        // the API must never bind those. Loopback/private/ULA only.
+        IpAddr::V4(v4) => {
+            v4.octets()[0] != 0 && !v4.is_broadcast() && dnscraft_common::net::is_private_v4(v4)
+        }
         IpAddr::V6(v6) => is_private_v6(v6),
     }
 }
 
-fn is_private_v4(v4: Ipv4Addr) -> bool {
-    v4.is_private() || v4.is_loopback() || v4.is_link_local() || is_cgnat(v4)
-}
-
 fn is_private_v6(v6: Ipv6Addr) -> bool {
     v6.is_loopback() || v6.is_unicast_link_local() || v6.is_unique_local()
-}
-
-fn is_cgnat(v4: Ipv4Addr) -> bool {
-    let o = v4.octets();
-    o[0] == 100 && (o[1] & 0xc0) == 64
 }
 
 #[cfg(test)]

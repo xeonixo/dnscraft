@@ -13,12 +13,12 @@ use std::time::SystemTime;
 
 use ipnet::IpNet;
 
-use crate::config::normalise_domain;
 use crate::config::{ClientsConfig, ManualEntry};
 use crate::error::ClientsError;
 use crate::merge::{self, MergeOutput};
 use crate::state::State;
 use crate::types::ClientInfo;
+use dnscraft_common::config::normalise_domain;
 
 /// Immutable client identity snapshot.
 #[derive(Clone, Debug)]

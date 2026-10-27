@@ -15,6 +15,7 @@ workspace = true
 async-trait = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
+dnscraft-common = { path = "../dnscraft-common" }
 http = { workspace = true }
 http-body-util = { workspace = true }
 idna = { workspace = true }

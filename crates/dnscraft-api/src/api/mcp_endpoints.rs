@@ -24,7 +24,6 @@ use crate::api::auth::Authenticated;
 use crate::api::config_routes::{actor, json_body, service, stored_snapshot};
 use crate::api::pagination::Pagination;
 use crate::api::response::success;
-use crate::clock::unix_seconds;
 use crate::error::ControlApiError;
 use crate::mcp_backend::{
     self, add_rule_to_snapshot, canonical_allow_domain, canonical_block_rule, duration_error,
@@ -33,6 +32,7 @@ use crate::mcp_backend::{
 };
 use crate::query_log::new_id;
 use crate::server::AppState;
+use dnscraft_common::clock::unix_seconds;
 
 use dnscraft_filtering::{DomainName, TempAllow};
 use dnscraft_mcp::ProtectedDomains;

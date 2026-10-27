@@ -1,7 +1,7 @@
 //! Injectable time source.
 use std::fmt;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
 
 /// Source of wall-clock time.
@@ -81,6 +81,14 @@ pub fn add_duration(now: SystemTime, d: Duration) -> SystemTime {
     now.checked_add(d).unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
+/// Converts a wall-clock instant to unix seconds (negative for pre-epoch times).
+pub fn unix_seconds(time: SystemTime) -> i64 {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs() as i64,
+        Err(error) => -(error.duration().as_secs() as i64),
+    }
+}
+
 /// Waits until `clock.now() >= deadline`.
 ///
 /// Uses [`Clock::tick_notify`] when present (manual clocks). Otherwise sleeps
@@ -135,6 +143,12 @@ mod tests {
     #[test]
     fn system_clock_is_after_epoch() {
         assert!(SystemClock.now() > SystemTime::UNIX_EPOCH);
+    }
+
+    #[test]
+    fn unix_seconds_round_trips() {
+        let time = SystemTime::UNIX_EPOCH + Duration::from_secs(1234);
+        assert_eq!(unix_seconds(time), 1234);
     }
 
     #[derive(Debug)]

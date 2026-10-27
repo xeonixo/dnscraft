@@ -65,14 +65,6 @@ impl Clock for ManualClock {
     }
 }
 
-/// Converts a wall-clock instant to unix seconds (negative for pre-epoch times).
-pub(crate) fn unix_seconds(time: SystemTime) -> i64 {
-    match time.duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs() as i64,
-        Err(error) => -(error.duration().as_secs() as i64),
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -85,11 +77,5 @@ mod tests {
         assert_eq!(clock.now(), start);
         clock.advance(Duration::from_secs(5));
         assert_eq!(clock.now(), start + Duration::from_secs(5));
-    }
-
-    #[test]
-    fn unix_seconds_round_trips() {
-        let time = SystemTime::UNIX_EPOCH + Duration::from_secs(1234);
-        assert_eq!(unix_seconds(time), 1234);
     }
 }

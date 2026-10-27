@@ -82,12 +82,8 @@ pub use sync::{
     snapshot_digest,
 };
 
-use ring::digest::{SHA256, digest};
-
 /// Lowercase hex SHA-256 of `bytes` (used for fingerprints and token hashes).
-pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
-    hex(digest(&SHA256, bytes).as_ref())
-}
+pub(crate) use dnscraft_common::hash::sha256_hex;
 
 /// Lowercase hex encoding.
 fn hex(bytes: &[u8]) -> String {

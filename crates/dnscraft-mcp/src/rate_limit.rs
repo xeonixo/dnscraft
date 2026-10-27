@@ -14,8 +14,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::clock::{Clock, unix_seconds};
+use crate::clock::Clock;
 use crate::config::McpConfig;
+use dnscraft_common::clock::unix_seconds;
 
 /// Which rate-limit bucket a call falls into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

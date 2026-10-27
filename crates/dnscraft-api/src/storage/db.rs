@@ -8,8 +8,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::db_err;
 use super::migrations::{migrate, schema_version};
-use crate::clock::{Clock, unix_seconds};
+use crate::clock::Clock;
 use crate::error::ControlApiError;
+use dnscraft_common::clock::unix_seconds;
 
 /// A handle to the control-api SQLite database.
 ///

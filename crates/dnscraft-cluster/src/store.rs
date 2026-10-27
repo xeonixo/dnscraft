@@ -9,9 +9,9 @@
 use std::fmt;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
-use dnscraft_common::clock::Clock;
+use dnscraft_common::clock::{Clock, unix_seconds};
 use dnscraft_common::secret::Secret;
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -496,13 +496,6 @@ fn random_token() -> Result<String, ClusterError> {
             message: format!("join token randomness: {error}"),
         })?;
     Ok(crate::hex(&bytes))
-}
-
-fn unix_seconds(time: SystemTime) -> i64 {
-    match time.duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs() as i64,
-        Err(error) => -(error.duration().as_secs() as i64),
-    }
 }
 
 pub(crate) fn duration_seconds(duration: Duration) -> i64 {

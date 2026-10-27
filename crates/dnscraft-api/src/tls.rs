@@ -27,8 +27,9 @@ use serde_json::{Value, json};
 
 use crate::Secret;
 use crate::audit::sha256_hex;
-use crate::clock::{Clock, unix_seconds};
+use crate::clock::Clock;
 use crate::error::ControlApiError;
+use dnscraft_common::clock::unix_seconds;
 
 /// Certificate validity: one year.
 const VALIDITY_SECS: i64 = 365 * 24 * 3600;

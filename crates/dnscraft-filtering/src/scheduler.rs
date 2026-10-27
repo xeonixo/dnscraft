@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 use crate::clock::{self, Clock};
 use crate::engine::{FilterEngine, ListSelection};
 use crate::set::DEFAULT_UPDATE_INTERVAL;
+use dnscraft_common::config::jittered;
 
 /// Runs `update_lists(All)` on a jittered interval until [`UpdateScheduler::stop`],
 /// the scheduler is dropped, or the engine is gone.
@@ -98,7 +99,12 @@ async fn run_loop(
         let Some(interval) = engine.upgrade().map(|e| e.update_interval()) else {
             return;
         };
-        let wait = jittered(interval, clock.now());
+        let base = if interval.is_zero() {
+            DEFAULT_UPDATE_INTERVAL
+        } else {
+            interval
+        };
+        let wait = jittered(base, clock.now()).max(Duration::from_secs(1));
         let deadline = clock.now() + wait;
         clock::wait_until(clock.as_ref(), deadline, tick.as_ref()).await;
         if stop.load(Ordering::SeqCst) {
@@ -108,49 +114,5 @@ async fn run_loop(
             return;
         };
         let _ = eng.update_lists(ListSelection::All).await;
-    }
-}
-
-/// Interval ±10 %, never below one second.
-pub(crate) fn jittered(base: Duration, salt: std::time::SystemTime) -> Duration {
-    let base = if base.is_zero() {
-        DEFAULT_UPDATE_INTERVAL
-    } else {
-        base
-    };
-    let nanos = base.as_nanos().min(u128::from(u64::MAX)) as u64;
-    let span = nanos / 10;
-    let mix = salt
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    // Map high bits to [-span, +span].
-    let signed = (mix as i64) >> 32;
-    let max = span as i64;
-    let delta = if max == 0 {
-        0
-    } else {
-        signed.rem_euclid(max.saturating_mul(2).saturating_add(1)) - max
-    };
-    let adjusted = nanos.saturating_add_signed(delta).max(1_000_000_000);
-    Duration::from_nanos(adjusted)
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use super::*;
-    use std::time::{Duration, SystemTime};
-
-    #[test]
-    fn jitter_stays_within_ten_percent() {
-        let base = Duration::from_secs(1000);
-        for i in 0..50 {
-            let salt = SystemTime::UNIX_EPOCH + Duration::from_secs(i * 17);
-            let j = jittered(base, salt);
-            assert!(j >= Duration::from_secs(900), "{j:?}");
-            assert!(j <= Duration::from_secs(1100), "{j:?}");
-        }
     }
 }

@@ -16,3 +16,4 @@ tokio = { workspace = true }
 zeroize = { workspace = true }
 serde = { workspace = true }
 idna = { workspace = true }
+ring = { workspace = true }

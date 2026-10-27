@@ -54,8 +54,6 @@ const KEY_MODIFIERS: &[&str] = &[
 /// provenance. `session_id` is deliberately *not* listed here (it is secret).
 const EXACT_ALLOW_KEYS: &[&str] = &["token_id"];
 
-const HEX: &[u8; 16] = b"0123456789abcdef";
-
 /// Redacts secret material from `value`, recursively, returning a new value.
 ///
 /// An object key is redacted when its tokens contain a [`SECRET_TOKENS`] token
@@ -191,15 +189,7 @@ pub(crate) fn contains_redacted_placeholder(value: &Value) -> bool {
 }
 
 /// SHA-256 hex digest of `bytes` (lowercase, 64 characters).
-pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
-    let mut out = String::with_capacity(digest.as_ref().len() * 2);
-    for &b in digest.as_ref() {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
-}
+pub(crate) use dnscraft_common::hash::sha256_hex;
 
 /// Redacts and digests one optional snapshot.
 ///

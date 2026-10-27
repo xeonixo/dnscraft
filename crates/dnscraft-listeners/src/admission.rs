@@ -52,7 +52,9 @@ fn is_private_source(ip: IpAddr) -> bool {
 }
 
 fn is_private_v4(v4: Ipv4Addr) -> bool {
-    v4.is_private() || v4.is_loopback() || v4.is_link_local() || is_cgnat(v4)
+    // The shared helper also covers `0.0.0.0/8` and broadcast, which are not
+    // private source ranges here (RFC 1918, loopback, link-local, CGNAT).
+    v4.octets()[0] != 0 && !v4.is_broadcast() && dnscraft_common::net::is_private_v4(v4)
 }
 
 fn is_private_v6(v6: Ipv6Addr) -> bool {
@@ -60,11 +62,6 @@ fn is_private_v6(v6: Ipv6Addr) -> bool {
         return is_private_v4(v4);
     }
     v6.is_loopback() || v6.is_unicast_link_local() || v6.is_unique_local()
-}
-
-fn is_cgnat(v4: Ipv4Addr) -> bool {
-    let o = v4.octets();
-    o[0] == 100 && (o[1] & 0xc0) == 64
 }
 
 /// Client-ID presentation state after SNI / DoH path parsing.
