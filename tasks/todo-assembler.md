@@ -32,9 +32,9 @@
 
 ## Phase 2 — Apply + store
 
-- [ ] **AS8** `ApplyFiltering`/`ApplyClients`/`ApplyPolicy`/`ApplyListeners`/`ApplyTls` real impls
+- [x] **AS8** `ApplyFiltering`/`ApplyClients`/`ApplyPolicy`/`ApplyListeners`/`ApplyTls` real impls
       (D2): deserialize the JSON section and call the module's `apply_config`/rebuild. Closes GA5.
-- [ ] **AS9** `Db` + `ConfigStore` + `ConfigService` under `data_dir`, with bootstrap seeding (D4):
+- [x] **AS9** `Db` + `ConfigStore` + `ConfigService` under `data_dir`, with bootstrap seeding (D4):
       TOML → JSON snapshot → seed `config_versions` once. Closes GA28.
 
 ## Phase 3 — control-api + MCP
