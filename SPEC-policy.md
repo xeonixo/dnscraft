@@ -80,7 +80,7 @@ reachable default.
 
 | Object | Owns |
 |---|---|
-| **View** | Selection keys (CIDR ranges); optional `nodes` validity (which nodes the view exists on; empty = all); split-horizon **records** (A, AAAA, CNAME, TXT, SRV, MX); pointer to one **profile** |
+| **View** | Selection keys (CIDR ranges); optional `nodes` validity (which nodes the view exists on; empty = all); pointer to one **profile** |
 | **Profile** | `filter_set` id; pause protection; schedules (low priority); bypass controls; rebind exceptions; `suppress_aaaa`; SafeSearch; optional allow-list of forward-zone ids |
 
 Blocked services and custom rules live on the **filter set** ([SPEC-filtering.md](SPEC-filtering.md)); the profile selects which set is active (schedules may swap the set — see below).
@@ -103,7 +103,7 @@ For each query, after selection:
 
 | Step | Action | Why this order |
 |---|---|---|
-| 1 | **View local records** — exact name in the view’s record table (A/AAAA/CNAME/TXT/SRV/MX/**PTR**). If the owner name has a CNAME and the qtype is not CNAME, return the CNAME (and follow **only** if the target is also a view-local name; otherwise leave following to the recursive path / client — do not half-resolve through filters twice) | Split-horizon must win over public data and filters for names the admin authored |
+| 1 | **Local records** — exact name in the global record table, using the selected view's `overrides` value when present (else the default) (A/AAAA/CNAME/TXT/SRV/MX/**PTR**). If the owner name has a CNAME and the qtype is not CNAME, return the CNAME (and follow **only** if the target is also a local name; otherwise leave following to the recursive path / client — do not half-resolve through filters twice) | Split-horizon must win over public data and filters for names the admin authored |
 | 2 | **ClientDirectory local names / PTR** — only names `ClientDirectory` **actually knows** (FQDN match via `by_name`, or reverse for private/ULA PTR) are answered locally (**skipped** if step 1 already answered). A known name with no address of the queried type → **NODATA** (NOERROR empty), not fall-through. An **unknown** name under a local domain is **not** answered here: it continues to step 3 onward (filter → forward/recursion), because the UniFi DHCP `domainName` may be a real public domain (e.g. the one that also hosts `dns.<domain>`). Exception, see *Local domains and special-use suffixes* | Same “answer locally” idea; data from UniFi/manuals, not the view editor |
 | 3 | **Bypass / canary** — per profile: `use-application-dns.net` → NXDOMAIN; `mask.icloud.com` / `mask-h2.icloud.com` → configured answers (block Private Relay or not) | Must not depend on filter lists; fixed product behaviour |
 | 4 | **Filter original qname** — `FilterEngine::match_name(set, name, qtype)` | Block/allow/rewrite before spending recursion budget; block wins over SafeSearch (a blocked YouTube service must not be bypassed by the rewrite) |
@@ -168,11 +168,16 @@ pub struct FilterHit {
 
 ### Local records
 
-- Per view: map of owner name → RR sets for types A, AAAA, CNAME, TXT, SRV, MX,
-  **PTR** (static PTR overrides ClientDirectory when present).
+- **Global name space**: one map of owner name → RR sets for types A, AAAA,
+  CNAME, TXT, SRV, MX, **PTR** (static PTR overrides ClientDirectory when
+  present). A name exists across all zones; its records are **not** duplicated
+  per view.
+- A record's `rdata` is the **default** for all zones. Optional `overrides`
+  keyed by view id (`{ view_id: rdata }`) replace the value in that zone; a
+  zone without an override uses the default.
 - TTL configurable per record (default 60 s).
-- CNAME at a node means no other types at that node (RFC 1034); validate on apply.
-- Wildcards: **exact names only in v1** (no `*.example` view records). Revisit if the UI needs them.
+- CNAME at a name means no other types at that name (RFC 1034); validate on apply.
+- Wildcards: **exact names only in v1** (no `*.example` records). Revisit if the UI needs them.
 
 ### Other protocol defaults (from SPEC.md)
 
@@ -195,7 +200,7 @@ pub struct FilterHit {
   resolver's `ForwardZone` stays unchanged); then the normal rules and exceptions apply. Recursive
   (non-forwarded) answers are always checked. The decision record notes
   `forward_zone` so the skip is visible.
-- Filter `$dnsrewrite` / view records that intentionally point at private IPs
+- Filter `$dnsrewrite` / local records that intentionally point at private IPs
   are not subject to rebind (synthetic answers **skip** step 10).
 - Complementary to list-based rebind rules in the reference filter set (e.g.
   HaGeZi DNS Rebind Protection): lists block **qnames**; this step sanitises
@@ -384,16 +389,17 @@ subnets = ["192.0.2.0/24", "2001:db8:1::/64"]
 profile = "default"
 # nodes = ["node-1", "node-2"]   # leer = auf allen Nodes gültig
 
-[[policy.views.records]]
-name = "nas.lan.example.com"
-type = "A"
-rdata = "192.0.2.10"
-ttl = 60
-
 [[policy.views]]
 id = "default"
 subnets = []               # catch-all
 profile = "default"
+
+[[policy.records]]
+name = "nas.lan.example.com"
+type = "A"
+rdata = "192.0.2.10"        # Standardwert für alle Zonen
+ttl = 60
+# overrides = { "guests" = "192.0.2.50", "vpn" = "10.9.0.20" }
 
 [[policy.profiles]]
 id = "default"
@@ -439,7 +445,7 @@ rebind_exceptions = ["*.example.com"]
 ## Success Criteria
 
 1. Selection table tests match the LPM / default rules (Client IDs never change the selection).
-2. Pipeline golden tests: view record and ClientDirectory answers never hit the
+2. Pipeline golden tests: local record and ClientDirectory answers never hit the
    resolver; blocked qnames never hit the resolver; CNAME chain block works.
 3. Rebind strips private answers except exceptions and forward-zone answers
    (unless listed in `rebind_check_forward_zones`); filter/view synthetics skip rebind.
@@ -475,8 +481,8 @@ Schedule time zones: ship UTC-only (current) or add a profile/timezone field lat
 9. **Canaries:** implement against current Apple/Mozilla docs at coding time;
    cite URLs; mark unverified until checked.
 10. **DDR / SVCB for `_dns.resolver.arpa`:** **listeners** synthesise DDR answers
-    using hostnames/ports from tls + listener config. Policy view records are
-    **not** required for DDR. (Listeners may still call policy for the client’s
+    using hostnames/ports from tls + listener config. Policy local records are
+    **not** required for DDR. (Listeners may still call policy for the client's
     normal queries on the LAN.)
 11. Spec status: **approved by the owner 2026-10-25** (incl. the Claude review corrections).
 12. **Review 2026-10-25:** PTR in view records; CNAME follow only within view;
@@ -488,6 +494,12 @@ Schedule time zones: ship UTC-only (current) or add a profile/timezone field lat
     Do53; the Client ID only authenticates the client to the listener and
     enriches the log, never the chosen zone. The UI must let the admin create
     zones and their subnet ranges themselves.
+14. **Review 2026-10-27 (owner):** local records are a **global name space**, not
+    per-view. A name exists once across all zones; a record's `rdata` is the
+    default for every zone, with optional `overrides` keyed by view id (e.g.
+    `nas.lan` resolves one way in Gäste, another in VPN). The UI keeps names and
+    zones separate: **Zonen** = selection scopes, **Namen** = shared records with
+    per-zone overrides.
 13. **Review 2026-10-25 (Claude):** pipeline reordered to filter original qname →
     SafeSearch → filter rewritten host (block wins over SafeSearch); steps
     renumbered (rebind is now step 10). Only names `ClientDirectory` knows are
