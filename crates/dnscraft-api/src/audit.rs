@@ -2,8 +2,6 @@
 
 use serde_json::{Map, Value};
 
-use dnscraft_mcp::McpConfig;
-
 use crate::error::ControlApiError;
 use crate::storage::{AuditRecord, Db};
 
@@ -352,6 +350,8 @@ mod tests {
     use std::time::Duration;
 
     use serde_json::json;
+
+    use dnscraft_mcp::McpConfig;
 
     use super::*;
     use crate::config::{

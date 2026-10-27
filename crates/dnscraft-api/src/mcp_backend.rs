@@ -13,8 +13,8 @@ use dnscraft_mcp::backend::{BackendError, McpBackend};
 use dnscraft_mcp::dto::{
     AddRuleParams, AddRuleResult, AnswerRecord, AuditEntry, AuditResult, DnssecCounts,
     ExplainBlockResult, ExplainReason, FilteringStatus, ListRulesParams, ListRulesResult,
-    NodeStatus, PauseDuration, PauseInfo, PauseParams, PauseResult, QType, QueryClient,
-    QueryDetail, QueryLogEntry, QueryLogFilter as McpQueryLogFilter, QueryLogResult,
+    McpRuleInfo, NodeStatus, PauseDuration, PauseInfo, PauseParams, PauseResult, QType,
+    QueryClient, QueryDetail, QueryLogEntry, QueryLogFilter as McpQueryLogFilter, QueryLogResult,
     QueryLogSearch, QueryName, QueryTimings, RemoveRuleParams, RemoveRuleResult, ResolverStatus,
     ResumeResult, Selection, StatsParams, StatsPeriod, StatsResult, SynthesizedAnswer,
     TempAllowInfo, TempAllowParams, TempAllowResult, TestQueryFilter, TestQueryResult, TlsStatus,
@@ -28,6 +28,8 @@ use time::format_description::well_known::Rfc3339;
 use crate::api::auth::roles::Scope;
 use crate::api::query_log_routes::parse_timestamp;
 use crate::audit::Audit;
+use crate::clock::Clock;
+use crate::config_apply::ConfigService;
 use crate::error::ControlApiError;
 use crate::query_log::{Order, OrderBy, QueryLog, QueryLogFilter};
 use crate::stats::TopBy;
@@ -41,11 +43,15 @@ pub(crate) struct McpBackendInner {
     pub query_log: Option<Arc<QueryLog>>,
     pub tokens: Option<crate::api::auth::TokenStore>,
     pub audit: Option<Arc<Audit>>,
+    pub config: Option<Arc<ConfigService>>,
+    pub clock: Arc<dyn Clock>,
     pub tls: Option<Arc<dyn TlsStatusProvider>>,
     pub resolver_cache_size: Arc<AtomicU64>,
     pub node_id: String,
     pub version: String,
     pub start_time: std::time::Instant,
+    // Consumed by the M22/M23 write and runtime endpoints.
+    #[allow(dead_code)]
     pub mcp_config: dnscraft_mcp::McpConfig,
 }
 
@@ -88,6 +94,8 @@ pub fn mcp_backend_for_test(query_log: Option<Arc<QueryLog>>) -> Arc<dyn McpBack
         query_log,
         tokens: None,
         audit: None,
+        config: None,
+        clock: Arc::new(crate::clock::SystemClock),
         tls: None,
         resolver_cache_size: Arc::new(AtomicU64::new(0)),
         node_id: "test".to_owned(),
@@ -100,7 +108,7 @@ pub fn mcp_backend_for_test(query_log: Option<Arc<QueryLog>>) -> Arc<dyn McpBack
 // ---- helpers ----
 
 fn default_set() -> SetId {
-    SetId::from_str("default").unwrap()
+    SetId::from_str("default").unwrap_or_else(|_| unreachable!("default is a valid set id"))
 }
 
 fn resolve_set(id: Option<&str>) -> SetId {
@@ -112,7 +120,7 @@ fn set_name(id: Option<&str>) -> String {
     id.unwrap_or("default").to_owned()
 }
 
-fn rfc3339(ts: SystemTime) -> String {
+pub(crate) fn rfc3339(ts: SystemTime) -> String {
     let d = ts.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
     OffsetDateTime::from_unix_timestamp_nanos((d.as_nanos() as i128).min(i64::MAX as i128))
         .unwrap_or(OffsetDateTime::UNIX_EPOCH)
@@ -326,6 +334,299 @@ fn selection_cause_json(cause: &dnscraft_policy::SelectionCause) -> Selection {
     }
 }
 
+/// Maps a control-api error onto the MCP backend's coded-error shape.
+fn backend_error(err: ControlApiError) -> BackendError {
+    match err {
+        ControlApiError::Module { code, params } => BackendError::Coded {
+            code: code.to_owned(),
+            params,
+        },
+        other => BackendError::Internal {
+            message: other.code().to_owned(),
+        },
+    }
+}
+
+fn unknown_set(set: &SetId) -> ControlApiError {
+    ControlApiError::Module {
+        code: "policy.config.unknown_filter_set",
+        params: Some(json!({ "filter_set_id": set.as_str() })),
+    }
+}
+
+fn paginate<T: Clone>(all: Vec<T>, limit: u32, offset: u32) -> (Vec<T>, bool, Option<u32>) {
+    let skip = (offset as usize).min(all.len());
+    let page = &all[skip..];
+    let count = page.len().min(limit as usize);
+    let has_more = count < page.len();
+    (
+        page[..count].to_vec(),
+        has_more,
+        has_more.then(|| offset.saturating_add(count as u32)),
+    )
+}
+
+/// Parses a stored `created_at`/`expires_at`: unix seconds or RFC 3339.
+fn stored_time(value: &Value) -> Option<SystemTime> {
+    match value {
+        Value::Number(number) => number
+            .as_u64()
+            .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds)),
+        Value::String(raw) => OffsetDateTime::parse(raw, &Rfc3339)
+            .ok()
+            .and_then(|time| u64::try_from(time.unix_timestamp()).ok())
+            .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds)),
+        _ => None,
+    }
+}
+
+/// Explains a filtered name against the current filtering engine state.
+///
+/// Shared by the MCP tool and `POST /api/v1/filtering/explain-block` so the two
+/// surfaces cannot drift.
+pub(crate) fn explain(
+    filter: &FilterEngine,
+    now: SystemTime,
+    domain: &str,
+    profile_id: Option<&str>,
+    qtype: QType,
+) -> Result<ExplainBlockResult, ControlApiError> {
+    let name = DomainName::parse(domain).map_err(|_| ControlApiError::Module {
+        code: "filter_name.invalid_char",
+        params: Some(json!({ "domain": domain })),
+    })?;
+    let set = resolve_set(profile_id);
+    let verdict = filter
+        .match_name(&set, &name, filter_qtype(qtype), now)
+        .map_err(|_| unknown_set(&set))?;
+    let set_str = set_name(profile_id);
+    let (verdict, reason) = match &verdict {
+        Verdict::Pass | Verdict::Allowed(_) => ("allowed".to_owned(), None),
+        Verdict::Blocked(reason) => (
+            "blocked".to_owned(),
+            Some(ExplainReason {
+                rule_text: reason.rule.to_string(),
+                source: reason_source_str(&reason.source),
+                important: reason.important,
+                block_mode: String::new(),
+            }),
+        ),
+        Verdict::Rewrite(_, _) => ("allowed".to_owned(), None),
+    };
+    Ok(ExplainBlockResult {
+        domain: name.as_str().to_owned(),
+        profile_id: set_str.clone(),
+        filter_set_id: set_str,
+        verdict,
+        reason,
+    })
+}
+
+/// Lists MCP-managed entries for one filter set.
+///
+/// Shared by the MCP tool and `GET /api/v1/filtering/mcp-rules`. Stored rules
+/// are read from `snapshot`; temporary allows and pauses come from the engine.
+pub(crate) fn list_mcp_rules(
+    filter: &FilterEngine,
+    snapshot: Option<&Value>,
+    now: SystemTime,
+    params: &ListRulesParams,
+) -> Result<ListRulesResult, ControlApiError> {
+    let set = resolve_set(params.filter_set_id.as_deref());
+    let set_str = set_name(params.filter_set_id.as_deref());
+    let mut result = ListRulesResult {
+        filter_set_id: set_str.clone(),
+        kind: params.kind.clone(),
+        ..Default::default()
+    };
+    match params.kind.as_str() {
+        "temporary_allows" => {
+            let allows = filter
+                .list_temporary_allows(&set, now)
+                .map_err(|_| unknown_set(&set))?;
+            let all: Vec<_> = allows
+                .into_iter()
+                .map(|allow| TempAllowInfo {
+                    domain: allow.domain.to_string(),
+                    include_subdomains: allow.include_subdomains,
+                    created_at: rfc3339(allow.created_at),
+                    expires_at: rfc3339(allow.until),
+                    filter_set_id: set_str.clone(),
+                })
+                .collect();
+            let (page, has_more, next_offset) = paginate(all, params.limit, params.offset);
+            result.temporary_allows = page;
+            result.has_more = has_more;
+            result.next_offset = next_offset;
+        }
+        "pauses" => {
+            if let Some(until) = filter.paused_until(&set) {
+                result.pauses = vec![PauseInfo {
+                    filter_set_id: set_str.clone(),
+                    paused_until: rfc3339(until),
+                }];
+            }
+        }
+        "rules" => {
+            let stored = snapshot.and_then(|snapshot| {
+                snapshot
+                    .get("filtering")
+                    .and_then(|section| section.get("sets"))
+                    .and_then(Value::as_array)
+                    .and_then(|sets| {
+                        sets.iter()
+                            .find(|set| set.get("id").and_then(Value::as_str) == Some(&set_str))
+                    })
+            });
+            if snapshot.is_some() && stored.is_none() {
+                return Err(unknown_set(&set));
+            }
+            let all: Vec<_> = stored
+                .and_then(|set| set.get("mcp_rules"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|rule| rule_info(rule, &set_str, now))
+                .collect();
+            let (page, has_more, next_offset) = paginate(all, params.limit, params.offset);
+            result.rules = page;
+            result.has_more = has_more;
+            result.next_offset = next_offset;
+        }
+        _ => {
+            return Err(ControlApiError::Module {
+                code: "mcp.invalid_input",
+                params: Some(json!({
+                    "reason": "kind must be rules, temporary_allows or pauses"
+                })),
+            });
+        }
+    }
+    Ok(result)
+}
+
+/// Converts one stored `mcp_rules[]` entry, dropping expired or malformed ones.
+fn rule_info(rule: &Value, set_str: &str, now: SystemTime) -> Option<McpRuleInfo> {
+    let domain = DomainName::parse(rule.get("domain")?.as_str()?).ok()?;
+    let include_subdomains = rule.get("include_subdomains")?.as_bool()?;
+    let created_at = stored_time(rule.get("created_at")?)?;
+    let expires_at = stored_time(rule.get("expires_at")?)?;
+    if expires_at <= now {
+        return None;
+    }
+    Some(McpRuleInfo {
+        id: rule
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        domain: domain.to_string(),
+        include_subdomains,
+        rule_text: format!("{}{}^", if include_subdomains { "||" } else { "|" }, domain),
+        created_at: rfc3339(created_at),
+        expires_at: rfc3339(expires_at),
+        filter_set_id: set_str.to_owned(),
+    })
+}
+
+/// Runs a dry-run query and returns the tool-shaped result plus the full
+/// decision record (including the synthesized answer).
+pub(crate) async fn run_test_query(
+    policy: &dnscraft_policy::PolicyEngine,
+    params: &dnscraft_mcp::dto::TestQueryParams,
+) -> Result<(TestQueryResult, Value), ControlApiError> {
+    let source_ip: IpAddr = params
+        .source_ip
+        .as_deref()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(IpAddr::from([127, 0, 0, 1]));
+    let listener_id =
+        dnscraft_policy::ListenerId::new("mcp-test").map_err(|_| ControlApiError::Internal {
+            message: "invalid listener id".to_owned(),
+        })?;
+    let name =
+        dnscraft_proto::Name::from_ascii(&params.domain).map_err(|_| ControlApiError::Module {
+            code: "filter_name.invalid_char",
+            params: Some(json!({ "domain": params.domain })),
+        })?;
+    let ctx = RequestContext {
+        source_ip,
+        protocol: policy_protocol(&params.protocol),
+        listener_id,
+        client_id: params
+            .client_id
+            .as_deref()
+            .and_then(|id| dnscraft_policy::ClientId::new(id).ok()),
+        query: dnscraft_resolver::Query {
+            name,
+            qtype: dnscraft_proto::RecordType(filter_qtype(params.qtype)),
+            qclass: dnscraft_proto::Class::IN,
+        },
+        flags: dnscraft_policy::ClientFlags::default(),
+        test_query: true,
+    };
+    let answer = policy
+        .handle(ctx)
+        .await
+        .map_err(|e| ControlApiError::Module {
+            code: e.code(),
+            params: None,
+        })?;
+    let record = &answer.record;
+    let verdict = record.filter.as_ref().map_or("allowed", |_| "blocked");
+    let filter_dto = record.filter.as_ref().map(|f| TestQueryFilter {
+        rule_text: f.reason.rule.to_string(),
+        list_id: None,
+        block_mode: f
+            .block_mode
+            .as_ref()
+            .map(block_mode_str)
+            .unwrap_or_default(),
+    });
+    let records: Vec<AnswerRecord> = answer
+        .message
+        .answers
+        .iter()
+        .map(|r| AnswerRecord {
+            name: r.name.to_string(),
+            qtype: record_qtype(r.rtype()),
+            ttl: r.ttl,
+            data: rdata_str(&r.rdata),
+        })
+        .collect();
+    let rcode = answer.message.rcode().to_string();
+    let records_json = serde_json::to_value(&records).map_err(|e| ControlApiError::Internal {
+        message: format!("serialize test-query answer: {e}"),
+    })?;
+    let mut decision = crate::query_log::decision_record_json(record);
+    decision["answer"] = json!({ "rcode": rcode, "records": records_json });
+    let sel = selection_cause_json(&record.selection);
+    let result = TestQueryResult {
+        view_id: record.view_id.to_string(),
+        profile_id: record.profile_id.to_string(),
+        selection: Selection {
+            cause: sel.cause,
+            prefix: sel.prefix,
+            client_id: record.client_id.as_ref().map(|id| id.to_string()),
+        },
+        verdict: verdict.to_owned(),
+        filter: filter_dto,
+        answer: SynthesizedAnswer { rcode, records },
+        dnssec: record
+            .dnssec
+            .as_ref()
+            .map(|s| dnssec_status_str(s).to_owned()),
+        timings: dnscraft_mcp::dto::DecisionTimings {
+            select_us: record.timings.select_us,
+            filter_us: record.timings.filter_us,
+            total_us: record.timings.select_us
+                + record.timings.filter_us
+                + record.timings.resolve_us,
+        },
+    };
+    Ok((result, decision))
+}
+
 // ---- trait impl ----
 
 #[async_trait]
@@ -345,9 +646,7 @@ impl McpBackend for ControlMcpBackend {
                     actor_id: principal.actor_id().to_owned(),
                 })
             }
-            Err(e) if matches!(e, ControlApiError::AuthUnauthenticated) => {
-                Err(BackendError::Unauthenticated)
-            }
+            Err(ControlApiError::AuthUnauthenticated) => Err(BackendError::Unauthenticated),
             Err(e) => Err(BackendError::Internal {
                 message: format!("token validation: {}", e.code()),
             }),
@@ -454,131 +753,24 @@ impl McpBackend for ControlMcpBackend {
         profile_id: Option<&str>,
         qtype: QType,
     ) -> Result<ExplainBlockResult, BackendError> {
-        let name =
-            DomainName::parse(domain).map_err(|_| code_err("filter_name.invalid_char", domain))?;
-        let set = resolve_set(profile_id);
-        let now = SystemTime::now();
-        let verdict = self
-            .filter_engine()?
-            .match_name(&set, &name, filter_qtype(qtype), now)
-            .unwrap_or(Verdict::Pass);
-        let set_str = set_name(profile_id);
-        let (v, reason) = match &verdict {
-            Verdict::Pass | Verdict::Allowed(_) => ("allowed".to_owned(), None),
-            Verdict::Blocked(r) => {
-                let reason = ExplainReason {
-                    rule_text: r.rule.to_string(),
-                    source: reason_source_str(&r.source),
-                    important: r.important,
-                    block_mode: String::new(),
-                };
-                ("blocked".to_owned(), Some(reason))
-            }
-            Verdict::Rewrite(_, _) => ("allowed".to_owned(), None),
-        };
-        Ok(ExplainBlockResult {
-            domain: domain.to_owned(),
-            profile_id: set_str.clone(),
-            filter_set_id: set_str,
-            verdict: v,
-            reason,
-        })
+        explain(
+            self.filter_engine()?,
+            self.inner.clock.now(),
+            domain,
+            profile_id,
+            qtype,
+        )
+        .map_err(backend_error)
     }
 
     async fn test_query(
         &self,
         params: dnscraft_mcp::dto::TestQueryParams,
     ) -> Result<TestQueryResult, BackendError> {
-        let source_ip: IpAddr = params
-            .source_ip
-            .as_deref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(IpAddr::from([127, 0, 0, 1]));
-        let listener_id =
-            dnscraft_policy::ListenerId::new("mcp-test").map_err(|_| BackendError::Internal {
-                message: "invalid listener id".into(),
-            })?;
-        let name = dnscraft_proto::Name::from_ascii(&params.domain)
-            .map_err(|_| code_err("filter_name.invalid_char", &params.domain))?;
-        let ctx = RequestContext {
-            source_ip,
-            protocol: policy_protocol(&params.protocol),
-            listener_id,
-            client_id: params
-                .client_id
-                .as_deref()
-                .and_then(|id| dnscraft_policy::ClientId::new(id).ok()),
-            query: dnscraft_resolver::Query {
-                name,
-                qtype: dnscraft_proto::RecordType(match params.qtype {
-                    QType::A => 1,
-                    QType::Aaaa => 28,
-                    QType::Cname => 5,
-                    QType::Mx => 15,
-                    QType::Txt => 16,
-                    QType::Srv => 33,
-                    QType::Https => 65,
-                }),
-                qclass: dnscraft_proto::Class::IN,
-            },
-            flags: dnscraft_policy::ClientFlags::default(),
-            test_query: true,
-        };
-        let answer = self
-            .policy_engine()?
-            .handle(ctx)
+        run_test_query(self.policy_engine()?, &params)
             .await
-            .map_err(|e| BackendError::Coded {
-                code: e.code().to_owned(),
-                params: None,
-            })?;
-        let record = &answer.record;
-        let verdict = record.filter.as_ref().map_or("allowed", |_| "blocked");
-        let filter_dto = record.filter.as_ref().map(|f| TestQueryFilter {
-            rule_text: f.reason.rule.to_string(),
-            list_id: None,
-            block_mode: f
-                .block_mode
-                .as_ref()
-                .map(block_mode_str)
-                .unwrap_or_default(),
-        });
-        let records: Vec<AnswerRecord> = answer
-            .message
-            .answers
-            .iter()
-            .map(|r| AnswerRecord {
-                name: r.name.to_string(),
-                qtype: record_qtype(r.rtype()),
-                ttl: r.ttl,
-                data: rdata_str(&r.rdata),
-            })
-            .collect();
-        let rcode = answer.message.rcode().to_string();
-        let sel = selection_cause_json(&record.selection);
-        Ok(TestQueryResult {
-            view_id: record.view_id.to_string(),
-            profile_id: record.profile_id.to_string(),
-            selection: Selection {
-                cause: sel.cause,
-                prefix: sel.prefix,
-                client_id: record.client_id.as_ref().map(|id| id.to_string()),
-            },
-            verdict: verdict.to_owned(),
-            filter: filter_dto,
-            answer: SynthesizedAnswer { rcode, records },
-            dnssec: record
-                .dnssec
-                .as_ref()
-                .map(|s| dnssec_status_str(s).to_owned()),
-            timings: dnscraft_mcp::dto::DecisionTimings {
-                select_us: record.timings.select_us,
-                filter_us: record.timings.filter_us,
-                total_us: record.timings.select_us
-                    + record.timings.filter_us
-                    + record.timings.resolve_us,
-            },
-        })
+            .map(|(result, _)| result)
+            .map_err(backend_error)
     }
 
     async fn get_stats(&self, params: StatsParams) -> Result<StatsResult, BackendError> {
@@ -702,50 +894,25 @@ impl McpBackend for ControlMcpBackend {
         &self,
         params: ListRulesParams,
     ) -> Result<ListRulesResult, BackendError> {
-        let set = resolve_set(params.filter_set_id.as_deref());
-        let set_str = set_name(params.filter_set_id.as_deref());
-        let now = SystemTime::now();
-        let mut result = ListRulesResult {
-            filter_set_id: set_str.clone(),
-            kind: params.kind.clone(),
-            ..Default::default()
+        let snapshot = match &self.inner.config {
+            Some(service) => {
+                service
+                    .current()
+                    .await
+                    .map_err(|e| BackendError::Internal {
+                        message: e.code().to_owned(),
+                    })?
+                    .1
+            }
+            None => None,
         };
-        match params.kind.as_str() {
-            "temporary_allows" => {
-                let allows = self
-                    .filter_engine()?
-                    .list_temporary_allows(&set, now)
-                    .unwrap_or_default();
-                let all: Vec<_> = allows
-                    .into_iter()
-                    .map(|a| TempAllowInfo {
-                        domain: a.domain.to_string(),
-                        include_subdomains: a.include_subdomains,
-                        created_at: rfc3339(a.created_at),
-                        expires_at: rfc3339(a.until),
-                        filter_set_id: set_str.clone(),
-                    })
-                    .collect();
-                let skip = (params.offset as usize).min(all.len());
-                let page = &all[skip..];
-                let count = page.len().min(params.limit as usize);
-                result.temporary_allows = page[..count].to_vec();
-                result.has_more = count < page.len();
-                result.next_offset = result.has_more.then(|| params.offset + count as u32);
-            }
-            "pauses" => {
-                if let Some(until) = self.filter_engine()?.paused_until(&set) {
-                    result.pauses = vec![PauseInfo {
-                        filter_set_id: set_str.clone(),
-                        paused_until: rfc3339(until),
-                    }];
-                }
-            }
-            _ => {
-                result.rules = vec![];
-            }
-        }
-        Ok(result)
+        list_mcp_rules(
+            self.filter_engine()?,
+            snapshot.as_ref(),
+            self.inner.clock.now(),
+            &params,
+        )
+        .map_err(backend_error)
     }
 
     async fn allow_temporarily(
@@ -755,7 +922,7 @@ impl McpBackend for ControlMcpBackend {
         let set = resolve_set(params.filter_set_id.as_deref());
         let domain = DomainName::parse(&params.domain)
             .map_err(|_| code_err("filter_build.invalid_domain", &params.domain))?;
-        let now = SystemTime::now();
+        let now = self.inner.clock.now();
         let until = now + duration_secs(params.duration);
         let rule = TempAllow {
             domain,
@@ -815,7 +982,7 @@ impl McpBackend for ControlMcpBackend {
 
     async fn pause_filter_set(&self, params: PauseParams) -> Result<PauseResult, BackendError> {
         let set = resolve_set(params.filter_set_id.as_deref());
-        let until = SystemTime::now() + duration_secs(params.duration);
+        let until = self.inner.clock.now() + duration_secs(params.duration);
         self.filter_engine()?
             .set_paused_until(&set, Some(until))
             .map_err(|_| BackendError::Coded {

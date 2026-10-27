@@ -707,6 +707,30 @@ fn protocol_str(protocol: DnsProtocol) -> &'static str {
     }
 }
 
+/// Serializes a decision record in the query-log shape (the full record used
+/// by `POST /api/v1/policy/test-query`).
+pub(crate) fn decision_record_json(decision: &DecisionRecord) -> Json {
+    json!({
+        "view_id": decision.view_id.to_string(),
+        "profile_id": decision.profile_id.to_string(),
+        "filter_set_id": decision.filter_set.as_str(),
+        "selection": selection_json(decision.selection),
+        "client_id": decision.client_id.as_ref().map(ToString::to_string),
+        "steps": decision.steps.iter().map(step_json).collect::<Vec<_>>(),
+        "filter": decision.filter.as_ref().map(filter_json),
+        "forward_zone": decision.forward_zone.as_ref().map(ToString::to_string),
+        "dnssec": decision.dnssec.map(dnssec_str),
+        "answer_source": answer_origin_str(decision.answer_source),
+        "timings": {
+            "select_us": decision.timings.select_us,
+            "filter_us": decision.timings.filter_us,
+            "resolve_us": decision.timings.resolve_us,
+            "total_us": decision.timings.total_us,
+        },
+        "rcode": decision.rcode.to_string(),
+    })
+}
+
 /// Derives the documented outcome label from the decision and response code.
 fn status_str(decision: &DecisionRecord, rcode: Rcode) -> &'static str {
     if decision

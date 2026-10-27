@@ -27,6 +27,7 @@ use super::filter_routes::{
     put_filter_set,
 };
 use super::listener_routes::{delete_listener, list_listeners, put_listener};
+use super::mcp_endpoints::{explain_block, list_mcp_rules, test_query};
 use super::query_log_routes::{get_query_log, list_query_log};
 use super::rate_limit::rate_limit;
 use super::response::{BODY_LIMIT_BYTES, error_response, success};
@@ -41,7 +42,11 @@ use crate::tls::TlsMode;
 
 /// Builds the full router for `state`.
 pub(crate) fn build_router(state: AppState) -> Router {
-    let mut api = Router::new().route("/status", get(status));
+    let mut api = Router::new()
+        .route("/status", get(status))
+        .route("/filtering/explain-block", post(explain_block))
+        .route("/filtering/mcp-rules", get(list_mcp_rules))
+        .route("/policy/test-query", post(test_query));
     if state.config_service().is_some() {
         api = api
             .route("/config", get(get_config).put(put_config))

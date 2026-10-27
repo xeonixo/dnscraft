@@ -13,15 +13,17 @@ use tower::service_fn;
 
 use crate::api::auth::{AuthState, LocalAccountStore, OidcState};
 use crate::api::rate_limit::RateLimiter;
-use crate::clock::SystemClock;
+use crate::clock::{Clock, SystemClock};
 use crate::config::{ControlApiConfig, RateLimitConfig, is_internal_bind};
 use crate::config_apply::ConfigService;
 use crate::error::ControlApiError;
-use crate::mcp_backend::{ControlMcpBackend, McpBackendInner};
+use crate::mcp_backend::McpBackendInner;
 use crate::query_log::QueryLog;
 use crate::tls::{TlsStatus, TlsStatusProvider};
 
+use dnscraft_filtering::FilterEngine;
 use dnscraft_mcp::McpConfig;
+use dnscraft_policy::PolicyEngine;
 
 /// Shared state handed to every handler (and cloned into the router).
 ///
@@ -38,6 +40,9 @@ pub struct AppState {
     query_log: Option<Arc<QueryLog>>,
     mcp_backend: Option<Arc<McpBackendInner>>,
     mcp_config: McpConfig,
+    clock: Arc<dyn Clock>,
+    filter: Option<Arc<FilterEngine>>,
+    policy: Option<Arc<PolicyEngine>>,
 }
 
 impl Default for AppState {
@@ -64,7 +69,44 @@ impl AppState {
             query_log: None,
             mcp_backend: None,
             mcp_config: McpConfig::default(),
+            clock: Arc::new(SystemClock),
+            filter: None,
+            policy: None,
         }
+    }
+
+    /// Uses `clock` for timestamps in the MCP-facing endpoints and rules.
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// The configured time source.
+    pub(crate) fn clock(&self) -> &Arc<dyn Clock> {
+        &self.clock
+    }
+
+    /// Attaches the filtering engine used by the MCP-facing read and runtime
+    /// endpoints.
+    pub fn with_filter_engine(mut self, filter: Arc<FilterEngine>) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+
+    /// The configured filtering engine, if any.
+    pub(crate) fn filter_engine(&self) -> Option<&Arc<FilterEngine>> {
+        self.filter.as_ref()
+    }
+
+    /// Attaches the policy engine used by the MCP-facing `test-query` endpoint.
+    pub fn with_policy_engine(mut self, policy: Arc<PolicyEngine>) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    /// The configured policy engine, if any.
+    pub(crate) fn policy_engine(&self) -> Option<&Arc<PolicyEngine>> {
+        self.policy.as_ref()
     }
 
     /// Attaches the atomic config service.
@@ -99,7 +141,9 @@ impl AppState {
     ///
     /// With a backend attached, `POST /mcp/v1` is mounted when
     /// `control_api.mcp.enabled` is true.
-    pub fn with_mcp_backend(mut self, inner: Arc<McpBackendInner>) -> Self {
+    // Wired by the binary that assembles the MCP engines.
+    #[allow(dead_code)]
+    pub(crate) fn with_mcp_backend(mut self, inner: Arc<McpBackendInner>) -> Self {
         self.mcp_backend = Some(inner);
         self
     }
@@ -264,12 +308,12 @@ pub async fn serve(
         config.trusted_proxies.clone(),
     )));
     // Derive MCP allowed_origins from the configured TLS domain.
-    let mut mcp_config = config.mcp.clone();
-    if let Some(tls_status) = state.tls_status() {
-        if !tls_status.fingerprint.is_empty() {
-            // ponytail: derive origins from the TLS public domain (TLS module
-            // stores the public domain used for certificate requests).
-        }
+    let mcp_config = config.mcp.clone();
+    if let Some(tls_status) = state.tls_status()
+        && !tls_status.fingerprint.is_empty()
+    {
+        // ponytail: derive origins from the TLS public domain (TLS module
+        // stores the public domain used for certificate requests).
     }
     // If the backend is attached and MCP is enabled, wire the config.
     let state = if state.mcp_backend_inner().is_some() {

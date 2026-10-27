@@ -305,6 +305,19 @@ mod tests {
                 code: "policy.config.invalid",
                 params: None,
             },
+            // Forwarded module codes used by the MCP-facing endpoints.
+            ControlApiError::Module {
+                code: "filter_name.invalid_char",
+                params: None,
+            },
+            ControlApiError::Module {
+                code: "policy.config.unknown_filter_set",
+                params: None,
+            },
+            ControlApiError::Module {
+                code: "mcp.invalid_input",
+                params: None,
+            },
         ];
         let mut codes: Vec<&str> = all.iter().map(ControlApiError::code).collect();
         for (error, code) in all.iter().zip(&codes) {

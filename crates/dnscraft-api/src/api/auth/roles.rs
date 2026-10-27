@@ -177,6 +177,11 @@ fn requirement(method: &Method, path: &str) -> Requirement {
     if path == "/api/v1/auth/logout" || path == "/api/v1/auth/me" {
         return Requirement::Api;
     }
+    // Dry-run reads: they do not mutate config, so viewer may use them even
+    // though they are POSTs under the config-family `/policy` prefix.
+    if path == "/api/v1/filtering/explain-block" || path == "/api/v1/policy/test-query" {
+        return Requirement::Api;
+    }
     if is_config_path(path) {
         return Requirement::ApiAdmin;
     }
@@ -323,6 +328,24 @@ mod tests {
         assert_eq!(
             requirement(&Method::GET, "/api/v1/query-log"),
             Requirement::Api
+        );
+        // MCP dry-run reads are viewer-readable even though they are POSTs
+        // under the config-family `/policy` prefix.
+        assert_eq!(
+            requirement(&Method::POST, "/api/v1/filtering/explain-block"),
+            Requirement::Api
+        );
+        assert_eq!(
+            requirement(&Method::POST, "/api/v1/policy/test-query"),
+            Requirement::Api
+        );
+        assert_eq!(
+            requirement(&Method::GET, "/api/v1/filtering/mcp-rules"),
+            Requirement::Api
+        );
+        assert_eq!(
+            requirement(&Method::POST, "/api/v1/filtering/custom-rules"),
+            Requirement::ApiAdmin
         );
         // Configuration-family routes are admin-only for reads too.
         for path in [
