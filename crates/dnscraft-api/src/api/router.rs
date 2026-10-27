@@ -8,7 +8,7 @@ use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use serde_json::json;
 
 use super::auth::local::local_login;
@@ -18,6 +18,7 @@ use super::auth::{auth_middleware, logout, rbac_middleware};
 use super::clients_routes::{
     create_manual, delete_manual, list_clients, list_manual, put_manual, sync_clients,
 };
+use super::cluster_endpoints::{get_write, list_nodes, mint_join_token, revoke_node};
 use super::config_routes::{
     delete_pause, delete_profile, delete_view, get_config, get_pause, get_profile, get_view,
     list_versions, list_views, put_config, put_pause, put_profile, put_view, rollback,
@@ -149,6 +150,15 @@ pub(crate) fn build_router(state: AppState) -> Router {
             .route("/stats/top_clients", get(stats_top_clients))
             .route("/stats/top_domains", get(stats_top_domains))
             .route("/stats/cache", get(stats_cache));
+    }
+    if state.cluster_store().is_some() {
+        // Master-only admin surface. A standalone node has no cluster routes
+        // and falls through to 404 control_api.not_found.
+        api = api
+            .route("/cluster/join-tokens", post(mint_join_token))
+            .route("/cluster/nodes", get(list_nodes))
+            .route("/cluster/nodes/{node_id}", delete(revoke_node))
+            .route("/cluster/writes/{request_id}", get(get_write));
     }
     if state.auth_state().is_some() {
         // Token management exists only when persistence/auth is configured.

@@ -254,6 +254,16 @@ impl ControlApiError {
     }
 }
 
+impl From<dnscraft_cluster::ClusterError> for ControlApiError {
+    /// Forwards a `cluster.*` error unchanged, like [`ControlApiError::from_tls`].
+    fn from(error: dnscraft_cluster::ClusterError) -> Self {
+        Self::Module {
+            code: error.code(),
+            params: None,
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -408,5 +418,17 @@ mod tests {
             }
             other => panic!("expected a forwarded module error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn cluster_module_codes_are_forwarded_unchanged() {
+        let error = ControlApiError::from(dnscraft_cluster::ClusterError::NodeRevoked {
+            node_id: "node-a".to_owned(),
+        });
+        assert_eq!(error.code(), "cluster.node.revoked");
+        assert_eq!(
+            ControlApiError::from(dnscraft_cluster::ClusterError::JoinTokenInvalid).code(),
+            "cluster.join.token_invalid"
+        );
     }
 }

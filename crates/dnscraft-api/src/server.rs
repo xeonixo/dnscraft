@@ -21,6 +21,7 @@ use crate::mcp_backend::McpBackendInner;
 use crate::query_log::QueryLog;
 use crate::tls::{TlsAdmin, TlsStatus, TlsStatusProvider};
 
+use dnscraft_cluster::{ClusterStore, OfflineWriteQueue};
 use dnscraft_filtering::FilterEngine;
 use dnscraft_mcp::McpConfig;
 use dnscraft_policy::PolicyEngine;
@@ -39,6 +40,8 @@ pub struct AppState {
     oidc: Option<Arc<OidcState>>,
     config: Option<Arc<ConfigService>>,
     query_log: Option<Arc<QueryLog>>,
+    cluster_store: Option<Arc<ClusterStore>>,
+    offline_writes: Option<Arc<OfflineWriteQueue>>,
     mcp_backend: Option<Arc<McpBackendInner>>,
     mcp_config: McpConfig,
     oidc_issuer: Option<String>,
@@ -70,6 +73,8 @@ impl AppState {
             oidc: None,
             config: None,
             query_log: None,
+            cluster_store: None,
+            offline_writes: None,
             mcp_backend: None,
             mcp_config: McpConfig::default(),
             oidc_issuer: None,
@@ -139,6 +144,33 @@ impl AppState {
     /// The configured query log, if any.
     pub(crate) fn query_log(&self) -> Option<&Arc<QueryLog>> {
         self.query_log.as_ref()
+    }
+
+    /// Attaches the master's durable cluster registry.
+    ///
+    /// With a store configured, the `/api/v1/cluster/*` admin routes (join
+    /// tokens, nodes, writes) are mounted. A standalone node leaves this unset
+    /// and the routes fall through to `404 control_api.not_found`.
+    pub fn with_cluster_store(mut self, store: Arc<ClusterStore>) -> Self {
+        self.cluster_store = Some(store);
+        self
+    }
+
+    /// The configured cluster registry, if any.
+    pub(crate) fn cluster_store(&self) -> Option<&Arc<ClusterStore>> {
+        self.cluster_store.as_ref()
+    }
+
+    /// Attaches the sub-node offline write queue read by
+    /// `GET /api/v1/cluster/writes/{request_id}`.
+    pub fn with_offline_write_queue(mut self, queue: Arc<OfflineWriteQueue>) -> Self {
+        self.offline_writes = Some(queue);
+        self
+    }
+
+    /// The configured offline write queue, if any.
+    pub(crate) fn offline_write_queue(&self) -> Option<&Arc<OfflineWriteQueue>> {
+        self.offline_writes.as_ref()
     }
 
     /// Attaches the MCP backend inner handle (engines, stores, status providers).

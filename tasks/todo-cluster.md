@@ -25,7 +25,7 @@
       + `node_id` filter on query-log/stats.
 - [ ] CL6 `GET /api/v1/status` cluster fields (role, master reachability, applied version, lag,
       queue depth, last sync).
-- [ ] CL7 admin endpoints `/api/v1/cluster/*` (admin-only, shapes from CL1).
+- [x] CL7 admin endpoints `/api/v1/cluster/*` (admin-only, shapes from CL1).
 - [x] CL8 `cluster.*` error codes + uniqueness test; reconcile `config.version`/`config.conflict`.
 
 ## Phase 2 — Cluster crate: transport + identity + join

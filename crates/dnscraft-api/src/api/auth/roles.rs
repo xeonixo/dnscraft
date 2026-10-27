@@ -219,6 +219,7 @@ fn is_config_path(path: &str) -> bool {
         "/api/v1/config",
         "/api/v1/policy",
         "/api/v1/clients",
+        "/api/v1/cluster",
         "/api/v1/filter-sets",
         "/api/v1/filter-lists",
         "/api/v1/listeners",
@@ -384,6 +385,7 @@ mod tests {
             "/api/v1/policy/views",
             "/api/v1/clients",
             "/api/v1/clients/manual",
+            "/api/v1/cluster/nodes",
             "/api/v1/filter-sets",
             "/api/v1/filter-lists",
             "/api/v1/listeners",
@@ -397,6 +399,23 @@ mod tests {
         }
         assert_eq!(
             requirement(&Method::POST, "/api/v1/config"),
+            Requirement::ApiAdmin
+        );
+        // The cluster admin surface is admin-only for every method.
+        assert_eq!(
+            requirement(&Method::POST, "/api/v1/cluster/join-tokens"),
+            Requirement::ApiAdmin
+        );
+        assert_eq!(
+            requirement(&Method::GET, "/api/v1/cluster/nodes"),
+            Requirement::ApiAdmin
+        );
+        assert_eq!(
+            requirement(&Method::DELETE, "/api/v1/cluster/nodes/node-a"),
+            Requirement::ApiAdmin
+        );
+        assert_eq!(
+            requirement(&Method::GET, "/api/v1/cluster/writes/r1"),
             Requirement::ApiAdmin
         );
         assert_eq!(

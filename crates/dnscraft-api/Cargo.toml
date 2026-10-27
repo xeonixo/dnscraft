@@ -17,6 +17,7 @@ async-trait = { workspace = true }
 axum = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
+dnscraft-cluster = { path = "../dnscraft-cluster" }
 dnscraft-common = { path = "../dnscraft-common" }
 dnscraft-filtering = { path = "../dnscraft-filtering" }
 dnscraft-listeners = { path = "../dnscraft-listeners" }

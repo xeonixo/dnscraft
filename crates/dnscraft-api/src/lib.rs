@@ -50,6 +50,7 @@ pub use config::{
     DEFAULT_WRITE_PER_SECOND, IpTruncate, QueryLogConfig, RateLimitConfig,
 };
 pub use config_apply::{ConfigActor, ConfigService, RollbackOutcome, SharedConfigService};
+pub use dnscraft_cluster::{ClusterStore, OfflineWriteQueue};
 pub use error::ControlApiError;
 #[doc(hidden)]
 pub use mcp_backend::{mcp_backend_for_test, mcp_backend_for_test_writes};
