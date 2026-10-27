@@ -65,7 +65,7 @@
 
 ## Phase 7 — Hardening, fault injection, fuzz, docs, traceability
 
-- [ ] CL25 security suite (threat model) + complete fault-injection matrix.
+- [x] CL25 security suite (threat model) + complete fault-injection matrix.
 - [x] CL26 fuzz targets (`cluster_join_token`, `cluster_log_batch`, `cluster_config`) + README +
        `CAPABILITY-MAP.md` row + SPEC success-criteria traceability (`tasks/progress.md`) + final gates.
 

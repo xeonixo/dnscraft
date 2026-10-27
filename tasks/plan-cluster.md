@@ -27,12 +27,13 @@ no multi-entry.
 
 ## Current state (code reality-check, 2026-10-27)
 
-- `crates/dnscraft-cluster` implemented (CL9–CL24): config validation, CA/join/identity/store,
+- `crates/dnscraft-cluster` implemented (CL9–CL26): config validation, CA/join/identity/store,
   mTLS transport, full-snapshot sync, write relay + offline queue, runtime broadcast, log
   streaming/backfill, cert/auth push, quotas/skew, with loopback integration suites. CL26 added the
   `cluster_join_token` / `cluster_log_batch` / `cluster_config` fuzz targets, the crate README and
-  the success-criteria traceability. **Remaining:** CL6/CL7 (control-api admin routes + status
-  fields), CL15 (sub-node apply/TLS/auth-snapshot/DNS wiring), CL25 (security suite), Checkpoint F.
+  the success-criteria traceability; CL25 added the threat-model security suite (`tests/security.rs`)
+  and the fault-injection matrix (`tests/injection.rs`). **Remaining:** CL6/CL7 (control-api admin
+  routes + status fields), CL15 (sub-node apply/TLS/auth-snapshot/DNS wiring), Checkpoint F.
 - `control-api` (`dnscraft-api`) COMPLETE (A0–A14, Checkpoint F owner-approved). Already provides:
   - Atomic apply path: `ConfigService` (`config_apply.rs:107`; `replace`/`mutate`/`mutate_unrecorded`/
     `rollback` under a serial `apply_lock`; `APPLY_ORDER` = filtering→clients→policy→listeners→tls).
