@@ -59,13 +59,13 @@ root `Cargo.toml`/`Cargo.lock` (own hunks only), `tasks/progress.md`.
 resource caps, TLS) + owner approval. Then archive the module.
 
 ### Stream 2 — `mcp` Stage 1, M0 (documentation agent — no repo code)
-Authority: [briefing-mcp-start.md](briefing-mcp-start.md) · [todo-mcp.md](todo-mcp.md) M0.
+Authority: [briefing-mcp-start.md](briefing-mcp-start.md) · [mcp-todo.md](archive/mcp-todo.md) M0.
 Produce the `rmcp` 3.7.0 dependency pack (crate list vs. current `Cargo.lock`, `cargo deny` result,
 `cargo tree` crypto checks), answer the SPEC-mcp "Unverified details" bullets with `file:line`, write
 `docs/adr/0006-mcp-rmcp-stateless.md` (Status: Proposed), fill the dependency table in
-[plan-mcp.md](plan-mcp.md). Work in a throw-away crate **outside** the repo; no builds, no repo code.
+[mcp-plan.md](archive/mcp-plan.md). Work in a throw-away crate **outside** the repo; no builds, no repo code.
 
-Files: `docs/adr/0006-mcp-rmcp-stateless.md`, `tasks/plan-mcp.md` (table only), `tasks/progress.md`.
+Files: `docs/adr/0006-mcp-rmcp-stateless.md`, `tasks/archive/mcp-plan.md` (table only), `tasks/progress.md`.
 
 **STOP: Checkpoint D0** — owner approves `rmcp` + transitive crates (or chooses fallback). This unblocks M1–M5.
 

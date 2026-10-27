@@ -1,9 +1,9 @@
 # Implementation Plan: `mcp` module
 
-> Spec: [SPEC-mcp.md](../SPEC-mcp.md) · Project spec: [SPEC.md](../SPEC.md) ·
-> Tasks: [todo-mcp.md](todo-mcp.md) · Resume log: [progress.md](progress.md) ·
-> Capability map: [CAPABILITY-MAP.md](../CAPABILITY-MAP.md) ·
-> Related plan: [plan-control-api.md](plan-control-api.md)
+> Spec: [SPEC-mcp.md](../../SPEC-mcp.md) · Project spec: [SPEC.md](../../SPEC.md) ·
+> Tasks: [mcp-todo.md](mcp-todo.md) · Resume log: [progress.md](../progress.md) ·
+> Capability map: [CAPABILITY-MAP.md](../../CAPABILITY-MAP.md) ·
+> Related plan: [plan-control-api.md](../plan-control-api.md)
 >
 > Status: **DRAFT for owner review** (written 2026-10-26). Nothing here is approved until the owner
 > logs approval in progress.md.

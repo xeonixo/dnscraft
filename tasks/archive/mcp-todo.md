@@ -1,9 +1,9 @@
 # Tasks: `mcp` module
 
-> Plan: [plan-mcp.md](plan-mcp.md) · Spec: [SPEC-mcp.md](../SPEC-mcp.md) · Resume log: [progress.md](progress.md)
+> Plan: [mcp-plan.md](mcp-plan.md) · Spec: [SPEC-mcp.md](../../SPEC-mcp.md) · Resume log: [progress.md](../progress.md)
 >
 > Agent rules (paste at the start of every session): "Agent rules for every MCP task" in
-> [plan-mcp.md](plan-mcp.md). Definition of done per task: `cargo fmt --all --check`,
+> [mcp-plan.md](mcp-plan.md). Definition of done per task: `cargo fmt --all --check`,
 > `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test` (workspace, or the affected
 > crates when another agent's work is in progress — say which), `cargo deny check`, crypto trees
 > (`aws-lc-rs`, `aws-lc-sys`, `openssl-sys`, `native-tls`) empty; lead review at checkpoints; committed.
@@ -799,5 +799,5 @@ marked as such).
 - [x] Independent security review (`agent-skills:security-auditor`: token handling, scope isolation, header/body
       confusion, rule safety, injection resistance, resource limits)
 - [ ] Client compatibility with the owner's actual MCP clients checked (Open question 5)
-- [ ] **Owner approval**; then archive: `git mv tasks/plan-mcp.md tasks/archive/mcp-plan.md` and
+- [x] **Owner approval**; then archive: `git mv tasks/plan-mcp.md tasks/archive/mcp-plan.md` and
       `git mv tasks/todo-mcp.md tasks/archive/mcp-todo.md`, fix relative links, update "Current state"

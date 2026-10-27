@@ -1,7 +1,7 @@
 # Briefing: `mcp` module (for deepseek-v4-pro), stages 1-5
 
 > Paste this file as the first message of a session. Authority: [SPEC-mcp.md](../SPEC-mcp.md). Plan:
-> [plan-mcp.md](plan-mcp.md). Tasks: [todo-mcp.md](todo-mcp.md). Phase 3 (M20-M27) is briefed separately.
+> [mcp-plan.md](archive/mcp-plan.md). Tasks: [mcp-todo.md](archive/mcp-todo.md). Phase 3 (M20-M27) is briefed separately.
 
 ```text
 ROLE AND SCOPE
@@ -11,9 +11,9 @@ separate message. Never continue past a STOP on your own.
 
 READ FIRST (in this order)
 1. SPEC-mcp.md (authority; when code and spec disagree, stop and report, never change either silently)
-2. tasks/plan-mcp.md (architecture decisions, risks, and the block "Agent rules for every MCP task":
+2. tasks/archive/mcp-plan.md (architecture decisions, risks, and the block "Agent rules for every MCP task":
    follow it literally, it is part of this briefing)
-3. tasks/todo-mcp.md (your tasks, acceptance criteria, verification commands, files)
+3. tasks/archive/mcp-todo.md (your tasks, acceptance criteria, verification commands, files)
 4. tasks/progress.md ("Current state" and the top of the "Log"), docs/adr/0002 and docs/adr/0005
 
 OWNER DECISIONS ALREADY MADE
@@ -65,7 +65,7 @@ STAGES
 STAGE 1 (start here): M0 only. Documentation, no Rust code in the repo. Work in a throw-away crate in the
 scratchpad/temp area outside the repo (metadata and source reading only, no builds). Produce the dependency
 pack and the rmcp findings exactly as the task requires, write docs/adr/0006-mcp-rmcp-stateless.md
-(Status: Proposed) and fill the dependency table in tasks/plan-mcp.md. One commit. Then STOP at
+(Status: Proposed) and fill the dependency table in tasks/archive/mcp-plan.md. One commit. Then STOP at
 CHECKPOINT D0. Report: the new-crates list, the cargo deny result, the answers to the six open rmcp
 questions (with file:line), and your keep-rmcp-or-fallback recommendation.
 
