@@ -610,12 +610,20 @@ impl Shared {
         let message = self
             .exchange_forward(&zone.targets, &zone.zone, &query.name, query.qtype)
             .await?;
-        let message = forward::scrub(message, &query.name, query.qtype);
+        let message = forward::scrub(message, &query.name, query.qtype, &zone.zone);
         // One validation budget for the whole forwarded resolution.
         let budget = dnssec::ValidationBudget::default();
         let mut caps = Vec::new();
         let status = self
-            .forwarded_status(&zone, &flags, &message, &budget, &mut caps)
+            .forwarded_status(
+                &zone,
+                &flags,
+                &query.name,
+                query.qtype,
+                &message,
+                &budget,
+                &mut caps,
+            )
             .await?;
         let mut message = message;
         let mut sig_cap = None;

@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use dnscraft_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
@@ -687,6 +687,87 @@ async fn glueless_ns_per_cut_is_capped_and_cycles_fail_fast() {
     assert_eq!(err.code(), "resolver.unreachable");
     let used = r.stats().outgoing_queries - before;
     assert!(used <= 20, "used {used} outgoing queries");
+}
+
+/// A referral with 16 glue addresses already uses the whole per-referral
+/// budget, so glueless name server lookups of the same referral are skipped.
+#[tokio::test]
+async fn glueless_lookups_share_the_referral_address_budget() {
+    let mut specs = default_servers().unwrap();
+    // Root delegates `example.`, so glueless host lookups can resolve.
+    for spec in &mut specs {
+        if origin(spec) == "." {
+            spec.zone = spec
+                .zone
+                .clone()
+                .with_ns("example.", "server.example.")
+                .unwrap()
+                .with_a("server.example.", LO)
+                .unwrap();
+        }
+    }
+    let mut example = Zone::new("example.")
+        .unwrap()
+        .with_soa("server.example.", "hostmaster.example.")
+        .unwrap()
+        .with_ns("example.", "server.example.")
+        .unwrap()
+        .with_a("server.example.", LO)
+        .unwrap();
+    for i in 1..=4 {
+        example = example
+            .with_a(
+                &format!("ns{i}.hosts.example."),
+                Ipv4Addr::new(192, 0, 2, i),
+            )
+            .unwrap();
+    }
+    specs.push(ServerSpec::new("server.example.", example).unwrap());
+    // `test.` delegates `victim.test.` to 16 glued servers (the glue fills
+    // the referral budget) and 4 glueless ones hosted under `example.`.
+    for spec in &mut specs {
+        if origin(spec) == "test." {
+            let mut z = spec.zone.clone();
+            for i in 0..16 {
+                let ns = format!("ns{i}.victim.test.");
+                z = z
+                    .with_ns("victim.test.", &ns)
+                    .unwrap()
+                    .with_a(&ns, LO)
+                    .unwrap();
+            }
+            for i in 1..=4 {
+                z = z
+                    .with_ns("victim.test.", &format!("ns{i}.hosts.example."))
+                    .unwrap();
+            }
+            spec.zone = z;
+        }
+    }
+    let h = Hierarchy::start_with(specs).await.unwrap();
+    let mut config = config_for(&h);
+    config.query_timeout = Duration::from_millis(5);
+    // Give the 16 glue names a (dead) address: the testkit port overrides.
+    for i in 0..16 {
+        config.nameserver_addr_overrides.insert(
+            Name::from_ascii(&format!("ns{i}.victim.test.")).unwrap(),
+            SocketAddr::from(([127, 0, 0, 1], 1)),
+        );
+    }
+    let r = Resolver::new(config).await.unwrap();
+    let err = r
+        .resolve(
+            &query("www.victim.test.", RecordType::A),
+            RequestFlags::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "resolver.unreachable");
+    assert!(
+        names(&h, "example.").is_empty(),
+        "glueless hosts were looked up after the referral cap: {:?}",
+        names(&h, "example.")
+    );
 }
 
 // ---- Task 7: QNAME minimisation (RFC 9156) ----

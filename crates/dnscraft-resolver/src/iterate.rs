@@ -100,6 +100,10 @@ impl<'a> Context<'a> {
         name: &Name,
         qtype: RecordType,
     ) -> Result<Option<Message>, ResolveError> {
+        if !self.config.egress_allowed(server.ip()) {
+            tracing::debug!(%server, "IPv6 egress disabled, not querying");
+            return Ok(None);
+        }
         self.budget.charge(name)?;
         self.total_sent.fetch_add(1, Ordering::Relaxed);
         let query = transport::build_query(name, qtype);
@@ -168,6 +172,7 @@ pub(crate) fn candidates_for(
         // data, so it is not subject to the address filter.
         if !glue.is_empty()
             && let Some(addr) = config.nameserver_addr_overrides.get(ns)
+            && config.egress_allowed(addr.ip())
         {
             if addrs < MAX_ADDRS_PER_REFERRAL {
                 out.push(Candidate::Addr(*addr));
@@ -178,6 +183,7 @@ pub(crate) fn candidates_for(
         let usable: Vec<IpAddr> = glue
             .into_iter()
             .filter(|ip| is_usable_server_ip(*ip, config.allow_private_nameservers))
+            .filter(|ip| config.egress_allowed(*ip))
             .collect();
         if usable.is_empty() {
             out.push(Candidate::Host(ns.clone()));
@@ -198,6 +204,15 @@ pub(crate) fn candidates_for(
 /// addresses together). Real delegations list up to 13 servers with two
 /// addresses each; the cap bounds the work a hostile referral can cause.
 pub(crate) const MAX_ADDRS_PER_REFERRAL: usize = 16;
+
+/// Addresses usable from a glueless host given `taken` addresses already
+/// taken from the same referral.
+fn take_glueless(resolved: Vec<SocketAddr>, taken: usize) -> Vec<SocketAddr> {
+    resolved
+        .into_iter()
+        .take(MAX_ADDRS_PER_REFERRAL.saturating_sub(taken))
+        .collect()
+}
 
 /// Whether an address learned from the network may be queried as a name
 /// server.
@@ -560,6 +575,10 @@ fn resolve_once<'a>(
             .collect();
         let max_depth = ctx.limits.max_referral_depth;
 
+        // Addresses already taken from the current zone's referral (glue
+        // addresses in the candidate queue); glueless lookups share the same
+        // per-referral budget. At the root hop nothing came from a referral.
+        let mut referral_addrs = 0usize;
         for hop in 0..=max_depth {
             tracing::debug!(qname = %name, qtype = %qtype, zone = %zone, hop, "asking zone");
             let mut verdict = None;
@@ -578,10 +597,16 @@ fn resolve_once<'a>(
                             tracing::debug!(zone = %zone, host = %host, "skipping dependent name server");
                             continue;
                         }
+                        if referral_addrs >= MAX_ADDRS_PER_REFERRAL {
+                            // Glue already used the whole referral budget.
+                            tracing::debug!(zone = %zone, host = %host, "referral address cap reached");
+                            continue;
+                        }
                         glueless_tried += 1;
                         let resolved = resolve_host(ctx, &host, depth, &chain).await?;
-                        let resolved = ctx.stats.order(&resolved);
-                        for addr in resolved.into_iter().rev() {
+                        let chunk = take_glueless(ctx.stats.order(&resolved), referral_addrs);
+                        referral_addrs += chunk.len();
+                        for addr in chunk.into_iter().rev() {
                             candidates.push_front(Candidate::Addr(addr));
                         }
                         continue;
@@ -654,6 +679,10 @@ fn resolve_once<'a>(
                         });
                     }
                     candidates = order_candidates(&ctx.stats, next);
+                    referral_addrs = candidates
+                        .iter()
+                        .filter(|c| matches!(c, Candidate::Addr(_)))
+                        .count();
                 }
                 Some((Verdict::Lame, _, _)) => {}
             }
@@ -888,6 +917,9 @@ async fn lookup_host(
 ) -> Result<Vec<SocketAddr>, ResolveError> {
     let mut ips = Vec::new();
     for qtype in [RecordType::A, RecordType::AAAA] {
+        if qtype == RecordType::AAAA && !ctx.config.outgoing_ipv6 {
+            continue;
+        }
         if chain.iter().any(|(n, t)| n == host && *t == qtype) {
             tracing::debug!(host = %host, "nested lookup loop avoided");
             continue;
@@ -926,6 +958,7 @@ async fn lookup_host(
     Ok(ips
         .into_iter()
         .filter(|ip| is_usable_server_ip(*ip, ctx.config.allow_private_nameservers))
+        .filter(|ip| ctx.config.egress_allowed(*ip))
         .take(MAX_ADDRS_PER_REFERRAL)
         .map(|ip| SocketAddr::new(ip, DNS_PORT))
         .collect())
@@ -936,10 +969,19 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use std::net::Ipv4Addr;
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     fn n(text: &str) -> Name {
         Name::from_ascii(text).unwrap()
+    }
+
+    fn glue6(owner: &str, ip: Ipv6Addr) -> Record {
+        Record {
+            name: n(owner),
+            class: Class::IN,
+            ttl: 3600,
+            rdata: RData::AAAA(ip),
+        }
     }
 
     fn glue(owner: &str, ip: Ipv4Addr) -> Record {
@@ -1102,6 +1144,37 @@ mod tests {
             &[glue("ns.example.com.", Ipv4Addr::LOCALHOST)],
         );
         assert!(matches!(out.as_slice(), [Candidate::Addr(a)] if *a == operator));
+    }
+
+    #[test]
+    fn ipv6_glue_is_ignored_when_ipv6_egress_is_off() {
+        let v6 = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+        let records = [
+            glue("ns.example.com.", Ipv4Addr::new(198, 51, 100, 1)),
+            glue6("ns.example.com.", v6),
+        ];
+        let off = ResolverConfig {
+            outgoing_ipv6: false,
+            ..ResolverConfig::default()
+        };
+        let out = candidates_for(&off, &n("com."), &[n("ns.example.com.")], &records);
+        assert!(matches!(out.as_slice(), [Candidate::Addr(a)] if a.is_ipv4()));
+        let on = ResolverConfig::default();
+        let out = candidates_for(&on, &n("com."), &[n("ns.example.com.")], &records);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn glueless_addresses_share_the_referral_budget() {
+        let addrs: Vec<SocketAddr> = (1..=16u8)
+            .map(|i| SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, i)), DNS_PORT))
+            .collect();
+        assert_eq!(
+            take_glueless(addrs.clone(), 0).len(),
+            MAX_ADDRS_PER_REFERRAL
+        );
+        assert_eq!(take_glueless(addrs.clone(), 10).len(), 6);
+        assert!(take_glueless(addrs, MAX_ADDRS_PER_REFERRAL).is_empty());
     }
 
     #[test]

@@ -11,9 +11,11 @@
 //! `Insecure`, the AD bit stays clear, and the records are not checked.
 //! `validate = true` checks positive RRsets in the zone against DNSKEY
 //! material fetched from the same targets and a trust anchor for the zone
-//! apex. Denial of existence is not reconstructed from a stub answer; a
-//! response with no in-zone answer RRset stays `Indeterminate` when
-//! validation is on. A signature failure or a missing anchor is `Bogus`.
+//! apex. A negative answer (NXDOMAIN or NODATA) must come with an NSEC/NSEC3
+//! proof that validates against those keys; a missing or unprovable denial is
+//! `Bogus`, never `Secure`. NXDOMAIN next to a validated RRset for the
+//! question is `Bogus` too (the rcode is not signed). A signature failure or
+//! a missing anchor is `Bogus`.
 //!
 //! The answer a target returns is rebuilt before it is used (see
 //! [`scrub`]): only the RRsets of the CNAME/DNAME chain from the question
@@ -41,8 +43,9 @@ use std::net::SocketAddr;
 use dnscraft_proto::{Message, Name, RData, Rcode, Record, RecordType};
 
 use crate::config::{ForwardZone, ForwardZoneId};
+use crate::dnssec::denial::{Denial, prove_nodata, prove_nxdomain};
 use crate::dnssec::status::{BogusReason, Status, rrsets};
-use crate::dnssec::walk::TtlCap;
+use crate::dnssec::walk::{TtlCap, nxdomain_contradicted};
 use crate::dnssec::{
     ChainFailure, DelegationTrust, KeysOutcome, ValidationBudget, validate_dnskey_rrset_budgeted,
     validate_rrset_budgeted,
@@ -64,7 +67,7 @@ const MAX_SCRUB_CHAIN: usize = 32;
 /// negative answer; the additional section is emptied. Everything else,
 /// whatever its owner, is dropped: a forwarder is trusted for the answer to
 /// the question, not for unrelated names.
-pub(crate) fn scrub(mut message: Message, qname: &Name, qtype: RecordType) -> Message {
+pub(crate) fn scrub(mut message: Message, qname: &Name, qtype: RecordType, zone: &Name) -> Message {
     let mut names = vec![qname.clone()];
     let mut i = 0;
     while i < names.len() && names.len() < MAX_SCRUB_CHAIN {
@@ -96,7 +99,9 @@ pub(crate) fn scrub(mut message: Message, qname: &Name, qtype: RecordType) -> Me
     });
     message.authorities.retain(|r| match covered(r) {
         Some(RecordType::SOA) => names.iter().any(|n| r.name.zone_of(n)),
-        Some(RecordType::NSEC | RecordType::NSEC3) => true,
+        // A denial proof must belong to the forwarded zone; records injected
+        // for other zones are dropped.
+        Some(RecordType::NSEC | RecordType::NSEC3) => zone.zone_of(&r.name),
         _ => false,
     });
     message.additionals.clear();
@@ -173,6 +178,11 @@ impl Shared {
         name: &Name,
         qtype: RecordType,
     ) -> Result<Message, ResolveError> {
+        let targets: Vec<SocketAddr> = targets
+            .iter()
+            .copied()
+            .filter(|t| self.config.egress_allowed(t.ip()))
+            .collect();
         if targets.is_empty() {
             return Err(ResolveError::Unreachable { zone: zone.clone() });
         }
@@ -187,7 +197,7 @@ impl Shared {
         let accept =
             |message: &Message| matches!(message.rcode(), Rcode::NOERROR | Rcode::NXDOMAIN);
         match transport::query_servers_with(
-            targets,
+            &targets,
             &query,
             self.config.query_timeout,
             &self.stats,
@@ -204,20 +214,23 @@ impl Shared {
         }
     }
 
-    /// DNSSEC status of a stub answer.
+    /// DNSSEC status of a stub answer to `qname`/`qtype`.
     ///
     /// `validate == false` is always `Insecure`. Otherwise CD, or no trust
     /// anchors at all, yields `Indeterminate` (validation is off), matching
     /// a recursive answer. With validation on, the zone apex must have a
     /// trust anchor; DNSKEY is fetched from the same targets and positive
-    /// in-zone RRsets are checked against it. A response with nothing to
-    /// check stays `Indeterminate` — a stub answer does not carry a denial
-    /// proof this resolver rebuilds. The longest TTL of every validated
-    /// RRset (RFC 4035 section 5.3.3) is appended to `caps`.
+    /// in-zone RRsets are checked against it. A negative answer is `Secure`
+    /// only when its NSEC/NSEC3 proof validates and proves the denial;
+    /// otherwise it is `Bogus`. The longest TTL of every validated RRset
+    /// (RFC 4035 section 5.3.3) is appended to `caps`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn forwarded_status(
         &self,
         zone: &ForwardZone,
         flags: &RequestFlags,
+        qname: &Name,
+        qtype: RecordType,
         message: &Message,
         budget: &ValidationBudget,
         caps: &mut Vec<TtlCap>,
@@ -282,11 +295,68 @@ impl Shared {
             .answers
             .iter()
             .any(|r| r.rtype() != RecordType::RRSIG && !zone.zone.zone_of(&r.name));
-        if saw && !outside {
-            Ok(Status::Secure)
-        } else {
-            Ok(Status::Indeterminate)
+        // The rcode is not signed: NXDOMAIN next to a validated RRset for the
+        // question is a forgery in a secure zone.
+        if nxdomain_contradicted(message, &zone.zone, qname, qtype) {
+            return Ok(Status::Bogus(BogusReason::RcodeMismatch));
         }
+        let in_zone = |r: &Record| zone.zone.zone_of(&r.name);
+        let answered = message.answers.iter().filter(|r| in_zone(r)).any(|r| {
+            let direct = r.name == *qname
+                && r.rtype() != RecordType::RRSIG
+                && (qtype == RecordType::ANY
+                    || r.rtype() == qtype
+                    || r.rtype() == RecordType::CNAME);
+            let dname = r.rtype() == RecordType::DNAME && r.name != *qname && r.name.zone_of(qname);
+            direct || dname
+        });
+        let mut status = Status::Secure;
+        let mut proved = false;
+        if answered {
+            proved = saw;
+        } else {
+            // Negative answer: only a validated NSEC/NSEC3 proof makes it
+            // Secure. Anything unproven is Bogus, never silently Secure.
+            let mut proofs: Vec<Record> = Vec::new();
+            for set in rrsets(&message.authorities, &zone.zone, |r| {
+                matches!(
+                    r.rtype(),
+                    RecordType::SOA | RecordType::NSEC | RecordType::NSEC3
+                )
+            }) {
+                let owned: Vec<Record> = set.into_iter().cloned().collect();
+                match validate_rrset_budgeted(&owned, &message.authorities, &keys, now, budget) {
+                    Ok(valid) => {
+                        if let Some(first) = owned.first() {
+                            caps.push(TtlCap {
+                                name: first.name.clone(),
+                                rtype: first.rtype(),
+                                max_ttl: valid.max_ttl,
+                            });
+                        }
+                        proofs.extend(owned.into_iter().filter(|r| r.rtype() != RecordType::SOA));
+                    }
+                    Err(err) => return Ok(Status::Bogus(BogusReason::Verify(err))),
+                }
+            }
+            let denial = match message.rcode() {
+                Rcode::NXDOMAIN => Some(prove_nxdomain(&zone.zone, qname, &proofs, budget)),
+                Rcode::NOERROR => Some(prove_nodata(&zone.zone, qname, qtype, &proofs, budget)),
+                _ => None,
+            };
+            if let Some(denial) = denial {
+                proved = true;
+                status = match denial {
+                    Denial::Secure => status,
+                    Denial::Insecure(why) => status.combine(Status::from_insecure(why)),
+                    Denial::Bogus(reason) => return Ok(Status::Bogus(reason)),
+                };
+            }
+        }
+        if !proved || outside {
+            status = status.combine(Status::Indeterminate);
+        }
+        Ok(status)
     }
 }
 
@@ -427,6 +497,8 @@ mod tests {
             .forwarded_status(
                 &fz,
                 &flags,
+                &name("www.fz.test."),
+                RecordType::A,
                 &message,
                 &ValidationBudget::default(),
                 &mut caps,
@@ -442,6 +514,8 @@ mod tests {
             .forwarded_status(
                 &fz,
                 &flags,
+                &name("www.fz.test."),
+                RecordType::A,
                 &message,
                 &ValidationBudget::with_limits(1, 1),
                 &mut Vec::new(),
@@ -452,5 +526,164 @@ mod tests {
             status,
             Status::Bogus(BogusReason::Verify(VerifyFailure::BudgetExhausted))
         );
+    }
+
+    /// A signed `fz.test.` forward zone (`www` has an A record) and a
+    /// resolver that validates it. The hierarchy must outlive the resolver.
+    async fn signed_fixture() -> (
+        dnscraft_testkit::Hierarchy,
+        crate::Resolver,
+        ForwardZone,
+        Name,
+    ) {
+        use crate::dnssec::TrustAnchors;
+        use dnscraft_proto::Class;
+        use dnscraft_testkit::{
+            Hierarchy, ServerSpec, SigAlgorithm, SigningOptions, Zone, ZoneKey, sign_zone,
+        };
+        use hickory_proto::serialize::binary::BinEncodable;
+
+        let origin = name("fz.test.");
+        let key = ZoneKey::generate(SigAlgorithm::default()).unwrap();
+        let zone = Zone::new("fz.test.")
+            .unwrap()
+            .with_soa("ns1.fz.test.", "hostmaster.fz.test.")
+            .unwrap()
+            .with_ns("fz.test.", "ns1.fz.test.")
+            .unwrap()
+            .with_a("ns1.fz.test.", std::net::Ipv4Addr::LOCALHOST)
+            .unwrap()
+            .with_a("www.fz.test.", std::net::Ipv4Addr::new(192, 0, 2, 7))
+            .unwrap();
+        let signed = sign_zone(zone, &key, &SigningOptions::now()).unwrap();
+        let h = Hierarchy::start_with(vec![ServerSpec::new("ns1.fz.test.", signed).unwrap()])
+            .await
+            .unwrap();
+        let target = h.server("fz.test.").unwrap().addr();
+        let ds = key
+            .ds(&dnscraft_testkit::parse_name("fz.test.").unwrap())
+            .unwrap();
+        let bytes = ds.to_bytes().unwrap();
+        let anchors = TrustAnchors::from_records(&[Record {
+            name: origin.clone(),
+            class: Class::IN,
+            ttl: 3600,
+            rdata: RData::decode(&bytes, RecordType::DS, 0, bytes.len()).unwrap(),
+        }])
+        .unwrap();
+        let fz = ForwardZone {
+            id: ForwardZoneId::new("fz-test").unwrap(),
+            zone: origin.clone(),
+            targets: vec![target],
+            validate: true,
+        };
+        let r = crate::Resolver::new(crate::ResolverConfig {
+            root_hints: vec![target],
+            trust_anchors: anchors,
+            query_timeout: std::time::Duration::from_millis(500),
+            forward_zones: vec![fz.clone()],
+            ..crate::ResolverConfig::default()
+        })
+        .await
+        .unwrap();
+        (h, r, fz, origin)
+    }
+
+    async fn forward_message(
+        r: &crate::Resolver,
+        fz: &ForwardZone,
+        origin: &Name,
+        qname: &str,
+        qtype: RecordType,
+    ) -> Message {
+        r.shared
+            .exchange_forward(&fz.targets, origin, &name(qname), qtype)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn forwarded_nxdomain_and_nodata_need_a_valid_denial_proof() {
+        let (_h, r, fz, origin) = signed_fixture().await;
+        let budget = ValidationBudget::default();
+        let flags = RequestFlags::default();
+
+        let nxdomain = forward_message(&r, &fz, &origin, "nope.fz.test.", RecordType::A).await;
+        let nxdomain = scrub(nxdomain, &name("nope.fz.test."), RecordType::A, &origin);
+        assert_eq!(nxdomain.rcode(), Rcode::NXDOMAIN);
+        let status = r
+            .shared
+            .forwarded_status(
+                &fz,
+                &flags,
+                &name("nope.fz.test."),
+                RecordType::A,
+                &nxdomain,
+                &budget,
+                &mut Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status, Status::Secure);
+
+        // NODATA: the name exists, AAAA does not.
+        let nodata = forward_message(&r, &fz, &origin, "www.fz.test.", RecordType::AAAA).await;
+        let nodata = scrub(nodata, &name("www.fz.test."), RecordType::AAAA, &origin);
+        assert_eq!(nodata.rcode(), Rcode::NOERROR);
+        assert!(nodata.answers.is_empty());
+        let status = r
+            .shared
+            .forwarded_status(
+                &fz,
+                &flags,
+                &name("www.fz.test."),
+                RecordType::AAAA,
+                &nodata,
+                &budget,
+                &mut Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status, Status::Secure);
+
+        // Without the proof the same NXDOMAIN is not accepted.
+        let mut stripped = nxdomain.clone();
+        stripped.authorities.clear();
+        let status = r
+            .shared
+            .forwarded_status(
+                &fz,
+                &flags,
+                &name("nope.fz.test."),
+                RecordType::A,
+                &stripped,
+                &budget,
+                &mut Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status, Status::Bogus(BogusReason::NoDenialProof));
+    }
+
+    #[tokio::test]
+    async fn forged_nxdomain_next_to_validated_data_is_bogus() {
+        let (_h, r, fz, origin) = signed_fixture().await;
+        let mut message = forward_message(&r, &fz, &origin, "www.fz.test.", RecordType::A).await;
+        message.set_rcode(Rcode::NXDOMAIN).unwrap();
+        let message = scrub(message, &name("www.fz.test."), RecordType::A, &origin);
+        let status = r
+            .shared
+            .forwarded_status(
+                &fz,
+                &RequestFlags::default(),
+                &name("www.fz.test."),
+                RecordType::A,
+                &message,
+                &ValidationBudget::default(),
+                &mut Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status, Status::Bogus(BogusReason::RcodeMismatch));
     }
 }

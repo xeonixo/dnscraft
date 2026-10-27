@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -121,6 +121,10 @@ pub struct ResolverConfig {
     /// How long IPv6 name servers are deprioritised after an IPv6 send failed
     /// with network-unreachable.
     pub ipv6_cooldown: Duration,
+    /// Send queries over IPv6 as well as IPv4. When off, IPv6 addresses are
+    /// never contacted (no IPv6 glue, AAAA name server lookups are skipped,
+    /// and IPv6 roots or forward targets are not used). Default on.
+    pub outgoing_ipv6: bool,
     /// Zones answered by stub forwarders instead of iterative resolution.
     ///
     /// Empty by default. A name is forwarded to the most specific zone that
@@ -194,6 +198,13 @@ pub struct ForwardZone {
     pub validate: bool,
 }
 
+impl ResolverConfig {
+    /// Whether a query may be sent to `ip` under [`Self::outgoing_ipv6`].
+    pub(crate) fn egress_allowed(&self, ip: IpAddr) -> bool {
+        self.outgoing_ipv6 || ip.is_ipv4()
+    }
+}
+
 impl Default for ResolverConfig {
     fn default() -> Self {
         Self {
@@ -215,6 +226,7 @@ impl Default for ResolverConfig {
             nameserver_addr_overrides: HashMap::new(),
             cache_capacity_bytes: None,
             ipv6_cooldown: Duration::from_secs(60),
+            outgoing_ipv6: true,
             forward_zones: Vec::new(),
             max_concurrent_resolutions: 1024,
             allow_private_nameservers: false,
@@ -242,6 +254,7 @@ mod tests {
         assert!(!config.allow_private_nameservers);
         assert_eq!(config.root_reprime_interval, Duration::from_secs(86_400));
         assert_eq!(config.resolve_deadline, Duration::from_secs(10));
+        assert!(config.outgoing_ipv6);
     }
 
     #[test]
