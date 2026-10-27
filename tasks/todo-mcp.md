@@ -795,8 +795,8 @@ marked as such).
 **Scope:** S
 
 ## Checkpoint F: Complete
-- [ ] All SPEC-mcp.md success criteria met (table in progress.md)
-- [ ] Independent security review (`agent-skills:security-auditor`: token handling, scope isolation, header/body
+- [x] All SPEC-mcp.md success criteria met (table in progress.md)
+- [x] Independent security review (`agent-skills:security-auditor`: token handling, scope isolation, header/body
       confusion, rule safety, injection resistance, resource limits)
 - [ ] Client compatibility with the owner's actual MCP clients checked (Open question 5)
 - [ ] **Owner approval**; then archive: `git mv tasks/plan-mcp.md tasks/archive/mcp-plan.md` and
