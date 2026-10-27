@@ -3,7 +3,7 @@
 //! Every input is validated here before it reaches the backend, so a schema or
 //! value failure is a tool result (`mcp.invalid_input`), never a JSON-RPC
 //! error. Every string from the backend is untrusted and leaves through
-//! [`SafeText`].
+//! [`sanitize`].
 //!
 //! The tools are dispatched manually (rather than with rmcp's typed
 //! `Parameters` extractor) because that extractor reports deserialization
@@ -34,7 +34,7 @@ use crate::dto::{
 use crate::error::McpError;
 use crate::protected::canonicalize;
 use crate::result::{tool_error, tool_ok};
-use crate::sanitize::{CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_RULE_TEXT, SafeText};
+use crate::sanitize::{CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_RULE_TEXT, sanitize};
 
 /// Maximum entries returned in each `get_stats` top list.
 pub const TOP_LIST_LIMIT: usize = 10;
@@ -739,28 +739,28 @@ impl Kind {
 
 fn status_json(status: &crate::dto::NodeStatus) -> Value {
     json!({
-        "node_id": SafeText::new(&status.node_id, CAP_CLIENT_NAME),
-        "version": SafeText::new(&status.version, CAP_CLIENT_NAME),
+        "node_id": sanitize(&status.node_id, CAP_CLIENT_NAME),
+        "version": sanitize(&status.version, CAP_CLIENT_NAME),
         "uptime_seconds": status.uptime_seconds,
         "resolver": {
             "primed": status.resolver.primed,
             "cache_size": status.resolver.cache_size,
         },
         "listeners": status.listeners.iter().map(|listener| json!({
-            "id": SafeText::new(&listener.id, CAP_LIST_ID),
-            "protocol": SafeText::new(&listener.protocol, CAP_CLIENT_NAME),
-            "bind": SafeText::new(&listener.bind, CAP_DOMAIN),
-            "status": SafeText::new(&listener.status, CAP_CLIENT_NAME),
+            "id": sanitize(&listener.id, CAP_LIST_ID),
+            "protocol": sanitize(&listener.protocol, CAP_CLIENT_NAME),
+            "bind": sanitize(&listener.bind, CAP_DOMAIN),
+            "status": sanitize(&listener.status, CAP_CLIENT_NAME),
         })).collect::<Vec<_>>(),
         "tls": {
-            "mode": SafeText::new(&status.tls.mode, CAP_CLIENT_NAME),
-            "cert_expiry": SafeText::new(&status.tls.cert_expiry, CAP_RULE_TEXT),
-            "fingerprint": SafeText::new(&status.tls.fingerprint, CAP_RULE_TEXT),
+            "mode": sanitize(&status.tls.mode, CAP_CLIENT_NAME),
+            "cert_expiry": sanitize(&status.tls.cert_expiry, CAP_RULE_TEXT),
+            "fingerprint": sanitize(&status.tls.fingerprint, CAP_RULE_TEXT),
         },
         "filtering": {
             "lists_loaded": status.filtering.lists_loaded,
             "rules_active": status.filtering.rules_active,
-            "last_update": SafeText::new(&status.filtering.last_update, CAP_RULE_TEXT),
+            "last_update": sanitize(&status.filtering.last_update, CAP_RULE_TEXT),
         },
     })
 }
@@ -775,14 +775,14 @@ fn query_log_json(result: &QueryLogResult) -> Value {
 
 fn query_entry_json(entry: &QueryLogEntry) -> Value {
     json!({
-        "id": SafeText::new(&entry.id, CAP_LIST_ID),
-        "time": SafeText::new(&entry.time, CAP_CLIENT_NAME),
+        "id": sanitize(&entry.id, CAP_LIST_ID),
+        "time": sanitize(&entry.time, CAP_CLIENT_NAME),
         "client": query_client_json(&entry.client),
         "query": query_name_json(&entry.query),
-        "profile_id": SafeText::new(&entry.profile_id, CAP_LIST_ID),
-        "answer_source": SafeText::new(&entry.answer_source, CAP_CLIENT_NAME),
+        "profile_id": sanitize(&entry.profile_id, CAP_LIST_ID),
+        "answer_source": sanitize(&entry.answer_source, CAP_CLIENT_NAME),
         "filter": entry.filter.as_ref().map(query_filter_json),
-        "rcode": SafeText::new(&entry.rcode, CAP_CLIENT_NAME),
+        "rcode": sanitize(&entry.rcode, CAP_CLIENT_NAME),
         "timings": {
             "total_us": entry.timings.total_us,
         },
@@ -791,65 +791,65 @@ fn query_entry_json(entry: &QueryLogEntry) -> Value {
 
 fn query_client_json(client: &QueryClient) -> Value {
     json!({
-        "id": SafeText::new(&client.id, CAP_LIST_ID),
-        "display_name": SafeText::new(&client.display_name, CAP_CLIENT_NAME),
-        "source": SafeText::new(&client.source, CAP_CLIENT_NAME),
+        "id": sanitize(&client.id, CAP_LIST_ID),
+        "display_name": sanitize(&client.display_name, CAP_CLIENT_NAME),
+        "source": sanitize(&client.source, CAP_CLIENT_NAME),
     })
 }
 
 fn query_name_json(name: &QueryName) -> Value {
     json!({
-        "name": SafeText::new(&name.name, CAP_DOMAIN),
+        "name": sanitize(&name.name, CAP_DOMAIN),
         "type": name.qtype.as_str(),
     })
 }
 
 fn query_filter_json(filter: &QueryLogFilter) -> Value {
     json!({
-        "reason": SafeText::new(&filter.reason, CAP_CLIENT_NAME),
-        "rule_text": filter.rule_text.as_deref().map(|text| SafeText::new(text, CAP_RULE_TEXT)),
-        "list_id": filter.list_id.as_deref().map(|text| SafeText::new(text, CAP_LIST_ID)),
+        "reason": sanitize(&filter.reason, CAP_CLIENT_NAME),
+        "rule_text": filter.rule_text.as_deref().map(|text| sanitize(text, CAP_RULE_TEXT)),
+        "list_id": filter.list_id.as_deref().map(|text| sanitize(text, CAP_LIST_ID)),
     })
 }
 
 fn query_detail_json(detail: &QueryDetail) -> Value {
     json!({
-        "id": SafeText::new(&detail.id, CAP_LIST_ID),
-        "view_id": SafeText::new(&detail.view_id, CAP_LIST_ID),
-        "profile_id": SafeText::new(&detail.profile_id, CAP_LIST_ID),
+        "id": sanitize(&detail.id, CAP_LIST_ID),
+        "view_id": sanitize(&detail.view_id, CAP_LIST_ID),
+        "profile_id": sanitize(&detail.profile_id, CAP_LIST_ID),
         "selection": selection_json(&detail.selection),
         "steps": detail.steps.iter().map(step_json).collect::<Vec<_>>(),
         "filter": detail.filter.as_ref().map(decision_filter_json),
-        "dnssec": detail.dnssec.as_deref().map(|text| SafeText::new(text, CAP_CLIENT_NAME)),
-        "answer_source": SafeText::new(&detail.answer_source, CAP_CLIENT_NAME),
-        "rcode": SafeText::new(&detail.rcode, CAP_CLIENT_NAME),
+        "dnssec": detail.dnssec.as_deref().map(|text| sanitize(text, CAP_CLIENT_NAME)),
+        "answer_source": sanitize(&detail.answer_source, CAP_CLIENT_NAME),
+        "rcode": sanitize(&detail.rcode, CAP_CLIENT_NAME),
         "timings": timings_json(&detail.timings),
     })
 }
 
 fn selection_json(selection: &Selection) -> Value {
     json!({
-        "cause": SafeText::new(&selection.cause, CAP_CLIENT_NAME),
-        "prefix": selection.prefix.as_deref().map(|text| SafeText::new(text, CAP_DOMAIN)),
-        "client_id": selection.client_id.as_deref().map(|text| SafeText::new(text, CAP_LIST_ID)),
+        "cause": sanitize(&selection.cause, CAP_CLIENT_NAME),
+        "prefix": selection.prefix.as_deref().map(|text| sanitize(text, CAP_DOMAIN)),
+        "client_id": selection.client_id.as_deref().map(|text| sanitize(text, CAP_LIST_ID)),
     })
 }
 
 fn step_json(step: &DecisionStep) -> Value {
     json!({
-        "stage": SafeText::new(&step.stage, CAP_CLIENT_NAME),
-        "verdict": SafeText::new(&step.verdict, CAP_CLIENT_NAME),
-        "rule": step.rule.as_deref().map(|text| SafeText::new(text, CAP_RULE_TEXT)),
-        "list_id": step.list_id.as_deref().map(|text| SafeText::new(text, CAP_LIST_ID)),
+        "stage": sanitize(&step.stage, CAP_CLIENT_NAME),
+        "verdict": sanitize(&step.verdict, CAP_CLIENT_NAME),
+        "rule": step.rule.as_deref().map(|text| sanitize(text, CAP_RULE_TEXT)),
+        "list_id": step.list_id.as_deref().map(|text| sanitize(text, CAP_LIST_ID)),
     })
 }
 
 fn decision_filter_json(filter: &DecisionFilter) -> Value {
     json!({
-        "reason": SafeText::new(&filter.reason, CAP_CLIENT_NAME),
-        "block_mode": SafeText::new(&filter.block_mode, CAP_CLIENT_NAME),
-        "rule_text": filter.rule_text.as_deref().map(|text| SafeText::new(text, CAP_RULE_TEXT)),
-        "list_id": filter.list_id.as_deref().map(|text| SafeText::new(text, CAP_LIST_ID)),
+        "reason": sanitize(&filter.reason, CAP_CLIENT_NAME),
+        "block_mode": sanitize(&filter.block_mode, CAP_CLIENT_NAME),
+        "rule_text": filter.rule_text.as_deref().map(|text| sanitize(text, CAP_RULE_TEXT)),
+        "list_id": filter.list_id.as_deref().map(|text| sanitize(text, CAP_LIST_ID)),
         "important": filter.important,
     })
 }
@@ -864,49 +864,49 @@ fn timings_json(timings: &DecisionTimings) -> Value {
 
 fn explain_json(result: &ExplainBlockResult) -> Value {
     json!({
-        "domain": SafeText::new(&result.domain, CAP_DOMAIN),
-        "profile_id": SafeText::new(&result.profile_id, CAP_LIST_ID),
-        "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
-        "verdict": SafeText::new(&result.verdict, CAP_CLIENT_NAME),
+        "domain": sanitize(&result.domain, CAP_DOMAIN),
+        "profile_id": sanitize(&result.profile_id, CAP_LIST_ID),
+        "filter_set_id": sanitize(&result.filter_set_id, CAP_LIST_ID),
+        "verdict": sanitize(&result.verdict, CAP_CLIENT_NAME),
         "reason": result.reason.as_ref().map(explain_reason_json),
     })
 }
 
 fn explain_reason_json(reason: &ExplainReason) -> Value {
     json!({
-        "rule_text": SafeText::new(&reason.rule_text, CAP_RULE_TEXT),
-        "source": SafeText::new(&reason.source, CAP_RULE_TEXT),
+        "rule_text": sanitize(&reason.rule_text, CAP_RULE_TEXT),
+        "source": sanitize(&reason.source, CAP_RULE_TEXT),
         "important": reason.important,
-        "block_mode": SafeText::new(&reason.block_mode, CAP_CLIENT_NAME),
+        "block_mode": sanitize(&reason.block_mode, CAP_CLIENT_NAME),
     })
 }
 
 fn test_query_json(result: &TestQueryResult) -> Value {
     json!({
-        "view_id": SafeText::new(&result.view_id, CAP_LIST_ID),
-        "profile_id": SafeText::new(&result.profile_id, CAP_LIST_ID),
+        "view_id": sanitize(&result.view_id, CAP_LIST_ID),
+        "profile_id": sanitize(&result.profile_id, CAP_LIST_ID),
         "selection": selection_json(&result.selection),
-        "verdict": SafeText::new(&result.verdict, CAP_CLIENT_NAME),
+        "verdict": sanitize(&result.verdict, CAP_CLIENT_NAME),
         "filter": result.filter.as_ref().map(test_filter_json),
         "answer": {
-            "rcode": SafeText::new(&result.answer.rcode, CAP_CLIENT_NAME),
+            "rcode": sanitize(&result.answer.rcode, CAP_CLIENT_NAME),
             "records": result.answer.records.iter().map(|record| json!({
-                "name": SafeText::new(&record.name, CAP_DOMAIN),
+                "name": sanitize(&record.name, CAP_DOMAIN),
                 "type": record.qtype.as_str(),
                 "ttl": record.ttl,
-                "data": SafeText::new(&record.data, CAP_RULE_TEXT),
+                "data": sanitize(&record.data, CAP_RULE_TEXT),
             })).collect::<Vec<_>>(),
         },
-        "dnssec": result.dnssec.as_deref().map(|text| SafeText::new(text, CAP_CLIENT_NAME)),
+        "dnssec": result.dnssec.as_deref().map(|text| sanitize(text, CAP_CLIENT_NAME)),
         "timings": timings_json(&result.timings),
     })
 }
 
 fn test_filter_json(filter: &TestQueryFilter) -> Value {
     json!({
-        "rule_text": SafeText::new(&filter.rule_text, CAP_RULE_TEXT),
-        "list_id": filter.list_id.as_deref().map(|text| SafeText::new(text, CAP_LIST_ID)),
-        "block_mode": SafeText::new(&filter.block_mode, CAP_CLIENT_NAME),
+        "rule_text": sanitize(&filter.rule_text, CAP_RULE_TEXT),
+        "list_id": filter.list_id.as_deref().map(|text| sanitize(text, CAP_LIST_ID)),
+        "block_mode": sanitize(&filter.block_mode, CAP_CLIENT_NAME),
     })
 }
 
@@ -926,21 +926,21 @@ fn stats_json(result: &StatsResult) -> Value {
 
 fn stats_period_json(period: &StatsPeriod) -> Value {
     json!({
-        "from": SafeText::new(&period.from, CAP_CLIENT_NAME),
-        "to": SafeText::new(&period.to, CAP_CLIENT_NAME),
+        "from": sanitize(&period.from, CAP_CLIENT_NAME),
+        "to": sanitize(&period.to, CAP_CLIENT_NAME),
     })
 }
 
 fn top_domain_json(domain: &TopDomain) -> Value {
     json!({
-        "domain": SafeText::new(&domain.domain, CAP_DOMAIN),
+        "domain": sanitize(&domain.domain, CAP_DOMAIN),
         "count": domain.count,
     })
 }
 
 fn top_client_json(client: &TopClient) -> Value {
     json!({
-        "client_name": SafeText::new(&client.client_name, CAP_CLIENT_NAME),
+        "client_name": sanitize(&client.client_name, CAP_CLIENT_NAME),
         "queries": client.queries,
     })
 }
@@ -963,21 +963,21 @@ fn clients_json(result: &crate::dto::ClientListResult) -> Value {
 
 fn client_json(client: &ClientInfo) -> Value {
     json!({
-        "id": SafeText::new(&client.id, CAP_LIST_ID),
-        "display_name": SafeText::new(&client.display_name, CAP_CLIENT_NAME),
-        "source": SafeText::new(&client.source, CAP_CLIENT_NAME),
-        "addresses": client.addresses.iter().map(|address| SafeText::new(address, CAP_CLIENT_NAME)).collect::<Vec<_>>(),
-        "macs": client.macs.iter().map(|mac| SafeText::new(mac, CAP_CLIENT_NAME)).collect::<Vec<_>>(),
+        "id": sanitize(&client.id, CAP_LIST_ID),
+        "display_name": sanitize(&client.display_name, CAP_CLIENT_NAME),
+        "source": sanitize(&client.source, CAP_CLIENT_NAME),
+        "addresses": client.addresses.iter().map(|address| sanitize(address, CAP_CLIENT_NAME)).collect::<Vec<_>>(),
+        "macs": client.macs.iter().map(|mac| sanitize(mac, CAP_CLIENT_NAME)).collect::<Vec<_>>(),
         "vlan": client.vlan.as_ref().map(|vlan| json!({
             "id": vlan.id,
-            "name": SafeText::new(&vlan.name, CAP_CLIENT_NAME),
+            "name": sanitize(&vlan.name, CAP_CLIENT_NAME),
         })),
-        "local_domain": client.local_domain.as_deref().map(|text| SafeText::new(text, CAP_DOMAIN)),
+        "local_domain": client.local_domain.as_deref().map(|text| sanitize(text, CAP_DOMAIN)),
     })
 }
 
 fn rules_json(result: &ListRulesResult, kind: &str) -> Value {
-    let filter_set_id = SafeText::new(&result.filter_set_id, CAP_LIST_ID);
+    let filter_set_id = sanitize(&result.filter_set_id, CAP_LIST_ID);
     match kind {
         "temporary_allows" => json!({
             "filter_set_id": filter_set_id,
@@ -1005,29 +1005,29 @@ fn rules_json(result: &ListRulesResult, kind: &str) -> Value {
 
 fn rule_json(rule: &McpRuleInfo) -> Value {
     json!({
-        "id": SafeText::new(&rule.id, CAP_LIST_ID),
-        "domain": SafeText::new(&rule.domain, CAP_DOMAIN),
+        "id": sanitize(&rule.id, CAP_LIST_ID),
+        "domain": sanitize(&rule.domain, CAP_DOMAIN),
         "include_subdomains": rule.include_subdomains,
-        "rule_text": SafeText::new(&rule.rule_text, CAP_RULE_TEXT),
-        "created_at": SafeText::new(&rule.created_at, CAP_CLIENT_NAME),
-        "expires_at": SafeText::new(&rule.expires_at, CAP_CLIENT_NAME),
-        "filter_set_id": SafeText::new(&rule.filter_set_id, CAP_LIST_ID),
+        "rule_text": sanitize(&rule.rule_text, CAP_RULE_TEXT),
+        "created_at": sanitize(&rule.created_at, CAP_CLIENT_NAME),
+        "expires_at": sanitize(&rule.expires_at, CAP_CLIENT_NAME),
+        "filter_set_id": sanitize(&rule.filter_set_id, CAP_LIST_ID),
     })
 }
 
 fn temp_allow_json(allow: &TempAllowInfo) -> Value {
     json!({
-        "domain": SafeText::new(&allow.domain, CAP_DOMAIN),
+        "domain": sanitize(&allow.domain, CAP_DOMAIN),
         "include_subdomains": allow.include_subdomains,
-        "created_at": SafeText::new(&allow.created_at, CAP_CLIENT_NAME),
-        "expires_at": SafeText::new(&allow.expires_at, CAP_CLIENT_NAME),
-        "filter_set_id": SafeText::new(&allow.filter_set_id, CAP_LIST_ID),
+        "created_at": sanitize(&allow.created_at, CAP_CLIENT_NAME),
+        "expires_at": sanitize(&allow.expires_at, CAP_CLIENT_NAME),
+        "filter_set_id": sanitize(&allow.filter_set_id, CAP_LIST_ID),
     })
 }
 
 fn pause_json(pause: &PauseInfo) -> Value {
     json!({
-        "filter_set_id": SafeText::new(&pause.filter_set_id, CAP_LIST_ID),
-        "paused_until": SafeText::new(&pause.paused_until, CAP_CLIENT_NAME),
+        "filter_set_id": sanitize(&pause.filter_set_id, CAP_LIST_ID),
+        "paused_until": sanitize(&pause.paused_until, CAP_CLIENT_NAME),
     })
 }

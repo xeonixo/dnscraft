@@ -1,18 +1,13 @@
 //! Control-character neutralisation and length caps for tool output.
 //!
 //! Strings that come from DNS, clients, filter lists or the assistant are
-//! untrusted data. They reach tool output only through [`SafeText`], which
+//! untrusted data. They reach tool output only through [`sanitize`], which
 //! replaces every control code point (`U+0000..=U+001F`, `U+007F..=U+009F`)
 //! with `U+FFFD` and truncates on a character boundary with a `...` suffix.
 //!
 //! Markup characters (`<`, `>`, `&`, `[`, `]`, `` ` ``) are deliberately left
 //! unchanged: tool output is JSON, not markup, and the assistant must treat
 //! field values as data (SPEC-mcp.md § Output rules).
-
-use std::fmt;
-use std::ops::Deref;
-
-use serde::Serialize;
 
 /// Cap for domain names (DNS maximum).
 pub const CAP_DOMAIN: usize = 253;
@@ -24,42 +19,6 @@ pub const CAP_RULE_TEXT: usize = 1000;
 pub const CAP_LIST_ID: usize = 100;
 /// Cap for assistant-supplied reasons.
 pub const CAP_REASON: usize = 200;
-
-/// A string that has passed through [`sanitize`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(transparent)]
-pub struct SafeText(String);
-
-impl SafeText {
-    /// Sanitize `input` and cap it at `cap` characters.
-    pub fn new(input: &str, cap: usize) -> Self {
-        Self(sanitize(input, cap))
-    }
-
-    /// The sanitized text.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// Consume the wrapper and return the sanitized text.
-    pub fn into_inner(self) -> String {
-        self.0
-    }
-}
-
-impl Deref for SafeText {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl fmt::Display for SafeText {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
 
 /// Replace control characters and truncate to at most `cap` characters.
 ///
@@ -107,7 +66,6 @@ mod tests {
     fn printable_text_emoji_and_markup_pass_unchanged() {
         let input = "Hello <script>&[x]` 😀 — ünïcode";
         assert_eq!(sanitize(input, CAP_DOMAIN), input);
-        assert_eq!(SafeText::new(input, CAP_DOMAIN).as_str(), input);
     }
 
     #[test]

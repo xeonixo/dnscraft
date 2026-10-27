@@ -9,7 +9,7 @@
 //! mutation happened but has no audit record.
 //!
 //! Strings from the assistant (`reason`) and from the backend are untrusted
-//! and leave through [`SafeText`]. Tool descriptions are static.
+//! and leave through [`sanitize`]. Tool descriptions are static.
 
 use std::net::IpAddr;
 use std::time::Duration;
@@ -28,7 +28,7 @@ use crate::dto::{
 use crate::error::McpError;
 use crate::result::{tool_error, tool_ok};
 use crate::sanitize::{
-    CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_REASON, CAP_RULE_TEXT, SafeText,
+    CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_REASON, CAP_RULE_TEXT, sanitize,
 };
 
 /// Static description for `allow_temporarily`.
@@ -334,11 +334,11 @@ async fn allow_temporarily(
     match server.backend.allow_temporarily(params).await {
         Ok(result) => {
             let after = json!({
-                "domain": SafeText::new(&domain, CAP_DOMAIN),
+                "domain": sanitize(&domain, CAP_DOMAIN),
                 "include_subdomains": include_subdomains,
-                "created_at": SafeText::new(&result.created_at, CAP_CLIENT_NAME),
-                "expires_at": SafeText::new(&result.expires_at, CAP_CLIENT_NAME),
-                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
+                "created_at": sanitize(&result.created_at, CAP_CLIENT_NAME),
+                "expires_at": sanitize(&result.expires_at, CAP_CLIENT_NAME),
+                "filter_set_id": sanitize(&result.filter_set_id, CAP_LIST_ID),
                 "reason": reason,
             });
             if record(
@@ -356,11 +356,11 @@ async fn allow_temporarily(
                 return audit_failed("mcp.allow_temporarily");
             }
             tool_ok(json!({
-                "domain": SafeText::new(&domain, CAP_DOMAIN),
+                "domain": sanitize(&domain, CAP_DOMAIN),
                 "include_subdomains": include_subdomains,
-                "created_at": SafeText::new(&result.created_at, CAP_CLIENT_NAME),
-                "expires_at": SafeText::new(&result.expires_at, CAP_CLIENT_NAME),
-                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
+                "created_at": sanitize(&result.created_at, CAP_CLIENT_NAME),
+                "expires_at": sanitize(&result.expires_at, CAP_CLIENT_NAME),
+                "filter_set_id": sanitize(&result.filter_set_id, CAP_LIST_ID),
             }))
         }
         Err(error) => {
@@ -447,12 +447,12 @@ async fn add_rule(
             // The backend commits the rule and its audit entry in one
             // transaction, so this layer never writes a second audit row.
             tool_ok(json!({
-                "rule_text": SafeText::new(&result.rule_text, CAP_RULE_TEXT),
-                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
-                "domain": SafeText::new(&domain, CAP_DOMAIN),
+                "rule_text": sanitize(&result.rule_text, CAP_RULE_TEXT),
+                "filter_set_id": sanitize(&result.filter_set_id, CAP_LIST_ID),
+                "domain": sanitize(&domain, CAP_DOMAIN),
                 "include_subdomains": include_subdomains,
-                "created_at": SafeText::new(&result.created_at, CAP_CLIENT_NAME),
-                "expires_at": SafeText::new(&result.expires_at, CAP_CLIENT_NAME),
+                "created_at": sanitize(&result.created_at, CAP_CLIENT_NAME),
+                "expires_at": sanitize(&result.expires_at, CAP_CLIENT_NAME),
             }))
         }
         Err(error) => {
@@ -472,9 +472,9 @@ fn rule_failure_after(
     reason: &str,
 ) -> Value {
     json!({
-        "domain": SafeText::new(domain, CAP_DOMAIN),
+        "domain": sanitize(domain, CAP_DOMAIN),
         "include_subdomains": include_subdomains,
-        "filter_set_id": filter_set_id.map(|id| SafeText::new(id, CAP_LIST_ID)),
+        "filter_set_id": filter_set_id.map(|id| sanitize(id, CAP_LIST_ID)),
         "reason": reason,
     })
 }
@@ -501,8 +501,8 @@ async fn remove_rule(
     };
     let filter_set_id = args.filter_set_id.clone();
     let before = json!({
-        "domain": SafeText::new(&domain, CAP_DOMAIN),
-        "filter_set_id": filter_set_id.as_deref().map(|id| SafeText::new(id, CAP_LIST_ID)),
+        "domain": sanitize(&domain, CAP_DOMAIN),
+        "filter_set_id": filter_set_id.as_deref().map(|id| sanitize(id, CAP_LIST_ID)),
     });
 
     let found = match server
@@ -546,8 +546,8 @@ async fn remove_rule(
 
     if found.is_none() {
         let after = json!({
-            "domain": SafeText::new(&domain, CAP_DOMAIN),
-            "filter_set_id": filter_set_id.as_deref().map(|id| SafeText::new(id, CAP_LIST_ID)),
+            "domain": sanitize(&domain, CAP_DOMAIN),
+            "filter_set_id": filter_set_id.as_deref().map(|id| sanitize(id, CAP_LIST_ID)),
             "removed": false,
             "config_version": Value::Null,
         });
@@ -580,8 +580,8 @@ async fn remove_rule(
             if result.removed {
                 tool_ok(json!({
                     "removed": true,
-                    "domain": SafeText::new(&domain, CAP_DOMAIN),
-                    "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
+                    "domain": sanitize(&domain, CAP_DOMAIN),
+                    "filter_set_id": sanitize(&result.filter_set_id, CAP_LIST_ID),
                 }))
             } else {
                 tool_ok(json!({ "removed": false }))
@@ -636,8 +636,8 @@ async fn pause_filter_set(
     match server.backend.pause_filter_set(params).await {
         Ok(result) => {
             let after = json!({
-                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
-                "paused_until": SafeText::new(&result.paused_until, CAP_CLIENT_NAME),
+                "filter_set_id": sanitize(&result.filter_set_id, CAP_LIST_ID),
+                "paused_until": sanitize(&result.paused_until, CAP_CLIENT_NAME),
             });
             if record(
                 server,
@@ -654,8 +654,8 @@ async fn pause_filter_set(
                 return audit_failed("mcp.pause_filter_set");
             }
             tool_ok(json!({
-                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
-                "paused_until": SafeText::new(&result.paused_until, CAP_CLIENT_NAME),
+                "filter_set_id": sanitize(&result.filter_set_id, CAP_LIST_ID),
+                "paused_until": sanitize(&result.paused_until, CAP_CLIENT_NAME),
             }))
         }
         Err(error) => {
@@ -679,7 +679,7 @@ async fn pause_filter_set(
 
 fn pause_failure_after(filter_set_id: Option<&str>, duration: PauseDuration) -> Value {
     json!({
-        "filter_set_id": filter_set_id.map(|id| SafeText::new(id, CAP_LIST_ID)),
+        "filter_set_id": filter_set_id.map(|id| sanitize(id, CAP_LIST_ID)),
         "duration": duration.as_str(),
     })
 }
@@ -708,15 +708,15 @@ async fn resume_filter_set(
     {
         Ok(result) => {
             let after = json!({
-                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
+                "filter_set_id": sanitize(&result.filter_set_id, CAP_LIST_ID),
                 "resumed": result.resumed,
             });
             let before = json!({
-                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
+                "filter_set_id": sanitize(&result.filter_set_id, CAP_LIST_ID),
                 "was_paused_until": result
                     .was_paused_until
                     .as_deref()
-                    .map(|until| SafeText::new(until, CAP_CLIENT_NAME)),
+                    .map(|until| sanitize(until, CAP_CLIENT_NAME)),
             });
             if record(
                 server,
@@ -733,7 +733,7 @@ async fn resume_filter_set(
                 return audit_failed("mcp.resume_filter_set");
             }
             tool_ok(json!({
-                "filter_set_id": SafeText::new(&result.filter_set_id, CAP_LIST_ID),
+                "filter_set_id": sanitize(&result.filter_set_id, CAP_LIST_ID),
                 "resumed": result.resumed,
             }))
         }
@@ -743,7 +743,7 @@ async fn resume_filter_set(
             let before = json!({
                 "filter_set_id": filter_set_id
                     .as_deref()
-                    .map(|id| SafeText::new(id, CAP_LIST_ID)),
+                    .map(|id| sanitize(id, CAP_LIST_ID)),
                 "was_paused_until": Value::Null,
             });
             let _ = record(
@@ -769,10 +769,10 @@ fn allow_failure_after(
     reason: &str,
 ) -> Value {
     json!({
-        "domain": SafeText::new(domain, CAP_DOMAIN),
+        "domain": sanitize(domain, CAP_DOMAIN),
         "include_subdomains": include_subdomains,
         "duration": duration.as_str(),
-        "filter_set_id": filter_set_id.map(|id| SafeText::new(id, CAP_LIST_ID)),
+        "filter_set_id": filter_set_id.map(|id| sanitize(id, CAP_LIST_ID)),
         "reason": reason,
     })
 }
@@ -804,27 +804,20 @@ fn validate_domain(raw: &str) -> Result<String, CallToolResult> {
 
 /// Neutralise control characters and cap an assistant-supplied reason.
 fn sanitize_reason(reason: Option<&str>) -> String {
-    reason.map_or_else(String::new, |reason| {
-        SafeText::new(reason, CAP_REASON).into_inner()
-    })
+    reason.map_or_else(String::new, |reason| sanitize(reason, CAP_REASON))
 }
 
 /// Reject a fixed-set duration above the configured maximum.
 fn duration_error(requested: PauseDuration, maximum: Duration) -> Option<McpError> {
     (requested.seconds() > maximum.as_secs()).then(|| McpError::DurationExceedsMaximum {
         requested: requested.as_str().to_owned(),
-        maximum: iso_duration(maximum),
+        maximum: match maximum.as_secs() {
+            300 => "PT5M".to_owned(),
+            900 => "PT15M".to_owned(),
+            3600 => "PT1H".to_owned(),
+            seconds => format!("PT{seconds}S"),
+        },
     })
-}
-
-/// Render a configured duration for the error `params`.
-fn iso_duration(duration: Duration) -> String {
-    match duration.as_secs() {
-        300 => "PT5M".to_owned(),
-        900 => "PT15M".to_owned(),
-        3600 => "PT1H".to_owned(),
-        seconds => format!("PT{seconds}S"),
-    }
 }
 
 /// Reject a target covered by the protected-domain list.

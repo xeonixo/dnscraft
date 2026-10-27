@@ -518,8 +518,13 @@ fn unsupported_version(requested: Option<&str>, supported: &[String]) -> Respons
         .into_response()
 }
 
-/// Build the rmcp service with the DNScraft transport limits.
-pub(crate) fn build(backend: std::sync::Arc<dyn McpBackend>, config: McpConfig) -> McpTransport {
+/// Build the stateless MCP service mounted by `control-api` under `/mcp/v1`.
+///
+/// The returned service is cloned per request; every instance shares `backend`
+/// and `config`. It wraps rmcp's `StreamableHttpService` with the transport
+/// conformance rules in this module (instead of returning rmcp's type directly,
+/// as SPEC-mcp.md's sketch says).
+pub fn build(backend: std::sync::Arc<dyn McpBackend>, config: McpConfig) -> McpTransport {
     let server_config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(config.legacy_session_mode)
         .with_json_response(true)

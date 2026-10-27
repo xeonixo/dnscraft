@@ -24,8 +24,6 @@ pub mod transport;
 mod auth;
 mod rate_limit;
 
-use std::sync::Arc;
-
 pub use backend::{BackendError, McpBackend};
 pub use config::McpConfig;
 pub use dto::{
@@ -42,18 +40,8 @@ pub use dto::{
 pub use error::McpError;
 pub use protected::ProtectedDomains;
 pub use result::{tool_error, tool_ok};
-pub use sanitize::{
-    CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_REASON, CAP_RULE_TEXT, SafeText, sanitize,
-};
+pub use sanitize::{CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_REASON, CAP_RULE_TEXT, sanitize};
 pub use tools::parse_mcp_tool_input;
-pub use transport::{McpTransport, RequestLimits, RequestRejection, validate_mcp_request};
-
-/// Build the stateless MCP service mounted by `control-api` under `/mcp/v1`.
-///
-/// The returned service is cloned per request; every instance shares `backend`
-/// and `config`. It wraps rmcp's `StreamableHttpService` with the transport
-/// conformance rules in [`transport`] (instead of returning rmcp's type
-/// directly, as SPEC-mcp.md's sketch says).
-pub fn service(backend: Arc<dyn McpBackend>, config: McpConfig) -> McpTransport {
-    transport::build(backend, config)
-}
+pub use transport::{
+    McpTransport, RequestLimits, RequestRejection, build as service, validate_mcp_request,
+};
