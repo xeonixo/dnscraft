@@ -1,3 +1,8 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DNScraft Console</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
@@ -136,6 +141,7 @@ body {
   border-bottom: 1px solid var(--separator);
 }
 .toolbar h1 { font-size: 21px; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
+#page-title:focus { outline: none; }
 .toolbar .spacer { flex: 1; }
 
 .seg {
@@ -147,7 +153,7 @@ body {
   font: inherit; font-size: 13.5px; padding: 5px 13px; border-radius: 7px;
   cursor: pointer; min-height: 30px;
 }
-.seg button[aria-selected="true"] { background: var(--label); color: var(--canvas); font-weight: 600; }
+.seg button[aria-checked="true"] { background: var(--label); color: var(--canvas); font-weight: 600; }
 
 .icon-btn {
   width: 34px; height: 34px; display: grid; place-items: center;
@@ -385,6 +391,9 @@ body {
 }
 </style>
 
+</head>
+<body>
+
 <div class="app">
   <aside class="sidebar" aria-label="Navigation">
     <div class="brand">
@@ -495,7 +504,7 @@ body {
       <button class="icon-btn menu-btn" aria-label="Menü" onclick="toggleNav()">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
       </button>
-      <h1 id="page-title">Übersicht</h1>
+      <h1 id="page-title" tabindex="-1">Übersicht</h1>
       <div class="spacer"></div>
       <button class="icon-btn" aria-label="Hilfe und Feedback" onclick="openHelpSheet()">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
@@ -520,11 +529,11 @@ body {
         </div>
 
         <div class="filter-row">
-          <div class="seg" role="tablist" aria-label="Zeitraum">
-            <button role="tab" aria-selected="true">24 h</button>
-            <button role="tab" aria-selected="false">7 d</button>
-            <button role="tab" aria-selected="false">30 d</button>
-            <button role="tab" aria-selected="false">1 Jahr</button>
+          <div class="seg" role="radiogroup" aria-label="Zeitraum">
+            <button role="radio" aria-checked="true">24 h</button>
+            <button role="radio" aria-checked="false">7 d</button>
+            <button role="radio" aria-checked="false">30 d</button>
+            <button role="radio" aria-checked="false">1 Jahr</button>
           </div>
         </div>
 
@@ -537,8 +546,8 @@ body {
           </div>
           <div class="tile">
             <div class="top"><span class="name">Blockiert</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></div>
-            <div class="value num">4.209<span class="unit">3,3&nbsp;%</span></div>
-            <div class="delta"><span class="down">−1,1&nbsp;%</span> seit gestern</div>
+            <div class="value num">4.209</div>
+            <div class="delta"><span class="down">−1,1&nbsp;%</span> seit gestern · 3,3&nbsp;% aller Anfragen</div>
             <div class="spark"><svg viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"><polyline points="0,6 10,8 20,7 30,12 40,10 50,16 60,14 70,20 80,18 90,24 100,22 110,27 120,25" fill="none" stroke="var(--danger)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
           </div>
           <div class="tile">
@@ -625,7 +634,7 @@ body {
         <div class="group">
           <div class="row">
             <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
-            <div class="main"><div class="domain">Knoten „node-3" offline</div><div class="meta">seit 14:02 · Konfiguration v10 · Rückstand 2 Versionen</div></div>
+            <div class="main"><div class="domain">Knoten „node-3“ offline</div><div class="meta">seit 14:02 · Konfiguration v10 · Rückstand 2 Versionen</div></div>
             <div class="tail"><div class="time">14:02</div></div>
           </div>
           <div class="row">
@@ -698,17 +707,17 @@ body {
           <label style="display:inline-flex;align-items:center;gap:8px;font-size:13.5px;color:var(--label-2);margin-left:auto;flex:0 0 auto">Live<span class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></span></label>
         </div>
         <div class="filter-row">
-          <div class="seg" role="tablist" aria-label="Aktion">
-            <button role="tab" aria-selected="true">Alle</button>
-            <button role="tab" aria-selected="false">Blockiert</button>
-            <button role="tab" aria-selected="false">Erlaubt</button>
-            <button role="tab" aria-selected="false">Cache</button>
+          <div class="seg" role="radiogroup" aria-label="Aktion">
+            <button role="radio" aria-checked="true">Alle</button>
+            <button role="radio" aria-checked="false">Blockiert</button>
+            <button role="radio" aria-checked="false">Erlaubt</button>
+            <button role="radio" aria-checked="false">Cache</button>
           </div>
-          <div class="seg" role="tablist" aria-label="Zeitraum">
-            <button role="tab" aria-selected="true">24 h</button>
-            <button role="tab" aria-selected="false">7 d</button>
-            <button role="tab" aria-selected="false">30 d</button>
-            <button role="tab" aria-selected="false">Angepasst</button>
+          <div class="seg" role="radiogroup" aria-label="Zeitraum">
+            <button role="radio" aria-checked="true">24 h</button>
+            <button role="radio" aria-checked="false">7 d</button>
+            <button role="radio" aria-checked="false">30 d</button>
+            <button role="radio" aria-checked="false">Angepasst</button>
           </div>
         </div>
         <div class="filter-row">
@@ -721,13 +730,13 @@ body {
         </div>
 
         <div class="section-head">128.431 Anfragen · 4.209 blockiert (3,3 %) · 89.201 aus Cache · 34.971 Upstream</div>
-        <div class="qtable" role="table" aria-label="Anfragen">
-          <div class="qhead" role="row">
+        <div class="qtable" role="group" aria-label="Anfragen">
+          <div class="qhead">
             <span>Zeit</span><span>Domäne</span><span>Typ</span><span>Client</span><span>Protokoll</span><span>Antwort</span><span class="r">Latenz</span><span class="r">Aktion</span>
           </div>
-          <div class="qrow" onclick="openQueryDetail()">
+          <div class="qrow" onclick="openQueryDetail(this)">
             <span class="c time">14:32:07</span>
-            <div class="c domain"><span class="dstat block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span><div class="dtxt"><div class="dname">ads.example.com</div><div class="dsub d">Blocklist „Ads"</div><div class="dsub m">A · DoH · iPhone · 3 ms</div></div></div>
+            <div class="c domain"><span class="dstat block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span><div class="dtxt"><div class="dname">ads.example.com</div><div class="dsub d">Blocklist „Ads“</div><div class="dsub m">A · DoH · iPhone · 3 ms</div></div></div>
             <span class="c type">A</span>
             <div class="c client"><div class="cname">iPhone</div><div class="csub">iphone-k7q2x9 · 192.0.2.11</div></div>
             <span class="c proto">DoH</span>
@@ -736,7 +745,7 @@ body {
             <span class="c act"><button class="qact allow" title="Freigeben" aria-label="Freigeben" onclick="event.stopPropagation();openAllowSheet()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></button></span>
             <svg class="chev-m" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="qrow" onclick="openQueryDetail()">
+          <div class="qrow" onclick="openQueryDetail(this)">
             <span class="c time">14:31:58</span>
             <div class="c domain"><span class="dstat allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span><div class="dtxt"><div class="dname">www.example.com</div><div class="dsub d">aus Cache</div><div class="dsub m">AAAA · DoT · MacBook · 0,4 ms</div></div></div>
             <span class="c type">AAAA</span>
@@ -744,10 +753,10 @@ body {
             <span class="c proto">DoT</span>
             <span class="c answer"><span class="verdict allow">NOERROR</span></span>
             <span class="c lat">0,4 ms</span>
-            <span class="c act"><button class="qact deny" title="Blockieren" aria-label="Blockieren" onclick="event.stopPropagation()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></button></span>
+            <span class="c act"><button class="qact deny" title="Blockieren" aria-label="Blockieren" onclick="event.stopPropagation();openDenySheet()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></button></span>
             <svg class="chev-m" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="qrow" onclick="openQueryDetail()">
+          <div class="qrow" onclick="openQueryDetail(this)">
             <span class="c time">14:31:40</span>
             <div class="c domain"><span class="dstat allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span><div class="dtxt"><div class="dname">cdn.example.com</div><div class="dsub d">Upstream 10.0.0.53</div><div class="dsub m">A · Do53 · iPhone · 8 ms</div></div></div>
             <span class="c type">A</span>
@@ -755,10 +764,10 @@ body {
             <span class="c proto">Do53</span>
             <span class="c answer"><span class="verdict allow">NOERROR</span></span>
             <span class="c lat">8 ms</span>
-            <span class="c act"><button class="qact deny" title="Blockieren" aria-label="Blockieren" onclick="event.stopPropagation()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></button></span>
+            <span class="c act"><button class="qact deny" title="Blockieren" aria-label="Blockieren" onclick="event.stopPropagation();openDenySheet()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></button></span>
             <svg class="chev-m" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="qrow" onclick="openQueryDetail()">
+          <div class="qrow" onclick="openQueryDetail(this)">
             <span class="c time">14:31:18</span>
             <div class="c domain"><span class="dstat block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span><div class="dtxt"><div class="dname">tracker.example.com</div><div class="dsub d">SafeSearch</div><div class="dsub m">A · Do53 · MacBook · 2 ms</div></div></div>
             <span class="c type">A</span>
@@ -769,7 +778,7 @@ body {
             <span class="c act"><button class="qact allow" title="Freigeben" aria-label="Freigeben" onclick="event.stopPropagation();openAllowSheet()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></button></span>
             <svg class="chev-m" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="qrow" onclick="openQueryDetail()">
+          <div class="qrow" onclick="openQueryDetail(this)">
             <span class="c time">14:30:52</span>
             <div class="c domain"><span class="dstat allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span><div class="dtxt"><div class="dname">api.example.net</div><div class="dsub d">Rebind-Schutz erlaubt</div><div class="dsub m">A · DoH · TV · 12 ms</div></div></div>
             <span class="c type">A</span>
@@ -777,12 +786,12 @@ body {
             <span class="c proto">DoH</span>
             <span class="c answer"><span class="verdict allow">NOERROR</span></span>
             <span class="c lat">12 ms</span>
-            <span class="c act"><button class="qact deny" title="Blockieren" aria-label="Blockieren" onclick="event.stopPropagation()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></button></span>
+            <span class="c act"><button class="qact deny" title="Blockieren" aria-label="Blockieren" onclick="event.stopPropagation();openDenySheet()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></button></span>
             <svg class="chev-m" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="qrow" onclick="openQueryDetail()">
+          <div class="qrow" onclick="openQueryDetail(this)">
             <span class="c time">14:30:26</span>
-            <div class="c domain"><span class="dstat block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span><div class="dtxt"><div class="dname">stats.example.org</div><div class="dsub d">Filter-Set „Kinder"</div><div class="dsub m">AAAA · DoT · Tablet · 1 ms</div></div></div>
+            <div class="c domain"><span class="dstat block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span><div class="dtxt"><div class="dname">stats.example.org</div><div class="dsub d">Filter-Set „Kinder“</div><div class="dsub m">AAAA · DoT · Tablet · 1 ms</div></div></div>
             <span class="c type">AAAA</span>
             <div class="c client"><div class="cname">Tablet</div><div class="csub">tablet-x9q2m · 192.0.2.22</div></div>
             <span class="c proto">DoT</span>
@@ -796,7 +805,7 @@ body {
           <button class="btn-sec">Mehr laden</button>
           <span class="count">1–50 von 128.431</span>
         </div>
-        <div class="footnote">Aufbewahrung 30 Tage · IP-Kürzung „letzte Gruppe" · Spalten über Filter konfigurierbar · Export über das Menü</div>
+        <div class="footnote">Aufbewahrung 30 Tage · IP-Kürzung „letzte Gruppe“ · Spalten über Filter konfigurierbar · Export über das Menü</div>
       </div>
     </section>
 
@@ -805,35 +814,35 @@ body {
         <div class="grab"></div>
         <h2>Filter</h2>
         <label>Record-Typ</label>
-        <div class="seg" role="tablist" aria-label="Record-Typ" style="width:100%">
-          <button role="tab" aria-selected="true" style="flex:1">Alle</button>
-          <button role="tab" aria-selected="false" style="flex:1">A</button>
-          <button role="tab" aria-selected="false" style="flex:1">AAAA</button>
-          <button role="tab" aria-selected="false" style="flex:1">TXT</button>
+        <div class="seg" role="radiogroup" aria-label="Record-Typ" style="width:100%">
+          <button role="radio" aria-checked="true" style="flex:1">Alle</button>
+          <button role="radio" aria-checked="false" style="flex:1">A</button>
+          <button role="radio" aria-checked="false" style="flex:1">AAAA</button>
+          <button role="radio" aria-checked="false" style="flex:1">TXT</button>
         </div>
         <label>Antwortcode</label>
-        <div class="seg" role="tablist" aria-label="Antwortcode" style="width:100%">
-          <button role="tab" aria-selected="true" style="flex:1">Alle</button>
-          <button role="tab" aria-selected="false" style="flex:1">NOERROR</button>
-          <button role="tab" aria-selected="false" style="flex:1">NXDOMAIN</button>
-          <button role="tab" aria-selected="false" style="flex:1">NULL-IP</button>
+        <div class="seg" role="radiogroup" aria-label="Antwortcode" style="width:100%">
+          <button role="radio" aria-checked="true" style="flex:1">Alle</button>
+          <button role="radio" aria-checked="false" style="flex:1">NOERROR</button>
+          <button role="radio" aria-checked="false" style="flex:1">NXDOMAIN</button>
+          <button role="radio" aria-checked="false" style="flex:1">NULL-IP</button>
         </div>
         <label for="f-reason">Grund</label>
         <div class="field"><input id="f-reason" placeholder="Blocklist, Regel oder Kategorie"></div>
         <label for="f-client">Client</label>
         <div class="field"><input id="f-client" placeholder="Gerät, IP oder Client-ID"></div>
         <label>Protokoll</label>
-        <div class="seg" role="tablist" aria-label="Protokoll" style="width:100%">
-          <button role="tab" aria-selected="true" style="flex:1">Alle</button>
-          <button role="tab" aria-selected="false" style="flex:1">Do53</button>
-          <button role="tab" aria-selected="false" style="flex:1">DoH</button>
-          <button role="tab" aria-selected="false" style="flex:1">DoT</button>
+        <div class="seg" role="radiogroup" aria-label="Protokoll" style="width:100%">
+          <button role="radio" aria-checked="true" style="flex:1">Alle</button>
+          <button role="radio" aria-checked="false" style="flex:1">Do53</button>
+          <button role="radio" aria-checked="false" style="flex:1">DoH</button>
+          <button role="radio" aria-checked="false" style="flex:1">DoT</button>
         </div>
         <label>Sortierung</label>
-        <div class="seg" role="tablist" aria-label="Sortierung" style="width:100%">
-          <button role="tab" aria-selected="true" style="flex:1">Neueste</button>
-          <button role="tab" aria-selected="false" style="flex:1">Älteste</button>
-          <button role="tab" aria-selected="false" style="flex:1">Antwortzeit</button>
+        <div class="seg" role="radiogroup" aria-label="Sortierung" style="width:100%">
+          <button role="radio" aria-checked="true" style="flex:1">Neueste</button>
+          <button role="radio" aria-checked="false" style="flex:1">Älteste</button>
+          <button role="radio" aria-checked="false" style="flex:1">Antwortzeit</button>
         </div>
         <div class="actions">
           <button class="btn-sec" onclick="closeFilterSheet()">Abbrechen</button>
@@ -848,15 +857,15 @@ body {
         <h2>Anfrage</h2>
         <div class="group" style="margin-bottom:12px">
           <div class="row">
-            <div class="main"><div class="domain">ads.example.com</div><div class="meta">A · DoH · iPhone · iphone-k7q2x9 · 14:32:07</div></div>
-            <div class="verdict block">NXDOMAIN</div>
+            <div class="main"><div class="domain" id="qd-domain">ads.example.com</div><div class="meta" id="qd-meta">A · DoH · iPhone · iphone-k7q2x9 · 14:32:07</div></div>
+            <div class="verdict block" id="qd-verdict">NXDOMAIN</div>
           </div>
         </div>
         <label>Entscheidungskette</label>
         <div class="group" style="margin-bottom:12px">
           <div class="row">
             <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span>
-            <div class="main"><div class="domain">Blocklist „Ads"</div><div class="meta">Regel ads.example.com → blockieren</div></div>
+            <div class="main"><div class="domain">Blocklist „Ads“</div><div class="meta">Regel ads.example.com → blockieren</div></div>
           </div>
           <div class="row">
             <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
@@ -869,9 +878,9 @@ body {
         </div>
         <label>Details</label>
         <div class="group" style="margin-bottom:12px">
-          <div class="row"><div class="main"><b style="font-weight:500">Zone / Profil</b></div><div class="meta">LAN · Profil „Standard"</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Zone / Profil</b></div><div class="meta">LAN · Profil „Standard“</div></div>
           <div class="row"><div class="main"><b style="font-weight:500">Antwortquelle</b><div class="meta">answer_source</div></div><div class="verdict block">Blocklist</div></div>
-          <div class="row"><div class="main"><b style="font-weight:500">Auswahlgrund</b><div class="meta">selection_cause</div></div><div class="meta">Liste „Ads" · Regel „ads.example.com"</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Auswahlgrund</b><div class="meta">selection_cause</div></div><div class="meta">Liste „Ads“ · Regel „ads.example.com“</div></div>
           <div class="row"><div class="main"><b style="font-weight:500">DNSSEC</b></div><div class="meta">nicht geprüft (geblockt)</div></div>
           <div class="row"><div class="main"><b style="font-weight:500">Cache</b></div><div class="meta">cache_hit = false</div></div>
           <div class="row"><div class="main"><b style="font-weight:500">Quell- / Zielport</b></div><div class="meta mono">51234 → 443</div></div>
@@ -912,7 +921,7 @@ body {
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
         </div>
-        <div class="footnote">Regeln und Roh-Editor öffnen sich in einem Sheet. Erstellen über „Neu" in der Symbolleiste.</div>
+        <div class="footnote">Regeln und Roh-Editor öffnen sich in einem Sheet. Erstellen über „Neu“ in der Symbolleiste.</div>
       </div>
     </section>
 
@@ -922,7 +931,7 @@ body {
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 6 9 12 15 18"/></svg>
           Filtersätze
         </button>
-        <div class="section-head">Filtersatz „Standard"</div>
+        <div class="section-head" id="set-detail-head">Filtersatz „Standard“</div>
         <div class="group">
           <div class="row">
             <div class="main"><b style="font-weight:500">Aktiv</b><div class="meta">angewendet für zugewiesene Profile</div></div>
@@ -932,7 +941,7 @@ body {
         <div class="section-head">Blocking-Mode</div>
         <div class="group">
           <div class="row"><div class="main"><b style="font-weight:500">0.0.0.0 / ::</b><div class="meta">Standard · Antwort auf geblockte Namen</div></div><span class="tag">aktiv</span></div>
-          <div class="row"><div class="main"><b style="font-weight:500">NXDOMAIN</b><div class="meta">Antwort wie „nicht vorhanden"</div></div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">NXDOMAIN</b><div class="meta">Antwort wie „nicht vorhanden“</div></div></div>
           <div class="row"><div class="main"><b style="font-weight:500">REFUSED</b><div class="meta">Antwortcode REFUSED</div></div></div>
           <div class="row"><div class="main"><b style="font-weight:500">Benutzerdefinierte IP</b><div class="meta">eigene A/AAAA-Adresse</div></div></div>
         </div>
@@ -955,14 +964,14 @@ body {
       <div class="sheet" onclick="event.stopPropagation()">
         <div class="grab"></div>
         <h2>Regel hinzufügen</h2>
-        <div class="seg" role="tablist" aria-label="Modus" style="width:100%">
-          <button role="tab" aria-selected="true" style="flex:1">Geführt</button>
-          <button role="tab" aria-selected="false" style="flex:1">Roh-Editor</button>
+        <div class="seg" role="radiogroup" aria-label="Modus" style="width:100%">
+          <button role="radio" aria-checked="true" style="flex:1">Geführt</button>
+          <button role="radio" aria-checked="false" style="flex:1">Roh-Editor</button>
         </div>
         <label>Typ</label>
-        <div class="seg" role="tablist" aria-label="Typ" style="width:100%">
-          <button role="tab" aria-selected="true" style="flex:1">Blockieren</button>
-          <button role="tab" aria-selected="false" style="flex:1">Erlauben</button>
+        <div class="seg" role="radiogroup" aria-label="Typ" style="width:100%">
+          <button role="radio" aria-checked="true" style="flex:1">Blockieren</button>
+          <button role="radio" aria-checked="false" style="flex:1">Erlauben</button>
         </div>
         <label for="rule-domain">Domain</label>
         <div class="field"><input id="rule-domain" placeholder="ads.example.com"></div>
@@ -1088,17 +1097,17 @@ body {
         <div class="group">
           <div class="row">
             <div class="main"><b style="font-weight:500">Design</b></div>
-            <div class="seg" role="tablist" aria-label="Design">
-              <button role="tab" aria-selected="true">Hell</button>
-              <button role="tab" aria-selected="false">Dunkel</button>
-              <button role="tab" aria-selected="false">System</button>
+            <div class="seg" role="radiogroup" aria-label="Design">
+              <button role="radio" aria-checked="true">Hell</button>
+              <button role="radio" aria-checked="false">Dunkel</button>
+              <button role="radio" aria-checked="false">System</button>
             </div>
           </div>
           <div class="row">
             <div class="main"><b style="font-weight:500">Sprache</b></div>
-            <div class="seg" role="tablist" aria-label="Sprache">
-              <button role="tab" aria-selected="true">Deutsch</button>
-              <button role="tab" aria-selected="false">English</button>
+            <div class="seg" role="radiogroup" aria-label="Sprache">
+              <button role="radio" aria-checked="true">Deutsch</button>
+              <button role="radio" aria-checked="false">English</button>
             </div>
           </div>
         </div>
@@ -1130,10 +1139,10 @@ body {
           </div>
           <div class="row">
             <div class="main"><b style="font-weight:500">IP-Kürzung</b></div>
-            <div class="seg" role="tablist" aria-label="IP-Kürzung">
-              <button role="tab" aria-selected="false">Keine</button>
-              <button role="tab" aria-selected="false">Oktett</button>
-              <button role="tab" aria-selected="true">Gruppe</button>
+            <div class="seg" role="radiogroup" aria-label="IP-Kürzung">
+              <button role="radio" aria-checked="false">Keine</button>
+              <button role="radio" aria-checked="false">Oktett</button>
+              <button role="radio" aria-checked="true">Gruppe</button>
             </div>
           </div>
           <div class="row">
@@ -1294,10 +1303,10 @@ body {
       <div class="content">
         <p class="lead">Von MCP verwaltete Regeln, temporäre Freigaben und Pausen.</p>
         <div class="filter-row">
-          <div class="seg" role="tablist" aria-label="Art">
-            <button role="tab" aria-selected="true">Regeln</button>
-            <button role="tab" aria-selected="false">Freigaben</button>
-            <button role="tab" aria-selected="false">Pausen</button>
+          <div class="seg" role="radiogroup" aria-label="Art">
+            <button role="radio" aria-checked="true">Regeln</button>
+            <button role="radio" aria-checked="false">Freigaben</button>
+            <button role="radio" aria-checked="false">Pausen</button>
           </div>
         </div>
         <div class="section-head">Regeln</div>
@@ -1330,16 +1339,16 @@ body {
         <div class="section-head">Zonen</div>
         <div class="group">
           <div class="row" onclick="openZone('LAN')" style="cursor:pointer">
-            <div class="main"><div class="domain">LAN</div><div class="meta">2 Bereiche · Profil „Standard"</div></div>
+            <div class="main"><div class="domain">LAN</div><div class="meta">2 Bereiche · Profil „Standard“</div></div>
             <span class="tag">Standard</span>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="row" onclick="openZone('Gäste')" style="cursor:pointer">
-            <div class="main"><div class="domain">Gäste</div><div class="meta">1 Bereich · Profil „Gäste"</div></div>
+            <div class="main"><div class="domain">Gäste</div><div class="meta">1 Bereich · Profil „Gäste“</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="row" onclick="openZone('Kinder')" style="cursor:pointer">
-            <div class="main"><div class="domain">Kinder</div><div class="meta">1 Bereich · Profil „Kinder"</div></div>
+            <div class="main"><div class="domain">Kinder</div><div class="meta">1 Bereich · Profil „Kinder“</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="row" onclick="openZoneSheet()" style="cursor:pointer">
@@ -1357,7 +1366,7 @@ body {
           Zonen
         </button>
 
-        <div class="section-head">Zone „LAN"</div>
+        <div class="section-head" id="zone-detail-head">Zone „LAN“</div>
         <div class="group">
           <div class="row">
             <div class="main"><b style="font-weight:500">Standard-Zone</b><div class="meta">Fängt alle Clients ohne Bereichs-Treffer ab</div></div>
@@ -1399,7 +1408,7 @@ body {
         <div class="section-head">Profil</div>
         <div class="group">
           <div class="row" onclick="showScreen('screen-profiles','Profile')" style="cursor:pointer">
-            <div class="main"><div class="domain">Standard</div><div class="meta">Filter-Set „Standard" · SafeSearch aus · Rebind-Schutz an</div></div>
+            <div class="main"><div class="domain">Standard</div><div class="meta">Filter-Set „Standard“ · SafeSearch aus · Rebind-Schutz an</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
         </div>
@@ -1455,7 +1464,7 @@ body {
           Namen
         </button>
 
-        <div class="section-head">Name „nas.lan"</div>
+        <div class="section-head" id="name-detail-head">Name „nas.lan“</div>
         <div class="group">
           <div class="rec-head"><span class="name">A</span><span class="count">Standard + 2 Überschreibungen</span></div>
           <div class="row">
@@ -1497,7 +1506,7 @@ body {
         <div class="section-head">Forward-Zonen</div>
         <div class="group">
           <div class="row">
-            <div class="main"><div class="domain">site-a.example.com</div><div class="meta">10.9.0.53 · reverse 0.9.10.in-addr.arpa · nur Profil „VPN"</div></div>
+            <div class="main"><div class="domain">site-a.example.com</div><div class="meta">10.9.0.53 · reverse 0.9.10.in-addr.arpa · nur Profil „VPN“</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="row">
@@ -1523,17 +1532,17 @@ body {
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="row" onclick="openProfile('Standard')" style="cursor:pointer">
-            <div class="main"><div class="domain">Standard</div><div class="meta">Filter-Set „Standard" · SafeSearch aus · Rebind an</div></div>
+            <div class="main"><div class="domain">Standard</div><div class="meta">Filter-Set „Standard“ · SafeSearch aus · Rebind an</div></div>
             <span class="verdict allow">aktiv</span>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="row" onclick="openProfile('Kinder')" style="cursor:pointer">
-            <div class="main"><div class="domain">Kinder</div><div class="meta">Filter-Set „Kinder" · SafeSearch an · Rebind an</div></div>
+            <div class="main"><div class="domain">Kinder</div><div class="meta">Filter-Set „Kinder“ · SafeSearch an · Rebind an</div></div>
             <span class="verdict allow">aktiv</span>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="row" onclick="openProfile('Gäste')" style="cursor:pointer">
-            <div class="main"><div class="domain">Gäste</div><div class="meta">Filter-Set „Gäste" · pausiert bis 18:00</div></div>
+            <div class="main"><div class="domain">Gäste</div><div class="meta">Filter-Set „Gäste“ · pausiert bis 18:00</div></div>
             <span class="verdict block">pausiert</span>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
@@ -1548,7 +1557,7 @@ body {
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 6 9 12 15 18"/></svg>
           Profile
         </button>
-        <div class="section-head">Profil „Kinder"</div>
+        <div class="section-head" id="profile-detail-head">Profil „Kinder“</div>
         <div class="group">
           <div class="row"><div class="main"><b style="font-weight:500">Filter-Set</b></div><div class="domain">Kinder</div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
         </div>
@@ -1567,14 +1576,14 @@ body {
         </div>
         <div class="section-head">Zeitpläne</div>
         <div class="group">
-          <div class="row"><div class="main"><div class="domain">Wochentags</div><div class="meta">Mo–Fr · 07:00–09:00 · Filter-Set „Standard"</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
-          <div class="row"><div class="main"><div class="domain">Wochenende</div><div class="meta">Sa–So · ganztags · Filter-Set „Kinder"</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><div class="domain">Wochentags</div><div class="meta">Mo–Fr · 07:00–09:00 · Filter-Set „Standard“</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><div class="domain">Wochenende</div><div class="meta">Sa–So · ganztags · Filter-Set „Kinder“</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
           <div class="row"><div class="main"><b style="font-weight:500;color:var(--accent)">Zeitplan hinzufügen</b><div class="meta">Wochentage, Zeitfenster, Filter-Set</div></div></div>
         </div>
         <div class="section-head">Schutz</div>
         <div class="group">
           <div class="row"><div class="main"><b style="font-weight:500">SafeSearch</b><div class="meta">Google · YouTube · Bing · DuckDuckGo</div></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
-          <div class="row"><div class="main"><b style="font-weight:500">YouTube-Modus</b><div class="meta">youtube_mode · nur bei SafeSearch</div></div><div class="seg"><button role="tab" aria-selected="true">strict</button><button role="tab" aria-selected="false">moderate</button></div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">YouTube-Modus</b><div class="meta">youtube_mode · nur bei SafeSearch</div></div><div class="seg"><button role="radio" aria-checked="true">strict</button><button role="radio" aria-checked="false">moderate</button></div></div>
           <div class="row"><div class="main"><b style="font-weight:500">Rebind-Schutz</b><div class="meta">private Antworten verwerfen</div></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
           <div class="row"><div class="main"><b style="font-weight:500">AAAA unterdrücken</b><div class="meta">nur IPv4-Antworten</div></div><label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label></div>
           <div class="row"><div class="main"><b style="font-weight:500">Firefox-Canary</b><div class="meta">use-application-dns.net → NXDOMAIN</div></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
@@ -1609,10 +1618,10 @@ body {
           </div>
           <div class="row">
             <div class="main"><b style="font-weight:500">Typ</b></div>
-            <div class="seg" role="tablist" aria-label="Typ">
-              <button role="tab" aria-selected="true">A</button>
-              <button role="tab" aria-selected="false">AAAA</button>
-              <button role="tab" aria-selected="false">CNAME</button>
+            <div class="seg" role="radiogroup" aria-label="Typ">
+              <button role="radio" aria-checked="true">A</button>
+              <button role="radio" aria-checked="false">AAAA</button>
+              <button role="radio" aria-checked="false">CNAME</button>
             </div>
           </div>
         </div>
@@ -1621,10 +1630,10 @@ body {
         <div class="group">
           <div class="row">
             <span class="status-ic allow"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
-            <div class="main"><b style="font-weight:500">Zone „LAN"</b><div class="meta">getroffen über Subnetz <span class="mono">192.0.2.0/24</span></div></div>
+            <div class="main"><b style="font-weight:500">Zone „LAN“</b><div class="meta">getroffen über Subnetz <span class="mono">192.0.2.0/24</span></div></div>
           </div>
           <div class="row">
-            <div class="main"><b style="font-weight:500">Profil „Standard"</b><div class="meta">Filter-Set „Standard"</div></div>
+            <div class="main"><b style="font-weight:500">Profil „Standard“</b><div class="meta">Filter-Set „Standard“</div></div>
           </div>
           <div class="row">
             <span class="rr-type">1</span>
@@ -1640,22 +1649,22 @@ body {
       <div class="sheet" onclick="event.stopPropagation()">
         <div class="grab"></div>
         <h2>Datensatz hinzufügen</h2>
-        <div class="seg" role="tablist" aria-label="Typ" style="width:100%">
-          <button role="tab" aria-selected="true" style="flex:1">A</button>
-          <button role="tab" aria-selected="false" style="flex:1">AAAA</button>
-          <button role="tab" aria-selected="false" style="flex:1">CNAME</button>
-          <button role="tab" aria-selected="false" style="flex:1">TXT</button>
-          <button role="tab" aria-selected="false" style="flex:1">SRV</button>
-          <button role="tab" aria-selected="false" style="flex:1">MX</button>
-          <button role="tab" aria-selected="false" style="flex:1">PTR</button>
+        <div class="seg" role="radiogroup" aria-label="Typ" style="width:100%">
+          <button role="radio" aria-checked="true" style="flex:1">A</button>
+          <button role="radio" aria-checked="false" style="flex:1">AAAA</button>
+          <button role="radio" aria-checked="false" style="flex:1">CNAME</button>
+          <button role="radio" aria-checked="false" style="flex:1">TXT</button>
+          <button role="radio" aria-checked="false" style="flex:1">SRV</button>
+          <button role="radio" aria-checked="false" style="flex:1">MX</button>
+          <button role="radio" aria-checked="false" style="flex:1">PTR</button>
         </div>
         <label for="rr-name">Name</label>
         <div class="field"><input id="rr-name" placeholder="nas.lan"></div>
         <label>Gilt für</label>
-        <div class="seg" role="tablist" aria-label="Gilt für" style="width:100%">
-          <button role="tab" aria-selected="true" style="flex:1">Standard</button>
-          <button role="tab" aria-selected="false" style="flex:1">Gäste</button>
-          <button role="tab" aria-selected="false" style="flex:1">VPN</button>
+        <div class="seg" role="radiogroup" aria-label="Gilt für" style="width:100%">
+          <button role="radio" aria-checked="true" style="flex:1">Standard</button>
+          <button role="radio" aria-checked="false" style="flex:1">Gäste</button>
+          <button role="radio" aria-checked="false" style="flex:1">VPN</button>
         </div>
         <label for="rr-value">Wert</label>
         <div class="field"><input id="rr-value" placeholder="192.0.2.20"></div>
@@ -1710,7 +1719,7 @@ body {
           <div class="row"><div class="main"><b style="font-weight:500">Letzter Sync</b><div class="meta">vor 58 s · 37 Geräte · 2 Netzwerke</div></div><span class="verdict allow">ok</span></div>
           <div class="row"><div class="main"><b style="font-weight:500;color:var(--accent)">Jetzt synchronisieren</b></div></div>
         </div>
-        <div class="footnote">Quelle „UniFi" wird per Sync aktualisiert; Namen sind ungeprüfte Daten. Manuelle Einträge (einzelne IP/CIDR) haben Vorrang; kollidierende UniFi-Einträge werden umetikettiert. VLAN wird als <span class="mono">Name (id)</span> angezeigt.</div>
+        <div class="footnote">Quelle „UniFi“ wird per Sync aktualisiert; Namen sind ungeprüfte Daten. Manuelle Einträge (einzelne IP/CIDR) haben Vorrang; kollidierende UniFi-Einträge werden umetikettiert. VLAN wird als <span class="mono">Name (id)</span> angezeigt.</div>
       </div>
     </section>
 
@@ -1757,12 +1766,12 @@ body {
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="row">
-            <div class="main"><div class="domain">Android „Private DNS"</div><div class="meta mono">node1.dns.example.com</div></div>
+            <div class="main"><div class="domain">Android „Private DNS“</div><div class="meta mono">node1.dns.example.com</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
         </div>
 
-        <div class="footnote">Endpunkte: DoH <span class="mono">/dns-query/&lt;id&gt;</span> · DoT <span class="mono">&lt;id&gt;.dns.example.com</span>. Die Zone ergibt sich aus der Source-IP, nicht aus der Client-ID. Unbekannte Client-IDs werden abgelehnt (404 / Ban-Strike). Widerruf und Umbenennen einer Client-ID haben noch keinen Endpunkt (SPEC-control-api § Open questions); der Prototyp zeigt sie daher als „nicht impl.".</div>
+        <div class="footnote">Endpunkte: DoH <span class="mono">/dns-query/&lt;id&gt;</span> · DoT <span class="mono">&lt;id&gt;.dns.example.com</span>. Die Zone ergibt sich aus der Source-IP, nicht aus der Client-ID. Unbekannte Client-IDs werden abgelehnt (404 / Ban-Strike). Widerruf und Umbenennen einer Client-ID haben noch keinen Endpunkt (SPEC-control-api § Open questions); der Prototyp zeigt sie daher als „nicht impl.“.</div>
       </div>
     </section>
 
@@ -1836,10 +1845,10 @@ body {
           <div class="body"><b>Selbstsigniertes Zertifikat aktiv</b><p>ACME-Zertifikat noch nicht vorhanden; die Verbindung ist bis dahin nicht vertrauenswürdig.</p><span class="fp">SHA-256&nbsp; 3A:9C:7F:11:DE:42:0B:88:65:01:EE:2A:94:C3:0D:77</span></div>
         </div>
 
-        <div class="seg" id="tls-tabs" role="tablist" aria-label="Bereich" style="width:100%">
-          <button role="tab" data-tab="overview" aria-selected="true" style="flex:1" onclick="switchTlsTab(this)">Übersicht</button>
-          <button role="tab" data-tab="cert" aria-selected="false" style="flex:1" onclick="switchTlsTab(this)">Zertifikat</button>
-          <button role="tab" data-tab="dns" aria-selected="false" style="flex:1" onclick="switchTlsTab(this)">DNS</button>
+        <div class="seg" id="tls-tabs" role="radiogroup" aria-label="Bereich" style="width:100%">
+          <button role="radio" data-tab="overview" aria-checked="true" style="flex:1" onclick="switchTlsTab(this)">Übersicht</button>
+          <button role="radio" data-tab="cert" aria-checked="false" style="flex:1" onclick="switchTlsTab(this)">Zertifikat</button>
+          <button role="radio" data-tab="dns" aria-checked="false" style="flex:1" onclick="switchTlsTab(this)">DNS</button>
         </div>
 
         <div id="tls-tab-overview" style="display:flex;flex-direction:column;gap:18px">
@@ -1883,12 +1892,12 @@ body {
 
         <div id="tls-tab-cert" hidden style="display:flex;flex-direction:column;gap:18px">
         <div class="section-head">Quelle</div>
-        <div class="seg" id="tls-source" role="tablist" aria-label="Quelle" style="width:100%">
-          <button role="tab" data-src="selfsigned" aria-selected="true" style="flex:1" onclick="switchTlsSource(this)">Selbstsigniert</button>
-          <button role="tab" data-src="acme" aria-selected="false" style="flex:1" onclick="switchTlsSource(this)">ACME</button>
-          <button role="tab" data-src="manual" aria-selected="false" style="flex:1" onclick="switchTlsSource(this)">Eigenes Zertifikat</button>
+        <div class="seg" id="tls-source" role="radiogroup" aria-label="Quelle" style="width:100%">
+          <button role="radio" data-src="selfsigned" aria-checked="true" style="flex:1" onclick="switchTlsSource(this)">Selbstsigniert</button>
+          <button role="radio" data-src="acme" aria-checked="false" style="flex:1" onclick="switchTlsSource(this)">ACME</button>
+          <button role="radio" data-src="manual" aria-checked="false" style="flex:1" onclick="switchTlsSource(this)">Eigenes Zertifikat</button>
         </div>
-        <div class="footnote">„Eigenes Zertifikat" ist noch nicht implementiert (SPEC-control-api kennt nur self_signed | acme).</div>
+        <div class="footnote">„Eigenes Zertifikat“ ist noch nicht implementiert (SPEC-control-api kennt nur self_signed | acme).</div>
 
         <div id="tls-src-identity" style="display:flex;flex-direction:column;gap:18px">
         <div class="section-head">Domain & SANs</div>
@@ -1910,7 +1919,7 @@ body {
           </div>
           <div class="row">
             <div class="main"><b style="font-weight:500">Schlüsseltyp</b><div class="meta">key_type</div></div>
-            <div class="seg"><button role="tab" aria-selected="true">ECDSA P-256</button><button role="tab" aria-selected="false">ECDSA P-384</button></div>
+            <div class="seg"><button role="radio" aria-checked="true">ECDSA P-256</button><button role="radio" aria-checked="false">ECDSA P-384</button></div>
           </div>
           <div class="row">
             <div class="main"><b style="font-weight:500">Erneuerung</b><div class="meta">renew_before</div></div>
@@ -1929,8 +1938,8 @@ body {
           <div class="row">
             <div class="main"><b style="font-weight:500">Challenge</b><div class="meta">HTTP-01 wird nicht unterstützt (nur DNS-01)</div></div>
             <div class="seg">
-              <button role="tab" aria-selected="true">DNS-01</button>
-              <button role="tab" disabled style="opacity:.4">HTTP-01</button>
+              <button role="radio" aria-checked="true">DNS-01</button>
+              <button role="radio" disabled style="opacity:.4">HTTP-01</button>
             </div>
           </div>
         </div>
@@ -1940,7 +1949,7 @@ body {
         <div class="group">
           <div class="row">
             <div class="main"><b style="font-weight:500">Verzeichnis</b><div class="meta">acme.directory · auch eigene URL erlaubt</div></div>
-            <div class="seg"><button role="tab" aria-selected="true">Produktion</button><button role="tab" aria-selected="false">Staging</button></div>
+            <div class="seg"><button role="radio" aria-checked="true">Produktion</button><button role="radio" aria-checked="false">Staging</button></div>
           </div>
           <div class="field-row">
             <label class="flabel" for="tls-acme-directory-url">Eigene Directory-URL</label>
@@ -1988,8 +1997,8 @@ body {
           <div class="row">
             <div class="main"><b style="font-weight:500">Knoten</b><div class="meta">DynDNS wird je Knoten konfiguriert</div></div>
             <div class="seg" id="tls-dd-node">
-              <button role="tab" data-node="node1" aria-selected="true" onclick="switchDdNode(this)">node1</button>
-              <button role="tab" data-node="node2" aria-selected="false" onclick="switchDdNode(this)">node2</button>
+              <button role="radio" data-node="node1" aria-checked="true" onclick="switchDdNode(this)">node1</button>
+              <button role="radio" data-node="node2" aria-checked="false" onclick="switchDdNode(this)">node2</button>
             </div>
           </div>
           <div class="row">
@@ -2027,9 +2036,9 @@ body {
           <div class="row">
             <div class="main"><b style="font-weight:500">IPv6-Kennung</b><div class="meta">stabile lokale Kennung für die AAAA-Adresse</div></div>
             <div class="seg" id="tls-dd-v6id">
-              <button role="tab" data-v6id="eui64" aria-selected="true" onclick="switchV6Id(this)">EUI-64</button>
-              <button role="tab" data-v6id="privacy" aria-selected="false" onclick="switchV6Id(this)">Privacy</button>
-              <button role="tab" data-v6id="static" aria-selected="false" onclick="switchV6Id(this)">Statisch</button>
+              <button role="radio" data-v6id="eui64" aria-checked="true" onclick="switchV6Id(this)">EUI-64</button>
+              <button role="radio" data-v6id="privacy" aria-checked="false" onclick="switchV6Id(this)">Privacy</button>
+              <button role="radio" data-v6id="static" aria-checked="false" onclick="switchV6Id(this)">Statisch</button>
             </div>
           </div>
           <div class="field-row" id="tls-dd-mac-row">
@@ -2100,7 +2109,7 @@ body {
             <span class="tag" style="color:var(--label-2);border-color:var(--separator)">nicht impl.</span>
           </div>
         </div>
-        <div class="footnote">Automatischer DNS-Check ist noch nicht implementiert (kein Endpunkt in SPEC-control-api). Manuell per „dig dns.example.com A @&lt;NS&gt;" prüfbar. Keine CNAMEs — Apex und Wildcard sind A/AAAA (DNS-only, proxied=false).</div>
+        <div class="footnote">Automatischer DNS-Check ist noch nicht implementiert (kein Endpunkt in SPEC-control-api). Manuell per „dig dns.example.com A @&lt;NS&gt;“ prüfbar. Keine CNAMEs — Apex und Wildcard sind A/AAAA (DNS-only, proxied=false).</div>
         </div>
 
         <button class="btn-primary" onclick="openTlsConfirmSheet()">Speichern</button>
@@ -2184,9 +2193,9 @@ body {
         <label for="jt-node">Vorgesehene node_id</label>
         <div class="field"><input id="jt-node" placeholder="node-4"></div>
         <label>TTL</label>
-        <div class="seg" role="tablist" aria-label="TTL" style="width:100%">
-          <button role="tab" aria-selected="true" style="flex:1">15 min</button>
-          <button role="tab" aria-selected="false" style="flex:1">1 h</button>
+        <div class="seg" role="radiogroup" aria-label="TTL" style="width:100%">
+          <button role="radio" aria-checked="true" style="flex:1">15 min</button>
+          <button role="radio" aria-checked="false" style="flex:1">1 h</button>
         </div>
         <label>Token (einmalig)</label>
         <div class="field" style="font-family:var(--font-mono);font-size:12px;word-break:break-all">jt_live_8f2a…c1e · wird gehasht gespeichert</div>
@@ -2299,9 +2308,9 @@ body {
       <label for="fz-reverse">Reverse-Zonen (optional)</label>
       <div class="field"><input id="fz-reverse" placeholder="0.9.10.in-addr.arpa · mehrere/CIDR"></div>
       <label>Beschränkung auf Profile</label>
-      <div class="seg" role="tablist" aria-label="Profile" style="width:100%">
-        <button role="tab" aria-selected="true" style="flex:1">Alle</button>
-        <button role="tab" aria-selected="false" style="flex:1">Auswahl…</button>
+      <div class="seg" role="radiogroup" aria-label="Profile" style="width:100%">
+        <button role="radio" aria-checked="true" style="flex:1">Alle</button>
+        <button role="radio" aria-checked="false" style="flex:1">Auswahl…</button>
       </div>
       <div class="row" style="padding:14px 0 0;border:0">
         <div class="main"><b style="font-weight:500">Upstream validieren</b><div class="meta">Erreichbarkeit beim Speichern prüfen</div></div>
@@ -2377,11 +2386,11 @@ body {
       <label for="fs-lists">Filterlisten</label>
       <div class="field"><input id="fs-lists" placeholder="Standard-Blockliste, Tracking-Schutz"></div>
       <label>Block-Modus</label>
-      <div class="seg" role="tablist" aria-label="Block-Modus" style="width:100%">
-        <button role="tab" aria-selected="true" style="flex:1">REFUSED</button>
-        <button role="tab" aria-selected="false" style="flex:1">NXDOMAIN</button>
-        <button role="tab" aria-selected="false" style="flex:1">NULL-IP</button>
-        <button role="tab" aria-selected="false" style="flex:1">Eigene IP</button>
+      <div class="seg" role="radiogroup" aria-label="Block-Modus" style="width:100%">
+        <button role="radio" aria-checked="true" style="flex:1">REFUSED</button>
+        <button role="radio" aria-checked="false" style="flex:1">NXDOMAIN</button>
+        <button role="radio" aria-checked="false" style="flex:1">NULL-IP</button>
+        <button role="radio" aria-checked="false" style="flex:1">Eigene IP</button>
       </div>
       <label for="fs-rules">Eigene Regeln</label>
       <div class="field"><input id="fs-rules" placeholder="eine Regel pro Zeile"></div>
@@ -2401,21 +2410,21 @@ body {
       <label for="l-addr">Adresse</label>
       <div class="field"><input id="l-addr" placeholder="192.0.2.1:443"></div>
       <label>Protokoll</label>
-      <div class="seg" role="tablist" aria-label="Protokoll" style="width:100%">
-        <button role="tab" aria-selected="true" style="flex:1">udp53</button>
-        <button role="tab" aria-selected="false" style="flex:1">tcp53</button>
-        <button role="tab" aria-selected="false" style="flex:1">dot</button>
-        <button role="tab" aria-selected="false" style="flex:1">doh</button>
-        <button role="tab" aria-selected="false" style="flex:1">doq</button>
+      <div class="seg" role="radiogroup" aria-label="Protokoll" style="width:100%">
+        <button role="radio" aria-checked="true" style="flex:1">udp53</button>
+        <button role="radio" aria-checked="false" style="flex:1">tcp53</button>
+        <button role="radio" aria-checked="false" style="flex:1">dot</button>
+        <button role="radio" aria-checked="false" style="flex:1">doh</button>
+        <button role="radio" aria-checked="false" style="flex:1">doq</button>
       </div>
       <div class="row" style="padding:14px 0 0;border:0">
         <div class="main"><b style="font-weight:500">HTTP/3 (h3)</b><div class="meta">nur für doh · gleicher Port</div></div>
         <label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label>
       </div>
       <label>Exposition</label>
-      <div class="seg" role="tablist" aria-label="Exposition" style="width:100%">
-        <button role="tab" aria-selected="true" style="flex:1">lokal</button>
-        <button role="tab" aria-selected="false" style="flex:1">öffentlich</button>
+      <div class="seg" role="radiogroup" aria-label="Exposition" style="width:100%">
+        <button role="radio" aria-checked="true" style="flex:1">lokal</button>
+        <button role="radio" aria-checked="false" style="flex:1">öffentlich</button>
       </div>
       <div class="footnote" style="padding:10px 0 0">Öffentlich nur für verschlüsselte Protokolle (dot/doh/doq); öffentliches Do53 wird still verworfen. Public-Admission gilt je Knoten.</div>
       <div class="actions">
@@ -2432,11 +2441,11 @@ body {
       <label for="t-label">Bezeichnung</label>
       <div class="field"><input id="t-label" placeholder="mcp-scanner"></div>
       <label>Scope</label>
-      <div class="seg" role="tablist" aria-label="Scope" style="width:100%">
-        <button role="tab" aria-selected="false" style="flex:1">viewer</button>
-        <button role="tab" aria-selected="false" style="flex:1">admin</button>
-        <button role="tab" aria-selected="false" style="flex:1">mcp:read</button>
-        <button role="tab" aria-selected="false" style="flex:1">mcp:write</button>
+      <div class="seg" role="radiogroup" aria-label="Scope" style="width:100%">
+        <button role="radio" aria-checked="false" style="flex:1">viewer</button>
+        <button role="radio" aria-checked="false" style="flex:1">admin</button>
+        <button role="radio" aria-checked="false" style="flex:1">mcp:read</button>
+        <button role="radio" aria-checked="false" style="flex:1">mcp:write</button>
       </div>
       <div class="footnote" style="padding:10px 0 0">Der Klartext wird nur einmal angezeigt und kann danach nicht wieder abgerufen werden.</div>
       <div class="actions">
@@ -2453,10 +2462,10 @@ body {
       <label for="pause-set">Filtersatz</label>
       <div class="field"><input id="pause-set" placeholder="Standard"></div>
       <label>Dauer</label>
-      <div class="seg" role="tablist" aria-label="Dauer" style="width:100%">
-        <button role="tab" aria-selected="true" style="flex:1">5 min</button>
-        <button role="tab" aria-selected="false" style="flex:1">15 min</button>
-        <button role="tab" aria-selected="false" style="flex:1">1 h</button>
+      <div class="seg" role="radiogroup" aria-label="Dauer" style="width:100%">
+        <button role="radio" aria-checked="true" style="flex:1">5 min</button>
+        <button role="radio" aria-checked="false" style="flex:1">15 min</button>
+        <button role="radio" aria-checked="false" style="flex:1">1 h</button>
       </div>
       <div class="actions">
         <button class="btn-sec" onclick="closePauseSheet()">Abbrechen</button>
@@ -2476,14 +2485,31 @@ body {
         <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
       </div>
       <label>Dauer</label>
-      <div class="seg" role="tablist" aria-label="Dauer" style="width:100%">
-        <button role="tab" aria-selected="true" style="flex:1">5 min</button>
-        <button role="tab" aria-selected="false" style="flex:1">15 min</button>
-        <button role="tab" aria-selected="false" style="flex:1">1 h</button>
+      <div class="seg" role="radiogroup" aria-label="Dauer" style="width:100%">
+        <button role="radio" aria-checked="true" style="flex:1">5 min</button>
+        <button role="radio" aria-checked="false" style="flex:1">15 min</button>
+        <button role="radio" aria-checked="false" style="flex:1">1 h</button>
       </div>
       <div class="actions">
         <button class="btn-sec" onclick="closeAllowSheet()">Abbrechen</button>
         <button class="btn-primary" onclick="closeAllowSheet()">Freigeben</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet-scrim" id="deny-sheet" hidden onclick="closeDenySheet()">
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="grab"></div>
+      <h2>Blockieren</h2>
+      <label for="d-domain">Domain</label>
+      <div class="field"><input id="d-domain" placeholder="cdn.example.com"></div>
+      <div class="row" style="padding:14px 0 0;border:0">
+        <div class="main"><b style="font-weight:500">Subdomains einschließen</b><div class="meta">gilt auch für *.cdn.example.com</div></div>
+        <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
+      </div>
+      <div class="actions">
+        <button class="btn-sec" onclick="closeDenySheet()">Abbrechen</button>
+        <button class="btn-primary" style="background:var(--danger)" onclick="closeDenySheet()">Blockieren</button>
       </div>
     </div>
   </div>
@@ -2499,10 +2525,13 @@ document.addEventListener('keydown', function (e) {
 });
 
 function showScreen(id, title) {
+  window.scrollTo(0, 0);
   document.querySelectorAll('.screen').forEach(function (s) { s.hidden = true; });
   var target = document.getElementById(id);
   if (target) target.hidden = false;
   document.getElementById('page-title').textContent = title;
+  document.title = title + ' · DNScraft';
+  document.getElementById('page-title').focus();
   document.querySelectorAll('.nav-item').forEach(function (i) {
     i.classList.toggle('active', i.dataset.target === id);
   });
@@ -2515,25 +2544,29 @@ document.querySelectorAll('.nav-item').forEach(function (item) {
 });
 
 function openZone(name) {
-  showScreen('screen-zone-detail', 'Zone „' + name + '"');
+  showScreen('screen-zone-detail', 'Zone „' + name + '“');
+  document.getElementById('zone-detail-head').textContent = 'Zone „' + name + '“';
   document.querySelectorAll('.nav-item').forEach(function (i) {
     i.classList.toggle('active', i.dataset.target === 'screen-zones');
   });
 }
 function openName(name) {
-  showScreen('screen-name-detail', 'Name „' + name + '"');
+  showScreen('screen-name-detail', 'Name „' + name + '“');
+  document.getElementById('name-detail-head').textContent = 'Name „' + name + '“';
   document.querySelectorAll('.nav-item').forEach(function (i) {
     i.classList.toggle('active', i.dataset.target === 'screen-names');
   });
 }
 function openSet(name) {
-  showScreen('screen-filter-set-detail', 'Filtersatz „' + name + '"');
+  showScreen('screen-filter-set-detail', 'Filtersatz „' + name + '“');
+  document.getElementById('set-detail-head').textContent = 'Filtersatz „' + name + '“';
   document.querySelectorAll('.nav-item').forEach(function (i) {
     i.classList.toggle('active', i.dataset.target === 'screen-filter-sets');
   });
 }
 function openProfile(name) {
-  showScreen('screen-profile-detail', 'Profil „' + name + '"');
+  showScreen('screen-profile-detail', 'Profil „' + name + '“');
+  document.getElementById('profile-detail-head').textContent = 'Profil „' + name + '“';
   document.querySelectorAll('.nav-item').forEach(function (i) {
     i.classList.toggle('active', i.dataset.target === 'screen-profiles');
   });
@@ -2546,7 +2579,23 @@ function openSheet() { document.getElementById('record-sheet').hidden = false; }
 function closeSheet() { document.getElementById('record-sheet').hidden = true; }
 function openFilterSheet() { document.getElementById('filter-sheet').hidden = false; }
 function closeFilterSheet() { document.getElementById('filter-sheet').hidden = true; }
-function openQueryDetail() { document.getElementById('query-detail-sheet').hidden = false; }
+function openQueryDetail(row) {
+  var sheet = document.getElementById('query-detail-sheet');
+  var domain = row.querySelector('.dname').textContent;
+  var type = row.querySelector('.type').textContent;
+  var proto = row.querySelector('.proto').textContent;
+  var cname = row.querySelector('.cname').textContent;
+  var time = row.querySelector('.time').textContent;
+  var v = row.querySelector('.verdict');
+  var verdict = v ? v.textContent : '';
+  var blocked = verdict === 'NXDOMAIN' || verdict === 'NULL-IP' || verdict === 'REFUSED';
+  document.getElementById('qd-domain').textContent = domain;
+  document.getElementById('qd-meta').textContent = type + ' · ' + proto + ' · ' + cname + ' · ' + time;
+  var qv = document.getElementById('qd-verdict');
+  qv.textContent = verdict;
+  qv.className = 'verdict ' + (blocked ? 'block' : 'allow');
+  sheet.hidden = false;
+}
 function closeQueryDetail() { document.getElementById('query-detail-sheet').hidden = true; }
 function openClientSheet() { document.getElementById('client-sheet').hidden = false; }
 function closeClientSheet() { document.getElementById('client-sheet').hidden = true; }
@@ -2572,11 +2621,13 @@ function openPauseSheet() { document.getElementById('pause-sheet').hidden = fals
 function closePauseSheet() { document.getElementById('pause-sheet').hidden = true; }
 function openAllowSheet() { document.getElementById('allow-sheet').hidden = false; }
 function closeAllowSheet() { document.getElementById('allow-sheet').hidden = true; }
+function openDenySheet() { document.getElementById('deny-sheet').hidden = false; }
+function closeDenySheet() { document.getElementById('deny-sheet').hidden = true; }
 function openTlsConfirmSheet() { document.getElementById('tls-confirm-sheet').hidden = false; }
 function closeTlsConfirmSheet() { document.getElementById('tls-confirm-sheet').hidden = true; }
 function switchTlsTab(btn) {
   document.querySelectorAll('#tls-tabs button').forEach(function (b) {
-    b.setAttribute('aria-selected', String(b === btn));
+    b.setAttribute('aria-checked', String(b === btn));
   });
   var t = btn.dataset.tab;
   document.getElementById('tls-tab-overview').hidden = t !== 'overview';
@@ -2585,7 +2636,7 @@ function switchTlsTab(btn) {
 }
 function switchTlsSource(btn) {
   document.querySelectorAll('#tls-source button').forEach(function (b) {
-    b.setAttribute('aria-selected', String(b === btn));
+    b.setAttribute('aria-checked', String(b === btn));
   });
   var s = btn.dataset.src;
   document.getElementById('tls-src-identity').hidden = s === 'manual';
@@ -2600,13 +2651,13 @@ function updateTlsSans() {
 document.getElementById('tls-domain').addEventListener('input', updateTlsSans);
 function switchDdNode(btn) {
   document.querySelectorAll('#tls-dd-node button').forEach(function (b) {
-    b.setAttribute('aria-selected', String(b === btn));
+    b.setAttribute('aria-checked', String(b === btn));
   });
   document.getElementById('tls-dd-hostname').value = btn.dataset.node + '.dns.example.com';
 }
 function switchV6Id(btn) {
   document.querySelectorAll('#tls-dd-v6id button').forEach(function (b) {
-    b.setAttribute('aria-selected', String(b === btn));
+    b.setAttribute('aria-checked', String(b === btn));
   });
   document.getElementById('tls-dd-mac-row').hidden = btn.dataset.v6id === 'privacy';
 }
@@ -2628,5 +2679,119 @@ themeBtn.addEventListener('click', function () {
   document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
   syncThemeIcon();
 });
+
+// a11y: give each row switch an accessible name from its row's label
+document.querySelectorAll('.row .switch input[type="checkbox"]').forEach(function (inp) {
+  var row = inp.closest('.row');
+  if (!row) return;
+  var t = row.querySelector('.main b, .main .domain, .main .name');
+  if (t) inp.setAttribute('aria-label', t.textContent.trim());
+});
+
+// keyboard access for clickable rows, avoiding button-in-button (APG)
+document.querySelectorAll('.row[onclick], .qrow[onclick]').forEach(function (row) {
+  var hasNested = row.querySelector('button, input, select, textarea, a[href]');
+  var target = hasNested
+    ? (row.querySelector('.dname') || row.querySelector('.domain') || row.querySelector('.main'))
+    : row;
+  if (!target) return;
+  target.setAttribute('tabindex', '0');
+  target.setAttribute('role', 'button');
+  if (target !== row) {
+    target.addEventListener('click', function (e) { e.stopPropagation(); row.click(); });
+  }
+});
+document.addEventListener('keydown', function (e) {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute('role') === 'button' && e.target.hasAttribute('tabindex')) {
+    e.preventDefault();
+    if (e.target.hasAttribute('onclick')) e.target.click();
+    else {
+      var row = e.target.closest('.row[onclick], .qrow[onclick]');
+      if (row) row.click();
+    }
+  }
+});
+
+// a11y: radio-group behavior for segmented controls (roving tabindex + arrow keys)
+document.querySelectorAll('.seg').forEach(function (group) {
+  group.setAttribute('role', 'radiogroup');
+  var radios = Array.prototype.slice.call(group.querySelectorAll('button:not([disabled])'));
+  function sync(checked) {
+    radios.forEach(function (r) {
+      r.setAttribute('role', 'radio');
+      r.setAttribute('aria-checked', String(r === checked));
+      r.setAttribute('tabindex', r === checked ? '0' : '-1');
+    });
+  }
+  sync(group.querySelector('[aria-checked="true"]') || radios[0]);
+  group.addEventListener('click', function (e) {
+    var r = e.target.closest('button');
+    if (!r || r.disabled) return;
+    sync(r);
+  });
+  group.addEventListener('keydown', function (e) {
+    var idx = radios.indexOf(document.activeElement);
+    if (idx === -1) return;
+    var n = null;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') n = radios[(idx + 1) % radios.length];
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') n = radios[(idx - 1 + radios.length) % radios.length];
+    else if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); n = radios[idx]; }
+    else return;
+    e.preventDefault();
+    n.focus();
+    sync(n);
+    n.click();
+  });
+});
+
+// a11y: sheet focus management (dialog semantics, focus trap, Escape)
+document.querySelectorAll('.sheet').forEach(function (s) {
+  s.setAttribute('role', 'dialog');
+  s.setAttribute('aria-modal', 'true');
+});
+// dialog accessible name from its h2
+document.querySelectorAll('.sheet-scrim').forEach(function (sc) {
+  var sheet = sc.querySelector('.sheet');
+  var h2 = sheet && sheet.querySelector('h2');
+  if (sheet && h2) {
+    h2.id = sc.id + '-title';
+    sheet.setAttribute('aria-labelledby', h2.id);
+  }
+});
+var sheetReturn = null;
+document.querySelectorAll('.sheet-scrim').forEach(function (sc) {
+  new MutationObserver(function () {
+    if (sc.hidden) {
+      if (sheetReturn) { sheetReturn.focus(); sheetReturn = null; }
+    } else {
+      sheetReturn = document.activeElement;
+      var f = sc.querySelector('input, button, select, textarea');
+      if (f) f.focus();
+    }
+  }).observe(sc, { attributes: true, attributeFilter: ['hidden'] });
+});
+document.addEventListener('keydown', function (e) {
+  var open = document.querySelector('.sheet-scrim:not([hidden])');
+  if (!open) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    open.hidden = true;
+  } else if (e.key === 'Tab') {
+    var f = Array.prototype.filter.call(
+      open.querySelectorAll('input, button, select, textarea, a[href]'),
+      function (el) { return el.offsetParent !== null && !el.disabled; }
+    );
+    if (!f.length) return;
+    var first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+});
+// stop switch toggles from also firing a clickable row's onclick
+document.addEventListener('click', function (e) {
+  if (e.target.closest('.switch')) e.stopPropagation();
+}, true);
 syncThemeIcon();
 </script>
+</body>
+</html>
