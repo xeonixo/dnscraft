@@ -28,6 +28,13 @@ refer to `tasks/todo-spec-gaps.md`):
   overrides), but the policy crate still does Client-ID selection and per-view
   records. The UI must build against the intended model and treat the crate's
   current behaviour as temporary.
+- **Prototype placeholders** (`docs/design/web-ui-prototype.html`): the Alerts
+  screen, the blocked-services catalog, the automatic-backup status in
+  Einstellungen → Konfiguration and the update notice in Einstellungen → Allgemein
+  are shown as placeholders because no endpoint or catalog exists yet. They are
+  tracked in "Required control-api additions" below and in
+  `tasks/todo-webui-prototype-gaps.md` (WP1–WP5). Do not treat the placeholders as
+  implemented behaviour.
 
 ## Objective
 
@@ -1296,13 +1303,42 @@ GA1–GA4/GA6 in `tasks/todo-spec-gaps.md`):
   contract is undefined.
 - An alerts aggregate endpoint (`GET /api/v1/alerts` or a status sub-field), only if
   the Alerts screen is not assembled purely from the module status sources it already
-  polls.
+  polls. Proposal (WP1): `GET /api/v1/alerts`, role viewer/admin, owner `control-api`
+  (aggregates TLS, filter-list, cluster and DynDNS state). Shape sketch:
+  `{ "data": { "active_count": 2, "items": [ { "id": "tls.cert_expiry", "severity":
+  "warning", "module": "tls", "created_at": "...", "params": { "days_left": 12 },
+  "target_route": "/tls" } ] } }`. `params` carries raw values only; titles are
+  translated client-side. Recommended over client-side assembly so the badge and
+  dashboard banner use one rule set.
 - A same-origin release-check proxy for the update notice (the SPA must not call
   `github.com` directly under the strict CSP), or a decision to omit the hint.
+  Proposal (WP2): `GET /api/v1/update/check`, role viewer/admin, owner `control-api`
+  (the binary fetches the GitHub latest release with its own HTTP client, cached
+  roughly 24 h). Shape sketch: `{ "data": { "enabled": true, "current": "0.x.y",
+  "latest": "0.x.z", "update_available": true, "release_url": "https://github.com/...",
+  "checked_at": "..." } }`; `latest` is `null` when disabled or unreachable. Opt-out is
+  a config key written through `PUT /api/v1/config`. No download or self-update.
 - A diagnostics endpoint returning recent structured log lines (opt-in) for the
   bug-report Diagnostics block; otherwise `recent_log_lines[]` ships omitted.
 - Automatic-backup status/retention endpoints, or a decision to show a documented
-  note only in `/settings`.
+  note only in `/settings`. Proposal (WP3): `GET /api/v1/backups`, role admin (the
+  response exposes a filesystem path), owner `control-api` (SPEC.md "Automatic
+  backups"). Shape sketch: `{ "data": { "enabled": true, "directory": "/var/lib/dnscraft/backups",
+  "retention_count": 7, "last_run": { "at": "...", "result": "ok", "file": "..." } | null,
+  "next_run": "..." } }`. Retention and enablement are written with
+  `PUT /api/v1/backups/settings` (admin, same fields). Secrets are excluded from the
+  exports, as in SPEC.md.
 - A blocked-services catalog capability in the filtering crate (runtime
   `services.json`/`services_i18n.json` download + per-profile toggle) — a filtering
-  feature, not a control-api route.
+  feature, not a control-api route. Proposal (WP4, owner `filtering`): download and
+  cache both files like a filter list (see `SPEC-filtering.md` § Blocked services);
+  without a catalog the service reports `available: false`. Routes (WP5, owner
+  `control-api`): `GET /api/v1/filtering/services` (viewer/admin) returning
+  `{ "data": { "available": true, "catalog_updated_at": "...", "locale": "de",
+  "items": [ { "id": "youtube", "name": "YouTube", "group": "social", "icon": "<sanitized
+  SVG>", "enabled": { "default": true } } ] } }`, and
+  `PUT /api/v1/filtering/services/{service_id}` (admin) with `{ "filter_set_id":
+  "default", "enabled": true }`. Icons come from third-party data and must be
+  sanitized before they reach the DOM (see § XSS). Open point: SPEC.md says the toggle
+  is per profile, `SPEC-filtering.md` says per filter set; the route follows the
+  filter-set model until the owner decides.
