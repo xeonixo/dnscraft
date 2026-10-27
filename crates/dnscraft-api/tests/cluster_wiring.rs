@@ -27,8 +27,9 @@ use dnscraft_api::{
 use dnscraft_cluster::{
     AuthSnapshotApplier, CertInstaller, ClusterCa, ClusterClient, ClusterConfig, ClusterServer,
     ClusterServerConfig, ClusterStore, ConfigApplier, JoinConfig, ListenConfig, LogConfig,
-    LogIngest, LogOutbox, LogRecord, NodeIdentity, OfflineWritesConfig, PendingNodeIdentity,
-    QuotaConfig, RelayResponse, RelayedActor, Role, RuntimeCommandApplier, TlsPaths, WriteExecutor,
+    LogIngest, LogOutbox, LogRecord, NodeIdentity, OfflineWriteQueue, OfflineWritesConfig,
+    PendingNodeIdentity, QuotaConfig, RelayResponse, RelayedActor, Role, RuntimeCommandApplier,
+    TlsPaths, WriteExecutor, WriteRelay,
 };
 use dnscraft_common::clock::ManualClock as ClusterClock;
 use dnscraft_common::secret::Secret;
@@ -330,6 +331,7 @@ async fn sub_node_applies_a_master_push_and_acks_zero_lag() {
         clock.clone(),
         Arc::new(NoWrites),
         Arc::new(NoLogs),
+        None,
     )
     .await
     .unwrap();
@@ -751,6 +753,38 @@ async fn relayed_viewer_write_is_rejected_and_admin_write_applies_once() {
 }
 
 #[tokio::test]
+async fn relayed_unknown_actor_type_is_rejected_without_audit() {
+    let (service, db) = service("master", ModuleAppliers::default()).await;
+    let executor =
+        ConfigWriteExecutor::new(Arc::clone(&service), Arc::new(ClusterClock::new(at(NOW))));
+    let mut actor = admin_actor();
+    actor.actor_type = "service".to_owned();
+
+    let response = executor
+        .execute(
+            "node-a",
+            actor,
+            "PUT".to_owned(),
+            "/api/v1/config".to_owned(),
+            snapshot("bad-actor"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status, 403);
+    assert_eq!(
+        response.body["error"]["code"],
+        "control_api.auth.invalid_scope"
+    );
+    assert_eq!(service.current().await.unwrap().0, None);
+    assert!(
+        db.audit_list(10, 0).await.unwrap().is_empty(),
+        "an unknown actor type must never be persisted"
+    );
+}
+
+#[tokio::test]
 async fn relayed_write_audits_the_originating_node_and_direct_writes_the_local_node() {
     let (service, db) = service("master", ModuleAppliers::default()).await;
     let executor =
@@ -1089,6 +1123,123 @@ async fn master_runtime_command_endpoint_broadcasts_to_the_sub_node() {
 }
 
 #[tokio::test]
+async fn admin_revoke_closes_a_connected_sub_node_stream() {
+    use tower::ServiceExt as _;
+
+    let master_dir = TempDir::new("revoke-master");
+    let node_dir = TempDir::new("revoke-node");
+    let api_clock = Arc::new(ApiClock::new(at(NOW)));
+    let cluster_clock = Arc::new(ClusterClock::new(SystemTime::now()));
+
+    let (master_service, _) = service("master", ModuleAppliers::default()).await;
+    let master_status = Arc::new(ClusterStatusHandle::new());
+    let master_state = AppState::new()
+        .with_config_service(Arc::clone(&master_service))
+        .with_cluster_status(master_status.clone())
+        .with_clock(api_clock.clone());
+    let mut master_options = ClusterRuntimeOptions::new(master_dir.path());
+    master_options.clock = cluster_clock.clone();
+    master_options.status = master_status.clone();
+    let master = ClusterRuntime::start(
+        master_config(master_dir.path()),
+        &master_state,
+        master_options,
+    )
+    .await
+    .unwrap();
+
+    let store = Arc::new(master.cluster_store().unwrap());
+    let url = format!("https://{}", master.listen_addr().unwrap());
+    let server_cert = master.server_cert_pem().unwrap().to_owned();
+    let token = store.mint_join_token("node-b").await.unwrap();
+
+    let (node_service, _) = service("node-b", ModuleAppliers::default()).await;
+    let node_status = Arc::new(ClusterStatusHandle::new());
+    let node_state = AppState::new()
+        .with_config_service(Arc::clone(&node_service))
+        .with_cluster_status(node_status.clone())
+        .with_clock(api_clock);
+    let mut node_options = ClusterRuntimeOptions::new(node_dir.path());
+    node_options.clock = cluster_clock;
+    node_options.status = node_status.clone();
+    node_options.join_token = Some(Secret::new(token.expose()));
+    node_options.master_cert_pem = Some(server_cert);
+    let node = ClusterRuntime::start(
+        sub_node_config(node_dir.path(), &url),
+        &node_state,
+        node_options,
+    )
+    .await
+    .unwrap();
+
+    for _ in 0..20_000 {
+        if node_status
+            .status()
+            .is_some_and(|status| status.master_reachable)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        node_status
+            .status()
+            .is_some_and(|status| status.master_reachable),
+        "sub-node never connected"
+    );
+    for _ in 0..20_000 {
+        if !master.config_sync().unwrap().lag().is_empty() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(master.config_sync().unwrap().lag().len(), 1);
+
+    // The admin surface only exists when the registry is attached.
+    let admin_state = master_state.clone().with_cluster_store(store);
+    let request = axum::http::Request::builder()
+        .method("DELETE")
+        .uri("/api/v1/cluster/nodes/node-b")
+        .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            40_000,
+        ))))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let response = admin_state.router().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+    // The sender is gone, so the stream ends and no reconnect succeeds.
+    assert!(
+        master.config_sync().unwrap().lag().is_empty(),
+        "the revoked node must be unregistered immediately"
+    );
+    for _ in 0..20_000 {
+        if !node_status
+            .status()
+            .is_some_and(|status| status.master_reachable)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !node_status.status().unwrap().master_reachable,
+        "the revoked node's stream must end"
+    );
+
+    // A later publish has no target.
+    master_service
+        .replace(snapshot("after-revoke"), &ConfigActor::local(), None)
+        .await
+        .unwrap();
+    assert!(master.config_sync().unwrap().lag().is_empty());
+
+    node.shutdown().await;
+    master.shutdown().await;
+}
+
+#[tokio::test]
 async fn master_auth_change_pushes_a_snapshot_the_sub_node_applies() {
     let master_dir = TempDir::new("auth-master");
     let node_dir = TempDir::new("auth-node");
@@ -1195,6 +1346,234 @@ async fn master_auth_change_pushes_a_snapshot_the_sub_node_applies() {
     assert_eq!(
         node_auth.auth_snapshot().await.unwrap().session_epoch,
         master_auth.auth_snapshot().await.unwrap().session_epoch
+    );
+
+    node.shutdown().await;
+    master.shutdown().await;
+}
+
+#[tokio::test]
+async fn sub_node_receives_auth_snapshot_on_connect() {
+    let master_dir = TempDir::new("connect-auth-master");
+    let node_dir = TempDir::new("connect-auth-node");
+    let cluster_clock = Arc::new(ClusterClock::new(SystemTime::now()));
+
+    let master_auth = auth_state(
+        Db::open_in_memory(Arc::new(ApiClock::new(at(NOW))))
+            .await
+            .unwrap(),
+        false,
+    )
+    .await;
+    // Created before the node ever connects: no change notification follows,
+    // so only the connect-time snapshot can deliver it.
+    let created = master_auth
+        .tokens()
+        .create(
+            "alice".to_owned(),
+            "ci".to_owned(),
+            dnscraft_api::Scope::Admin,
+            None,
+        )
+        .await
+        .unwrap();
+    let plaintext = created.plaintext().expose().to_owned();
+
+    let (master_service, _) = service("master", ModuleAppliers::default()).await;
+    let master_status = Arc::new(ClusterStatusHandle::new());
+    let master_state = AppState::new()
+        .with_config_service(Arc::clone(&master_service))
+        .with_cluster_status(master_status.clone())
+        .with_auth(master_auth.clone());
+    let mut master_options = ClusterRuntimeOptions::new(master_dir.path());
+    master_options.clock = cluster_clock.clone();
+    master_options.status = master_status;
+    let master = ClusterRuntime::start(
+        master_config(master_dir.path()),
+        &master_state,
+        master_options,
+    )
+    .await
+    .unwrap();
+
+    let url = format!("https://{}", master.listen_addr().unwrap());
+    let server_cert = master.server_cert_pem().unwrap().to_owned();
+    let token = master
+        .cluster_store()
+        .unwrap()
+        .mint_join_token("node-b")
+        .await
+        .unwrap();
+
+    let node_auth = auth_state(
+        Db::open_in_memory(Arc::new(ApiClock::new(at(NOW))))
+            .await
+            .unwrap(),
+        false,
+    )
+    .await;
+    let (node_service, _) = service("node-b", ModuleAppliers::default()).await;
+    let node_status = Arc::new(ClusterStatusHandle::new());
+    let node_state = AppState::new()
+        .with_config_service(Arc::clone(&node_service))
+        .with_cluster_status(node_status.clone())
+        .with_auth(node_auth.clone());
+    let mut node_options = ClusterRuntimeOptions::new(node_dir.path());
+    node_options.clock = cluster_clock;
+    node_options.status = node_status;
+    node_options.join_token = Some(Secret::new(token.expose()));
+    node_options.master_cert_pem = Some(server_cert);
+    let node = ClusterRuntime::start(
+        sub_node_config(node_dir.path(), &url),
+        &node_state,
+        node_options,
+    )
+    .await
+    .unwrap();
+
+    for _ in 0..20_000 {
+        if node_auth.tokens().authenticate(&plaintext).await.is_ok() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    node_auth
+        .tokens()
+        .authenticate(&plaintext)
+        .await
+        .expect("the connect-time auth snapshot must reach the node");
+
+    node.shutdown().await;
+    master.shutdown().await;
+}
+
+#[tokio::test]
+async fn offline_replay_is_dropped_after_the_token_is_revoked() {
+    let master_dir = TempDir::new("replay-master");
+    let node_dir = TempDir::new("replay-node");
+    let cluster_clock = Arc::new(ClusterClock::new(SystemTime::now()));
+
+    let master_auth = auth_state(
+        Db::open_in_memory(Arc::new(ApiClock::new(at(NOW))))
+            .await
+            .unwrap(),
+        false,
+    )
+    .await;
+    let created = master_auth
+        .tokens()
+        .create(
+            "alice".to_owned(),
+            "queued".to_owned(),
+            dnscraft_api::Scope::Admin,
+            None,
+        )
+        .await
+        .unwrap();
+    let (master_service, _) = service("master", ModuleAppliers::default()).await;
+
+    // The sub-node caches the pre-revocation snapshot, then the token is
+    // revoked on the master while the node is offline.
+    let node_auth = auth_state(
+        Db::open_in_memory(Arc::new(ApiClock::new(at(NOW))))
+            .await
+            .unwrap(),
+        false,
+    )
+    .await;
+    node_auth
+        .apply_auth_snapshot(&master_auth.auth_snapshot().await.unwrap())
+        .await
+        .unwrap();
+    master_auth.tokens().revoke(created.id()).await.unwrap();
+
+    let queue_store = ClusterStore::open_in_memory(cluster_clock.clone(), TOKEN_TTL)
+        .await
+        .unwrap();
+    let queue = Arc::new(OfflineWriteQueue::new(
+        queue_store,
+        OfflineWritesConfig {
+            enabled: true,
+            queue_max_entries: 10,
+            max_age: Duration::from_secs(3600),
+        },
+    ));
+    queue
+        .enqueue(WriteRelay {
+            request_id: "queued-1".to_owned(),
+            idempotency_key: Some("idem-1".to_owned()),
+            if_match: Some("\"v1\"".to_owned()),
+            method: "PUT".to_owned(),
+            path: "/api/v1/config".to_owned(),
+            body: snapshot("offline"),
+            actor: RelayedActor {
+                actor_id: "alice".to_owned(),
+                actor_type: "token".to_owned(),
+                scope: "admin".to_owned(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let master_status = Arc::new(ClusterStatusHandle::new());
+    let master_state = AppState::new()
+        .with_config_service(Arc::clone(&master_service))
+        .with_cluster_status(master_status.clone())
+        .with_auth(master_auth);
+    let mut master_options = ClusterRuntimeOptions::new(master_dir.path());
+    master_options.clock = cluster_clock.clone();
+    master_options.status = master_status;
+    let master = ClusterRuntime::start(
+        master_config(master_dir.path()),
+        &master_state,
+        master_options,
+    )
+    .await
+    .unwrap();
+
+    let url = format!("https://{}", master.listen_addr().unwrap());
+    let server_cert = master.server_cert_pem().unwrap().to_owned();
+    let token = master
+        .cluster_store()
+        .unwrap()
+        .mint_join_token("node-b")
+        .await
+        .unwrap();
+
+    let (node_service, _) = service("node-b", ModuleAppliers::default()).await;
+    let node_status = Arc::new(ClusterStatusHandle::new());
+    let node_state = AppState::new()
+        .with_config_service(Arc::clone(&node_service))
+        .with_cluster_status(node_status.clone())
+        .with_auth(node_auth)
+        .with_offline_write_queue(Arc::clone(&queue));
+    let mut node_options = ClusterRuntimeOptions::new(node_dir.path());
+    node_options.clock = cluster_clock;
+    node_options.status = node_status;
+    node_options.join_token = Some(Secret::new(token.expose()));
+    node_options.master_cert_pem = Some(server_cert);
+    let node = ClusterRuntime::start(
+        sub_node_config(node_dir.path(), &url),
+        &node_state,
+        node_options,
+    )
+    .await
+    .unwrap();
+
+    for _ in 0..20_000 {
+        if queue.status().await.unwrap().expired == 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let status = queue.status().await.unwrap();
+    assert_eq!(status.expired, 1, "stale queued write must be dropped");
+    assert_eq!(status.applied, 0);
+    assert_eq!(status.failed, 0);
+    assert_eq!(
+        master_service.current().await.unwrap().0,
+        None,
+        "the master must never execute a write from a revoked token"
     );
 
     node.shutdown().await;

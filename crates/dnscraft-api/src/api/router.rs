@@ -161,8 +161,13 @@ pub(crate) fn build_router(state: AppState) -> Router {
             .route("/cluster/writes/{request_id}", get(get_write));
     }
     if state.auth_state().is_some() {
-        // Token management exists only when persistence/auth is configured.
-        api = api.route("/auth/tokens", post(create_token));
+        // Token minting is master-only (SPEC-cluster § No cross-node privilege
+        // escalation). A sub-node authenticates the replicated tokens but
+        // cannot issue credentials of its own; a standalone node is its own
+        // master. Account provisioning has no HTTP route.
+        if !state.is_cluster_sub_node() {
+            api = api.route("/auth/tokens", post(create_token));
+        }
         // Logout revokes the cookie session; available whenever sessions exist.
         api = api.route("/auth/logout", post(logout));
         // Break-glass login is mounted only when local accounts are provisioned.

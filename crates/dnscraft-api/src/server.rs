@@ -22,7 +22,7 @@ use crate::mcp_backend::McpBackendInner;
 use crate::query_log::QueryLog;
 use crate::tls::{TlsAdmin, TlsStatus, TlsStatusProvider};
 
-use dnscraft_cluster::{ClusterBroadcast, ClusterStore, OfflineWriteQueue};
+use dnscraft_cluster::{ClusterBroadcast, ClusterStore, OfflineWriteQueue, Role};
 use dnscraft_filtering::FilterEngine;
 use dnscraft_mcp::McpConfig;
 use dnscraft_policy::PolicyEngine;
@@ -44,6 +44,7 @@ pub struct AppState {
     cluster_store: Option<Arc<ClusterStore>>,
     cluster_status: Option<Arc<dyn ClusterStatusProvider>>,
     cluster_broadcast: Arc<Mutex<Option<ClusterBroadcast>>>,
+    cluster_role: Arc<Mutex<Option<Role>>>,
     offline_writes: Option<Arc<OfflineWriteQueue>>,
     mcp_backend: Option<Arc<McpBackendInner>>,
     mcp_config: McpConfig,
@@ -79,6 +80,7 @@ impl AppState {
             cluster_store: None,
             cluster_status: None,
             cluster_broadcast: Arc::new(Mutex::new(None)),
+            cluster_role: Arc::new(Mutex::new(None)),
             offline_writes: None,
             mcp_backend: None,
             mcp_config: McpConfig::default(),
@@ -188,6 +190,39 @@ impl AppState {
     /// The configured cluster status source, if any.
     pub(crate) fn cluster_status(&self) -> Option<&Arc<dyn ClusterStatusProvider>> {
         self.cluster_status.as_ref()
+    }
+
+    /// Attaches the role this process runs (`ClusterRuntime::start` does this).
+    ///
+    /// The router uses it to keep token/account creation master-only: a
+    /// sub-node authenticates the master's replicated credentials but must not
+    /// mint its own.
+    pub fn with_cluster_role(self, role: Role) -> Self {
+        self.attach_cluster_role(role);
+        self
+    }
+
+    /// Attaches the cluster role on the shared state (interior mutability).
+    pub(crate) fn attach_cluster_role(&self, role: Role) {
+        *self
+            .cluster_role
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(role);
+    }
+
+    /// The cluster role attached by the runtime, if any.
+    pub(crate) fn cluster_role(&self) -> Option<Role> {
+        *self
+            .cluster_role
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Whether this process is a cluster sub-node.
+    ///
+    /// A standalone node is its own authority and keeps the full API surface.
+    pub(crate) fn is_cluster_sub_node(&self) -> bool {
+        self.cluster_role() == Some(Role::SubNode)
     }
 
     /// Attaches the master's volatile cluster broadcast handle.

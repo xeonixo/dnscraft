@@ -141,6 +141,7 @@ async fn start_master(name: &str) -> Master {
         clock.clone(),
         Arc::new(NoWrites),
         Arc::new(NoLogs),
+        None,
     )
     .await
     .unwrap();

@@ -139,6 +139,7 @@ async fn start_master(name: &str, quota: QuotaConfig) -> Master {
         clock.clone(),
         Arc::new(MockWrites),
         Arc::new(MockLogs),
+        None,
     )
     .await
     .unwrap();

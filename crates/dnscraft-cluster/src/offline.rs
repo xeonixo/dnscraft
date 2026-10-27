@@ -16,6 +16,7 @@
 //! verbatim, never logged. The HTTP status mapping (`202`/`400`/`503`) belongs
 //! to the caller; the queue only reports what happened.
 
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use dnscraft_common::clock::{add_duration, wait_until};
@@ -28,7 +29,7 @@ use crate::config::{
     DEFAULT_RECONNECT_BACKOFF, DEFAULT_RECONNECT_BACKOFF_MAX, OfflineWritesConfig,
 };
 use crate::error::ClusterError;
-use crate::relay::{WriteExecutor, WriteRelay};
+use crate::relay::{RelayedActor, WriteExecutor, WriteRelay};
 use crate::store::{ClusterStore, db_err, duration_seconds};
 
 /// The `409` code the master returns when `If-Match` is stale.
@@ -164,17 +165,42 @@ pub struct ReplayOutcome {
     pub conflict: Option<String>,
 }
 
+/// Sub-node hook that re-checks a queued actor before replay.
+///
+/// The local auth state is the closest available authority: the master cannot
+/// verify the sub-node's credential, and a write queued while a token was valid
+/// must not be replayed after that token was revoked. The implementation reads
+/// the replicated auth snapshot; it never sees plaintext credentials.
+#[async_trait::async_trait]
+pub trait ActorValidator: Send + Sync {
+    /// Whether `actor` still resolves to a live credential with its scope.
+    async fn is_valid(&self, actor: &RelayedActor) -> Result<bool, ClusterError>;
+}
+
 /// SQLite-backed FIFO queue for writes buffered while the master is down.
 #[derive(Clone)]
 pub struct OfflineWriteQueue {
     store: ClusterStore,
     config: OfflineWritesConfig,
+    validator: Option<Arc<dyn ActorValidator>>,
 }
 
 impl OfflineWriteQueue {
     /// Wraps the node's existing [`ClusterStore`] (the queue is a table in it).
     pub fn new(store: ClusterStore, config: OfflineWritesConfig) -> Self {
-        Self { store, config }
+        Self {
+            store,
+            config,
+            validator: None,
+        }
+    }
+
+    /// Re-checks queued actors against `validator` before every replay.
+    ///
+    /// A stale row is marked [`OfflineWriteState::Expired`] and never sent.
+    pub fn with_actor_validator(mut self, validator: Arc<dyn ActorValidator>) -> Self {
+        self.validator = Some(validator);
+        self
     }
 
     /// Commits `relay` to the queue in one transaction.
@@ -267,6 +293,15 @@ impl OfflineWriteQueue {
         };
 
         while let Some(row) = self.next_pending().await? {
+            // A credential revoked while the write was queued must not replay.
+            if let Some(validator) = &self.validator
+                && !validator.is_valid(&row.relay.actor).await?
+            {
+                self.set_state(&row.relay.request_id, OfflineWriteState::Expired)
+                    .await?;
+                outcome.expired += 1;
+                continue;
+            }
             match self.send_with_retry(executor, &row).await? {
                 SendOutcome::Applied => {
                     self.set_state(&row.relay.request_id, OfflineWriteState::Applied)
@@ -588,6 +623,16 @@ mod tests {
     use super::*;
     use crate::relay::{RelayResponse, RelayedActor};
 
+    /// Rejects every actor (a token revoked while the write was queued).
+    struct RevokedValidator;
+
+    #[async_trait::async_trait]
+    impl ActorValidator for RevokedValidator {
+        async fn is_valid(&self, _actor: &RelayedActor) -> Result<bool, ClusterError> {
+            Ok(false)
+        }
+    }
+
     const TTL: Duration = Duration::from_secs(15 * 60);
     const NOW: i64 = 1_700_000_000;
     const MAX_AGE: Duration = Duration::from_secs(3600);
@@ -890,6 +935,26 @@ mod tests {
         assert_eq!(outcome.expired, 1);
         assert_eq!(outcome.applied, 0);
         assert!(executor.calls().is_empty());
+        assert_eq!(
+            queue.get("a").await.unwrap().unwrap().state,
+            OfflineWriteState::Expired
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_drops_writes_whose_actor_is_no_longer_valid() {
+        let (queue, _clock) = queue(10).await;
+        let queue = queue.with_actor_validator(Arc::new(RevokedValidator));
+        queue.enqueue(relay("a")).await.unwrap();
+        let executor = MockExecutor::default();
+
+        let outcome = queue.replay_all(&executor).await.unwrap();
+        assert_eq!(outcome.expired, 1);
+        assert_eq!(outcome.applied, 0);
+        assert!(
+            executor.calls().is_empty(),
+            "a stale actor's write must never be submitted"
+        );
         assert_eq!(
             queue.get("a").await.unwrap().unwrap().state,
             OfflineWriteState::Expired

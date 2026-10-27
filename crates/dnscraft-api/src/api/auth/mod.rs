@@ -199,6 +199,32 @@ impl AuthState {
         Ok(())
     }
 
+    /// Whether a relayed actor still resolves to a live local credential.
+    ///
+    /// Used by the sub-node before replaying a buffered write. Tokens are
+    /// checked against the replicated token rows: revocation deletes the row,
+    /// so a revoked token no longer matches its owner/scope. Cookie and OIDC
+    /// sessions are not replicated, so `user` actors cannot be checked locally
+    /// and are accepted; the master still re-checks their claimed scope.
+    /// Unknown actor kinds are rejected.
+    pub async fn relayed_actor_is_current(
+        &self,
+        actor_type: &str,
+        actor_id: &str,
+        scope: &str,
+    ) -> Result<bool, ControlApiError> {
+        match actor_type {
+            "token" => Ok(self
+                .tokens
+                .snapshot_entries()
+                .await?
+                .iter()
+                .any(|token| token.actor_id == actor_id && token.scope == scope)),
+            "user" => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
     /// Invalidates every session derived from this auth state by advancing the
     /// monotonic epoch (for example after a global sign-out).
     pub fn invalidate_sessions(&self) {

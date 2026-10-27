@@ -65,15 +65,15 @@ pub use log::{
     Backfill, FlushOutcome, LogAck, LogBatch, LogIngest, LogOutbox, LogRecord, LogStreamer,
 };
 pub use offline::{
-    EnqueueOutcome, OfflineQueueStatus, OfflineWriteEntry, OfflineWriteQueue, OfflineWriteState,
-    QueuedWrite, ReplayOutcome,
+    ActorValidator, EnqueueOutcome, OfflineQueueStatus, OfflineWriteEntry, OfflineWriteQueue,
+    OfflineWriteState, QueuedWrite, ReplayOutcome,
 };
 pub use relay::{
     RelayResponse, RelayedActor, RuntimeCommand, RuntimeCommandApplier, WriteExecutor, WriteRelay,
 };
 pub use server::{
-    ClusterBroadcast, ClusterServer, ClusterServerConfig, HeartbeatRequest, HeartbeatResponse,
-    StatusWarning,
+    AuthSnapshotSource, ClusterBroadcast, ClusterServer, ClusterServerConfig, HeartbeatRequest,
+    HeartbeatResponse, StatusWarning,
 };
 pub use store::{ClusterNode, ClusterStore, MintedJoinToken};
 pub use sync::{

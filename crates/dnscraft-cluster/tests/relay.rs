@@ -204,6 +204,7 @@ async fn start_master(name: &str, executor: Arc<dyn WriteExecutor>) -> Master {
         clock.clone(),
         executor,
         Arc::new(NoLogs),
+        None,
     )
     .await
     .unwrap();

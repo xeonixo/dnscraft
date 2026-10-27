@@ -24,6 +24,15 @@ use crate::error::ClusterError;
 /// Authenticated identity forwarded with a relayed write.
 ///
 /// Raw bearer tokens and session cookies are never part of this value.
+///
+/// # Trust boundary
+///
+/// This value is **asserted by the sub-node**, not re-authenticated by the
+/// master: the master sees the actor but never the credential. A compromised
+/// sub-node can therefore claim any actor id/type/scope for its own relayed
+/// writes. That is accepted by SPEC-cluster § Security considerations — node
+/// compromise is contained by revocation, and the master still enforces the
+/// claimed scope and audits every write with the originating `node_id`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayedActor {
     /// Stable actor id (user id or token id).
@@ -32,6 +41,14 @@ pub struct RelayedActor {
     pub actor_type: String,
     /// Authenticated role/scope the caller held on the sub-node.
     pub scope: String,
+}
+
+impl RelayedActor {
+    /// Whether [`Self::actor_type`] is one of the two authenticated credential
+    /// kinds. Anything else must be rejected, never written to an audit row.
+    pub fn has_known_type(&self) -> bool {
+        matches!(self.actor_type.as_str(), "user" | "token")
+    }
 }
 
 /// One write forwarded from a sub-node to the master.

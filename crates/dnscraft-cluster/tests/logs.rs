@@ -272,6 +272,7 @@ async fn start_master(name: &str, ingest: Arc<dyn LogIngest>) -> Master {
         clock.clone(),
         Arc::new(NoWrites),
         ingest,
+        None,
     )
     .await
     .unwrap();

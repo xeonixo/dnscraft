@@ -24,7 +24,7 @@ use dnscraft_cluster::{
     AuthSnapshotPush, CertPush, ClusterCa, ClusterClient, ClusterConfig, ClusterError,
     ClusterServer, ClusterServerConfig, ClusterStore, ConfigPush, EnrollRequest, ListenConfig,
     LogBatch, LogIngest, LogRecord, NodeIdentity, PROTOCOL_VERSION, PendingNodeIdentity,
-    QuotaConfig, RelayResponse, RelayedActor, TlsPaths, WriteExecutor, WriteRelay,
+    QuotaConfig, RelayResponse, RelayedActor, StreamRecord, TlsPaths, WriteExecutor, WriteRelay,
     cert_fingerprint,
 };
 use dnscraft_common::clock::ManualClock;
@@ -309,6 +309,7 @@ async fn start_server(
         clock.clone(),
         executor,
         ingest,
+        None,
     )
     .await
     .unwrap();
@@ -573,6 +574,90 @@ async fn threat_compromised_sub_node_is_contained_by_revocation() {
         .err()
         .expect("a revoked node cannot resume a stream");
     assert_eq!(error.code(), "cluster.node.revoked");
+
+    master.shutdown().await;
+}
+
+/// Revocation closes the live stream: no further config, auth or certificate
+/// push reaches the node, and a later publish sees no registered subscriber.
+#[tokio::test]
+async fn revocation_disconnects_the_live_stream() {
+    let dir = TestDir::new("revoke-stream");
+    let executor = Arc::new(MasterExecutor::new(false));
+    let master = start_master(
+        &dir,
+        clock(),
+        executor.clone(),
+        Arc::new(NoLogs),
+        QuotaConfig::default(),
+    )
+    .await;
+    let identity = enroll_node(&dir, &master, "node-a").await;
+    let node = client(&master, &identity);
+    let mut stream = node.open_stream().await.unwrap();
+
+    master.store.revoke("node-a").await.unwrap();
+    // This is exactly what `DELETE /api/v1/cluster/nodes/{id}` now does.
+    master.server.broadcast_handle().disconnect("node-a");
+
+    // The NDJSON body ends when the sender is dropped.
+    assert!(
+        stream.next_record().await.is_err(),
+        "a revoked node's stream must end"
+    );
+
+    // A subsequent publish cannot reach it: it is no longer registered.
+    master
+        .server
+        .config_sync()
+        .publish(1, &json!({ "config_version": 1 }))
+        .unwrap();
+    assert!(
+        master.server.config_sync().lag().is_empty(),
+        "revoked node must not remain a broadcast target"
+    );
+
+    // Next connection is refused with the documented code.
+    let error = node
+        .open_stream()
+        .await
+        .err()
+        .expect("a revoked node cannot resume a stream");
+    assert_eq!(error.code(), "cluster.node.revoked");
+
+    master.shutdown().await;
+}
+
+/// Defence in depth: a revoke that bypasses the disconnect path still ends the
+/// stream with `cluster.node.revoked` before the next push is delivered.
+#[tokio::test]
+async fn revocation_racing_registration_ends_the_stream_on_the_next_push() {
+    let dir = TestDir::new("revoke-race");
+    let executor = Arc::new(MasterExecutor::new(false));
+    let master = start_master(
+        &dir,
+        clock(),
+        executor.clone(),
+        Arc::new(NoLogs),
+        QuotaConfig::default(),
+    )
+    .await;
+    let identity = enroll_node(&dir, &master, "node-a").await;
+    let node = client(&master, &identity);
+    let mut stream = node.open_stream().await.unwrap();
+
+    // Flag only: the sender is not dropped.
+    master.store.revoke("node-a").await.unwrap();
+    master
+        .server
+        .config_sync()
+        .publish(2, &json!({ "config_version": 2 }))
+        .unwrap();
+
+    match stream.next_record().await.unwrap() {
+        StreamRecord::Error { error } => assert_eq!(error.code, "cluster.node.revoked"),
+        other => panic!("expected cluster.node.revoked, got {other:?}"),
+    }
 
     master.shutdown().await;
 }

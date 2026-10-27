@@ -67,6 +67,17 @@ pub(crate) const PROTOCOL_HEADER: &str = "x-cluster-protocol";
 
 const NDJSON: &str = "application/x-ndjson";
 
+/// Master hook that produces the current auth snapshot for a connecting node.
+///
+/// The stream handler calls this once per (re)connection, after `hello`, so a
+/// node that was offline across a revocation reconciles before it replays any
+/// buffered write. The snapshot is opaque to this crate.
+#[async_trait::async_trait]
+pub trait AuthSnapshotSource: Send + Sync {
+    /// Returns the serialized [`crate::AuthSnapshotPush`] payload.
+    async fn snapshot(&self) -> Result<serde_json::Value, ClusterError>;
+}
+
 /// Bootstrap configuration for the master's cluster listener.
 #[derive(Debug, Clone)]
 pub struct ClusterServerConfig {
@@ -161,13 +172,23 @@ impl ClusterBroadcast {
 
     /// Broadcasts an auth snapshot to every connected node.
     ///
-    /// Best-effort: offline nodes reconcile from the master's next snapshot.
+    /// Best-effort: a full per-node queue drops the push, and offline nodes
+    /// reconcile from the snapshot the master sends when they reconnect.
     pub fn push_auth_snapshot(&self, snapshot: &serde_json::Value) {
         self.config_sync
             .broadcast(StreamRecord::AuthSnapshotPush(AuthSnapshotPush {
                 protocol: PROTOCOL_VERSION,
                 snapshot: snapshot.clone(),
             }));
+    }
+
+    /// Ends a node's live downstream stream by dropping its sender.
+    ///
+    /// The stream task sees the closed channel, ends the NDJSON response, and
+    /// unregisters itself. Called after a node is revoked so a compromised
+    /// node stops receiving config, auth and certificate pushes immediately.
+    pub fn disconnect(&self, node_id: &str) {
+        self.config_sync.unregister(node_id);
     }
 }
 
@@ -190,10 +211,12 @@ impl ClusterServer {
     ///
     /// `store` is shared with the caller (`ClusterStore` is cheaply cloneable)
     /// so the admin surface can read the registry. `write_executor` runs
-    /// relayed writes after re-checking RBAC, and `log_ingest` stores query
-    /// logs streamed by sub-nodes. The master certificate is issued by `ca`
-    /// for `config.server_name`; its fingerprint is exposed by
+    /// relayed writes after re-checking RBAC, `log_ingest` stores query
+    /// logs streamed by sub-nodes, and `auth_snapshot` (when wired) is pushed
+    /// to every node as it (re)connects. The master certificate is issued by
+    /// `ca` for `config.server_name`; its fingerprint is exposed by
     /// [`Self::server_cert_pem`] for bootstrap pinning.
+    #[allow(clippy::too_many_arguments)]
     pub async fn start(
         config: ClusterServerConfig,
         ca: ClusterCa,
@@ -201,6 +224,7 @@ impl ClusterServer {
         clock: Arc<dyn Clock>,
         write_executor: Arc<dyn WriteExecutor>,
         log_ingest: Arc<dyn LogIngest>,
+        auth_snapshot: Option<Arc<dyn AuthSnapshotSource>>,
     ) -> Result<Self, ClusterError> {
         // Defence in depth: the cluster listener is never exposed publicly.
         if config.listen.bind.is_unspecified()
@@ -243,6 +267,7 @@ impl ClusterServer {
             quotas: QuotaLimiter::new(config.quota),
             write_executor,
             log_ingest,
+            auth_snapshot,
         });
         let router = router(Arc::clone(&state));
 
@@ -390,6 +415,7 @@ struct ServerState {
     quotas: QuotaLimiter,
     write_executor: Arc<dyn WriteExecutor>,
     log_ingest: Arc<dyn LogIngest>,
+    auth_snapshot: Option<Arc<dyn AuthSnapshotSource>>,
 }
 
 /// Authenticated peer identity extracted from the client certificate chain.
@@ -598,18 +624,53 @@ async fn stream(
         last_applied_version: state.config_sync.current_version(),
         last_acked_log_seq: Some(master_highest_log_seq),
     }));
+    // Reconcile auth on every (re)connection: the change watcher alone means a
+    // node that was offline across a revocation would keep the stale snapshot.
+    // The channel is empty here, so this cannot be dropped by backpressure.
+    if let Some(source) = &state.auth_snapshot
+        && let Ok(snapshot) = source.snapshot().await
+    {
+        let _ = records.try_send(StreamRecord::AuthSnapshotPush(AuthSnapshotPush {
+            protocol: PROTOCOL_VERSION,
+            snapshot,
+        }));
+    }
     state
         .config_sync
         .register(&auth.0, last_applied_version, records);
 
     let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(8);
     let config_sync = Arc::clone(&state.config_sync);
+    let store = state.store.clone();
     let node_id = auth.0.clone();
     tokio::spawn(async move {
         loop {
             tokio::select! {
                 record = record_rx.recv() => {
                     let Some(record) = record else { break };
+                    // Defence in depth: a revoke that did not go through the
+                    // admin disconnect path still terminates the stream before
+                    // the next push is delivered.
+                    if let Ok(Some(node)) = store.get_node(&node_id).await
+                        && node.revoked
+                    {
+                        let error = StreamRecord::Error {
+                            error: StreamError {
+                                code: ClusterError::NodeRevoked {
+                                    node_id: node_id.clone(),
+                                }
+                                .code()
+                                .to_owned(),
+                                params: Some(json!({ "node_id": &node_id })),
+                            },
+                        };
+                        if let Ok(line) = serde_json::to_string(&error) {
+                            let mut bytes = line.into_bytes();
+                            bytes.push(b'\n');
+                            let _ = tx.send(Ok(Bytes::from(bytes))).await;
+                        }
+                        break;
+                    }
                     let Ok(line) = serde_json::to_string(&record) else { continue };
                     let mut bytes = line.into_bytes();
                     bytes.push(b'\n');

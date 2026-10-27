@@ -93,12 +93,16 @@ pub(crate) async fn list_nodes(
 
 /// `DELETE /api/v1/cluster/nodes/{node_id}` — revoke a node.
 ///
-/// Its next connection is rejected with `cluster.node.revoked`.
+/// Its next connection is rejected with `cluster.node.revoked`, and its
+/// currently open stream is dropped so it receives no further pushes.
 pub(crate) async fn revoke_node(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     store(&state)?.revoke(&node_id).await?;
+    if let Some(broadcast) = state.cluster_broadcast() {
+        broadcast.disconnect(&node_id);
+    }
     Ok(success(json!({ "node_id": node_id, "revoked": true })))
 }
 

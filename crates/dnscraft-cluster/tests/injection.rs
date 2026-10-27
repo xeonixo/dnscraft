@@ -437,6 +437,7 @@ async fn start_server(
         clock.clone(),
         executor,
         ingest,
+        None,
     )
     .await
     .unwrap();

@@ -36,11 +36,11 @@ use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 
 use dnscraft_cluster::{
-    AuthSnapshotApplier, CertInstaller, ClusterCa, ClusterClient, ClusterConfig, ClusterError,
-    ClusterServer, ClusterServerConfig, ClusterStore, ConfigApplier, ConfigSync, LogIngest,
-    LogOutbox, LogRecord, LogStreamer, NodeIdentity, OfflineWriteQueue, PendingNodeIdentity,
-    RelayResponse, RelayedActor, Role, RuntimeCommandApplier, StreamRecord, WriteExecutor,
-    WriteRelay,
+    ActorValidator, AuthSnapshotApplier, AuthSnapshotSource, CertInstaller, ClusterCa,
+    ClusterClient, ClusterConfig, ClusterError, ClusterServer, ClusterServerConfig, ClusterStore,
+    ConfigApplier, ConfigSync, LogIngest, LogOutbox, LogRecord, LogStreamer, NodeIdentity,
+    OfflineWriteQueue, PendingNodeIdentity, RelayResponse, RelayedActor, Role,
+    RuntimeCommandApplier, StreamRecord, WriteExecutor, WriteRelay,
 };
 use dnscraft_common::clock::{Clock, add_duration, wait_until};
 use dnscraft_common::secret::Secret;
@@ -64,6 +64,9 @@ use crate::server::AppState;
 const IDEMPOTENCY_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// Delay between log-streamer retries after a transport failure.
 const LOG_RETRY_DELAY: Duration = Duration::from_secs(1);
+/// How long a reconnect waits for the master's first auth snapshot before
+/// replaying buffered writes anyway.
+const AUTH_REPLAY_GRACE: Duration = Duration::from_secs(5);
 
 /// Sub-node applier: node-scoped views → `apply_synced_config`.
 pub struct SyncedConfigApplier {
@@ -215,7 +218,61 @@ impl RuntimeCommandApplier for StateRuntimeApplier {
     }
 }
 
+/// Sub-node hook: rejects a queued write whose actor is no longer valid.
+///
+/// A token revoked on the master disappears from the replicated snapshot, so a
+/// write queued under it must not replay after reconnect.
+pub struct StateActorValidator {
+    auth: Arc<AuthState>,
+}
+
+impl StateActorValidator {
+    /// Wraps the sub-node's replicated auth state.
+    pub fn new(auth: Arc<AuthState>) -> Self {
+        Self { auth }
+    }
+}
+
+#[async_trait]
+impl ActorValidator for StateActorValidator {
+    async fn is_valid(&self, actor: &RelayedActor) -> Result<bool, ClusterError> {
+        self.auth
+            .relayed_actor_is_current(&actor.actor_type, &actor.actor_id, &actor.scope)
+            .await
+            .map_err(internal)
+    }
+}
+
+/// Master hook: serializes the current auth state for a connecting node.
+pub struct StateAuthSnapshotSource {
+    auth: Arc<AuthState>,
+}
+
+impl StateAuthSnapshotSource {
+    /// Wraps the master's authoritative auth state.
+    pub fn new(auth: Arc<AuthState>) -> Self {
+        Self { auth }
+    }
+}
+
+#[async_trait]
+impl AuthSnapshotSource for StateAuthSnapshotSource {
+    async fn snapshot(&self) -> Result<Value, ClusterError> {
+        let snapshot = self.auth.auth_snapshot().await.map_err(internal)?;
+        serde_json::to_value(snapshot).map_err(|error| ClusterError::Internal {
+            message: format!("encode auth snapshot: {error}"),
+        })
+    }
+}
+
 /// Master hook: RBAC re-check + canonical config handler for a relayed write.
+///
+/// The actor is *claimed* by the sub-node and never re-authenticated here: the
+/// master sees no credential, only the actor id/type/scope. A compromised
+/// sub-node can assert any actor for its own relayed writes; this is accepted
+/// by SPEC-cluster § Security considerations and contained by revocation. The
+/// executor still enforces the claimed scope and audits the write with the
+/// originating `node_id`.
 pub struct ConfigWriteExecutor {
     service: Arc<ConfigService>,
     clock: Arc<dyn Clock>,
@@ -261,6 +318,11 @@ impl ConfigWriteExecutor {
         body: Value,
         if_match: Option<&str>,
     ) -> RelayResponse {
+        // The actor type is copied into the audit row, so only the two known
+        // credential kinds are accepted; an arbitrary claim must not persist.
+        if !actor.has_known_type() {
+            return error_response(ControlApiError::AuthInvalidScope);
+        }
         let Some(scope) = Scope::parse(&actor.scope) else {
             return error_response(ControlApiError::AuthInvalidScope);
         };
@@ -927,6 +989,8 @@ impl ClusterRuntime {
         let (shutdown, _) = watch::channel(false);
         let notify = Arc::new(Notify::new());
         let clock = Arc::clone(&options.clock);
+        // Expose the role to the router (token/account creation is master-only).
+        state.attach_cluster_role(config.role);
         match config.role {
             Role::Standalone => Ok(Self {
                 role: config.role,
@@ -1048,6 +1112,13 @@ impl ClusterRuntime {
             Some(log) => Arc::new(QueryLogIngest::new(log)),
             None => Arc::new(UnavailableLogIngest),
         };
+        // Every (re)connecting node receives the current auth snapshot, so a
+        // revocation that happened while it was offline is applied before it
+        // replays buffered writes.
+        let auth_snapshot: Option<Arc<dyn AuthSnapshotSource>> =
+            state.auth_state_arc().map(|auth| {
+                Arc::new(StateAuthSnapshotSource::new(auth)) as Arc<dyn AuthSnapshotSource>
+            });
         let server = ClusterServer::start(
             ClusterServerConfig {
                 listen,
@@ -1065,6 +1136,7 @@ impl ClusterRuntime {
             clock.clone(),
             write_executor,
             log_ingest,
+            auth_snapshot,
         )
         .await?;
 
@@ -1181,8 +1253,9 @@ impl ClusterRuntime {
             Arc::clone(&service),
             config.node_id.clone(),
         ));
-        let auth_applier: Option<Arc<dyn AuthSnapshotApplier>> = state
-            .auth_state_arc()
+        let auth_state = state.auth_state_arc();
+        let auth_applier: Option<Arc<dyn AuthSnapshotApplier>> = auth_state
+            .clone()
             .map(|auth| Arc::new(StateAuthApplier::new(auth)) as Arc<dyn AuthSnapshotApplier>);
         let cert_installer: Option<Arc<dyn CertInstaller>> = match (
             options.tls_resolver.clone(),
@@ -1216,7 +1289,16 @@ impl ClusterRuntime {
         let notify = Arc::clone(&self.notify);
         let connection_clock = clock.clone();
         let connection_state = state.clone();
-        let queue = state.offline_write_queue_arc();
+        let queue = state.offline_write_queue_arc().map(|queue| {
+            let queue = (*queue).clone();
+            match &auth_state {
+                Some(auth) => Arc::new(
+                    queue
+                        .with_actor_validator(Arc::new(StateActorValidator::new(Arc::clone(auth)))),
+                ),
+                None => Arc::new(queue),
+            }
+        });
         let replay_executor = Arc::new(ClientWriteExecutor::new(Arc::clone(&client)));
         let replay_lock = Arc::new(tokio::sync::Mutex::new(()));
         let connection_client = Arc::clone(&client);
@@ -1355,23 +1437,34 @@ async fn run_sub_node_loop(
         };
         status.update(|status| status.master_reachable = true);
 
-        if let Some(queue) = queue.clone()
-            && let Ok(guard) = replay_lock.clone().try_lock_owned()
-        {
-            let executor = Arc::clone(&replay_executor);
-            tokio::spawn(async move {
-                let _guard = guard;
-                if let Err(error) = queue.replay_all(executor.as_ref()).await {
-                    tracing::warn!(error = %error, "offline write replay failed");
-                }
-            });
+        // When auth is replicated, wait for the reconnect's first auth
+        // snapshot before replaying: a token revoked while the node was
+        // offline must be gone before a queued write is re-submitted. A
+        // ConfigPush (always queued after the snapshot) is the liveness
+        // fallback when the master has no auth state.
+        let mut replay_pending = if queue.is_some() {
+            replay_lock.clone().try_lock_owned().ok()
+        } else {
+            None
+        };
+        if auth_applier.is_none() {
+            spawn_replay(&mut replay_pending, &queue, &replay_executor);
         }
+        // Liveness fallback: if no snapshot or config push arrives (for
+        // example a master with no auth state), replay anyway after a grace
+        // period driven by the injected clock.
+        let replay_wake = Notify::new();
+        let replay_deadline = add_duration(clock.now(), AUTH_REPLAY_GRACE);
 
         loop {
             tokio::select! {
                 _ = shutdown.changed() => return,
+                () = wait_until(clock.as_ref(), replay_deadline, &replay_wake), if replay_pending.is_some() => {
+                    spawn_replay(&mut replay_pending, &queue, &replay_executor);
+                }
                 record = stream.next_record() => match record {
                     Ok(StreamRecord::ConfigPush(push)) => {
+                        spawn_replay(&mut replay_pending, &queue, &replay_executor);
                         match client.apply_push(&push, applier.as_ref()).await {
                             Ok(applied) => status.update(|status| {
                                 status.applied_version = Some(applied);
@@ -1398,17 +1491,22 @@ async fn run_sub_node_loop(
                         }
                         None => tracing::warn!("cluster cert push ignored: no TLS resolver wired"),
                     },
-                    Ok(StreamRecord::AuthSnapshotPush(push)) => match &auth_applier {
-                        Some(applier) => {
-                            if let Err(error) =
-                                client.apply_auth_snapshot(&push, applier.as_ref()).await
-                            {
-                                tracing::warn!(error = %error, "cluster auth snapshot failed");
-                                return;
+                    Ok(StreamRecord::AuthSnapshotPush(push)) => {
+                        match &auth_applier {
+                            Some(applier) => {
+                                if let Err(error) =
+                                    client.apply_auth_snapshot(&push, applier.as_ref()).await
+                                {
+                                    tracing::warn!(error = %error, "cluster auth snapshot failed");
+                                    return;
+                                }
+                            }
+                            None => {
+                                tracing::warn!("cluster auth snapshot ignored: no auth state wired")
                             }
                         }
-                        None => tracing::warn!("cluster auth snapshot ignored: no auth state wired"),
-                    },
+                        spawn_replay(&mut replay_pending, &queue, &replay_executor);
+                    }
                     Ok(StreamRecord::RuntimeCommand(command)) => {
                         if let Err(error) =
                             client.apply_runtime_command(&command, runtime_applier.as_ref()).await
@@ -1431,6 +1529,24 @@ async fn run_sub_node_loop(
             }
         }
     }
+}
+
+/// Spawns one offline-write replay pass if one is still pending.
+fn spawn_replay(
+    pending: &mut Option<tokio::sync::OwnedMutexGuard<()>>,
+    queue: &Option<Arc<OfflineWriteQueue>>,
+    executor: &Arc<ClientWriteExecutor>,
+) {
+    let (Some(guard), Some(queue)) = (pending.take(), queue.clone()) else {
+        return;
+    };
+    let executor = Arc::clone(executor);
+    tokio::spawn(async move {
+        let _guard = guard;
+        if let Err(error) = queue.replay_all(executor.as_ref()).await {
+            tracing::warn!(error = %error, "offline write replay failed");
+        }
+    });
 }
 
 fn internal(error: ControlApiError) -> ClusterError {

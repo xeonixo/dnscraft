@@ -19,7 +19,7 @@ use dnscraft_api::{
     AppState, Auth, AuthState, ClusterStore, Db, ManualClock as ApiClock, OfflineWriteQueue, Scope,
     SessionStore, TokenStore,
 };
-use dnscraft_cluster::{EnqueueOutcome, OfflineWritesConfig, RelayedActor, WriteRelay};
+use dnscraft_cluster::{EnqueueOutcome, OfflineWritesConfig, RelayedActor, Role, WriteRelay};
 use dnscraft_common::clock::ManualClock as ClusterClock;
 
 const NOW: u64 = 1_700_000_000;
@@ -224,6 +224,43 @@ async fn revoke_marks_node_revoked() {
         json!({ "node_id": "node-a", "revoked": true })
     );
     assert!(store.get_node("node-a").await.unwrap().unwrap().revoked);
+}
+
+#[tokio::test]
+async fn token_minting_is_master_only() {
+    let body = json!({ "name": "ci", "scope": "viewer" });
+
+    // A master (and a standalone node, which has no attached role) may mint.
+    for role in [Some(Role::Master), None] {
+        let mut h = harness(true, false).await;
+        if let Some(role) = role {
+            h.state = h.state.clone().with_cluster_role(role);
+        }
+        let (status, response) = send(
+            &h,
+            "POST",
+            "/api/v1/auth/tokens",
+            Some(&h.admin),
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{role:?}: {response}");
+        assert!(response["data"]["token"].is_string());
+    }
+
+    // A sub-node authenticates the master's replicated tokens but cannot mint.
+    let mut h = harness(true, false).await;
+    h.state = h.state.clone().with_cluster_role(Role::SubNode);
+    let (status, response) = send(
+        &h,
+        "POST",
+        "/api/v1/auth/tokens",
+        Some(&h.admin),
+        Some(json!({ "name": "ci", "scope": "admin" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(response["error"]["code"], "control_api.not_found");
 }
 
 #[tokio::test]
