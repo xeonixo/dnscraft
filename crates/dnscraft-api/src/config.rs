@@ -3,7 +3,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use dnscraft_mcp::McpConfig;
 
@@ -61,8 +61,11 @@ const MIN_SESSION_ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(3600);
 const MAX_SESSION_ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// IP truncation level for persisted query-log records.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize)]
-
+///
+/// The serde names match the wire/config names (`none`, `last_octet`,
+/// `last_group`); `last_octet` is the default for new installs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum IpTruncate {
     /// Keep the full source IP.
     None,
@@ -97,7 +100,8 @@ impl IpTruncate {
 }
 
 /// Authentication settings.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AuthConfig {
     /// Whether OIDC login is enabled.
     pub oidc_enabled: bool,
@@ -106,6 +110,11 @@ pub struct AuthConfig {
     /// OIDC client id.
     pub oidc_client_id: String,
     /// OIDC client secret (env-only in the binary; serializes as `"redacted"`).
+    ///
+    /// Never read from TOML: the value is re-supplied from
+    /// `DNSCRAFT_OIDC_CLIENT_SECRET` at startup, so a config file cannot
+    /// smuggle a plaintext secret (nor a `"redacted"` marker) into the binary.
+    #[serde(default, skip_deserializing)]
     pub oidc_client_secret: Secret,
     /// Group name that maps to the `admin` role.
     pub oidc_admin_group: String,
@@ -145,7 +154,8 @@ impl Default for AuthConfig {
 }
 
 /// Query-log storage settings.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct QueryLogConfig {
     /// Retention window in days (1–3650).
     pub retention_days: u32,
@@ -166,7 +176,8 @@ impl Default for QueryLogConfig {
 }
 
 /// Rate-limit settings for the internal API.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RateLimitConfig {
     /// Read endpoints: tokens per second.
     pub read_per_second: u32,
@@ -190,7 +201,14 @@ impl Default for RateLimitConfig {
 }
 
 /// Full control-api bootstrap configuration.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+///
+/// The container-level `default` fills omitted TOML keys from
+/// [`ControlApiConfig::default`]. `IpAddr`, `Duration`, `Vec` and `Option`
+/// fields use serde's built-in representations; the binary's TOML loader must
+/// turn human forms such as `"60s"` / `"1MiB"` into their serde forms before
+/// deserializing (no custom `serde(with)` is used here).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ControlApiConfig {
     /// Bind address. Must be loopback/private/ULA (never `0.0.0.0`/`::`).
     pub bind: IpAddr,
@@ -207,7 +225,6 @@ pub struct ControlApiConfig {
     /// Rate limits.
     pub rate_limit: RateLimitConfig,
     /// MCP server configuration (`control_api.mcp.*` in the bootstrap TOML).
-    #[serde(skip)]
     pub mcp: McpConfig,
 }
 
@@ -521,5 +538,79 @@ mod tests {
     #[test]
     fn default_config_is_valid() {
         assert!(ControlApiConfig::default().validate().is_ok());
+    }
+
+    /// Every field differs from its default (documentation ranges only), so
+    /// the round-trip covers the full value space.
+    fn non_default_config() -> ControlApiConfig {
+        ControlApiConfig {
+            bind: "127.0.0.1".parse().unwrap(),
+            port: 8443,
+            tls: false,
+            trusted_proxies: vec![
+                "192.0.2.10".parse().unwrap(),
+                "2001:db8::1".parse().unwrap(),
+            ],
+            auth: AuthConfig {
+                oidc_enabled: false,
+                oidc_issuer: "https://auth.example.com/application/o/dnscraft".into(),
+                oidc_client_id: "dnscraft".into(),
+                oidc_client_secret: Secret::new("real-secret-value"),
+                oidc_admin_group: "admins".into(),
+                oidc_token_skew: Duration::from_secs(60),
+                local_login_enabled: true,
+                local_login_max_attempts: 3,
+                local_login_lock_window: Duration::from_secs(600),
+                api_token_max_ttl: Duration::from_secs(30 * 24 * 3600),
+                session_idle_timeout: Duration::from_secs(900),
+                session_absolute_timeout: Duration::from_secs(4 * 3600),
+            },
+            query_log: QueryLogConfig {
+                retention_days: 7,
+                ip_truncate: IpTruncate::LastGroup,
+                max_rows_per_request: 500,
+            },
+            rate_limit: RateLimitConfig {
+                read_per_second: 10,
+                write_per_second: 5,
+                auth_per_second: 2,
+                burst_factor: 3,
+            },
+            mcp: McpConfig {
+                enabled: true,
+                protected_domains: vec!["example.com".into()],
+                ..McpConfig::default()
+            },
+        }
+    }
+
+    #[test]
+    fn config_round_trips_through_json() {
+        let original = non_default_config();
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ControlApiConfig = serde_json::from_str(&json).unwrap();
+
+        // The secret is env-only: it is skipped on deserialization and the
+        // binary re-supplies it at startup. All other fields round-trip.
+        assert_eq!(decoded.auth.oidc_client_secret.expose(), "");
+        let mut decoded = decoded;
+        decoded.auth.oidc_client_secret = original.auth.oidc_client_secret.clone();
+        assert_eq!(decoded, original);
+        // `[control_api.mcp]` is no longer skipped.
+        assert!(json.contains(r#""mcp":{"#));
+    }
+
+    #[test]
+    fn serialized_config_never_contains_plaintext_secret() {
+        let config = non_default_config();
+        assert_eq!(config.auth.oidc_client_secret.expose(), "real-secret-value");
+
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(
+            !json.contains("real-secret-value"),
+            "plaintext secret leaked into serialized config: {json}"
+        );
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["auth"]["oidc_client_secret"], "redacted");
     }
 }

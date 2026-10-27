@@ -27,10 +27,10 @@ const SECRET_TOKENS: &[&str] = &[
 
 /// Name tokens that keep a key intact even when a secret token is also present
 /// (e.g. `session_idle_timeout`, `api_token_max_ttl`, `oidc_token_skew` are
-/// durations/limits, not secrets).
+/// durations/limits, not secrets, and `legacy_session_mode` is a flag).
 const ALLOW_TOKENS: &[&str] = &[
     "ttl", "timeout", "days", "max", "limit", "attempts", "window", "enabled", "count", "interval",
-    "lifetime", "skew", "duration", "expiry", "age",
+    "lifetime", "skew", "duration", "expiry", "age", "mode",
 ];
 
 /// Tokens that mark a key secret when combined with `key` (or `keys`), e.g.

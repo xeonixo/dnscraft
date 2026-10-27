@@ -9,6 +9,8 @@
 
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::McpError;
 use crate::protected::ProtectedDomains;
 
@@ -56,7 +58,14 @@ pub const DEFAULT_MAX_TRACKED_TOKENS: usize = 10_000;
 pub const MAX_TRACKED_TOKENS: usize = 1_000_000;
 
 /// MCP server configuration (`control_api.mcp` in the bootstrap TOML).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The container-level `default` fills any key omitted from the TOML from
+/// [`McpConfig::default`]; `protected_domains` and `allowed_origins` are
+/// runtime-derived and default to empty (control-api populates them after
+/// loading, never from TOML). The type holds no secrets, so it is safe to
+/// serialize (needed by `ControlApiConfig`'s snapshot `Serialize`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
 pub struct McpConfig {
     /// Whether the MCP endpoint is mounted. Off by default.
     pub enabled: bool,
@@ -239,6 +248,20 @@ mod tests {
     #[test]
     fn defaults_are_valid() {
         McpConfig::default().validate().unwrap();
+    }
+
+    #[test]
+    fn deserializes_partial_config_with_runtime_fields_defaulted() {
+        // Only one key is supplied; every other key (including the
+        // runtime-derived lists) comes from `Default`.
+        let config: McpConfig =
+            serde_json::from_str(r#"{"enabled": true, "protected_domains": ["example.com"]}"#)
+                .unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.protected_domains, ["example.com"]);
+        assert!(config.allowed_origins.is_empty());
+        assert_eq!(config.request_timeout, DEFAULT_REQUEST_TIMEOUT);
+        assert_eq!(config.max_request_body_size, DEFAULT_MAX_REQUEST_BODY_SIZE);
     }
 
     #[test]
