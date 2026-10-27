@@ -6,7 +6,7 @@ tokens). This crate is the internal-only configuration boundary for the web UI
 and the MCP server.
 
 Formal requirements: [`SPEC-control-api.md`](../../SPEC-control-api.md).
-Plan / task list: [`tasks/todo-control-api.md`](../../tasks/todo-control-api.md).
+Plan / task list: [`tasks/archive/todo-control-api.md`](../../tasks/archive/todo-control-api.md).
 
 ## Status
 

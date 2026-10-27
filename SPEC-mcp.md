@@ -1104,7 +1104,7 @@ All new endpoints use consistent path prefixes:
 
 Workspace crates already pinned in the root `Cargo.toml` (verified 2026-10-25 per tasks/progress.md): `tokio` 1.x, `serde` 1.x, `serde_json` 1.x, `hyper` 1.x, `http` 1.x, `bytes` 1.x, `thiserror` 2.x, `tracing` 0.1.x, `async-trait` 0.1.x. These are reused with their workspace versions and features.
 
-**Note:** `axum`, `tower`, and `tower-http` are **not** currently pinned in the root `Cargo.toml`. They are introduced by the control-api plan (plan-control-api.md, task A3) for the control-api listener. The mcp crate reuses them as workspace dependencies once the control-api plan adds them.
+**Note:** `axum`, `tower`, and `tower-http` are **not** currently pinned in the root `Cargo.toml`. They are introduced by the control-api plan (tasks/archive/plan-control-api.md, task A3) for the control-api listener. The mcp crate reuses them as workspace dependencies once the control-api plan adds them.
 
 ### New dependency for mcp
 

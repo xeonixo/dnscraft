@@ -12,7 +12,7 @@
 //! A2: config snapshot/version store + audit log with secret redaction.
 //! A3: HTTP server core — router, envelopes, pagination.
 //! A4: internal-only bind + TLS bootstrap (self-signed → ACME handover).
-//! (Further tasks are listed in `tasks/todo-control-api.md`.)
+//! (Further tasks are listed in `tasks/archive/todo-control-api.md`.)
 
 #![deny(missing_docs)]
 

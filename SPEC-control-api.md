@@ -297,7 +297,7 @@ available for at least one full major release.
 These endpoints are required by the `mcp` module (SPEC-mcp.md § Required
 control-api additions). They are **not part of the v1 core**: they are built
 after Checkpoint F in the MCP phase, and each needs an owner-approved plan (see
-tasks/plan-control-api.md § Phase M). They use the same `{data}`/`{error}`
+tasks/archive/plan-control-api.md § Phase M). They use the same `{data}`/`{error}`
 envelopes, auth middleware, audit path and config-apply path as the endpoints
 above. `viewer`/`admin` tokens may call the read endpoints; `mcp:read` and
 `mcp:write` tokens may **not** call any `/api/v1` endpoint (see § Auth).
@@ -644,7 +644,7 @@ configuration, not runtime state.
 
 The filtering crate currently has neither `McpRule` nor
 `FilterSetConfig::mcp_rules` (verified 2026-10-26); both are prerequisites of
-the MCP phase (tasks/plan-control-api.md § Phase M).
+the MCP phase (tasks/archive/plan-control-api.md § Phase M).
 
 ### Rollback
 
@@ -795,7 +795,7 @@ Limits/defaults:
 default: while `control_api.mcp.enabled = false`, every request to `/mcp/v1`
 returns HTTP 404 with `control_api.not_found`. The token scopes and the
 `/api/v1` ↔ `/mcp/v1` separation are in § Auth; the protocol surface is in
-SPEC-mcp.md. Mounting is part of the MCP phase (tasks/plan-control-api.md
+SPEC-mcp.md. Mounting is part of the MCP phase (tasks/archive/plan-control-api.md
 § Phase M), not the v1 core.
 
 ## Error codes
