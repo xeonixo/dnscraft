@@ -42,9 +42,10 @@ pub fn at(seconds: u64) -> SystemTime {
 
 /// RFC 3339 rendering of `seconds` after the epoch (seconds precision, `Z`).
 pub fn rfc3339(seconds: u64) -> String {
-    chrono::DateTime::from_timestamp(seconds as i64, 0)
+    time::OffsetDateTime::from_unix_timestamp(seconds as i64)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+        .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default()
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 /// A unique directory under the OS temp dir, removed on drop.
@@ -223,11 +224,13 @@ fn json_time(value: &Value) -> Result<SystemTime, ControlApiError> {
             .as_u64()
             .map(at)
             .ok_or_else(|| invalid("timestamp must be unix seconds or RFC 3339")),
-        Value::String(raw) => chrono::DateTime::parse_from_rfc3339(raw)
-            .ok()
-            .and_then(|time| u64::try_from(time.timestamp()).ok())
-            .map(at)
-            .ok_or_else(|| invalid("timestamp must be unix seconds or RFC 3339")),
+        Value::String(raw) => {
+            time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc3339)
+                .ok()
+                .and_then(|time| u64::try_from(time.unix_timestamp()).ok())
+                .map(at)
+                .ok_or_else(|| invalid("timestamp must be unix seconds or RFC 3339"))
+        }
         _ => Err(invalid("timestamp must be unix seconds or RFC 3339")),
     }
 }

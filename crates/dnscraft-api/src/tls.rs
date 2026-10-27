@@ -665,8 +665,11 @@ impl TlsAdmin for EngineTlsAdmin {
 
 /// RFC 3339 (UTC, seconds precision) for a [`SystemTime`].
 fn rfc3339(time: SystemTime) -> String {
-    let datetime: chrono::DateTime<chrono::Utc> = time.into();
-    datetime.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    time::OffsetDateTime::from(time)
+        .format(time::macros::format_description!(
+            "[year]-[month]-[day]T[hour]:[minute]:[second]Z"
+        ))
+        .unwrap_or_default()
 }
 
 /// Serde `with` adapter: [`SystemTime`] ↔ RFC 3339 string.

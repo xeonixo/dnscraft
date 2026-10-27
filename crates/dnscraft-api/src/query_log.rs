@@ -1304,7 +1304,7 @@ fn system_time_micros(time: SystemTime) -> i64 {
 }
 
 /// Formats [`SystemTime`] as RFC 3339 with microsecond precision and a `Z`
-/// suffix — matching chrono's `to_rfc3339_opts(SecondsFormat::Micros, true)`.
+/// suffix.
 fn format_rfc3339_micros(time: SystemTime) -> String {
     let odt = OffsetDateTime::from(time);
     let (year, month_day, time_part) = (odt.year(), odt.month() as u8, odt.time());

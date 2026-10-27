@@ -100,5 +100,9 @@ impl ClusterStatusProvider for ClusterStatusHandle {
 
 /// RFC 3339 (UTC, seconds precision).
 fn rfc3339(time: SystemTime) -> String {
-    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    time::OffsetDateTime::from(time)
+        .format(time::macros::format_description!(
+            "[year]-[month]-[day]T[hour]:[minute]:[second]Z"
+        ))
+        .unwrap_or_default()
 }

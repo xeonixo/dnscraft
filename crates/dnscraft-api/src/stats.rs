@@ -29,7 +29,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
-use chrono::{DateTime, SecondsFormat, Utc};
 use hyper::body::{Body as HttpBody, Bytes, Frame};
 use rusqlite::params;
 use serde::Serialize;
@@ -794,8 +793,14 @@ fn csv_escape(field: &str) -> String {
 
 /// Formats unix microseconds as RFC 3339 (or the raw value if out of range).
 fn format_micros(micros: i64) -> String {
-    DateTime::<Utc>::from_timestamp_micros(micros)
-        .map(|time| time.to_rfc3339_opts(SecondsFormat::Micros, true))
+    time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(micros) * 1_000)
+        .ok()
+        .and_then(|time| {
+            time.format(time::macros::format_description!(
+                "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:6]Z"
+            ))
+            .ok()
+        })
         .unwrap_or_else(|| format!("{micros}us"))
 }
 

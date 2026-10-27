@@ -33,9 +33,10 @@ fn at(seconds: u64) -> SystemTime {
 }
 
 fn rfc3339(seconds: u64) -> String {
-    chrono::DateTime::from_timestamp(seconds as i64, 0)
-        .unwrap()
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    time::OffsetDateTime::from_unix_timestamp(seconds as i64)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
 }
 
 struct Harness {

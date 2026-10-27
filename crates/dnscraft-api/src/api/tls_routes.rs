@@ -287,8 +287,11 @@ async fn webhook(state: &AppState) -> Option<TlsWebhook> {
 
 /// Injection order for the webhook `time` field.
 fn now_rfc3339(state: &AppState) -> String {
-    let datetime: chrono::DateTime<chrono::Utc> = state.clock().now().into();
-    datetime.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    time::OffsetDateTime::from(state.clock().now())
+        .format(time::macros::format_description!(
+            "[year]-[month]-[day]T[hour]:[minute]:[second]Z"
+        ))
+        .unwrap_or_default()
 }
 
 /// `GET /api/v1/tls/status` — the typed TLS DTO (contract § G).

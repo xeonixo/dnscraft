@@ -26,7 +26,6 @@ use std::time::Duration;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, Utc};
 use openidconnect::core::{
     CoreAuthDisplay, CoreAuthPrompt, CoreAuthenticationFlow, CoreErrorResponseType,
     CoreGenderClaim, CoreJsonWebKey, CoreJweContentEncryptionAlgorithm, CoreJwsSigningAlgorithm,
@@ -342,7 +341,7 @@ impl OidcState {
                 let now = time_clock.now();
                 // Validate `exp` against now minus the allowed skew, so a
                 // token expiring up to `skew` ago is still accepted.
-                DateTime::<Utc>::from(now.checked_sub(skew).unwrap_or(now))
+                now.checked_sub(skew).unwrap_or(now).into()
             })
             .set_issue_time_verifier_fn(move |issued| {
                 if issued.timestamp() > unix_seconds(iat_clock.now()).saturating_add(skew_secs) {
