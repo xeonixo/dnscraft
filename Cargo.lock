@@ -855,6 +855,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dnscraft-cluster"
+version = "0.1.0"
+dependencies = [
+ "dnscraft-common",
+ "rcgen",
+ "ring",
+ "rusqlite",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "dnscraft-common"
 version = "0.1.0"
 dependencies = [
