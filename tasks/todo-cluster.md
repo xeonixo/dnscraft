@@ -26,13 +26,13 @@
 - [ ] CL6 `GET /api/v1/status` cluster fields (role, master reachability, applied version, lag,
       queue depth, last sync).
 - [ ] CL7 admin endpoints `/api/v1/cluster/*` (admin-only, shapes from CL1).
-- [ ] CL8 `cluster.*` error codes + uniqueness test; reconcile `config.version`/`config.conflict`.
+- [x] CL8 `cluster.*` error codes + uniqueness test; reconcile `config.version`/`config.conflict`.
 
 ## Phase 2 — Cluster crate: transport + identity + join
 
-- [ ] CL9 cluster config validation (`role`/`node_id`/`master_url`/bind; non-private bind rejected).
-- [ ] CL10 master: cluster CA gen (`0600`), join-token mint/hash (TTL, one-time), enroll endpoint,
-       node registry (fingerprint, joined_at, last_seen, applied_config_version, revoke).
+- [x] CL9 cluster config validation (`role`/`node_id`/`master_url`/bind; non-private bind rejected).
+- [x] CL10 master: cluster CA gen (`0600`), join-token mint/hash (TTL, one-time), node registry
+       (fingerprint, joined_at, last_seen, applied_config_version, revoke). Enroll endpoint → CL12.
 - [ ] CL11 sub-node: key+CSR (`rcgen`), enroll, CA+node cert, mTLS connection.
 - [ ] CL12 transport: TLS 1.3 ring-only, HTTP/2, `GET /cluster/v1/stream` NDJSON, heartbeat, version
        handshake; second internal mTLS listener (mirror of `router.rs:184` nest_service).
