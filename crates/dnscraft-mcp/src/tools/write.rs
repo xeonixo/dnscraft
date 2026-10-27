@@ -890,6 +890,11 @@ fn iso_duration(duration: Duration) -> String {
 }
 
 /// Reject a target covered by the protected-domain list.
+///
+/// The returned error names only the submitted target. The matched protected
+/// entry is logged server-side and never disclosed in the tool result, so a
+/// derived infrastructure host (OIDC issuer, forward-zone apex, filter-list
+/// host, …) cannot be read back through the error `params`.
 fn protected_violation(
     server: &McpServer,
     domain: &str,
@@ -897,9 +902,16 @@ fn protected_violation(
 ) -> Result<(), McpError> {
     let list = server.protected.as_ref().map_err(Clone::clone)?;
     match list.check(domain, include_subdomains) {
-        Some(matched) => Err(McpError::ProtectedDomain {
-            domain: SafeText::new(&matched, CAP_DOMAIN).into_inner(),
-        }),
+        Some(matched) => {
+            tracing::warn!(
+                submitted = %domain,
+                matched = %matched,
+                "protected domain rejected"
+            );
+            Err(McpError::ProtectedDomain {
+                domain: domain.to_owned(),
+            })
+        }
         None => Ok(()),
     }
 }

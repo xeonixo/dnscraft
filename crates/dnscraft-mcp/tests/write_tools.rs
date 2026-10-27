@@ -186,8 +186,8 @@ async fn allow_temporarily_rejects_protected_domains() {
     .await;
     assert_eq!(harness::error_code(&body), "mcp.protected_domain", "{body}");
     assert_eq!(
-        body["result"]["structuredContent"]["error"]["params"]["domain"],
-        "auth.example.net"
+        body["result"]["structuredContent"]["error"]["params"]["domain"], "example.net",
+        "only the submitted target is disclosed"
     );
 
     // Descendant with either flag.
