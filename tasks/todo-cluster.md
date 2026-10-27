@@ -33,7 +33,7 @@
 - [x] CL9 cluster config validation (`role`/`node_id`/`master_url`/bind; non-private bind rejected).
 - [x] CL10 master: cluster CA gen (`0600`), join-token mint/hash (TTL, one-time), node registry
        (fingerprint, joined_at, last_seen, applied_config_version, revoke). Enroll endpoint → CL12.
-- [ ] CL11 sub-node: key+CSR (`rcgen`), enroll, CA+node cert, mTLS connection.
+- [x] CL11 sub-node: key+CSR (`rcgen`), enroll, CA+node cert (in-process). mTLS connection → CL12.
 - [ ] CL12 transport: TLS 1.3 ring-only, HTTP/2, `GET /cluster/v1/stream` NDJSON, heartbeat, version
        handshake; second internal mTLS listener (mirror of `router.rs:184` nest_service).
 
