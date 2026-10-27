@@ -7,13 +7,13 @@
 
 ## Phase 0 — Config model (gated on plan decisions D1/D5/D6)
 
-- [ ] **AS0** `ControlApiConfig` + `McpConfig` gain `Deserialize` (incl. nested `auth`/`rate_limit`/
+- [x] **AS0** `ControlApiConfig` + `McpConfig` gain `Deserialize` (incl. nested `auth`/`rate_limit`/
       `query_log`/`mcp` blocks), keeping the existing `Serialize`. Uniqueness of `control_api.*`/
       `mcp.*` codes unchanged.
 - [x] **AS1** Per D1: add `serde` to `ResolverConfig`, `FilterConfig`, `ClientsConfig`, `TlsConfig`,
       `PolicyConfig` and the listeners config structs (or, if D1 = mirror, add the JSON mirror layer).
       Round-trip tests (Rust → JSON → Rust) per config.
-- [ ] **AS2** Extend the binary `Config` with `data_dir` + `[resolver]`/`[filtering]`/`[clients]`/
+- [x] **AS2** Extend the binary `Config` with `data_dir` + `[resolver]`/`[filtering]`/`[clients]`/
       `[tls]`/`[policy]`/`[listeners_public]`/`[listeners_limits]`/`[listeners_ddr]`/`[control_api]`,
       mapping onto the module configs. Keep `deny_unknown_fields` and the env-secret TLS bootstrap.
       Resolve GL2 (public `enabled` key) and the D6 `ip_truncate` default here.
