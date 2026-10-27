@@ -521,6 +521,67 @@ async fn backoff_on_429_then_recovery_clears_stale() {
 }
 
 #[tokio::test]
+async fn sync_success_failure_counters() {
+    let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+    seed(&mock).await;
+    let clock = Arc::new(ManualClock::new(start()));
+    let eng = engine(
+        &mock,
+        Arc::clone(&clock) as Arc<_>,
+        Duration::from_secs(3600),
+    )
+    .await;
+    await_initial_sync(&eng).await;
+
+    let before = eng.status();
+    eng.sync_now().await.unwrap();
+    let after_ok = eng.status();
+    assert_eq!(after_ok.sync_successes, before.sync_successes + 1);
+    assert_eq!(after_ok.sync_failures, before.sync_failures);
+
+    mock.force_status(401).await;
+    assert!(eng.sync_now().await.is_err());
+    let after_err = eng.status();
+    assert_eq!(after_err.sync_successes, after_ok.sync_successes);
+    assert_eq!(after_err.sync_failures, after_ok.sync_failures + 1);
+}
+
+#[tokio::test]
+async fn ip_conflicts_surface_in_status() {
+    let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+    seed(&mock).await;
+    let clock = Arc::new(ManualClock::new(start()));
+    let eng = engine(
+        &mock,
+        Arc::clone(&clock) as Arc<_>,
+        Duration::from_secs(3600),
+    )
+    .await;
+    await_initial_sync(&eng).await;
+
+    let shared = IpAddr::from_str("198.51.100.77").unwrap();
+    let conflicting: Vec<UnifiObservation> = ["dup-a", "dup-b"]
+        .into_iter()
+        .map(|cid| UnifiObservation {
+            id: ClientId::new(cid).unwrap(),
+            display_name: cid.into(),
+            macs: Vec::new(),
+            addresses: vec![shared],
+            network_id: None,
+            last_seen: Some(start()),
+            online: true,
+        })
+        .collect();
+    eng.set_cached_observations_for_test(conflicting);
+
+    let cfg = cfg_for(&mock, Duration::from_secs(3600));
+    eng.apply_config_with_secret(cfg, |_| Ok(Secret::new(API_KEY)))
+        .await
+        .unwrap();
+    assert!(eng.status().ip_conflicts >= 1);
+}
+
+#[tokio::test]
 async fn poll_cadence_respects_jitter_bounds() {
     let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
     seed(&mock).await;

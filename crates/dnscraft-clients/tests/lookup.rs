@@ -191,6 +191,48 @@ fn local_domains_includes_overrides() {
 }
 
 #[test]
+fn local_domains_omits_unused_fallback() {
+    // GC8: the config fallback is local only while a client actually uses it.
+    let empty = ClientLookup::build_manual(&[], "home.arpa").unwrap();
+    assert!(empty.local_domains().is_empty());
+
+    let lookup = ClientLookup::build_manual(
+        &[entry_ip_domain("b", "198.51.100.2", "iot.example.com")],
+        "home.arpa",
+    )
+    .unwrap();
+    let domains = lookup.local_domains();
+    assert_eq!(domains.len(), 1);
+    assert_eq!(domains[0], "iot.example.com");
+}
+
+#[test]
+fn cidr_index_precedence_default_route_and_family_isolation() {
+    // GC15: default routes exercise the /0 mask; families must not leak.
+    let lookup = ClientLookup::build_manual(
+        &[
+            entry_ip("exact", "198.51.100.10"),
+            entry_cidr("all-v4", "0.0.0.0/0"),
+            entry_cidr("all-v6", "::/0"),
+        ],
+        "home.arpa",
+    )
+    .unwrap();
+    assert_eq!(
+        lookup.by_ip(ip("198.51.100.10")).unwrap().display_name,
+        "exact"
+    );
+    assert_eq!(
+        lookup.by_ip(ip("203.0.113.5")).unwrap().display_name,
+        "all-v4"
+    );
+    assert_eq!(
+        lookup.by_ip(ip("2001:db8::1")).unwrap().display_name,
+        "all-v6"
+    );
+}
+
+#[test]
 fn by_ip_returns_arc_clone_not_deep_copy() {
     let lookup =
         ClientLookup::build_manual(&[entry_ip("paperless", "198.51.100.5")], "home.arpa").unwrap();

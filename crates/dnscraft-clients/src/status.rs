@@ -26,4 +26,10 @@ pub struct ClientsStatus {
     pub poll_interval: Duration,
     /// Lookup generation; increments only when the snapshot is rebuilt.
     pub generation: u64,
+    /// Cumulative IP claims resolved by dropping a loser from the index.
+    pub ip_conflicts: u64,
+    /// Successful sync attempts since construction.
+    pub sync_successes: u64,
+    /// Failed sync attempts since construction.
+    pub sync_failures: u64,
 }

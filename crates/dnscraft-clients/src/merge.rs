@@ -17,9 +17,9 @@ use crate::state::{RetainedClient, State};
 use crate::types::{ClientId, ClientInfo, ClientSource, MacAddr, VlanInfo};
 use dnscraft_common::config::normalise_domain;
 
-/// Soft warn threshold (SPEC-clients.md).
+/// Soft warn threshold (SPEC-clients.md): clients + indexed addresses.
 pub const WARN_CLIENT_COUNT: usize = 2_000;
-/// Hard refuse threshold.
+/// Hard refuse threshold: clients + indexed addresses.
 pub const MAX_CLIENT_COUNT: usize = 10_000;
 
 /// Normalised UniFi client row (Integration + classic merged upstream).
@@ -159,10 +159,23 @@ pub fn build(
         );
     }
 
-    let total = manuals.len() + unifi_draft.len();
+    // The cap covers client rows *and* addresses held in the lookup indexes.
+    let client_total = manuals.len() + unifi_draft.len();
+    let address_total = manuals
+        .iter()
+        .filter(|m| m.ip.is_some_and(|ip| !is_link_local(ip)))
+        .count()
+        + unifi_draft
+            .values()
+            .map(|d| d.addresses.len())
+            .sum::<usize>();
+    let total = client_total + address_total;
     if total > MAX_CLIENT_COUNT {
         return Err(ClientsError::TooMany {
-            message: format!("{total} clients exceeds hard cap {MAX_CLIENT_COUNT}"),
+            message: format!(
+                "{client_total} clients / {address_total} addresses exceeds hard cap \
+                 {MAX_CLIENT_COUNT}"
+            ),
         });
     }
     let mut stats = MergeStats::default();
@@ -170,8 +183,9 @@ pub fn build(
         stats.warned_too_many = true;
         warn!(
             code = "clients.too_many",
-            count = total,
-            "client count above soft warn threshold"
+            clients = client_total,
+            addresses = address_total,
+            "client/address count above soft warn threshold"
         );
     }
 
@@ -182,7 +196,6 @@ pub fn build(
     let mut label_owners: HashMap<String, Vec<u32>> = HashMap::new();
     let mut taken_in_domain: HashMap<(String, String), ClientId> = HashMap::new();
     let mut domains_used: HashMap<String, ()> = HashMap::new();
-    domains_used.insert(default_domain.clone(), ());
 
     let mut next_state = State::default();
 
@@ -242,8 +255,6 @@ pub fn build(
         }));
     }
 
-    cidrs.sort_by_key(|(net, _)| std::cmp::Reverse(net.prefix_len()));
-
     let mut unifi_list: Vec<DraftUnifi> = unifi_draft.into_values().collect();
     // Existing labels first so newcomers never steal a first-seen name;
     // then online before offline; then id for stability.
@@ -260,8 +271,9 @@ pub fn build(
 
     for draft in unifi_list {
         let idx = clients.len() as u32;
-        let vlan = resolve_vlan(&draft, &net_by_id, networks);
-        let domain = resolve_domain(cfg, &default_domain, vlan.as_ref(), &net_by_id, &draft);
+        let network = resolve_network(&draft, &net_by_id, networks);
+        let vlan = network.and_then(vlan_info);
+        let domain = resolve_domain(cfg, &default_domain, network);
 
         domains_used.insert(domain.clone(), ());
 
@@ -473,19 +485,17 @@ fn assign_label(
     }
 }
 
-fn resolve_vlan(
+/// Resolves the network a UniFi client belongs to: id join, then longest
+/// matching gateway-managed prefix.
+fn resolve_network<'a>(
     draft: &DraftUnifi,
-    by_id: &HashMap<&str, &NetworkInfo>,
-    networks: &[NetworkInfo],
-) -> Option<VlanInfo> {
+    by_id: &HashMap<&str, &'a NetworkInfo>,
+    networks: &'a [NetworkInfo],
+) -> Option<&'a NetworkInfo> {
     if let Some(nid) = &draft.network_id
-        && let Some(n) = by_id.get(nid.as_str())
+        && let Some(&n) = by_id.get(nid.as_str())
     {
-        return Some(VlanInfo {
-            id: n.vlan_id.unwrap_or(0),
-            name: n.name.clone(),
-            domain_name: n.domain_name.clone(),
-        });
+        return Some(n);
     }
     let mut best: Option<(&NetworkInfo, u8)> = None;
     for addr in &draft.addresses {
@@ -500,32 +510,27 @@ fn resolve_vlan(
             }
         }
     }
-    best.map(|(n, _)| VlanInfo {
-        id: n.vlan_id.unwrap_or(0),
-        name: n.name.clone(),
-        domain_name: n.domain_name.clone(),
+    best.map(|(n, _)| n)
+}
+
+/// `None` when the matched network has no 802.1Q id: an unknown VLAN is not id 0.
+fn vlan_info(network: &NetworkInfo) -> Option<VlanInfo> {
+    Some(VlanInfo {
+        id: network.vlan_id?,
+        name: network.name.clone(),
+        domain_name: network.domain_name.clone(),
     })
 }
 
 fn resolve_domain(
     cfg: &ClientsConfig,
     default_domain: &str,
-    vlan: Option<&VlanInfo>,
-    by_id: &HashMap<&str, &NetworkInfo>,
-    draft: &DraftUnifi,
+    network: Option<&NetworkInfo>,
 ) -> String {
     if cfg.local_domain_mode == LocalDomainMode::Config {
         return default_domain.to_owned();
     }
-    if let Some(v) = vlan
-        && let Some(d) = &v.domain_name
-        && let Ok(n) = normalise_domain(d)
-        && !n.is_empty()
-    {
-        return n;
-    }
-    if let Some(nid) = &draft.network_id
-        && let Some(n) = by_id.get(nid.as_str())
+    if let Some(n) = network
         && let Some(d) = &n.domain_name
         && let Ok(norm) = normalise_domain(d)
         && !norm.is_empty()

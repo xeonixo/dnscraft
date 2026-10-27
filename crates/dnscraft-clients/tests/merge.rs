@@ -474,6 +474,63 @@ fn manual_cidr_beats_unifi() {
 }
 
 #[test]
+fn missing_vlan_id_is_unknown_not_zero() {
+    // GC9: a joined network without `vlanId` must not surface VLAN 0.
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(80_000);
+    let networks = [NetworkInfo {
+        id: "n-lan".into(),
+        name: "LAN".into(),
+        vlan_id: None,
+        ipv4_prefix: Some(IpNet::from_str("192.0.2.0/24").unwrap()),
+        ipv6_prefix: None,
+        domain_name: Some("lan.example.com".into()),
+    }];
+    let out = build(
+        &[],
+        &[obs(
+            "pc",
+            "Pc",
+            &["192.0.2.8"],
+            Some("n-lan"),
+            Some(now),
+            true,
+        )],
+        &networks,
+        &State::default(),
+        &cfg(),
+        now,
+    )
+    .unwrap();
+    let pc = out.lookup.by_ip(ip("192.0.2.8")).unwrap();
+    assert!(pc.vlan.is_none(), "missing vlanId must not report VLAN 0");
+    // The network's DHCP domain still applies.
+    assert_eq!(pc.local_domain, "lan.example.com");
+}
+
+#[test]
+fn hard_cap_counts_indexed_addresses_not_just_rows() {
+    // GC10: 5 001 clients × 2 addresses is below the row cap but above the
+    // combined client/address cap.
+    let now = SystemTime::UNIX_EPOCH;
+    let mut obs_list = Vec::with_capacity(5_001);
+    for i in 0..5_001u32 {
+        let hi = ((i >> 8) & 0xff) as u8;
+        let lo = (i & 0xff) as u8;
+        obs_list.push(UnifiObservation {
+            id: id(&format!("addr-{i}")),
+            display_name: format!("Host{i}"),
+            macs: Vec::new(),
+            addresses: vec![IpAddr::from([10, 0, hi, lo]), IpAddr::from([11, 0, hi, lo])],
+            network_id: None,
+            last_seen: Some(now),
+            online: true,
+        });
+    }
+    let err = build(&[], &obs_list, &[], &State::default(), &cfg(), now).unwrap_err();
+    assert_eq!(err.code(), "clients.too_many");
+}
+
+#[test]
 fn too_many_clients_hard_cap() {
     let now = SystemTime::UNIX_EPOCH;
     let mut obs_list = Vec::new();

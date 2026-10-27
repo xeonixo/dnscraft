@@ -105,16 +105,16 @@ approval before Phase 0 code.
 - [ ] **GC7** 🟠 [code] `[clients]`/`[clients.unifi]` keys (`enabled`, `base_url`, `site_id`,
       TLS mode, `local_domain_mode`, `offline_retain`, `ipv6_address_ttl`, `classic_clients`,
       `tls_pin_sha256`) are not mapped anywhere in the product. *(api config_routes.rs:60)*
-- [ ] **GC8** 🟡 [code] `local_domains()` always inserts the config fallback domain even when
+- [x] **GC8** 🟡 [code] `local_domains()` always inserts the config fallback domain even when
       unused. *(merge.rs:183, 374-384)*
-- [ ] **GC9** 🟡 [code] Missing `vlanId` yields `VlanInfo { id: 0, … }` instead of unknown. *(merge.rs:447-455)*
-- [ ] **GC10** 🟡 [code] Memory cap counts rows, not indexed addresses. *(merge.rs:160-165)*
-- [ ] **GC11** 🟡 [code] `clients.ip.conflict` counter computed but not surfaced. *(merge.rs:60-66, engine.rs:36-53)*
-- [ ] **GC12** 🟡 [code] No sync success/failure counters exposed. *(status.rs:6-29)*
+- [x] **GC9** 🟡 [code] Missing `vlanId` yields `VlanInfo { id: 0, … }` instead of unknown. *(merge.rs:447-455)*
+- [x] **GC10** 🟡 [code] Memory cap counts rows, not indexed addresses. *(merge.rs:160-165)*
+- [x] **GC11** 🟡 [code] `clients.ip.conflict` counter computed but not surfaced. *(merge.rs:60-66, engine.rs:36-53)*
+- [x] **GC12** 🟡 [code] No sync success/failure counters exposed. *(status.rs:6-29)*
 - [x] **GC13** 🟡 [code] Link-local `fe80::/10` exclusion applies only to UniFi observations, not
       manual entries. *(merge.rs:516-518 vs 208-222)*
 - [x] **GC14** 🟡 [code] URL validation accepts malformed hosts/ports and paths. *(config.rs:305-331)*
-- [ ] **GC15** 🟡 [code] Manual CIDR lookup is O(n), not O(1). *(lookup.rs:109-121)*
+- [x] **GC15** 🟡 [code] Manual CIDR lookup is O(n), not O(1). *(lookup.rs:109-121)*
 
 ## TLS (`SPEC-tls.md` ↔ `crates/dnscraft-tls`)
 

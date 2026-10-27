@@ -238,6 +238,14 @@ the CL15 follow-up).
 
 ## Log
 
+- 2026-10-27 — **clients gaps GC8/GC9/GC10/GC11/GC12/GC15.** `local_domains()` omits the unused
+  fallback domain; a missing `vlanId` yields `vlan: None` (not id 0) while the DHCP domain still
+  resolves; the memory cap counts indexed addresses in addition to rows; `ip_conflicts` +
+  sync success/failure counters are surfaced in `ClientsStatus`; manual CIDR lookup is a
+  per-family prefix index (longest-first, ≤33/129 probes, precedence unchanged). Gates:
+  `fmt --check` clean, `clippy -p dnscraft-clients --all-targets` clean,
+  `cargo test -p dnscraft-clients` 130 passed / 0 failed.
+
 - 2026-10-27 — **control-api gaps GA2/GA3/GA4.** `GET /auth/tokens` (list metadata, never
   plaintext), `DELETE /auth/tokens/{id}` (revoke → 404 `auth.unknown_token` on unknown id), and
   `GET /audit` (paginated, redacted, admin-only) are mounted. Token list/revoke join minting as

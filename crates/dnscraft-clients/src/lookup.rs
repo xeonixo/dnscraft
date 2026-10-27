@@ -26,8 +26,8 @@ pub struct ClientLookup {
     clients: Arc<[Arc<ClientInfo>]>,
     /// Manual single-IP entries.
     by_manual_ip: HashMap<IpAddr, u32>,
-    /// Manual CIDRs, longest prefix first.
-    cidrs: Vec<(IpNet, u32)>,
+    /// Manual CIDRs keyed by (prefix length, masked network).
+    cidrs: CidrIndex,
     /// UniFi addresses (after IP-conflict resolution).
     by_unifi_ip: HashMap<IpAddr, u32>,
     /// Lower-cased FQDN → client index.
@@ -36,6 +36,61 @@ pub struct ClientLookup {
     by_bare: HashMap<String, u32>,
     /// Parent domains currently in use (sorted, unique).
     local_domains: Arc<[String]>,
+}
+
+/// Longest-prefix manual CIDR index.
+///
+/// Entries are keyed by `(prefix length, masked network)` per address family,
+/// so a lookup probes at most 33 (IPv4) / 129 (IPv6) hashes instead of scanning
+/// every manual CIDR.
+#[derive(Clone, Debug, Default)]
+struct CidrIndex {
+    v4: HashMap<(u8, u32), u32>,
+    v6: HashMap<(u8, u128), u32>,
+}
+
+impl CidrIndex {
+    /// First insertion wins, matching config order for duplicate networks.
+    fn insert(&mut self, net: IpNet, client: u32) {
+        match net {
+            IpNet::V4(n) => {
+                self.v4
+                    .entry((n.prefix_len(), u32::from(n.network())))
+                    .or_insert(client);
+            }
+            IpNet::V6(n) => {
+                self.v6
+                    .entry((n.prefix_len(), u128::from(n.network())))
+                    .or_insert(client);
+            }
+        }
+    }
+
+    /// Returns the client owning the longest matching manual CIDR.
+    fn get(&self, ip: IpAddr) -> Option<u32> {
+        match ip {
+            IpAddr::V4(v4) => {
+                if self.v4.is_empty() {
+                    return None;
+                }
+                let raw = u32::from(v4);
+                (0u32..=32).rev().find_map(|len| {
+                    let mask = u32::MAX.checked_shl(32 - len).unwrap_or(0);
+                    self.v4.get(&(len as u8, raw & mask)).copied()
+                })
+            }
+            IpAddr::V6(v6) => {
+                if self.v6.is_empty() {
+                    return None;
+                }
+                let raw = u128::from(v6);
+                (0u32..=128).rev().find_map(|len| {
+                    let mask = u128::MAX.checked_shl(128 - len).unwrap_or(0);
+                    self.v6.get(&(len as u8, raw & mask)).copied()
+                })
+            }
+        }
+    }
 }
 
 impl ClientLookup {
@@ -49,10 +104,14 @@ impl ClientLookup {
         by_bare: HashMap<String, u32>,
         local_domains: Arc<[String]>,
     ) -> Self {
+        let mut cidr_index = CidrIndex::default();
+        for (net, idx) in cidrs {
+            cidr_index.insert(net, idx);
+        }
         Self {
             clients,
             by_manual_ip,
-            cidrs,
+            cidrs: cidr_index,
             by_unifi_ip,
             by_fqdn,
             by_bare,
@@ -85,7 +144,7 @@ impl ClientLookup {
         Self {
             clients: Arc::from([]),
             by_manual_ip: HashMap::new(),
-            cidrs: Vec::new(),
+            cidrs: CidrIndex::default(),
             by_unifi_ip: HashMap::new(),
             by_fqdn: HashMap::new(),
             by_bare: HashMap::new(),
@@ -110,10 +169,8 @@ impl ClientLookup {
         if let Some(&idx) = self.by_manual_ip.get(&ip) {
             return self.clients.get(idx as usize).cloned();
         }
-        for (net, idx) in &self.cidrs {
-            if net.contains(&ip) {
-                return self.clients.get(*idx as usize).cloned();
-            }
+        if let Some(idx) = self.cidrs.get(ip) {
+            return self.clients.get(idx as usize).cloned();
         }
         if let Some(&idx) = self.by_unifi_ip.get(&ip) {
             return self.clients.get(idx as usize).cloned();

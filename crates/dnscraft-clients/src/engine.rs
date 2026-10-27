@@ -21,7 +21,7 @@ use crate::config::{ClientsConfig, UnifiConfig};
 use crate::error::ClientsError;
 use crate::gateway::GatewayClient;
 use crate::lookup::ClientLookup;
-use crate::merge::{self, NetworkInfo, UnifiObservation};
+use crate::merge::{self, MergeStats, NetworkInfo, UnifiObservation};
 use crate::state::State;
 use crate::status::ClientsStatus;
 use crate::sync::{self, SyncResult};
@@ -45,6 +45,8 @@ pub struct SyncReport {
     pub client_count: usize,
     /// Classic error `code()` when Integration still succeeded.
     pub classic_error: Option<&'static str>,
+    /// IP claims resolved by dropping a loser from the index during this merge.
+    pub ip_conflicts: u64,
     /// True when this fetch was discarded without install: UniFi config changed
     /// mid-flight, UniFi was disabled, or a newer fetch already installed.
     ///
@@ -168,7 +170,7 @@ impl ClientEngine {
             None
         });
 
-        let (lookup, state, obs, nets, from_cache) = if let Some(payload) = cached {
+        let (lookup, state, obs, nets, from_cache, ip_conflicts) = if let Some(payload) = cached {
             if config.unifi.enabled {
                 match merge::build(
                     &config.manual,
@@ -184,6 +186,7 @@ impl ClientEngine {
                         payload.observations,
                         payload.networks,
                         true,
+                        built.stats.ip_conflicts,
                     ),
                     Err(e) => {
                         warn!(
@@ -198,7 +201,14 @@ impl ClientEngine {
                             &config,
                             now,
                         )?;
-                        (built.lookup, built.state, Vec::new(), Vec::new(), false)
+                        (
+                            built.lookup,
+                            built.state,
+                            Vec::new(),
+                            Vec::new(),
+                            false,
+                            built.stats.ip_conflicts,
+                        )
                     }
                 }
             } else {
@@ -210,11 +220,25 @@ impl ClientEngine {
                 prev.last_unifi.clear();
                 prev.ipv6_last_seen.clear();
                 let built = merge::build(&config.manual, &[], &[], &prev, &config, now)?;
-                (built.lookup, built.state, Vec::new(), Vec::new(), false)
+                (
+                    built.lookup,
+                    built.state,
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                    built.stats.ip_conflicts,
+                )
             }
         } else {
             let built = merge::build(&config.manual, &[], &[], &State::default(), &config, now)?;
-            (built.lookup, built.state, Vec::new(), Vec::new(), false)
+            (
+                built.lookup,
+                built.state,
+                Vec::new(),
+                Vec::new(),
+                false,
+                built.stats.ip_conflicts,
+            )
         };
 
         let generation = 1u64;
@@ -239,6 +263,9 @@ impl ClientEngine {
             last_error: None,
             poll_interval: config.unifi.poll_interval,
             generation,
+            ip_conflicts,
+            sync_successes: 0,
+            sync_failures: 0,
         };
 
         let inner = Arc::new(Inner {
@@ -410,6 +437,7 @@ impl ClientEngine {
         // Build *before* swapping config so a TooMany / domain failure cannot
         // leave a broken config active for later polls.
         let built = merge::build(&config.manual, &obs, &nets, &prev, &config, now)?;
+        self.record_merge_stats(&built.stats);
 
         let unifi_changed = {
             let old = self
@@ -498,6 +526,8 @@ impl ClientEngine {
             prev.last_unifi.clear();
             prev.ipv6_last_seen.clear();
             let built = merge::build(&cfg.manual, &[], &[], &prev, &cfg, now)?;
+            self.record_merge_stats(&built.stats);
+            let ip_conflicts = built.stats.ip_conflicts;
             let rebuilt = self.install_snapshot(built.lookup, built.state, &[], &[], true);
             let seq = self.inner.next_fetch_seq.load(Ordering::Relaxed);
             self.inner.installed_seq.store(seq, Ordering::Relaxed);
@@ -509,6 +539,7 @@ impl ClientEngine {
                 rebuilt,
                 client_count: self.lookup().len(),
                 classic_error: None,
+                ip_conflicts,
                 superseded: false,
             });
         }
@@ -613,6 +644,7 @@ impl ClientEngine {
             rebuilt: false,
             client_count: self.lookup().len(),
             classic_error: None,
+            ip_conflicts: 0,
             superseded: true,
         }
     }
@@ -639,6 +671,7 @@ impl ClientEngine {
 
     fn apply_sync_result(&self, result: SyncResult) -> SyncReport {
         let classic_err = result.classic_error.as_ref().map(|e| e.code());
+        let stats = result.merge.stats;
         let rebuilt = self.install_snapshot(
             result.merge.lookup,
             result.merge.state,
@@ -646,6 +679,7 @@ impl ClientEngine {
             &result.networks,
             false,
         );
+        self.record_merge_stats(&stats);
         self.persist_cache();
         self.clear_backoff();
         self.mark_success(classic_err);
@@ -654,6 +688,7 @@ impl ClientEngine {
             rebuilt,
             client_count: self.lookup().len(),
             classic_error: classic_err,
+            ip_conflicts: stats.ip_conflicts,
             superseded: false,
         }
     }
@@ -759,8 +794,21 @@ impl ClientEngine {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         st.last_success = Some(now);
         st.stale = false;
+        st.sync_successes += 1;
         // Classic soft-failure is recorded but does not mark the whole sync stale.
         st.last_error = classic_error;
+    }
+
+    fn record_merge_stats(&self, stats: &MergeStats) {
+        if stats.ip_conflicts == 0 {
+            return;
+        }
+        let mut st = self
+            .inner
+            .status
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        st.ip_conflicts = st.ip_conflicts.saturating_add(stats.ip_conflicts);
     }
 
     fn on_sync_error(&self, err: &ClientsError) {
@@ -771,6 +819,7 @@ impl ClientEngine {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         st.stale = true;
         st.last_error = Some(err.code());
+        st.sync_failures += 1;
 
         if let ClientsError::HttpStatus { status, .. } = err
             && (*status == 429 || *status >= 500)
