@@ -27,8 +27,8 @@ use serde_json::{Value, json};
 
 use crate::Secret;
 use crate::audit::sha256_hex;
-use crate::clock::Clock;
 use crate::error::ControlApiError;
+use dnscraft_common::clock::Clock;
 use dnscraft_common::clock::unix_seconds;
 
 /// Certificate validity: one year.
@@ -1075,7 +1075,7 @@ mod tests {
     use rustls::pki_types::{ServerName, UnixTime};
 
     use super::*;
-    use crate::clock::ManualClock;
+    use dnscraft_common::clock::ManualClock;
 
     /// A unique, self-cleaning temporary directory.
     struct TempDir(PathBuf);

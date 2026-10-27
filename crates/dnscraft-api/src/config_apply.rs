@@ -1184,9 +1184,9 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::*;
-    use crate::clock::ManualClock;
     use crate::modules::{ApplyFiltering, ModuleFuture};
     use crate::storage::Db;
+    use dnscraft_common::clock::ManualClock;
 
     #[tokio::test]
     async fn audited_mutation_rolls_back_when_the_audit_insert_fails() {

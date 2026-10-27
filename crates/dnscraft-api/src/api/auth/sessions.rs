@@ -244,8 +244,8 @@ fn hash_session_id(session_id: &str) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::clock::ManualClock;
     use crate::storage::{Db, db_err};
+    use dnscraft_common::clock::ManualClock;
     use std::sync::Arc;
     use std::time::SystemTime;
 

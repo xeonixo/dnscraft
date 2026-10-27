@@ -435,7 +435,7 @@ mod tests {
     use std::time::SystemTime;
 
     use super::*;
-    use crate::clock::ManualClock;
+    use dnscraft_common::clock::ManualClock;
 
     fn clock() -> Arc<ManualClock> {
         Arc::new(ManualClock::new(SystemTime::UNIX_EPOCH))

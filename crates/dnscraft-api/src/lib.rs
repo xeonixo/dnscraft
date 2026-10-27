@@ -18,7 +18,6 @@
 
 mod api;
 mod audit;
-mod clock;
 mod cluster;
 mod cluster_status;
 mod config;
@@ -42,7 +41,6 @@ pub use api::auth::{
 };
 pub use api::rate_limit::{DEFAULT_MAX_TRACKED_SOURCES, RateLimiter};
 pub use audit::{Audit, ConfigChangeRecord};
-pub use clock::{Clock, ManualClock, SystemClock};
 pub use cluster::{
     ClusterRuntime, ClusterRuntimeOptions, ConfigWriteExecutor, QueryLogIngest, QueryLogOutbox,
     StateAuthApplier, StateRuntimeApplier, SyncedConfigApplier, TlsCertInstaller, backfill_logs,
@@ -58,6 +56,7 @@ pub use config::{
 };
 pub use config_apply::{ConfigActor, ConfigService, RollbackOutcome, SharedConfigService};
 pub use dnscraft_cluster::{ClusterStore, OfflineWriteQueue};
+pub use dnscraft_common::clock::{Clock, ManualClock, SystemClock};
 pub use dnscraft_common::secret::Secret;
 pub use error::ControlApiError;
 pub use mcp_backend::{McpBackendInner, mcp_backend_inner};

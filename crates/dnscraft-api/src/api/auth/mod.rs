@@ -406,9 +406,9 @@ mod tests {
 
     use super::*;
     use crate::Secret;
-    use crate::clock::ManualClock;
     use crate::config::AuthConfig;
     use crate::storage::Db;
+    use dnscraft_common::clock::ManualClock;
 
     async fn auth_state() -> (AuthState, CreatedToken, OidcState) {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(SystemTime::UNIX_EPOCH));

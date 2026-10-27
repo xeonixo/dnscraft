@@ -8,8 +8,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::db_err;
 use super::migrations::{migrate, schema_version};
-use crate::clock::Clock;
 use crate::error::ControlApiError;
+use dnscraft_common::clock::Clock;
 use dnscraft_common::clock::unix_seconds;
 
 /// A handle to the control-api SQLite database.
@@ -371,7 +371,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::*;
-    use crate::clock::{ManualClock, SystemClock};
+    use dnscraft_common::clock::{ManualClock, SystemClock};
 
     fn temp_db_path() -> PathBuf {
         let nanos = SystemTime::now()

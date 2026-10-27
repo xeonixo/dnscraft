@@ -122,12 +122,6 @@ impl ApiClock for BridgeClock {
     fn now(&self) -> SystemTime {
         Self::now(self)
     }
-}
-
-impl FilterClock for BridgeClock {
-    fn now(&self) -> SystemTime {
-        Self::now(self)
-    }
 
     fn tick_notify(&self) -> Option<Arc<Notify>> {
         Some(Arc::clone(&self.tick))

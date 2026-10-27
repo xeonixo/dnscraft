@@ -18,10 +18,10 @@ use axum::http::{HeaderMap, Method};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-use crate::clock::Clock;
 use crate::config::RateLimitConfig;
 use crate::error::ControlApiError;
 use crate::server::AppState;
+use dnscraft_common::clock::Clock;
 use dnscraft_common::clock::unix_seconds;
 
 /// Default maximum number of distinct sources tracked before LRU eviction.
@@ -297,7 +297,7 @@ pub(crate) async fn rate_limit(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::clock::ManualClock;
+    use dnscraft_common::clock::ManualClock;
     use std::time::{Duration, SystemTime};
 
     fn cfg(per_second: u32, burst_factor: u32) -> RateLimitConfig {

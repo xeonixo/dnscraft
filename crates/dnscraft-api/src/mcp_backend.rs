@@ -31,13 +31,13 @@ use time::format_description::well_known::Rfc3339;
 use crate::api::auth::roles::Scope;
 use crate::api::query_log_routes::parse_timestamp;
 use crate::audit::Audit;
-use crate::clock::Clock;
 use crate::config_apply::{ConfigActor, ConfigService, MutationAudit};
 use crate::error::ControlApiError;
 use crate::query_log::{Order, OrderBy, QueryLog, QueryLogFilter};
 use crate::server::AppState;
 use crate::stats::TopBy;
 use crate::tls::TlsStatusProvider;
+use dnscraft_common::clock::Clock;
 
 /// Master broadcast handle shared with [`AppState`](crate::AppState).
 ///
@@ -211,7 +211,7 @@ pub fn mcp_backend_for_test(query_log: Option<Arc<QueryLog>>) -> Arc<dyn McpBack
         tokens: None,
         audit: None,
         config: None,
-        clock: Arc::new(crate::clock::SystemClock),
+        clock: Arc::new(dnscraft_common::clock::SystemClock),
         tls: None,
         resolver_cache_size: Arc::new(AtomicU64::new(0)),
         node_id: "test".to_owned(),

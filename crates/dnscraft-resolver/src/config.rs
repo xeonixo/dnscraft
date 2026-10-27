@@ -10,10 +10,10 @@ use std::time::Duration;
 use dnscraft_proto::Name;
 use serde::{Deserialize, Serialize};
 
-use crate::clock::{Clock, SystemClock};
 use crate::dnssec::TrustAnchors;
 use crate::error::ForwardZoneIdError;
 use crate::hints::default_root_hints;
+use dnscraft_common::clock::{Clock, SystemClock};
 
 const MAX_FORWARD_ZONE_ID: usize = 64;
 

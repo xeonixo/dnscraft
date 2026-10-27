@@ -1433,20 +1433,24 @@ mod tests {
 
     #[test]
     fn ttl_decreases_with_the_manual_clock() {
-        let clock = crate::clock::ManualClock::new(std::time::SystemTime::now());
+        let clock = dnscraft_common::clock::ManualClock::new(std::time::SystemTime::now());
         let cache = Cache::new(usize::MAX);
         let (q, m) = simple("www.example.com.", 100);
         put(
             &cache,
             &q,
             &m,
-            crate::clock::Clock::instant(&clock),
+            dnscraft_common::clock::Clock::instant(&clock),
             0,
             86_400,
         );
-        let ttl_at = |clock: &crate::clock::ManualClock| {
+        let ttl_at = |clock: &dnscraft_common::clock::ManualClock| {
             cache
-                .lookup(&q, &Route::Recursive, crate::clock::Clock::instant(clock))
+                .lookup(
+                    &q,
+                    &Route::Recursive,
+                    dnscraft_common::clock::Clock::instant(clock),
+                )
                 .unwrap()
                 .message
                 .answers[0]
@@ -1460,7 +1464,11 @@ mod tests {
         clock.advance(Duration::from_secs(1));
         assert!(
             cache
-                .lookup(&q, &Route::Recursive, crate::clock::Clock::instant(&clock))
+                .lookup(
+                    &q,
+                    &Route::Recursive,
+                    dnscraft_common::clock::Clock::instant(&clock)
+                )
                 .is_none()
         );
     }

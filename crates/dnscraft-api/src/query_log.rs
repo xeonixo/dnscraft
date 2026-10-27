@@ -1369,7 +1369,7 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::clock::ManualClock;
+    use dnscraft_common::clock::ManualClock;
     use dnscraft_filtering::SetId;
     use dnscraft_policy::{DecisionTimings, ListenerId, ProfileId, SelectionCause, ViewId};
     use dnscraft_proto::{Class, Name, RecordType};

@@ -14,8 +14,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::clock::Clock;
 use crate::config::McpConfig;
+use dnscraft_common::clock::Clock;
 use dnscraft_common::clock::unix_seconds;
 
 /// Which rate-limit bucket a call falls into.
@@ -213,7 +213,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::*;
-    use crate::clock::ManualClock;
+    use dnscraft_common::clock::ManualClock;
 
     fn config(read: u32, write: u32, auth: u32, max_tracked_tokens: usize) -> McpConfig {
         McpConfig {

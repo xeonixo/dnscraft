@@ -13,7 +13,6 @@ use tower::service_fn;
 
 use crate::api::auth::{AuthState, LocalAccountStore, OidcState};
 use crate::api::rate_limit::RateLimiter;
-use crate::clock::{Clock, SystemClock};
 use crate::cluster_status::ClusterStatusProvider;
 use crate::config::{ControlApiConfig, RateLimitConfig, is_internal_bind};
 use crate::config_apply::ConfigService;
@@ -21,6 +20,7 @@ use crate::error::ControlApiError;
 use crate::mcp_backend::McpBackendInner;
 use crate::query_log::QueryLog;
 use crate::tls::{TlsAdmin, TlsStatus, TlsStatusProvider};
+use dnscraft_common::clock::{Clock, SystemClock};
 
 use dnscraft_cluster::{ClusterBroadcast, ClusterStore, OfflineWriteQueue, Role};
 use dnscraft_filtering::FilterEngine;

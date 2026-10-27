@@ -39,11 +39,11 @@ use tower::Service;
 
 use crate::auth::{self, AuthError};
 use crate::backend::McpBackend;
-use crate::clock::SystemClock;
 use crate::config::McpConfig;
 use crate::rate_limit::{BucketClass, TokenRateLimiter};
 use crate::tools::McpServer;
 use crate::tools::write;
+use dnscraft_common::clock::SystemClock;
 
 const VERSION_HEADER: &str = "MCP-Protocol-Version";
 const ORIGIN_HEADER: &str = "Origin";

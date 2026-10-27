@@ -1,13 +1,21 @@
 //! Injectable time source.
 use std::fmt;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
 
 /// Source of wall-clock time.
 pub trait Clock: Send + Sync + fmt::Debug {
     /// Current wall-clock time.
     fn now(&self) -> SystemTime;
+
+    /// Monotonic time (used for TTL expiry and RTT measurements).
+    ///
+    /// Defaults to [`Instant::now`]; [`ManualClock`] overrides it so tests can
+    /// advance it alongside the wall clock.
+    fn instant(&self) -> Instant {
+        Instant::now()
+    }
 
     /// Optional wake signal fired when time jumps (see [`ManualClock`]).
     /// Schedulers wait on this instead of a real sleep so tests can drive the
@@ -31,6 +39,7 @@ impl Clock for SystemClock {
 #[derive(Debug)]
 pub struct ManualClock {
     now: Mutex<SystemTime>,
+    instant: Mutex<Instant>,
     tick: Arc<Notify>,
 }
 
@@ -39,6 +48,7 @@ impl ManualClock {
     pub fn new(start: SystemTime) -> Self {
         Self {
             now: Mutex::new(start),
+            instant: Mutex::new(Instant::now()),
             tick: Arc::new(Notify::new()),
         }
     }
@@ -50,10 +60,18 @@ impl ManualClock {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *now += by;
+        drop(now);
+        let mut instant = self
+            .instant
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *instant += by;
         self.tick.notify_waiters();
     }
 
-    /// Sets the clock to an absolute time and wakes waiters.
+    /// Sets the wall clock to an absolute time and wakes waiters.
+    ///
+    /// Monotonic [`Clock::instant`] is unaffected (it cannot jump backwards).
     pub fn set(&self, to: SystemTime) {
         *self
             .now
@@ -67,6 +85,13 @@ impl Clock for ManualClock {
     fn now(&self) -> SystemTime {
         *self
             .now
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn instant(&self) -> Instant {
+        *self
+            .instant
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -138,6 +163,15 @@ mod tests {
         assert_eq!(clock.now(), start + Duration::from_secs(5));
         clock.set(SystemTime::UNIX_EPOCH);
         assert_eq!(clock.now(), SystemTime::UNIX_EPOCH);
+    }
+
+    #[test]
+    fn manual_clock_advances_instant() {
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let clock = ManualClock::new(start);
+        let i0 = clock.instant();
+        clock.advance(Duration::from_secs(5));
+        assert_eq!(clock.instant() - i0, Duration::from_secs(5));
     }
 
     #[test]

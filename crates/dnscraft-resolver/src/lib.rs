@@ -16,7 +16,6 @@
 //! - `clock`: injectable time for the cache and DNSSEC (Tasks 9, 11).
 
 mod cache;
-mod clock;
 mod config;
 pub mod dnssec;
 mod error;
@@ -48,8 +47,8 @@ use server_selection::ServerStats;
 use stats::Counters;
 use tokio::sync::Semaphore;
 
-pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{ForwardZone, ForwardZoneId, ResolverConfig};
+pub use dnscraft_common::clock::{Clock, ManualClock, SystemClock};
 pub use error::{ForwardZoneIdError, ResolveError, ResolverError};
 pub use hints::default_root_hints;
 pub use stats::ResolverStats;
