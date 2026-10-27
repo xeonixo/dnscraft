@@ -803,11 +803,39 @@ body {
         <div class="section-head">Regeln</div>
         <div class="group">
           <div class="row"><div class="main"><div class="domain">42 Regeln · 1 Liste</div><div class="meta">Standard-Blockliste</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
-          <div class="row"><div class="main"><b style="font-weight:500;color:var(--accent)">Regel hinzufügen</b><div class="meta">geführt (blockieren/erlauben) oder Roh-Editor</div></div></div>
+          <div class="row" onclick="openRuleSheet()" style="cursor:pointer"><div class="main"><b style="font-weight:500;color:var(--accent)">Regel hinzufügen</b><div class="meta">geführt (blockieren/erlauben) oder Roh-Editor</div></div></div>
         </div>
         <div class="footnote">Blocking-Mode und Dienste gelten pro Filtersatz; Regeln werden vor dem Speichern validiert.</div>
       </div>
     </section>
+
+    <div class="sheet-scrim" id="rule-sheet" hidden onclick="closeRuleSheet()">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <div class="grab"></div>
+        <h2>Regel hinzufügen</h2>
+        <div class="seg" role="tablist" aria-label="Modus" style="width:100%">
+          <button role="tab" aria-selected="true" style="flex:1">Geführt</button>
+          <button role="tab" aria-selected="false" style="flex:1">Roh-Editor</button>
+        </div>
+        <label>Typ</label>
+        <div class="seg" role="tablist" aria-label="Typ" style="width:100%">
+          <button role="tab" aria-selected="true" style="flex:1">Blockieren</button>
+          <button role="tab" aria-selected="false" style="flex:1">Erlauben</button>
+        </div>
+        <label for="rule-domain">Domain</label>
+        <div class="field"><input id="rule-domain" placeholder="ads.example.com"></div>
+        <div class="row" style="padding:14px 0 0;border:0">
+          <div class="main"><b style="font-weight:500">Subdomains einschließen</b><div class="meta">||domain^ · auch Unterdomains treffen</div></div>
+          <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
+        </div>
+        <label>Vorschau</label>
+        <div class="field" style="font-family:var(--font-mono);font-size:12.5px;color:var(--label-2)">||ads.example.com^</div>
+        <div class="actions">
+          <button class="btn-sec" onclick="closeRuleSheet()">Abbrechen</button>
+          <button class="btn-primary" onclick="closeRuleSheet()">Hinzufügen</button>
+        </div>
+      </div>
+    </div>
 
     <section class="screen" id="screen-listeners" hidden>
       <div class="content">
@@ -1310,23 +1338,61 @@ body {
         <p class="lead">Profile legen das Verhalten fest: Filter-Set, Pause, Schutz (SafeSearch, Rebind, AAAA) und Zeitpläne.</p>
         <div class="section-head">Profile</div>
         <div class="group">
-          <div class="row">
+          <div class="row" onclick="openProfile('Standard')" style="cursor:pointer">
             <div class="main"><div class="domain">Standard</div><div class="meta">Filter-Set „Standard" · SafeSearch aus · Rebind an</div></div>
             <span class="verdict allow">aktiv</span>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="row">
+          <div class="row" onclick="openProfile('Kinder')" style="cursor:pointer">
             <div class="main"><div class="domain">Kinder</div><div class="meta">Filter-Set „Kinder" · SafeSearch an · Rebind an</div></div>
             <span class="verdict allow">aktiv</span>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="row">
+          <div class="row" onclick="openProfile('Gäste')" style="cursor:pointer">
             <div class="main"><div class="domain">Gäste</div><div class="meta">Filter-Set „Gäste" · pausiert bis 18:00</div></div>
             <span class="verdict block">pausiert</span>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
         </div>
         <div class="footnote">Schutz-Einstellungen (Rebind-Ausnahmen, Forward-Zonen, Zeitpläne) öffnen sich im Detail.</div>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-profile-detail" hidden>
+      <div class="content">
+        <button class="back-link" onclick="showScreen('screen-profiles','Profile')">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 6 9 12 15 18"/></svg>
+          Profile
+        </button>
+        <div class="section-head">Profil „Kinder"</div>
+        <div class="group">
+          <div class="row"><div class="main"><b style="font-weight:500">Filter-Set</b></div><div class="domain">Kinder</div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+        </div>
+        <div class="section-head">Pause</div>
+        <div class="group">
+          <div class="row"><div class="main"><b style="font-weight:500">5 Minuten</b><div class="meta">Filterung vorübergehend deaktivieren</div></div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">1 Stunde</b></div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Bis zur Wiederaufnahme</b></div></div>
+        </div>
+        <div class="section-head">Zeitpläne</div>
+        <div class="group">
+          <div class="row"><div class="main"><div class="domain">Wochentags</div><div class="meta">Mo–Fr · 07:00–09:00 · Filter-Set „Standard"</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><div class="domain">Wochenende</div><div class="meta">Sa–So · ganztags · Filter-Set „Kinder"</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+          <div class="row"><div class="main"><b style="font-weight:500;color:var(--accent)">Zeitplan hinzufügen</b><div class="meta">Wochentage, Zeitfenster, Filter-Set</div></div></div>
+        </div>
+        <div class="section-head">Schutz</div>
+        <div class="group">
+          <div class="row"><div class="main"><b style="font-weight:500">SafeSearch</b><div class="meta">Google · Bing · YouTube</div></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Rebind-Schutz</b><div class="meta">private Antworten verwerfen</div></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><b style="font-weight:500">AAAA unterdrücken</b><div class="meta">nur IPv4-Antworten</div></div><label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Firefox-Canary</b><div class="meta">use-application-dns.net → NXDOMAIN</div></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><b style="font-weight:500">iCloud Private Relay</b><div class="meta">mask.icloud.com steuern</div></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
+        </div>
+        <div class="section-head">Forward-Zonen</div>
+        <div class="group">
+          <div class="row"><div class="main"><div class="domain">alle erlaubt</div><div class="meta">optional auf bestimmte Zonen einschränken</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
+        </div>
+        <div class="footnote">Zeitpläne wechseln das aktive Filter-Set in definierten Zeitfenstern.</div>
       </div>
     </section>
 
@@ -1424,6 +1490,20 @@ body {
             <span class="tag" style="color:var(--label-2);border-color:var(--separator)">manuell</span>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
+        </div>
+        <div class="section-head">UniFi-Integration</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Aktiviert</b><div class="meta">UniFi Network · lokale Integration API</div></div>
+            <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
+          </div>
+          <div class="row"><div class="main"><b style="font-weight:500">Gateway</b></div><div class="meta mono">https://192.0.2.1</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Site</b></div><div class="meta mono">default</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">API-Key</b><div class="meta">Env DNSCRAFT_UNIFI_API_KEY</div></div><div class="meta mono">••••••••</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">TLS-Pin</b></div><div class="meta mono">sha256:AB:CD:…</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Abfrage-Intervall</b></div><div class="meta">60 s</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Letzter Sync</b><div class="meta">vor 58 s · 37 Geräte · 2 Netzwerke</div></div><span class="verdict allow">ok</span></div>
+          <div class="row"><div class="main"><b style="font-weight:500;color:var(--accent)">Jetzt synchronisieren</b></div></div>
         </div>
         <div class="footnote">Quelle „UniFi" wird per Sync aktualisiert; Namen sind ungeprüfte Daten.</div>
       </div>
@@ -1720,6 +1800,14 @@ function openSet(name) {
     i.classList.toggle('active', i.dataset.target === 'screen-filter-sets');
   });
 }
+function openProfile(name) {
+  showScreen('screen-profile-detail', 'Profil „' + name + '"');
+  document.querySelectorAll('.nav-item').forEach(function (i) {
+    i.classList.toggle('active', i.dataset.target === 'screen-profiles');
+  });
+}
+function openRuleSheet() { document.getElementById('rule-sheet').hidden = false; }
+function closeRuleSheet() { document.getElementById('rule-sheet').hidden = true; }
 function openSheet() { document.getElementById('record-sheet').hidden = false; }
 function closeSheet() { document.getElementById('record-sheet').hidden = true; }
 function openFilterSheet() { document.getElementById('filter-sheet').hidden = false; }
