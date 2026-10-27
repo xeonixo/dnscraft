@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
 use dnscraft_api::{
-    AppState, Auth, AuthState, ClusterStore, Db, ManualClock as ApiClock, OfflineWriteQueue, Scope,
+    AppState, AuthState, ClusterStore, Db, ManualClock as ApiClock, OfflineWriteQueue, Scope,
     SessionStore, TokenStore,
 };
 use dnscraft_cluster::{EnqueueOutcome, OfflineWritesConfig, RelayedActor, Role, WriteRelay};
@@ -51,7 +51,7 @@ async fn harness(with_cluster: bool, with_queue: bool) -> Harness {
         .await
         .unwrap();
     let auth = AuthState::new(
-        Auth::new(SessionStore::new(db.clone(), IDLE, ABSOLUTE)),
+        SessionStore::new(db.clone(), IDLE, ABSOLUTE),
         TokenStore::new(db.clone(), MAX_TTL),
     );
     let tokens = TokenStore::new(db.clone(), MAX_TTL);

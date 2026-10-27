@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use dnscraft_api::{
-    AppState, ApplyFiltering, Audit, Auth, AuthState, ClusterRuntime, ClusterRuntimeOptions,
+    AppState, ApplyFiltering, Audit, AuthState, ClusterRuntime, ClusterRuntimeOptions,
     ClusterStatusHandle, ConfigActor, ConfigService, ConfigStore, ConfigWriteExecutor,
     ControlApiError, Db, LocalAccountStore, ManualClock as ApiClock, ModuleAppliers, ModuleFuture,
     OidcState, QueryLog, QueryLogIngest, QueryLogOutbox, SessionStore, StateAuthApplier,
@@ -660,7 +660,7 @@ fn oidc_state() -> OidcState {
 async fn auth_state(db: Db, with_local: bool) -> AuthState {
     let oidc = oidc_state();
     let state = AuthState::new(
-        Auth::new(SessionStore::new(db.clone(), IDLE, ABSOLUTE)),
+        SessionStore::new(db.clone(), IDLE, ABSOLUTE),
         TokenStore::new(db.clone(), MAX_TTL),
     )
     .with_oidc(&oidc);

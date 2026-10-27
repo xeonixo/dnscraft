@@ -21,8 +21,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
 use dnscraft_api::{
-    AppState, Audit, Auth, AuthState, Clock, ConfigActor, ConfigService, ConfigStore, Db,
-    ManualClock, ModuleAppliers, Scope, SessionStore, TokenStore, derive_protected_domains,
+    AppState, Audit, AuthState, Clock, ConfigActor, ConfigService, ConfigStore, Db, ManualClock,
+    ModuleAppliers, Scope, SessionStore, TokenStore, derive_protected_domains,
 };
 use dnscraft_filtering::{
     BlockMode, Clock as FilterClockTrait, DomainName, FilterConfig, FilterEngine, FilterSetConfig,
@@ -127,7 +127,7 @@ async fn harness_with(mcp: McpConfig, snapshot: Value, issuer: Option<&str>) -> 
         .await
         .unwrap();
     let auth = AuthState::new(
-        Auth::new(SessionStore::new(db.clone(), IDLE, ABSOLUTE)),
+        SessionStore::new(db.clone(), IDLE, ABSOLUTE),
         TokenStore::new(db.clone(), MAX_TTL),
     );
     let admin = TokenStore::new(db.clone(), MAX_TTL)
@@ -600,7 +600,7 @@ async fn internal_errors_do_not_leak_detail() {
         .await
         .unwrap();
     let auth = AuthState::new(
-        Auth::new(SessionStore::new(db.clone(), IDLE, ABSOLUTE)),
+        SessionStore::new(db.clone(), IDLE, ABSOLUTE),
         TokenStore::new(db.clone(), MAX_TTL),
     );
     let admin = TokenStore::new(db.clone(), MAX_TTL)

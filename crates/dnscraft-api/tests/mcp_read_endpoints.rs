@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
 use dnscraft_api::{
-    AppState, Audit, Auth, AuthState, ConfigService, ConfigStore, Db, ManualClock, ModuleAppliers,
-    Scope, SessionStore, TokenStore,
+    AppState, Audit, AuthState, ConfigService, ConfigStore, Db, ManualClock, ModuleAppliers, Scope,
+    SessionStore, TokenStore,
 };
 use dnscraft_filtering::{
     BlockMode, FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId,
@@ -134,7 +134,7 @@ async fn harness() -> Harness {
         SystemTime::UNIX_EPOCH + Duration::from_secs(NOW),
     ));
     let auth = AuthState::new(
-        Auth::new(SessionStore::new(db.clone(), IDLE, ABSOLUTE)),
+        SessionStore::new(db.clone(), IDLE, ABSOLUTE),
         TokenStore::new(db.clone(), MAX_TTL),
     );
     let tokens = TokenStore::new(db.clone(), MAX_TTL);

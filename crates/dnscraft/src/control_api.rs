@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dnscraft_api::{
-    AppState, Audit, Auth, AuthState, ConfigService, ControlApiTls, Db, EngineStatusProvider,
+    AppState, Audit, AuthState, ConfigService, ControlApiTls, Db, EngineStatusProvider,
     EngineTlsAdmin, LocalAccountStore, OidcState, QueryLog, SessionStore, SystemClock,
     TlsStatusProvider, TokenStore, mcp_backend_inner,
 };
@@ -105,7 +105,7 @@ pub(crate) async fn start(
         auth_config.session_absolute_timeout,
     );
     let tokens = TokenStore::new(db.clone(), auth_config.api_token_max_ttl);
-    let mut auth_state = AuthState::new(Auth::new(sessions), tokens);
+    let mut auth_state = AuthState::new(sessions, tokens);
     if auth_config.local_login_enabled {
         auth_state = auth_state.with_local_accounts(local_accounts.clone());
     }

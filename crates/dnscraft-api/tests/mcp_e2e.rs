@@ -16,7 +16,7 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 
 use dnscraft_api::{
-    AppState, Audit, Auth, AuthState, Clock as ApiClock, ConfigActor, ConfigService, ConfigStore,
+    AppState, Audit, AuthState, Clock as ApiClock, ConfigActor, ConfigService, ConfigStore,
     CreatedToken, Db, ModuleAppliers, QueryLog, QueryLogConfig, QueryLogFilter, Scope,
     SessionStore, TokenStore, derive_protected_domains, mcp_backend_for_test_writes,
 };
@@ -219,7 +219,7 @@ impl Harness {
         ));
         let tokens = TokenStore::new(db.clone(), MAX_TTL);
         let auth = AuthState::new(
-            Auth::new(SessionStore::new(db.clone(), IDLE, ABSOLUTE)),
+            SessionStore::new(db.clone(), IDLE, ABSOLUTE),
             tokens.clone(),
         );
         let admin = tokens

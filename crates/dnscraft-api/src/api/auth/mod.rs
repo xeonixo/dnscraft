@@ -84,7 +84,7 @@ pub struct AuthSnapshot {
 /// settings are optional handles used only to build an [`AuthSnapshot`].
 #[derive(Clone)]
 pub struct AuthState {
-    sessions: Auth,
+    sessions: SessionStore,
     tokens: TokenStore,
     local_accounts: Option<LocalAccountStore>,
     oidc: Arc<RwLock<Option<OidcSettings>>>,
@@ -96,7 +96,7 @@ pub struct AuthState {
 
 impl AuthState {
     /// Bundles the cookie-session and bearer-token stores.
-    pub fn new(mut sessions: Auth, mut tokens: TokenStore) -> Self {
+    pub fn new(mut sessions: SessionStore, mut tokens: TokenStore) -> Self {
         let epoch = Arc::new(AtomicU64::new(0));
         tokens.set_epoch(epoch.clone());
         sessions.set_epoch(epoch.clone());
@@ -132,7 +132,7 @@ impl AuthState {
     }
 
     /// The cookie-session middleware state.
-    pub fn sessions(&self) -> &Auth {
+    pub fn sessions(&self) -> &SessionStore {
         &self.sessions
     }
 
@@ -235,29 +235,6 @@ impl AuthState {
     }
 }
 
-/// Session/CSRF middleware state.
-#[derive(Clone)]
-pub struct Auth {
-    store: SessionStore,
-}
-
-impl Auth {
-    /// Wraps a [`SessionStore`] for use with [`auth_middleware`].
-    pub fn new(store: SessionStore) -> Self {
-        Self { store }
-    }
-
-    /// The session store backing this middleware.
-    pub fn store(&self) -> &SessionStore {
-        &self.store
-    }
-
-    /// Shares the auth state's session-invalidation epoch with the store.
-    pub(crate) fn set_epoch(&mut self, epoch: Arc<AtomicU64>) {
-        self.store.set_epoch(epoch);
-    }
-}
-
 /// Middleware enforcing cookie-session authentication and CSRF on `/api/v1`.
 ///
 /// Mount with `axum::middleware::from_fn_with_state(auth, auth_middleware)`.
@@ -265,7 +242,11 @@ impl Auth {
 /// [`Principal`]) and mutating methods additionally require a matching CSRF
 /// token. Cookie sessions never authenticate any other path family (for
 /// example `/mcp/v1`), and bearer-token requests are passed through untouched.
-pub async fn auth_middleware(State(auth): State<Auth>, mut req: Request, next: Next) -> Response {
+pub async fn auth_middleware(
+    State(auth): State<SessionStore>,
+    mut req: Request,
+    next: Next,
+) -> Response {
     let path = req.uri().path().to_owned();
     if !is_api_path(&path) {
         // Cookie sessions never authorize other path families (e.g. /mcp/v1).
@@ -279,7 +260,7 @@ pub async fn auth_middleware(State(auth): State<Auth>, mut req: Request, next: N
         // No credentials: A7 owns the 401 decision.
         return next.run(req).await;
     };
-    let principal = match auth.store.validate(&cookie).await {
+    let principal = match auth.validate(&cookie).await {
         Ok(principal) => principal,
         Err(err) => return err.into_response(),
     };
@@ -384,7 +365,7 @@ pub(crate) async fn logout(
     if let Some(auth) = state.auth_state()
         && let Some(cookie) = session_cookie_value(&headers)
     {
-        auth.sessions().store().logout(&cookie).await?;
+        auth.sessions().logout(&cookie).await?;
         // A logout invalidates auth state, so sub-nodes see a new epoch.
         auth.invalidate_sessions();
     }
@@ -437,11 +418,11 @@ mod tests {
             .unwrap();
 
         let auth = AuthState::new(
-            Auth::new(SessionStore::new(
+            SessionStore::new(
                 db,
                 Duration::from_secs(3600),
                 Duration::from_secs(12 * 3600),
-            )),
+            ),
             tokens,
         )
         .with_local_accounts(local)
@@ -500,13 +481,11 @@ mod tests {
         let (auth, _created, _) = auth_state().await;
         let session = auth
             .sessions()
-            .store()
             .create("alice".to_owned(), Role::Admin)
             .await
             .unwrap();
         assert!(
             auth.sessions()
-                .store()
                 .validate(session.cookie().expose())
                 .await
                 .is_ok()
@@ -516,7 +495,6 @@ mod tests {
         auth.invalidate_sessions();
         let error = auth
             .sessions()
-            .store()
             .validate(session.cookie().expose())
             .await
             .unwrap_err();

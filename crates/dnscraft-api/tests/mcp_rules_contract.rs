@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
 use dnscraft_api::{
-    AppState, Audit, Auth, AuthState, Clock, ConfigService, ConfigStore, Db, ManualClock,
-    ModuleAppliers, Scope, SessionStore, TokenStore,
+    AppState, Audit, AuthState, Clock, ConfigService, ConfigStore, Db, ManualClock, ModuleAppliers,
+    Scope, SessionStore, TokenStore,
 };
 use dnscraft_mcp::McpConfig;
 
@@ -43,7 +43,7 @@ async fn harness_with(mcp: McpConfig) -> Harness {
         .await
         .unwrap();
     let auth = AuthState::new(
-        Auth::new(SessionStore::new(db.clone(), IDLE, ABSOLUTE)),
+        SessionStore::new(db.clone(), IDLE, ABSOLUTE),
         TokenStore::new(db.clone(), MAX_TTL),
     );
     let token = TokenStore::new(db.clone(), MAX_TTL)

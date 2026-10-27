@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
 use dnscraft_api::{
-    AppState, Audit, Auth, ConfigChangeRecord, ConfigService, ConfigStore, ControlApiConfig,
+    AppState, Audit, ConfigChangeRecord, ConfigService, ConfigStore, ControlApiConfig,
     ControlApiError, Db, ManualClock, ModuleAppliers, Principal, QueryLog, QueryLogConfig,
     QueryLogFilter, RateLimitConfig, RateLimiter, Role, Scope, SessionStore, TokenStore,
     auth_middleware, serve,
@@ -345,7 +345,7 @@ async fn security_sql_injection_is_treated_as_data() {
 
 // --- threat: CSRF bypass ---------------------------------------------------
 
-fn csrf_router(auth: Auth) -> axum::Router {
+fn csrf_router(auth: SessionStore) -> axum::Router {
     async fn mutating(principal: Option<Extension<Principal>>) -> Json<Value> {
         Json(match principal {
             Some(Extension(principal)) => {
@@ -371,7 +371,7 @@ async fn security_csrf_bypass_is_rejected_for_cookie_sessions() {
     );
     let first = sessions.create("u1".into(), Role::Admin).await.unwrap();
     let second = sessions.create("u2".into(), Role::Viewer).await.unwrap();
-    let router = csrf_router(Auth::new(sessions));
+    let router = csrf_router(sessions);
     let cookie = format!("dnscraft_session={}", first.cookie().expose());
 
     let (status, body) = send(

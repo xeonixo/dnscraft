@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
 use dnscraft_api::{
-    AppState, Auth, AuthState, ControlApiError, Db, LocalAccountStore, ManualClock, Role,
-    SessionStore, TokenStore,
+    AppState, AuthState, ControlApiError, Db, LocalAccountStore, ManualClock, Role, SessionStore,
+    TokenStore,
 };
 
 const IDLE: Duration = Duration::from_secs(60 * 60);
@@ -44,10 +44,7 @@ async fn db(clock: Arc<ManualClock>) -> Db {
 async fn setup(clock: Arc<ManualClock>) -> (axum::Router, LocalAccountStore, SessionStore, Db) {
     let db = db(clock).await;
     let sessions = SessionStore::new(db.clone(), IDLE, ABSOLUTE);
-    let auth = AuthState::new(
-        Auth::new(sessions.clone()),
-        TokenStore::new(db.clone(), MAX_TTL),
-    );
+    let auth = AuthState::new(sessions.clone(), TokenStore::new(db.clone(), MAX_TTL));
     let local = LocalAccountStore::new(db.clone(), MAX_ATTEMPTS, WINDOW);
     local.upsert("admin", PASSWORD, Role::Admin).await.unwrap();
     let app = AppState::new()

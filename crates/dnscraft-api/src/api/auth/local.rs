@@ -388,7 +388,7 @@ pub(crate) async fn local_login(
         .clone();
     let sessions = state
         .auth_state()
-        .map(|auth| auth.sessions().store().clone())
+        .map(|auth| auth.sessions().clone())
         .ok_or_else(|| ControlApiError::Internal {
             message: "session authentication is not configured".to_owned(),
         })?;

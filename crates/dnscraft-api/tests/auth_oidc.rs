@@ -31,8 +31,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
 use dnscraft_api::{
-    AppState, Auth, AuthConfig, AuthState, ControlApiError, Db, ManualClock, OidcState, Role,
-    Secret, SessionStore, TokenStore,
+    AppState, AuthConfig, AuthState, ControlApiError, Db, ManualClock, OidcState, Role, Secret,
+    SessionStore, TokenStore,
 };
 
 /// Fixed wall-clock instant used by the injected clock and the mock ID tokens.
@@ -445,10 +445,7 @@ async fn harness() -> Harness {
     let provider = MockProvider::start().await;
     let db = Db::open_in_memory(clock.clone()).await.unwrap();
     let sessions = SessionStore::new(db.clone(), IDLE, ABSOLUTE);
-    let auth = AuthState::new(
-        Auth::new(sessions.clone()),
-        TokenStore::new(db.clone(), MAX_TTL),
-    );
+    let auth = AuthState::new(sessions.clone(), TokenStore::new(db.clone(), MAX_TTL));
     let config = AuthConfig {
         oidc_enabled: true,
         oidc_issuer: provider.issuer.clone(),

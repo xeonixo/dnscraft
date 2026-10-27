@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
 use dnscraft_api::{
-    AppState, Auth, AuthState, Authenticated, ControlApiError, Db, ManualClock, Role, Scope,
+    AppState, AuthState, Authenticated, ControlApiError, Db, ManualClock, Role, Scope,
     SessionStore, SystemClock, TlsMode, TlsStatus, TlsStatusProvider, TokenStore, auth_middleware,
     rbac_middleware,
 };
@@ -40,7 +40,7 @@ async fn db(clock: Arc<ManualClock>) -> Db {
 
 fn auth_state(db: &Db) -> AuthState {
     AuthState::new(
-        Auth::new(SessionStore::new(db.clone(), IDLE, ABSOLUTE)),
+        SessionStore::new(db.clone(), IDLE, ABSOLUTE),
         TokenStore::new(db.clone(), MAX_TTL),
     )
 }
@@ -84,7 +84,7 @@ async fn post_req(router: &axum::Router, uri: &str, auth: Option<&str>) -> (Stat
 
 /// A router with one read and one write `/api/v1` route plus one `/mcp/v1`
 /// route, wrapped in the same two middleware layers the production router uses.
-fn rbac_router(app: AppState, sessions: Auth) -> axum::Router {
+fn rbac_router(app: AppState, sessions: SessionStore) -> axum::Router {
     async fn read(Extension(auth): Extension<Authenticated>) -> Json<Value> {
         principal_json(&auth)
     }
@@ -469,7 +469,6 @@ async fn session_role_still_authorizes_api_and_is_enforced_by_rbac() {
     let sessions = auth.sessions().clone();
     let viewer_session = auth
         .sessions()
-        .store()
         .create("u1".into(), Role::Viewer)
         .await
         .unwrap();
