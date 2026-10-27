@@ -34,8 +34,8 @@
 - [x] CL10 master: cluster CA gen (`0600`), join-token mint/hash (TTL, one-time), node registry
        (fingerprint, joined_at, last_seen, applied_config_version, revoke). Enroll endpoint → CL12.
 - [x] CL11 sub-node: key+CSR (`rcgen`), enroll, CA+node cert (in-process). mTLS connection → CL12.
-- [ ] CL12 transport: TLS 1.3 ring-only, HTTP/2, `GET /cluster/v1/stream` NDJSON, heartbeat, version
-       handshake; second internal mTLS listener (mirror of `router.rs:184` nest_service).
+- [x] CL12 transport: TLS 1.3 ring-only, HTTP/2, `GET /cluster/v1/stream` NDJSON, heartbeat, version
+       handshake; separate mTLS listener (own bind/port), mTLS chain + fingerprint + revoke check.
 
 ## Phase 3 — Config sync
 
@@ -73,7 +73,7 @@
 
 - [ ] Checkpoint 0 — Phase 0 spec reconciliation owner-approved.
 - [ ] Checkpoint 1 — control-api hooks/admin/data-model green (`cargo test -p dnscraft-api`).
-- [ ] Checkpoint 2 — join + mTLS transport (loopback 1–3 sub-nodes).
+- [x] Checkpoint 2 — join + mTLS transport (loopback, happy path + wrong-CA/missing/unregistered/revoked).
 - [ ] Checkpoint 3 — config sync converges under partition.
 - [ ] Checkpoint 4 — relay exactly-once; queue survives restart; no role escalation.
 - [ ] Checkpoint 5 — dedupe/backfill/gap; stats node_id.
