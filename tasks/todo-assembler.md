@@ -10,7 +10,7 @@
 - [ ] **AS0** `ControlApiConfig` + `McpConfig` gain `Deserialize` (incl. nested `auth`/`rate_limit`/
       `query_log`/`mcp` blocks), keeping the existing `Serialize`. Uniqueness of `control_api.*`/
       `mcp.*` codes unchanged.
-- [ ] **AS1** Per D1: add `serde` to `ResolverConfig`, `FilterConfig`, `ClientsConfig`, `TlsConfig`,
+- [x] **AS1** Per D1: add `serde` to `ResolverConfig`, `FilterConfig`, `ClientsConfig`, `TlsConfig`,
       `PolicyConfig` and the listeners config structs (or, if D1 = mirror, add the JSON mirror layer).
       Round-trip tests (Rust → JSON → Rust) per config.
 - [ ] **AS2** Extend the binary `Config` with `data_dir` + `[resolver]`/`[filtering]`/`[clients]`/
