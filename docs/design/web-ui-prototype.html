@@ -440,6 +440,57 @@ body {
 #pal-list { margin-top: 10px; max-height: 50vh; overflow-y: auto; }
 .pal-opt { cursor: pointer; min-height: 44px; }
 .pal-opt[aria-selected="true"] { background: var(--accent-fill); color: var(--accent); }
+/* API-Explorer */
+.x-controls { display: flex; flex-direction: column; gap: 10px; }
+.x-filters { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
+.x-filters .seg { flex-wrap: wrap; }
+.x-role { min-width: 180px; }
+.x-role .flabel { margin-bottom: 4px; }
+.x-group { display: flex; flex-direction: column; gap: 6px; }
+.x-group .section-head { padding-top: 0; }
+.x-group .group { min-width: 0; }
+.x-item { min-width: 0; }
+.x-item + .x-item { border-top: 1px solid var(--separator); }
+.x-head {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 12px 16px;
+  background: none; border: 0; color: var(--label); font: inherit; text-align: left; cursor: pointer;
+}
+.x-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.x-head .main { flex: 1; min-width: 0; }
+.x-path { overflow-wrap: anywhere; word-break: break-word; font-size: 13.5px; }
+.x-head .meta { overflow-wrap: anywhere; }
+.x-tags { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: 0 0 auto; }
+.x-st-proposed { border-style: dashed; color: var(--warn); border-color: var(--warn); }
+.x-chev { color: var(--label-3); flex: 0 0 auto; transition: transform 0.15s; font-size: 16px; line-height: 1; }
+.x-head[aria-expanded="true"] .x-chev { transform: rotate(90deg); }
+.x-detail { padding: 0 16px 16px 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.x-detail[hidden] { display: none; }
+.x-lbl { font-size: 12.5px; color: var(--label-2); font-weight: 500; }
+.x-lbl-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.x-pre {
+  margin: 4px 0 0 0; padding: 10px 12px; max-width: 100%; box-sizing: border-box;
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.5; color: var(--label);
+  background: var(--surface-2); border: 1px solid var(--separator); border-radius: var(--r-ctl);
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+}
+.x-codes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.x-codes code {
+  font-family: var(--font-mono); font-size: 11.5px; overflow-wrap: anywhere;
+  background: var(--surface-2); border: 1px solid var(--separator); border-radius: 6px; padding: 2px 6px;
+}
+.x-note { font-size: 12.5px; color: var(--label-2); margin: 4px 0 0 0; overflow-wrap: anywhere; }
+.x-copy { flex: 0 0 auto; }
+@media (max-width: 520px) {
+  .x-role { min-width: 0; flex: 1 1 100%; }
+  .x-filters .seg { display: flex; width: 100%; }
+  .x-filters .seg button { flex: 1 1 auto; padding: 5px 6px; }
+  .x-head { padding: 12px 12px; gap: 10px; }
+  .x-detail { padding: 0 12px 14px 12px; }
+  .x-head .rr-type { width: 40px; }
+}
+.x-group .section-head { padding: 0; margin: 0; }
+.x-path, .x-head .meta { display: block; }
+.x-head .main { display: block; }
 </style>
 
 </head>
@@ -2619,53 +2670,41 @@ body {
 
     <section class="screen" id="screen-api-explorer" hidden>
       <div class="content">
-        <p class="lead">Referenz aller REST-Endpunkte und MCP-Tools mit Rollen — entspricht docs/API-REFERENCE.md.</p>
-        <div class="search">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input type="search" placeholder="Endpunkt oder Tool durchsuchen" aria-label="Endpunkt durchsuchen">
+        <p class="lead">Referenz aller REST-Endpunkte und MCP-Tools aus SPEC-control-api.md und SPEC-mcp.md. Die Rolle ist die minimal nötige Rolle; admin darf alles, was viewer darf. Zeile antippen für Details und curl-Beispiel.</p>
+        <div class="x-controls">
+          <div class="search">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="search" id="x-q" placeholder="Pfad, Methode, Tool oder Bereich" aria-label="Endpunkt oder Tool durchsuchen" autocomplete="off">
+          </div>
+          <div class="x-filters">
+            <div class="seg" role="radiogroup" aria-label="Status filtern" id="x-status">
+              <button type="button" role="radio" aria-checked="true" data-status="all">Alle</button>
+              <button type="button" role="radio" aria-checked="false" data-status="implemented">Implementiert</button>
+              <button type="button" role="radio" aria-checked="false" data-status="proposed">Vorgeschlagen</button>
+              <button type="button" role="radio" aria-checked="false" data-status="mcp">MCP</button>
+            </div>
+            <div class="x-role">
+              <label class="flabel" for="x-role-sel">Rolle</label>
+              <div class="field"><select id="x-role-sel">
+                <option value="all">Alle Rollen</option>
+                <option value="public">public</option>
+                <option value="viewer">viewer</option>
+                <option value="admin">admin</option>
+                <option value="mcp:read">mcp:read</option>
+                <option value="mcp:write">mcp:write</option>
+              </select></div>
+            </div>
+          </div>
+          <p class="footnote" id="x-count" aria-live="polite"></p>
         </div>
-        <div class="section-head">Status · public</div>
-        <div class="group">
-          <div class="row"><span class="rr-type">GET</span><div class="main"><div class="mono">/api/v1/status</div><div class="meta">TLS-Modus, Fingerprint, Warnungen</div></div><span class="tag">public</span></div>
-          <div class="row"><span class="rr-type">GET</span><div class="main"><div class="mono">/healthz · /readyz</div><div class="meta">Liveness und Readiness</div></div><span class="tag">public</span></div>
+        <div id="x-groups"></div>
+        <div class="group" id="x-empty" hidden>
+          <div class="row">
+            <div class="main"><div>Keine Treffer</div><div class="meta">Suchbegriff oder Filter ändern.</div></div>
+            <button type="button" class="btn-sec" id="x-reset">Filter zurücksetzen</button>
+          </div>
         </div>
-        <div class="section-head">Konfiguration · admin</div>
-        <div class="group">
-          <div class="row"><span class="rr-type">GET</span><div class="main"><div class="mono">/api/v1/config</div><div class="meta">auch PUT · POST/DELETE für Versionen</div></div><span class="tag">admin</span></div>
-        </div>
-        <div class="section-head">DNS-Regelwerk · admin</div>
-        <div class="group">
-          <div class="row"><span class="rr-type">CRUD</span><div class="main"><div class="mono">/api/v1/config/policy/views</div><div class="meta">Zonen (Views) · Records · Auswahlschlüssel</div></div><span class="tag">admin</span></div>
-          <div class="row"><span class="rr-type">CRUD</span><div class="main"><div class="mono">/api/v1/config/policy/profiles</div><div class="meta">Profile · Filtersatz · Pause · Zeitpläne</div></div><span class="tag">admin</span></div>
-        </div>
-        <div class="section-head">Filterung · admin</div>
-        <div class="group">
-          <div class="row"><span class="rr-type">CRUD</span><div class="main"><div class="mono">/api/v1/filter-sets</div><div class="meta">Filtersätze mit Listen</div></div><span class="tag">admin</span></div>
-          <div class="row"><span class="rr-type">CRUD</span><div class="main"><div class="mono">/api/v1/filter-lists</div><div class="meta">externe Listen · Datei/URL</div></div><span class="tag">admin</span></div>
-        </div>
-        <div class="section-head">Netzwerk · admin</div>
-        <div class="group">
-          <div class="row"><span class="rr-type">CRUD</span><div class="main"><div class="mono">/api/v1/clients</div><div class="meta">Geräte und Profile-Zuordnung</div></div><span class="tag">admin</span></div>
-          <div class="row"><span class="rr-type">CRUD</span><div class="main"><div class="mono">/api/v1/listeners</div><div class="meta">DNS-/Cluster-Listener</div></div><span class="tag">admin</span></div>
-          <div class="row"><span class="rr-type">GET</span><div class="main"><div class="mono">/api/v1/tls</div><div class="meta">auch PUT · ACME · Cloudflare · DynDNS</div></div><span class="tag">admin</span></div>
-        </div>
-        <div class="section-head">Anfragen &amp; Statistik · viewer</div>
-        <div class="group">
-          <div class="row"><span class="rr-type">GET</span><div class="main"><div class="mono">/api/v1/query-log</div><div class="meta">auch POST /export</div></div><span class="tag">viewer</span></div>
-          <div class="row"><span class="rr-type">GET</span><div class="main"><div class="mono">/api/v1/stats/*</div><div class="meta">Laufzeit-Statistiken</div></div><span class="tag">viewer</span></div>
-        </div>
-        <div class="section-head">Auth</div>
-        <div class="group">
-          <div class="row"><span class="rr-type">POST</span><div class="main"><div class="mono">/api/v1/auth/local/login</div><div class="meta">Session-Cookie</div></div><span class="tag">public</span></div>
-          <div class="row"><span class="rr-type">POST</span><div class="main"><div class="mono">/api/v1/auth/logout</div><div class="meta">Session widerrufen</div></div><span class="tag">viewer</span></div>
-          <div class="row"><span class="rr-type">CRUD</span><div class="main"><div class="mono">/api/v1/tokens</div><div class="meta">API-Tokens mit Rollen</div></div><span class="tag">admin</span></div>
-        </div>
-        <div class="section-head">MCP-Tools</div>
-        <div class="group">
-          <div class="row"><span class="rr-type">read</span><div class="main"><div class="mono">get_status · search_query_log · get_query · explain_block · test_query · get_stats · list_clients · list_mcp_rules</div></div><span class="tag">mcp:read</span></div>
-          <div class="row"><span class="rr-type">write</span><div class="main"><div class="mono">allow_temporarily · add_rule · remove_rule · pause_filter_set · resume_filter_set</div></div><span class="tag">mcp:write</span></div>
-        </div>
-        <div class="footnote">Schreibende Endpunkte sind zusätzlich über write_tools_enabled gesperrt.</div>
+        <div class="footnote">Schreibende MCP-Tools sind zusätzlich über write_tools_enabled gesperrt. Vorgeschlagene Routen sind nicht freigegeben und nicht implementiert. Browser-Sitzungen brauchen Cookie und CSRF-Token; die curl-Beispiele nutzen Bearer-Tokens mit Platzhaltern.</div>
       </div>
     </section>
 
@@ -3570,6 +3609,388 @@ document.addEventListener('click', function (e) {
   if (e.target.closest('.switch')) e.stopPropagation();
 }, true);
 syncThemeIcon();
+// ---- API-Explorer: data-driven reference (SPEC-control-api.md, SPEC-mcp.md, SPEC-web-ui.md) ----
+// status: implemented = in SPEC core table or in the mounted router; mcp = MCP phase (REST or tool); proposed = not approved, no backend.
+// role = minimal role (admin includes viewer); MCP tools use mcp:read / mcp:write.
+var XAPI = [
+  // Status
+  { method: 'GET', path: '/healthz', role: 'public', area: 'Status', summary: 'Liveness, nur Prozess lebt', status: 'implemented', response: '{ "ok": true }', errors: [] },
+  { method: 'GET', path: '/readyz', role: 'public', area: 'Status', summary: 'Readiness: Module-Zustand aggregiert', status: 'implemented', response: '200 bei Bereitschaft; 503 mit modules[] der nicht bereiten Module', errors: ['control_api.not_ready'] },
+  { method: 'GET', path: '/api/v1/status', role: 'public', area: 'Status', summary: 'Knotenstatus: TLS-Modus, Fingerprint, Modulstatus, Build-Version', status: 'implemented', response: '{ "data": { "tls": { "mode", "fingerprint" }, "warnings": [], "version": "…" } }', note: 'TLS-Felder fehlen im Reverse-Proxy-Modus.', errors: ['control_api.internal'] },
+
+  // Konfiguration
+  { method: 'GET', path: '/api/v1/config', role: 'admin', area: 'Konfiguration', summary: 'Vollständiger Konfigurationsexport, Geheimnisse ausgeschlossen', status: 'implemented', response: '{ "data": { "version": 42, "config": { … } } }', errors: ['control_api.config.read'] },
+  { method: 'PUT', path: '/api/v1/config', role: 'admin', area: 'Konfiguration', summary: 'Gesamte Konfiguration atomar ersetzen, liefert neue Version', status: 'implemented', body: '{ "…": "vollständige Konfiguration" }', response: '{ "data": { "version": 43 } }', note: 'Optional If-Match: <version>. mcp_rules bleiben erhalten, wenn sie fehlen.', errors: ['control_api.config.invalid', 'control_api.config.apply', 'control_api.config.version'] },
+  { method: 'GET', path: '/api/v1/config/versions', role: 'admin', area: 'Konfiguration', summary: 'Frühere Konfigurationsversionen, neueste zuerst', status: 'implemented', response: '{ "data": { "items": [ { "version", "created_at" } ], "has_more", "next_offset" } }', errors: ['control_api.config.version'] },
+  { method: 'POST', path: '/api/v1/config/versions/{version}/rollback', role: 'admin', area: 'Konfiguration', summary: 'Gespeicherte Version wiederherstellen', status: 'implemented', response: '{ "data": { "version": "neue Version" } }', errors: ['control_api.config.unknown_version'] },
+  { method: 'POST', path: '/api/v1/config/validate', role: 'admin', area: 'Konfiguration', summary: 'Konfiguration prüfen (Dry-run), ohne Anwendung', status: 'implemented', body: '{ "…": "gleicher Body wie PUT /api/v1/config" }', response: '{ "data": { "valid": false, "config_version": 42, "errors": [ { "code", "path", "params" } ], "warnings": [], "diff": { "changed_sections", "added", "removed", "changed" } } }', note: 'HTTP 200 auch bei ungültiger Konfiguration. Keine Versionsänderung, kein Audit-Eintrag. Optional If-Match.', errors: ['control_api.config.invalid'] },
+
+  // Policy
+  { method: 'GET', path: '/api/v1/policy/views', role: 'admin', area: 'Policy', summary: 'Zonen (Views) auflisten', status: 'implemented', response: '{ "data": { "items": [ … ] } }', errors: [] },
+  { method: 'GET', path: '/api/v1/policy/views/{id}', role: 'admin', area: 'Policy', summary: 'Eine Zone lesen', status: 'implemented', response: '{ "data": { "id", … } }', errors: ['control_api.not_found'] },
+  { method: 'PUT', path: '/api/v1/policy/views/{id}', role: 'admin', area: 'Policy', summary: 'Zone anlegen oder ersetzen', status: 'implemented', body: '{ "name": "<zone>", "…": "Bereiche, Profil" }', response: '{ "data": { "id", … } }', errors: ['policy.config.invalid'] },
+  { method: 'POST', path: '/api/v1/policy/views/{id}', role: 'admin', area: 'Policy', summary: 'Zone anlegen oder aktualisieren', status: 'implemented', body: '{ "name": "<zone>", "…": "Bereiche, Profil" }', response: '{ "data": { "id", … } }', errors: ['policy.config.invalid'] },
+  { method: 'DELETE', path: '/api/v1/policy/views/{id}', role: 'admin', area: 'Policy', summary: 'Zone löschen', status: 'implemented', errors: ['control_api.not_found'] },
+  { method: 'GET', path: '/api/v1/policy/profiles/{id}', role: 'admin', area: 'Policy', summary: 'Profil lesen (Verhalten, Filtersatz, Pause, Zeitpläne)', status: 'implemented', response: '{ "data": { "id", … } }', errors: ['policy.config.unknown_filter_set'] },
+  { method: 'POST', path: '/api/v1/policy/profiles/{id}', role: 'admin', area: 'Policy', summary: 'Profil anlegen', status: 'implemented', body: '{ "filter_set_id": "default", "…": "…" }', response: '{ "data": { "id", … } }', errors: ['policy.config.unknown_filter_set'] },
+  { method: 'PUT', path: '/api/v1/policy/profiles/{id}', role: 'admin', area: 'Policy', summary: 'Profil ersetzen', status: 'implemented', body: '{ "filter_set_id": "default", "…": "…" }', response: '{ "data": { "id", … } }', errors: ['policy.config.unknown_filter_set'] },
+  { method: 'DELETE', path: '/api/v1/policy/profiles/{id}', role: 'admin', area: 'Policy', summary: 'Profil löschen', status: 'implemented', errors: ['policy.config.unknown_filter_set'] },
+  { method: 'GET', path: '/api/v1/policy/pause', role: 'admin', area: 'Policy', summary: 'Pausenstatus, global und pro Profil', status: 'implemented', response: '{ "data": { … } }', errors: [] },
+  { method: 'POST', path: '/api/v1/policy/pause', role: 'admin', area: 'Policy', summary: 'Pause setzen', status: 'implemented', body: '{ "…": "Pausenangaben" }', response: '{ "data": { … } }', errors: ['policy.config.invalid'] },
+  { method: 'PUT', path: '/api/v1/policy/pause', role: 'admin', area: 'Policy', summary: 'Pausenzustand ersetzen (Singleton)', status: 'implemented', body: '{ "…": "Pausenangaben" }', response: '{ "data": { … } }', errors: ['policy.config.invalid'] },
+  { method: 'DELETE', path: '/api/v1/policy/pause', role: 'admin', area: 'Policy', summary: 'Pause aufheben', status: 'implemented', errors: ['policy.config.invalid'] },
+  { method: 'POST', path: '/api/v1/policy/test-query', role: 'viewer', area: 'Policy', summary: 'Abfrage gegen Regeln und Profile prüfen, ohne Log-Eintrag', status: 'mcp', body: '{ "domain": "example.com", "qtype": "A", "client_id": "<optional>", "source_ip": "192.0.2.10", "protocol": "udp53" }', response: '{ "data": { DecisionRecord, "answer": { "rcode": "NXDOMAIN", "records": [] } } }', note: 'Braucht im Resolver ein no_cache_write-Flag; laut Spec noch nicht vorhanden.', errors: ['policy.selection.no_view', 'filter_name.*'] },
+
+  // Clients
+  { method: 'GET', path: '/api/v1/clients', role: 'admin', area: 'Clients', summary: 'Manuelle Einträge und synchronisiertes Gerätverzeichnis', status: 'implemented', response: '{ "data": { "items": [ … ] } }', errors: [] },
+  { method: 'POST', path: '/api/v1/clients/sync', role: 'admin', area: 'Clients', summary: 'UniFi-Synchronisation auslösen', status: 'implemented', errors: ['clients.sync.*'] },
+  { method: 'GET', path: '/api/v1/clients/manual', role: 'admin', area: 'Clients', summary: 'Manuelle IP-, CIDR- und Domain-Einträge', status: 'implemented', response: '{ "data": { "items": [ … ] } }', errors: ['clients.config.invalid'] },
+  { method: 'POST', path: '/api/v1/clients/manual', role: 'admin', area: 'Clients', summary: 'Manuellen Eintrag anlegen', status: 'implemented', body: '{ "name": "<name>" }', errors: ['clients.config.invalid'] },
+  { method: 'PUT', path: '/api/v1/clients/manual', role: 'admin', area: 'Clients', summary: 'Manuellen Eintrag anlegen oder ersetzen', status: 'implemented', body: '{ "name": "<name>" }', errors: ['clients.config.invalid'] },
+  { method: 'DELETE', path: '/api/v1/clients/manual', role: 'admin', area: 'Clients', summary: 'Manuellen Eintrag löschen', status: 'implemented', body: '{ "name": "<name>" }', errors: ['clients.config.invalid'] },
+
+  // Filterung
+  { method: 'GET', path: '/api/v1/filter-sets', role: 'admin', area: 'Filterung', summary: 'Filtersätze auflisten', status: 'implemented', response: '{ "data": { "items": [ … ] } }', errors: ['filtering.config.*'] },
+  { method: 'POST', path: '/api/v1/filter-sets', role: 'admin', area: 'Filterung', summary: 'Filtersatz anlegen', status: 'implemented', body: '{ "id": "<id>", "name": "<name>", "lists": [], "custom_rules": [] }', errors: ['filtering.config.*'] },
+  { method: 'PUT', path: '/api/v1/filter-sets', role: 'admin', area: 'Filterung', summary: 'Filtersatz ersetzen', status: 'implemented', body: '{ "id": "<id>", "name": "<name>", "lists": [], "custom_rules": [] }', note: 'Ziel-ID laut Spec nicht im Pfad, Form nicht festgelegt.', errors: ['filtering.config.*'] },
+  { method: 'DELETE', path: '/api/v1/filter-sets', role: 'admin', area: 'Filterung', summary: 'Filtersatz löschen', status: 'implemented', note: 'Ziel-Form (Pfad oder Body) laut Spec nicht festgelegt.', errors: ['filtering.config.*'] },
+  { method: 'GET', path: '/api/v1/filter-lists', role: 'admin', area: 'Filterung', summary: 'URL-Listen auflisten', status: 'implemented', response: '{ "data": { "items": [ … ] } }', errors: ['filtering.*'] },
+  { method: 'POST', path: '/api/v1/filter-lists', role: 'admin', area: 'Filterung', summary: 'Listenquelle anlegen (URL oder lokale Datei)', status: 'implemented', body: '{ "id": "<id>", "url": "https://<liste>" }', note: 'Lokale Dateiquellen werden auf Pfadtraversal geprüft.', errors: ['filtering.*', 'filtering.list_source_path_not_safe'] },
+  { method: 'PUT', path: '/api/v1/filter-lists', role: 'admin', area: 'Filterung', summary: 'Listenquelle ersetzen', status: 'implemented', body: '{ "id": "<id>", "url": "https://<liste>" }', note: 'Ziel-Form laut Spec nicht festgelegt.', errors: ['filtering.*', 'filtering.list_source_path_not_safe'] },
+  { method: 'DELETE', path: '/api/v1/filter-lists', role: 'admin', area: 'Filterung', summary: 'Listenquelle löschen', status: 'implemented', note: 'Ziel-Form laut Spec nicht festgelegt.', errors: ['filtering.*'] },
+  { method: 'POST', path: '/api/v1/filtering/explain-block', role: 'viewer', area: 'Filterung', summary: 'Blockadegrund für eine Domain erklären (ohne Live-Abfrage)', status: 'mcp', body: '{ "domain": "ads.example.com", "profile_id": "default", "qtype": "A" }', response: '{ "data": { "domain", "profile_id", "filter_set_id", "verdict": "blocked | allowed", "reason": { "rule_text", "source", "important", "block_mode" } | null } }', errors: ['policy.config.unknown_filter_set', 'filter_name.*'] },
+  { method: 'GET', path: '/api/v1/filtering/mcp-rules', role: 'viewer', area: 'Filterung', summary: 'MCP-verwaltete Regeln, Freigaben oder Pausen', status: 'mcp', body: 'Query: filter_set_id?, kind = rules | temporary_allows | pauses, limit (max 500), offset', response: '{ "data": { "filter_set_id", "kind", "rules": [ { "id", "domain", "include_subdomains", "rule_text", "created_at", "expires_at", "filter_set_id" } ], "has_more", "next_offset" } }', errors: ['policy.config.unknown_filter_set', 'control_api.pagination.invalid'] },
+  { method: 'POST', path: '/api/v1/filtering/temporary-allows', role: 'admin', area: 'Filterung', summary: 'Befristete Freigabe anlegen (Laufzeitzustand)', status: 'mcp', body: '{ "domain": "example.com", "include_subdomains": true, "duration": "PT15M", "filter_set_id": "default", "reason": "<grund>" }', note: 'duration: PT5M | PT15M | PT1H. Ablauf ist Pflicht.', response: '{ "data": { "domain", "include_subdomains", "created_at", "expires_at", "filter_set_id" } }', errors: ['filter_build.invalid_domain', 'filter_build.pattern_not_allowed', 'mcp.domain_too_broad', 'mcp.protected_domain', 'mcp.invalid_input', 'mcp.duration_exceeds_maximum'] },
+  { method: 'POST', path: '/api/v1/filtering/custom-rules', role: 'admin', area: 'Filterung', summary: 'MCP-Blockregel anlegen (Konfigurationsänderung)', status: 'mcp', body: '{ "domain": "example.com", "include_subdomains": true, "filter_set_id": "default", "reason": "<grund>", "expires_at": "2026-11-25T10:30:00Z" }', note: 'expires_at optional, nur früher als Maximum. Nur Blockregeln.', response: '{ "data": { "rule_text", "filter_set_id", "domain", "include_subdomains", "created_at", "expires_at" } }', errors: ['filter_build.invalid_domain', 'filter_build.pattern_not_allowed', 'mcp.domain_too_broad', 'mcp.protected_domain', 'mcp.rule_limit_exceeded', 'control_api.config.apply'] },
+  { method: 'DELETE', path: '/api/v1/filtering/custom-rules', role: 'admin', area: 'Filterung', summary: 'MCP-erstellte Regel entfernen', status: 'mcp', body: '{ "domain": "example.com", "filter_set_id": "default" }', response: '{ "data": { "removed": true, "domain", "filter_set_id" } }', errors: ['filter_build.invalid_domain', 'filter_build.pattern_not_allowed', 'mcp.protected_domain', 'control_api.config.apply'] },
+  { method: 'POST', path: '/api/v1/filtering/pause', role: 'admin', area: 'Filterung', summary: 'Filtersatz für feste Dauer pausieren', status: 'mcp', body: '{ "filter_set_id": "default", "duration": "PT5M" }', note: 'duration: PT5M | PT15M | PT1H. Keine unbefristete Pause.', response: '{ "data": { "filter_set_id", "paused_until" } }', errors: ['policy.config.unknown_filter_set', 'mcp.invalid_input', 'mcp.duration_exceeds_maximum'] },
+  { method: 'POST', path: '/api/v1/filtering/resume', role: 'admin', area: 'Filterung', summary: 'Pausierten Filtersatz fortsetzen', status: 'mcp', body: '{ "filter_set_id": "default" }', response: '{ "data": { "filter_set_id", "resumed": true } }', errors: ['policy.config.unknown_filter_set'] },
+  { method: 'GET', path: '/api/v1/filtering/services', role: 'viewer', area: 'Filterung', summary: 'Sperrdienste-Katalog mit Status pro Filtersatz', status: 'proposed', response: '{ "data": { "available": true, "catalog_updated_at", "locale": "de", "items": [ { "id", "name", "group", "icon", "enabled": { "default" } } ] } }', note: 'SPEC-web-ui WP4/WP5. Katalog wird zur Laufzeit geladen (nicht gebündelt). available: false ohne Katalog.', errors: ['filtering.catalog.unavailable'] },
+  { method: 'PUT', path: '/api/v1/filtering/services/{service_id}', role: 'admin', area: 'Filterung', summary: 'Sperrdienst für einen Filtersatz ein- oder ausschalten', status: 'proposed', body: '{ "filter_set_id": "default", "enabled": true }', note: 'SPEC-web-ui WP5. Pro Profil oder pro Filtersatz ist noch offen.', errors: ['filtering.service.unknown', 'filtering.catalog.unavailable'] },
+
+  // Listener
+  { method: 'GET', path: '/api/v1/listeners', role: 'admin', area: 'Listener', summary: 'DNS- und Cluster-Listener auflisten', status: 'implemented', response: '{ "data": { "items": [ … ] } }', errors: ['listeners.config.*'] },
+  { method: 'POST', path: '/api/v1/listeners', role: 'admin', area: 'Listener', summary: 'Listener anlegen', status: 'implemented', body: '{ "id": "<id>", "protocol": "<protokoll>", "address": "<adresse>", "exposure": "<exposure>", "h3": false }', errors: ['listeners.config.*'] },
+  { method: 'PUT', path: '/api/v1/listeners', role: 'admin', area: 'Listener', summary: 'Listener ersetzen', status: 'implemented', body: '{ "id": "<id>", "protocol": "<protokoll>", "address": "<adresse>", "exposure": "<exposure>", "h3": false }', note: 'Ziel-Form laut Spec nicht festgelegt.', errors: ['listeners.config.*'] },
+  { method: 'DELETE', path: '/api/v1/listeners', role: 'admin', area: 'Listener', summary: 'Listener löschen', status: 'implemented', note: 'Ziel-Form laut Spec nicht festgelegt.', errors: ['listeners.config.*'] },
+
+  // TLS
+  { method: 'GET', path: '/api/v1/tls', role: 'admin', area: 'TLS', summary: 'TLS-Konfiguration inkl. ACME, DynDNS, Benachrichtigungen', status: 'implemented', response: '{ "data": { "public_domain", "extra_sans", "key_type", "renew_before", "expiry_warn", "acme", "dyndns" } }', errors: ['tls.config.*'] },
+  { method: 'POST', path: '/api/v1/tls', role: 'admin', area: 'TLS', summary: 'TLS-Konfiguration anlegen (Singleton)', status: 'implemented', body: '{ "public_domain": "<domain>", "extra_sans": [], "key_type": "<typ>", "renew_before": "<dauer>", "expiry_warn": "<dauer>" }', note: 'Der Cloudflare-API-Token wird nie über diese Route übergeben.', errors: ['tls.config.*'] },
+  { method: 'PUT', path: '/api/v1/tls', role: 'admin', area: 'TLS', summary: 'TLS-Konfiguration ersetzen', status: 'implemented', body: '{ "public_domain": "<domain>", "extra_sans": [], "key_type": "<typ>", "renew_before": "<dauer>", "expiry_warn": "<dauer>" }', note: 'Der Cloudflare-API-Token wird nie über diese Route übergeben.', errors: ['tls.config.*'] },
+  { method: 'DELETE', path: '/api/v1/tls', role: 'admin', area: 'TLS', summary: 'TLS-Konfiguration entfernen', status: 'implemented', note: 'Ziel-Form laut Spec nicht festgelegt.', errors: ['tls.config.*'] },
+  { method: 'GET', path: '/api/v1/tls/status', role: 'viewer', area: 'TLS', summary: 'Typisierter TLS-Status: Modus, Fingerprint, Ablauf, Kette, ARI, Verlauf', status: 'implemented', response: '{ "data": { "mode", "fingerprint", "expires_at", "chain", "ari", "history", "store_health" } }', errors: ['control_api.not_ready'] },
+  { method: 'PUT', path: '/api/v1/tls/certificate', role: 'admin', area: 'TLS', summary: 'Zertifikat und Schlüssel hochladen, wechselt in den manuellen Modus', status: 'implemented', body: '{ "cert_pem": "-----BEGIN CERTIFICATE-----…", "key_pem": "-----BEGIN PRIVATE KEY-----…", "chain_pem": "<optional>" }', note: 'Feldnamen sind Platzhalter, die Spec nennt nur PEM-Zertifikat, Schlüssel und optionale Kette.', response: '{ "data": { "mode": "manual" } }', errors: ['tls.cert.manual.invalid'] },
+  { method: 'GET', path: '/api/v1/tls/certificate', role: 'admin', area: 'TLS', summary: 'Fullchain-PEM exportieren (nur Zertifikate, kein Schlüssel)', status: 'implemented', response: '{ "data": { "fullchain_pem": "-----BEGIN CERTIFICATE-----…" } }', errors: ['control_api.internal'] },
+  { method: 'POST', path: '/api/v1/tls/renew', role: 'admin', area: 'TLS', summary: 'Ausstellung oder Erneuerung jetzt auslösen', status: 'implemented', response: '{ "data": { "started": true } }', errors: ['tls.acme.*', 'tls.store.*', 'tls.cert.*'] },
+  { method: 'POST', path: '/api/v1/tls/revoke', role: 'admin', area: 'TLS', summary: 'Aktives Zertifikat widerrufen', status: 'implemented', body: '{ "reason": "<grund>" }', errors: ['tls.cert.revoked', 'tls.config.invalid'] },
+  { method: 'POST', path: '/api/v1/tls/rotate', role: 'admin', area: 'TLS', summary: 'Neu ausstellen mit frischem Schlüsselpaar', status: 'implemented', response: '{ "data": { "rotated": true } }', errors: ['tls.cert.rotate.failed', 'tls.acme.*'] },
+  { method: 'POST', path: '/api/v1/tls/preflight', role: 'admin', area: 'TLS', summary: 'Trockenlauf: Erreichbarkeit und Konfiguration prüfen', status: 'implemented', response: '{ "data": { "ok": true, "checks": [ … ] } }', errors: ['tls.acme.preflight.failed'] },
+  { method: 'POST', path: '/api/v1/tls/dyndns', role: 'admin', area: 'TLS', summary: 'DynDNS-Aktualisierung auslösen', status: 'implemented', response: '{ "data": Prüfbericht }', errors: ['tls.dyndns.*', 'tls.dns.provider.*'] },
+  { method: 'GET', path: '/api/v1/tls/records', role: 'admin', area: 'TLS', summary: 'Erwartete dns.<domain>- und *.dns.<domain>-Records mit Live-Prüfung', status: 'implemented', response: '{ "data": { "items": [ … ] } }', errors: ['tls.dns.provider.zone'] },
+  { method: 'GET', path: '/api/v1/tls/account', role: 'admin', area: 'TLS', summary: 'ACME-Kontostatus: EAB, Nutzungsbedingungen, Schlüsselrollover', status: 'implemented', response: '{ "data": { … } }', errors: ['tls.acme.account.*'] },
+  { method: 'GET', path: '/api/v1/tls/order', role: 'admin', area: 'TLS', summary: 'Aktuelle ACME-Bestellung und Fortschritt', status: 'implemented', response: '{ "data": { … } }', errors: ['tls.acme.order_pending'] },
+  { method: 'GET', path: '/api/v1/tls/audit', role: 'admin', area: 'TLS', summary: 'DynDNS-Auditverlauf (begrenzt)', status: 'implemented', response: '{ "data": { "items": [ … ] } }', errors: [] },
+
+  // Cluster
+  { method: 'GET', path: '/api/v1/cluster/nodes', role: 'admin', area: 'Cluster', summary: 'Unterknoten mit Rolle, Erreichbarkeit, Version und Verzug', status: 'implemented', response: '{ "data": { "items": [ … ] } }', errors: ['cluster.node.*'] },
+  { method: 'POST', path: '/api/v1/cluster/join-tokens', role: 'admin', area: 'Cluster', summary: 'Einmaliges Beitritts-Token für eine node_id erzeugen, TTL standard 15 min', status: 'implemented', body: '{ "node_id": "<node-id>" }', errors: ['cluster.join.*'] },
+  { method: 'DELETE', path: '/api/v1/cluster/nodes/{id}', role: 'admin', area: 'Cluster', summary: 'Knoten widerrufen und entfernen', status: 'implemented', errors: ['cluster.node.revoked'] },
+
+  // Anfragen
+  { method: 'GET', path: '/api/v1/query-log', role: 'viewer', area: 'Anfragen', summary: 'Anfrageprotokoll durchsuchen, filtern und paginieren', status: 'implemented', body: 'Query: from, to, client_id, client_name_substr, domain, domain_substr, protocol, view_id, profile_id, status, only_blocked, only_with_clients, order_by, order, limit (max 500), offset', response: '{ "data": { "items": [ … ], "has_more", "next_offset" } }', errors: ['control_api.query_log.invalid', 'control_api.query_log.read'] },
+  { method: 'GET', path: '/api/v1/query-log/{id}', role: 'viewer', area: 'Anfragen', summary: 'Einzelner Eintrag mit vollständiger Entscheidungskette („Warum blockiert?“)', status: 'implemented', response: '{ "data": { DecisionRecord } }', errors: ['control_api.not_found'] },
+  { method: 'GET', path: '/api/v1/query-log/export.csv', role: 'viewer', area: 'Anfragen', summary: 'CSV-Export des aktuellen Filters', status: 'implemented', body: 'Query: wie GET /api/v1/query-log', response: 'text/csv', errors: ['control_api.query_log.export'] },
+  { method: 'GET', path: '/api/v1/query-log/export.ndjson', role: 'viewer', area: 'Anfragen', summary: 'NDJSON-Stream des aktuellen Filters', status: 'implemented', body: 'Query: wie GET /api/v1/query-log', response: 'application/x-ndjson, eine Zeile pro Eintrag', errors: ['control_api.query_log.export'] },
+  { method: 'GET', path: '/api/v1/query-log/stream', role: 'viewer', area: 'Anfragen', summary: 'Live-Stream neuer Anfragen (SSE) mit denselben Filtern wie die Suche', status: 'proposed', body: 'Query: wie GET /api/v1/query-log ohne limit, offset, order. Header: Accept: text/event-stream', response: 'SSE: event row (Record + node_id), event lagged { "dropped": n }, Ping alle 15 s. Nur live, kein Replay.', note: 'WX2. Browser per Cookie, Bearer per fetch-Stream. Token nie in der URL. Max. 4 Streams je Prinzipal.', errors: ['control_api.query_log.invalid', 'control_api.query_log.stream_limit'] },
+
+  // Statistik
+  { method: 'GET', path: '/api/v1/stats/overview', role: 'viewer', area: 'Statistik', summary: 'Dashboard-Aggregat', status: 'implemented', body: 'Query: from, to, limit, by', response: '{ "data": { … } }', errors: [] },
+  { method: 'GET', path: '/api/v1/stats/top_clients', role: 'viewer', area: 'Statistik', summary: 'Top-Clients nach Anfragen oder Blockierungen', status: 'implemented', body: 'Query: from, to, limit, by', response: '{ "data": { "items": [ … ] } }', errors: [] },
+  { method: 'GET', path: '/api/v1/stats/top_domains', role: 'viewer', area: 'Statistik', summary: 'Top-Domains', status: 'implemented', body: 'Query: from, to, limit, by', response: '{ "data": { "items": [ … ] } }', errors: [] },
+  { method: 'GET', path: '/api/v1/stats/cache', role: 'viewer', area: 'Statistik', summary: 'Cache-Trefferquote', status: 'implemented', response: '{ "data": { … } }', errors: [] },
+  { method: 'GET', path: '/api/v1/stats/domains/{name}', role: 'viewer', area: 'Statistik', summary: 'Domain-Detail: Zählungen, Top-Clients, Tagesreihe', status: 'proposed', body: 'Query: days = 7 | 30 (Standard 7)', response: '{ "data": { "domain", "retention_limited": true, "first_seen", "last_seen", "counts": { "total", "blocked", "allowed" }, "top_clients": [ max 10 ], "daily": [ { "day", "total", "blocked" } ], "last_decision" } }', note: 'WX5. Zählungen gelten nur innerhalb der Log-Aufbewahrung (30 Tage).', errors: ['control_api.stats.invalid_domain', 'control_api.not_found'] },
+
+  // Resolver
+  { method: 'GET', path: '/api/v1/resolver/upstreams', role: 'viewer', area: 'Resolver', summary: 'Upstream-Gesundheit, passiv aus dem Verkehr (Fenster 5 min)', status: 'implemented', response: '{ "data": { "window_seconds", "items": [ { "name", "kind": "forward_target | recursion", "zone?", "address?", "protocol", "state": "up | degraded | down | unknown", "rtt_ms": { "p50", "p95" } | null, "success_rate", "samples", "last_error": { "code" } | null, "last_checked" } ] } }', note: 'WX3. Keine synthetischen Probes.', errors: ['control_api.not_ready'] },
+  { method: 'POST', path: '/api/v1/resolver/cache/flush', role: 'admin', area: 'Resolver', summary: 'Cache leeren: gesamt oder eine Domain samt Unterdomains', status: 'implemented', body: '{ "domain": "example.com" } oder {}', response: '{ "data": { "scope": "all | domain", "domain", "evicted": 1234 } }', note: 'WX4. Knotenlokal, wird auditiert.', errors: ['control_api.resolver.flush.invalid_domain'] },
+
+  // Auth & Sitzungen
+  { method: 'GET', path: '/api/v1/auth/oidc/authorize-url', role: 'public', area: 'Auth & Sitzungen', summary: 'OIDC-Anmeldung starten: Autorisierungs-URL mit PKCE S256 und Nonce', status: 'implemented', response: 'Autorisierungs-URL', errors: ['control_api.auth.oidc'] },
+  { method: 'GET', path: '/api/v1/auth/oidc/callback', role: 'public', area: 'Auth & Sitzungen', summary: 'OIDC-Rückruf: Code-Tausch, danach Cookie-Sitzung', status: 'implemented', response: 'Weiterleitung mit Session-Cookie (Browser)', errors: ['control_api.auth.oidc'] },
+  { method: 'POST', path: '/api/v1/auth/local/login', role: 'public', area: 'Auth & Sitzungen', summary: 'Break-glass-Anmeldung mit lokalem Konto, setzt Session-Cookie', status: 'implemented', body: '{ "username": "<benutzer>", "password": "<passwort>" }', errors: ['control_api.auth.locked', 'control_api.auth.local'] },
+  { method: 'POST', path: '/api/v1/auth/logout', role: 'viewer', area: 'Auth & Sitzungen', summary: 'Aktuelle Sitzung widerrufen', status: 'implemented', errors: ['control_api.auth.csrf', 'control_api.auth.session_expired'] },
+  { method: 'GET', path: '/api/v1/auth/me', role: 'viewer', area: 'Auth & Sitzungen', summary: 'Aktueller Prinzipal und Rolle', status: 'implemented', response: '{ "data": { "id", "role", … } }', errors: ['control_api.auth.unauthenticated'] },
+  { method: 'GET', path: '/api/v1/auth/tokens', role: 'admin', area: 'Auth & Sitzungen', summary: 'Bearer-Tokens auflisten (ohne Klartext)', status: 'implemented', response: '{ "data": { "items": [ { "id", "scope", "created_at" } ] } }', errors: [] },
+  { method: 'POST', path: '/api/v1/auth/tokens', role: 'admin', area: 'Auth & Sitzungen', summary: 'Bearer-Token anlegen, Klartext nur einmal sichtbar', status: 'implemented', body: '{ "scope": "viewer | admin | mcp:read | mcp:write" }', response: '{ "data": { "id", "token": "<nur einmal>" } }', errors: [] },
+  { method: 'DELETE', path: '/api/v1/auth/tokens/{id}', role: 'admin', area: 'Auth & Sitzungen', summary: 'Token widerrufen', status: 'implemented', errors: ['control_api.auth.unknown_token'] },
+  { method: 'GET', path: '/api/v1/auth/sessions', role: 'viewer', area: 'Auth & Sitzungen', summary: 'Aktive Sitzungen: Viewer sehen eigene, Admin alle', status: 'proposed', body: 'Query: scope = own | all (all nur Admin), limit, offset', response: '{ "data": { "items": [ { "id", "actor_id", "actor_type", "client_label", "ip", "created_at", "last_seen", "expires_at", "current" } ], "has_more", "next_offset" } }', note: 'WX8. IP gekürzt, kein User-Agent gespeichert.', errors: ['control_api.auth.insufficient_scope', 'control_api.pagination.invalid'] },
+  { method: 'DELETE', path: '/api/v1/auth/sessions/{id}', role: 'viewer', area: 'Auth & Sitzungen', summary: 'Sitzung widerrufen, wirkt sofort (Viewer nur eigene, Admin alle)', status: 'proposed', response: '{ "data": { "id", "revoked": true } }', note: 'WX8. Die aktuelle Sitzung kann hier nicht widerrufen werden, dafür gibt es Logout.', errors: ['control_api.auth.unknown_session', 'control_api.auth.session_current', 'control_api.auth.csrf'] },
+
+  // Audit
+  { method: 'GET', path: '/api/v1/audit', role: 'viewer', area: 'Audit', summary: 'Audit-Log durchsuchen', status: 'implemented', response: '{ "data": { "items": [ … ] } }', note: 'Rolle laut Tabelle viewer/admin. Offene Frage in SPEC-web-ui, ob viewer das sehen darf.', errors: ['control_api.audit.read'] },
+
+  // Warnungen & Kanäle
+  { method: 'GET', path: '/api/v1/alerts', role: 'viewer', area: 'Warnungen & Kanäle', summary: 'Aktive Hinweise: Zertifikatablauf, Listenfehler, Knoten offline, DynDNS', status: 'proposed', response: '{ "data": { "active_count": 2, "items": [ { "id", "severity", "module", "created_at", "params", "target_route" } ] } }', note: 'SPEC-web-ui WP1. Alternative wäre Zusammenstellung im Client aus /status.', errors: [] },
+  { method: 'GET', path: '/api/v1/notifications', role: 'viewer', area: 'Warnungen & Kanäle', summary: 'Benachrichtigungskanäle und Ereignisliste', status: 'proposed', response: '{ "data": { "channels": [ { "id", "type": "webhook | ntfy", "enabled", "url? | server?", "topic?", "has_secret", "events": [] } ], "event_catalog": [] } }', note: 'WX7. URL-Query und Userinfo werden nie zurückgegeben, Geheimnisse nie.', errors: [] },
+  { method: 'PUT', path: '/api/v1/notifications', role: 'admin', area: 'Warnungen & Kanäle', summary: 'Kanäle atomar speichern, Geheimnisse nur schreibbar', status: 'proposed', body: '{ "channels": [ { "id": "ops-webhook", "type": "webhook", "enabled": true, "url": "https://<host>/<pfad>", "events": [] } ] }', note: 'WX7. secret/token: fehlt = behalten, null = löschen. Egress nur HTTPS, Host-Allow-List.', response: '{ "data": { "config_version": 43 } }', errors: ['control_api.notifications.invalid', 'control_api.notifications.host_not_allowed', 'control_api.config.version', 'control_api.config.apply'] },
+  { method: 'POST', path: '/api/v1/notifications/test', role: 'admin', area: 'Warnungen & Kanäle', summary: 'Testnachricht an einen Kanal senden', status: 'proposed', body: '{ "channel_id": "ops-webhook" }', response: '{ "data": { "channel_id", "delivered": true, "status": 204, "latency_ms": 180 } }', note: 'WX7. Wird auditiert.', errors: ['control_api.notifications.delivery', 'control_api.notifications.egress_denied', 'control_api.notifications.unknown_channel'] },
+
+  // Updates & Backups
+  { method: 'GET', path: '/api/v1/update/check', role: 'viewer', area: 'Updates & Backups', summary: 'Neueste Version über Server-Proxy prüfen (Cache ca. 24 h)', status: 'proposed', response: '{ "data": { "enabled", "current", "latest": "0.x.z | null", "update_available", "release_url", "checked_at" } }', note: 'SPEC-web-ui WP2. Opt-out über PUT /api/v1/config. Kein Download, keine Selbstaktualisierung.', errors: [] },
+  { method: 'GET', path: '/api/v1/backups', role: 'admin', area: 'Updates & Backups', summary: 'Status automatischer Backups: letzter und nächster Lauf, Verzeichnis, Aufbewahrung', status: 'proposed', response: '{ "data": { "enabled", "directory", "retention_count", "last_run": { "at", "result", "file" } | null, "next_run" } }', note: 'SPEC-web-ui WP3. Enthält einen Dateisystempfad, daher admin.', errors: [] },
+  { method: 'PUT', path: '/api/v1/backups/settings', role: 'admin', area: 'Updates & Backups', summary: 'Aktivierung und Aufbewahrung der Backups setzen', status: 'proposed', body: '{ "enabled": true, "directory": "/var/lib/dnscraft/backups", "retention_count": 7 }', note: 'SPEC-web-ui WP3. Ungültige Aufbewahrung wird abgelehnt, Code noch offen.', errors: [] },
+
+  // MCP tools (kind read: mcp:read or mcp:write, kind write: mcp:write + write_tools_enabled)
+  { method: 'read', kind: 'read', path: 'get_status', role: 'mcp:read', area: 'MCP-Tools', summary: 'Knotenstatus: Resolver, Listener, TLS-Zertifikat, Listenzeiten, Laufzeit', status: 'mcp', body: '{}', response: 'JSON im structuredContent, Felder als Daten', errors: [] },
+  { method: 'read', kind: 'read', path: 'search_query_log', role: 'mcp:read', area: 'MCP-Tools', summary: 'Anfrageprotokoll mit Filtern durchsuchen', status: 'mcp', body: '{ "domain_substr": "example", "client_name_substr": "<name>", "from": "2026-10-26T00:00:00Z", "to": "2026-10-27T00:00:00Z", "only_blocked": true, "limit": 50 }', response: 'Treffer mit Client, Domain, Urteil und Zeitstempel, als Daten zurückgegeben', errors: ['control_api.query_log.read'] },
+  { method: 'read', kind: 'read', path: 'get_query', role: 'mcp:read', area: 'MCP-Tools', summary: 'Einzelner Eintrag mit Entscheidungskette (Regel, Quelle, DNSSEC, Zeiten)', status: 'mcp', body: '{ "id": "<query-id>" }', response: 'DecisionRecord als JSON', errors: [] },
+  { method: 'read', kind: 'read', path: 'explain_block', role: 'mcp:read', area: 'MCP-Tools', summary: 'Warum ist eine Domain für ein Profil blockiert (ohne Live-Abfrage)', status: 'mcp', body: '{ "domain": "ads.example.com", "profile_id": "default", "qtype": "A" }', response: 'verdict und reason wie POST /api/v1/filtering/explain-block', errors: ['policy.config.unknown_filter_set', 'filter_name.*'] },
+  { method: 'read', kind: 'read', path: 'test_query', role: 'mcp:read', area: 'MCP-Tools', summary: 'Abfrage als bestimmter Client simulieren, ohne Log und Cache', status: 'mcp', body: '{ "domain": "example.com", "qtype": "A", "client_id": "<optional>", "source_ip": "192.0.2.10", "protocol": "udp53" }', response: 'DecisionRecord plus answer', errors: ['policy.selection.no_view', 'filter_name.*'] },
+  { method: 'read', kind: 'read', path: 'get_stats', role: 'mcp:read', area: 'MCP-Tools', summary: 'Aggregierte Statistik für einen Zeitraum', status: 'mcp', body: '{ "from": "2026-10-26T00:00:00Z", "to": "2026-10-27T00:00:00Z", "profile_id": "default" }', response: 'Aggregate als JSON', errors: [] },
+  { method: 'read', kind: 'read', path: 'list_clients', role: 'mcp:read', area: 'MCP-Tools', summary: 'Bekannte Clients mit Namen, IPs, VLANs und Quelle (UniFi oder manuell)', status: 'mcp', body: '{ "name_substr": "<name>", "source": "manual", "limit": 50 }', response: 'Clientliste als JSON', errors: [] },
+  { method: 'read', kind: 'read', path: 'list_mcp_rules', role: 'mcp:read', area: 'MCP-Tools', summary: 'Über MCP gesetzte Regeln, Freigaben oder Pausen eines Filtersatzes', status: 'mcp', body: '{ "filter_set_id": "default", "kind": "rules", "limit": 100 }', response: 'Liste wie GET /api/v1/filtering/mcp-rules', errors: ['policy.config.unknown_filter_set'] },
+  { method: 'write', kind: 'write', path: 'allow_temporarily', role: 'mcp:write', area: 'MCP-Tools', summary: 'Blockierte Domain befristet freigeben, läuft automatisch ab', status: 'mcp', body: '{ "domain": "example.com", "include_subdomains": false, "duration": "PT15M", "reason": "<grund>" }', note: 'Nur mit write_tools_enabled. duration: PT5M | PT15M | PT1H. Ablauf ist Pflicht.', response: '{ domain, include_subdomains, created_at, expires_at, filter_set_id }', errors: ['mcp.write_tools_disabled', 'mcp.domain_too_broad', 'mcp.protected_domain', 'mcp.invalid_input', 'mcp.duration_exceeds_maximum', 'filter_build.invalid_domain', 'filter_build.pattern_not_allowed'] },
+  { method: 'write', kind: 'write', path: 'add_rule', role: 'mcp:write', area: 'MCP-Tools', summary: 'Eigene Blockregel aus strukturierter Eingabe anlegen', status: 'mcp', body: '{ "domain": "example.com", "include_subdomains": true, "reason": "<grund>" }', note: 'Nur Blockregeln, keine Freigaben und keine rohe AdGuard-Syntax.', response: '{ rule_text, filter_set_id, domain, include_subdomains, created_at, expires_at }', errors: ['mcp.write_tools_disabled', 'mcp.domain_too_broad', 'mcp.protected_domain', 'mcp.rule_limit_exceeded', 'filter_build.invalid_domain', 'filter_build.pattern_not_allowed'] },
+  { method: 'write', kind: 'write', path: 'remove_rule', role: 'mcp:write', area: 'MCP-Tools', summary: 'Eine von MCP erstellte Regel entfernen', status: 'mcp', body: '{ "domain": "example.com" }', note: 'Nur MCP-erstellte Regeln, exakte Domain.', response: '{ removed, domain, filter_set_id }', errors: ['mcp.write_tools_disabled', 'mcp.protected_domain', 'filter_build.invalid_domain'] },
+  { method: 'write', kind: 'write', path: 'pause_filter_set', role: 'mcp:write', area: 'MCP-Tools', summary: 'Filtersatz für feste Dauer pausieren', status: 'mcp', body: '{ "filter_set_id": "default", "duration": "PT5M" }', note: 'duration: PT5M | PT15M | PT1H. Keine unbefristete Pause.', response: '{ filter_set_id, paused_until }', errors: ['mcp.write_tools_disabled', 'mcp.invalid_input', 'mcp.duration_exceeds_maximum', 'policy.config.unknown_filter_set'] },
+  { method: 'write', kind: 'write', path: 'resume_filter_set', role: 'mcp:write', area: 'MCP-Tools', summary: 'Pausierten Filtersatz fortsetzen (ohne Wirkung, wenn nicht pausiert)', status: 'mcp', body: '{ "filter_set_id": "default" }', response: '{ filter_set_id, resumed }', errors: ['mcp.write_tools_disabled', 'policy.config.unknown_filter_set'] }
+];
+
+var X_BASE = 'https://<node-host>';
+var X_STATUS_LABEL = { implemented: 'implementiert', proposed: 'vorgeschlagen', mcp: 'MCP-Phase' };
+var X_KIND_LABEL = { read: 'lesen', write: 'schreiben' };
+var X = { status: 'all', role: 'all', q: '' };
+var X_ITEMS = [];
+var X_GROUPS = [];
+
+function xEl(tag, cls, text) {
+  var el = document.createElement(tag);
+  if (cls) el.className = cls;
+  if (text != null) el.textContent = text;
+  return el;
+}
+function xGroupName(e) {
+  return e.kind ? e.area + ' · ' + X_KIND_LABEL[e.kind] : e.area;
+}
+function xTitle(e) {
+  return e.kind ? 'MCP-Tool ' + e.path : e.method + ' ' + e.path;
+}
+function xCurl(e) {
+  var parts;
+  if (e.kind) {
+    parts = [
+      "curl -sS -X POST '" + X_BASE + "/mcp/v1'",
+      "-H 'Authorization: Bearer <MCP_TOKEN>'",
+      "-H 'MCP-Protocol-Version: 2026-07-28'",
+      "-H 'Mcp-Method: tools/call'",
+      "-H 'Mcp-Name: " + e.path + "'",
+      "-H 'Content-Type: application/json'",
+      "-d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"" + e.path + "\",\"arguments\":" + e.body + "}}'"
+    ];
+  } else {
+    var url = X_BASE + e.path.replace(/\{(\w+)\}/g, '<$1>');
+    var stream = /\/stream$/.test(e.path);
+    parts = ["curl -sS" + (stream ? 'N' : '') + (e.method === 'GET' ? '' : " -X " + e.method) + " '" + url + "'"];
+    if (e.role !== 'public') parts.push("-H 'Authorization: Bearer <API_TOKEN>'");
+    if (stream) parts.push("-H 'Accept: text/event-stream'");
+    if (e.body && /^[\[{]/.test(e.body)) {
+      parts.push("-H 'Content-Type: application/json'");
+      parts.push("-d '" + e.body + "'");
+    }
+  }
+  return parts.join(' \\\n  ');
+}
+function xPre(text, extra) {
+  var p = xEl('pre', 'x-pre' + (extra ? ' ' + extra : ''), text);
+  return p;
+}
+function xCopy(pre) {
+  var text = pre.textContent;
+  var fallback = function () {
+    try {
+      var r = document.createRange();
+      r.selectNodeContents(pre);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    } catch (err) { /* selection is a convenience only */ }
+    announce('Kopieren nicht möglich. Das Beispiel ist markiert, bitte mit Strg oder Cmd plus C kopieren.');
+  };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { announce('curl-Beispiel kopiert'); }, fallback);
+    } else {
+      fallback();
+    }
+  } catch (err) {
+    fallback();
+  }
+}
+function xSection(label) {
+  var s = xEl('div');
+  s.appendChild(xEl('div', 'x-lbl', label));
+  return s;
+}
+function xBuildItem(e, i) {
+  var item = xEl('div', 'x-item');
+  var headId = 'x-h-' + i, detId = 'x-d-' + i;
+
+  var btn = xEl('button', 'x-head');
+  btn.type = 'button';
+  btn.id = headId;
+  btn.setAttribute('aria-expanded', 'false');
+  btn.setAttribute('aria-controls', detId);
+  btn.appendChild(xEl('span', 'rr-type', e.kind ? e.kind : e.method));
+  var main = xEl('span', 'main');
+  main.appendChild(xEl('span', 'mono x-path', e.path));
+  main.appendChild(xEl('span', 'meta', e.summary));
+  btn.appendChild(main);
+  var tags = xEl('span', 'x-tags');
+  tags.appendChild(xEl('span', 'tag', e.role));
+  tags.appendChild(xEl('span', 'tag x-st-' + e.status, X_STATUS_LABEL[e.status]));
+  btn.appendChild(tags);
+  var chev = xEl('span', 'x-chev', '›');
+  chev.setAttribute('aria-hidden', 'true');
+  btn.appendChild(chev);
+  item.appendChild(btn);
+
+  var det = xEl('div', 'x-detail');
+  det.id = detId;
+  det.hidden = true;
+  det.setAttribute('role', 'region');
+  det.setAttribute('aria-labelledby', headId);
+
+  if (e.body) {
+    var bl = e.kind ? 'Argumente' : (/^[\[{]/.test(e.body) ? 'Anfrage' : 'Parameter');
+    var bs = xSection(bl);
+    bs.appendChild(xPre(e.body));
+    det.appendChild(bs);
+  }
+  if (e.response) {
+    var rs = xSection('Antwort');
+    rs.appendChild(xPre(e.response));
+    det.appendChild(rs);
+  }
+  var es = xSection('Fehlercodes');
+  if (e.errors && e.errors.length) {
+    var codes = xEl('div', 'x-codes');
+    e.errors.forEach(function (c) { codes.appendChild(xEl('code', null, c)); });
+    es.appendChild(codes);
+  } else {
+    es.appendChild(xEl('p', 'x-note', 'keine eigenen Fehlercodes in der Spec'));
+  }
+  det.appendChild(es);
+  if (e.note) {
+    var ns = xSection('Hinweis');
+    ns.appendChild(xEl('p', 'x-note', e.note));
+    det.appendChild(ns);
+  }
+  var cs = xEl('div');
+  var lr = xEl('div', 'x-lbl-row');
+  lr.appendChild(xEl('div', 'x-lbl', 'curl-Beispiel'));
+  var copy = xEl('button', 'btn-sec x-copy', 'Kopieren');
+  copy.type = 'button';
+  copy.setAttribute('aria-label', 'curl-Beispiel kopieren: ' + xTitle(e));
+  lr.appendChild(copy);
+  cs.appendChild(lr);
+  var cpre = xPre(xCurl(e), 'x-curl');
+  cs.appendChild(cpre);
+  copy.addEventListener('click', function () { xCopy(cpre); });
+  det.appendChild(cs);
+  item.appendChild(det);
+
+  btn.addEventListener('click', function () {
+    var open = btn.getAttribute('aria-expanded') !== 'true';
+    btn.setAttribute('aria-expanded', String(open));
+    det.hidden = !open;
+  });
+  return item;
+}
+function renderExplorer() {
+  var host = document.getElementById('x-groups');
+  var byName = {};
+  XAPI.forEach(function (e, i) {
+    var name = xGroupName(e);
+    var g = byName[name];
+    if (!g) {
+      var sec = xEl('section', 'x-group');
+      var head = xEl('h2', 'section-head', name);
+      head.id = 'x-gh-' + X_GROUPS.length;
+      sec.setAttribute('aria-labelledby', head.id);
+      sec.appendChild(head);
+      var box = xEl('div', 'group');
+      sec.appendChild(box);
+      host.appendChild(sec);
+      g = { name: name, el: sec, box: box, items: [] };
+      byName[name] = g;
+      X_GROUPS.push(g);
+    }
+    var item = xBuildItem(e, i);
+    g.box.appendChild(item);
+    var status = e.status;
+    X_ITEMS.push({
+      data: e,
+      el: item,
+      group: g,
+      hay: [e.method, e.kind || '', e.path, e.summary, e.area, e.role, e.status, X_STATUS_LABEL[e.status]].join(' ').toLowerCase()
+    });
+    g.items.push(X_ITEMS[X_ITEMS.length - 1]);
+  });
+}
+function xApply() {
+  var q = X.q.trim().toLowerCase();
+  var shown = 0;
+  X_ITEMS.forEach(function (it) {
+    var d = it.data;
+    var ok = (X.status === 'all' || d.status === X.status)
+      && (X.role === 'all' || d.role === X.role)
+      && (!q || it.hay.indexOf(q) !== -1);
+    it.el.hidden = !ok;
+    if (ok) shown++;
+  });
+  X_GROUPS.forEach(function (g) {
+    g.el.hidden = !g.items.some(function (it) { return !it.el.hidden; });
+  });
+  document.getElementById('x-empty').hidden = shown !== 0;
+  document.getElementById('x-count').textContent = shown + ' von ' + X_ITEMS.length + ' Einträgen';
+}
+function xSetStatus(s) {
+  X.status = s;
+  document.querySelectorAll('#x-status button').forEach(function (b) {
+    var on = b.dataset.status === s;
+    b.setAttribute('aria-checked', String(on));
+    b.setAttribute('tabindex', on ? '0' : '-1');
+  });
+  xApply();
+}
+(function initExplorer() {
+  renderExplorer();
+  var q = document.getElementById('x-q');
+  q.addEventListener('input', function () { X.q = q.value; xApply(); });
+  document.querySelectorAll('#x-status button').forEach(function (b) {
+    b.addEventListener('click', function () { xSetStatus(b.dataset.status); });
+  });
+  // radio-group keys move focus (generic .seg handler); arrow keys also select, as in a radio group
+  document.getElementById('x-status').addEventListener('keydown', function () {
+    var b = document.activeElement;
+    if (b && b.dataset && b.dataset.status && b.dataset.status !== X.status) xSetStatus(b.dataset.status);
+  });
+  document.getElementById('x-role-sel').addEventListener('change', function (e) {
+    X.role = e.target.value;
+    xApply();
+  });
+  document.getElementById('x-reset').addEventListener('click', function () {
+    X.q = '';
+    q.value = '';
+    document.getElementById('x-role-sel').value = 'all';
+    X.role = 'all';
+    xSetStatus('all');
+    q.focus();
+  });
+  xApply();
+})();
+
 </script>
 </body>
 </html>
