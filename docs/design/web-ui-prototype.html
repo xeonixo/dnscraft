@@ -296,6 +296,62 @@ body {
 .rec-actions button:hover { background: var(--surface-2); color: var(--label); }
 .rec-actions button.del:hover { color: var(--danger); }
 
+/* query log: responsive table (desktop) / list (mobile) */
+.qtable { background: var(--surface); border: 1px solid var(--separator); border-radius: var(--r-card); overflow: hidden; box-shadow: var(--shadow); }
+.qhead, .qrow {
+  display: grid; gap: 12px; align-items: center;
+  grid-template-columns: 70px minmax(180px,1.6fr) 48px minmax(140px,1.2fr) 72px 88px 62px 76px;
+}
+.qhead {
+  padding: 9px 16px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+  text-transform: uppercase; color: var(--label-3); border-bottom: 1px solid var(--separator);
+}
+.qhead .r { text-align: right; }
+.qrow { padding: 10px 16px; min-height: 48px; cursor: pointer; }
+.qrow + .qrow { border-top: 1px solid var(--separator); }
+.qrow:hover { background: var(--surface-2); }
+.qrow .c { min-width: 0; }
+.qrow .time { font-family: var(--font-mono); font-size: 12px; color: var(--label-2); }
+.qrow .domain { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.qrow .dstat { flex: 0 0 auto; }
+.qrow .dstat.block { color: var(--danger); }
+.qrow .dstat.allow { color: var(--ok); }
+.qrow .dtxt { min-width: 0; }
+.qrow .dname { font-family: var(--font-mono); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qrow .dsub { font-size: 12px; color: var(--label-2); margin-top: 1px; }
+.qrow .dsub.m { display: none; }
+.qrow .type { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--accent); }
+.qrow .cname { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qrow .csub { font-size: 11.5px; color: var(--label-3); font-family: var(--font-mono); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qrow .proto { font-size: 12.5px; color: var(--label-2); }
+.qrow .verdict { font-size: 12px; font-weight: 500; }
+.qrow .verdict.block { color: var(--danger); }
+.qrow .verdict.allow { color: var(--ok); }
+.qrow .lat { font-family: var(--font-mono); font-size: 12px; color: var(--label-2); text-align: right; }
+.qrow .act { display: flex; gap: 6px; justify-content: flex-end; opacity: 0; transition: opacity 0.12s; }
+.qrow:hover .act, .qrow:focus-within .act { opacity: 1; }
+.qact {
+  width: 30px; height: 30px; display: grid; place-items: center; border-radius: 7px;
+  border: 1px solid var(--separator); background: var(--surface); color: var(--label-2); cursor: pointer;
+}
+.qact:hover { color: var(--label); background: var(--surface-2); }
+.qact.deny:hover { color: var(--danger); }
+.qact.allow:hover { color: var(--ok); }
+.qrow .chev-m { display: none; color: var(--label-3); flex: 0 0 auto; }
+.pager { display: flex; align-items: center; gap: 14px; }
+.pager .count { font-size: 12.5px; color: var(--label-3); }
+
+@media (max-width: 999px) {
+  .qhead { display: none; }
+  .qrow { display: flex; align-items: center; gap: 12px; padding: 12px 16px; min-height: 52px; }
+  .qrow .time, .qrow .type, .qrow .client, .qrow .proto, .qrow .lat, .qrow .act { display: none; }
+  .qrow .domain { flex: 1; }
+  .qrow .dsub.d { display: none; }
+  .qrow .dsub.m { display: block; }
+  .qrow .answer { flex: 0 0 auto; text-align: right; }
+  .qrow .chev-m { display: block; }
+}
+
 /* ---- mobile ---- */
 .menu-btn { display: none; }
 .scrim { display: none; }
@@ -318,7 +374,8 @@ body {
 }
 @media (max-width: 520px) {
   .tiles { grid-template-columns: 1fr; }
-  .seg { display: none; }
+  .filter-row { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; padding-bottom: 2px; }
+  .filter-row::-webkit-scrollbar { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   .sidebar, .scrim, .switch .track, .switch .thumb { transition: none; }
@@ -626,9 +683,16 @@ body {
 
     <section class="screen" id="screen-queries" hidden>
       <div class="content wide">
-        <div class="search">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
-          <input type="search" placeholder="Domain, Gerät oder IP durchsuchen" aria-label="Suche">
+        <div class="filter-row">
+          <div class="search">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+            <input type="search" placeholder="Domain, Gerät, IP oder Client-ID" aria-label="Suche">
+          </div>
+          <button class="btn-sec" onclick="openFilterSheet()">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+            Filter
+          </button>
+          <label style="display:inline-flex;align-items:center;gap:8px;font-size:13.5px;color:var(--label-2);margin-left:auto;flex:0 0 auto">Live<span class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></span></label>
         </div>
         <div class="filter-row">
           <div class="seg" role="tablist" aria-label="Aktion">
@@ -643,11 +707,6 @@ body {
             <button role="tab" aria-selected="false">30 d</button>
             <button role="tab" aria-selected="false">Angepasst</button>
           </div>
-          <button class="btn-sec" onclick="openFilterSheet()">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
-            Filter
-          </button>
-          <label style="display:inline-flex;align-items:center;gap:8px;font-size:13.5px;color:var(--label-2);margin-left:auto">Live<span class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></span></label>
         </div>
         <div class="filter-row">
           <span class="tag">Grund: Ads</span>
@@ -655,35 +714,84 @@ body {
           <span class="tag">Client: iphone-k7q2x9</span>
           <span class="tag">Protokoll: DoH</span>
           <span class="tag">Code: NXDOMAIN</span>
-          <button class="back-link" style="font-size:13px" onclick="this.parentNode.querySelectorAll('.tag').forEach(function(t){t.remove()});this.remove()">Zurücksetzen</button>
+          <button class="back-link" style="font-size:13px;flex:0 0 auto" onclick="this.parentNode.querySelectorAll('.tag').forEach(function(t){t.remove()});this.remove()">Zurücksetzen</button>
         </div>
 
-        <div class="section-head">128.431 Anfragen · 4.209 blockiert (3,3 %) · 89.201 aus Cache</div>
-        <div class="group">
-          <div class="row" onclick="openQueryDetail()" style="cursor:pointer">
-            <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span>
-            <div class="main"><div class="domain">ads.example.com</div><div class="meta">A · Blocklist „Ads" · DoH · iPhone · iphone-k7q2x9</div></div>
-            <div class="tail"><div class="verdict block">NXDOMAIN</div><div class="time">14:32:07 · 3 ms</div></div>
-            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+        <div class="section-head">128.431 Anfragen · 4.209 blockiert (3,3 %) · 89.201 aus Cache · 34.971 Upstream</div>
+        <div class="qtable" role="table" aria-label="Anfragen">
+          <div class="qhead" role="row">
+            <span>Zeit</span><span>Domäne</span><span>Typ</span><span>Client</span><span>Protokoll</span><span>Antwort</span><span class="r">Latenz</span><span class="r">Aktion</span>
           </div>
-          <div class="row" onclick="openQueryDetail()" style="cursor:pointer">
-            <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
-            <div class="main"><div class="domain">www.example.com</div><div class="meta">AAAA · aus Cache · DoT · MacBook · macbook-r4t8vn</div></div>
-            <div class="tail"><div class="verdict allow">NOERROR</div><div class="time">14:31:58 · 0,4 ms</div></div>
-            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          <div class="qrow" onclick="openQueryDetail()">
+            <span class="c time">14:32:07</span>
+            <div class="c domain"><span class="dstat block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span><div class="dtxt"><div class="dname">ads.example.com</div><div class="dsub d">Blocklist „Ads"</div><div class="dsub m">A · DoH · iPhone · 3 ms</div></div></div>
+            <span class="c type">A</span>
+            <div class="c client"><div class="cname">iPhone</div><div class="csub">iphone-k7q2x9 · 192.0.2.11</div></div>
+            <span class="c proto">DoH</span>
+            <span class="c answer"><span class="verdict block">NXDOMAIN</span></span>
+            <span class="c lat">3 ms</span>
+            <span class="c act"><button class="qact allow" title="Freigeben" aria-label="Freigeben" onclick="event.stopPropagation()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></button></span>
+            <svg class="chev-m" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="row" onclick="openQueryDetail()" style="cursor:pointer">
-            <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
-            <div class="main"><div class="domain">cdn.example.com</div><div class="meta">A · Upstream 10.0.0.53 · iPhone · 192.0.2.11</div></div>
-            <div class="tail"><div class="verdict allow">NOERROR</div><div class="time">14:31:40 · 8 ms</div></div>
-            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          <div class="qrow" onclick="openQueryDetail()">
+            <span class="c time">14:31:58</span>
+            <div class="c domain"><span class="dstat allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span><div class="dtxt"><div class="dname">www.example.com</div><div class="dsub d">aus Cache</div><div class="dsub m">AAAA · DoT · MacBook · 0,4 ms</div></div></div>
+            <span class="c type">AAAA</span>
+            <div class="c client"><div class="cname">MacBook</div><div class="csub">macbook-r4t8vn · 192.0.2.4</div></div>
+            <span class="c proto">DoT</span>
+            <span class="c answer"><span class="verdict allow">NOERROR</span></span>
+            <span class="c lat">0,4 ms</span>
+            <span class="c act"><button class="qact deny" title="Blockieren" aria-label="Blockieren" onclick="event.stopPropagation()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></button></span>
+            <svg class="chev-m" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="row" onclick="openQueryDetail()" style="cursor:pointer">
-            <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span>
-            <div class="main"><div class="domain">tracker.example.com</div><div class="meta">A · SafeSearch · MacBook · 192.0.2.4</div></div>
-            <div class="tail"><div class="verdict block">NULL-IP</div><div class="time">14:31:18 · 2 ms</div></div>
-            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          <div class="qrow" onclick="openQueryDetail()">
+            <span class="c time">14:31:40</span>
+            <div class="c domain"><span class="dstat allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span><div class="dtxt"><div class="dname">cdn.example.com</div><div class="dsub d">Upstream 10.0.0.53</div><div class="dsub m">A · Do53 · iPhone · 8 ms</div></div></div>
+            <span class="c type">A</span>
+            <div class="c client"><div class="cname">iPhone</div><div class="csub">192.0.2.11</div></div>
+            <span class="c proto">Do53</span>
+            <span class="c answer"><span class="verdict allow">NOERROR</span></span>
+            <span class="c lat">8 ms</span>
+            <span class="c act"><button class="qact deny" title="Blockieren" aria-label="Blockieren" onclick="event.stopPropagation()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></button></span>
+            <svg class="chev-m" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
+          <div class="qrow" onclick="openQueryDetail()">
+            <span class="c time">14:31:18</span>
+            <div class="c domain"><span class="dstat block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span><div class="dtxt"><div class="dname">tracker.example.com</div><div class="dsub d">SafeSearch</div><div class="dsub m">A · Do53 · MacBook · 2 ms</div></div></div>
+            <span class="c type">A</span>
+            <div class="c client"><div class="cname">MacBook</div><div class="csub">192.0.2.4</div></div>
+            <span class="c proto">Do53</span>
+            <span class="c answer"><span class="verdict block">NULL-IP</span></span>
+            <span class="c lat">2 ms</span>
+            <span class="c act"><button class="qact allow" title="Freigeben" aria-label="Freigeben" onclick="event.stopPropagation()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></button></span>
+            <svg class="chev-m" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+          <div class="qrow" onclick="openQueryDetail()">
+            <span class="c time">14:30:52</span>
+            <div class="c domain"><span class="dstat allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span><div class="dtxt"><div class="dname">api.example.net</div><div class="dsub d">Rebind-Schutz erlaubt</div><div class="dsub m">A · DoH · TV · 12 ms</div></div></div>
+            <span class="c type">A</span>
+            <div class="c client"><div class="cname">Wohnzimmer-TV</div><div class="csub">tv-8d2f1a · 192.0.2.18</div></div>
+            <span class="c proto">DoH</span>
+            <span class="c answer"><span class="verdict allow">NOERROR</span></span>
+            <span class="c lat">12 ms</span>
+            <span class="c act"><button class="qact deny" title="Blockieren" aria-label="Blockieren" onclick="event.stopPropagation()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></button></span>
+            <svg class="chev-m" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+          <div class="qrow" onclick="openQueryDetail()">
+            <span class="c time">14:30:26</span>
+            <div class="c domain"><span class="dstat block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></span><div class="dtxt"><div class="dname">stats.example.org</div><div class="dsub d">Filter-Set „Kinder"</div><div class="dsub m">AAAA · DoT · Tablet · 1 ms</div></div></div>
+            <span class="c type">AAAA</span>
+            <div class="c client"><div class="cname">Tablet</div><div class="csub">tablet-x9q2m · 192.0.2.22</div></div>
+            <span class="c proto">DoT</span>
+            <span class="c answer"><span class="verdict block">REFUSED</span></span>
+            <span class="c lat">1 ms</span>
+            <span class="c act"><button class="qact allow" title="Freigeben" aria-label="Freigeben" onclick="event.stopPropagation()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></button></span>
+            <svg class="chev-m" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+        </div>
+        <div class="pager">
+          <button class="btn-sec">Mehr laden</button>
+          <span class="count">1–50 von 128.431</span>
         </div>
         <div class="footnote">Aufbewahrung 30 Tage · IP-Kürzung „letzte Gruppe" · Spalten über Filter konfigurierbar · Export über das Menü</div>
       </div>
