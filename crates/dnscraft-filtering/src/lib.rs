@@ -44,7 +44,10 @@ pub use builder::{
 pub use clock::{Clock, ManualClock, SystemClock, wait_until};
 pub use engine::{FilterEngine, ListSelection, ListStatus, ReloadReport};
 pub use error::{FilterError, IdError, NameError, RuleError, UnsupportedKind};
-pub use fetch::{FetchError, FetchOutcome, Fetcher, FetcherConfig, MAX_REDIRECTS};
+pub use fetch::{
+    FetchError, FetchOutcome, Fetcher, FetcherConfig, LIST_FETCH_FAILED, LIST_TOO_LARGE,
+    MAX_REDIRECTS,
+};
 pub use index::{
     ENTRY_OVERHEAD_BYTES, Index, IndexBuilder, IndexError, IndexMemory, MAX_GLOB_RULES,
     MAX_REGEX_RULES, MemoryTexts, REGEX_BUDGET_BYTES, RuleTextSource, SourceId, SourceKind,
@@ -66,8 +69,8 @@ pub use services::{
     ServicesUpdateReport, ServicesUrls, seed_services_cache, update_services_catalog,
 };
 pub use set::{
-    DEFAULT_UPDATE_INTERVAL, FilterConfig, FilterSetConfig, ListBodies, ListConfig, ListText,
-    McpRule, OpenedList, SnapshotError,
+    DEFAULT_MAX_LIST_SIZE_MB, DEFAULT_UPDATE_INTERVAL, FilterConfig, FilterSetConfig, ListBodies,
+    ListConfig, ListText, McpRule, OpenedList, SnapshotError,
 };
 pub use snapshot::{CustomFacts, ListFacts, SharedIndex, Snapshot, SnapshotBuilder};
 pub use stats::{FilterStats, ListStats, SetStats};

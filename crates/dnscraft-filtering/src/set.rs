@@ -14,6 +14,9 @@ use crate::types::{BlockMode, ListId, McpRuleId, SetId};
 /// Default list update interval (24 h).
 pub const DEFAULT_UPDATE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// Default maximum size of one list body in MiB (64 MiB).
+pub const DEFAULT_MAX_LIST_SIZE_MB: u64 = crate::store::DEFAULT_MAX_BODY_BYTES / (1024 * 1024);
+
 /// One configured filter list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListConfig {
@@ -96,6 +99,18 @@ pub struct FilterConfig {
     pub sets: Vec<FilterSetConfig>,
     /// How often lists are refreshed.
     pub update_interval: Duration,
+    /// Maximum accepted size of one list body, in MiB (spec
+    /// `filtering.max_list_size_mb`, default 64 MiB). This is the counterpart
+    /// of [`StoreConfig::max_body_bytes`](crate::StoreConfig::max_body_bytes)
+    /// and is applied to every store body read, fetch and write.
+    pub max_list_size_mb: u64,
+}
+
+impl FilterConfig {
+    /// [`Self::max_list_size_mb`] in bytes, saturating on absurd values.
+    pub fn max_list_size_bytes(&self) -> u64 {
+        self.max_list_size_mb.saturating_mul(1024 * 1024)
+    }
 }
 
 impl Default for FilterConfig {
@@ -104,6 +119,7 @@ impl Default for FilterConfig {
             lists: Vec::new(),
             sets: Vec::new(),
             update_interval: DEFAULT_UPDATE_INTERVAL,
+            max_list_size_mb: DEFAULT_MAX_LIST_SIZE_MB,
         }
     }
 }

@@ -18,8 +18,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use dnscraft_filtering::{
-    Clock, DomainName, FilterConfig, FilterEngine, FilterSetConfig, ListConfig, ListId, ListMeta,
-    ListSelection, ListSourceSpec, ListStore, ManualClock, SetId, StoreConfig, Verdict,
+    Clock, DEFAULT_MAX_BODY_BYTES, DomainName, FilterConfig, FilterEngine, FilterSetConfig,
+    ListConfig, ListId, ListMeta, ListSelection, ListSourceSpec, ListStore, ManualClock, SetId,
+    SkipReason, StoreConfig, Verdict,
 };
 use http::{Route, TestServer};
 
@@ -84,6 +85,7 @@ fn base_config(lists: Vec<ListConfig>, sets: Vec<FilterSetConfig>) -> FilterConf
         lists,
         sets,
         update_interval: Duration::from_secs(3600),
+        ..FilterConfig::default()
     }
 }
 
@@ -254,7 +256,7 @@ async fn failed_update_keeps_last_good() {
     let st = statuses.iter().find(|s| s.id == lid("a")).unwrap();
     assert_eq!(
         st.error_code.as_deref(),
-        Some("filter_fetch.http_status"),
+        Some("filter_list.fetch_failed"),
         "{st:?}"
     );
 
@@ -374,4 +376,76 @@ async fn on_disk_rule_text_via_store() {
         panic!("{v:?}");
     };
     assert_eq!(&*r.rule, "||ads.example^");
+}
+
+#[test]
+fn default_max_list_size_matches_the_store_default() {
+    let cfg = FilterConfig::default();
+    assert_eq!(cfg.max_list_size_mb, 64);
+    assert_eq!(cfg.max_list_size_bytes(), DEFAULT_MAX_BODY_BYTES);
+}
+
+/// GF1 regression: `max_list_size_mb` from `FilterConfig` reaches the store's
+/// body cap instead of leaving the store default (64 MiB) in charge.
+#[tokio::test]
+async fn config_max_list_size_mb_caps_list_bodies() {
+    let dir = TempDir::new("max-size");
+    let clock = Arc::new(ManualClock::new(t0()));
+    let store = ListStore::open_with(dir.path(), StoreConfig::default(), clock.clone()).unwrap();
+    let path = dir.path().join("big.txt");
+    let line = "||host000000.example^\n";
+    let mut body = String::new();
+    while body.len() <= 2 * 1024 * 1024 {
+        body.push_str(line);
+    }
+    write_file(&path, &body);
+
+    let mut cfg = base_config(vec![list_file("big", path)], vec![one_set(&["big"])]);
+    cfg.max_list_size_mb = 1;
+    let eng = FilterEngine::open_without_scheduler(cfg, store, clock).unwrap();
+    let statuses = eng.update_lists(ListSelection::All).await;
+    let st = statuses.iter().find(|s| s.id == lid("big")).unwrap();
+    assert_eq!(
+        st.error_code.as_deref(),
+        Some("filter_list.too_large"),
+        "{st:?}"
+    );
+    assert!(st.last_attempt.is_some());
+}
+
+/// GF4 regression: the last HTTP status and the skip breakdown are surfaced.
+#[tokio::test]
+async fn list_status_reports_http_status_and_skips_by_reason() {
+    let dir = TempDir::new("status");
+    let clock = Arc::new(ManualClock::new(t0()));
+    let store = ListStore::open_with(dir.path(), StoreConfig::default(), clock.clone()).unwrap();
+    let mut meta = ListMeta::default();
+    meta.last_attempt = Some(store.now_unix());
+    meta.last_success = Some(store.now_unix());
+    meta.http_status = Some(200);
+    store
+        .write_body(&lid("a"), "||ads.example^\n##.ad\n||bad..name^\n", &meta)
+        .unwrap();
+
+    let cfg = base_config(
+        vec![list_url("a", "https://lists.example.com/a.txt".into())],
+        vec![one_set(&["a"])],
+    );
+    let eng = FilterEngine::open_without_scheduler(cfg, store, clock).unwrap();
+    let st = eng.list_status().into_iter().next().unwrap();
+    assert_eq!(st.http_status, Some(200), "{st:?}");
+    assert_eq!(st.rules_parsed, 1, "{st:?}");
+    assert_eq!(st.rules_skipped, 2, "{st:?}");
+    assert_eq!(
+        st.skipped_by_reason.get(SkipReason::Unsupported(
+            dnscraft_filtering::UnsupportedKind::Cosmetic
+        )),
+        1,
+        "{st:?}"
+    );
+    assert_eq!(
+        st.skipped_by_reason.get(SkipReason::InvalidDomain),
+        1,
+        "{st:?}"
+    );
 }

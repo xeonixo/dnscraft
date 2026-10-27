@@ -45,9 +45,13 @@ Supported modifiers: `$important`, `$badfilter`, `$dnstype=…` (incl. negation 
 `$denyallow=…`, `$dnsrewrite=…`.
 
 - `$dnsrewrite` from **custom rules** may answer with an rcode (`REFUSED`, `NXDOMAIN`, …)
-  or with records (A, AAAA, CNAME, TXT, …). From **downloaded lists** only rcode/blocking
-  forms are honoured; record rewrites from third-party lists are ignored with a warning
-  (same reasoning as hosts lines: a compromised list must not redirect domains).
+  or with records (A, AAAA, CNAME, TXT, …). From **downloaded lists** only rcode and
+  `@@…$dnsrewrite` (disable) forms are honoured. A **record-form** rewrite (A/AAAA/CNAME/
+  TXT) on a downloaded-list rule causes the **whole rule to be dropped** and counted as
+  `rewrite_from_list` with a warning. This deliberately differs from hosts lines (which
+  keep their block and ignore the IP): a record-rewrite line has no block-only meaning
+  the list author wrote, so the engine does not invent one. The invariant is the same:
+  a compromised list must not redirect domains.
 - `$client`, `$ctag`: ignored with a warning (profiles in `policy` replace them).
 - Cosmetic/URL rules from browser lists (`##`, `$script`, paths, `$domain=`): skipped and
   counted, never an error (EasyList Germany and EasyPrivacy contain many).
@@ -55,8 +59,11 @@ Supported modifiers: `$important`, `$badfilter`, `$dnstype=…` (incl. negation 
   Non-ASCII rules are converted to punycode (IDNA); unconvertible ones are skipped with a
   warning.
 - Priority (highest first), as in AdGuard: `$important` exception > `$important` block >
-  exception > block; `$badfilter` disables the identical rule everywhere in the set.
-  Temporary allows (below) rank like `$important` exceptions.
+  exception > block. `$badfilter` disables the identical rule **from the sources it may
+  affect**: a `$badfilter` in a downloaded list or a blocked service never disables an
+  identical **custom** rule of the set (a list must not silently remove the user's own
+  rules); a custom `$badfilter` disables identical rules everywhere in the set, including
+  list and service rules. Temporary allows (below) rank like `$important` exceptions.
 
 ### Parsing and validation API
 
@@ -152,6 +159,10 @@ Every error exposes a stable `code()` for API and i18n (`filter_list.fetch_faile
 Measured with a `criterion` benchmark on a generated rule set of the same size and shape
 (mostly plain domains, some wildcards/regex), plus a manual run against the real lists.
 
+**Owner waiver (2026-10-27).** The deep-name match p99 (measured ≈ 18.9 µs against the
+10 µs target) and the reload peak memory were waived by the owner. They are tracked as
+known deviations, not release gates; the other budget rows remain targets.
+
 ## Configuration excerpt (TOML, bootstrap only; normally edited in the UI)
 
 ```toml
@@ -215,8 +226,9 @@ custom_rules = ["@@||example.org^"]
 - Block mode: selectable per filter set; default `REFUSED`.
 - List updates every 24 h by default.
 - Hosts lines in lists always block, never redirect.
-- `$dnsrewrite` record rewrites are honoured only in custom rules; from downloaded lists
-  only rcode/blocking forms apply.
+- `$dnsrewrite` record rewrites are honoured only in custom rules; in downloaded lists
+  only rcode and disable forms apply, and a record-form rewrite drops the whole rule
+  (counted as `rewrite_from_list`).
 - IP rules (`||1.2.3.4^`) are supported and match answer addresses (owner, 2026-10-25, after Checkpoint A).
 - Spec approved 2026-10-25. Dependencies are proposed in the plan for approval.
 

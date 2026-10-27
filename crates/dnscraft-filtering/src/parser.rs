@@ -39,10 +39,10 @@
 //! - `$` modifier lists are recognised syntactically (the text after the last
 //!   unescaped `$` that starts with a letter or `~` and contains no `/`) and
 //!   parsed by the `modifiers` module. Browser-only modifiers skip the rule as
-//!   `Unsupported(BrowserOnly)`; `$client`/`$ctag` skip it as `ClientModifier`
-//!   (applying a per-client rule globally would be wrong); unknown ones as
-//!   `UnknownModifier`. `$dnsrewrite` records are refused in downloaded lists
-//!   (`RewriteFromList`).
+//!   `Unsupported(BrowserOnly)`; `$client`/`$ctag` are ignored with a warning
+//!   and the rule still applies (profiles do per-client scoping); unknown ones
+//!   as `UnknownModifier`. `$dnsrewrite` records are refused in downloaded
+//!   lists (`RewriteFromList`).
 //! - Non-ASCII domains are converted to punycode (UTS 46); failures are
 //!   `InvalidIdna`.
 //! - Wildcard rules (any adblock pattern containing `*`) become
@@ -98,7 +98,8 @@ pub enum SkipReason {
     ReservedHost,
     /// A modifier this engine does not know.
     UnknownModifier,
-    /// `$client` / `$ctag` (per-client scoping is done by profiles).
+    /// Reserved for `$client` / `$ctag`. The parser now ignores those
+    /// modifiers and keeps the rule, so it no longer produces this reason.
     ClientModifier,
     /// A `$dnsrewrite` record rewrite in a downloaded list (never honoured).
     RewriteFromList,
@@ -440,6 +441,19 @@ pub fn parse_list(body: &str, source: ListSource) -> ParsedList {
 fn record_skip(out: &mut ListParseStats, line_no: u32, line: &str, e: &RuleError) {
     let reason = SkipReason::from(e);
     out.skipped.add(reason);
+    // DNS-relevant skips deserve an operator warning; cosmetic/browser noise
+    // from the reference lists does not.
+    if matches!(
+        reason,
+        SkipReason::ClientModifier | SkipReason::InvalidIdna | SkipReason::RewriteFromList
+    ) {
+        tracing::warn!(
+            line = line_no,
+            reason = reason.as_str(),
+            code = e.code(),
+            "skipping filter rule"
+        );
+    }
     if out.samples.len() < SKIP_SAMPLE_LIMIT && out.skipped.get(reason) <= SKIP_SAMPLES_PER_REASON {
         let t = trim_rule_line(line);
         let mut n = t.len().min(SAMPLE_TEXT_MAX);

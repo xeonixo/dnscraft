@@ -178,8 +178,11 @@ async fn http_404_fails_and_keeps_last_good_body() {
         .unwrap()
         .last_error
         .unwrap();
-    assert_eq!(me.code, "filter_fetch.http_status");
+    // API-level code from SPEC.md, with the promised params; the low-level
+    // code stays available on the error itself.
+    assert_eq!(me.code, "filter_list.fetch_failed");
     assert_eq!(me.params["status"], "404");
+    assert_eq!(me.params["url"], srv.url("/missing"));
     assert_eq!(meta.last_attempt, Some(1010));
     assert_eq!(meta.last_success, Some(1000));
     assert_eq!(e.store.read_body(&id()).unwrap().unwrap(), "good\n");
@@ -192,7 +195,9 @@ async fn oversize_content_length_aborts_immediately() {
     let (meta, error) = failed(e.fetcher.fetch(&id(), &url(&srv, "/big"), None).await);
     assert_eq!(error, FetchError::TooLarge { max: 1000 });
     assert_eq!(error.code(), "filter_fetch.too_large");
-    assert_eq!(meta.last_error.unwrap().code, "filter_fetch.too_large");
+    let me = meta.last_error.unwrap();
+    assert_eq!(me.code, "filter_list.too_large");
+    assert_eq!(me.params["max"], "1000");
 }
 
 #[tokio::test]

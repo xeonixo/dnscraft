@@ -17,6 +17,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::error::FilterError;
 use crate::fetch::{FetchOutcome, Fetcher};
 use crate::name::DomainName;
+use crate::parser::SkipCounts;
 use crate::scheduler::UpdateScheduler;
 use crate::services::{
     ServiceCatalog, ServicesUpdateReport, ServicesUrls, update_services_catalog,
@@ -47,12 +48,18 @@ pub struct ListStatus {
     pub last_attempt: Option<SystemTime>,
     /// Last successful update.
     pub last_success: Option<SystemTime>,
-    /// Stable error code of the last failed attempt, if any.
+    /// Stable error code of the last failed attempt, if any
+    /// (`filter_list.fetch_failed`, `filter_list.too_large`, …).
     pub error_code: Option<String>,
+    /// HTTP status of the last attempt, when it got a response.
+    pub http_status: Option<u16>,
     /// Rules accepted by the parser in the last successful build.
     pub rules_parsed: u64,
     /// Rules skipped by the parser in the last successful build.
     pub rules_skipped: u64,
+    /// Skipped items broken down by reason (the sum is
+    /// [`Self::rules_skipped`] while the list has a body in a set).
+    pub skipped_by_reason: SkipCounts,
     /// Unique contribution after dedup in a set that uses this list
     /// (maximum across sets when the list appears in several combinations).
     pub unique_contribution: usize,
@@ -183,14 +190,19 @@ impl FilterEngine {
         store: ListStore,
         clock: Arc<dyn Clock>,
     ) -> Result<Arc<Self>, FilterError> {
+        // `FilterConfig` is the source of truth for the per-list size cap
+        // (`max_list_size_mb`); apply it to a list-only clone so the blocked-
+        // services catalog keeps its own (larger) cap in `store`.
+        let mut list_store = store.clone();
+        list_store.set_max_body_bytes(config.max_list_size_bytes());
         let (catalog, services_error) = load_catalog_offline(&store);
         let snapshot = build_snapshot(
-            list_bodies(&store, &config),
+            list_bodies(&list_store, &config),
             &config,
             catalog.clone(),
             Arc::clone(&clock),
         )?;
-        let status = status_from_snapshot(&snapshot, &config, &store);
+        let status = status_from_snapshot(&snapshot, &config, &list_store);
         let fetcher = Fetcher::new(&store).map_err(|e| FilterError::BuildFailed {
             message: e.to_string(),
         })?;
@@ -297,11 +309,12 @@ impl FilterEngine {
             let _ = self.refresh_services_catalog().await;
         }
         let targets = select_lists(&config, &which);
+        // Fetch and persist with the cap of the current config
+        // (`max_list_size_mb`), not the cap the store was opened with.
+        let mut store = inner.store.clone();
+        store.set_max_body_bytes(config.max_list_size_bytes());
         for (id, source) in targets {
-            let outcome = inner
-                .fetcher
-                .fetch_and_store(&inner.store, &id, &source)
-                .await;
+            let outcome = inner.fetcher.fetch_and_store(&store, &id, &source).await;
             update_meta_status(inner, &id, &outcome);
             // Persist parse counts after rebuild; fetch meta already written.
             let _ = outcome;
@@ -635,8 +648,9 @@ impl FilterEngine {
                     .clone()
             });
 
-            let bodies = list_bodies(&inner.store, &cfg);
-            let store = inner.store.clone();
+            let mut store = inner.store.clone();
+            store.set_max_body_bytes(cfg.max_list_size_bytes());
+            let bodies = list_bodies(&store, &cfg);
             let catalog = inner
                 .catalog
                 .read()
@@ -929,21 +943,21 @@ fn status_from_snapshot(
 ) -> HashMap<ListId, ListStatus> {
     let mut unique: HashMap<ListId, usize> = HashMap::new();
     let mut parsed: HashMap<ListId, u64> = HashMap::new();
-    let mut skipped: HashMap<ListId, u64> = HashMap::new();
+    let mut skipped: HashMap<ListId, SkipCounts> = HashMap::new();
     for set in snapshot.set_ids() {
         if let Some(facts) = snapshot.list_facts(set) {
             for f in facts {
                 let e = unique.entry(f.list.clone()).or_insert(0);
                 *e = (*e).max(f.unique_contribution);
                 parsed.insert(f.list.clone(), f.rules_parsed as u64);
-                let sk: u64 = f.skipped.total() as u64;
-                skipped.insert(f.list.clone(), sk);
+                skipped.insert(f.list.clone(), f.skipped.clone());
             }
         }
     }
     let mut out = HashMap::new();
     for l in &config.lists {
         let meta = store.read_meta(&l.id).ok().flatten().unwrap_or_default();
+        let breakdown = skipped.get(&l.id).cloned().unwrap_or_default();
         out.insert(
             l.id.clone(),
             ListStatus {
@@ -951,8 +965,12 @@ fn status_from_snapshot(
                 last_attempt: meta.last_attempt.map(unix_to_system),
                 last_success: meta.last_success.map(unix_to_system),
                 error_code: meta.last_error.map(|e| e.code),
+                http_status: meta.http_status,
                 rules_parsed: parsed.get(&l.id).copied().unwrap_or(meta.rules_parsed),
-                rules_skipped: skipped.get(&l.id).copied().unwrap_or(meta.rules_skipped),
+                rules_skipped: skipped
+                    .get(&l.id)
+                    .map_or(meta.rules_skipped, |s| s.total() as u64),
+                skipped_by_reason: breakdown,
                 unique_contribution: unique.get(&l.id).copied().unwrap_or(0),
             },
         );
@@ -971,13 +989,16 @@ fn update_meta_status(inner: &EngineInner, id: &ListId, outcome: &FetchOutcome) 
         last_attempt: None,
         last_success: None,
         error_code: None,
+        http_status: None,
         rules_parsed: 0,
         rules_skipped: 0,
+        skipped_by_reason: SkipCounts::default(),
         unique_contribution: 0,
     });
     entry.last_attempt = meta.last_attempt.map(unix_to_system);
     entry.last_success = meta.last_success.map(unix_to_system);
     entry.error_code = meta.last_error.as_ref().map(|e: &MetaError| e.code.clone());
+    entry.http_status = meta.http_status;
     // Keep parse/unique numbers until rebuild refreshes them.
     let _ = meta;
 }

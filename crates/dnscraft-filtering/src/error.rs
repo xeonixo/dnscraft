@@ -238,8 +238,10 @@ pub enum RuleError {
         /// Span of the offending part (the value if there is one).
         span: std::ops::Range<usize>,
     },
-    /// `$client` / `$ctag`: per-client scoping is done by profiles, not rules.
-    #[error("$client and $ctag are not supported; use profiles")]
+    /// `$client` / `$ctag`. Kept for API compatibility: the parser now ignores
+    /// those modifiers (with a warning) and keeps the rule, because per-client
+    /// scoping is done by profiles.
+    #[error("$client and $ctag are ignored; use profiles")]
     ClientModifier {
         /// Span of the modifier.
         span: std::ops::Range<usize>,

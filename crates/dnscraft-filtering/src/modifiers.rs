@@ -287,14 +287,24 @@ pub(crate) fn parse_modifiers(
             span: s..off(line, mods) + mods.len(),
         });
     }
-    if let Some(t) = toks.iter().find(|t| t.name == "client" || t.name == "ctag") {
-        return Err(RuleError::ClientModifier {
-            span: t.span.clone(),
-        });
+    // `$client` / `$ctag`: profiles in `policy` replace per-client rule
+    // scoping, so the modifier is ignored and the rule still applies. Warn
+    // instead of rejecting the whole rule (SPEC-filtering: "ignored with a
+    // warning").
+    for t in toks
+        .iter()
+        .filter(|t| t.name == "client" || t.name == "ctag")
+    {
+        tracing::warn!(
+            modifier = %t.name,
+            span = ?t.span,
+            "ignoring $client/$ctag modifier; per-client scoping is done by profiles"
+        );
     }
+    let ignored = |t: &Tok<'_>| t.name == "client" || t.name == "ctag";
     if let Some(t) = toks
         .iter()
-        .find(|t| !t.name.is_empty() && !KNOWN.contains(&t.name.as_str()))
+        .find(|t| !t.name.is_empty() && !ignored(t) && !KNOWN.contains(&t.name.as_str()))
     {
         return Err(RuleError::UnknownModifier {
             span: t.span.clone(),
@@ -302,6 +312,9 @@ pub(crate) fn parse_modifiers(
     }
     let mut m = Modifiers::default();
     for t in &toks {
+        if ignored(t) {
+            continue;
+        }
         let Some(name) = KNOWN.iter().find(|k| **k == t.name).copied() else {
             return Err(RuleError::InvalidSyntax {
                 detail: "empty_modifier",

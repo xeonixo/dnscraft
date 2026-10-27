@@ -87,6 +87,7 @@ fn config(lists: Vec<ListConfig>, sets: Vec<FilterSetConfig>, secs: u64) -> Filt
         lists,
         sets,
         update_interval: Duration::from_secs(secs),
+        ..FilterConfig::default()
     }
 }
 

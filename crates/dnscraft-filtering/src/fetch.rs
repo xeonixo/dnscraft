@@ -32,6 +32,11 @@
 //! | [`FetchError::NotText`] | `filter_fetch.not_text` |
 //! | [`FetchError::Tls`] | `filter_fetch.tls` |
 //! | [`FetchError::Io`] | `filter_fetch.io` |
+//!
+//! Errors persisted in [`ListMeta::last_error`] use the list-level codes from
+//! `SPEC.md`: `filter_list.fetch_failed` (with `url` and `status`) and
+//! `filter_list.too_large` (with `max`). [`FetchError::code`] keeps the
+//! low-level code for logs and callers that need it.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
@@ -50,6 +55,15 @@ use crate::types::ListId;
 
 /// Maximum number of redirects followed.
 pub const MAX_REDIRECTS: usize = 5;
+
+/// Stable list-level code for a download rejected with an HTTP status.
+/// Promised by `SPEC.md`; the low-level [`FetchError::code`] stays available.
+pub const LIST_FETCH_FAILED: &str = "filter_list.fetch_failed";
+
+/// Stable list-level code for a body above the configured cap. Promised by
+/// `SPEC.md`; the low-level [`FetchError::code`] / [`StoreError::code`] stay
+/// available.
+pub const LIST_TOO_LARGE: &str = "filter_list.too_large";
 
 /// Code stored in the metadata of a services file rejected by validation.
 pub(crate) const MALFORMED_SERVICES_CODE: &str = "filter_services.malformed";
@@ -127,7 +141,19 @@ impl FetchError {
         }
     }
 
-    /// The form stored in [`ListMeta::last_error`].
+    /// Stable list-level code promised by `SPEC.md`
+    /// (`filter_list.fetch_failed` / `filter_list.too_large`); every other
+    /// failure keeps [`Self::code`].
+    pub fn list_code(&self) -> &'static str {
+        match self {
+            Self::HttpStatus(_) => LIST_FETCH_FAILED,
+            Self::TooLarge { .. } => LIST_TOO_LARGE,
+            _ => self.code(),
+        }
+    }
+
+    /// The form stored in [`ListMeta::last_error`]. Uses [`Self::list_code`]
+    /// so persisted list errors carry the API-level codes from `SPEC.md`.
     pub fn to_meta_error(&self) -> MetaError {
         let mut params = BTreeMap::new();
         match self {
@@ -146,10 +172,24 @@ impl FetchError {
             Self::Timeout | Self::TooManyRedirects | Self::NotText => {}
         }
         MetaError {
-            code: self.code().to_owned(),
+            code: self.list_code().to_owned(),
             params,
         }
     }
+}
+
+/// Records `error` on `meta`, adding the `url` parameter promised by
+/// `SPEC.md` when the source is an HTTP(S) URL.
+fn set_last_error(meta: &mut ListMeta, error: &FetchError) {
+    let mut e = error.to_meta_error();
+    if let Some(src) = meta.source.as_deref()
+        && (src.starts_with("https://") || src.starts_with("http://"))
+    {
+        e.params
+            .entry("url".to_owned())
+            .or_insert_with(|| src.to_owned());
+    }
+    meta.last_error = Some(e);
 }
 
 impl From<StoreError> for FetchError {
@@ -288,7 +328,7 @@ impl Fetcher {
         }
         match source {
             ListSourceSpec::Url(url) => self.fetch_url(url, prev, meta, now, max_body).await,
-            ListSourceSpec::File(path) => self.fetch_file(id, path, meta, now).await,
+            ListSourceSpec::File(path) => self.fetch_file(id, path, meta, now, max_body).await,
         }
     }
 
@@ -364,7 +404,7 @@ impl Fetcher {
                     Err(e) => {
                         let error = FetchError::from(e);
                         let mut meta = meta;
-                        meta.last_error = Some(error.to_meta_error());
+                        set_last_error(&mut meta, &error);
                         (Ok(()), FetchOutcome::Failed { meta, error })
                     }
                 }
@@ -394,7 +434,12 @@ impl Fetcher {
                 None
             }
         };
-        let outcome = self.fetch(id, source, prev.as_ref()).await;
+        // The caller's store carries the list size cap derived from the
+        // current `FilterConfig` (`max_list_size_mb`), which may differ from
+        // the cap this fetcher was built with.
+        let outcome = self
+            .fetch_capped(id, source, prev.as_ref(), store.config().max_body_bytes)
+            .await;
         let (result, outcome) = match outcome {
             FetchOutcome::Updated { body, meta } => {
                 let r = store.write_body(id, &body, &meta);
@@ -403,7 +448,7 @@ impl Fetcher {
                     Err(e) => {
                         let error = FetchError::from(e);
                         let mut meta = meta;
-                        meta.last_error = Some(error.to_meta_error());
+                        set_last_error(&mut meta, &error);
                         (Ok(()), FetchOutcome::Failed { meta, error })
                     }
                 }
@@ -485,8 +530,11 @@ impl Fetcher {
         path: &std::path::Path,
         mut meta: ListMeta,
         now: u64,
+        max_body: u64,
     ) -> FetchOutcome {
-        let store = self.store.clone();
+        // Local file lists obey the same cap as downloaded bodies.
+        let mut store = self.store.clone();
+        store.set_max_body_bytes(max_body);
         let path = path.to_path_buf();
         let read = tokio::task::spawn_blocking(move || store.read_file_source(&path)).await;
         let text = match read {
@@ -519,7 +567,7 @@ impl Fetcher {
 }
 
 fn failed(mut meta: ListMeta, error: FetchError, status: Option<StatusCode>) -> FetchOutcome {
-    meta.last_error = Some(error.to_meta_error());
+    set_last_error(&mut meta, &error);
     meta.http_status = status.map(|s| s.as_u16());
     FetchOutcome::Failed { meta, error }
 }
@@ -710,11 +758,30 @@ mod tests {
             assert!(e.code().starts_with("filter_fetch."));
             assert!(seen.insert(e.code()), "duplicate {}", e.code());
             assert!(!e.to_string().is_empty());
-            assert_eq!(e.to_meta_error().code, e.code());
+            // Persisted list errors carry the API-level code from SPEC.md.
+            assert_eq!(e.to_meta_error().code, e.list_code());
         }
         assert_eq!(
             FetchError::HttpStatus(503).to_meta_error().params["status"],
             "503"
+        );
+        // Both code families are exposed: low-level on the error, list-level
+        // for the API.
+        assert_eq!(
+            FetchError::HttpStatus(404).code(),
+            "filter_fetch.http_status"
+        );
+        assert_eq!(
+            FetchError::HttpStatus(404).list_code(),
+            "filter_list.fetch_failed"
+        );
+        assert_eq!(
+            FetchError::TooLarge { max: 1 }.code(),
+            "filter_fetch.too_large"
+        );
+        assert_eq!(
+            FetchError::TooLarge { max: 1 }.list_code(),
+            "filter_list.too_large"
         );
     }
 

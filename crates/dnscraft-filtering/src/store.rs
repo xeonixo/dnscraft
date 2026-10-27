@@ -109,6 +109,15 @@ impl StoreError {
         }
     }
 
+    /// Stable list-level code promised by `SPEC.md`
+    /// (`filter_list.too_large`); other failures keep [`Self::code`].
+    pub fn list_code(&self) -> &'static str {
+        match self {
+            Self::TooLarge { .. } => crate::fetch::LIST_TOO_LARGE,
+            _ => self.code(),
+        }
+    }
+
     fn io(op: &'static str, path: &Path, source: io::Error) -> Self {
         Self::Io {
             op,
@@ -359,6 +368,14 @@ impl ListStore {
     /// The configuration in effect.
     pub fn config(&self) -> &StoreConfig {
         &self.config
+    }
+
+    /// Replaces the body size cap of this store handle (clones keep their own
+    /// copy). The engine calls this with
+    /// [`FilterConfig::max_list_size_bytes`](crate::FilterConfig::max_list_size_bytes)
+    /// before reading, fetching or writing a list.
+    pub(crate) fn set_max_body_bytes(&mut self, max: u64) {
+        self.config.max_body_bytes = max;
     }
 
     /// Current time in unix seconds, from the injected clock.
@@ -1029,5 +1046,18 @@ mod tests {
             assert!(seen.insert(e.code()));
             assert!(!e.to_string().is_empty());
         }
+        // SPEC.md list-level alias for the size cap; other errors keep theirs.
+        assert_eq!(
+            StoreError::TooLarge {
+                path: "p".into(),
+                max: 1
+            }
+            .list_code(),
+            "filter_list.too_large"
+        );
+        assert_eq!(
+            StoreError::InvalidSource { reason: "r" }.list_code(),
+            "filter_store.invalid_source"
+        );
     }
 }

@@ -369,26 +369,32 @@ mod modifiers {
     }
 
     #[test]
-    fn client_and_ctag() {
+    fn client_and_ctag_are_ignored_but_the_rule_applies() {
         for input in [
             "||a.example^$client=1.2.3.4",
             "||a.example^$important,ctag=device_pc",
             "||a.example^$CLIENT=~'x'",
         ] {
-            let e = err(input);
-            assert_eq!(e.code(), "filter_rule.client_modifier", "{input}");
-            assert_eq!(e.params(), vec![("hint", "profiles".to_string())]);
-            let l = parse_list(input, ListSource::List);
-            assert!(l.rules.is_empty());
-            assert_eq!(l.skipped.get(SkipReason::ClientModifier), 1);
+            // The modifier is ignored, not an error: the rule still parses.
+            let r = rule(input);
+            assert_eq!(r.domain().unwrap().as_str(), "a.example", "{input}");
+            assert_eq!(r.action(), RuleAction::Block, "{input}");
         }
-        let e = err("||a.example^$important,client=1.2.3.4");
-        assert_eq!(
-            &"||a.example^$important,client=1.2.3.4"[e.span()],
-            "client=1.2.3.4"
+        // Modifiers next to the ignored one still apply.
+        assert!(
+            rule("||a.example^$important,ctag=device_pc")
+                .modifiers()
+                .important
         );
-        let l = parse_list("||a.example^$client=1.2.3.4", ListSource::Custom);
-        assert_eq!(l.skipped.get(SkipReason::ClientModifier), 1);
+        assert!(rule("||a.example^$client=1.2.3.4").modifiers().is_empty());
+
+        // List parsing keeps the rule and does not count it as skipped.
+        let l = parse_list("||a.example^$client=1.2.3.4\n", ListSource::List);
+        assert_eq!(l.rules.len(), 1);
+        assert_eq!(l.skipped.get(SkipReason::ClientModifier), 0);
+        let l = parse_list("||a.example^$client=1.2.3.4\n", ListSource::Custom);
+        assert_eq!(l.rules.len(), 1);
+        assert_eq!(l.skipped.get(SkipReason::ClientModifier), 0);
     }
 
     #[test]
