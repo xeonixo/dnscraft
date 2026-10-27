@@ -17,13 +17,15 @@
   --surface: #FFFFFF;
   --surface-2: #F7F7FA;
   --label: #000000;
-  --label-2: rgba(60,60,67,0.60);
-  --label-3: rgba(60,60,67,0.32);
+  --label-2: #6E6E73;
+  --label-3: #6C6C70;
   --separator: rgba(60,60,67,0.14);
-  --accent: #007AFF;
-  --accent-fill: rgba(0,122,255,0.12);
-  --ok: #1E9B45;
+  --track-off: #8E8E93;
+  --accent: #0060DF;
+  --accent-fill: rgba(0,96,223,0.12);
+  --ok: #18803A;
   --danger: #E0362F;
+  --danger-fill: #D0302A;
   --warn: #B55A00;
   --warn-fill: rgba(255,149,0,0.12);
   --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -39,12 +41,14 @@
     --surface-2: #2C2C2E;
     --label: #FFFFFF;
     --label-2: rgba(235,235,245,0.60);
-    --label-3: rgba(235,235,245,0.30);
+    --label-3: #8E8E93;
     --separator: rgba(84,84,88,0.60);
+    --track-off: #6C6C70;
     --accent: #0A84FF;
     --accent-fill: rgba(10,132,255,0.20);
     --ok: #30D158;
     --danger: #FF453A;
+    --danger-fill: #D70015;
     --warn: #FF9F0A;
     --warn-fill: rgba(255,159,10,0.16);
     --shadow: 0 1px 1px rgba(0,0,0,0.5);
@@ -57,12 +61,14 @@
   --surface-2: #2C2C2E;
   --label: #FFFFFF;
   --label-2: rgba(235,235,245,0.60);
-  --label-3: rgba(235,235,245,0.30);
+  --label-3: #8E8E93;
   --separator: rgba(84,84,88,0.60);
+  --track-off: #6C6C70;
   --accent: #0A84FF;
   --accent-fill: rgba(10,132,255,0.20);
   --ok: #30D158;
   --danger: #FF453A;
+  --danger-fill: #D70015;
   --warn: #FF9F0A;
   --warn-fill: rgba(255,159,10,0.16);
   --shadow: 0 1px 1px rgba(0,0,0,0.5);
@@ -168,6 +174,8 @@ body {
   font-size: 14px; border: 0; border-radius: var(--r-ctl);
   padding: 7px 15px; min-height: 34px; cursor: pointer;
 }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn-primary { background: #0A66D6; } }
+:root[data-theme="dark"] .btn-primary { background: #0A66D6; }
 
 .content { padding: 20px 24px; display: flex; flex-direction: column; gap: 18px; max-width: 1040px; }
 .content.wide { max-width: 1200px; }
@@ -186,6 +194,7 @@ body {
   margin-top: 8px; font-family: var(--font-mono); font-size: 12.5px;
   color: var(--label-2); background: var(--surface-2); border-radius: 6px;
   padding: 4px 8px; display: inline-block; letter-spacing: 0.02em;
+  max-width: 100%; overflow-wrap: anywhere;
 }
 
 .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
@@ -231,7 +240,7 @@ body {
 .switch { position: relative; width: 51px; height: 31px; flex: 0 0 auto; }
 .switch input { opacity: 0; width: 0; height: 0; }
 .switch .track {
-  position: absolute; inset: 0; border-radius: 16px; background: rgba(120,120,128,0.32);
+  position: absolute; inset: 0; border-radius: 16px; background: var(--track-off);
   transition: background 0.18s; cursor: pointer;
 }
 .switch .thumb {
@@ -251,10 +260,14 @@ body {
 .search svg { color: var(--label-3); flex: 0 0 auto; }
 .search input { border: 0; background: none; font: inherit; color: var(--label); outline: none; width: 100%; }
 .search input::placeholder { color: var(--label-3); }
+.search:focus-within, .field:focus-within { box-shadow: 0 0 0 3px var(--accent-fill); border-color: var(--accent); }
+.switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
 .filter-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 
 .lead { color: var(--label-2); font-size: 14px; max-width: 60ch; margin: 0; }
 .footnote { font-size: 12.5px; color: var(--label-3); padding: 0 4px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.sidebar nav { display: flex; flex-direction: column; gap: 2px; }
 
 /* placeholder screens: feature inventory */
 .feature-row { display: flex; align-items: center; gap: 12px; padding: 11px 16px; min-height: 46px; }
@@ -276,6 +289,11 @@ body {
   font-size: 14px; cursor: pointer; border: 0; background: none; font: inherit; padding: 0; align-self: flex-start;
 }
 .back-link:hover { text-decoration: underline; }
+.link-danger { font: inherit; font-size: 13px; font-weight: 500; color: var(--danger); background: none; border: 0; padding: 0; cursor: pointer; }
+/* placeholder helpers: nav count badge, disabled switch, select inside .field */
+.nav-badge { margin-left: auto; min-width: 20px; padding: 1px 7px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 11.5px; font-weight: 600; text-align: center; }
+.switch input:disabled ~ .track { opacity: .4; cursor: not-allowed; }
+.field select { border: 0; background: none; font: inherit; color: var(--label); outline: none; width: 100%; }
 .sheet-scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.32); z-index: 60; display: grid; place-items: end center; }
 .sheet {
   width: 100%; max-width: 520px; background: var(--surface);
@@ -353,7 +371,8 @@ body {
 @media (max-width: 999px) {
   .qhead { display: none; }
   .qrow { display: flex; align-items: center; gap: 12px; padding: 12px 16px; min-height: 52px; }
-  .qrow .time, .qrow .type, .qrow .client, .qrow .proto, .qrow .lat, .qrow .act { display: none; }
+  .qrow .time, .qrow .type, .qrow .client, .qrow .proto, .qrow .lat { display: none; }
+  .qrow .act { display: flex; opacity: 1; flex: 0 0 auto; }
   .qrow .domain { flex: 1; }
   .qrow .dsub.d { display: none; }
   .qrow .dsub.m { display: block; }
@@ -368,9 +387,10 @@ body {
   .sidebar {
     position: fixed; left: 0; top: 0; bottom: 0; z-index: 40;
     transform: translateX(-100%);
-    transition: transform 0.22s cubic-bezier(0.2,0.8,0.2,1); height: 100dvh;
+    transition: transform 0.22s cubic-bezier(0.2,0.8,0.2,1), visibility 0s linear 0.22s; height: 100dvh;
+    visibility: hidden;
   }
-  body.nav-open .sidebar { transform: translateX(0); }
+  body.nav-open .sidebar { transform: translateX(0); visibility: visible; transition-delay: 0s; }
   .scrim { display: block; position: fixed; inset: 0; z-index: 39;
     background: rgba(0,0,0,0.32); opacity: 0; pointer-events: none; transition: opacity 0.22s; }
   body.nav-open .scrim { opacity: 1; pointer-events: auto; }
@@ -386,6 +406,24 @@ body {
   .filter-row { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; padding-bottom: 2px; }
   .filter-row::-webkit-scrollbar { display: none; }
 }
+@media (pointer: coarse) {
+  .nav-item { min-height: 44px; }
+  .seg button { min-height: 44px; }
+  .icon-btn { width: 44px; height: 44px; }
+  .qact { width: 44px; height: 44px; }
+  .switch::before { content: ""; position: absolute; inset: -7px -4px; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .toolbar { background: var(--canvas); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .scrim, .sheet-scrim { background: rgba(0,0,0,0.5); }
+}
+@media (prefers-contrast: more) {
+  :root { --label-2: #4A4A4F; --label-3: #5A5A5E; --separator: rgba(60,60,67,0.6); }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --label-2: #C7C7CC; --label-3: #A8A8AD; --separator: rgba(235,235,245,0.4); }
+  }
+  :root[data-theme="dark"] { --label-2: #C7C7CC; --label-3: #A8A8AD; --separator: rgba(235,235,245,0.4); }
+}
 @media (prefers-reduced-motion: reduce) {
   .sidebar, .scrim, .switch .track, .switch .thumb { transition: none; }
 }
@@ -394,8 +432,10 @@ body {
 </head>
 <body>
 
+<div id="live" role="status" aria-live="polite" class="sr-only"></div>
+
 <div class="app">
-  <aside class="sidebar" aria-label="Navigation">
+  <aside class="sidebar">
     <div class="brand">
       <span class="mark">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
@@ -403,15 +443,21 @@ body {
       DNScraft
     </div>
 
+    <nav id="sidebar-nav" aria-label="Navigation">
     <div class="nav-section">Übersicht</div>
-    <button class="nav-item active" data-target="screen-dashboard" data-title="Übersicht">
+    <button class="nav-item active" aria-current="page" data-target="screen-dashboard" data-title="Übersicht">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/></svg>
-      Dashboard
+      Übersicht
     </button>
 
     <button class="nav-item" data-target="screen-queries" data-title="Anfragen">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       Anfragen
+    </button>
+    <button class="nav-item" data-target="screen-alerts" data-title="Alerts">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+      Alerts
+      <span class="nav-badge" aria-label="4 aktive Hinweise">4</span>
     </button>
 
     <div class="nav-section">Filterung</div>
@@ -426,6 +472,10 @@ body {
     <button class="nav-item" data-target="screen-mcp-rules" data-title="Regeln &amp; Freigaben">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       Regeln &amp; Freigaben
+    </button>
+    <button class="nav-item" data-target="screen-blocked-services" data-title="Blockierte Dienste">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg>
+      Blockierte Dienste
     </button>
 
     <div class="nav-section">DNS-Regelwerk</div>
@@ -491,6 +541,8 @@ body {
       API-Explorer
     </button>
 
+    </nav>
+
     <div class="sidebar-foot">
       <div class="node"><span class="node-dot"></span> node-1 · online</div>
       <div style="margin-top:3px">DNScraft v0.1.0 · <span style="color:var(--accent)">Update v0.1.1</span></div>
@@ -501,7 +553,7 @@ body {
 
   <main class="main">
     <div class="toolbar">
-      <button class="icon-btn menu-btn" aria-label="Menü" onclick="toggleNav()">
+      <button class="icon-btn menu-btn" aria-label="Menü" aria-controls="sidebar-nav" aria-expanded="false" onclick="toggleNav()">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
       </button>
       <h1 id="page-title" tabindex="-1">Übersicht</h1>
@@ -525,6 +577,14 @@ body {
             <b>Selbstsigniertes Zertifikat aktiv</b>
             <p>Bis ein ACME-Zertifikat vorliegt, ist die Verbindung nicht vertrauenswürdig. Das Zertifikat gilt für <span class="mono">node1.dns.example.com</span>.</p>
             <span class="fp">SHA-256&nbsp; 3A:9C:7F:11:DE:42:0B:88:65:01:EE:2A:94:C3:0D:77</span>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="row" onclick="showScreen('screen-alerts','Alerts')" style="cursor:pointer">
+            <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+            <div class="main"><b style="font-weight:500">4 aktive Hinweise</b><div class="meta">Zertifikat · Filterliste · Knoten „node-2“ · DynDNS</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
         </div>
 
@@ -693,6 +753,56 @@ body {
       </div>
     </section>
 
+    <section class="screen" id="screen-alerts" hidden>
+      <div class="content">
+        <p class="lead">Aktive Hinweise aus Zertifikat, Filterlisten, Cluster und DynDNS. Jeder Hinweis führt zu seinem Bereich.</p>
+        <div class="filter-row">
+          <div class="seg" role="radiogroup" aria-label="Vorschau-Zustand">
+            <button role="radio" aria-checked="true" onclick="setAlertsEmpty(false)">Mit Hinweisen</button>
+            <button role="radio" aria-checked="false" onclick="setAlertsEmpty(true)">Leer</button>
+          </div>
+        </div>
+        <div id="alerts-list">
+          <div class="section-head">Zertifikat &amp; Domains</div>
+          <div class="group">
+            <div class="row">
+              <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+              <div class="main"><b style="font-weight:500">Zertifikat läuft in 12 Tagen ab</b><div class="meta">TLS · ACME nicht aktiv</div></div>
+              <div class="tail"><div class="time">heute 06:00</div><button class="btn-sec" onclick="showScreen('screen-tls','Zertifikat &amp; Domains')">Zum Zertifikat</button></div>
+            </div>
+            <div class="row">
+              <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+              <div class="main"><b style="font-weight:500">DynDNS-Fehler</b><div class="meta">DynDNS · Cloudflare 502</div></div>
+              <div class="tail"><div class="time">14:29</div><button class="btn-sec" onclick="showScreen('screen-tls','Zertifikat &amp; Domains')">Zu DynDNS</button></div>
+            </div>
+          </div>
+          <div class="section-head">Filterung</div>
+          <div class="group">
+            <div class="row">
+              <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+              <div class="main"><b style="font-weight:500">Filterliste-Update fehlgeschlagen</b><div class="meta">Filterlisten · letzter Versuch erneut in 1 h</div></div>
+              <div class="tail"><div class="time">heute 13:40</div><button class="btn-sec" onclick="showScreen('screen-filter-lists','Filterlisten')">Zu Filterlisten</button></div>
+            </div>
+          </div>
+          <div class="section-head">Knoten</div>
+          <div class="group">
+            <div class="row">
+              <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+              <div class="main"><b style="font-weight:500">Knoten „node-2“ offline</b><div class="meta">Cluster · Konfiguration v10</div></div>
+              <div class="tail"><div class="time">seit 14:02</div><button class="btn-sec" onclick="showScreen('screen-cluster','Knoten')">Zu Knoten</button></div>
+            </div>
+          </div>
+        </div>
+        <div id="alerts-empty" class="group" hidden>
+          <div class="row">
+            <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
+            <div class="main"><b style="font-weight:500">Keine aktiven Hinweise</b><div class="meta">Zertifikat, Filterlisten, Cluster und DynDNS sind in Ordnung.</div></div>
+          </div>
+        </div>
+        <div class="footnote">Platzhalter – kein /alerts-Endpunkt, siehe SPEC-web-ui (Required additions).</div>
+      </div>
+    </section>
+
     <section class="screen" id="screen-queries" hidden>
       <div class="content wide">
         <div class="filter-row">
@@ -802,7 +912,7 @@ body {
           </div>
         </div>
         <div class="pager">
-          <button class="btn-sec">Mehr laden</button>
+          <button class="btn-sec" onclick="announce('Mehr laden (Prototyp)')">Mehr laden</button>
           <span class="count">1–50 von 128.431</span>
         </div>
         <div class="footnote">Aufbewahrung 30 Tage · IP-Kürzung „letzte Gruppe“ · Spalten über Filter konfigurierbar · Export über das Menü</div>
@@ -884,7 +994,7 @@ body {
           <div class="row"><div class="main"><b style="font-weight:500">DNSSEC</b></div><div class="meta">nicht geprüft (geblockt)</div></div>
           <div class="row"><div class="main"><b style="font-weight:500">Cache</b></div><div class="meta">cache_hit = false</div></div>
           <div class="row"><div class="main"><b style="font-weight:500">Quell- / Zielport</b></div><div class="meta mono">51234 → 443</div></div>
-          <div class="row"><div class="main"><b style="font-weight:500">Node</b></div><div class="meta mono">node-1</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Knoten</b></div><div class="meta mono">node-1</div></div>
         </div>
         <div class="actions">
           <button class="btn-sec" onclick="closeQueryDetail()">Schließen</button>
@@ -971,7 +1081,7 @@ body {
         <label>Typ</label>
         <div class="seg" role="radiogroup" aria-label="Typ" style="width:100%">
           <button role="radio" aria-checked="true" style="flex:1">Blockieren</button>
-          <button role="radio" aria-checked="false" style="flex:1">Erlauben</button>
+          <button role="radio" aria-checked="false" style="flex:1">Freigeben</button>
         </div>
         <label for="rule-domain">Domain</label>
         <div class="field"><input id="rule-domain" placeholder="ads.example.com"></div>
@@ -993,7 +1103,7 @@ body {
         <div class="grab"></div>
         <h2>Hilfe &amp; Feedback</h2>
         <div class="group" style="margin:0 0 14px">
-          <div class="row">
+          <div class="row" style="cursor:pointer" onclick="announce('Änderungsprotokoll öffnen (Prototyp)')">
             <div class="main"><b style="font-weight:500;color:var(--accent)">Update v0.1.1 verfügbar</b><div class="meta">Änderungsprotokoll auf GitHub</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
@@ -1007,8 +1117,8 @@ body {
         <div class="field" style="font-family:var(--font-mono);font-size:11.5px;color:var(--label-2);min-height:52px;align-items:flex-start;padding-top:10px">{ "schema_version": 1, "error_codes": [], "node_role": "master" }</div>
         <div class="footnote" style="margin-top:10px">DNScraft öffnet nur das GitHub-Issue, sendet nie automatisch. Offline → Markdown kopieren.</div>
         <div class="actions">
-          <button class="btn-sec" onclick="closeHelpSheet()">Markdown kopieren</button>
-          <button class="btn-primary" onclick="closeHelpSheet()">GitHub-Issue öffnen</button>
+          <button class="btn-sec" onclick="copyDiagnostics()">Markdown kopieren</button>
+          <button class="btn-primary" onclick="announce('GitHub-Issue öffnen (Prototyp)')">GitHub-Issue öffnen</button>
         </div>
       </div>
     </div>
@@ -1152,6 +1262,24 @@ body {
           </div>
         </div>
 
+        <div class="section-head">Backups</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Automatische Backups</b><div class="meta">Letzter Lauf · Pfad · Aufbewahrung</div></div>
+            <span class="verdict block">nicht verfügbar</span>
+          </div>
+        </div>
+        <div class="footnote">Automatische Backups: noch nicht verfügbar – kein Endpunkt (SPEC-web-ui, Required additions).</div>
+
+        <div class="section-head">Updates</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><b style="font-weight:500">Update v0.1.1 verfügbar</b><div class="meta"><button class="back-link" style="font-size:12.5px" onclick="announce('Release-Notizen (Prototyp)')">Release-Notizen</button> · Versionsprüfung über Proxy</div></div>
+            <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
+          </div>
+        </div>
+        <div class="footnote">Opt-out: Ausschalten deaktiviert die Versionsprüfung. Die Prüfung läuft über einen same-origin-Endpunkt, nicht direkt gegen GitHub (CSP; SPEC-web-ui, Required additions).</div>
+
         <div class="section-head">Konfiguration</div>
         <div class="group">
           <div class="row" onclick="showScreen('screen-config','Konfiguration')" style="cursor:pointer">
@@ -1164,11 +1292,11 @@ body {
         <div class="group">
           <div class="row">
             <div class="main"><div class="domain">mcp-scanner</div><div class="meta">Scope mcp:read · vor 3 Tagen</div></div>
-            <span style="color:var(--danger);font-size:13px;font-weight:500">Widerrufen</span>
+            <button class="link-danger" onclick="confirmRevokeToken(this)">Widerrufen</button>
           </div>
           <div class="row">
             <div class="main"><div class="domain">viewer-home</div><div class="meta">Scope viewer · vor 12 Tagen</div></div>
-            <span style="color:var(--danger);font-size:13px;font-weight:500">Widerrufen</span>
+            <button class="link-danger" onclick="confirmRevokeToken(this)">Widerrufen</button>
           </div>
           <div class="row" onclick="openTokenSheet()" style="cursor:pointer">
             <div class="main"><b style="font-weight:500;color:var(--accent)">Token erstellen</b><div class="meta">Scope, Einmal-Anzeige des Klartexts</div></div>
@@ -1229,8 +1357,8 @@ body {
         <div class="section-head">Versionen</div>
         <div class="group">
           <div class="row"><div class="main"><div class="domain">v12</div><div class="meta">heute 14:02 · admin</div></div><span class="tag">aktuell</span></div>
-          <div class="row"><div class="main"><div class="domain">v11</div><div class="meta">gestern 18:44 · admin</div></div><span style="color:var(--danger);font-size:13px;font-weight:500">Rollback</span></div>
-          <div class="row"><div class="main"><div class="domain">v10</div><div class="meta">gestern 09:15 · admin</div></div><span style="color:var(--danger);font-size:13px;font-weight:500">Rollback</span></div>
+          <div class="row"><div class="main"><div class="domain">v11</div><div class="meta">gestern 18:44 · admin</div></div><button class="link-danger" onclick="confirmRollback(this)">Rollback</button></div>
+          <div class="row"><div class="main"><div class="domain">v10</div><div class="meta">gestern 09:15 · admin</div></div><button class="link-danger" onclick="confirmRollback(this)">Rollback</button></div>
         </div>
         <div class="footnote">Speichern nutzt If-Match mit config_version; Rollback wird selbst auditiert. Secrets werden nie exportiert.</div>
       </div>
@@ -1251,7 +1379,7 @@ body {
           <div class="row"><div class="main"><b style="font-weight:500">Benutzername</b></div><div class="meta mono">admin</div></div>
           <div class="row"><div class="main"><b style="font-weight:500">Passwort</b></div><div class="meta mono">••••••••</div></div>
         </div>
-        <div class="footnote">Break-glass-Login ist nur aus privaten Netzen erreichbar. <span style="color:var(--accent);cursor:pointer" onclick="showScreen('screen-setup','Ersteinrichtung')">Ersteinrichtung</span></div>
+        <div class="footnote">Break-glass-Login ist nur aus privaten Netzen erreichbar. <button class="back-link" onclick="showScreen('screen-setup','Ersteinrichtung')">Ersteinrichtung</button></div>
       </div>
     </section>
 
@@ -1333,6 +1461,44 @@ body {
       </div>
     </section>
 
+    <section class="screen" id="screen-blocked-services" hidden>
+      <div class="content">
+        <div class="banner" role="status">
+          <span class="ic"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+          <div class="body">
+            <b>Katalog wird zur Laufzeit geladen (services.json, GPL-3.0) – noch nicht verfügbar</b>
+            <p>Die Schalter bleiben deaktiviert, bis der Katalog-Endpunkt vorliegt.</p>
+          </div>
+        </div>
+        <p class="lead">Ein Schalter sperrt einen bekannten Dienst für das gewählte Profil.</p>
+        <div class="section-head">Profil</div>
+        <div class="group">
+          <div class="field-row">
+            <label class="flabel" for="bs-profile">Profil</label>
+            <div class="field">
+              <select id="bs-profile">
+                <option>Standard</option>
+                <option>Kinder</option>
+                <option>Gäste</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="section-head">Katalog</div>
+        <div class="group">
+          <div class="row"><div class="main"><div class="domain">YouTube</div><div class="meta">Video</div></div><label class="switch"><input type="checkbox" disabled><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><div class="domain">TikTok</div><div class="meta">Social</div></div><label class="switch"><input type="checkbox" disabled><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><div class="domain">Facebook</div><div class="meta">Social</div></div><label class="switch"><input type="checkbox" disabled><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><div class="domain">Instagram</div><div class="meta">Social</div></div><label class="switch"><input type="checkbox" disabled><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><div class="domain">Netflix</div><div class="meta">Streaming</div></div><label class="switch"><input type="checkbox" disabled><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><div class="domain">Steam</div><div class="meta">Gaming</div></div><label class="switch"><input type="checkbox" disabled><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><div class="domain">WhatsApp</div><div class="meta">Messenger</div></div><label class="switch"><input type="checkbox" disabled><span class="track"><span class="thumb"></span></span></label></div>
+          <div class="row"><div class="main"><div class="domain">Discord</div><div class="meta">Messenger</div></div><label class="switch"><input type="checkbox" disabled><span class="track"><span class="thumb"></span></span></label></div>
+        </div>
+        <div class="footnote">Der Katalog (services.json, GPL-3.0) wird zur Laufzeit geladen und nie mitgeliefert. Die Zuordnung pro Profil braucht den Filtering-Katalog (SPEC-web-ui, Required additions).</div>
+      </div>
+    </section>
+
     <section class="screen" id="screen-zones" hidden>
       <div class="content">
         <p class="lead">Zonen beantworten lokale Namen je nach Client unterschiedlich. Jede Zone wird über einen oder mehrere Bereiche (Subnetze) gewählt — die Source-IP entscheidet, auch für DoH-Clients.</p>
@@ -1392,18 +1558,18 @@ body {
         </div>
         <div class="footnote">Längstes Subnetz-Prefix gewinnt; ohne Treffer greift die Standard-Zone. DoH-Clients werden über ihre Source-IP zugeordnet.</div>
 
-        <div class="section-head">Node-Gültigkeit</div>
+        <div class="section-head">Knoten-Gültigkeit</div>
         <div class="group">
           <div class="row">
-            <div class="main"><b style="font-weight:500">Auf allen Nodes aktiv</b><div class="meta">sonst nur auf den gewählten Nodes</div></div>
+            <div class="main"><b style="font-weight:500">Auf allen Knoten aktiv</b><div class="meta">sonst nur auf den gewählten Knoten</div></div>
             <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
           </div>
           <div class="row" style="cursor:pointer">
-            <div class="main"><div class="domain">Nodes</div><div class="meta">node-1 · node-2 · node-3</div></div>
+            <div class="main"><div class="domain">Knoten</div><div class="meta">node-1 · node-2 · node-3</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
         </div>
-        <div class="footnote">Jeder Node wählt nur aus den für ihn gültigen Zonen; ohne Treffer greift die Standard-Zone.</div>
+        <div class="footnote">Jeder Knoten wählt nur aus den für ihn gültigen Zonen; ohne Treffer greift die Standard-Zone.</div>
 
         <div class="section-head">Profil</div>
         <div class="group">
@@ -1672,7 +1838,7 @@ body {
         <div class="field"><input id="rr-ttl" value="60"></div>
         <div class="actions">
           <button class="btn-sec" onclick="closeSheet()">Abbrechen</button>
-          <button class="btn-primary" onclick="closeSheet()">Speichern</button>
+          <button class="btn-primary" onclick="closeSheet()">Anlegen</button>
         </div>
       </div>
     </div>
@@ -1730,7 +1896,7 @@ body {
           <div class="row"><div class="main"><b style="font-weight:500">TLS-Pin</b></div><div class="meta mono">sha256:AB:CD:…</div></div>
           <div class="row"><div class="main"><b style="font-weight:500">Abfrage-Intervall</b></div><div class="meta">60 s</div></div>
           <div class="row"><div class="main"><b style="font-weight:500">Letzter Sync</b><div class="meta">vor 58 s · 37 Geräte · 2 Netzwerke</div></div><span class="verdict allow">ok</span></div>
-          <div class="row"><div class="main"><b style="font-weight:500;color:var(--accent)">Jetzt synchronisieren</b></div></div>
+          <div class="row" style="cursor:pointer" onclick="announce('Sync gestartet (Prototyp)')"><div class="main"><b style="font-weight:500;color:var(--accent)">Jetzt synchronisieren</b></div></div>
         </div>
         <div class="footnote">Quelle „UniFi“ wird per Sync aktualisiert; Namen sind ungeprüfte Daten. Manuelle Einträge (einzelne IP/CIDR) haben Vorrang; kollidierende UniFi-Einträge werden umetikettiert. VLAN wird als <span class="mono">Name (id)</span> angezeigt.</div>
       </div>
@@ -1795,7 +1961,7 @@ body {
         <label for="c-name">Name</label>
         <div class="field"><input id="c-name" placeholder="iPhone"></div>
         <label>Client-ID</label>
-        <div class="field" style="justify-content:space-between"><span class="mono">iphone-k7q2x9</span><button class="back-link" style="font-size:12.5px">Neu generieren</button></div>
+        <div class="field" style="justify-content:space-between"><span class="mono">iphone-k7q2x9</span><button class="back-link" style="font-size:12.5px" onclick="announce('Neue Client-ID (Prototyp)')">Neu generieren</button></div>
         <label>Zone</label>
         <div class="footnote" style="padding:0">ergibt sich automatisch aus der Source-IP (Bereich)</div>
         <label>Endpunkte (nach dem Speichern)</label>
@@ -1857,7 +2023,7 @@ body {
         <div class="actions">
           <button class="btn-sec" onclick="closeDeviceSheet()">Abbrechen</button>
           <button class="btn-sec" onclick="closeDeviceSheet()">Umbenennen</button>
-          <button class="btn-primary" style="background:var(--danger)" onclick="closeDeviceSheet()">Blockieren</button>
+          <button class="btn-primary" style="background:var(--danger-fill)" onclick="confirmBlockDevice()">Blockieren</button>
         </div>
         <div class="footnote" style="margin-top:10px">UniFi-Geräte werden per Sync verwaltet; Umbenennen/Löschen nur für manuelle Einträge.</div>
       </div>
@@ -1877,17 +2043,17 @@ body {
         <div class="group" style="margin:0 0 12px">
           <div class="row"><div class="main"><b style="font-weight:500">DoH</b></div><div class="meta mono" id="dd-doh">https://dns.example.com/dns-query/iphone-k7q2x9</div></div>
           <div class="row"><div class="main"><b style="font-weight:500">DoT</b></div><div class="meta mono" id="dd-dot">iphone-k7q2x9.dns.example.com</div></div>
-          <div class="row" style="cursor:pointer"><div class="main"><b style="font-weight:500;color:var(--accent)">QR-Code für die Einrichtung anzeigen</b></div></div>
+          <div class="row" style="cursor:pointer" onclick="announce('QR-Code (Prototyp)')"><div class="main"><b style="font-weight:500;color:var(--accent)">QR-Code für die Einrichtung anzeigen</b></div></div>
         </div>
         <label>Geräteprofil</label>
         <div class="group" style="margin:0 0 12px">
-          <div class="row" style="cursor:pointer"><div class="main"><b style="font-weight:500;color:var(--accent)">Apple (.mobileconfig) herunterladen</b></div></div>
+          <div class="row" style="cursor:pointer" onclick="announce('Profil-Download (Prototyp)')"><div class="main"><b style="font-weight:500;color:var(--accent)">Apple (.mobileconfig) herunterladen</b></div></div>
           <div class="row"><div class="main"><div class="domain">Android · Private DNS</div></div><div class="meta mono">node1.dns.example.com</div></div>
         </div>
         <div class="actions">
           <button class="btn-sec" onclick="closeDohDetail()">Abbrechen</button>
           <button class="btn-sec" onclick="closeDohDetail()">Umbenennen</button>
-          <button class="btn-primary" style="background:var(--danger)" onclick="closeDohDetail()">Widerrufen</button>
+          <button class="btn-primary" style="background:var(--danger-fill)" onclick="confirmRevokeDoh()">Widerrufen</button>
         </div>
         <div class="footnote" style="margin-top:10px">Umbenennen/Widerruf noch ohne Endpunkt (SPEC-control-api § Open questions).</div>
       </div>
@@ -1998,11 +2164,11 @@ body {
             <div class="seg"><button role="radio" aria-checked="true">ECDSA P-256</button><button role="radio" aria-checked="false">ECDSA P-384</button></div>
           </div>
           <div class="row">
-            <div class="main"><b style="font-weight:500">Erneuerung</b><div class="meta">renew_before</div></div>
+            <div class="main"><label for="tls-renew" style="font-weight:500">Erneuerung</label><div class="meta">renew_before</div></div>
             <div class="field" style="width:76px;flex:0 0 auto"><input id="tls-renew" value="30d" style="text-align:right"></div>
           </div>
           <div class="row">
-            <div class="main"><b style="font-weight:500">Warnung</b><div class="meta">expiry_warn</div></div>
+            <div class="main"><label for="tls-warn" style="font-weight:500">Warnung</label><div class="meta">expiry_warn</div></div>
             <div class="field" style="width:76px;flex:0 0 auto"><input id="tls-warn" value="14d" style="text-align:right"></div>
           </div>
         </div>
@@ -2036,11 +2202,11 @@ body {
             <div class="field"><input id="tls-acme-email" type="email" placeholder="admin@example.com"></div>
           </div>
           <div class="row">
-            <div class="main"><b style="font-weight:500">Propagation-Timeout</b><div class="meta">propagation_timeout</div></div>
+            <div class="main"><label for="tls-prop-timeout" style="font-weight:500">Propagation-Timeout</label><div class="meta">propagation_timeout</div></div>
             <div class="field" style="width:76px;flex:0 0 auto"><input id="tls-prop-timeout" value="2m" style="text-align:right"></div>
           </div>
           <div class="row">
-            <div class="main"><b style="font-weight:500">Propagation-Poll</b><div class="meta">propagation_poll</div></div>
+            <div class="main"><label for="tls-prop-poll" style="font-weight:500">Propagation-Poll</label><div class="meta">propagation_poll</div></div>
             <div class="field" style="width:76px;flex:0 0 auto"><input id="tls-prop-poll" value="5s" style="text-align:right"></div>
           </div>
         </div>
@@ -2094,7 +2260,7 @@ body {
             <label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label>
           </div>
           <div class="row">
-            <div class="main"><b style="font-weight:500">Intervall</b><div class="meta">interval · ±10 % Jitter</div></div>
+            <div class="main"><label for="tls-dd-interval" style="font-weight:500">Intervall</label><div class="meta">interval · ±10 % Jitter</div></div>
             <div class="field" style="width:76px;flex:0 0 auto"><input id="tls-dd-interval" value="5m" style="text-align:right"></div>
           </div>
           <div class="field-row">
@@ -2208,7 +2374,7 @@ body {
         </div>
         <div class="actions">
           <button class="btn-sec" onclick="closeTlsConfirmSheet()">Abbrechen</button>
-          <button class="btn-primary" style="background:var(--danger)" onclick="closeTlsConfirmSheet()">Bestätigen</button>
+          <button class="btn-primary" style="background:var(--danger-fill)" onclick="closeTlsConfirmSheet()">Bestätigen</button>
         </div>
       </div>
     </div>
@@ -2251,11 +2417,11 @@ body {
         <div class="group">
           <div class="row">
             <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
-            <div class="main"><div class="domain">Konfigurations-Lag</div><div class="meta">node-3 liegt 2 Versionen zurück (degradiert)</div></div>
+            <div class="main"><div class="domain">Konfigurationsverzug</div><div class="meta">node-3 liegt 2 Versionen zurück (degradiert)</div></div>
           </div>
           <div class="row">
             <span class="status-ic block"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
-            <div class="main"><div class="domain">Clock-Skew</div><div class="meta">node-3 · 4 min Abweichung</div></div>
+            <div class="main"><div class="domain">Zeitabweichung</div><div class="meta">node-3 · 4 min Abweichung</div></div>
           </div>
         </div>
         <div class="footnote">Sub-Knoten verbinden sich selbst zum Master. Fällt der Master aus, beantworten sie DNS weiter aus der zuletzt angewendeten Konfiguration. Widerruf schließt Sessions und lehnt mit <span class="mono">cluster.node.revoked</span> ab; Query-Log/Statistik tragen eine <span class="mono">node_id</span>-Facette.</div>
@@ -2278,7 +2444,7 @@ body {
         <div class="footnote" style="padding:10px 0 0">Einmalig und an <span class="mono">node_id</span> gebunden; nach Ablauf oder Verwendung ungültig. Sub-Knoten erzeugt Key/CSR und trägt sich selbst ein.</div>
         <div class="actions">
           <button class="btn-sec" onclick="closeJoinTokenSheet()">Schließen</button>
-          <button class="btn-primary" onclick="closeJoinTokenSheet()">Kopieren</button>
+          <button class="btn-primary" onclick="copyText('jt_live_8f2a…c1e')">Kopieren</button>
         </div>
       </div>
     </div>
@@ -2526,7 +2692,7 @@ body {
       <div class="footnote" style="padding:10px 0 0">Der Klartext wird nur einmal angezeigt und kann danach nicht wieder abgerufen werden.</div>
       <div class="actions">
         <button class="btn-sec" onclick="closeTokenSheet()">Abbrechen</button>
-        <button class="btn-primary" onclick="closeTokenSheet()">Erstellen</button>
+        <button class="btn-primary" onclick="closeTokenSheet()">Anlegen</button>
       </div>
     </div>
   </div>
@@ -2573,6 +2739,18 @@ body {
     </div>
   </div>
 
+  <div class="sheet-scrim" id="confirm-sheet" hidden onclick="closeConfirmSheet()">
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="grab"></div>
+      <h2>Bestätigen</h2>
+      <p class="lead" id="confirm-text" style="margin:0"></p>
+      <div class="actions">
+        <button class="btn-sec" onclick="closeConfirmSheet()">Abbrechen</button>
+        <button class="btn-primary" id="confirm-ok" style="background:var(--danger-fill)" onclick="runConfirm()">Bestätigen</button>
+      </div>
+    </div>
+  </div>
+
   <div class="sheet-scrim" id="deny-sheet" hidden onclick="closeDenySheet()">
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="grab"></div>
@@ -2585,7 +2763,7 @@ body {
       </div>
       <div class="actions">
         <button class="btn-sec" onclick="closeDenySheet()">Abbrechen</button>
-        <button class="btn-primary" style="background:var(--danger)" onclick="closeDenySheet()">Blockieren</button>
+        <button class="btn-primary" style="background:var(--danger-fill)" onclick="closeDenySheet()">Blockieren</button>
       </div>
     </div>
   </div>
@@ -2594,11 +2772,40 @@ body {
 </div>
 
 <script>
-function toggleNav() { document.body.classList.toggle('nav-open'); }
-function closeNav() { document.body.classList.remove('nav-open'); }
+function setNav(open) {
+  document.body.classList.toggle('nav-open', open);
+  document.querySelector('.menu-btn').setAttribute('aria-expanded', String(open));
+}
+function toggleNav() {
+  var open = !document.body.classList.contains('nav-open');
+  setNav(open);
+  if (open) document.querySelector('#sidebar-nav .nav-item').focus();
+}
+function closeNav() { setNav(false); }
 document.addEventListener('keydown', function (e) {
-  if (e.key === 'Escape') closeNav();
+  if (e.key === 'Escape' && document.body.classList.contains('nav-open')) {
+    closeNav();
+    document.querySelector('.menu-btn').focus();
+  }
 });
+function announce(msg) {
+  var l = document.getElementById('live');
+  if (!l) return;
+  l.textContent = '';
+  setTimeout(function () { l.textContent = msg; }, 50);
+  var t = document.getElementById('toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'toast';
+    t.setAttribute('aria-hidden', 'true');
+    t.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:100;max-width:90vw;padding:10px 16px;border-radius:12px;background:var(--label);color:var(--canvas);font-size:14px;box-shadow:0 4px 16px rgba(0,0,0,.25)';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(t._h);
+  t._h = setTimeout(function () { t.hidden = true; }, 2500);
+}
 
 function showScreen(id, title) {
   window.scrollTo(0, 0);
@@ -2608,8 +2815,13 @@ function showScreen(id, title) {
   document.getElementById('page-title').textContent = title;
   document.title = title + ' · DNScraft';
   document.getElementById('page-title').focus();
+  setActiveNav(id);
+}
+function setActiveNav(id) {
   document.querySelectorAll('.nav-item').forEach(function (i) {
-    i.classList.toggle('active', i.dataset.target === id);
+    var on = i.dataset.target === id;
+    i.classList.toggle('active', on);
+    if (on) i.setAttribute('aria-current', 'page'); else i.removeAttribute('aria-current');
   });
 }
 document.querySelectorAll('.nav-item').forEach(function (item) {
@@ -2622,30 +2834,22 @@ document.querySelectorAll('.nav-item').forEach(function (item) {
 function openZone(name) {
   showScreen('screen-zone-detail', 'Zone „' + name + '“');
   document.getElementById('zone-detail-head').textContent = 'Zone „' + name + '“';
-  document.querySelectorAll('.nav-item').forEach(function (i) {
-    i.classList.toggle('active', i.dataset.target === 'screen-zones');
-  });
+  setActiveNav('screen-zones');
 }
 function openName(name) {
   showScreen('screen-name-detail', 'Name „' + name + '“');
   document.getElementById('name-detail-head').textContent = 'Name „' + name + '“';
-  document.querySelectorAll('.nav-item').forEach(function (i) {
-    i.classList.toggle('active', i.dataset.target === 'screen-names');
-  });
+  setActiveNav('screen-names');
 }
 function openSet(name) {
   showScreen('screen-filter-set-detail', 'Filtersatz „' + name + '“');
   document.getElementById('set-detail-head').textContent = 'Filtersatz „' + name + '“';
-  document.querySelectorAll('.nav-item').forEach(function (i) {
-    i.classList.toggle('active', i.dataset.target === 'screen-filter-sets');
-  });
+  setActiveNav('screen-filter-sets');
 }
 function openProfile(name) {
   showScreen('screen-profile-detail', 'Profil „' + name + '“');
   document.getElementById('profile-detail-head').textContent = 'Profil „' + name + '“';
-  document.querySelectorAll('.nav-item').forEach(function (i) {
-    i.classList.toggle('active', i.dataset.target === 'screen-profiles');
-  });
+  setActiveNav('screen-profiles');
 }
 function openRuleSheet() { document.getElementById('rule-sheet').hidden = false; }
 function closeRuleSheet() { document.getElementById('rule-sheet').hidden = true; }
@@ -2743,6 +2947,46 @@ function openDenySheet() { document.getElementById('deny-sheet').hidden = false;
 function closeDenySheet() { document.getElementById('deny-sheet').hidden = true; }
 function openTlsConfirmSheet() { document.getElementById('tls-confirm-sheet').hidden = false; }
 function closeTlsConfirmSheet() { document.getElementById('tls-confirm-sheet').hidden = true; }
+var confirmFn = null;
+function openConfirm(title, text, label, fn) {
+  document.querySelector('#confirm-sheet h2').textContent = title;
+  document.getElementById('confirm-text').textContent = text;
+  document.getElementById('confirm-ok').textContent = label;
+  confirmFn = fn;
+  document.getElementById('confirm-sheet').hidden = false;
+}
+function closeConfirmSheet() { document.getElementById('confirm-sheet').hidden = true; confirmFn = null; }
+function runConfirm() { var fn = confirmFn; closeConfirmSheet(); if (fn) fn(); }
+function confirmBlockDevice() {
+  var n = document.getElementById('device-sheet-name').textContent;
+  closeDeviceSheet();
+  openConfirm('Gerät blockieren?', '„' + n + '“ wird gesperrt; seine Anfragen werden abgelehnt.', 'Blockieren', function () { announce('Gerät blockiert (Prototyp)'); });
+}
+function confirmRevokeDoh() {
+  var n = document.getElementById('doh-detail-name').textContent;
+  closeDohDetail();
+  openConfirm('Client widerrufen?', '„' + n + '“ verliert den DoH/DoT-Zugriff.', 'Widerrufen', function () { announce('Widerruf simuliert (Prototyp)'); });
+}
+function confirmRevokeToken(btn) {
+  var n = btn.closest('.row').querySelector('.domain').textContent;
+  openConfirm('Token widerrufen?', n + ' verliert sofort den Zugriff.', 'Widerrufen', function () { announce('Token widerrufen (Prototyp)'); });
+}
+function confirmRollback(btn) {
+  var v = btn.closest('.row').querySelector('.domain').textContent;
+  openConfirm('Auf ' + v + ' zurückrollen?', 'Die aktive Konfiguration wird durch ' + v + ' ersetzt. Der Rollback wird auditiert.', 'Rollback', function () { announce('Rollback auf ' + v + ' simuliert (Prototyp)'); });
+}
+function copyText(text) {
+  try {
+    navigator.clipboard.writeText(text).then(function () { announce('In Zwischenablage kopiert'); }, function () { announce('Kopieren nicht möglich (Prototyp)'); });
+  } catch (e) { announce('Kopieren nicht möglich (Prototyp)'); }
+}
+function copyDiagnostics() {
+  copyText('```json\n{ "schema_version": 1, "error_codes": [], "node_role": "master" }\n```');
+}
+function setAlertsEmpty(empty) {
+  document.getElementById('alerts-list').hidden = empty;
+  document.getElementById('alerts-empty').hidden = !empty;
+}
 function switchTlsTab(btn) {
   document.querySelectorAll('#tls-tabs button').forEach(function (b) {
     b.setAttribute('aria-checked', String(b === btn));
@@ -2806,6 +3050,13 @@ document.querySelectorAll('.row .switch input[type="checkbox"]').forEach(functio
   if (t) inp.setAttribute('aria-label', t.textContent.trim());
 });
 
+// prototype: chevron rows without a handler announce instead of failing silently
+document.querySelectorAll('.row .chev').forEach(function (ch) {
+  var row = ch.closest('.row');
+  if (!row || row.hasAttribute('onclick') || row.querySelector('button, input')) return;
+  row.setAttribute('onclick', "announce('Detailansicht (Prototyp)')");
+  row.style.cursor = 'pointer';
+});
 // keyboard access for clickable rows, avoiding button-in-button (APG)
 document.querySelectorAll('.row[onclick], .qrow[onclick]').forEach(function (row) {
   var hasNested = row.querySelector('button, input, select, textarea, a[href]');
@@ -2872,7 +3123,7 @@ document.querySelectorAll('.sheet-scrim').forEach(function (sc) {
   var sheet = sc.querySelector('.sheet');
   var h2 = sheet && sheet.querySelector('h2');
   if (sheet && h2) {
-    h2.id = sc.id + '-title';
+    if (!h2.id) h2.id = sc.id + '-title';
     sheet.setAttribute('aria-labelledby', h2.id);
   }
 });
