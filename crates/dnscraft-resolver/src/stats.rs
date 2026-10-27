@@ -12,7 +12,6 @@ use crate::types::DnssecStatus;
 /// when the denominator is non-zero. Percentiles are measured by the criterion
 /// cache-hit benchmark, not by these counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct ResolverStats {
     /// Questions passed to `resolve` (local RFC 6303 answers are excluded).
     pub resolutions: u64,

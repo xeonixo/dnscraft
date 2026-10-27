@@ -89,7 +89,6 @@ pub enum DnsRewrite {
 
 /// Rule modifiers.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
-#[non_exhaustive]
 pub struct Modifiers {
     /// `$important`.
     pub important: bool,

@@ -243,7 +243,6 @@ pub struct SkippedLine {
 /// Produced by [`parse_list_each`]; [`parse_list`] wraps the same stats with
 /// the collected [`Rule`]s.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
-#[non_exhaustive]
 pub struct ListParseStats {
     /// Number of lines in the body.
     pub total_lines: usize,
@@ -262,7 +261,6 @@ pub struct ListParseStats {
 
 /// Result of [`parse_list`].
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
-#[non_exhaustive]
 pub struct ParsedList {
     /// All rules, in file order. Source text is recovered with
     /// [`Rule::text`] and the original body.
