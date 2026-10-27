@@ -78,7 +78,7 @@
 - [x] Checkpoint 4 — relay exactly-once; queue survives restart; no role escalation.
 - [x] Checkpoint 5 — dedupe/backfill/gap; stats node_id.
 - [x] Checkpoint 6 — cert push + offline token auth + quotas.
-- [ ] Checkpoint F — independent security review + owner approval + archive.
+- [x] Checkpoint F — independent security review + owner approval + archive.
 
 Final gates: `cargo fmt --check` · `clippy --workspace --all-targets --locked -- -D warnings` ·
 `cargo test --workspace` · `cargo deny check` · `cargo tree -i aws-lc-rs|aws-lc-sys|openssl-sys|native-tls` empty.
