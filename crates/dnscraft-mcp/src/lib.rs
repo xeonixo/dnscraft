@@ -46,7 +46,7 @@ pub use result::{tool_error, tool_ok};
 pub use sanitize::{
     CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_REASON, CAP_RULE_TEXT, SafeText, sanitize,
 };
-pub use tools::{McpServer, parse_mcp_tool_input};
+pub use tools::parse_mcp_tool_input;
 pub use transport::{McpTransport, RequestLimits, RequestRejection, validate_mcp_request};
 
 /// Build the stateless MCP service mounted by `control-api` under `/mcp/v1`.

@@ -33,8 +33,12 @@ use crate::protected::ProtectedDomains;
 use crate::result::tool_error;
 
 /// Shared state cloned into every per-request server instance.
+///
+/// Crate-private on purpose: `dnscraft_mcp::service` is the only supported
+/// mounting path, so a caller cannot expose the tools by constructing a raw
+/// server that bypasses [`crate::transport::McpTransport`]'s authentication.
 #[derive(Clone)]
-pub struct McpServer {
+pub(crate) struct McpServer {
     pub(crate) backend: std::sync::Arc<dyn McpBackend>,
     pub(crate) config: McpConfig,
     /// Built once per server handle. `Err` means the configured list is
@@ -44,7 +48,7 @@ pub struct McpServer {
 
 impl McpServer {
     /// A server handle over `backend` and `config`.
-    pub fn new(backend: std::sync::Arc<dyn McpBackend>, config: McpConfig) -> Self {
+    pub(crate) fn new(backend: std::sync::Arc<dyn McpBackend>, config: McpConfig) -> Self {
         let protected = ProtectedDomains::new(config.protected_domains.iter().cloned());
         Self {
             backend,
@@ -179,6 +183,18 @@ pub(crate) fn token_from(context: &RequestContext<RoleServer>) -> Option<&TokenI
         .get::<TokenInfo>()
 }
 
+/// Reject a tool call that carries no validated [`TokenInfo`].
+///
+/// `transport` always inserts the token after authentication. This guard is
+/// defence in depth so a read tool cannot run if a server were ever mounted
+/// without that wrapper, mirroring the check in `write::call`.
+pub(crate) fn require_token(token: Option<&TokenInfo>) -> Result<(), CallToolResult> {
+    match token {
+        Some(_) => Ok(()),
+        None => Err(tool_error("control_api.auth.unauthenticated", json!({}))),
+    }
+}
+
 #[tool_handler(name = "dnscraft-mcp")]
 impl ServerHandler for McpServer {
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
@@ -296,5 +312,22 @@ mod tests {
             );
         }
         assert!(parse_mcp_tool_input("nope", b"{}").is_err());
+    }
+
+    #[test]
+    fn read_dispatch_rejects_a_missing_token() {
+        // `read::call` and `get_status` apply this guard before any work.
+        let error = require_token(None).unwrap_err();
+        assert_eq!(error.is_error, Some(true));
+        assert_eq!(
+            error.structured_content.unwrap()["error"]["code"],
+            "control_api.auth.unauthenticated"
+        );
+        let token = crate::dto::TokenInfo {
+            token_id: "tok-read".into(),
+            scope: crate::dto::TokenScope::McpRead,
+            actor_id: "actor".into(),
+        };
+        assert!(require_token(Some(&token)).is_ok());
     }
 }

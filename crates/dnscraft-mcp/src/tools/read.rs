@@ -21,7 +21,9 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use super::{McpServer, backend_call, invalid_input, parse_arguments, schema};
+use super::{
+    McpServer, backend_call, invalid_input, parse_arguments, require_token, schema, token_from,
+};
 use crate::dto::{
     ClientInfo, ClientListParams, DecisionFilter, DecisionStep, DecisionTimings, DnssecCounts,
     ExplainBlockResult, ExplainReason, ListRulesParams, ListRulesResult, McpRuleInfo, PauseInfo,
@@ -196,6 +198,9 @@ pub(crate) async fn call(
     server: &McpServer,
     context: RequestContext<RoleServer>,
 ) -> CallToolResult {
+    if let Err(error) = require_token(token_from(&context)) {
+        return error;
+    }
     match name {
         "search_query_log" => search_query_log(arguments, server, context).await,
         "get_query" => get_query(arguments, server, context).await,
@@ -254,6 +259,9 @@ impl McpServer {
         )
     )]
     pub async fn get_status(&self, context: RequestContext<RoleServer>) -> CallToolResult {
+        if let Err(error) = require_token(token_from(&context)) {
+            return error;
+        }
         let result = match backend_call("get_status", &context, self.backend.get_status()).await {
             Ok(status) => status,
             Err(error) => return error,
