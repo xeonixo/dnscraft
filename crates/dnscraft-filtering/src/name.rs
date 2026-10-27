@@ -20,7 +20,8 @@ const MAX_NAME: usize = 253;
 /// contain such names. It is strict about length and character set. The root
 /// name is not representable. Non-ASCII input is rejected; IDNA (punycode)
 /// conversion is the parser's job.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String")]
 pub struct DomainName(Box<str>);
 
 impl DomainName {
@@ -113,6 +114,14 @@ impl FromStr for DomainName {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s)
+    }
+}
+
+impl TryFrom<String> for DomainName {
+    type Error = NameError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
     }
 }
 

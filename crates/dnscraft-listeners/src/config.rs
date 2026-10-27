@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use dnscraft_policy::ListenerId;
+use serde::{Deserialize, Serialize};
 
 use crate::error::ListenersError;
 
@@ -36,7 +37,7 @@ pub const DEFAULT_BAN_DURATION: Duration = Duration::from_secs(15 * 60);
 pub const DEFAULT_MAX_TRACKED_SOURCES: u32 = 100_000;
 
 /// Transport protocol of one listener.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 
 pub enum Protocol {
     /// Plain DNS over UDP (port 53 by convention).
@@ -70,7 +71,7 @@ impl Protocol {
 }
 
 /// Who may use the listener.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 
 pub enum Exposure {
     /// Private / local sources only (default).
@@ -85,7 +86,7 @@ pub enum Exposure {
 /// Applied when building the rustls `ServerConfig`. `alpn` configures DoH over
 /// TCP only; DoT and DoQ keep their protocol-mandated ALPN (`dot`, `doq`, `h3`).
 /// Ring is the only provider (no aws-lc).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TlsPolicy {
     /// Minimum TLS version: `"1.2"` (default) or `"1.3"`.
     pub min_version: String,
@@ -111,7 +112,7 @@ impl Default for TlsPolicy {
 }
 
 /// One listener entry.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListenerConfig {
     /// Unique id (`[a-z0-9-]{1,64}`), passed to policy as `listener_id`.
     pub id: ListenerId,
@@ -128,7 +129,7 @@ pub struct ListenerConfig {
 }
 
 /// Token-bucket rate: `N` tokens per second, burst capacity `2N` when parsed from `N/s`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenRate {
     /// Tokens replenished per second.
     pub per_second: u32,
@@ -159,7 +160,7 @@ impl TokenRate {
 }
 
 /// Resource and timing limits shared by all listeners.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Limits {
     /// EDNS UDP payload maximum advertised and enforced.
     pub udp_payload_max: u16,
@@ -291,7 +292,7 @@ impl Limits {
 }
 
 /// Per-node public DoH/DoT/DoQ settings (off by default).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublicConfig {
     /// When false, no listener may use [`Exposure::Public`].
     pub enabled: bool,
@@ -318,7 +319,7 @@ impl Default for PublicConfig {
 }
 
 /// DDR (`_dns.resolver.arpa`) settings.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DdrConfig {
     /// When false, DDR queries fall through to policy.
     pub enabled: bool,
@@ -336,7 +337,7 @@ impl Default for DdrConfig {
 }
 
 /// Full listeners configuration.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ListenersConfig {
     /// Configured listeners.
     pub listeners: Vec<ListenerConfig>,
@@ -494,4 +495,63 @@ fn validate_public(public: &PublicConfig) -> Result<(), ListenersError> {
         return Err(ListenersError::config("max_tracked_sources must be > 0"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use super::*;
+
+    #[test]
+    fn config_round_trips_through_json() {
+        let cfg = ListenersConfig {
+            listeners: vec![
+                ListenerConfig {
+                    id: ListenerId::new("lan-udp").unwrap(),
+                    protocol: Protocol::Udp53,
+                    address: SocketAddr::from((Ipv4Addr::UNSPECIFIED, 53)),
+                    exposure: Exposure::Local,
+                    h3: false,
+                    tls_policy: None,
+                },
+                ListenerConfig {
+                    id: ListenerId::new("public-doh").unwrap(),
+                    protocol: Protocol::Doh,
+                    address: SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 443),
+                    exposure: Exposure::Public,
+                    h3: true,
+                    tls_policy: Some(TlsPolicy {
+                        min_version: "1.3".to_owned(),
+                        ciphersuites: Some(vec!["TLS_AES_128_GCM_SHA256".to_owned()]),
+                        alpn: vec!["h2".to_owned(), "http/1.1".to_owned()],
+                    }),
+                },
+            ],
+            limits: Limits {
+                query_timeout: Duration::from_secs(5),
+                rate_per_source: TokenRate {
+                    per_second: 100,
+                    burst: 200,
+                },
+                ..Limits::default()
+            },
+            public: PublicConfig {
+                enabled: true,
+                ban_strikes: 3,
+                ban_window: Duration::from_secs(30),
+                ban_duration: Duration::from_secs(600),
+                max_tracked_sources: 10_000,
+            },
+            ddr: DdrConfig {
+                enabled: true,
+                target: "dns".to_owned(),
+            },
+        };
+
+        let json = serde_json::to_string(&cfg).unwrap();
+        let decoded: ListenersConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, cfg);
+    }
 }

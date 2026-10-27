@@ -66,6 +66,22 @@ macro_rules! id_type {
                 &self.0
             }
         }
+
+        // Serialized as its text form, deserialized through `new` so the id
+        // charset/length rules are enforced on the way back in.
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(&self.0)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let text =
+                    <std::borrow::Cow<'de, str> as serde::Deserialize>::deserialize(deserializer)?;
+                Self::new(&text).map_err(serde::de::Error::custom)
+            }
+        }
     };
 }
 

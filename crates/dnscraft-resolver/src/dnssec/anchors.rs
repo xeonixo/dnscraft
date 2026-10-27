@@ -3,11 +3,12 @@
 use dnscraft_proto::{Name, RData, Record, RecordType};
 
 /// One trust anchor: a DS-style digest or a full DNSKEY.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Anchor {
     /// DS-style anchor.
     Ds {
         /// Zone the anchor belongs to.
+        #[serde(with = "crate::config::name_serde")]
         owner: Name,
         /// Key tag.
         key_tag: u16,
@@ -21,6 +22,7 @@ pub enum Anchor {
     /// DNSKEY-style anchor.
     Dnskey {
         /// Zone the anchor belongs to.
+        #[serde(with = "crate::config::name_serde")]
         owner: Name,
         /// DNSKEY flags.
         flags: u16,
@@ -55,7 +57,7 @@ impl AnchorError {
 }
 
 /// A set of trust anchors.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TrustAnchors {
     anchors: Vec<Anchor>,
 }

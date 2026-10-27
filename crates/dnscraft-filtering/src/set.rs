@@ -1,15 +1,84 @@
 //! Filter set configuration and the list-body provider.
 //!
-//! These are plain Rust values (no serde here): `control-api` owns persistence
-//! and hands a [`FilterConfig`] to the [`SnapshotBuilder`](crate::SnapshotBuilder).
+//! These are plain Rust values that serialize to JSON for the config snapshot.
+//! `control-api` owns persistence and hands a [`FilterConfig`] to the
+//! [`SnapshotBuilder`](crate::SnapshotBuilder).
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+
+use serde::{Deserialize, Serialize};
 
 use crate::index::IndexError;
 use crate::name::DomainName;
 use crate::store::ListSourceSpec;
 use crate::types::{BlockMode, ListId, McpRuleId, SetId};
+
+/// serde adapter for [`SystemTime`], which has no serde implementation.
+///
+/// Encoded as `{ "secs": <u64>, "nanos": <u32> }` seconds and nanoseconds
+/// since the Unix epoch, preserving full precision. Times before the epoch
+/// cannot be represented and fail to serialize.
+pub(crate) mod system_time_serde {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use serde::ser::Error as _;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    struct Timestamp {
+        secs: u64,
+        nanos: u32,
+    }
+
+    pub fn serialize<S: Serializer>(time: &SystemTime, serializer: S) -> Result<S::Ok, S::Error> {
+        let since_epoch = time.duration_since(UNIX_EPOCH).map_err(S::Error::custom)?;
+        Timestamp {
+            secs: since_epoch.as_secs(),
+            nanos: since_epoch.subsec_nanos(),
+        }
+        .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<SystemTime, D::Error> {
+        from_timestamp(Timestamp::deserialize(deserializer)?)
+    }
+
+    fn from_timestamp<E: serde::de::Error>(ts: Timestamp) -> Result<SystemTime, E> {
+        if ts.nanos >= 1_000_000_000 {
+            return Err(E::custom("nanoseconds out of range"));
+        }
+        UNIX_EPOCH
+            .checked_add(Duration::new(ts.secs, ts.nanos))
+            .ok_or_else(|| E::custom("timestamp out of range"))
+    }
+
+    pub mod option {
+        use std::time::SystemTime;
+
+        use serde::{Deserialize, Deserializer, Serializer};
+
+        use super::Timestamp;
+
+        pub fn serialize<S: Serializer>(
+            time: &Option<SystemTime>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            match time {
+                Some(time) => super::serialize(time, serializer),
+                None => serializer.serialize_none(),
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<SystemTime>, D::Error> {
+            Option::<Timestamp>::deserialize(deserializer)?
+                .map(super::from_timestamp)
+                .transpose()
+        }
+    }
+}
 
 /// Default list update interval (24 h).
 pub const DEFAULT_UPDATE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -18,7 +87,7 @@ pub const DEFAULT_UPDATE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 pub const DEFAULT_MAX_LIST_SIZE_MB: u64 = crate::store::DEFAULT_MAX_BODY_BYTES / (1024 * 1024);
 
 /// One configured filter list.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListConfig {
     /// List id.
     pub id: ListId,
@@ -36,7 +105,7 @@ pub struct ListConfig {
 /// metadata and expires. At snapshot build time non-expired rules are turned
 /// into canonical block-rule text with
 /// [`build_rule`](crate::build_rule); expired rules are dropped silently.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpRule {
     /// Unique per set.
     pub id: McpRuleId,
@@ -46,15 +115,17 @@ pub struct McpRule {
     /// (`|`).
     pub include_subdomains: bool,
     /// When the rule was created.
+    #[serde(with = "system_time_serde")]
     pub created_at: SystemTime,
     /// When the rule stops blocking (mandatory; must be after `created_at`).
+    #[serde(with = "system_time_serde")]
     pub expires_at: SystemTime,
     /// Which MCP token created the rule.
     pub token_id: String,
 }
 
 /// One configured filter set.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilterSetConfig {
     /// Set id.
     pub id: SetId,
@@ -69,6 +140,7 @@ pub struct FilterSetConfig {
     /// How blocked queries are answered.
     pub block_mode: BlockMode,
     /// The set passes every name before this time.
+    #[serde(default, with = "system_time_serde::option")]
     pub paused_until: Option<SystemTime>,
     /// Block rules created through the MCP control API. Empty by default.
     pub mcp_rules: Vec<McpRule>,
@@ -91,7 +163,7 @@ impl FilterSetConfig {
 }
 
 /// The whole filtering configuration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilterConfig {
     /// All known lists.
     pub lists: Vec<ListConfig>,
@@ -242,5 +314,63 @@ impl SnapshotError {
             Self::InvalidMcpRule { .. } => "filtering.config.mcp_rule_invalid",
             Self::Index(e) => e.code(),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::time::UNIX_EPOCH;
+
+    #[test]
+    fn config_round_trips_through_json() {
+        let list = ListConfig {
+            id: ListId::new("ads").unwrap(),
+            name: "Ads".into(),
+            source: ListSourceSpec::Url("https://example.com/hosts.txt".into()),
+            enabled: true,
+        };
+        let rule = McpRule {
+            id: McpRuleId::new("mcp-1").unwrap(),
+            domain: DomainName::parse("ads.example.net").unwrap(),
+            include_subdomains: true,
+            created_at: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+            expires_at: UNIX_EPOCH + Duration::from_secs(1_700_003_600),
+            token_id: "token-1".into(),
+        };
+        let set = FilterSetConfig {
+            id: SetId::new("default").unwrap(),
+            name: "Default".into(),
+            lists: vec![list.id.clone()],
+            custom_rules: "||tracker.example.com^".into(),
+            services: vec!["video".into()],
+            block_mode: BlockMode::NxDomain,
+            paused_until: Some(UNIX_EPOCH + Duration::from_secs(1_700_007_200)),
+            mcp_rules: vec![rule],
+        };
+        let config = FilterConfig {
+            lists: vec![list],
+            sets: vec![set],
+            update_interval: Duration::from_secs(43_200),
+            max_list_size_mb: 32,
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let back: FilterConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, config);
+    }
+
+    #[test]
+    fn system_time_rejects_out_of_range_nanos() {
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct Paused {
+            #[serde(with = "system_time_serde::option")]
+            paused_until: Option<SystemTime>,
+        }
+
+        let json = r#"{"paused_until":{"secs":1,"nanos":1000000000}}"#;
+        assert!(serde_json::from_str::<Paused>(json).is_err());
     }
 }

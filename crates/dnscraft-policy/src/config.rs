@@ -8,6 +8,7 @@ use dnscraft_filtering::SetId;
 use dnscraft_proto::{Name, RData, RecordType};
 use dnscraft_resolver::{ForwardZoneId, Query};
 use ipnet::IpNet;
+use serde::{Deserialize, Serialize};
 
 use crate::ids::{ClientId, ListenerId, ProfileId, ViewId};
 
@@ -74,15 +75,17 @@ pub struct RequestContext {
 }
 
 /// One resource record authored under a view.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewRecordConfig {
     /// Owner name (exact; wildcards are rejected at build time).
+    #[serde(with = "name_serde")]
     pub name: Name,
     /// TTL in seconds. [`DEFAULT_RECORD_TTL`] when unset by the UI.
     pub ttl: u32,
     /// Record data; the wire type is derived from the variant.
     ///
     /// Only A, AAAA, CNAME, TXT, SRV, MX and PTR are accepted.
+    #[serde(with = "rdata_serde")]
     pub rdata: RData,
 }
 
@@ -123,7 +126,7 @@ pub const SCHEDULE_WEEK: Duration = Duration::from_secs(7 * 24 * 3600);
 ///
 /// Maps to Google's DNS CNAME targets (`restrict.youtube.com` vs
 /// `restrictmoderate.youtube.com`). Default is [`Strict`](Self::Strict).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 
 pub enum YoutubeMode {
     /// Maximum restriction (`restrict.youtube.com`).
@@ -134,7 +137,7 @@ pub enum YoutubeMode {
 }
 
 /// SafeSearch settings on a profile.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SafeSearchConfig {
     /// When true, rewrite known search/video hosts to their safe endpoints.
     pub enabled: bool,
@@ -148,11 +151,12 @@ pub struct SafeSearchConfig {
 ///
 /// Windows are offsets within one week from Monday 00:00 UTC
 /// (`start` inclusive, `end` exclusive). See [`crate::active_schedule`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleConfig {
     /// Human-readable id for status / UI.
     pub id: Arc<str>,
     /// Filter set to use while this window is active.
+    #[serde(with = "serde_ids")]
     pub filter_set: SetId,
     /// Inclusive start of the window within a week, from Monday 00:00 UTC.
     pub start: Duration,
@@ -161,7 +165,7 @@ pub struct ScheduleConfig {
 }
 
 /// A split-horizon view: selection keys, local records, and a profile pointer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewConfig {
     /// Stable view id.
     pub id: ViewId,
@@ -179,11 +183,12 @@ pub struct ViewConfig {
 }
 
 /// A policy profile: filter set, canaries, rebind, forward-zone allow-list, …
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfileConfig {
     /// Stable profile id.
     pub id: ProfileId,
     /// Active filter set (schedules may override later).
+    #[serde(with = "serde_ids")]
     pub filter_set: SetId,
     /// When true and the qtype is AAAA, answer NODATA.
     pub suppress_aaaa: bool,
@@ -198,6 +203,7 @@ pub struct ProfileConfig {
     /// Forward zones this profile may use.
     ///
     /// `None` applies every configured zone; `Some(ids)` restricts to those ids.
+    #[serde(with = "serde_ids::opt_seq")]
     pub forward_zones: Option<Vec<ForwardZoneId>>,
     /// SafeSearch rewrite (steps 5–6).
     pub safesearch: SafeSearchConfig,
@@ -213,7 +219,7 @@ impl ProfileConfig {
 }
 
 /// Top-level policy configuration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyConfig {
     /// Default for profiles that omit [`ProfileConfig::rebind`].
     pub default_rebind: bool,
@@ -222,6 +228,7 @@ pub struct PolicyConfig {
     /// Non-public suffixes synthesised as NXDOMAIN when unknown and not forwarded.
     pub local_nxdomain_suffixes: Vec<Arc<str>>,
     /// Forward zones whose answers still get rebind protection (default: none).
+    #[serde(with = "serde_ids::seq")]
     pub rebind_check_forward_zones: Vec<ForwardZoneId>,
     /// Split-horizon views.
     pub views: Vec<ViewConfig>,
@@ -242,6 +249,141 @@ impl Default for PolicyConfig {
             views: Vec::new(),
             profiles: Vec::new(),
         }
+    }
+}
+
+/// Serde adapter for `SetId` / `ForwardZoneId`: text on the wire, parsed back
+/// through `FromStr` so the id charset/length rules still apply on deserialize.
+/// Keeps this crate independent of serde support in the crates that define them.
+mod serde_ids {
+    use std::fmt::Display;
+    use std::str::FromStr;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        T: Display,
+        S: Serializer,
+    {
+        value.to_string().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, T, D>(deserializer: D) -> Result<T, D::Error>
+    where
+        T: FromStr,
+        T::Err: Display,
+        D: Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+
+    pub mod seq {
+        use super::*;
+
+        pub fn serialize<T, S>(values: &[T], serializer: S) -> Result<S::Ok, S::Error>
+        where
+            T: Display,
+            S: Serializer,
+        {
+            let text: Vec<String> = values.iter().map(ToString::to_string).collect();
+            text.serialize(serializer)
+        }
+
+        pub fn deserialize<'de, T, D>(deserializer: D) -> Result<Vec<T>, D::Error>
+        where
+            T: FromStr,
+            T::Err: Display,
+            D: Deserializer<'de>,
+        {
+            Vec::<String>::deserialize(deserializer)?
+                .into_iter()
+                .map(|text| text.parse().map_err(serde::de::Error::custom))
+                .collect()
+        }
+    }
+
+    pub mod opt_seq {
+        use super::*;
+
+        pub fn serialize<T, S>(values: &Option<Vec<T>>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            T: Display,
+            S: Serializer,
+        {
+            let text: Option<Vec<String>> = values
+                .as_ref()
+                .map(|values| values.iter().map(ToString::to_string).collect());
+            text.serialize(serializer)
+        }
+
+        pub fn deserialize<'de, T, D>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
+        where
+            T: FromStr,
+            T::Err: Display,
+            D: Deserializer<'de>,
+        {
+            Option::<Vec<String>>::deserialize(deserializer)?
+                .map(|texts| {
+                    texts
+                        .into_iter()
+                        .map(|text| text.parse().map_err(serde::de::Error::custom))
+                        .collect()
+                })
+                .transpose()
+        }
+    }
+}
+
+/// Serde adapter for [`Name`]: presentation-format text on the wire.
+mod name_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::Name;
+
+    pub fn serialize<S: Serializer>(value: &Name, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(value)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Name, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Name::from_ascii(&text).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Serde adapter for [`RData`].
+///
+/// `dnscraft-proto` exposes no RDATA presentation-format parser, so the value
+/// is stored as its uncompressed wire bytes plus the record type needed to
+/// decode them. This round-trips every `RData` variant losslessly.
+mod rdata_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::{RData, RecordType};
+
+    #[derive(Serialize, Deserialize)]
+    struct Wire {
+        #[serde(rename = "type")]
+        rtype: u16,
+        data: Vec<u8>,
+    }
+
+    pub fn serialize<S: Serializer>(value: &RData, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut data = Vec::new();
+        value
+            .encode(&mut data, None)
+            .map_err(serde::ser::Error::custom)?;
+        Wire {
+            rtype: value.record_type().value(),
+            data,
+        }
+        .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<RData, D::Error> {
+        let Wire { rtype, data } = Wire::deserialize(deserializer)?;
+        RData::decode(&data, RecordType(rtype), 0, data.len()).map_err(serde::de::Error::custom)
     }
 }
 
@@ -280,5 +422,67 @@ mod tests {
             rdata: RData::A(Ipv4Addr::new(192, 0, 2, 10)),
         };
         assert_eq!(rec.rtype(), RecordType::A);
+    }
+
+    #[test]
+    fn config_round_trips_through_json() {
+        let cfg = PolicyConfig {
+            default_rebind: false,
+            ptr_prefixes: vec![
+                "192.0.2.0/24".parse().unwrap(),
+                "2001:db8::/32".parse().unwrap(),
+            ],
+            local_nxdomain_suffixes: vec![Arc::from("lan"), Arc::from("example.com")],
+            rebind_check_forward_zones: vec![ForwardZoneId::new("example-zone").unwrap()],
+            views: vec![ViewConfig {
+                id: ViewId::new("lan").unwrap(),
+                is_default: true,
+                subnets: vec!["192.0.2.0/24".parse().unwrap()],
+                client_ids: vec![ClientId::new("iphone-k7q2x9").unwrap()],
+                records: vec![
+                    ViewRecordConfig {
+                        name: Name::from_ascii("nas.lan.example.com").unwrap(),
+                        ttl: DEFAULT_RECORD_TTL,
+                        rdata: RData::A(Ipv4Addr::new(192, 0, 2, 10)),
+                    },
+                    ViewRecordConfig {
+                        name: Name::from_ascii("alias.lan.example.com").unwrap(),
+                        ttl: 300,
+                        rdata: RData::CNAME(Name::from_ascii("nas.lan.example.com").unwrap()),
+                    },
+                    ViewRecordConfig {
+                        name: Name::from_ascii("txt.lan.example.com").unwrap(),
+                        ttl: 60,
+                        rdata: RData::TXT(vec![b"hello world".to_vec().into_boxed_slice()]),
+                    },
+                ],
+                profile: ProfileId::new("default").unwrap(),
+            }],
+            profiles: vec![ProfileConfig {
+                id: ProfileId::new("default").unwrap(),
+                filter_set: SetId::new("family").unwrap(),
+                suppress_aaaa: true,
+                firefox_canary: true,
+                icloud_private_relay: false,
+                rebind: Some(true),
+                rebind_exceptions: vec![Arc::from("nas.example.com")],
+                forward_zones: Some(vec![ForwardZoneId::new("example-zone").unwrap()]),
+                safesearch: SafeSearchConfig {
+                    enabled: true,
+                    providers: vec![Arc::from("google"), Arc::from("youtube")],
+                    youtube_mode: YoutubeMode::Moderate,
+                },
+                schedules: vec![ScheduleConfig {
+                    id: Arc::from("school"),
+                    filter_set: SetId::new("strict").unwrap(),
+                    start: Duration::from_secs(8 * 3600),
+                    end: Duration::from_secs(15 * 3600),
+                }],
+            }],
+        };
+
+        let json = serde_json::to_string(&cfg).unwrap();
+        let decoded: PolicyConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, cfg);
     }
 }

@@ -19,6 +19,7 @@ dnscraft-resolver = { path = "../dnscraft-resolver" }
 dnscraft-filtering = { path = "../dnscraft-filtering" }
 dnscraft-tls = { path = "../dnscraft-tls" }
 thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive", "rc"] }
 tokio = { workspace = true, features = ["signal"] }
 socket2 = { workspace = true }
 quinn-udp = { workspace = true }
@@ -36,6 +37,7 @@ h3-quinn = { workspace = true }
 
 [dev-dependencies]
 dnscraft-testkit = { path = "../dnscraft-testkit" }
+serde_json = { workspace = true }
 hickory-proto = { workspace = true }
 proptest = { workspace = true }
 rcgen = { workspace = true }

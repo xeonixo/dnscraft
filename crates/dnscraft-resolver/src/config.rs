@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dnscraft_proto::Name;
+use serde::{Deserialize, Serialize};
 
 use crate::clock::{Clock, SystemClock};
 use crate::dnssec::TrustAnchors;
@@ -16,12 +17,92 @@ use crate::hints::default_root_hints;
 
 const MAX_FORWARD_ZONE_ID: usize = 64;
 
+/// serde adapter for [`Name`], which lives in `dnscraft-proto` and has no
+/// serde implementation. Names travel in presentation format and are parsed
+/// back through [`Name::from_ascii`].
+pub(crate) mod name_serde {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
+
+    use dnscraft_proto::Name;
+
+    pub fn serialize<S: Serializer>(name: &Name, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&name.to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Name, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Name::from_ascii(&text).map_err(D::Error::custom)
+    }
+}
+
+/// serde adapter for a `Vec<Name>`.
+pub(crate) mod name_list_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+
+    use dnscraft_proto::Name;
+
+    pub fn serialize<S: Serializer>(names: &[Name], serializer: S) -> Result<S::Ok, S::Error> {
+        let text: Vec<String> = names.iter().map(ToString::to_string).collect();
+        text.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Name>, D::Error> {
+        Vec::<String>::deserialize(deserializer)?
+            .into_iter()
+            .map(|text| Name::from_ascii(&text).map_err(D::Error::custom))
+            .collect()
+    }
+}
+
+/// serde adapter for a `HashMap<Name, SocketAddr>`, keyed by the presentation
+/// form of the name.
+pub(crate) mod name_addr_map_serde {
+    use std::collections::HashMap;
+    use std::net::SocketAddr;
+
+    use serde::de::Error as _;
+    use serde::ser::SerializeMap;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use dnscraft_proto::Name;
+
+    pub fn serialize<S: Serializer>(
+        map: &HashMap<Name, SocketAddr>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut out = serializer.serialize_map(Some(map.len()))?;
+        for (name, addr) in map {
+            out.serialize_entry(&name.to_string(), addr)?;
+        }
+        out.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<HashMap<Name, SocketAddr>, D::Error> {
+        HashMap::<String, SocketAddr>::deserialize(deserializer)?
+            .into_iter()
+            .map(|(text, addr)| Name::from_ascii(&text).map(|name| (name, addr)))
+            .collect::<Result<_, _>>()
+            .map_err(D::Error::custom)
+    }
+}
+
 /// Identifier of a [`ForwardZone`].
 ///
 /// Matches `[a-z0-9-]{1,64}`. [`Resolver::new`](crate::Resolver::new) rejects
 /// two zones that share an id.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+#[serde(try_from = "String")]
 pub struct ForwardZoneId(Arc<str>);
+
+impl TryFrom<String> for ForwardZoneId {
+    type Error = ForwardZoneIdError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(&value)
+    }
+}
 
 impl ForwardZoneId {
     /// Validates `s` (`[a-z0-9-]{1,64}`) and wraps it.
@@ -62,7 +143,7 @@ impl FromStr for ForwardZoneId {
 }
 
 /// Configuration of a [`Resolver`](crate::Resolver).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResolverConfig {
     /// Root server addresses used for priming and as fallback.
     pub root_hints: Vec<SocketAddr>,
@@ -86,8 +167,10 @@ pub struct ResolverConfig {
     /// Negative trust anchors (RFC 7646): names at or below one of these
     /// domains are resolved without DNSSEC validation (status `Insecure`,
     /// no AD bit, no SERVFAIL for bogus data). Default empty.
+    #[serde(with = "name_list_serde")]
     pub negative_trust_anchors: Vec<Name>,
     /// Time source.
+    #[serde(skip, default = "default_clock")]
     pub clock: Arc<dyn Clock>,
     /// Answer-cache limit in mebibytes (1024×1024 bytes). `0` stores nothing.
     /// Default: 64.
@@ -113,6 +196,7 @@ pub struct ResolverConfig {
     /// (so the glueless path is exercised); only its result is replaced by the
     /// mapped address.
     #[doc(hidden)]
+    #[serde(with = "name_addr_map_serde")]
     pub nameserver_addr_overrides: HashMap<Name, SocketAddr>,
     /// Test hook: exact cache budget in bytes. When set, replaces
     /// [`Self::cache_size_mb`].
@@ -182,7 +266,7 @@ pub struct ResolverConfig {
 /// port), and IPv4-mapped IPv6 equals the plain IPv4 address. A loop that
 /// crosses NAT (the source IP seen here is not a configured target) is not
 /// detected by address; it ends at `query_timeout`, so it is bounded but slow.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForwardZone {
     /// Stable id (`[a-z0-9-]{1,64}`). Unique among the configured zones.
     ///
@@ -190,6 +274,7 @@ pub struct ForwardZone {
     /// The cache and in-flight keys use it as the forward route.
     pub id: ForwardZoneId,
     /// Apex of the forwarded zone.
+    #[serde(with = "name_serde")]
     pub zone: Name,
     /// Recursive servers that answer this zone.
     pub targets: Vec<SocketAddr>,
@@ -203,6 +288,11 @@ impl ResolverConfig {
     pub(crate) fn egress_allowed(&self, ip: IpAddr) -> bool {
         self.outgoing_ipv6 || ip.is_ipv4()
     }
+}
+
+/// serde default for the skipped [`ResolverConfig::clock`] field.
+fn default_clock() -> Arc<dyn Clock> {
+    Arc::new(SystemClock)
 }
 
 impl Default for ResolverConfig {
@@ -284,5 +374,48 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn config_round_trips_through_json() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            Name::from_ascii("ns.example.net").unwrap(),
+            "[2001:db8::53]:53".parse().unwrap(),
+        );
+        let config = ResolverConfig {
+            root_hints: vec!["192.0.2.53:53".parse().unwrap()],
+            negative_trust_anchors: vec![Name::from_ascii("example.com").unwrap()],
+            nameserver_addr_overrides: overrides,
+            forward_zones: vec![ForwardZone {
+                id: ForwardZoneId::new("vpn-site-1").unwrap(),
+                zone: Name::from_ascii("example.com").unwrap(),
+                targets: vec!["192.0.2.1:53".parse().unwrap()],
+                validate: false,
+            }],
+            ..ResolverConfig::default()
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let back: ResolverConfig = serde_json::from_str(&json).unwrap();
+
+        // `ResolverConfig` has no `PartialEq` because of its `Arc<dyn Clock>`;
+        // the serialized form is the persisted state and must be identical.
+        assert_eq!(
+            serde_json::to_value(&config).unwrap(),
+            serde_json::to_value(&back).unwrap()
+        );
+        assert_eq!(back.forward_zones, config.forward_zones);
+        assert_eq!(back.negative_trust_anchors, config.negative_trust_anchors);
+        assert_eq!(
+            back.nameserver_addr_overrides,
+            config.nameserver_addr_overrides
+        );
+    }
+
+    #[test]
+    fn invalid_forward_zone_id_is_rejected_on_deserialize() {
+        let json = r#"{"id":"Upper","zone":"example.com","targets":[],"validate":false}"#;
+        assert!(serde_json::from_str::<ForwardZone>(json).is_err());
     }
 }

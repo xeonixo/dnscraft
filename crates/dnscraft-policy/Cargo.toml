@@ -17,12 +17,14 @@ dnscraft-filtering = { path = "../dnscraft-filtering" }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-ipnet = { workspace = true }
+serde = { workspace = true, features = ["derive", "rc"] }
+ipnet = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 criterion = { workspace = true }
 dnscraft-testkit = { path = "../dnscraft-testkit" }
 hickory-proto = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 
 [[bench]]

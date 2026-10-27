@@ -13,6 +13,32 @@ use ipnet::IpNet;
 use crate::error::ClientsError;
 use crate::secret::{Secret, UNIFI_API_KEY_ENV, read_secret};
 
+/// serde adapter for an optional [`IpNet`], which has no serde implementation
+/// used by this crate. Uses the CIDR presentation form (`192.0.2.0/24`).
+pub(crate) mod optional_ipnet_serde {
+    use std::str::FromStr;
+
+    use ipnet::IpNet;
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(net: &Option<IpNet>, serializer: S) -> Result<S::Ok, S::Error> {
+        match net {
+            Some(net) => serializer.serialize_some(&net.to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<IpNet>, D::Error> {
+        Option::<String>::deserialize(deserializer)?
+            .map(|text| IpNet::from_str(&text))
+            .transpose()
+            .map_err(D::Error::custom)
+    }
+}
+
 /// Default parent domain when UniFi has no per-network DHCP domain (RFC 8375).
 pub const DEFAULT_LOCAL_DOMAIN: &str = "home.arpa";
 /// Default offline retain window: 7 days.
@@ -25,8 +51,7 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(60);
 pub const MAX_MANUAL_ENTRIES: usize = 1_000;
 
 /// How the parent domain for FQDNs is chosen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum LocalDomainMode {
     /// Prefer UniFi per-VLAN DHCP domain when present; else config `local_domain`.
     #[default]
@@ -36,8 +61,7 @@ pub enum LocalDomainMode {
 }
 
 /// TLS trust mode for the UniFi gateway connection.
-#[derive(Clone, Debug, PartialEq, Eq)]
-
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TlsMode {
     /// SHA-256 of the leaf certificate DER must equal this pin (32 bytes).
     Pin([u8; 32]),
@@ -84,7 +108,7 @@ impl TlsMode {
 
 /// UniFi gateway connection settings. The API key is never stored here — see
 /// [`crate::secret::read_secret`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UnifiConfig {
     /// When false, UniFi contributes nothing; manuals only.
     pub enabled: bool,
@@ -115,20 +139,21 @@ impl Default for UnifiConfig {
 }
 
 /// One manual name entry (exact IP or CIDR).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ManualEntry {
     /// Display name (normalised later into a DNS label).
     pub name: String,
     /// Exact host address. Mutually exclusive with [`Self::cidr`].
     pub ip: Option<IpAddr>,
     /// CIDR range. Mutually exclusive with [`Self::ip`].
+    #[serde(with = "optional_ipnet_serde")]
     pub cidr: Option<IpNet>,
     /// Optional domain override for this entry only.
     pub domain: Option<String>,
 }
 
 /// Top-level clients configuration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ClientsConfig {
     /// Fallback parent domain when UniFi has no DHCP domain for the network.
     pub local_domain: String,
@@ -560,5 +585,59 @@ mod tests {
         let mut cfg = example_config();
         cfg.unifi.base_url = "https://[2001:db8::1]:8443".into();
         cfg.validate_with_secret(ok_secret).expect("ipv6 origin");
+    }
+
+    #[test]
+    fn config_round_trips_through_json() {
+        let config = ClientsConfig {
+            local_domain: "example.com".into(),
+            local_domain_mode: LocalDomainMode::Config,
+            offline_retain: Duration::from_secs(7 * 24 * 3600),
+            ipv6_address_ttl: Duration::from_secs(24 * 3600),
+            unifi: UnifiConfig {
+                enabled: true,
+                base_url: "https://192.0.2.1".into(),
+                site_id: Some("site-1".into()),
+                poll_interval: Duration::from_secs(60),
+                classic_clients: false,
+                tls: TlsMode::pin_from_str(
+                    "sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+                )
+                .unwrap(),
+            },
+            manual: vec![
+                ManualEntry {
+                    name: "printer".into(),
+                    ip: Some("192.0.2.10".parse().unwrap()),
+                    cidr: None,
+                    domain: Some("example.com".into()),
+                },
+                ManualEntry {
+                    name: "lab".into(),
+                    ip: None,
+                    cidr: Some("2001:db8::/32".parse().unwrap()),
+                    domain: None,
+                },
+            ],
+            allow_http_for_tests: false,
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let back: ClientsConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, config);
+    }
+
+    #[test]
+    fn all_tls_modes_round_trip() {
+        for tls in [
+            TlsMode::Pin([7; 32]),
+            TlsMode::CaFile(PathBuf::from("/etc/dnscraft/ca.pem")),
+            TlsMode::Secure,
+            TlsMode::Insecure,
+        ] {
+            let json = serde_json::to_string(&tls).unwrap();
+            let back: TlsMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, tls);
+        }
     }
 }

@@ -29,7 +29,18 @@ fn validate_id(s: &str) -> Result<(), IdError> {
 macro_rules! id_type {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
-        #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+        #[derive(
+            Clone,
+            PartialEq,
+            Eq,
+            Hash,
+            PartialOrd,
+            Ord,
+            Debug,
+            serde::Serialize,
+            serde::Deserialize,
+        )]
+        #[serde(try_from = "String")]
         pub struct $name(Arc<str>);
 
         impl $name {
@@ -42,6 +53,14 @@ macro_rules! id_type {
             /// The id as text.
             pub fn as_str(&self) -> &str {
                 &self.0
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = IdError;
+
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                Self::new(&value)
             }
         }
 
@@ -162,8 +181,7 @@ pub enum Verdict {
 }
 
 /// How blocked queries are answered.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum BlockMode {
     /// RCODE REFUSED.
     #[default]

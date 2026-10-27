@@ -17,12 +17,14 @@ rand = { workspace = true }
 thiserror = { workspace = true }
 ring = { workspace = true }
 tracing = { workspace = true }
+serde = { workspace = true, features = ["rc"] }
 
 [dev-dependencies]
 dnscraft-testkit = { path = "../dnscraft-testkit" }
 hickory-proto = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 criterion = { workspace = true }
+serde_json = { workspace = true }
 
 [[bench]]
 name = "cache"

@@ -147,7 +147,7 @@ impl Default for StoreConfig {
 }
 
 /// Where a list comes from.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ListSourceSpec {
     /// An `https://` URL, fetched and cached in the store.
     Url(String),
