@@ -27,6 +27,11 @@
 //!   while the master is unreachable, with replay conflict/expiry semantics.
 //! - [`RuntimeCommand`] / [`RuntimeCommandApplier`] — volatile runtime-command
 //!   broadcast to every connected node (never persisted or queued).
+//! - [`LogOutbox`] / [`LogIngest`] — caller-supplied query-log hooks;
+//!   [`LogStreamer`] batches contiguous unacked rows into a [`LogBatch`] and
+//!   [`ClusterServer`] acknowledges the highest contiguous [`LogAck`]. Records
+//!   are opaque, and [`Backfill`] resumes after an outage with `cluster.log_gap`
+//!   when the local buffer overran.
 
 #![deny(missing_docs)]
 
@@ -36,6 +41,7 @@ mod config;
 mod enroll;
 mod error;
 mod identity;
+mod log;
 mod offline;
 mod relay;
 mod server;
@@ -51,6 +57,9 @@ pub use config::{
 pub use enroll::{EnrollRequest, EnrollResponse, PROTOCOL_VERSION, enroll};
 pub use error::ClusterError;
 pub use identity::{NodeIdentity, PendingNodeIdentity};
+pub use log::{
+    Backfill, FlushOutcome, LogAck, LogBatch, LogIngest, LogOutbox, LogRecord, LogStreamer,
+};
 pub use offline::{
     EnqueueOutcome, OfflineQueueStatus, OfflineWriteEntry, OfflineWriteQueue, OfflineWriteState,
     QueuedWrite, ReplayOutcome,

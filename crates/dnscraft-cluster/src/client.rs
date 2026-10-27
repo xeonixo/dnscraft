@@ -28,6 +28,7 @@ use crate::config::{
 use crate::enroll::{EnrollRequest, EnrollResponse, PROTOCOL_VERSION};
 use crate::error::ClusterError;
 use crate::identity::NodeIdentity;
+use crate::log::{LogAck, LogBatch};
 use crate::relay::{RelayResponse, RuntimeCommand, RuntimeCommandApplier, WriteRelay};
 use crate::server::{HeartbeatRequest, HeartbeatResponse, PROTOCOL_HEADER};
 use crate::sync::{ConfigAck, ConfigApplier, ConfigPush, Hello, StreamError, StreamRecord};
@@ -36,6 +37,7 @@ const ENROLL_PATH: &str = "/cluster/v1/enroll";
 const STREAM_PATH: &str = "/cluster/v1/stream";
 const HEARTBEAT_PATH: &str = "/cluster/v1/heartbeat";
 const ACK_PATH: &str = "/cluster/v1/ack";
+const LOGS_PATH: &str = "/cluster/v1/logs";
 const RELAY_PATH: &str = "/cluster/v1/writes";
 const NDJSON: &str = "application/x-ndjson";
 
@@ -142,7 +144,10 @@ impl ClusterClient {
             })?;
         match record {
             StreamRecord::Hello(Hello {
-                protocol, node_id, ..
+                protocol,
+                node_id,
+                last_acked_log_seq,
+                ..
             }) => {
                 if protocol != PROTOCOL_VERSION {
                     return Err(ClusterError::ProtocolVersion);
@@ -155,6 +160,7 @@ impl ClusterClient {
                 Ok(ClusterStream {
                     node_id,
                     protocol,
+                    master_highest_log_seq: last_acked_log_seq,
                     response,
                     buffer,
                 })
@@ -258,6 +264,27 @@ impl ClusterClient {
             .map_err(master_unavailable)?;
         ensure_success(response).await?;
         Ok(())
+    }
+
+    /// Posts one log batch and returns the master's highest contiguous `seq`.
+    ///
+    /// `node_id` is sent for the wire shape only; the master derives the real
+    /// identity from the client certificate and rejects a mismatch with
+    /// `cluster.log_stream.invalid`. The records are opaque to this crate.
+    pub async fn post_logs(&self, batch: &LogBatch) -> Result<u64, ClusterError> {
+        let body = serde_json::to_vec(batch).map_err(|error| ClusterError::Internal {
+            message: format!("encode log batch: {error}"),
+        })?;
+        let response = self
+            .http
+            .post(format!("{}{LOGS_PATH}", self.base_url))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(master_unavailable)?;
+        let ack: LogAck = json_body(ensure_success(response).await?).await?;
+        Ok(ack.acked_seq)
     }
 
     /// Sends one heartbeat; `applied_version`/`queue_depth` are reported as-is.
@@ -383,6 +410,7 @@ impl ClusterClient {
 pub struct ClusterStream {
     node_id: String,
     protocol: u32,
+    master_highest_log_seq: Option<u64>,
     /// Kept alive so the HTTP/2 response body stays open.
     response: reqwest::Response,
     /// Leftover bytes after the last record read.
@@ -398,6 +426,14 @@ impl ClusterStream {
     /// The negotiated cluster protocol version.
     pub fn protocol(&self) -> u32 {
         self.protocol
+    }
+
+    /// Highest contiguous log `seq` the master has stored for this node.
+    ///
+    /// Pass it to [`crate::LogStreamer::backfill`] after a reconnect; `None`
+    /// means the master sent no log cursor.
+    pub fn master_highest_log_seq(&self) -> Option<u64> {
+        self.master_highest_log_seq
     }
 
     /// Reads the next NDJSON record from the master.
@@ -434,6 +470,17 @@ fn map_wire_error(error: &StreamError) -> ClusterError {
         "cluster.node.unknown" => ClusterError::NodeUnknown { node_id },
         "cluster.node.revoked" => ClusterError::NodeRevoked { node_id },
         "cluster.protocol.version" => ClusterError::ProtocolVersion,
+        "cluster.log_stream.invalid" => ClusterError::LogStreamInvalid {
+            reason: "rejected by the master".to_owned(),
+        },
+        "cluster.log_gap" => ClusterError::LogGap {
+            missing: error
+                .params
+                .as_ref()
+                .and_then(|params| params.get("missing"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default(),
+        },
         "cluster.master_unavailable" => ClusterError::MasterUnavailable,
         "cluster.transport.tls" => ClusterError::TransportTls {
             message: "rejected by the cluster listener".to_owned(),

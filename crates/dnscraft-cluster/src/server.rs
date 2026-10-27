@@ -52,6 +52,7 @@ use crate::ca::{ClusterCa, cert_fingerprint, node_id_from_der};
 use crate::config::ListenConfig;
 use crate::enroll::{PROTOCOL_VERSION, enroll as run_enroll};
 use crate::error::ClusterError;
+use crate::log::{LogAck, LogBatch, LogIngest};
 use crate::relay::{RuntimeCommand, WriteExecutor, WriteRelay};
 use crate::store::ClusterStore;
 use crate::sync::{ConfigAck, ConfigSync, Hello, StreamError, StreamRecord};
@@ -113,8 +114,9 @@ impl ClusterServer {
     ///
     /// `store` is shared with the caller (`ClusterStore` is cheaply cloneable)
     /// so the admin surface can read the registry. `write_executor` runs
-    /// relayed writes after re-checking RBAC. The master certificate is issued
-    /// by `ca` for `config.server_name`; its fingerprint is exposed by
+    /// relayed writes after re-checking RBAC, and `log_ingest` stores query
+    /// logs streamed by sub-nodes. The master certificate is issued by `ca`
+    /// for `config.server_name`; its fingerprint is exposed by
     /// [`Self::server_cert_pem`] for bootstrap pinning.
     pub async fn start(
         config: ClusterServerConfig,
@@ -122,6 +124,7 @@ impl ClusterServer {
         store: ClusterStore,
         clock: Arc<dyn Clock>,
         write_executor: Arc<dyn WriteExecutor>,
+        log_ingest: Arc<dyn LogIngest>,
     ) -> Result<Self, ClusterError> {
         // Defence in depth: the cluster listener is never exposed publicly.
         if config.listen.bind.is_unspecified()
@@ -162,6 +165,7 @@ impl ClusterServer {
             node_cert_ttl: config.node_cert_ttl,
             config_sync: Arc::clone(&config_sync),
             write_executor,
+            log_ingest,
         });
         let router = router(Arc::clone(&state));
 
@@ -281,6 +285,7 @@ struct ServerState {
     node_cert_ttl: Duration,
     config_sync: Arc<ConfigSync>,
     write_executor: Arc<dyn WriteExecutor>,
+    log_ingest: Arc<dyn LogIngest>,
 }
 
 /// Authenticated peer identity extracted from the client certificate chain.
@@ -308,7 +313,7 @@ fn router(state: Arc<ServerState>) -> Router {
         .route("/cluster/v1/stream", get(stream))
         .route("/cluster/v1/ack", post(config_ack))
         .route("/cluster/v1/heartbeat", post(heartbeat))
-        .route("/cluster/v1/logs", post(not_found))
+        .route("/cluster/v1/logs", post(log_batch))
         .route("/cluster/v1/writes", post(write_relay))
         .route_layer(middleware::from_fn_with_state(
             Arc::clone(&state),
@@ -439,11 +444,17 @@ async fn stream(
 
     let last_applied_version = hello.as_ref().and_then(|hello| hello.last_applied_version);
     let (records, mut record_rx) = mpsc::channel::<StreamRecord>(8);
+    // Backfill cursor: the sub-node resumes logging from this + 1.
+    let master_highest_log_seq = state
+        .log_ingest
+        .highest_seq(&auth.0)
+        .await
+        .unwrap_or_default();
     let _ = records.try_send(StreamRecord::Hello(Hello {
         protocol: PROTOCOL_VERSION,
         node_id: auth.0.clone(),
         last_applied_version: state.config_sync.current_version(),
-        last_acked_log_seq: None,
+        last_acked_log_seq: Some(master_highest_log_seq),
     }));
     state
         .config_sync
@@ -495,6 +506,38 @@ async fn config_ack(
         .await
     {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+/// `POST /cluster/v1/logs` — ingests one contiguous query-log batch.
+///
+/// The body is parsed by hand so a malformed batch yields
+/// `cluster.log_stream.invalid` rather than axum's rejection. `node_id` is
+/// taken from the certificate; the payload copy must match it. The ingest hook
+/// owns deduplication and gap recording.
+async fn log_batch(
+    State(state): State<Arc<ServerState>>,
+    Extension(auth): Extension<AuthenticatedNode>,
+    body: Bytes,
+) -> Response {
+    let batch: LogBatch = match serde_json::from_slice(&body) {
+        Ok(batch) => batch,
+        Err(_) => {
+            return error_response(&ClusterError::LogStreamInvalid {
+                reason: "malformed log batch".to_owned(),
+            });
+        }
+    };
+    if let Err(error) = batch.validate(&auth.0) {
+        return error_response(&error);
+    }
+    match state
+        .log_ingest
+        .ingest(&auth.0, batch.first_seq, batch.last_seq, &batch.records)
+        .await
+    {
+        Ok(acked_seq) => Json(LogAck { acked_seq }).into_response(),
         Err(error) => error_response(&error),
     }
 }
@@ -567,7 +610,10 @@ fn error_response(error: &ClusterError) -> Response {
         | ClusterError::JoinTokenInvalid
         | ClusterError::JoinTokenExpired => StatusCode::FORBIDDEN,
         ClusterError::NodeAlreadyJoined { .. } => StatusCode::CONFLICT,
-        ClusterError::ProtocolVersion | ClusterError::RoleInvalid { .. } => StatusCode::BAD_REQUEST,
+        ClusterError::ProtocolVersion
+        | ClusterError::RoleInvalid { .. }
+        | ClusterError::LogStreamInvalid { .. }
+        | ClusterError::LogGap { .. } => StatusCode::BAD_REQUEST,
         ClusterError::MasterUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -579,8 +625,11 @@ fn error_response(error: &ClusterError) -> Response {
         ClusterError::NodeAlreadyJoined { node_id } => {
             body["error"]["params"] = json!({ "node_id": node_id });
         }
-        ClusterError::RoleInvalid { reason } => {
+        ClusterError::RoleInvalid { reason } | ClusterError::LogStreamInvalid { reason } => {
             body["error"]["params"] = json!({ "reason": reason });
+        }
+        ClusterError::LogGap { missing } => {
+            body["error"]["params"] = json!({ "missing": missing });
         }
         _ => {}
     }

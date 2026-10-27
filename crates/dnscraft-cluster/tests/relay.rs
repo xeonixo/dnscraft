@@ -19,8 +19,8 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 use dnscraft_cluster::{
     ClusterCa, ClusterClient, ClusterError, ClusterServer, ClusterServerConfig, ClusterStore,
-    ListenConfig, NodeIdentity, PendingNodeIdentity, RelayResponse, RelayedActor,
-    RuntimeCommandApplier, TlsPaths, WriteExecutor, WriteRelay,
+    ListenConfig, LogIngest, LogRecord, NodeIdentity, PendingNodeIdentity, RelayResponse,
+    RelayedActor, RuntimeCommandApplier, TlsPaths, WriteExecutor, WriteRelay,
 };
 use dnscraft_common::clock::ManualClock;
 use dnscraft_common::secret::Secret;
@@ -144,6 +144,28 @@ impl Drop for TestDir {
     }
 }
 
+/// Log ingest is not exercised here.
+struct NoLogs;
+
+#[async_trait]
+impl LogIngest for NoLogs {
+    async fn ingest(
+        &self,
+        _node_id: &str,
+        _first_seq: u64,
+        _last_seq: u64,
+        _records: &[LogRecord],
+    ) -> Result<u64, ClusterError> {
+        Err(ClusterError::Internal {
+            message: "log ingest not used in this test".to_owned(),
+        })
+    }
+
+    async fn highest_seq(&self, _node_id: &str) -> Result<u64, ClusterError> {
+        Ok(0)
+    }
+}
+
 /// A real master listening on loopback.
 struct Master {
     server: ClusterServer,
@@ -177,6 +199,7 @@ async fn start_master(name: &str, executor: Arc<dyn WriteExecutor>) -> Master {
         store.clone(),
         clock.clone(),
         executor,
+        Arc::new(NoLogs),
     )
     .await
     .unwrap();
