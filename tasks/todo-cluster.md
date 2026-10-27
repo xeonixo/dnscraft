@@ -53,8 +53,8 @@
 
 ## Phase 5 — Log aggregation + stats
 
-- [ ] CL19 log outbox streaming + contiguous ack + dedupe `(node_id, record_id)`+`(node_id, seq)`.
-- [ ] CL20 backfill from `last_acked_log_seq` + gap counting + buffer retention.
+- [x] CL19 log outbox streaming + contiguous ack + dedupe `(node_id, record_id)`+`(node_id, seq)`.
+- [x] CL20 backfill from `last_acked_log_seq` + gap counting + buffer retention.
 - [ ] CL21 stats node_id rollups + per-node breakdown + sub-node read model (local offline).
 
 ## Phase 6 — TLS cert push + auth snapshot + quotas/skew
