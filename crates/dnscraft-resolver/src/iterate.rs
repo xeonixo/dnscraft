@@ -1,9 +1,7 @@
 //! Iterative resolution: walk the delegation chain from the root servers.
 
 use std::collections::{HashMap, VecDeque};
-use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
-use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
@@ -18,6 +16,7 @@ use crate::error::ResolveError;
 use crate::limits::{Budget, Limits};
 use crate::server_selection::ServerStats;
 use crate::transport::{self, TransportError};
+use crate::BoxFuture;
 
 /// A server to try: a known address, or a name server host still to resolve.
 #[derive(Debug)]
@@ -249,8 +248,6 @@ pub(crate) fn is_usable_server_ip(ip: IpAddr, allow_private: bool) -> bool {
         }
     }
 }
-
-type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Resolves `name`/`qtype` and follows CNAME and DNAME chains.
 ///

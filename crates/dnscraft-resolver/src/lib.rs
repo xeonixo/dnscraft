@@ -36,7 +36,9 @@ pub mod transport;
 mod types;
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -60,6 +62,10 @@ pub use types::{
 /// In-memory answer cache, exposed only for the criterion microbench.
 #[doc(hidden)]
 pub use cache::{Cache as __BenchCache, TtlClamp as __BenchTtlClamp};
+
+/// A boxed, `Send` future borrowed for `'a` (used by the resolver's
+/// recursive helpers).
+pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// State shared with background prefetch tasks. Those tasks must not borrow
 /// the `Resolver`, which the caller is free to drop while a refresh runs.

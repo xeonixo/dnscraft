@@ -3,9 +3,7 @@
 //! trust at referrals (Task 9b).
 
 use std::collections::VecDeque;
-use std::future::Future;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
 
@@ -20,6 +18,7 @@ use super::{
 };
 use crate::error::ResolveError;
 use crate::iterate::{Candidate, Context};
+use crate::BoxFuture;
 
 /// Servers asked for a DNSKEY RRset: the one that just answered plus a few
 /// other known addresses of the zone.
@@ -99,8 +98,6 @@ pub(crate) async fn settle(
 const MAX_CUT_DEPTH: u8 = 8;
 /// Maximum number of DS probes for hidden cuts per resolution.
 const MAX_PROBES: u32 = 8;
-
-type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// What a DS lookup at a name found.
 enum Cut {
