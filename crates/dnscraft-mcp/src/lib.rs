@@ -22,6 +22,8 @@ pub mod tools;
 pub mod transport;
 
 mod auth;
+mod clock;
+mod rate_limit;
 
 use std::sync::Arc;
 

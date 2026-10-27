@@ -27,10 +27,10 @@ const WRITE_TOOL_NAMES: [&str; 5] = [
 ];
 
 fn write_config() -> McpConfig {
-    McpConfig {
+    support::high_rate_config(McpConfig {
         write_tools_enabled: true,
         ..McpConfig::default()
-    }
+    })
 }
 
 async fn spawn(config: McpConfig) -> TestServer {

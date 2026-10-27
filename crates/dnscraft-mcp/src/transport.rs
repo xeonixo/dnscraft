@@ -14,18 +14,22 @@
 //! request is cancelled), so it uses `control_api.internal` with
 //! `{"reason":"timeout"}` and HTTP 504.
 //!
-//! The caller owns the token rate limiter: 401 responses are counted there
-//! (SPEC-mcp.md § Authentication), not in this crate.
+//! The caller mounts this service; authentication, the per-token rate limit
+//! (read/write buckets) and the per-token in-flight cap are enforced here, not
+//! by the caller. Failed authentication attempts are charged to the source's
+//! auth bucket.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 
 use axum::body::Body;
-use axum::http::{HeaderMap, Method, Request, Response, StatusCode, header};
+use axum::extract::ConnectInfo;
+use axum::http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode, header};
 use axum::response::{IntoResponse, Json};
 use rmcp::model::ProtocolVersion;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -35,11 +39,16 @@ use tower::Service;
 
 use crate::auth::{self, AuthError};
 use crate::backend::McpBackend;
+use crate::clock::SystemClock;
 use crate::config::McpConfig;
+use crate::rate_limit::{BucketClass, TokenRateLimiter};
 use crate::tools::McpServer;
+use crate::tools::write;
 
 const VERSION_HEADER: &str = "MCP-Protocol-Version";
 const ORIGIN_HEADER: &str = "Origin";
+const MCP_METHOD_HEADER: &str = "Mcp-Method";
+const MCP_NAME_HEADER: &str = "Mcp-Name";
 
 /// Limits and allow-lists applied by [`validate_mcp_request`].
 #[derive(Debug, Clone, Copy)]
@@ -180,6 +189,7 @@ pub struct McpTransport {
     config: McpConfig,
     supported_versions: Vec<String>,
     in_flight: InFlight,
+    rate_limiter: TokenRateLimiter,
 }
 
 impl McpTransport {
@@ -187,6 +197,7 @@ impl McpTransport {
         inner: StreamableHttpService<McpServer, LocalSessionManager>,
         backend: Arc<dyn McpBackend>,
         config: McpConfig,
+        rate_limiter: TokenRateLimiter,
     ) -> Self {
         let supported_versions = if config.legacy_session_mode {
             ProtocolVersion::KNOWN_VERSIONS
@@ -202,6 +213,7 @@ impl McpTransport {
             config,
             supported_versions,
             in_flight: InFlight::default(),
+            rate_limiter,
         }
     }
 }
@@ -239,6 +251,10 @@ impl Service<Request<Body>> for McpTransport {
                 ));
             }
 
+            // A failed authentication attempt is charged to the source's auth
+            // bucket; the peer is only available when the caller serves with
+            // connect info, otherwise every 401 shares one fallback bucket.
+            let auth_key = auth_key(&request);
             // One deadline covers token validation and the tool call.
             let deadline = tokio::time::Instant::now() + this.config.request_timeout;
             let token = match tokio::time::timeout_at(
@@ -248,29 +264,20 @@ impl Service<Request<Body>> for McpTransport {
             .await
             {
                 Ok(Ok(token)) => token,
-                Ok(Err(AuthError::Unauthenticated)) => {
-                    return Ok(envelope(
-                        StatusCode::UNAUTHORIZED,
-                        "control_api.auth.unauthenticated",
-                        json!({}),
-                    ));
-                }
-                Ok(Err(AuthError::InvalidScope)) => {
-                    return Ok(envelope(
-                        StatusCode::FORBIDDEN,
-                        "control_api.auth.invalid_scope",
-                        json!({}),
-                    ));
-                }
-                Ok(Err(AuthError::Internal)) => {
-                    return Ok(envelope(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "control_api.internal",
-                        json!({ "reason": "token_validation" }),
-                    ));
+                Ok(Err(error)) => {
+                    if let Err(seconds) = this.rate_limiter.check(&auth_key, BucketClass::Auth) {
+                        return Ok(rate_limited_response(seconds));
+                    }
+                    return Ok(auth_error_response(error));
                 }
                 Err(_) => return Ok(timeout_response(&this.config)),
             };
+            // The tool is known from the SEP-2243 headers; rmcp still enforces
+            // that those headers match the body before dispatching.
+            let class = bucket_class(request.headers());
+            if let Err(seconds) = this.rate_limiter.check(&token.token_id, class) {
+                return Ok(rate_limited_response(seconds));
+            }
             let _slot = match this.in_flight.try_acquire(
                 &token.token_id,
                 this.config.max_concurrent_requests_per_token,
@@ -348,6 +355,67 @@ fn timeout_response(config: &McpConfig) -> Response<Body> {
             "timeout_seconds": config.request_timeout.as_secs(),
         }),
     )
+}
+
+/// Map an authentication failure to the endpoint's stable envelope.
+fn auth_error_response(error: AuthError) -> Response<Body> {
+    match error {
+        AuthError::Unauthenticated => envelope(
+            StatusCode::UNAUTHORIZED,
+            "control_api.auth.unauthenticated",
+            json!({}),
+        ),
+        AuthError::InvalidScope => envelope(
+            StatusCode::FORBIDDEN,
+            "control_api.auth.invalid_scope",
+            json!({}),
+        ),
+        AuthError::Internal => envelope(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "control_api.internal",
+            json!({ "reason": "token_validation" }),
+        ),
+    }
+}
+
+/// The bucket for a request: a write tool uses the write bucket, everything
+/// else (read tools, `tools/list`, `server/discover`) uses the read bucket.
+fn bucket_class(headers: &HeaderMap) -> BucketClass {
+    let method = headers
+        .get(MCP_METHOD_HEADER)
+        .and_then(|value| value.to_str().ok());
+    let name = headers
+        .get(MCP_NAME_HEADER)
+        .and_then(|value| value.to_str().ok());
+    if method == Some("tools/call") && name.is_some_and(write::is_write_tool) {
+        BucketClass::Write
+    } else {
+        BucketClass::Read
+    }
+}
+
+/// The auth-bucket key: the peer address when the caller serves with connect
+/// info, otherwise one shared fallback bucket.
+fn auth_key(request: &Request<Body>) -> String {
+    request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.ip().to_canonical().to_string())
+        .unwrap_or_else(|| "unauthenticated".to_owned())
+}
+
+/// The control-api rate-limit response: `429`, `control_api.rate_limited` and
+/// a `Retry-After` header.
+fn rate_limited_response(seconds: u64) -> Response<Body> {
+    let mut response = (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({ "error": { "code": "control_api.rate_limited" } })),
+    )
+        .into_response();
+    if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
+        response.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+    response
 }
 
 /// Turn rmcp's plain-text rejections into stable JSON bodies.
@@ -467,7 +535,8 @@ pub(crate) fn build(backend: std::sync::Arc<dyn McpBackend>, config: McpConfig) 
         std::sync::Arc::new(LocalSessionManager::default()),
         server_config,
     );
-    McpTransport::new(inner, transport_backend, config)
+    let rate_limiter = TokenRateLimiter::new(&config, Arc::new(SystemClock));
+    McpTransport::new(inner, transport_backend, config, rate_limiter)
 }
 
 /// Host allowlist: loopback plus every origin host.
@@ -618,5 +687,16 @@ mod tests {
                 requested: Some("<duplicate>".to_owned())
             })
         );
+    }
+
+    #[test]
+    fn tool_names_select_the_rate_bucket() {
+        let write = headers(&[("Mcp-Method", "tools/call"), ("Mcp-Name", "add_rule")]);
+        assert_eq!(bucket_class(&write), BucketClass::Write);
+        let read = headers(&[("Mcp-Method", "tools/call"), ("Mcp-Name", "get_status")]);
+        assert_eq!(bucket_class(&read), BucketClass::Read);
+        let list = headers(&[("Mcp-Method", "tools/list")]);
+        assert_eq!(bucket_class(&list), BucketClass::Read);
+        assert_eq!(bucket_class(&HeaderMap::new()), BucketClass::Read);
     }
 }

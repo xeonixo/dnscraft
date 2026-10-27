@@ -42,6 +42,18 @@ pub const DEFAULT_MAX_BLOCK_RULE_LIFETIME: Duration = Duration::from_secs(30 * 2
 pub const MIN_BLOCK_RULE_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 /// Upper bound for `max_block_rule_lifetime`.
 pub const MAX_BLOCK_RULE_LIFETIME: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+/// Default `read_per_second` (same as control-api).
+pub const DEFAULT_READ_PER_SECOND: u32 = 100;
+/// Default `write_per_second` (same as control-api).
+pub const DEFAULT_WRITE_PER_SECOND: u32 = 20;
+/// Default `auth_per_second` (same as control-api).
+pub const DEFAULT_AUTH_PER_SECOND: u32 = 10;
+/// Upper bound for each per-token rate (defence against absurd configs).
+pub const MAX_PER_SECOND: u32 = 10_000;
+/// Default `max_tracked_tokens`.
+pub const DEFAULT_MAX_TRACKED_TOKENS: usize = 10_000;
+/// Upper bound for `max_tracked_tokens`.
+pub const MAX_TRACKED_TOKENS: usize = 1_000_000;
 
 /// MCP server configuration (`control_api.mcp` in the bootstrap TOML).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +71,14 @@ pub struct McpConfig {
     pub request_timeout: Duration,
     /// Maximum JSON request body size in bytes.
     pub max_request_body_size: usize,
+    /// Read-tool rate limit for each token, in requests per second.
+    pub read_per_second: u32,
+    /// Write-tool rate limit for each token, in requests per second.
+    pub write_per_second: u32,
+    /// Failed-authentication rate limit per source, in attempts per second.
+    pub auth_per_second: u32,
+    /// Maximum number of token/source buckets tracked before LRU eviction.
+    pub max_tracked_tokens: usize,
     /// Highest accepted `allow_temporarily` duration; only lowers the fixed
     /// `PT5M`/`PT15M`/`PT1H` set.
     pub max_temporary_allow_duration: Duration,
@@ -85,6 +105,10 @@ impl Default for McpConfig {
             max_concurrent_requests_per_token: DEFAULT_MAX_CONCURRENT_REQUESTS_PER_TOKEN,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             max_request_body_size: DEFAULT_MAX_REQUEST_BODY_SIZE,
+            read_per_second: DEFAULT_READ_PER_SECOND,
+            write_per_second: DEFAULT_WRITE_PER_SECOND,
+            auth_per_second: DEFAULT_AUTH_PER_SECOND,
+            max_tracked_tokens: DEFAULT_MAX_TRACKED_TOKENS,
             max_temporary_allow_duration: MAX_ACTION_DURATION,
             max_pause_duration: MAX_ACTION_DURATION,
             max_custom_rules_per_set: DEFAULT_MAX_CUSTOM_RULES_PER_SET,
@@ -105,6 +129,15 @@ impl McpConfig {
     pub fn validate(&self) -> Result<(), McpError> {
         if self.max_request_body_size == 0 {
             return Err(invalid("max_request_body_size", "must be at least 1 byte"));
+        }
+        check_range("read_per_second", self.read_per_second, 1, MAX_PER_SECOND)?;
+        check_range("write_per_second", self.write_per_second, 1, MAX_PER_SECOND)?;
+        check_range("auth_per_second", self.auth_per_second, 1, MAX_PER_SECOND)?;
+        if self.max_tracked_tokens == 0 || self.max_tracked_tokens > MAX_TRACKED_TOKENS {
+            return Err(invalid(
+                "max_tracked_tokens",
+                format!("must be in the range 1..={MAX_TRACKED_TOKENS}"),
+            ));
         }
         check_range(
             "max_concurrent_requests_per_token",

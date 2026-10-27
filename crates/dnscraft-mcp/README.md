@@ -72,6 +72,10 @@ Tool descriptions are static and are never built from runtime data.
 | `max_concurrent_requests_per_token` | 5 | 1–50 | Per-token in-flight counter |
 | `request_timeout` | 60 s | 10–300 s | Per-request deadline |
 | `max_request_body_size` | 1 MiB | ≥ 1 byte | Transport (streamed, independent of `Content-Length`) |
+| `read_per_second` | 100 | 1–10000 | Per-token read-tool rate |
+| `write_per_second` | 20 | 1–10000 | Per-token write-tool rate |
+| `auth_per_second` | 10 | 1–10000 | Per-source failed-authentication rate |
+| `max_tracked_tokens` | 10000 | 1–1000000 | LRU cap on rate-limit buckets |
 | `max_temporary_allow_duration` | 1 h | 5 min–1 h | Lowers the fixed `PT5M`/`PT15M`/`PT1H` set |
 | `max_pause_duration` | 1 h | 5 min–1 h | Lowers the fixed `PT5M`/`PT15M`/`PT1H` set |
 | `max_custom_rules_per_set` | 100 | 10–1000 | `add_rule` (non-expired rules per filter set) |
@@ -81,7 +85,10 @@ Tool descriptions are static and are never built from runtime data.
 
 `enabled` defaults to `false` as well: the endpoint is opt-in. Result lists default
 to 50 items (100 for `list_clients` and `list_mcp_rules`) and cap at 500 per
-request. Per-token rate limits are the control-api limits for the token.
+request. Rate limits use a per-token token bucket: read tools and non-tool
+methods use `read_per_second`, write tools use `write_per_second`, and failed
+authentication attempts use `auth_per_second` keyed by source. Excess returns
+HTTP 429 with `control_api.rate_limited` and `Retry-After`.
 
 The duration maxima can only **lower** the fixed three-value duration set; they
 cannot add `PT4H` or any other value. Out-of-range configuration is rejected at

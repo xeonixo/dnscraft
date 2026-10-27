@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use dnscraft_mcp::McpConfig;
 use dnscraft_mcp::backend::{BackendError, McpBackend};
 use dnscraft_mcp::dto::{
     AddRuleParams, AddRuleResult, AuditEntry, ClientInfo, ClientListParams, ClientListResult,
@@ -657,6 +658,18 @@ impl McpBackend for MockBackend {
         slot(&self.audits).push(entry);
         Ok(())
     }
+}
+
+/// Raise every rate limit to its maximum.
+///
+/// Tests that are not about rate limiting issue bursts far above the
+/// production defaults; the dedicated rate-limit tests configure low rates.
+pub fn high_rate_config(mut config: McpConfig) -> McpConfig {
+    let max = dnscraft_mcp::config::MAX_PER_SECOND;
+    config.read_per_second = max;
+    config.write_per_second = max;
+    config.auth_per_second = max;
+    config
 }
 
 /// A write-scope token used by most tests.

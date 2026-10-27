@@ -138,6 +138,47 @@ fn request_body_size_must_be_nonzero() {
 }
 
 #[test]
+fn rate_limit_boundaries() {
+    for (value, valid) in [(0, false), (1, true), (10_000, true), (10_001, false)] {
+        for key in ["read_per_second", "write_per_second", "auth_per_second"] {
+            let config = match key {
+                "read_per_second" => McpConfig {
+                    read_per_second: value,
+                    ..config()
+                },
+                "write_per_second" => McpConfig {
+                    write_per_second: value,
+                    ..config()
+                },
+                _ => McpConfig {
+                    auth_per_second: value,
+                    ..config()
+                },
+            };
+            assert_eq!(config.validate().is_ok(), valid, "{key} {value}");
+            if !valid {
+                assert_invalid(&config, key);
+            }
+        }
+    }
+
+    for (value, valid) in [(0, false), (1, true), (1_000_000, true), (1_000_001, false)] {
+        let config = McpConfig {
+            max_tracked_tokens: value,
+            ..config()
+        };
+        assert_eq!(
+            config.validate().is_ok(),
+            valid,
+            "max_tracked_tokens {value}"
+        );
+        if !valid {
+            assert_invalid(&config, "max_tracked_tokens");
+        }
+    }
+}
+
+#[test]
 fn protected_domain_errors_use_the_config_code() {
     let config = McpConfig {
         protected_domains: vec!["https://example.com".into()],
