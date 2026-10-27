@@ -23,6 +23,8 @@
 //! - [`WriteRelay`] / [`WriteExecutor`] / [`RelayResponse`] — live write relay
 //!   from a sub-node to the master (the caller re-checks RBAC and executes the
 //!   canonical handler).
+//! - [`OfflineWriteQueue`] — the durable FIFO of keyed config writes buffered
+//!   while the master is unreachable, with replay conflict/expiry semantics.
 //! - [`RuntimeCommand`] / [`RuntimeCommandApplier`] — volatile runtime-command
 //!   broadcast to every connected node (never persisted or queued).
 
@@ -34,6 +36,7 @@ mod config;
 mod enroll;
 mod error;
 mod identity;
+mod offline;
 mod relay;
 mod server;
 mod store;
@@ -48,6 +51,10 @@ pub use config::{
 pub use enroll::{EnrollRequest, EnrollResponse, PROTOCOL_VERSION, enroll};
 pub use error::ClusterError;
 pub use identity::{NodeIdentity, PendingNodeIdentity};
+pub use offline::{
+    EnqueueOutcome, OfflineQueueStatus, OfflineWriteEntry, OfflineWriteQueue, OfflineWriteState,
+    QueuedWrite, ReplayOutcome,
+};
 pub use relay::{
     RelayResponse, RelayedActor, RuntimeCommand, RuntimeCommandApplier, WriteExecutor, WriteRelay,
 };

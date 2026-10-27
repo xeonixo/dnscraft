@@ -37,6 +37,22 @@ const MIGRATIONS: &[&str] = &[
         expires_at  INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS join_tokens_node_idx ON join_tokens(node_id);",
+    // v2: sub-node offline write queue (FIFO by insertion `rowid`). The body
+    // and actor are stored as opaque JSON text.
+    "CREATE TABLE IF NOT EXISTS offline_writes (
+        request_id       TEXT PRIMARY KEY,
+        idempotency_key  TEXT NOT NULL,
+        if_match         TEXT NOT NULL,
+        method           TEXT NOT NULL,
+        path             TEXT NOT NULL,
+        body             TEXT NOT NULL,
+        actor            TEXT NOT NULL,
+        enqueued_at      INTEGER NOT NULL,
+        state            TEXT NOT NULL,
+        attempts         INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS offline_writes_state_idx
+        ON offline_writes(state, enqueued_at);",
 ];
 
 /// One registered cluster node.
@@ -431,12 +447,16 @@ impl ClusterStore {
         .await
     }
 
-    fn now_unix(&self) -> i64 {
+    pub(crate) fn now_unix(&self) -> i64 {
         unix_seconds(self.clock.now())
     }
 
+    pub(crate) fn clock(&self) -> Arc<dyn Clock> {
+        Arc::clone(&self.clock)
+    }
+
     /// Runs `f` on the shared connection from the blocking pool.
-    async fn with_conn<T, F>(&self, f: F) -> Result<T, ClusterError>
+    pub(crate) async fn with_conn<T, F>(&self, f: F) -> Result<T, ClusterError>
     where
         F: FnOnce(&mut Connection) -> Result<T, ClusterError> + Send + 'static,
         T: Send + 'static,
@@ -485,7 +505,7 @@ fn unix_seconds(time: SystemTime) -> i64 {
     }
 }
 
-fn duration_seconds(duration: Duration) -> i64 {
+pub(crate) fn duration_seconds(duration: Duration) -> i64 {
     i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
 }
 
@@ -527,7 +547,7 @@ fn consume_token(
     Ok(())
 }
 
-fn db_err(error: rusqlite::Error) -> ClusterError {
+pub(crate) fn db_err(error: rusqlite::Error) -> ClusterError {
     ClusterError::Internal {
         message: error.to_string(),
     }

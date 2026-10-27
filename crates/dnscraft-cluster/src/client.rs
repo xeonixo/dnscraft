@@ -637,20 +637,20 @@ async fn read_line(
 }
 
 /// Exponential reconnect backoff.
-struct Backoff {
+pub(crate) struct Backoff {
     current: Duration,
     max: Duration,
 }
 
 impl Backoff {
-    fn new(initial: Duration, max: Duration) -> Self {
+    pub(crate) fn new(initial: Duration, max: Duration) -> Self {
         Self {
             current: initial,
             max,
         }
     }
 
-    fn next_delay(&mut self) -> Duration {
+    pub(crate) fn next_delay(&mut self) -> Duration {
         let delay = self.current;
         self.current = (delay * 2).min(self.max);
         delay
