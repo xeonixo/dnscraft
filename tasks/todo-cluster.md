@@ -59,8 +59,8 @@
 
 ## Phase 6 — TLS cert push + auth snapshot + quotas/skew
 
-- [ ] CL22 `CertPush {chain, key}` → `CertResolver::import` hot-reload; no ACME while master known.
-- [ ] CL23 `AuthSnapshot` replication (encrypted) + session-invalidation epoch.
+- [x] CL22 `CertPush {chain, key}` → `CertInstaller` trait (hot-reload). Wiring (CertResolver::import + no-ACME) → CL15.
+- [x] CL23 `AuthSnapshot` push record + `AuthSnapshotApplier` trait + session epoch (CL3a). Wiring → CL15.
 - [ ] CL24 quotas (relay/log/queue) + clock-skew warning.
 
 ## Phase 7 — Hardening, fault injection, fuzz, docs, traceability
