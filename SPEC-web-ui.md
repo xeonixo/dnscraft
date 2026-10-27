@@ -654,7 +654,7 @@ via `Intl` and flags that DST-aware local windows are not yet supported.
 
 ### Navigation (sidebar)
 
-The persistent sidebar is a grouped source list — never a flat run of links. Five
+The persistent sidebar is a grouped source list — never a flat run of links. Four
 sections order the screens by concern, from operational ("what is happening") to
 administrative ("who can change things"):
 
@@ -664,12 +664,18 @@ administrative ("who can change things"):
 | Filterung | Filtersätze, Filterlisten, Regeln & Freigaben, Blockierte Dienste |
 | DNS-Regelwerk | Zonen, Namen, Forward-Zonen, Profile, Test-Abfrage |
 | Netzwerk | Geräte, DoH-Clients, Listener, TLS, Knoten |
-| Einstellungen | Allgemein (Konto, Darstellung, Protokollierung, Update-Benachrichtigung, API-Tokens, Audit-Log), Konfiguration (Editor, Import/Export, Versionen, Backups), MCP, API-Explorer, Hilfe & Feedback |
+| Einstellungen (single item, gear icon, set apart below the sections) | Tabs: Allgemein (Konto, Darstellung, Protokollierung, Update-Benachrichtigung, API-Tokens, Audit-Log), Konfiguration (Editor, Import/Export, Versionen, Backups), MCP, API-Explorer |
 
-`/login` and `/setup` are public and appear outside the sidebar. The system-level
-configuration is consolidated into a single **Einstellungen** screen rather than split
-across separate settings/config/tokens/audit entries; its sections are grouped
-inset lists within one scrollable screen. Admin-only sections (`/tokens`,
+Hilfe & Feedback stays as a link in the sidebar foot, outside the sections.
+
+`/login` and `/setup` are public and appear outside the sidebar. **Einstellungen** is
+one nav item, not a section: its four screens are reached through a segmented tab bar
+at the top of each screen (the same bar on every tab). The active tab is the screen
+shown; the nav item carries `aria-current="page"` and the page title reads
+"Einstellungen" (tab label is the only differentiator). The command palette lists the
+tabs as "Einstellungen › Allgemein" etc. System-level configuration is consolidated
+under this one entry rather than split across separate settings/config/tokens/audit
+items; each tab is a screen with grouped inset lists. Admin-only sections (`/tokens`,
 `/audit`) are hidden — not merely disabled — for `viewer`, so the navigation never
 offers a dead end. Section labels are translated small caps
 with slight letter-spacing; each item is an icon plus a label following the SF
@@ -1308,10 +1314,9 @@ Deliberately not included:
     per protocol", but `SPEC-listeners.md` models one listener per protocol (only DoH
     has an `h3` sub-flag). Confirm the create-sheet shape: one protocol selector plus
     a DoH `h3` toggle, not a multi-protocol switch group.
-31. **Settings consolidation.** Nav requires a single Einstellungen screen
-    (Allgemein, Konfiguration, MCP, API-Explorer as sections); the prototype still
-    splits them into separate nav entries. Confirm consolidation and the in-screen
-    section order.
+31. **Settings consolidation.** Nav requires a single Einstellungen entry
+    (Allgemein, Konfiguration, MCP, API-Explorer as tabs). The prototype now shows one
+    nav item with a tab bar; confirm the tab order.
 
 ### Required control-api additions (not invented here)
 
