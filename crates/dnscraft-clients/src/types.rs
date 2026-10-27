@@ -98,7 +98,7 @@ impl fmt::Display for MacAddr {
 
 /// Where a [`ClientInfo`] came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
+
 pub enum ClientSource {
     /// Admin-configured manual IP or CIDR entry.
     Manual,

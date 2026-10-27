@@ -44,7 +44,7 @@ use crate::config::ForwardZoneId;
 
 /// Failure to construct a [`Resolver`](crate::Resolver).
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum ResolverError {
     /// No root hints are configured, so recursion cannot start.
     #[error("no root hints configured")]
@@ -67,7 +67,7 @@ pub enum ResolverError {
 ///
 /// Ids match `[a-z0-9-]{1,64}`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum ForwardZoneIdError {
     /// The id is empty.
     #[error("forward zone id is empty")]
@@ -110,7 +110,7 @@ impl ResolverError {
 
 /// Failure to resolve one question.
 #[derive(Debug, Clone, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum ResolveError {
     /// No authoritative server of the zone answered usefully.
     #[error("no authoritative server reachable for {zone}")]

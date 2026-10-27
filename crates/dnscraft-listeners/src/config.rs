@@ -37,7 +37,7 @@ pub const DEFAULT_MAX_TRACKED_SOURCES: u32 = 100_000;
 
 /// Transport protocol of one listener.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
+
 pub enum Protocol {
     /// Plain DNS over UDP (port 53 by convention).
     Udp53,
@@ -71,7 +71,7 @@ impl Protocol {
 
 /// Who may use the listener.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
+
 pub enum Exposure {
     /// Private / local sources only (default).
     #[default]

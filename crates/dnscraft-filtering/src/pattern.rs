@@ -78,7 +78,7 @@ const END: u8 = 0;
 
 /// Where a glob match may begin.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-#[non_exhaustive]
+
 pub enum GlobStart {
     /// No anchor: anywhere in the name.
     Anywhere,

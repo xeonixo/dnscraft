@@ -40,7 +40,7 @@ const META_FILE: &str = "tls-meta.json";
 
 /// Which certificate the API listener is serving.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
+
 pub enum TlsMode {
     /// A real (ACME-issued) certificate from the `tls` module.
     Acme,

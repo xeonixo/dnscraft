@@ -7,7 +7,7 @@ use crate::ratelimit::LruMap;
 
 /// Why a strike was recorded (for logs / future metrics).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
+
 pub enum StrikeReason {
     /// Unknown or missing Client ID on a public listener.
     UnknownClientId,

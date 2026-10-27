@@ -12,6 +12,7 @@ description = "DNS listeners (Do53, DoT, DoH, DoQ) for DNScraft"
 workspace = true
 
 [dependencies]
+dnscraft-common = { path = "../dnscraft-common" }
 dnscraft-policy = { path = "../dnscraft-policy" }
 dnscraft-proto = { path = "../dnscraft-proto" }
 dnscraft-resolver = { path = "../dnscraft-resolver" }

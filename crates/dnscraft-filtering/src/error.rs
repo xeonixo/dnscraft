@@ -50,7 +50,7 @@
 
 /// A domain name was rejected.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum NameError {
     /// The input is empty or only a dot (the root is not a matchable name).
     #[error("domain name is empty")]
@@ -100,7 +100,7 @@ impl NameError {
 
 /// A list or set id was rejected.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum IdError {
     /// The id is empty.
     #[error("id is empty")]
@@ -132,7 +132,7 @@ impl IdError {
 
 /// Category of rule syntax that is recognised but not supported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
+
 pub enum UnsupportedKind {
     /// Element hiding, scriptlets and other cosmetic rules (`##`, `#@#`, ...).
     Cosmetic,
@@ -155,7 +155,7 @@ impl UnsupportedKind {
 /// Every variant carries the byte span of the offending part, relative to the
 /// start of the parsed input.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum RuleError {
     /// The line is blank.
     #[error("rule is empty")]
@@ -342,7 +342,7 @@ impl RuleError {
 
 /// Top-level error of the filtering module.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum FilterError {
     /// A domain name was rejected.
     #[error(transparent)]

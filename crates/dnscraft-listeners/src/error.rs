@@ -24,7 +24,7 @@ use std::io;
 
 /// Top-level error of the listeners module.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum ListenersError {
     /// Configuration values are inconsistent or out of range.
     #[error("invalid listeners config: {reason}")]

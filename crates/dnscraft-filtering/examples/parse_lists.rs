@@ -317,7 +317,6 @@ async fn main() {
                 MatchKind::Pattern => 2,
                 MatchKind::Regex => 3,
                 MatchKind::Ip => 4,
-                _ => continue, // future kinds
             };
             counts[slot] += 1;
             if let Some(d) = rule.domain() {

@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use dnscraft_mcp::McpConfig;
+
 use crate::error::ControlApiError;
 use crate::secret::Secret;
 
@@ -60,7 +62,7 @@ const MAX_SESSION_ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(7 * 24 * 3600
 
 /// IP truncation level for persisted query-log records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize)]
-#[non_exhaustive]
+
 pub enum IpTruncate {
     /// Keep the full source IP.
     None,
@@ -204,6 +206,9 @@ pub struct ControlApiConfig {
     pub query_log: QueryLogConfig,
     /// Rate limits.
     pub rate_limit: RateLimitConfig,
+    /// MCP server configuration (`control_api.mcp.*` in the bootstrap TOML).
+    #[serde(skip)]
+    pub mcp: McpConfig,
 }
 
 impl Default for ControlApiConfig {
@@ -216,6 +221,7 @@ impl Default for ControlApiConfig {
             auth: AuthConfig::default(),
             query_log: QueryLogConfig::default(),
             rate_limit: RateLimitConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 }
@@ -235,6 +241,17 @@ impl ControlApiConfig {
         validate_auth(&self.auth)?;
         validate_query_log(&self.query_log)?;
         validate_rate_limit(&self.rate_limit)?;
+        self.mcp.validate().map_err(|error| {
+            ControlApiError::config(format!(
+                "mcp config invalid: {}",
+                error
+                    .params()
+                    .and_then(|p| p.get("reason").cloned())
+                    .unwrap_or_else(|| serde_json::Value::String(error.code().to_owned()))
+                    .as_str()
+                    .unwrap_or(error.code())
+            ))
+        })?;
         Ok(())
     }
 }

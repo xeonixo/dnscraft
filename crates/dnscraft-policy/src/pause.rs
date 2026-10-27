@@ -10,7 +10,7 @@ use crate::ids::ProfileId;
 
 /// What to pause.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
+
 pub enum PauseScope {
     /// Every profile.
     Global,
@@ -20,7 +20,7 @@ pub enum PauseScope {
 
 /// How long the pause lasts.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
+
 pub enum PauseUntil {
     /// Absolute duration from the moment [`PolicyEngine::pause`](crate::PolicyEngine::pause)
     /// is called (spec: 5 minutes or 1 hour). Must be strictly positive —

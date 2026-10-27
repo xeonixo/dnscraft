@@ -2,6 +2,8 @@
 
 use serde_json::{Map, Value};
 
+use dnscraft_mcp::McpConfig;
+
 use crate::error::ControlApiError;
 use crate::storage::{AuditRecord, Db};
 
@@ -602,6 +604,7 @@ mod tests {
                 auth_per_second: 5,
                 burst_factor: 3,
             },
+            mcp: McpConfig::default(),
         }
     }
 

@@ -32,7 +32,7 @@ use std::time::Duration;
 
 /// Top-level error of the TLS module.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum TlsError {
     /// Configuration values are inconsistent or out of range.
     #[error("invalid TLS config: {reason}")]

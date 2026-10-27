@@ -9,7 +9,7 @@ use crate::select::SelectionCause;
 
 /// Which pause protection scope suppressed filtering for this query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
+
 pub enum ProtectionPauseScope {
     /// [`PauseScope::Global`](crate::PauseScope::Global) was active.
     Global,
@@ -19,7 +19,7 @@ pub enum ProtectionPauseScope {
 
 /// Why step 10 (rebind) did not strip addresses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
+
 pub enum RebindSkipReason {
     /// Profile rebind flag is off (or default is off).
     Disabled,
@@ -31,7 +31,7 @@ pub enum RebindSkipReason {
 
 /// Where the final answer came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
+
 pub enum AnswerOrigin {
     /// Iterative or forwarded recursion.
     Resolver,
@@ -53,7 +53,7 @@ pub enum AnswerOrigin {
 
 /// One breadcrumb from the pipeline, in order.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
+
 pub enum DecisionStep {
     /// View/profile selection finished.
     Selected {

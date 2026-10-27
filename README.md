@@ -3,10 +3,12 @@
 A lightweight, self-hosted, recursive DNS resolver for home networks — written in Rust.
 
 > **Status** (see [tasks/progress.md](tasks/progress.md)): `resolver`, `filtering`,
-> `clients`, `tls`, `policy` and `listeners` are **complete**. `control-api` is
-> **complete** (A0–A14; Checkpoint F pending owner approval). `mcp` is **in
-> progress** (crate + all 13 tools implemented, `/mcp/v1` mount pending). `web-ui`
-> and `cluster` are **pending** (specs drafted).
+> `clients`, `tls`, `policy`, `listeners` and `control-api` are **complete**
+> (Checkpoint F approved). `mcp` is **in progress** — 13 tools implemented and
+> passing Checkpoint W; the `McpBackend` adapter and `/mcp/v1` mount in
+> `control-api` are in progress (M20–M21). `web-ui` and `cluster` are **pending**
+> (specs drafted; web-ui has a live prototype at
+> [docs/design/web-ui-prototype.html](docs/design/web-ui-prototype.html)).
 
 - Recursive resolution from the root servers with DNSSEC validation — no upstream provider
 - AdGuard-compatible filter lists, custom rules, "why was this blocked?"
@@ -16,6 +18,8 @@ A lightweight, self-hosted, recursive DNS resolver for home networks — written
 - UniFi integration for device names in the query log
 - Multi-node (master + sub-nodes), Docker-first, multiple NICs (planned)
 - Web UI with OIDC single sign-on, fully internationalized (planned)
+- MCP server for AI assistants: query log, "why blocked?", test query, stats, temporary allows,
+  custom rules, pause/resume — over the stateless MCP 2026-07-28 Streamable HTTP endpoint
 
 ## Try the resolver
 
@@ -35,8 +39,9 @@ cargo run -p dnscraft-resolver --example query -- example.com A
 | [`dnscraft-tls`](crates/dnscraft-tls/README.md) | ACME DNS-01, cert store, DynDNS, SNI helpers | [`tls`](CAPABILITY-MAP.md) |
 | [`dnscraft-policy`](crates/dnscraft-policy/README.md) | Views/profiles and the query pipeline | [`policy`](CAPABILITY-MAP.md) |
 | [`dnscraft-listeners`](crates/dnscraft-listeners/README.md) | Do53 / DoT / DoH / DoQ listeners | [`listeners`](CAPABILITY-MAP.md) |
-| [`dnscraft-api`](crates/dnscraft-api/README.md) | HTTP API, config, query log, stats, audit, auth | [`control-api`](CAPABILITY-MAP.md) |
-| [`dnscraft-mcp`](crates/dnscraft-mcp) | MCP server for AI assistants (13 tools) | [`mcp`](CAPABILITY-MAP.md) |
+| [`dnscraft-api`](crates/dnscraft-api/README.md) | HTTP API, config, query log, stats, audit, auth, MCP backend | [`control-api`](CAPABILITY-MAP.md) |
+| [`dnscraft-mcp`](crates/dnscraft-mcp/README.md) | MCP server for AI assistants (13 tools) | [`mcp`](CAPABILITY-MAP.md) |
+| [`dnscraft-common`](crates/dnscraft-common/README.md) | Shared types: Clock trait, config, net helpers, secret wrappers | (shared) |
 | [`dnscraft`](crates/dnscraft/README.md) | Minimal server binary (TOML bootstrap) | (binary) |
 
 ## Documentation
@@ -46,7 +51,8 @@ cargo run -p dnscraft-resolver --example query -- example.com A
 - [SPEC-resolver.md](SPEC-resolver.md) · [SPEC-filtering.md](SPEC-filtering.md) ·
   [SPEC-clients.md](SPEC-clients.md) · [SPEC-tls.md](SPEC-tls.md) ·
   [SPEC-policy.md](SPEC-policy.md) · [SPEC-listeners.md](SPEC-listeners.md) ·
-  [SPEC-control-api.md](SPEC-control-api.md)
+  [SPEC-control-api.md](SPEC-control-api.md) · [SPEC-mcp.md](SPEC-mcp.md) · [SPEC-web-ui.md](SPEC-web-ui.md) ·
+  [SPEC-cluster.md](SPEC-cluster.md)
 - Crate READMEs: [proto](crates/dnscraft-proto/README.md),
   [testkit](crates/dnscraft-testkit/README.md),
   [resolver](crates/dnscraft-resolver/README.md),
@@ -55,7 +61,9 @@ cargo run -p dnscraft-resolver --example query -- example.com A
   [tls](crates/dnscraft-tls/README.md),
   [policy](crates/dnscraft-policy/README.md),
   [listeners](crates/dnscraft-listeners/README.md),
-  [api](crates/dnscraft-api/README.md)
+  [api](crates/dnscraft-api/README.md),
+  [mcp](crates/dnscraft-mcp/README.md),
+  [common](crates/dnscraft-common/README.md)
 - [docs/adr/](docs/adr/) — architecture decision records:
   [0001 recursion engine](docs/adr/0001-recursion-engine.md),
   [0002 ring-only crypto](docs/adr/0002-ring-only-crypto.md),

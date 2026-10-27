@@ -19,7 +19,7 @@ pub const DEFAULT_LOCAL_NXDOMAIN_SUFFIXES: &[&str] = &["local", "lan", "internal
 
 /// Transport that delivered the DNS query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
+
 pub enum DnsProtocol {
     /// Plain DNS over UDP on port 53.
     Udp53,
@@ -124,7 +124,7 @@ pub const SCHEDULE_WEEK: Duration = Duration::from_secs(7 * 24 * 3600);
 /// Maps to Google's DNS CNAME targets (`restrict.youtube.com` vs
 /// `restrictmoderate.youtube.com`). Default is [`Strict`](Self::Strict).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[non_exhaustive]
+
 pub enum YoutubeMode {
     /// Maximum restriction (`restrict.youtube.com`).
     #[default]

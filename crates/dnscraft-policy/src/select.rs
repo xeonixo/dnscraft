@@ -14,7 +14,7 @@ use crate::snapshot::{PolicySnapshot, ViewIdx};
 
 /// Why a view was selected for a request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
+
 pub enum SelectionCause {
     /// Exact match on a view's Client ID list.
     ClientId,

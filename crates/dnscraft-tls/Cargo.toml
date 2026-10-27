@@ -28,6 +28,7 @@ async-trait = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }
 http-body-util = { workspace = true }
+dnscraft-common = { path = "../dnscraft-common" }
 dnscraft-proto = { path = "../dnscraft-proto" }
 rand = { workspace = true }
 rcgen = { workspace = true }

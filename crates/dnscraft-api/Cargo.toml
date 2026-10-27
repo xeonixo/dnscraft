@@ -13,11 +13,14 @@ workspace = true
 
 [dependencies]
 argon2 = { workspace = true }
+async-trait = { workspace = true }
 axum = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
+dnscraft-common = { path = "../dnscraft-common" }
 dnscraft-filtering = { path = "../dnscraft-filtering" }
 dnscraft-listeners = { path = "../dnscraft-listeners" }
+dnscraft-mcp = { path = "../dnscraft-mcp" }
 dnscraft-policy = { path = "../dnscraft-policy" }
 dnscraft-proto = { path = "../dnscraft-proto" }
 dnscraft-resolver = { path = "../dnscraft-resolver" }

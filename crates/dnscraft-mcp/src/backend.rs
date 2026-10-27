@@ -22,7 +22,7 @@ use crate::dto::{
 
 /// An error returned by an [`McpBackend`] implementation.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum BackendError {
     /// Token is missing, malformed, unknown, revoked or expired.
     #[error("missing or invalid bearer token")]

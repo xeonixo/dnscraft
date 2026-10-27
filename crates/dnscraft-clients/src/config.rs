@@ -26,7 +26,7 @@ pub const MAX_MANUAL_ENTRIES: usize = 1_000;
 
 /// How the parent domain for FQDNs is chosen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[non_exhaustive]
+
 pub enum LocalDomainMode {
     /// Prefer UniFi per-VLAN DHCP domain when present; else config `local_domain`.
     #[default]
@@ -37,7 +37,7 @@ pub enum LocalDomainMode {
 
 /// TLS trust mode for the UniFi gateway connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
+
 pub enum TlsMode {
     /// SHA-256 of the leaf certificate DER must equal this pin (32 bytes).
     Pin([u8; 32]),

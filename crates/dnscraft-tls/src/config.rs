@@ -26,7 +26,7 @@ pub const DEFAULT_ECHO_URL: &str = "https://cloudflare.com/cdn-cgi/trace";
 
 /// ECDSA key type for issued certificates. RSA is not supported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[non_exhaustive]
+
 pub enum KeyType {
     /// NIST P-256 (default).
     #[default]
@@ -37,7 +37,7 @@ pub enum KeyType {
 
 /// Which ACME directory to use.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
-#[non_exhaustive]
+
 pub enum AcmeDirectoryKind {
     /// Let's Encrypt production (`https://acme-v02.api.letsencrypt.org/directory`).
     #[default]

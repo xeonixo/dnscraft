@@ -730,7 +730,7 @@ body {
             <span class="c proto">DoH</span>
             <span class="c answer"><span class="verdict block">NXDOMAIN</span></span>
             <span class="c lat">3 ms</span>
-            <span class="c act"><button class="qact allow" title="Freigeben" aria-label="Freigeben" onclick="event.stopPropagation()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></button></span>
+            <span class="c act"><button class="qact allow" title="Freigeben" aria-label="Freigeben" onclick="event.stopPropagation();openAllowSheet()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></button></span>
             <svg class="chev-m" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="qrow" onclick="openQueryDetail()">
@@ -763,7 +763,7 @@ body {
             <span class="c proto">Do53</span>
             <span class="c answer"><span class="verdict block">NULL-IP</span></span>
             <span class="c lat">2 ms</span>
-            <span class="c act"><button class="qact allow" title="Freigeben" aria-label="Freigeben" onclick="event.stopPropagation()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></button></span>
+            <span class="c act"><button class="qact allow" title="Freigeben" aria-label="Freigeben" onclick="event.stopPropagation();openAllowSheet()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></button></span>
             <svg class="chev-m" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
           <div class="qrow" onclick="openQueryDetail()">
@@ -785,7 +785,7 @@ body {
             <span class="c proto">DoT</span>
             <span class="c answer"><span class="verdict block">REFUSED</span></span>
             <span class="c lat">1 ms</span>
-            <span class="c act"><button class="qact allow" title="Freigeben" aria-label="Freigeben" onclick="event.stopPropagation()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></button></span>
+            <span class="c act"><button class="qact allow" title="Freigeben" aria-label="Freigeben" onclick="event.stopPropagation();openAllowSheet()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></button></span>
             <svg class="chev-m" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
         </div>
@@ -866,7 +866,7 @@ body {
         </div>
         <div class="actions">
           <button class="btn-sec" onclick="closeQueryDetail()">Schließen</button>
-          <button class="btn-sec" onclick="closeQueryDetail()">Freigeben</button>
+          <button class="btn-sec" onclick="closeQueryDetail();openAllowSheet()">Freigeben</button>
         </div>
       </div>
     </div>
@@ -876,6 +876,10 @@ body {
         <p class="lead">Filtersätze bündeln Regeln und verknüpfen eine Filterliste. Jeder Satz wird einer Richtlinie zugewiesen.</p>
         <div class="section-head">Filtersätze</div>
         <div class="group">
+          <div class="row" onclick="openFilterSetSheet()" style="cursor:pointer">
+            <div class="main"><b style="font-weight:500;color:var(--accent)">Filtersatz anlegen</b><div class="meta">Name, Listen, Block-Modus, eigene Regeln</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
           <div class="row" onclick="openSet('Standard')" style="cursor:pointer">
             <div class="main"><div class="domain">Standard</div><div class="meta">42 Regeln · 1 Liste</div></div>
             <span class="verdict allow">aktiv</span>
@@ -995,6 +999,10 @@ body {
         </div>
         <div class="section-head">Listener</div>
         <div class="group">
+          <div class="row" onclick="openListenerSheet()" style="cursor:pointer">
+            <div class="main"><b style="font-weight:500;color:var(--accent)">Listener hinzufügen</b><div class="meta">Adresse, Protokolle, Exposition</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
           <div class="row">
             <div class="main"><div class="domain">intern</div><div class="meta"><span class="mono">192.0.2.1:53</span> · Do53 · DoH</div></div>
             <span class="verdict allow">läuft</span>
@@ -1105,8 +1113,9 @@ body {
             <div class="main"><div class="domain">viewer-home</div><div class="meta">Scope viewer · vor 12 Tagen</div></div>
             <span style="color:var(--danger);font-size:13px;font-weight:500">Widerrufen</span>
           </div>
-          <div class="row">
-            <div class="main"><b style="font-weight:500;color:var(--accent)">Token erstellen</b></div>
+          <div class="row" onclick="openTokenSheet()" style="cursor:pointer">
+            <div class="main"><b style="font-weight:500;color:var(--accent)">Token erstellen</b><div class="meta">Scope, Einmal-Anzeige des Klartexts</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
         </div>
 
@@ -1209,6 +1218,10 @@ body {
         <p class="lead">Quellen für Filterlisten (https-URL oder lokale Datei).</p>
         <div class="section-head">Listen</div>
         <div class="group">
+          <div class="row" onclick="openFilterListSheet()" style="cursor:pointer">
+            <div class="main"><b style="font-weight:500;color:var(--accent)">Filterliste hinzufügen</b><div class="meta">Name, URL oder lokaler Pfad</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
           <div class="row">
             <div class="main"><div class="domain">Standard-Blockliste</div><div class="meta mono">https://lists.example.com/blocklist.txt</div></div>
             <div class="tail"><div class="verdict allow">aktuell</div><div class="meta" style="color:var(--label-3)">128.431 Einträge</div></div>
@@ -1249,6 +1262,13 @@ body {
           <div class="row">
             <div class="main"><div class="domain">cdn.example.com</div><div class="meta">erlaubt · von MCP erstellt</div></div>
             <div class="tail"><div class="verdict allow">erlaubt</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+        </div>
+        <div class="section-head">Pause</div>
+        <div class="group">
+          <div class="row" onclick="openPauseSheet()" style="cursor:pointer">
+            <div class="main"><b style="font-weight:500;color:var(--accent)">Pause anlegen</b><div class="meta">Filter-Set, Dauer</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
         </div>
@@ -1428,8 +1448,9 @@ body {
             <div class="main"><div class="domain">internal.example.net</div><div class="meta">198.51.100.53 · reverse 100.51.198.in-addr.arpa · alle Profile</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="row">
+          <div class="row" onclick="openForwardZoneSheet()" style="cursor:pointer">
             <div class="main"><b style="font-weight:500;color:var(--accent)">Forward-Zone hinzufügen</b><div class="meta">Domain, Upstream, Reverse-Zone, Profile</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
         </div>
         <div class="footnote">Forward-Zonen werden vor der Rekursion geprüft und können pro Profil eingeschränkt werden (allow-list).</div>
@@ -1441,6 +1462,10 @@ body {
         <p class="lead">Profile legen das Verhalten fest: Filter-Set, Pause, Schutz (SafeSearch, Rebind, AAAA) und Zeitpläne.</p>
         <div class="section-head">Profile</div>
         <div class="group">
+          <div class="row" onclick="openProfileSheet()" style="cursor:pointer">
+            <div class="main"><b style="font-weight:500;color:var(--accent)">Profil anlegen</b><div class="meta">Name, Filter-Set, Schutz-Einstellungen</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
           <div class="row" onclick="openProfile('Standard')" style="cursor:pointer">
             <div class="main"><div class="domain">Standard</div><div class="meta">Filter-Set „Standard" · SafeSearch aus · Rebind an</div></div>
             <span class="verdict allow">aktiv</span>
@@ -1550,6 +1575,9 @@ body {
           <button role="tab" aria-selected="false" style="flex:1">AAAA</button>
           <button role="tab" aria-selected="false" style="flex:1">CNAME</button>
           <button role="tab" aria-selected="false" style="flex:1">TXT</button>
+          <button role="tab" aria-selected="false" style="flex:1">SRV</button>
+          <button role="tab" aria-selected="false" style="flex:1">MX</button>
+          <button role="tab" aria-selected="false" style="flex:1">PTR</button>
         </div>
         <label for="rr-name">Name</label>
         <div class="field"><input id="rr-name" placeholder="nas.lan"></div>
@@ -1694,6 +1722,8 @@ body {
         <div class="field"><input id="z-name" placeholder="IoT"></div>
         <label for="z-cidr">Bereich (Subnetz)</label>
         <div class="field"><input id="z-cidr" placeholder="198.51.100.0/24"></div>
+        <label for="z-profile">Profil</label>
+        <div class="field"><input id="z-profile" placeholder="Standard"></div>
         <div class="row" style="padding:14px 0 0;border:0">
           <div class="main"><b style="font-weight:500">Als Standard-Zone verwenden</b><div class="meta">fängt alle Clients ohne Bereichs-Treffer ab</div></div>
           <label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label>
@@ -1859,6 +1889,202 @@ body {
       </div>
     </section>
 
+  <!-- create masks -->
+  <div class="sheet-scrim" id="forward-zone-sheet" hidden onclick="closeForwardZoneSheet()">
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="grab"></div>
+      <h2>Forward-Zone anlegen</h2>
+      <label for="fz-domain">Domain</label>
+      <div class="field"><input id="fz-domain" placeholder="site-a.example.com"></div>
+      <label for="fz-upstream">Upstream-Server</label>
+      <div class="field"><input id="fz-upstream" placeholder="10.9.0.53"></div>
+      <label for="fz-reverse">Reverse-Zone</label>
+      <div class="field"><input id="fz-reverse" placeholder="0.9.10.in-addr.arpa"></div>
+      <label>Beschränkung auf Profile</label>
+      <div class="seg" role="tablist" aria-label="Profile" style="width:100%">
+        <button role="tab" aria-selected="true" style="flex:1">Alle</button>
+        <button role="tab" aria-selected="false" style="flex:1">Auswahl…</button>
+      </div>
+      <div class="row" style="padding:14px 0 0;border:0">
+        <div class="main"><b style="font-weight:500">Upstream validieren</b><div class="meta">Erreichbarkeit beim Speichern prüfen</div></div>
+        <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
+      </div>
+      <div class="actions">
+        <button class="btn-sec" onclick="closeForwardZoneSheet()">Abbrechen</button>
+        <button class="btn-primary" onclick="closeForwardZoneSheet()">Anlegen</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet-scrim" id="profile-sheet" hidden onclick="closeProfileSheet()">
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="grab"></div>
+      <h2>Profil anlegen</h2>
+      <label for="p-name">Name</label>
+      <div class="field"><input id="p-name" placeholder="Gäste"></div>
+      <label for="p-set">Filtersatz</label>
+      <div class="field"><input id="p-set" placeholder="Standard"></div>
+      <div class="row" style="padding:14px 0 0;border:0">
+        <div class="main"><b style="font-weight:500">SafeSearch</b><div class="meta">Google, YouTube, Bing, DuckDuckGo</div></div>
+        <label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label>
+      </div>
+      <div class="row" style="padding:14px 0 0;border:0">
+        <div class="main"><b style="font-weight:500">Rebind-Schutz</b><div class="meta">DNS-Rebinding-Angriffe abwehren</div></div>
+        <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
+      </div>
+      <div class="row" style="padding:14px 0 0;border:0">
+        <div class="main"><b style="font-weight:500">AAAA unterdrücken</b><div class="meta">nur IPv4-Antworten</div></div>
+        <label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label>
+      </div>
+      <div class="row" style="padding:14px 0 0;border:0">
+        <div class="main"><b style="font-weight:500">Firefox-Canary</b><div class="meta">DoH-Fallback im Browser sperren</div></div>
+        <label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label>
+      </div>
+      <div class="row" style="padding:14px 0 0;border:0">
+        <div class="main"><b style="font-weight:500">iCloud Private Relay</b><div class="meta">Umgehung blockieren</div></div>
+        <label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label>
+      </div>
+      <div class="actions">
+        <button class="btn-sec" onclick="closeProfileSheet()">Abbrechen</button>
+        <button class="btn-primary" onclick="closeProfileSheet()">Anlegen</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet-scrim" id="filter-list-sheet" hidden onclick="closeFilterListSheet()">
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="grab"></div>
+      <h2>Filterliste hinzufügen</h2>
+      <label for="fl-name">Name</label>
+      <div class="field"><input id="fl-name" placeholder="Standard-Blockliste"></div>
+      <label for="fl-url">URL oder lokaler Pfad</label>
+      <div class="field"><input id="fl-url" placeholder="https://… oder custom.hosts"></div>
+      <div class="row" style="padding:14px 0 0;border:0">
+        <div class="main"><b style="font-weight:500">Aktiviert</b><div class="meta">nach dem Speichern sofort laden</div></div>
+        <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
+      </div>
+      <div class="actions">
+        <button class="btn-sec" onclick="closeFilterListSheet()">Abbrechen</button>
+        <button class="btn-primary" onclick="closeFilterListSheet()">Hinzufügen</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet-scrim" id="filter-set-sheet" hidden onclick="closeFilterSetSheet()">
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="grab"></div>
+      <h2>Filtersatz anlegen</h2>
+      <label for="fs-name">Name</label>
+      <div class="field"><input id="fs-name" placeholder="Gäste"></div>
+      <label for="fs-lists">Filterlisten</label>
+      <div class="field"><input id="fs-lists" placeholder="Standard-Blockliste, Tracking-Schutz"></div>
+      <label>Block-Modus</label>
+      <div class="seg" role="tablist" aria-label="Block-Modus" style="width:100%">
+        <button role="tab" aria-selected="true" style="flex:1">REFUSED</button>
+        <button role="tab" aria-selected="false" style="flex:1">NXDOMAIN</button>
+        <button role="tab" aria-selected="false" style="flex:1">NULL-IP</button>
+        <button role="tab" aria-selected="false" style="flex:1">Eigene IP</button>
+      </div>
+      <label for="fs-rules">Eigene Regeln</label>
+      <div class="field"><input id="fs-rules" placeholder="eine Regel pro Zeile"></div>
+      <div class="actions">
+        <button class="btn-sec" onclick="closeFilterSetSheet()">Abbrechen</button>
+        <button class="btn-primary" onclick="closeFilterSetSheet()">Anlegen</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet-scrim" id="listener-sheet" hidden onclick="closeListenerSheet()">
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="grab"></div>
+      <h2>Listener anlegen</h2>
+      <label for="l-id">ID</label>
+      <div class="field"><input id="l-id" placeholder="intern2"></div>
+      <label for="l-addr">Adresse</label>
+      <div class="field"><input id="l-addr" placeholder="192.0.2.1:53"></div>
+      <label>Protokolle</label>
+      <div class="group" style="margin:0">
+        <div class="row"><div class="main"><b style="font-weight:500">Do53 (UDP)</b></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
+        <div class="row"><div class="main"><b style="font-weight:500">TCP53</b></div><label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label></div>
+        <div class="row"><div class="main"><b style="font-weight:500">DoT</b></div><label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label></div>
+        <div class="row"><div class="main"><b style="font-weight:500">DoH</b></div><label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label></div>
+        <div class="row"><div class="main"><b style="font-weight:500">DoQ</b></div><label class="switch"><input type="checkbox"><span class="track"><span class="thumb"></span></span></label></div>
+      </div>
+      <label>Exposition</label>
+      <div class="seg" role="tablist" aria-label="Exposition" style="width:100%">
+        <button role="tab" aria-selected="true" style="flex:1">lokal</button>
+        <button role="tab" aria-selected="false" style="flex:1">öffentlich</button>
+      </div>
+      <div class="actions">
+        <button class="btn-sec" onclick="closeListenerSheet()">Abbrechen</button>
+        <button class="btn-primary" onclick="closeListenerSheet()">Anlegen</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet-scrim" id="token-sheet" hidden onclick="closeTokenSheet()">
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="grab"></div>
+      <h2>Token erstellen</h2>
+      <label for="t-label">Bezeichnung</label>
+      <div class="field"><input id="t-label" placeholder="mcp-scanner"></div>
+      <label>Scope</label>
+      <div class="seg" role="tablist" aria-label="Scope" style="width:100%">
+        <button role="tab" aria-selected="false" style="flex:1">viewer</button>
+        <button role="tab" aria-selected="false" style="flex:1">admin</button>
+        <button role="tab" aria-selected="false" style="flex:1">mcp:read</button>
+        <button role="tab" aria-selected="false" style="flex:1">mcp:write</button>
+      </div>
+      <div class="footnote" style="padding:10px 0 0">Der Klartext wird nur einmal angezeigt und kann danach nicht wieder abgerufen werden.</div>
+      <div class="actions">
+        <button class="btn-sec" onclick="closeTokenSheet()">Abbrechen</button>
+        <button class="btn-primary" onclick="closeTokenSheet()">Erstellen</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet-scrim" id="pause-sheet" hidden onclick="closePauseSheet()">
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="grab"></div>
+      <h2>Pause anlegen</h2>
+      <label for="pause-set">Filtersatz</label>
+      <div class="field"><input id="pause-set" placeholder="Standard"></div>
+      <label>Dauer</label>
+      <div class="seg" role="tablist" aria-label="Dauer" style="width:100%">
+        <button role="tab" aria-selected="true" style="flex:1">5 min</button>
+        <button role="tab" aria-selected="false" style="flex:1">15 min</button>
+        <button role="tab" aria-selected="false" style="flex:1">1 h</button>
+      </div>
+      <div class="actions">
+        <button class="btn-sec" onclick="closePauseSheet()">Abbrechen</button>
+        <button class="btn-primary" onclick="closePauseSheet()">Pausieren</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet-scrim" id="allow-sheet" hidden onclick="closeAllowSheet()">
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="grab"></div>
+      <h2>Temporäre Freigabe</h2>
+      <label for="a-domain">Domain</label>
+      <div class="field"><input id="a-domain" placeholder="ads.example.com"></div>
+      <div class="row" style="padding:14px 0 0;border:0">
+        <div class="main"><b style="font-weight:500">Subdomains einschließen</b><div class="meta">gilt auch für *.ads.example.com</div></div>
+        <label class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></label>
+      </div>
+      <label>Dauer</label>
+      <div class="seg" role="tablist" aria-label="Dauer" style="width:100%">
+        <button role="tab" aria-selected="true" style="flex:1">5 min</button>
+        <button role="tab" aria-selected="false" style="flex:1">15 min</button>
+        <button role="tab" aria-selected="false" style="flex:1">1 h</button>
+      </div>
+      <div class="actions">
+        <button class="btn-sec" onclick="closeAllowSheet()">Abbrechen</button>
+        <button class="btn-primary" onclick="closeAllowSheet()">Freigeben</button>
+      </div>
+    </div>
+  </div>
+
   </main>
 </div>
 
@@ -1923,6 +2149,22 @@ function openClientSheet() { document.getElementById('client-sheet').hidden = fa
 function closeClientSheet() { document.getElementById('client-sheet').hidden = true; }
 function openZoneSheet() { document.getElementById('zone-sheet').hidden = false; }
 function closeZoneSheet() { document.getElementById('zone-sheet').hidden = true; }
+function openForwardZoneSheet() { document.getElementById('forward-zone-sheet').hidden = false; }
+function closeForwardZoneSheet() { document.getElementById('forward-zone-sheet').hidden = true; }
+function openProfileSheet() { document.getElementById('profile-sheet').hidden = false; }
+function closeProfileSheet() { document.getElementById('profile-sheet').hidden = true; }
+function openFilterListSheet() { document.getElementById('filter-list-sheet').hidden = false; }
+function closeFilterListSheet() { document.getElementById('filter-list-sheet').hidden = true; }
+function openFilterSetSheet() { document.getElementById('filter-set-sheet').hidden = false; }
+function closeFilterSetSheet() { document.getElementById('filter-set-sheet').hidden = true; }
+function openListenerSheet() { document.getElementById('listener-sheet').hidden = false; }
+function closeListenerSheet() { document.getElementById('listener-sheet').hidden = true; }
+function openTokenSheet() { document.getElementById('token-sheet').hidden = false; }
+function closeTokenSheet() { document.getElementById('token-sheet').hidden = true; }
+function openPauseSheet() { document.getElementById('pause-sheet').hidden = false; }
+function closePauseSheet() { document.getElementById('pause-sheet').hidden = true; }
+function openAllowSheet() { document.getElementById('allow-sheet').hidden = false; }
+function closeAllowSheet() { document.getElementById('allow-sheet').hidden = true; }
 
 var themeBtn = document.getElementById('theme-toggle');
 var icSun = document.getElementById('ic-sun');

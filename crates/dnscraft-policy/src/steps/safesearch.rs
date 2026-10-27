@@ -108,7 +108,6 @@ pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Dra
                     _ => Flow::Answer(rewrite_answer(&ctx.query, rd, &rewrite, ttl)),
                 };
             }
-            Ok(_) => {}
             Err(FilterError::UnknownSet(_)) => {
                 draft.synthetic = true;
                 draft.steps.push(DecisionStep::FilterBlocked);

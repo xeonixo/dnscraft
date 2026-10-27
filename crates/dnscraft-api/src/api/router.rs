@@ -1,6 +1,8 @@
 //! Router assembly: liveness/readiness, the `/api/v1` prefix, and the HTTP
 //! envelope / error-mapping boundaries.
 
+use std::sync::Arc;
+
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
@@ -33,6 +35,7 @@ use super::stats_routes::{
 };
 use super::tls_routes::{delete_tls, get_tls, put_tls};
 use crate::error::ControlApiError;
+use crate::mcp_backend::ControlMcpBackend;
 use crate::server::AppState;
 use crate::tls::TlsMode;
 
@@ -138,6 +141,16 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .with_state(state.clone());
+
+    // Mount MCP when the backend is wired and MCP is enabled. When disabled the
+    // not_found fallback returns 404 control_api.not_found (no MCP-specific code).
+    if let Some(inner) = state.mcp_backend_inner().cloned() {
+        let mcp_config = state.mcp_config().clone();
+        if mcp_config.enabled {
+            let backend = Arc::new(ControlMcpBackend::new(inner));
+            router = router.nest_service("/mcp/v1", dnscraft_mcp::service(backend, mcp_config));
+        }
+    }
 
     if let Some(auth) = state.auth_state() {
         // Outermost first: the session middleware populates `Principal` for

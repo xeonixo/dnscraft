@@ -42,7 +42,7 @@ pub const SERVICES_I18N_STEM: &str = "services_i18n";
 
 /// A catalog parse or update failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum ServiceError {
     /// The JSON is not a usable catalog (keep the previous good one).
     #[error("services catalog is malformed: {detail}")]
@@ -465,7 +465,7 @@ pub struct ServicesUpdateReport {
 
 /// Coarse fetch result for reporting (body not retained).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
+
 pub enum FetchOutcomeKind {
     /// New body stored.
     Updated,

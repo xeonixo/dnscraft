@@ -39,7 +39,7 @@
 
 /// Top-level error of the control-api module.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum ControlApiError {
     /// Configuration values are inconsistent or out of range.
     #[error("invalid control-api config: {reason}")]

@@ -21,7 +21,7 @@ pub const SIG_INCEPTION_SKEW: u32 = 300;
 
 /// Why one RRSIG did not validate an RRset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
+
 pub enum VerifyFailure {
     /// The cryptographic check failed.
     BadSignature,

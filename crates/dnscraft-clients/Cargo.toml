@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+dnscraft-common = { path = "../dnscraft-common" }
 tokio = { workspace = true }
 idna = { workspace = true }
 tracing = { workspace = true }

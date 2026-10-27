@@ -480,6 +480,52 @@ impl QueryLog {
         })
     }
 
+    /// Top domains by blocked count for `[from_us, to_us]`.
+    ///
+    /// `limit` is clamped to `1..=TOP_DOMAINS_MAX`.
+    pub async fn top_blocked_domains(
+        &self,
+        from_us: Option<i64>,
+        to_us: Option<i64>,
+        limit: u32,
+    ) -> Result<TopDomains, ControlApiError> {
+        let db = self.db();
+        let (from, to) = resolve_window(db, from_us, to_us)?;
+        let limit = i64::from(limit.clamp(1, TOP_DOMAINS_MAX));
+        let domains = db
+            .with_conn(move |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT query_name,
+                                COUNT(*) AS queries,
+                                COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
+                                    AS blocked
+                         FROM query_log
+                         WHERE time >= ?1 AND time <= ?2
+                         GROUP BY query_name
+                         ORDER BY blocked DESC, queries DESC, query_name ASC
+                         LIMIT ?3",
+                    )
+                    .map_err(db_err)?;
+                let rows = stmt
+                    .query_map(params![from, to, limit], |row| {
+                        Ok(TopDomain {
+                            domain: row.get(0)?,
+                            queries: row.get(1)?,
+                            blocked: row.get(2)?,
+                        })
+                    })
+                    .map_err(db_err)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+            })
+            .await?;
+        Ok(TopDomains {
+            from: format_micros(from),
+            to: format_micros(to),
+            domains,
+        })
+    }
+
     /// Cache hit statistics for `[from_us, to_us]`.
     ///
     /// Counts the `resolve` pipeline step stored in each record: `cache` is a

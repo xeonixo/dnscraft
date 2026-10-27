@@ -203,18 +203,7 @@ pub fn block_answer(
             },
             _ => filter_nodata(query, rd, ttl, Some(ede(EDE_FORGED_ANSWER, ede_text))),
         },
-        _ => {
-            let mut message = response_skeleton(query, rd);
-            message.header.ra = true;
-            let _ = message.set_rcode(Rcode::REFUSED);
-            clear_ad(&mut message);
-            Synth {
-                message,
-                ede: Some(ede(EDE_BLOCKED, ede_text)),
-                origin: AnswerOrigin::Filter,
-            }
         }
-    }
 }
 
 /// Rewrite synthesis (no EDE). Type-mismatched address/TXT rewrites → NODATA.
@@ -288,8 +277,7 @@ pub fn rewrite_answer(
             Ok(n) => filter_records_answer(query, rd, ttl, vec![RData::CNAME(n)]),
             Err(_) => filter_nodata(query, rd, ttl, None),
         },
-        _ => filter_nodata(query, rd, ttl, None),
-    }
+        }
 }
 
 /// CNAME rewrite answer: synthesised CNAME plus the target's resolved records.

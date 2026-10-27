@@ -22,7 +22,7 @@
 
 /// Top-level error of the clients module.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum ClientsError {
     /// Configuration values are inconsistent or out of range.
     #[error("invalid clients config: {reason}")]

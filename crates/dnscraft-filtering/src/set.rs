@@ -158,7 +158,7 @@ pub struct OpenedList {
 
 /// Why a snapshot could not be built.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum SnapshotError {
     /// A set refers to a list that is not configured.
     #[error("set {set} refers to unknown list {list}")]

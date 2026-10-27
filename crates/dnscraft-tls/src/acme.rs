@@ -460,7 +460,7 @@ fn stored_directory_matches(account_json: &[u8], directory_url: &str) -> bool {
 
 /// Where [`FakeAcmeDirectory`] should fail (for negative tests).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
+
 pub enum FakeAcmeFail {
     /// Fail when challenges would be marked ready.
     Challenge,

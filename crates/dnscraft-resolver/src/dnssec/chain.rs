@@ -84,7 +84,7 @@ pub enum KeysOutcome {
 
 /// Why the chain of trust is broken (the zone is bogus).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
+
 pub enum ChainFailure {
     /// `DelegationTrust::Anchors` was given but has no anchor for the zone.
     NoTrustAnchor,

@@ -52,7 +52,6 @@ fn protocol_str(protocol: DnsProtocol) -> &'static str {
         DnsProtocol::DoT => "dot",
         DnsProtocol::DoH => "doh",
         DnsProtocol::DoQ => "doq",
-        _ => "unknown",
     }
 }
 

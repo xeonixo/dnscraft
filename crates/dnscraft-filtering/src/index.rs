@@ -115,7 +115,7 @@ const NO_TEXT: u32 = u32::MAX;
 
 /// Errors from [`IndexBuilder`].
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum IndexError {
     /// The [`SourceId`] was not created by this builder.
     #[error("unknown rule source")]
@@ -152,7 +152,7 @@ impl SourceId {
 
 /// Where the rules of a source come from, without the line number.
 #[derive(Clone, PartialEq, Eq, Debug)]
-#[non_exhaustive]
+
 pub enum SourceKind {
     /// A filter list.
     List(ListId),

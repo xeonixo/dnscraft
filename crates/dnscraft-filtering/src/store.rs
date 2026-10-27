@@ -66,7 +66,7 @@ pub const META_VERSION: u32 = 1;
 
 /// A store operation failed.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum StoreError {
     /// A filesystem operation failed.
     #[error("{op} {path}: {source}")]

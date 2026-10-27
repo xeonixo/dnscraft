@@ -44,7 +44,7 @@ pub const MAX_TXT_LEN: usize = 255;
 
 /// Answer rewrite of a custom block rule.
 #[derive(Clone, PartialEq, Eq, Debug)]
-#[non_exhaustive]
+
 pub enum RewriteSpec {
     /// RCODE REFUSED.
     Refused,
@@ -95,7 +95,7 @@ pub struct RuleSpec {
 
 /// The builder rejected a spec.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum BuildError {
     /// The domain or CNAME target is not a valid name.
     #[error("invalid domain: {reason}")]

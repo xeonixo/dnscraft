@@ -31,7 +31,7 @@ use dnscraft_resolver::ForwardZoneId;
 
 /// A view, profile, listener or client id was rejected.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum IdError {
     /// The id is empty.
     #[error("id is empty")]
@@ -65,7 +65,7 @@ impl IdError {
 
 /// Why a policy configuration was rejected.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum ConfigReason {
     /// No view is marked as the default catch-all.
     #[error("exactly one default view is required")]
@@ -191,7 +191,7 @@ impl ConfigReason {
 
 /// Errors from building or running the policy engine.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum PolicyError {
     /// The configuration failed validation.
     #[error("invalid policy config: {reason}")]

@@ -74,7 +74,7 @@ const SAMPLE_TEXT_MAX: usize = 200;
 /// Where a list body came from. `$dnsrewrite` uses this to decide whether record
 /// rewrites are honoured (custom rules) or ignored (downloaded lists).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
+
 pub enum ListSource {
     /// A downloaded or local filter list (untrusted).
     List,
@@ -84,7 +84,7 @@ pub enum ListSource {
 
 /// Why a line (or a hosts name) produced no rule.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-#[non_exhaustive]
+
 pub enum SkipReason {
     /// Valid syntax this engine does not implement (cosmetic, browser-only).
     Unsupported(UnsupportedKind),

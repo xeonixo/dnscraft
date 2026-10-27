@@ -123,7 +123,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
 | `listeners` | COMPLETE (Checkpoint D, 2026-10-26) | [plan](archive/listeners-plan.md) · [tasks](archive/listeners-todo.md) | [SPEC-listeners.md](../SPEC-listeners.md); crates `dnscraft-listeners` + `dnscraft` |
 | `control-api` | A0–A14 done (Checkpoint F, 2026-10-26); **owner approved** | [plan](plan-control-api.md) · [tasks](todo-control-api.md) | [SPEC-control-api.md](../SPEC-control-api.md); crate `dnscraft-api` |
-| `mcp` | M0–M19 done + reviewed (write tools + security suite, 2026-10-26); **next: Checkpoint W → Phase 3 (M20–M27, unblocked — control-api Checkpoint F approved)** | [plan](plan-mcp.md) · [tasks](todo-mcp.md) | [SPEC-mcp.md](../SPEC-mcp.md) |
+| `mcp` | M0–M20 done + reviewed (write-path security suite + first integration tasks, 2026-10-27); **next: Checkpoint I → Phase 3 (M21–M27)** | [plan](plan-mcp.md) · [tasks](todo-mcp.md) | [SPEC-mcp.md](../SPEC-mcp.md) |
 | `web-ui`, `cluster` | specs drafted (DRAFT, owner review pending; web-ui Apple-design revision in progress) | [SPEC-web-ui.md](../SPEC-web-ui.md) · [SPEC-cluster.md](../SPEC-cluster.md) | – |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions

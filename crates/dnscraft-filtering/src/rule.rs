@@ -22,7 +22,7 @@ use crate::pattern::{Glob, RegexRule};
 
 /// What a matching rule does.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-#[non_exhaustive]
+
 pub enum RuleAction {
     /// Block the name (`||x^`, plain domains, hosts lines).
     Block,
@@ -32,7 +32,7 @@ pub enum RuleAction {
 
 /// How the rule's domain is matched against a query name.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-#[non_exhaustive]
+
 pub enum MatchKind {
     /// The domain and all its subdomains (`||x^`, plain domain).
     Subdomains,

@@ -124,7 +124,7 @@ pub enum PublicSniOutcome {
 
 /// Why a public SNI was rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
+
 pub enum SniRejectKind {
     /// No SNI extension.
     Missing,

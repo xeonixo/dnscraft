@@ -9,7 +9,7 @@ pub const MAX_MESSAGE_LEN: usize = 65_535;
 
 /// Framing / length-prefix errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
+
 pub enum FrameError {
     /// Peer closed before any length bytes arrived.
     UnexpectedEof,

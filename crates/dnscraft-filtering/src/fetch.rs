@@ -74,7 +74,7 @@ fn webpki_tls_config() -> Result<rustls::ClientConfig, rustls::Error> {
 
 /// A fetch attempt failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum FetchError {
     /// The request did not finish within the total timeout.
     #[error("request timed out")]

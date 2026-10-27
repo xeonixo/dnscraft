@@ -563,8 +563,8 @@ record mutation evidence. No new production behaviour except fixes found by the 
 **Scope:** M
 
 ## Checkpoint W: Write tools
-- [ ] DoD green; Claude review with injection and rule-safety probes; coverage of `dnscraft-mcp` ≥ 80 % so far
-- [ ] progress.md updated
+- [x] DoD green; Claude review with injection and rule-safety probes; coverage of `dnscraft-mcp` ≥ 80 % so far — 2026-10-27
+- [x] progress.md updated — 2026-10-27
 
 ## Phase 3: Integration into `control-api`
 

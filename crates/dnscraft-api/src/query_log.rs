@@ -18,7 +18,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, SecondsFormat, Utc};
 use dnscraft_filtering::{BlockMode, RuleSource};
 use dnscraft_listeners::{QueryEvent, QueryEventSink};
 use dnscraft_policy::{
@@ -31,6 +30,7 @@ use rusqlite::params;
 use rusqlite::params_from_iter;
 use rusqlite::types::Value;
 use serde_json::{Value as Json, json};
+use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
 use crate::config::{IpTruncate, QueryLogConfig};
@@ -620,8 +620,7 @@ fn prepare_row(
             "resolve_us": decision.timings.resolve_us,
             "total_us": decision.timings.total_us,
         },
-        "time": DateTime::<Utc>::from(event.time)
-            .to_rfc3339_opts(SecondsFormat::Micros, true),
+        "time": format_rfc3339_micros(event.time),
     })
     .to_string();
     Ok(PreparedRow {
@@ -705,7 +704,6 @@ fn protocol_str(protocol: DnsProtocol) -> &'static str {
         DnsProtocol::DoT => "dot",
         DnsProtocol::DoH => "doh",
         DnsProtocol::DoQ => "doq",
-        _ => "unknown",
     }
 }
 
@@ -736,7 +734,6 @@ fn answer_origin_str(origin: AnswerOrigin) -> &'static str {
         AnswerOrigin::Bypass => "bypass",
         AnswerOrigin::Filter => "filter_block",
         AnswerOrigin::ListenerDdr => "listener_ddr",
-        _ => "unknown",
     }
 }
 
@@ -763,7 +760,6 @@ fn block_mode_str(mode: BlockMode) -> &'static str {
         BlockMode::NxDomain => "nxdomain",
         BlockMode::NullIp => "null_ip",
         BlockMode::CustomIp { .. } => "custom_ip",
-        _ => "unknown",
     }
 }
 
@@ -790,7 +786,6 @@ fn selection_json(cause: SelectionCause) -> Json {
             "prefix": format!("{network}/{prefix_len}"),
         }),
         SelectionCause::Default => json!({ "cause": "default" }),
-        _ => json!({ "cause": "unknown" }),
     }
 }
 
@@ -801,7 +796,6 @@ fn filter_json(hit: &FilterHit) -> Json {
         RuleSource::Service { id } => ("service", Some(id.to_string())),
         RuleSource::TemporaryAllow => ("temporary_allow", None),
         RuleSource::Mcp { .. } => ("mcp", None),
-        _ => ("unknown", None),
     };
     json!({
         // The spec calls this a filter reason; the engine exposes provenance
@@ -878,7 +872,6 @@ fn step_json(step: &DecisionStep) -> Json {
             "id": id.as_ref(),
             "filter_set": filter_set.as_str(),
         }),
-        _ => json!({ "stage": "unknown", "verdict": "unknown" }),
     }
 }
 
@@ -888,6 +881,23 @@ fn system_time_micros(time: SystemTime) -> i64 {
         Ok(delta) => i64::try_from(delta.as_micros()).unwrap_or(i64::MAX),
         Err(error) => -i64::try_from(error.duration().as_micros()).unwrap_or(i64::MAX),
     }
+}
+
+/// Formats [`SystemTime`] as RFC 3339 with microsecond precision and a `Z`
+/// suffix — matching chrono's `to_rfc3339_opts(SecondsFormat::Micros, true)`.
+fn format_rfc3339_micros(time: SystemTime) -> String {
+    let odt = OffsetDateTime::from(time);
+    let (year, month_day, time_part) = (odt.year(), odt.month() as u8, odt.time());
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}Z",
+        year,
+        month_day,
+        odt.day(),
+        time_part.hour(),
+        time_part.minute(),
+        time_part.second(),
+        time_part.nanosecond() / 1000,
+    )
 }
 
 /// Generates an opaque, UUID-shaped record id (16 random bytes, v4 layout).

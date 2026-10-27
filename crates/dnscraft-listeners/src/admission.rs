@@ -13,7 +13,7 @@ use crate::ratelimit::{LruMap, TokenBucket};
 
 /// Private vs public client source (after `to_canonical`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
+
 pub enum SourceClass {
     /// RFC 1918, loopback, link-local, ULA, CGNAT (and IPv4-mapped forms).
     Private,
@@ -69,7 +69,7 @@ fn is_cgnat(v4: Ipv4Addr) -> bool {
 
 /// Client-ID presentation state after SNI / DoH path parsing.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
+
 pub enum ClientIdState {
     /// No Client ID on the request.
     Absent,
@@ -81,7 +81,7 @@ pub enum ClientIdState {
 
 /// Result of [`Admission::check`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
+
 pub enum AdmitDecision {
     /// Proceed to message handling.
     Admit,

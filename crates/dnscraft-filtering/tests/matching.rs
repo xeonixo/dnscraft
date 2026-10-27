@@ -51,7 +51,6 @@ fn show(v: &Verdict) -> String {
         Verdict::Allowed(r) => format!("allow|{}", r.rule),
         Verdict::Blocked(r) => format!("block|{}", r.rule),
         Verdict::Rewrite(_, r) => format!("rw|{}", r.rule),
-        _ => "other".into(),
     }
 }
 

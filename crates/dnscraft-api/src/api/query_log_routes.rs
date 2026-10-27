@@ -5,7 +5,6 @@
 
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
-use chrono::DateTime;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -84,8 +83,10 @@ fn non_empty(value: Option<String>) -> Option<String> {
 
 /// Parses an RFC 3339 timestamp into unix microseconds.
 pub(crate) fn parse_timestamp(raw: &str, field: &str) -> Result<i64, ControlApiError> {
-    DateTime::parse_from_rfc3339(raw.trim())
-        .map(|time| time.timestamp_micros())
+    use time::OffsetDateTime;
+    use time::format_description::well_known::Rfc3339;
+    OffsetDateTime::parse(raw.trim(), &Rfc3339)
+        .map(|time| (time.unix_timestamp_nanos() / 1000) as i64)
         .map_err(|_| ControlApiError::QueryLogInvalid {
             reason: format!("`{field}` must be an RFC 3339 timestamp"),
         })

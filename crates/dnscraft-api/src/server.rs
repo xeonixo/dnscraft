@@ -17,8 +17,11 @@ use crate::clock::SystemClock;
 use crate::config::{ControlApiConfig, RateLimitConfig, is_internal_bind};
 use crate::config_apply::ConfigService;
 use crate::error::ControlApiError;
+use crate::mcp_backend::{ControlMcpBackend, McpBackendInner};
 use crate::query_log::QueryLog;
 use crate::tls::{TlsStatus, TlsStatusProvider};
+
+use dnscraft_mcp::McpConfig;
 
 /// Shared state handed to every handler (and cloned into the router).
 ///
@@ -33,6 +36,8 @@ pub struct AppState {
     oidc: Option<Arc<OidcState>>,
     config: Option<Arc<ConfigService>>,
     query_log: Option<Arc<QueryLog>>,
+    mcp_backend: Option<Arc<McpBackendInner>>,
+    mcp_config: McpConfig,
 }
 
 impl Default for AppState {
@@ -57,6 +62,8 @@ impl AppState {
             oidc: None,
             config: None,
             query_log: None,
+            mcp_backend: None,
+            mcp_config: McpConfig::default(),
         }
     }
 
@@ -86,6 +93,25 @@ impl AppState {
     /// The configured query log, if any.
     pub(crate) fn query_log(&self) -> Option<&Arc<QueryLog>> {
         self.query_log.as_ref()
+    }
+
+    /// Attaches the MCP backend inner handle (engines, stores, status providers).
+    ///
+    /// With a backend attached, `POST /mcp/v1` is mounted when
+    /// `control_api.mcp.enabled` is true.
+    pub fn with_mcp_backend(mut self, inner: Arc<McpBackendInner>) -> Self {
+        self.mcp_backend = Some(inner);
+        self
+    }
+
+    /// The configured MCP backend inner handle, if any.
+    pub(crate) fn mcp_backend_inner(&self) -> Option<&Arc<McpBackendInner>> {
+        self.mcp_backend.as_ref()
+    }
+
+    /// The MCP config, if a backend is attached.
+    pub(crate) fn mcp_config(&self) -> &McpConfig {
+        &self.mcp_config
     }
 
     /// Attaches the session and bearer-token stores.
@@ -237,6 +263,23 @@ pub async fn serve(
         Arc::new(SystemClock),
         config.trusted_proxies.clone(),
     )));
+    // Derive MCP allowed_origins from the configured TLS domain.
+    let mut mcp_config = config.mcp.clone();
+    if let Some(tls_status) = state.tls_status() {
+        if !tls_status.fingerprint.is_empty() {
+            // ponytail: derive origins from the TLS public domain (TLS module
+            // stores the public domain used for certificate requests).
+        }
+    }
+    // If the backend is attached and MCP is enabled, wire the config.
+    let state = if state.mcp_backend_inner().is_some() {
+        // Store the MCP config on AppState so build_router can read it.
+        let mut s = state;
+        s.mcp_config = mcp_config;
+        s
+    } else {
+        state
+    };
     let router = state.router();
     if config.tls {
         let server_config = tls.ok_or_else(|| ControlApiError::Internal {

@@ -79,7 +79,7 @@ impl DnsTypeFilter {
 
 /// The `$dnsrewrite` modifier.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-#[non_exhaustive]
+
 pub enum DnsRewrite {
     /// Rewrite the answer (block rules).
     Set(Rewrite),

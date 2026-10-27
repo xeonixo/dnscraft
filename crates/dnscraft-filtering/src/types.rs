@@ -82,7 +82,7 @@ id_type!(
 
 /// Where a rule came from.
 #[derive(Clone, PartialEq, Eq, Debug)]
-#[non_exhaustive]
+
 pub enum RuleSource {
     /// A line of a filter list.
     List {
@@ -127,7 +127,7 @@ pub struct Reason {
 
 /// A response modification chosen by a rule or by the block mode.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-#[non_exhaustive]
+
 pub enum Rewrite {
     /// Answer with RCODE REFUSED.
     Refused,
@@ -149,7 +149,7 @@ pub enum Rewrite {
 
 /// Outcome of matching a name against a rule set.
 #[derive(Clone, PartialEq, Eq, Debug)]
-#[non_exhaustive]
+
 pub enum Verdict {
     /// No rule matched.
     Pass,
@@ -163,7 +163,7 @@ pub enum Verdict {
 
 /// How blocked queries are answered.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[non_exhaustive]
+
 pub enum BlockMode {
     /// RCODE REFUSED.
     #[default]

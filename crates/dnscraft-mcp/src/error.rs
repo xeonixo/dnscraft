@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 
 /// An MCP-owned error.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
+
 pub enum McpError {
     /// The tool name in `tools/call` does not exist.
     #[error("unknown tool: {tool}")]

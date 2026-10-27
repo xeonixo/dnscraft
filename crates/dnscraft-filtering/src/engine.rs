@@ -30,7 +30,7 @@ use crate::types::{ListId, SetId, Verdict};
 
 /// Which lists [`FilterEngine::update_lists`] should refresh.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
+
 pub enum ListSelection {
     /// Every enabled list in the current config.
     All,
