@@ -207,33 +207,85 @@ impl ClusterStore {
 
         self.with_conn(move |conn| {
             let tx = conn.transaction().map_err(db_err)?;
-            let row: Option<(String, i64)> = tx
-                .query_row(
-                    "SELECT node_id, expires_at FROM join_tokens WHERE token_hash = ?1",
-                    params![token_hash],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(db_err)?;
-            let Some((stored_node, expires_at)) = row else {
-                return Err(ClusterError::JoinTokenInvalid);
-            };
-            if stored_node != bound_node {
-                return Err(ClusterError::JoinTokenInvalid);
-            }
-            // One-time: consume before reporting expiry or success.
-            tx.execute(
-                "DELETE FROM join_tokens WHERE token_hash = ?1",
-                params![token_hash],
-            )
-            .map_err(db_err)?;
+            let result = consume_token(&tx, &token_hash, &bound_node, now);
+            // An expired token is consumed, so its removal must be committed
+            // even though redemption fails. Invalid tokens are left intact.
             tx.commit().map_err(db_err)?;
-            if now >= expires_at {
-                return Err(ClusterError::JoinTokenExpired);
-            }
-            Ok(())
+            result
         })
         .await
+    }
+
+    /// Consumes `token` and registers `node_id` with `fingerprint` in one
+    /// transaction: either both happen or neither does (except that an expired
+    /// token is consumed, matching [`Self::redeem_join_token`]).
+    ///
+    /// A token bound to another `node_id`, or a node that is already
+    /// registered, is rejected without consuming the token.
+    pub async fn redeem_join_token_and_register(
+        &self,
+        token: &str,
+        node_id: &str,
+        fingerprint: &str,
+    ) -> Result<ClusterNode, ClusterError> {
+        validate_node_id(node_id)?;
+        let token_hash = crate::sha256_hex(token.as_bytes());
+        let now = self.now_unix();
+        let node = ClusterNode {
+            node_id: node_id.to_owned(),
+            fingerprint: fingerprint.to_owned(),
+            joined_at: now,
+            last_seen: Some(now),
+            applied_config_version: None,
+            revoked: false,
+        };
+        let insert = node.clone();
+
+        self.with_conn(move |conn| {
+            let tx = conn.transaction().map_err(db_err)?;
+            match consume_token(&tx, &token_hash, &insert.node_id, now) {
+                Ok(()) => {
+                    let already: Option<i64> = tx
+                        .query_row(
+                            "SELECT 1 FROM cluster_nodes WHERE node_id = ?1",
+                            params![insert.node_id],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(db_err)?;
+                    if already.is_some() {
+                        // Roll back the token deletion: it was not used.
+                        return Err(ClusterError::NodeAlreadyJoined {
+                            node_id: insert.node_id.clone(),
+                        });
+                    }
+                    tx.execute(
+                        "INSERT INTO cluster_nodes
+                            (node_id, fingerprint, joined_at, last_seen,
+                             applied_config_version, revoked)
+                         VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                        params![
+                            insert.node_id,
+                            insert.fingerprint,
+                            insert.joined_at,
+                            insert.last_seen,
+                            insert.applied_config_version
+                        ],
+                    )
+                    .map_err(db_err)?;
+                    tx.commit().map_err(db_err)?;
+                    Ok(())
+                }
+                Err(error @ ClusterError::JoinTokenExpired) => {
+                    // Expiry consumes the token; persist the removal.
+                    tx.commit().map_err(db_err)?;
+                    Err(error)
+                }
+                Err(error) => Err(error),
+            }
+        })
+        .await?;
+        Ok(node)
     }
 
     /// Registers a joined node and its certificate fingerprint.
@@ -435,6 +487,44 @@ fn unix_seconds(time: SystemTime) -> i64 {
 
 fn duration_seconds(duration: Duration) -> i64 {
     i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+}
+
+/// Looks up and consumes `token_hash` inside `tx`.
+///
+/// The token must be bound to `node_id`; a mismatch leaves it intact. Once the
+/// binding checks pass the row is deleted (one-time use) before expiry is
+/// reported, so a caller must commit the transaction even for
+/// [`ClusterError::JoinTokenExpired`].
+fn consume_token(
+    tx: &rusqlite::Transaction<'_>,
+    token_hash: &str,
+    node_id: &str,
+    now: i64,
+) -> Result<(), ClusterError> {
+    let row: Option<(String, i64)> = tx
+        .query_row(
+            "SELECT node_id, expires_at FROM join_tokens WHERE token_hash = ?1",
+            params![token_hash],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(db_err)?;
+    let Some((stored_node, expires_at)) = row else {
+        return Err(ClusterError::JoinTokenInvalid);
+    };
+    if stored_node != node_id {
+        return Err(ClusterError::JoinTokenInvalid);
+    }
+    // One-time: consume before reporting expiry or success.
+    tx.execute(
+        "DELETE FROM join_tokens WHERE token_hash = ?1",
+        params![token_hash],
+    )
+    .map_err(db_err)?;
+    if now >= expires_at {
+        return Err(ClusterError::JoinTokenExpired);
+    }
+    Ok(())
 }
 
 fn db_err(error: rusqlite::Error) -> ClusterError {

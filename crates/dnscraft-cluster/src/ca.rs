@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 use dnscraft_common::secret::Secret;
 use rcgen::{
-    BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose,
-    PKCS_ECDSA_P256_SHA256,
+    BasicConstraints, Certificate, CertificateParams, DnType, IsCa, Issuer, KeyPair,
+    KeyUsagePurpose, PKCS_ECDSA_P256_SHA256, PublicKey,
 };
 
 use crate::error::ClusterError;
@@ -25,6 +25,7 @@ use crate::error::ClusterError;
 /// the same identity across restarts.
 pub struct ClusterCa {
     cert_pem: String,
+    key: KeyPair,
     cert_path: PathBuf,
     key_path: PathBuf,
 }
@@ -61,16 +62,35 @@ impl ClusterCa {
         &self.cert_path
     }
 
+    /// Signs `params` (carrying `public_key`) under this CA.
+    pub(crate) fn sign(
+        &self,
+        params: &CertificateParams,
+        public_key: &PublicKey,
+    ) -> Result<Certificate, ClusterError> {
+        let issuer = Issuer::from_ca_cert_pem(&self.cert_pem, &self.key).map_err(|error| {
+            ClusterError::Internal {
+                message: format!("cluster CA issuer: {error}"),
+            }
+        })?;
+        params
+            .signed_by(public_key, &issuer)
+            .map_err(|error| ClusterError::Internal {
+                message: format!("node certificate signing: {error}"),
+            })
+    }
+
     fn load(cert_path: &Path, key_path: &Path) -> Result<Self, ClusterError> {
         let cert_pem = fs::read_to_string(cert_path).map_err(io_error)?;
         let key_pem = Secret::new(fs::read_to_string(key_path).map_err(io_error)?);
         // Reject a corrupt key now rather than at first signing.
-        KeyPair::from_pem(key_pem.expose()).map_err(|error| ClusterError::Internal {
+        let key = KeyPair::from_pem(key_pem.expose()).map_err(|error| ClusterError::Internal {
             message: format!("invalid cluster CA key: {error}"),
         })?;
         tighten_key_permissions(key_path)?;
         Ok(Self {
             cert_pem,
+            key,
             cert_path: cert_path.to_owned(),
             key_path: key_path.to_owned(),
         })
@@ -111,6 +131,7 @@ impl ClusterCa {
 
         Ok(Self {
             cert_pem,
+            key,
             cert_path: cert_path.to_owned(),
             key_path: key_path.to_owned(),
         })
@@ -136,7 +157,7 @@ fn key_path_for(cert_path: &Path) -> PathBuf {
     cert_path.with_extension("key")
 }
 
-fn io_error(error: std::io::Error) -> ClusterError {
+pub(crate) fn io_error(error: std::io::Error) -> ClusterError {
     ClusterError::Internal {
         message: error.to_string(),
     }
@@ -144,7 +165,7 @@ fn io_error(error: std::io::Error) -> ClusterError {
 
 /// Creates the certificate's parent directory with mode 0700 when it does not
 /// exist; a pre-existing directory is left untouched.
-fn prepare_parent(path: &Path) -> Result<(), ClusterError> {
+pub(crate) fn prepare_parent(path: &Path) -> Result<(), ClusterError> {
     if let Some(parent) = path.parent().filter(|dir| !dir.as_os_str().is_empty())
         && !parent.exists()
     {
@@ -155,7 +176,7 @@ fn prepare_parent(path: &Path) -> Result<(), ClusterError> {
 }
 
 /// Creates the key file with mode 0600 before writing any material.
-fn write_key_0600(path: &Path, key_pem: &[u8]) -> Result<(), ClusterError> {
+pub(crate) fn write_key_0600(path: &Path, key_pem: &[u8]) -> Result<(), ClusterError> {
     use std::io::Write;
 
     let mut file = fs::OpenOptions::new()
@@ -169,7 +190,7 @@ fn write_key_0600(path: &Path, key_pem: &[u8]) -> Result<(), ClusterError> {
 }
 
 /// Forces an existing key file back to 0600 (for example after a manual copy).
-fn tighten_key_permissions(path: &Path) -> Result<(), ClusterError> {
+pub(crate) fn tighten_key_permissions(path: &Path) -> Result<(), ClusterError> {
     let current = fs::metadata(path).map_err(io_error)?.permissions().mode() & 0o777;
     if current != 0o600 {
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(io_error)?;

@@ -10,15 +10,21 @@
 //! - [`ClusterCa`] — the master's dedicated cluster CA (key mode `0600`).
 //! - [`ClusterStore`] — the durable master registry for nodes and one-time
 //!   join tokens (SQLite in the data directory).
+//! - [`enroll`] / [`EnrollRequest`] / [`EnrollResponse`] — the in-process
+//!   master-side enrollment protocol and its wire shape.
+//! - [`PendingNodeIdentity`] / [`NodeIdentity`] — sub-node key + CSR
+//!   generation and durable certificate/key storage.
 //!
-//! The mTLS transport, enrollment endpoint, and log/write streaming are later
-//! slices; nothing here opens a socket.
+//! The mTLS transport and log/write streaming are later slices; nothing here
+//! opens a socket.
 
 #![deny(missing_docs)]
 
 mod ca;
 mod config;
+mod enroll;
 mod error;
+mod identity;
 mod store;
 
 pub use ca::{ClusterCa, cert_fingerprint};
@@ -26,7 +32,9 @@ pub use config::{
     ClusterConfig, JoinConfig, ListenConfig, LogConfig, OfflineWritesConfig, QuotaConfig, Role,
     TimingConfig, TlsPaths,
 };
+pub use enroll::{EnrollRequest, EnrollResponse, PROTOCOL_VERSION, enroll};
 pub use error::ClusterError;
+pub use identity::{NodeIdentity, PendingNodeIdentity};
 pub use store::{ClusterNode, ClusterStore, MintedJoinToken};
 
 use ring::digest::{SHA256, digest};
