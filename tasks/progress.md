@@ -238,6 +238,14 @@ the CL15 follow-up).
 
 ## Log
 
+- 2026-10-27 — **filtering gap GF8: adblock golden fixture.** New `tests/data/adblock_excerpt.txt`
+  (test-authored excerpt of the accepted list styles: block/allow, `$important`, hosts-file form,
+  rcode + record `$dnsrewrite`, cosmetic, malformed lines) + `tests/golden_lists.rs` asserting exact
+  parse results (rules, skip counts + samples by reason). GF2's filtering half confirmed already done
+  in `4769fcb` (only the control-api mapping remains). Gates: `fmt -p dnscraft-filtering --check`
+  clean, `clippy -p dnscraft-filtering --all-targets` clean, `cargo test -p dnscraft-filtering` 248
+  passed / 0 failed.
+
 - 2026-10-27 — **web-ui blocker GA1: `GET /api/v1/auth/me`.** New `auth_me` handler
   returns `{ role, actor_id, actor_type, csrf_token }` for the authenticated principal;
   the CSRF token is recomputed from the session cookie (`csrf::csrf_token_for`), and a

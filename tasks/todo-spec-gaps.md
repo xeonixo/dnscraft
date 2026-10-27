@@ -80,7 +80,7 @@ approval before Phase 0 code.
       the spec says "everywhere in the set" without that exception. *(index.rs:66-70, 508-548)*
 - [x] **GF7** 🟡 [spec] Record-form `$dnsrewrite` from a list drops the whole rule (loses the
       block); spec's hosts analogy suggests only the rewrite should be ignored. *(modifiers.rs:450-452)*
-- [ ] **GF8** 🟡 [code] No `tests/data/` golden fixtures; parser proptest only for the builder
+- [x] **GF8** 🟡 [code] No `tests/data/` golden fixtures; parser proptest only for the builder
       round-trip. *(tests/ has no data dir)*
 - [ ] **GF9** 🟡 [spec] Interface sketch drift: `new` returns `Arc<Self>`, `match_*` take `now`
       + return `Result`, `TempAllow` requires `created_at`. *(engine.rs:138-142 etc.)*

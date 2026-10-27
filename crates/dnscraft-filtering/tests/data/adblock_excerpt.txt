@@ -1,0 +1,15 @@
+[Adblock Plus 2.0]
+! Golden excerpt of the list styles DNScraft accepts (written for this
+! test; no third-party content, licence-compatible).
+
+||ads.example^
+||tracker.example^$important
+@@||cdn.example^
+plain.example
+0.0.0.0 hosts.example
+127.0.0.1 real.example
+||rcode.example^$dnsrewrite=REFUSED
+||record.example^$dnsrewrite=1.2.3.4
+example.com##.ad-banner
+||bad_domain!^
+||
