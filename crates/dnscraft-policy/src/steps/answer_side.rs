@@ -10,7 +10,7 @@ use crate::config::RequestContext;
 use crate::decision::{DecisionStep, FilterHit};
 use crate::pipeline::{Draft, StepCtx};
 use crate::synth::{DEFAULT_BLOCK_TTL, block_answer, filter_internal_servfail};
-use crate::util::{ede_text, name_to_domain};
+use crate::util::truncate_ede_text;
 
 /// Outcome of answer-side filtering.
 pub(crate) enum AnswerSide {
@@ -115,14 +115,14 @@ fn replace_blocked(
         rd,
         mode,
         ttl,
-        Some(ede_text(&reason)),
+        Some(truncate_ede_text(reason.rule.as_ref())),
     ))
 }
 
 /// Qname plus each CNAME target in answer order (owners followed within the section).
 fn collect_chain_names(qname: &Name, answers: &[Record]) -> Vec<DomainName> {
     let mut out = Vec::new();
-    if let Some(d) = name_to_domain(qname) {
+    if let Some(d) = DomainName::parse(&qname.to_string()).ok() {
         out.push(d);
     }
     let mut current = qname.clone();
@@ -133,7 +133,7 @@ fn collect_chain_names(qname: &Name, answers: &[Record]) -> Vec<DomainName> {
         let RData::CNAME(target) = &rec.rdata else {
             continue;
         };
-        if let Some(d) = name_to_domain(target) {
+        if let Some(d) = DomainName::parse(&target.to_string()).ok() {
             out.push(d);
         }
         current = target.clone();

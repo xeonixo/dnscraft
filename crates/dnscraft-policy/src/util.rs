@@ -1,20 +1,7 @@
 //! Small shared helpers used by more than one pipeline step.
 
-use dnscraft_filtering::{DomainName, Reason};
-use dnscraft_proto::Name;
-
 /// Maximum EXTRA-TEXT bytes for filter-derived EDE (before the ellipsis).
 pub(crate) const EDE_TEXT_MAX: usize = 200;
-
-/// Converts a wire name to a filtering [`DomainName`], or `None` if unsupported.
-pub(crate) fn name_to_domain(name: &Name) -> Option<DomainName> {
-    DomainName::parse(&name.to_string()).ok()
-}
-
-/// EXTRA-TEXT for a filter hit: the rule text, truncated on a char boundary.
-pub(crate) fn ede_text(reason: &Reason) -> String {
-    truncate_ede_text(reason.rule.as_ref())
-}
 
 /// Truncates `rule` to at most [`EDE_TEXT_MAX`] bytes on a UTF-8 boundary,
 /// appending `…` when truncated. Never panics on multi-byte characters.
@@ -51,15 +38,5 @@ mod tests {
         let without_ellipsis = out.len() - '…'.len_utf8();
         assert!(without_ellipsis <= EDE_TEXT_MAX);
         assert!(rule.is_char_boundary(without_ellipsis));
-    }
-
-    #[test]
-    fn name_to_domain_accepts_common_names() {
-        assert_eq!(
-            name_to_domain(&Name::from_ascii("Ads.Example.COM.").unwrap())
-                .unwrap()
-                .as_str(),
-            "ads.example.com"
-        );
     }
 }

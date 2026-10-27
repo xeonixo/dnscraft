@@ -457,7 +457,7 @@ impl PolicyEngine {
         loggable: bool,
     ) -> PolicyAnswer {
         draft.timings.total_us = elapsed_us(total_start);
-        let answer = emit(draft, synth, client_id, loggable, None, None);
+        let answer = emit(draft, synth, client_id, loggable);
         if loggable {
             self.record_stats(&answer.record);
         }
@@ -495,12 +495,10 @@ fn emit(
     synth: Synth,
     client_id: Option<crate::ids::ClientId>,
     loggable: bool,
-    forward_zone: Option<dnscraft_resolver::ForwardZoneId>,
-    dnssec: Option<DnssecStatus>,
 ) -> PolicyAnswer {
     let rcode = synth.message.rcode();
     let origin = synth.origin;
-    let record = draft.into_record(origin, rcode, forward_zone, dnssec, client_id);
+    let record = draft.into_record(origin, rcode, None, None, client_id);
     PolicyAnswer {
         message: synth.message,
         ede: synth.ede,

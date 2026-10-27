@@ -25,7 +25,7 @@ use crate::steps::filter::follow_cname_rewrite;
 use crate::synth::{
     DEFAULT_BLOCK_TTL, block_answer, filter_internal_servfail, rewrite_answer, rewrite_cname_follow,
 };
-use crate::util::ede_text;
+use crate::util::truncate_ede_text;
 
 /// Runs steps 5–6. May call the resolver to follow the safe-host CNAME.
 pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Draft) -> Flow {
@@ -91,7 +91,7 @@ pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Dra
                     rd,
                     mode,
                     ttl,
-                    Some(ede_text(&reason)),
+                    Some(truncate_ede_text(reason.rule.as_ref())),
                 ));
             }
             Ok(Verdict::Rewrite(rewrite, reason)) => {

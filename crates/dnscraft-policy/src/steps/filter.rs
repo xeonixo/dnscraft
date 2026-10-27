@@ -14,7 +14,7 @@ use crate::pipeline::{Draft, Flow, StepCtx};
 use crate::synth::{
     DEFAULT_BLOCK_TTL, block_answer, filter_internal_servfail, rewrite_answer, rewrite_cname_follow,
 };
-use crate::util::{ede_text, name_to_domain};
+use crate::util::truncate_ede_text;
 
 /// Logs at most once per process when a set vanishes mid-flight (reload race).
 static UNKNOWN_SET_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -29,7 +29,7 @@ pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Dra
     }
 
     let set_id = step.filter_set;
-    let Some(domain) = name_to_domain(&ctx.query.name) else {
+    let Some(domain) = DomainName::parse(&ctx.query.name.to_string()).ok() else {
         draft.steps.push(DecisionStep::FilterSkipped {
             reason: "unrepresentable_name",
         });
@@ -89,7 +89,7 @@ pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Dra
                 rd,
                 mode,
                 ttl,
-                Some(ede_text(&reason)),
+                Some(truncate_ede_text(reason.rule.as_ref())),
             ))
         }
         Verdict::Rewrite(rewrite, reason) => {
@@ -144,7 +144,7 @@ pub(crate) async fn follow_cname_rewrite(
                     rd,
                     mode,
                     ttl,
-                    Some(ede_text(&reason)),
+                    Some(truncate_ede_text(reason.rule.as_ref())),
                 ));
             }
             Ok(_) => {}
