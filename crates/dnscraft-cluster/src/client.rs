@@ -1,0 +1,507 @@
+//! Sub-node outbound mTLS client.
+//!
+//! The sub-node always dials the master (the master never dials a sub-node).
+//! The client presents its node certificate for the mTLS channel opened by
+//! [`ClusterClient::open_stream`], sends heartbeats, and performs the one-time
+//! enrollment over a certificate-pinned bootstrap connection.
+//!
+//! Reconnects use exponential backoff driven by the injectable
+//! [`Clock`] ([`ClusterClient::connect`]); there are no wall-clock sleeps.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use dnscraft_common::clock::{Clock, add_duration, wait_until};
+use reqwest::Client;
+use rustls::RootCertStore;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto::{ring as ring_provider, verify_tls12_signature, verify_tls13_signature};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, Error as RustlsError};
+use serde::Deserialize;
+
+use crate::ca::cert_fingerprint;
+use crate::config::{
+    DEFAULT_MASTER_TIMEOUT, DEFAULT_RECONNECT_BACKOFF, DEFAULT_RECONNECT_BACKOFF_MAX,
+};
+use crate::enroll::{EnrollRequest, EnrollResponse, PROTOCOL_VERSION};
+use crate::error::ClusterError;
+use crate::identity::NodeIdentity;
+use crate::server::{HeartbeatRequest, HeartbeatResponse, PROTOCOL_HEADER};
+
+const ENROLL_PATH: &str = "/cluster/v1/enroll";
+const STREAM_PATH: &str = "/cluster/v1/stream";
+const HEARTBEAT_PATH: &str = "/cluster/v1/heartbeat";
+
+/// A sub-node's HTTP/2 mTLS client for the master's cluster listener.
+pub struct ClusterClient {
+    http: Client,
+    base_url: String,
+    node_id: String,
+    clock: Arc<dyn Clock>,
+}
+
+impl ClusterClient {
+    /// Builds an mTLS client from a persisted node identity.
+    ///
+    /// The client trusts `identity.ca_cert_pem()` and presents the node
+    /// certificate/key. `node_id` is read from the certificate's DNS SAN, so
+    /// the client and master agree on the identity the channel carries.
+    pub fn new(
+        master_url: &str,
+        identity: &NodeIdentity,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self, ClusterError> {
+        let base_url = normalize_master_url(master_url)?;
+        let node_id = node_id_from_pem(identity.node_cert_pem())?;
+        Ok(Self {
+            http: mtls_client(identity)?,
+            base_url,
+            node_id,
+            clock,
+        })
+    }
+
+    /// The `node_id` carried by this node's certificate.
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    /// Enrolls this node over a bootstrap connection that trusts exactly
+    /// `master_cert_pem` (SHA-256 pin).
+    ///
+    /// This is the only request made without a node certificate. The join
+    /// token travels once, inside [`EnrollRequest`].
+    pub async fn enroll(
+        master_url: &str,
+        master_cert_pem: &str,
+        request: EnrollRequest,
+    ) -> Result<EnrollResponse, ClusterError> {
+        let base_url = normalize_master_url(master_url)?;
+        let http = pinned_client(master_cert_pem)?;
+        let body = serde_json::to_vec(&request).map_err(|error| ClusterError::Internal {
+            message: format!("encode enroll request: {error}"),
+        })?;
+        let response = http
+            .post(format!("{base_url}{ENROLL_PATH}"))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(master_unavailable)?;
+        json_body(ensure_success(response).await?).await
+    }
+
+    /// Opens the long-lived downstream stream and consumes the `hello`.
+    ///
+    /// The returned [`ClusterStream`] keeps the response (and therefore the
+    /// connection) alive. Downstream push records belong to later phases.
+    pub async fn open_stream(&self) -> Result<ClusterStream, ClusterError> {
+        let response = self
+            .http
+            .get(format!("{}{STREAM_PATH}", self.base_url))
+            .header(PROTOCOL_HEADER, PROTOCOL_VERSION.to_string())
+            .send()
+            .await
+            .map_err(master_unavailable)?;
+        let mut response = ensure_success(response).await?;
+
+        let mut buffer = Vec::new();
+        let line = read_line(&mut response, &mut buffer).await?;
+        let record: StreamRecord =
+            serde_json::from_slice(&line).map_err(|error| ClusterError::TransportTls {
+                message: format!("invalid stream hello: {error}"),
+            })?;
+        match record {
+            StreamRecord::Hello { protocol, node_id } => {
+                if protocol != PROTOCOL_VERSION {
+                    return Err(ClusterError::ProtocolVersion);
+                }
+                if node_id != self.node_id {
+                    return Err(ClusterError::TransportTls {
+                        message: "master bound the stream to another node_id".to_owned(),
+                    });
+                }
+                Ok(ClusterStream {
+                    node_id,
+                    protocol,
+                    _response: response,
+                    _buffer: buffer,
+                })
+            }
+            StreamRecord::Error { error } => Err(map_wire_error(&error)),
+        }
+    }
+
+    /// Sends one heartbeat; `applied_version`/`queue_depth` are reported as-is.
+    ///
+    /// The master derives `node_id` from the client certificate, never from
+    /// this body.
+    pub async fn heartbeat(
+        &self,
+        applied_version: Option<i64>,
+        queue_depth: u32,
+    ) -> Result<HeartbeatResponse, ClusterError> {
+        let request = HeartbeatRequest {
+            protocol: PROTOCOL_VERSION,
+            applied_version,
+            queue_depth,
+        };
+        let body = serde_json::to_vec(&request).map_err(|error| ClusterError::Internal {
+            message: format!("encode heartbeat: {error}"),
+        })?;
+        let response = self
+            .http
+            .post(format!("{}{HEARTBEAT_PATH}", self.base_url))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(master_unavailable)?;
+        json_body(ensure_success(response).await?).await
+    }
+
+    /// Opens the stream, retrying transient failures with exponential backoff.
+    ///
+    /// Waits are driven by the injected [`Clock`] (no wall-clock sleeps) and
+    /// are interrupted by `shutdown`. Authentication, revocation and protocol
+    /// failures are returned immediately because retrying cannot fix them.
+    pub async fn connect(
+        &self,
+        shutdown: &tokio::sync::Notify,
+    ) -> Result<ClusterStream, ClusterError> {
+        let mut backoff = Backoff::new(DEFAULT_RECONNECT_BACKOFF, DEFAULT_RECONNECT_BACKOFF_MAX);
+        loop {
+            match self.open_stream().await {
+                Ok(stream) => return Ok(stream),
+                Err(ClusterError::MasterUnavailable) => {}
+                Err(error) => return Err(error),
+            }
+
+            let delay = backoff.next_delay();
+            let deadline = add_duration(self.clock.now(), delay);
+            tokio::select! {
+                () = wait_until(self.clock.as_ref(), deadline, shutdown) => {}
+                () = shutdown.notified() => return Err(ClusterError::MasterUnavailable),
+            }
+        }
+    }
+}
+
+/// A live downstream stream whose `hello` has been validated.
+pub struct ClusterStream {
+    node_id: String,
+    protocol: u32,
+    /// Kept alive so the HTTP/2 response body stays open.
+    _response: reqwest::Response,
+    /// Leftover bytes after the `hello` line, for later record phases.
+    _buffer: Vec<u8>,
+}
+
+impl ClusterStream {
+    /// The `node_id` the master derived from this connection's certificate.
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    /// The negotiated cluster protocol version.
+    pub fn protocol(&self) -> u32 {
+        self.protocol
+    }
+}
+
+/// One downstream NDJSON record (the only records this slice emits).
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum StreamRecord {
+    Hello { protocol: u32, node_id: String },
+    Error { error: WireError },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WireError {
+    code: String,
+    #[serde(default)]
+    params: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ErrorEnvelope {
+    error: WireError,
+}
+
+fn map_wire_error(error: &WireError) -> ClusterError {
+    let node_id = error
+        .params
+        .as_ref()
+        .and_then(|params| params.get("node_id"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    match error.code.as_str() {
+        "cluster.join.token_invalid" => ClusterError::JoinTokenInvalid,
+        "cluster.join.token_expired" => ClusterError::JoinTokenExpired,
+        "cluster.node.already_joined" => ClusterError::NodeAlreadyJoined { node_id },
+        "cluster.node.unknown" => ClusterError::NodeUnknown { node_id },
+        "cluster.node.revoked" => ClusterError::NodeRevoked { node_id },
+        "cluster.protocol.version" => ClusterError::ProtocolVersion,
+        "cluster.master_unavailable" => ClusterError::MasterUnavailable,
+        "cluster.transport.tls" => ClusterError::TransportTls {
+            message: "rejected by the cluster listener".to_owned(),
+        },
+        other => ClusterError::TransportTls {
+            message: format!("master returned {other}"),
+        },
+    }
+}
+
+/// Rejects a non-2xx response with the master's `cluster.*` code.
+async fn ensure_success(response: reqwest::Response) -> Result<reqwest::Response, ClusterError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let bytes = response.bytes().await.unwrap_or_default();
+    match serde_json::from_slice::<ErrorEnvelope>(&bytes) {
+        Ok(envelope) => Err(map_wire_error(&envelope.error)),
+        Err(_) => Err(ClusterError::TransportTls {
+            message: format!("master returned HTTP {status}"),
+        }),
+    }
+}
+
+fn master_unavailable(_error: reqwest::Error) -> ClusterError {
+    ClusterError::MasterUnavailable
+}
+
+/// Decodes a successful JSON response body.
+async fn json_body<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+) -> Result<T, ClusterError> {
+    let bytes = response.bytes().await.map_err(master_unavailable)?;
+    serde_json::from_slice(&bytes).map_err(|error| ClusterError::TransportTls {
+        message: format!("invalid cluster response: {error}"),
+    })
+}
+
+fn normalize_master_url(master_url: &str) -> Result<String, ClusterError> {
+    let trimmed = master_url.trim_end_matches('/');
+    if !trimmed.starts_with("https://") {
+        return Err(ClusterError::RoleInvalid {
+            reason: "master_url must be https://".to_owned(),
+        });
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn node_id_from_pem(cert_pem: &str) -> Result<String, ClusterError> {
+    let der = CertificateDer::from_pem_slice(cert_pem.as_bytes()).map_err(|error| {
+        ClusterError::TransportTls {
+            message: format!("node certificate PEM: {error}"),
+        }
+    })?;
+    crate::ca::node_id_from_der(der.as_ref()).ok_or(ClusterError::TransportTls {
+        message: "node certificate has no node_id DNS SAN".to_owned(),
+    })
+}
+
+/// mTLS client: cluster CA roots, node certificate/key, TLS 1.3, ALPN h2.
+fn mtls_client(identity: &NodeIdentity) -> Result<Client, ClusterError> {
+    let mut roots = RootCertStore::empty();
+    let ca =
+        CertificateDer::from_pem_slice(identity.ca_cert_pem().as_bytes()).map_err(|error| {
+            ClusterError::TransportTls {
+                message: format!("cluster CA PEM: {error}"),
+            }
+        })?;
+    roots.add(ca).map_err(|error| ClusterError::TransportTls {
+        message: format!("cluster CA root: {error}"),
+    })?;
+
+    let certs = CertificateDer::pem_slice_iter(identity.node_cert_pem().as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| ClusterError::TransportTls {
+            message: format!("node certificate PEM: {error}"),
+        })?;
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(identity.key().serialize_der()));
+
+    let provider = Arc::new(ring_provider::default_provider());
+    let mut tls = rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|error| ClusterError::TransportTls {
+            message: format!("TLS 1.3: {error}"),
+        })?
+        .with_root_certificates(roots)
+        .with_client_auth_cert(certs, key)
+        .map_err(|error| ClusterError::TransportTls {
+            message: format!("node certificate/key: {error}"),
+        })?;
+    tls.alpn_protocols = vec![b"h2".to_vec()];
+    http_client(tls)
+}
+
+/// Bootstrap client: trusts exactly the pinned master certificate.
+fn pinned_client(master_cert_pem: &str) -> Result<Client, ClusterError> {
+    let cert = CertificateDer::from_pem_slice(master_cert_pem.as_bytes()).map_err(|error| {
+        ClusterError::TransportTls {
+            message: format!("master certificate PEM: {error}"),
+        }
+    })?;
+    let provider = Arc::new(ring_provider::default_provider());
+    let verifier = Arc::new(PinVerifier {
+        fingerprint: cert_fingerprint(cert.as_ref()),
+        schemes: provider.signature_verification_algorithms,
+    });
+    let mut tls = rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|error| ClusterError::TransportTls {
+            message: format!("TLS 1.3: {error}"),
+        })?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    tls.alpn_protocols = vec![b"h2".to_vec()];
+    http_client(tls)
+}
+
+fn http_client(tls: rustls::ClientConfig) -> Result<Client, ClusterError> {
+    Client::builder()
+        .use_preconfigured_tls(tls)
+        .connect_timeout(DEFAULT_MASTER_TIMEOUT)
+        .build()
+        .map_err(|error| ClusterError::TransportTls {
+            message: format!("build cluster HTTP client: {error}"),
+        })
+}
+
+/// Leaf-certificate pin verifier used only for bootstrap enrollment.
+#[derive(Debug)]
+struct PinVerifier {
+    fingerprint: String,
+    schemes: rustls::crypto::WebPkiSupportedAlgorithms,
+}
+
+impl ServerCertVerifier for PinVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, RustlsError> {
+        if cert_fingerprint(end_entity.as_ref()) != self.fingerprint {
+            return Err(RustlsError::InvalidCertificate(
+                rustls::CertificateError::ApplicationVerificationFailure,
+            ));
+        }
+        // The pin is the identity; the bootstrap URL may be an IP or a name
+        // that does not appear in the master's SAN.
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        verify_tls12_signature(message, cert, dss, &self.schemes)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        verify_tls13_signature(message, cert, dss, &self.schemes)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.schemes.supported_schemes()
+    }
+}
+
+/// Reads one newline-terminated NDJSON line, buffering the remainder.
+async fn read_line(
+    response: &mut reqwest::Response,
+    buffer: &mut Vec<u8>,
+) -> Result<Vec<u8>, ClusterError> {
+    loop {
+        if let Some(position) = buffer.iter().position(|byte| *byte == b'\n') {
+            let mut line: Vec<u8> = buffer.drain(..=position).collect();
+            line.pop();
+            return Ok(line);
+        }
+        match response.chunk().await {
+            Ok(Some(chunk)) => buffer.extend_from_slice(&chunk),
+            Ok(None) if !buffer.is_empty() => return Ok(std::mem::take(buffer)),
+            Ok(None) => {
+                return Err(ClusterError::MasterUnavailable);
+            }
+            Err(_error) => {
+                return Err(ClusterError::MasterUnavailable);
+            }
+        }
+    }
+}
+
+/// Exponential reconnect backoff.
+struct Backoff {
+    current: Duration,
+    max: Duration,
+}
+
+impl Backoff {
+    fn new(initial: Duration, max: Duration) -> Self {
+        Self {
+            current: initial,
+            max,
+        }
+    }
+
+    fn next_delay(&mut self) -> Duration {
+        let delay = self.current;
+        self.current = (delay * 2).min(self.max);
+        delay
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_doubles_up_to_the_cap() {
+        let mut backoff = Backoff::new(Duration::from_secs(1), Duration::from_secs(5));
+        assert_eq!(backoff.next_delay(), Duration::from_secs(1));
+        assert_eq!(backoff.next_delay(), Duration::from_secs(2));
+        assert_eq!(backoff.next_delay(), Duration::from_secs(4));
+        assert_eq!(backoff.next_delay(), Duration::from_secs(5));
+        assert_eq!(backoff.next_delay(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn wire_errors_map_to_stable_cluster_variants() {
+        let error = WireError {
+            code: "cluster.node.revoked".to_owned(),
+            params: Some(serde_json::json!({ "node_id": "node-a" })),
+        };
+        assert_eq!(
+            map_wire_error(&error),
+            ClusterError::NodeRevoked {
+                node_id: "node-a".to_owned()
+            }
+        );
+        assert_eq!(
+            map_wire_error(&WireError {
+                code: "cluster.protocol.version".to_owned(),
+                params: None,
+            }),
+            ClusterError::ProtocolVersion
+        );
+    }
+}

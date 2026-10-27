@@ -1,0 +1,558 @@
+//! Master-side mTLS listener for the cluster control plane.
+//!
+//! A second internal listener (separate from control-api) serves
+//! `/cluster/v1/*` over TLS 1.3 + HTTP/2. Every presented client certificate
+//! must chain to the dedicated cluster CA; after the handshake the leaf's
+//! `node_id` SAN and SHA-256 fingerprint are checked against the durable node
+//! registry before any protected route runs. `node_id` is therefore always the
+//! authenticated certificate identity, never a request field.
+//!
+//! `POST /cluster/v1/enroll` is the bootstrap exception: enrollment happens
+//! before the node has a certificate, so its trust comes from the one-time,
+//! `node_id`-bound join token and the CSR binding ([`crate::enroll`]). A client
+//! certificate presented to the enroll route, if any, is still chain-validated
+//! by rustls.
+//!
+//! Version negotiation uses the `x-cluster-protocol` request header on the
+//! stream; a mismatch yields one `error` record carrying
+//! `cluster.protocol.version` and closes the stream.
+
+use std::convert::Infallible;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
+use axum::body::{Body, Bytes};
+use axum::extract::{Extension, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
+use axum::middleware;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use dnscraft_common::clock::Clock;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::service::TowerToHyperService;
+use rcgen::{
+    CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
+    PKCS_ECDSA_P256_SHA256, SanType,
+};
+use rustls::RootCertStore;
+use rustls::server::WebPkiClientVerifier;
+use rustls_pki_types::pem::PemObject;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use time::OffsetDateTime;
+use tokio::net::TcpListener;
+use tokio::sync::{mpsc, watch};
+use tokio_rustls::TlsAcceptor;
+use tokio_stream::wrappers::ReceiverStream;
+
+use crate::ca::{ClusterCa, cert_fingerprint, node_id_from_der};
+use crate::config::ListenConfig;
+use crate::enroll::{PROTOCOL_VERSION, enroll as run_enroll};
+use crate::error::ClusterError;
+use crate::store::ClusterStore;
+
+/// Request header carrying the sub-node's cluster protocol version.
+pub(crate) const PROTOCOL_HEADER: &str = "x-cluster-protocol";
+
+const NDJSON: &str = "application/x-ndjson";
+
+/// Bootstrap configuration for the master's cluster listener.
+#[derive(Debug, Clone)]
+pub struct ClusterServerConfig {
+    /// Address to bind. Only loopback/private/ULA addresses are valid
+    /// (`[cluster.listen]`).
+    pub listen: ListenConfig,
+    /// SAN placed on the master's server certificate. Must match the host in
+    /// the sub-node's `master_url` (a DNS name or an IP address).
+    pub server_name: String,
+    /// Lifetime of certificates issued to joining nodes (`[cluster.join]`).
+    pub node_cert_ttl: Duration,
+}
+
+/// `POST /cluster/v1/heartbeat` request body.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct HeartbeatRequest {
+    /// Cluster protocol version; must equal [`PROTOCOL_VERSION`].
+    pub protocol: u32,
+    /// Last config version the node applied, if it has one.
+    pub applied_version: Option<i64>,
+    /// Local queue depth reported for status (not persisted in this slice).
+    pub queue_depth: u32,
+}
+
+/// `POST /cluster/v1/heartbeat` response body.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct HeartbeatResponse {
+    /// Always `true` on success.
+    pub ok: bool,
+    /// Master clock time the heartbeat was processed (RFC 3339).
+    pub received_at: String,
+}
+
+/// A running master cluster listener.
+///
+/// The server owns its own master certificate (issued by the cluster CA) so a
+/// sub-node can pin its fingerprint for the bootstrap enroll.
+pub struct ClusterServer {
+    addr: SocketAddr,
+    ca_cert_pem: String,
+    server_cert_pem: String,
+    shutdown: watch::Sender<bool>,
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl ClusterServer {
+    /// Binds the cluster listener and starts accepting mTLS HTTP/2 connections.
+    ///
+    /// `store` is shared with the caller (`ClusterStore` is cheaply cloneable)
+    /// so the admin surface can read the registry. The master certificate is
+    /// issued by `ca` for `config.server_name`; its fingerprint is exposed by
+    /// [`Self::server_cert_pem`] for bootstrap pinning.
+    pub async fn start(
+        config: ClusterServerConfig,
+        ca: ClusterCa,
+        store: ClusterStore,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self, ClusterError> {
+        // Defence in depth: the cluster listener is never exposed publicly.
+        if config.listen.bind.is_unspecified()
+            || !dnscraft_common::net::is_private(config.listen.bind)
+        {
+            return Err(ClusterError::RoleInvalid {
+                reason: "cluster.listen.bind must be a loopback or private/ULA address".to_owned(),
+            });
+        }
+        let bind = SocketAddr::new(config.listen.bind, config.listen.port);
+        let listener = TcpListener::bind(bind)
+            .await
+            .map_err(|error| ClusterError::Internal {
+                message: format!("bind cluster listener {bind}: {error}"),
+            })?;
+        let addr = listener
+            .local_addr()
+            .map_err(|error| ClusterError::Internal {
+                message: format!("read cluster listener address: {error}"),
+            })?;
+
+        let (server_cert_pem, server_key_pem) = issue_server_certificate(
+            &ca,
+            &config.server_name,
+            config.node_cert_ttl,
+            clock.as_ref(),
+        )?;
+        let tls = server_tls_config(ca.cert_pem(), &server_cert_pem, &server_key_pem)?;
+        let acceptor = TlsAcceptor::from(Arc::new(tls));
+
+        let state = Arc::new(ServerState {
+            ca,
+            store,
+            clock,
+            node_cert_ttl: config.node_cert_ttl,
+        });
+        let router = router(Arc::clone(&state));
+
+        let (shutdown, mut shutdown_rx) = watch::channel(false);
+        let handle = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    changed = shutdown_rx.changed() => {
+                        if changed.is_err() || *shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                    accepted = listener.accept() => {
+                        let Ok((stream, _peer)) = accepted else {
+                            continue;
+                        };
+                        let acceptor = acceptor.clone();
+                        let router = router.clone();
+                        tokio::spawn(async move {
+                            let Ok(tls) = acceptor.accept(stream).await else {
+                                // Handshake failure (for example a client
+                                // certificate signed by another CA). The
+                                // documented `cluster.transport.tls` code
+                                // cannot be delivered once the handshake is
+                                // rejected; there is no HTTP channel left.
+                                return;
+                            };
+                            let peer = tls
+                                .get_ref()
+                                .1
+                                .peer_certificates()
+                                .and_then(|certs| certs.first())
+                                .map(|der| PeerIdentity::from_der(der.as_ref()));
+                            let io = TokioIo::new(tls);
+                            let service = TowerToHyperService::new(router.layer(Extension(peer)));
+                            let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                                .serve_connection(io, service)
+                                .await;
+                        });
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            addr,
+            ca_cert_pem: state.ca.cert_pem().to_owned(),
+            server_cert_pem,
+            shutdown,
+            handle: Some(handle),
+        })
+    }
+
+    /// The bound listener address (useful when the configured port was `0`).
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// The cluster CA certificate (PEM), for distributing to joined nodes.
+    pub fn ca_cert_pem(&self) -> &str {
+        &self.ca_cert_pem
+    }
+
+    /// The master's own server certificate (PEM), for bootstrap pinning.
+    pub fn server_cert_pem(&self) -> &str {
+        &self.server_cert_pem
+    }
+
+    /// Stops accepting new connections and waits for the accept loop to exit.
+    ///
+    /// Established connections finish on their own; dropping the server also
+    /// signals shutdown.
+    pub async fn shutdown(mut self) {
+        let _ = self.shutdown.send(true);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.await;
+        }
+    }
+}
+
+impl Drop for ClusterServer {
+    fn drop(&mut self) {
+        let _ = self.shutdown.send(true);
+    }
+}
+
+/// State shared by every route.
+struct ServerState {
+    ca: ClusterCa,
+    store: ClusterStore,
+    clock: Arc<dyn Clock>,
+    node_cert_ttl: Duration,
+}
+
+/// Authenticated peer identity extracted from the client certificate chain.
+#[derive(Clone, Debug)]
+struct PeerIdentity {
+    fingerprint: String,
+    node_id: Option<String>,
+}
+
+impl PeerIdentity {
+    fn from_der(der: &[u8]) -> Self {
+        Self {
+            fingerprint: cert_fingerprint(der),
+            node_id: node_id_from_der(der),
+        }
+    }
+}
+
+/// `node_id` proven by the authenticated client certificate for one request.
+#[derive(Clone, Debug)]
+struct AuthenticatedNode(String);
+
+fn router(state: Arc<ServerState>) -> Router {
+    let protected = Router::new()
+        .route("/cluster/v1/stream", get(stream))
+        .route("/cluster/v1/heartbeat", post(heartbeat))
+        .route("/cluster/v1/logs", post(not_found))
+        .route("/cluster/v1/writes", post(not_found))
+        .route_layer(middleware::from_fn_with_state(
+            Arc::clone(&state),
+            authenticate,
+        ));
+
+    Router::new()
+        .route("/cluster/v1/enroll", post(enroll))
+        .merge(protected)
+        .fallback(not_found)
+        .with_state(state)
+}
+
+/// Binds every protected request to a registered, non-revoked certificate.
+///
+/// `node_id` comes from the certificate SAN; the registry is queried by that
+/// id and its stored fingerprint must equal the presented certificate's
+/// fingerprint. A request payload is never consulted.
+async fn authenticate(
+    State(state): State<Arc<ServerState>>,
+    mut request: axum::extract::Request,
+    next: middleware::Next,
+) -> Response {
+    let peer = request
+        .extensions()
+        .get::<Option<PeerIdentity>>()
+        .cloned()
+        .flatten();
+    let Some(peer) = peer else {
+        return error_response(&ClusterError::TransportTls {
+            message: "client certificate required".to_owned(),
+        });
+    };
+    let Some(node_id) = peer.node_id else {
+        return error_response(&ClusterError::TransportTls {
+            message: "client certificate has no node_id DNS SAN".to_owned(),
+        });
+    };
+
+    match state.store.get_node(&node_id).await {
+        Ok(Some(node)) if node.revoked => error_response(&ClusterError::NodeRevoked { node_id }),
+        Ok(Some(node)) if node.fingerprint != peer.fingerprint => {
+            error_response(&ClusterError::NodeUnknown { node_id })
+        }
+        Ok(Some(_)) => {
+            request.extensions_mut().insert(AuthenticatedNode(node_id));
+            next.run(request).await
+        }
+        Ok(None) => error_response(&ClusterError::NodeUnknown { node_id }),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn enroll(
+    State(state): State<Arc<ServerState>>,
+    Json(request): Json<crate::enroll::EnrollRequest>,
+) -> Response {
+    match run_enroll(
+        &state.ca,
+        &state.store,
+        state.clock.as_ref(),
+        state.node_cert_ttl,
+        request,
+    )
+    .await
+    {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn heartbeat(
+    State(state): State<Arc<ServerState>>,
+    Extension(auth): Extension<AuthenticatedNode>,
+    Json(request): Json<HeartbeatRequest>,
+) -> Response {
+    if request.protocol != PROTOCOL_VERSION {
+        return error_response(&ClusterError::ProtocolVersion);
+    }
+    if let Err(error) = state.store.mark_seen(&auth.0).await {
+        return error_response(&error);
+    }
+    if let Some(version) = request.applied_version
+        && let Err(error) = state
+            .store
+            .set_applied_config_version(&auth.0, version)
+            .await
+    {
+        return error_response(&error);
+    }
+    Json(HeartbeatResponse {
+        ok: true,
+        received_at: rfc3339(state.clock.now()),
+    })
+    .into_response()
+}
+
+/// Long-lived NDJSON downstream channel.
+///
+/// This slice sends the `hello` handshake and keeps the connection open;
+/// config/cert/auth/runtime push records are later phases. A protocol mismatch
+/// ends the stream with a single `error` record.
+async fn stream(Extension(auth): Extension<AuthenticatedNode>, headers: HeaderMap) -> Response {
+    let peer_protocol = headers
+        .get(PROTOCOL_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u32>().ok());
+    let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(4);
+
+    match peer_protocol {
+        Some(version) if version != PROTOCOL_VERSION => {
+            let record = json!({
+                "type": "error",
+                "error": { "code": "cluster.protocol.version" },
+            });
+            let _ = tx.try_send(Ok(Bytes::from(format!("{record}\n"))));
+            // Dropping `tx` closes the body after the error record.
+        }
+        _ => {
+            let record = json!({
+                "type": "hello",
+                "protocol": PROTOCOL_VERSION,
+                "node_id": auth.0,
+            });
+            let _ = tx.try_send(Ok(Bytes::from(format!("{record}\n"))));
+            // Hold the sender until the client drops the response, so the
+            // stream stays open without a wall-clock timer.
+            tokio::spawn(async move {
+                let _ = tx.closed().await;
+            });
+        }
+    }
+
+    let mut response = Body::from_stream(ReceiverStream::new(rx)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(NDJSON));
+    response
+}
+
+/// Phase 4/5 routes exist but are not served yet.
+async fn not_found(uri: Uri) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "error": {
+                "code": "control_api.not_found",
+                "params": { "what": uri.path() },
+            },
+        })),
+    )
+        .into_response()
+}
+
+fn error_response(error: &ClusterError) -> Response {
+    let status = match error {
+        ClusterError::TransportTls { .. }
+        | ClusterError::NodeUnknown { .. }
+        | ClusterError::NodeRevoked { .. }
+        | ClusterError::JoinTokenInvalid
+        | ClusterError::JoinTokenExpired => StatusCode::FORBIDDEN,
+        ClusterError::NodeAlreadyJoined { .. } => StatusCode::CONFLICT,
+        ClusterError::ProtocolVersion | ClusterError::RoleInvalid { .. } => StatusCode::BAD_REQUEST,
+        ClusterError::MasterUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    let mut body = json!({ "error": { "code": error.code() } });
+    match error {
+        ClusterError::NodeUnknown { node_id } | ClusterError::NodeRevoked { node_id } => {
+            body["error"]["params"] = json!({ "node_id": node_id });
+        }
+        ClusterError::NodeAlreadyJoined { node_id } => {
+            body["error"]["params"] = json!({ "node_id": node_id });
+        }
+        ClusterError::RoleInvalid { reason } => {
+            body["error"]["params"] = json!({ "reason": reason });
+        }
+        _ => {}
+    }
+    (status, Json(body)).into_response()
+}
+
+/// Issues the master's own server certificate from the cluster CA.
+fn issue_server_certificate(
+    ca: &ClusterCa,
+    server_name: &str,
+    ttl: Duration,
+    clock: &dyn Clock,
+) -> Result<(String, String), ClusterError> {
+    let key =
+        KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(|error| ClusterError::Internal {
+            message: format!("master key generation: {error}"),
+        })?;
+    let mut params =
+        CertificateParams::new(Vec::new()).map_err(|error| ClusterError::Internal {
+            message: format!("master certificate params: {error}"),
+        })?;
+    params
+        .distinguished_name
+        .push(DnType::CommonName, server_name);
+    params.subject_alt_names = vec![server_name_san(server_name)?];
+    params.is_ca = IsCa::NoCa;
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![
+        ExtendedKeyUsagePurpose::ServerAuth,
+        ExtendedKeyUsagePurpose::ClientAuth,
+    ];
+    params.not_before = OffsetDateTime::from(clock.now());
+    let ttl = time::Duration::try_from(ttl).map_err(|_| ClusterError::Internal {
+        message: "master certificate lifetime is out of range".to_owned(),
+    })?;
+    params.not_after =
+        params
+            .not_before
+            .checked_add(ttl)
+            .ok_or_else(|| ClusterError::Internal {
+                message: "master certificate lifetime overflows".to_owned(),
+            })?;
+    params.use_authority_key_identifier_extension = true;
+
+    let cert = ca.sign(&params, &key)?;
+    Ok((cert.pem(), key.serialize_pem()))
+}
+
+fn server_name_san(server_name: &str) -> Result<SanType, ClusterError> {
+    if let Ok(ip) = server_name.parse::<IpAddr>() {
+        return Ok(SanType::IpAddress(ip));
+    }
+    // `CertificateParams::new` parses DNS names into the correct SAN type.
+    CertificateParams::new(vec![server_name.to_owned()])
+        .ok()
+        .and_then(|params| params.subject_alt_names.into_iter().next())
+        .ok_or_else(|| ClusterError::Internal {
+            message: format!("invalid cluster server_name {server_name:?}"),
+        })
+}
+
+/// TLS 1.3 + HTTP/2 server, client certificates chained to the cluster CA.
+fn server_tls_config(
+    ca_cert_pem: &str,
+    server_cert_pem: &str,
+    server_key_pem: &str,
+) -> Result<rustls::ServerConfig, ClusterError> {
+    let mut roots = RootCertStore::empty();
+    let ca = CertificateDer::from_pem_slice(ca_cert_pem.as_bytes())
+        .map_err(|error| tls_config_error(format!("cluster CA PEM: {error}")))?;
+    roots
+        .add(ca)
+        .map_err(|error| tls_config_error(format!("cluster CA root: {error}")))?;
+
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    // `allow_unauthenticated` is required by the bootstrap enroll route: a
+    // node has no certificate before it enrolls. Protected routes require the
+    // peer certificate at the HTTP layer. Any certificate that *is* presented
+    // must chain to the cluster CA here, during the handshake.
+    let verifier = WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+        .allow_unauthenticated()
+        .build()
+        .map_err(|error| tls_config_error(format!("client certificate verifier: {error}")))?;
+
+    let certs = CertificateDer::pem_slice_iter(server_cert_pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| tls_config_error(format!("master certificate PEM: {error}")))?;
+    let key = PrivateKeyDer::from_pem_slice(server_key_pem.as_bytes())
+        .map_err(|error| tls_config_error(format!("master key PEM: {error}")))?;
+
+    let mut config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|error| tls_config_error(format!("TLS 1.3: {error}")))?
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(certs, key)
+        .map_err(|error| tls_config_error(format!("master certificate/key: {error}")))?;
+    config.alpn_protocols = vec![b"h2".to_vec()];
+    Ok(config)
+}
+
+fn tls_config_error(message: String) -> ClusterError {
+    ClusterError::TransportTls { message }
+}
+
+/// RFC 3339 (UTC, seconds precision) for a [`SystemTime`].
+fn rfc3339(time: SystemTime) -> String {
+    OffsetDateTime::from(time)
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+}

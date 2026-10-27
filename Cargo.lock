@@ -858,17 +858,25 @@ dependencies = [
 name = "dnscraft-cluster"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "dnscraft-common",
+ "hyper",
+ "hyper-util",
  "rcgen",
+ "reqwest",
  "ring",
  "rusqlite",
+ "rustls",
  "rustls-pki-types",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "time",
  "tokio",
+ "tokio-rustls",
+ "tokio-stream",
  "toml",
+ "x509-parser",
 ]
 
 [[package]]
@@ -2652,6 +2660,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "futures-core",
+ "h2",
  "http",
  "http-body",
  "http-body-util",
@@ -3537,6 +3546,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

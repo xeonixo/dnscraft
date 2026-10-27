@@ -13,8 +13,9 @@ use std::path::{Path, PathBuf};
 use dnscraft_common::secret::Secret;
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DnType, IsCa, Issuer, KeyPair,
-    KeyUsagePurpose, PKCS_ECDSA_P256_SHA256, PublicKey,
+    KeyUsagePurpose, PKCS_ECDSA_P256_SHA256, PublicKeyData,
 };
+use x509_parser::prelude::{FromDer, GeneralName, X509Certificate};
 
 use crate::error::ClusterError;
 
@@ -63,10 +64,10 @@ impl ClusterCa {
     }
 
     /// Signs `params` (carrying `public_key`) under this CA.
-    pub(crate) fn sign(
+    pub(crate) fn sign<K: PublicKeyData>(
         &self,
         params: &CertificateParams,
-        public_key: &PublicKey,
+        public_key: &K,
     ) -> Result<Certificate, ClusterError> {
         let issuer = Issuer::from_ca_cert_pem(&self.cert_pem, &self.key).map_err(|error| {
             ClusterError::Internal {
@@ -151,6 +152,20 @@ impl fmt::Debug for ClusterCa {
 /// SHA-256 fingerprint (lowercase hex) of a DER-encoded certificate.
 pub fn cert_fingerprint(der: &[u8]) -> String {
     crate::sha256_hex(der)
+}
+
+/// The first DNS SAN of a DER-encoded certificate, if any.
+///
+/// Cluster node certificates carry their `node_id` as the single DNS SAN
+/// (see [`crate::identity::PendingNodeIdentity`]); this is the only source of
+/// a connection's `node_id` on the master.
+pub(crate) fn node_id_from_der(der: &[u8]) -> Option<String> {
+    let (_, cert) = X509Certificate::from_der(der).ok()?;
+    let san = cert.subject_alternative_name().ok()??;
+    san.value.general_names.iter().find_map(|name| match name {
+        GeneralName::DNSName(dns) => Some((*dns).to_owned()),
+        _ => None,
+    })
 }
 
 fn key_path_for(cert_path: &Path) -> PathBuf {

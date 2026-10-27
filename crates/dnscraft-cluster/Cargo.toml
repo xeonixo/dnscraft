@@ -13,14 +13,24 @@ workspace = true
 
 [dependencies]
 dnscraft-common = { path = "../dnscraft-common" }
+axum = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+reqwest = { workspace = true, features = ["http2"] }
 thiserror = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }
 rusqlite = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
 tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+tokio-stream = { version = "0.1.19", default-features = false, features = ["sync"] }
 ring = { workspace = true }
 rcgen = { workspace = true }
-time = { workspace = true }
+time = { workspace = true, features = ["formatting"] }
+x509-parser = { workspace = true }
 
 [dev-dependencies]
 rustls-pki-types = { workspace = true }

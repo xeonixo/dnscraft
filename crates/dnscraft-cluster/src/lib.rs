@@ -1,8 +1,7 @@
-//! Cluster identity and bootstrap state for DNScraft.
+//! Cluster identity and transport for DNScraft.
 //!
 //! A DNScraft cluster is one `master` plus zero or more `sub_node`s, connected
-//! hub-and-spoke with mutual TLS under a dedicated cluster CA. This crate owns
-//! the node-local pieces that exist before any connection is opened:
+//! hub-and-spoke with mutual TLS under a dedicated cluster CA. This crate owns:
 //!
 //! - [`ClusterConfig`] — node-local `[cluster]` bootstrap configuration and
 //!   role-consistency validation ([`Role`]).
@@ -14,20 +13,24 @@
 //!   master-side enrollment protocol and its wire shape.
 //! - [`PendingNodeIdentity`] / [`NodeIdentity`] — sub-node key + CSR
 //!   generation and durable certificate/key storage.
-//!
-//! The mTLS transport and log/write streaming are later slices; nothing here
-//! opens a socket.
+//! - [`ClusterServer`] — the master's separate mTLS HTTP/2 listener with
+//!   enroll, stream and heartbeat routes.
+//! - [`ClusterClient`] — the sub-node's outbound mTLS client (the master never
+//!   dials a sub-node).
 
 #![deny(missing_docs)]
 
 mod ca;
+mod client;
 mod config;
 mod enroll;
 mod error;
 mod identity;
+mod server;
 mod store;
 
 pub use ca::{ClusterCa, cert_fingerprint};
+pub use client::{ClusterClient, ClusterStream};
 pub use config::{
     ClusterConfig, JoinConfig, ListenConfig, LogConfig, OfflineWritesConfig, QuotaConfig, Role,
     TimingConfig, TlsPaths,
@@ -35,6 +38,7 @@ pub use config::{
 pub use enroll::{EnrollRequest, EnrollResponse, PROTOCOL_VERSION, enroll};
 pub use error::ClusterError;
 pub use identity::{NodeIdentity, PendingNodeIdentity};
+pub use server::{ClusterServer, ClusterServerConfig, HeartbeatRequest, HeartbeatResponse};
 pub use store::{ClusterNode, ClusterStore, MintedJoinToken};
 
 use ring::digest::{SHA256, digest};
