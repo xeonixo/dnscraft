@@ -427,6 +427,16 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .sidebar, .scrim, .switch .track, .switch .thumb { transition: none; }
 }
+/* prototype additions: warn state, live toggle, command palette */
+.row .status-ic.warn { color: var(--warn); }
+.row .verdict.warn { color: var(--warn); }
+#live-toggle[aria-pressed="true"] { background: var(--accent-fill); color: var(--accent); border-color: var(--accent); }
+.sheet-scrim.palette { place-items: start center; padding: 12vh 16px 0; }
+.sheet-scrim.palette .sheet { border-radius: 14px; padding: 14px; }
+.sheet-scrim.palette .search { max-width: none; }
+#pal-list { margin-top: 10px; max-height: 50vh; overflow-y: auto; }
+.pal-opt { cursor: pointer; min-height: 44px; }
+.pal-opt[aria-selected="true"] { background: var(--accent-fill); color: var(--accent); }
 </style>
 
 </head>
@@ -558,6 +568,9 @@ body {
       </button>
       <h1 id="page-title" tabindex="-1">Übersicht</h1>
       <div class="spacer"></div>
+      <button class="icon-btn" aria-label="Befehlspalette öffnen" title="Befehlspalette (Strg/Cmd+K)" aria-keyshortcuts="Control+K Meta+K" onclick="openPalette()">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+      </button>
       <button class="icon-btn" aria-label="Hilfe und Feedback" onclick="openHelpSheet()">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
       </button>
@@ -655,6 +668,35 @@ body {
             <div class="tail"><div class="domain">p50 21 ms · p95 61 ms</div></div>
           </div>
         </div>
+
+        <div class="section-head">Upstream-Gesundheit · 24 h</div>
+        <div class="group">
+          <div class="row">
+            <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
+            <div class="main"><div class="domain">dns.quad9.net · DoT</div><div class="meta">p50 18 ms · p95 41 ms · Erfolgsquote 99,97 %</div><div class="meta">Letzter Fehler: keiner</div></div>
+            <div class="tail"><div class="verdict allow">OK</div></div>
+          </div>
+          <div class="row">
+            <span class="status-ic warn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+            <div class="main"><div class="domain">cloudflare-dns.com · DoH</div><div class="meta">p50 46 ms · p95 310 ms · Erfolgsquote 97,8 %</div><div class="meta">Letzter Fehler: Timeout nach 2 s · vor 14 min</div></div>
+            <div class="tail"><div class="verdict warn">Degradiert</div></div>
+          </div>
+          <div class="row">
+            <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
+            <div class="main"><div class="domain">10.0.0.53:853 · DoT</div><div class="meta">p50 21 ms · p95 61 ms · Erfolgsquote 99,8 %</div><div class="meta">Letzter Fehler: keiner</div></div>
+            <div class="tail"><div class="verdict allow">OK</div></div>
+          </div>
+        </div>
+        <div class="footnote">Platzhalter – kein Upstream-Health-Endpunkt; Werte sind Beispiele.</div>
+
+        <div class="section-head">Cache</div>
+        <div class="group">
+          <div class="row">
+            <div class="main"><div class="domain">Cache leeren</div><div class="meta">Gesamter Cache oder nur eine Domain</div></div>
+            <button class="btn-sec" onclick="openCacheSheet()">Cache leeren</button>
+          </div>
+        </div>
+        <div class="footnote">Platzhalter – kein Cache-Leeren-Endpunkt.</div>
 
         <div class="section-head">Module</div>
         <div class="group">
@@ -799,6 +841,32 @@ body {
             <div class="main"><b style="font-weight:500">Keine aktiven Hinweise</b><div class="meta">Zertifikat, Filterlisten, Cluster und DynDNS sind in Ordnung.</div></div>
           </div>
         </div>
+        <div class="section-head">Benachrichtigungen</div>
+        <div class="group">
+          <div class="field-row">
+            <div class="flabel" id="nt-chan-label">Kanal</div>
+            <div class="seg" id="nt-chan" role="radiogroup" aria-labelledby="nt-chan-label" style="display:flex">
+              <button role="radio" aria-checked="true" style="flex:1" onclick="switchNotifChannel(this)">Webhook</button>
+              <button role="radio" aria-checked="false" style="flex:1" onclick="switchNotifChannel(this)">ntfy</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <label class="flabel" id="nt-url-label" for="nt-url">Webhook-URL</label>
+            <div class="field"><input id="nt-url" type="url" inputmode="url" placeholder="https://hooks.example.com/dnscraft" autocomplete="off"></div>
+          </div>
+          <fieldset class="field-row" style="border:0;margin:0;min-width:0">
+            <legend class="flabel">Ereignisse</legend>
+            <label style="display:flex;align-items:center;gap:10px;padding:6px 0;font-size:14.5px"><input type="checkbox" checked style="accent-color:var(--accent);width:18px;height:18px">Zertifikat</label>
+            <label style="display:flex;align-items:center;gap:10px;padding:6px 0;font-size:14.5px"><input type="checkbox" checked style="accent-color:var(--accent);width:18px;height:18px">Filterliste</label>
+            <label style="display:flex;align-items:center;gap:10px;padding:6px 0;font-size:14.5px"><input type="checkbox" checked style="accent-color:var(--accent);width:18px;height:18px">Knoten</label>
+            <label style="display:flex;align-items:center;gap:10px;padding:6px 0;font-size:14.5px"><input type="checkbox" checked style="accent-color:var(--accent);width:18px;height:18px">DynDNS</label>
+          </fieldset>
+          <div class="field-row" style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap">
+            <button class="btn-sec" onclick="announce('Testnachricht gesendet (Prototyp)')">Test senden</button>
+            <button class="btn-primary" onclick="announce('Benachrichtigungen gespeichert (Prototyp)')">Speichern</button>
+          </div>
+        </div>
+        <div class="footnote">Push ist in v1 nicht vorgesehen – Platzhalter (kein Benachrichtigungs-Endpunkt).</div>
         <div class="footnote">Platzhalter – kein /alerts-Endpunkt, siehe SPEC-web-ui (Required additions).</div>
       </div>
     </section>
@@ -808,13 +876,16 @@ body {
         <div class="filter-row">
           <div class="search">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
-            <input type="search" placeholder="Domain, Gerät, IP oder Client-ID" aria-label="Suche">
+            <input id="q-search" type="search" placeholder="Domain, Gerät, IP oder Client-ID" aria-label="Suche">
           </div>
           <button class="btn-sec" onclick="openFilterSheet()">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
             Filter
           </button>
-          <label style="display:inline-flex;align-items:center;gap:8px;font-size:13.5px;color:var(--label-2);margin-left:auto;flex:0 0 auto">Live<span class="switch"><input type="checkbox" checked><span class="track"><span class="thumb"></span></span></span></label>
+          <div style="display:inline-flex;align-items:center;gap:8px;margin-left:auto;flex:0 0 auto">
+            <button type="button" class="btn-sec" id="live-toggle" aria-pressed="false" aria-describedby="live-state" onclick="toggleLive()">Live</button>
+            <span id="live-state" class="footnote">pausiert</span>
+          </div>
         </div>
         <div class="filter-row">
           <div class="seg" role="radiogroup" aria-label="Aktion">
@@ -840,7 +911,7 @@ body {
         </div>
 
         <div class="section-head">128.431 Anfragen · 4.209 blockiert (3,3 %) · 89.201 aus Cache · 34.971 Upstream</div>
-        <div class="qtable" role="group" aria-label="Anfragen">
+        <div class="qtable" id="qtable" role="group" aria-label="Anfragen">
           <div class="qhead">
             <span>Zeit</span><span>Domäne</span><span>Typ</span><span>Client</span><span>Protokoll</span><span>Antwort</span><span class="r">Latenz</span><span class="r">Aktion</span>
           </div>
@@ -915,6 +986,7 @@ body {
           <button class="btn-sec" onclick="announce('Mehr laden (Prototyp)')">Mehr laden</button>
           <span class="count">1–50 von 128.431</span>
         </div>
+        <div class="footnote">Platzhalter – SSE-Endpunkt fehlt; Live-Zeilen sind simuliert (alle 2 s, max. 50 Zeilen, nur bei geöffneter Ansicht).</div>
         <div class="footnote">Aufbewahrung 30 Tage · IP-Kürzung „letzte Gruppe“ · Spalten über Filter konfigurierbar · Export über das Menü</div>
       </div>
     </section>
@@ -998,8 +1070,37 @@ body {
         </div>
         <div class="actions">
           <button class="btn-sec" onclick="closeQueryDetail()">Schließen</button>
+          <button class="btn-sec" onclick="closeQueryDetail();openDomainDetail(document.getElementById('qd-domain').textContent)">Domain-Details</button>
           <button class="btn-sec" onclick="closeQueryDetail();openAllowSheet()">Freigeben</button>
         </div>
+      </div>
+    </div>
+
+    <div class="sheet-scrim" id="domain-detail-sheet" hidden onclick="closeDomainDetail()">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <div class="grab"></div>
+        <h2>Domain-Details</h2>
+        <div class="group" style="margin-bottom:12px">
+          <div class="row"><div class="main"><div class="domain" id="dom-name">ads.example.com</div><div class="meta">über alle Clients</div></div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Erstmals gesehen</b></div><div class="meta" id="dom-first"></div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Zuletzt gesehen</b></div><div class="meta" id="dom-last"></div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Anfragen, 7 Tage</b></div><div class="domain num" id="dom-total"></div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Geblockt / erlaubt</b></div><div class="meta num"><span class="verdict block" id="dom-blocked"></span> / <span class="verdict allow" id="dom-allowed"></span></div></div>
+        </div>
+        <label>Top-Clients</label>
+        <div class="group" id="dom-clients" style="margin-bottom:12px"></div>
+        <label>Verlauf · Anfragen pro Tag</label>
+        <div class="group" style="margin-bottom:12px">
+          <div class="row" style="display:block">
+            <svg id="dom-spark" role="img" aria-label="Anfragen pro Tag" viewBox="0 0 280 48" preserveAspectRatio="none" style="width:100%;height:56px;display:block"><polyline id="dom-line" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" points=""/></svg>
+            <div class="footnote" style="display:flex;justify-content:space-between;padding:4px 0 0"><span>vor 6 Tagen</span><span>heute</span></div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn-sec" onclick="announce('Domain freigegeben (Prototyp)');closeDomainDetail()">Freigeben</button>
+          <button class="btn-primary" style="background:var(--danger-fill)" onclick="announce('Domain blockiert (Prototyp)');closeDomainDetail()">Blockieren</button>
+        </div>
+        <div class="footnote" style="padding:10px 0 0">Platzhalter – kein Domain-Statistik-Endpunkt; Werte sind Beispiele.</div>
       </div>
     </div>
 
@@ -1203,6 +1304,23 @@ body {
           </div>
         </div>
 
+        <div class="section-head">Aktive Sitzungen</div>
+        <div class="group" id="sess-group">
+          <div class="row">
+            <div class="main"><div class="domain">Firefox · macOS</div><div class="meta mono">192.0.2.4 · zuletzt aktiv jetzt</div></div>
+            <span class="tag">Diese Sitzung</span>
+          </div>
+          <div class="row">
+            <div class="main"><div class="domain">Safari · iPhone</div><div class="meta mono">192.0.2.11 · zuletzt aktiv vor 2 min</div></div>
+            <button class="link-danger" onclick="confirmSessionEnd(this)">Abmelden</button>
+          </div>
+          <div class="row">
+            <div class="main"><div class="domain">Chrome · Windows</div><div class="meta mono">198.51.100.7 · zuletzt aktiv vor 3 Tagen</div></div>
+            <button class="link-danger" onclick="confirmSessionEnd(this)">Abmelden</button>
+          </div>
+        </div>
+        <div class="footnote">Platzhalter – kein Sitzungs-Endpunkt; Einträge sind Beispiele. Die aktuelle Sitzung kann hier nicht beendet werden.</div>
+
         <div class="section-head">Darstellung</div>
         <div class="group">
           <div class="row">
@@ -1333,6 +1451,29 @@ body {
     <section class="screen" id="screen-config" hidden>
       <div class="content">
         <p class="lead">Vollständige Konfiguration als atomarer Snapshot. Änderungen werden vor dem Speichern als Diff angezeigt.</p>
+        <div class="filter-row">
+          <button class="btn-sec" aria-controls="cfg-dry" onclick="runConfigDryRun()">Prüfen (ohne Anwenden)</button>
+        </div>
+        <div id="cfg-dry" hidden style="display:flex;flex-direction:column;gap:18px">
+          <div class="section-head">Ergebnis der Prüfung</div>
+          <div class="group">
+            <div class="row">
+              <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
+              <div class="main"><b id="cfg-dry-head" tabindex="-1" style="font-weight:500;outline:none">Keine Fehler</b><div class="meta">2 Hinweise · nichts wurde angewendet</div></div>
+            </div>
+            <div class="row">
+              <span class="status-ic warn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+              <div class="main"><div class="domain">Filterliste „Ads“ ist älter als 7 Tage</div><div class="meta">Sync-Intervall 24 h · letzter Erfolg vor 9 Tagen</div></div>
+              <div class="tail"><div class="verdict warn">Hinweis</div></div>
+            </div>
+            <div class="row">
+              <span class="status-ic warn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+              <div class="main"><div class="domain">Profil „Kinder“: Zeitplan ohne Endzeit</div><div class="meta">Zeitfenster ab 22:00 überschneidet das Standard-Set</div></div>
+              <div class="tail"><div class="verdict warn">Hinweis</div></div>
+            </div>
+          </div>
+          <div class="footnote">Platzhalter – kein Dry-run-Endpunkt; das Ergebnis ist ein Beispiel und wurde nicht geprüft.</div>
+        </div>
         <div class="section-head">Abschnitte</div>
         <div class="group">
           <div class="row"><div class="main"><div class="domain">Knoten</div><div class="meta">Name, Zeitzone, Datenverzeichnis</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></div>
@@ -2751,6 +2892,34 @@ body {
     </div>
   </div>
 
+  <div class="sheet-scrim palette" id="palette-sheet" hidden onclick="closePalette()">
+    <div class="sheet" onclick="event.stopPropagation()">
+      <h2 class="sr-only">Befehlspalette</h2>
+      <div class="search">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+        <input id="pal-input" type="text" role="combobox" aria-label="Befehlspalette: Bereich oder Domain" aria-autocomplete="list" aria-expanded="true" aria-controls="pal-list" placeholder="Bereich oder Domain suchen" autocomplete="off" spellcheck="false">
+      </div>
+      <div id="pal-list" class="group" role="listbox" aria-label="Treffer"></div>
+      <div id="pal-empty" class="footnote" style="padding:10px 4px 0" hidden>Keine Treffer</div>
+      <div class="footnote" style="padding:10px 4px 0">↑↓ wählen · Enter öffnen · Esc schließen</div>
+    </div>
+  </div>
+
+  <div class="sheet-scrim" id="cache-sheet" hidden onclick="closeCacheSheet()">
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="grab"></div>
+      <h2>Cache leeren?</h2>
+      <p class="lead" style="margin:0">Gespeicherte Antworten werden verworfen. Die nächste Anfrage geht an den Upstream.</p>
+      <label for="cache-domain">Nur diese Domain (optional)</label>
+      <div class="field"><input id="cache-domain" placeholder="leer lassen für den gesamten Cache"></div>
+      <div class="actions">
+        <button class="btn-sec" onclick="closeCacheSheet()">Abbrechen</button>
+        <button class="btn-primary" style="background:var(--danger-fill)" onclick="runCacheClear()">Leeren</button>
+      </div>
+      <div class="footnote" style="padding:10px 0 0">Platzhalter – kein Cache-Leeren-Endpunkt.</div>
+    </div>
+  </div>
+
   <div class="sheet-scrim" id="deny-sheet" hidden onclick="closeDenySheet()">
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="grab"></div>
@@ -2816,6 +2985,7 @@ function showScreen(id, title) {
   document.title = title + ' · DNScraft';
   document.getElementById('page-title').focus();
   setActiveNav(id);
+  syncLive();
 }
 function setActiveNav(id) {
   document.querySelectorAll('.nav-item').forEach(function (i) {
@@ -3058,7 +3228,7 @@ document.querySelectorAll('.row .chev').forEach(function (ch) {
   row.style.cursor = 'pointer';
 });
 // keyboard access for clickable rows, avoiding button-in-button (APG)
-document.querySelectorAll('.row[onclick], .qrow[onclick]').forEach(function (row) {
+function makeRowAccessible(row) {
   var hasNested = row.querySelector('button, input, select, textarea, a[href]');
   var target = hasNested
     ? (row.querySelector('.dname') || row.querySelector('.domain') || row.querySelector('.main'))
@@ -3067,13 +3237,20 @@ document.querySelectorAll('.row[onclick], .qrow[onclick]').forEach(function (row
   target.setAttribute('tabindex', '0');
   target.setAttribute('role', 'button');
   if (target !== row) {
-    target.addEventListener('click', function (e) { e.stopPropagation(); row.click(); });
+    target.addEventListener('click', function (e) {
+      e.stopPropagation();
+      // domain names in query rows open the domain sheet; the rest of the row opens the query detail
+      if (target.classList.contains('dname')) openDomainDetail(target.textContent);
+      else row.click();
+    });
   }
-});
+}
+document.querySelectorAll('.row[onclick], .qrow[onclick]').forEach(makeRowAccessible);
 document.addEventListener('keydown', function (e) {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute('role') === 'button' && e.target.hasAttribute('tabindex')) {
     e.preventDefault();
     if (e.target.hasAttribute('onclick')) e.target.click();
+    else if (e.target.classList.contains('dname')) openDomainDetail(e.target.textContent);
     else {
       var row = e.target.closest('.row[onclick], .qrow[onclick]');
       if (row) row.click();
@@ -3156,6 +3333,201 @@ document.addEventListener('keydown', function (e) {
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   }
 });
+// ---- command palette (Ctrl/Cmd+K, combobox + listbox pattern; sheet gives Esc, focus trap, focus restore) ----
+var PAL = { items: [], idx: 0 };
+function paletteEntries(q) {
+  var t = q.trim();
+  var low = t.toLowerCase();
+  var list = [];
+  document.querySelectorAll('#sidebar-nav .nav-item').forEach(function (it) {
+    var title = it.dataset.title;
+    if (!low || title.toLowerCase().indexOf(low) !== -1) list.push({ label: title, target: it.dataset.target, title: title });
+  });
+  if (t) list.push({ label: 'Domain suchen: ' + t, search: t });
+  return list;
+}
+function setPalIdx(i) {
+  var n = PAL.items.length;
+  if (!n) return;
+  PAL.idx = (i + n) % n;
+  document.querySelectorAll('#pal-list [role="option"]').forEach(function (o, j) {
+    o.setAttribute('aria-selected', String(j === PAL.idx));
+  });
+  var active = document.getElementById('pal-opt-' + PAL.idx);
+  document.getElementById('pal-input').setAttribute('aria-activedescendant', active.id);
+  active.scrollIntoView({ block: 'nearest' });
+}
+function renderPalette() {
+  var box = document.getElementById('pal-list');
+  var input = document.getElementById('pal-input');
+  PAL.items = paletteEntries(input.value);
+  PAL.idx = 0;
+  box.innerHTML = '';
+  PAL.items.forEach(function (e, i) {
+    var o = document.createElement('div');
+    o.className = 'row pal-opt';
+    o.id = 'pal-opt-' + i;
+    o.setAttribute('role', 'option');
+    o.setAttribute('aria-selected', 'false');
+    o.textContent = e.label;
+    o.addEventListener('click', function () { setPalIdx(i); activatePalette(); });
+    box.appendChild(o);
+  });
+  document.getElementById('pal-empty').hidden = PAL.items.length > 0;
+  input.setAttribute('aria-expanded', String(PAL.items.length > 0));
+  input.removeAttribute('aria-activedescendant');
+  setPalIdx(0);
+}
+function openPalette() {
+  if (document.querySelector('.sheet-scrim:not([hidden])')) return;
+  document.getElementById('pal-input').value = '';
+  renderPalette();
+  document.getElementById('palette-sheet').hidden = false;
+}
+function closePalette() { document.getElementById('palette-sheet').hidden = true; }
+function activatePalette() {
+  var e = PAL.items[PAL.idx];
+  if (!e) return;
+  sheetReturn = null; // focus lands on the opened screen's title, not on the old trigger
+  closePalette();
+  if (e.search) {
+    showScreen('screen-queries', 'Anfragen');
+    document.getElementById('q-search').value = e.search;
+    announce('Suche übernommen: „' + e.search + '“ (Prototyp)');
+  } else {
+    showScreen(e.target, e.title);
+  }
+}
+document.getElementById('pal-input').addEventListener('input', renderPalette);
+document.getElementById('pal-input').addEventListener('keydown', function (e) {
+  if (e.key === 'ArrowDown') { e.preventDefault(); setPalIdx(PAL.idx + 1); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); setPalIdx(PAL.idx - 1); }
+  else if (e.key === 'Enter') { e.preventDefault(); activatePalette(); }
+});
+document.addEventListener('keydown', function (e) {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (document.getElementById('palette-sheet').hidden) openPalette(); else closePalette();
+  }
+});
+
+// ---- live capture on queries (simulated; SSE endpoint missing) ----
+var LIVE = { on: false, timer: null };
+var LIVE_SAMPLES = [
+  { d: 'news.example.org', t: 'A', c: 'iPhone', ip: '192.0.2.11', p: 'DoH', v: 'NOERROR', l: '9 ms', ok: true, sub: 'Upstream 10.0.0.53' },
+  { d: 'ads.example.net', t: 'A', c: 'MacBook', ip: '192.0.2.4', p: 'DoT', v: 'NXDOMAIN', l: '2 ms', ok: false, sub: 'Blocklist „Ads“' },
+  { d: 'static.example.com', t: 'AAAA', c: 'Wohnzimmer-TV', ip: '192.0.2.18', p: 'DoH', v: 'NOERROR', l: '0,3 ms', ok: true, sub: 'aus Cache' },
+  { d: 'telemetry.example.org', t: 'A', c: 'Wohnzimmer-TV', ip: '192.0.2.18', p: 'Do53', v: 'NULL-IP', l: '1 ms', ok: false, sub: 'Blocklist „Tracker“' },
+  { d: 'mail.example.com', t: 'MX', c: 'Tablet', ip: '192.0.2.22', p: 'DoT', v: 'NOERROR', l: '11 ms', ok: true, sub: 'Upstream 10.0.0.53' }
+];
+function liveIcon(ok, size) {
+  return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/>'
+    + (ok ? '<polyline points="8 12.5 11 15.5 16 9"/>' : '<line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/>') + '</svg>';
+}
+function liveRowHtml(s) {
+  var time = new Date().toLocaleTimeString('de-DE');
+  var cls = s.ok ? 'allow' : 'block';
+  var act = s.ok
+    ? '<button class="qact deny" title="Blockieren" aria-label="Blockieren" onclick="event.stopPropagation();openDenySheet()">' + liveIcon(false, 14) + '</button>'
+    : '<button class="qact allow" title="Freigeben" aria-label="Freigeben" onclick="event.stopPropagation();openAllowSheet()">' + liveIcon(true, 14) + '</button>';
+  return '<div class="qrow" onclick="openQueryDetail(this)">'
+    + '<span class="c time">' + time + '</span>'
+    + '<div class="c domain"><span class="dstat ' + cls + '">' + liveIcon(s.ok, 18) + '</span><div class="dtxt"><div class="dname">' + s.d + '</div><div class="dsub d">' + s.sub + '</div><div class="dsub m">' + s.t + ' · ' + s.p + ' · ' + s.c + ' · ' + s.l + '</div></div></div>'
+    + '<span class="c type">' + s.t + '</span>'
+    + '<div class="c client"><div class="cname">' + s.c + '</div><div class="csub">' + s.ip + '</div></div>'
+    + '<span class="c proto">' + s.p + '</span>'
+    + '<span class="c answer"><span class="verdict ' + cls + '">' + s.v + '</span></span>'
+    + '<span class="c lat">' + s.l + '</span>'
+    + '<span class="c act">' + act + '</span>'
+    + '<svg class="chev-m" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>'
+    + '</div>';
+}
+function liveTick() {
+  var table = document.getElementById('qtable');
+  var s = LIVE_SAMPLES[Math.floor(Math.random() * LIVE_SAMPLES.length)];
+  var wrap = document.createElement('div');
+  wrap.innerHTML = liveRowHtml(s);
+  var row = wrap.firstElementChild;
+  table.insertBefore(row, table.querySelector('.qhead').nextSibling);
+  makeRowAccessible(row);
+  var rows = table.querySelectorAll('.qrow');
+  for (var i = 50; i < rows.length; i++) rows[i].remove();
+}
+function syncLive() {
+  var running = LIVE.on && !document.getElementById('screen-queries').hidden;
+  if (running && !LIVE.timer) LIVE.timer = setInterval(liveTick, 2000);
+  if (!running && LIVE.timer) { clearInterval(LIVE.timer); LIVE.timer = null; }
+  document.getElementById('live-state').textContent = !LIVE.on ? 'pausiert' : (running ? 'läuft' : 'pausiert, Ansicht verlassen');
+}
+function toggleLive() {
+  LIVE.on = !LIVE.on;
+  document.getElementById('live-toggle').setAttribute('aria-pressed', String(LIVE.on));
+  syncLive();
+  announce(LIVE.on ? 'Live-Mitschnitt läuft (Prototyp)' : 'Live-Mitschnitt pausiert');
+}
+
+// ---- domain detail sheet (simulated stats) ----
+var DOMAIN_STATS = {
+  'ads.example.com': { first: '12.09.2026 08:14', last: 'heute 14:32', total: '1.842', blocked: '1.812', allowed: '30', clients: [['iPhone', '1.102'], ['MacBook', '512'], ['Wohnzimmer-TV', '228']], days: [212, 240, 198, 260, 231, 245, 236] },
+  '_default': { first: '03.10.2026 09:12', last: 'heute 14:30', total: '3.412', blocked: '118', allowed: '3.294', clients: [['iPhone', '1.204'], ['MacBook', '1.021'], ['Wohnzimmer-TV', '842']], days: [410, 455, 398, 512, 476, 430, 341] }
+};
+function openDomainDetail(name) {
+  var s = DOMAIN_STATS[name] || DOMAIN_STATS['_default'];
+  document.getElementById('dom-name').textContent = name;
+  document.getElementById('dom-first').textContent = s.first;
+  document.getElementById('dom-last').textContent = s.last;
+  document.getElementById('dom-total').textContent = s.total;
+  document.getElementById('dom-blocked').textContent = s.blocked;
+  document.getElementById('dom-allowed').textContent = s.allowed;
+  var box = document.getElementById('dom-clients');
+  box.innerHTML = '';
+  s.clients.forEach(function (c) {
+    var r = document.createElement('div');
+    r.className = 'row';
+    r.innerHTML = '<div class="main"><div class="domain"></div></div><div class="tail"><div class="domain num"></div></div>';
+    r.querySelector('.main .domain').textContent = c[0];
+    r.querySelector('.tail .domain').textContent = c[1];
+    box.appendChild(r);
+  });
+  var max = Math.max.apply(null, s.days);
+  var step = 280 / (s.days.length - 1);
+  var pts = s.days.map(function (v, i) { return (i * step).toFixed(1) + ',' + (44 - v / max * 38).toFixed(1); }).join(' ');
+  document.getElementById('dom-line').setAttribute('points', pts);
+  document.getElementById('dom-spark').setAttribute('aria-label', 'Anfragen pro Tag, letzte 7 Tage: ' + s.days.join(', '));
+  document.getElementById('domain-detail-sheet').hidden = false;
+}
+function closeDomainDetail() { document.getElementById('domain-detail-sheet').hidden = true; }
+
+// ---- cache, config dry-run, notifications, sessions (prototype) ----
+function openCacheSheet() { document.getElementById('cache-domain').value = ''; document.getElementById('cache-sheet').hidden = false; }
+function closeCacheSheet() { document.getElementById('cache-sheet').hidden = true; }
+function runCacheClear() {
+  var d = document.getElementById('cache-domain').value.trim();
+  closeCacheSheet();
+  announce(d ? 'Cache für „' + d + '“ geleert (Prototyp)' : 'Gesamter Cache geleert (Prototyp)');
+}
+function runConfigDryRun() {
+  document.getElementById('cfg-dry').hidden = false;
+  document.getElementById('cfg-dry-head').focus();
+  announce('Prüfung abgeschlossen: keine Fehler, 2 Hinweise (Prototyp)');
+}
+function switchNotifChannel(btn) {
+  var ntfy = btn.textContent.trim() === 'ntfy';
+  document.getElementById('nt-url-label').textContent = ntfy ? 'ntfy-Topic-URL' : 'Webhook-URL';
+  document.getElementById('nt-url').placeholder = ntfy ? 'https://ntfy.example.com/dnscraft-alerts' : 'https://hooks.example.com/dnscraft';
+}
+function confirmSessionEnd(btn) {
+  var row = btn.closest('.row');
+  var group = row.parentNode;
+  var n = row.querySelector('.domain').textContent;
+  openConfirm('Sitzung abmelden?', '„' + n + '“ wird sofort abgemeldet.', 'Abmelden', function () {
+    row.remove();
+    var next = group.querySelector('.link-danger');
+    if (next) next.focus();
+    announce('Sitzung abgemeldet (Prototyp)');
+  });
+}
+
 // stop switch toggles from also firing a clickable row's onclick
 document.addEventListener('click', function (e) {
   if (e.target.closest('.switch')) e.stopPropagation();
