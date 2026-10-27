@@ -6,7 +6,7 @@ mod support;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use base64::Engine;
@@ -504,6 +504,27 @@ impl QueryHandler for HangHandler {
     }
 }
 
+/// Handler that signals entry and stays blocked until `open` becomes `true`
+/// (a watch gate lets every already-entered and later request through).
+struct GatedDohHandler {
+    count: Arc<AtomicUsize>,
+    open: watch::Receiver<bool>,
+    answer: PolicyAnswer,
+}
+
+impl QueryHandler for GatedDohHandler {
+    async fn handle(&self, _ctx: RequestContext) -> Result<PolicyAnswer, PolicyError> {
+        self.count.fetch_add(1, Ordering::SeqCst);
+        let mut open = self.open.clone();
+        while !*open.borrow() {
+            if open.changed().await.is_err() {
+                break;
+            }
+        }
+        Ok(self.answer.clone())
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn doh_partial_headers_closed() {
     install_ring();
@@ -745,4 +766,181 @@ async fn doh_h2_stream_cap() {
 
     release.notify_waiters();
     h.stop().await;
+}
+
+/// GL5: malformed DoH framing (bad method/content-type/base64/oversized body)
+/// records `StrikeReason::MalformedFraming`, so repeated abuse bans the source.
+#[tokio::test]
+async fn malformed_doh_requests_record_ban_strikes() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+    // Public listener: loopback counts as public; harness threshold is 5.
+    let h = DohHarness::spawn(Exposure::Public, Limits::default(), gate, certs, 30).await;
+
+    for _ in 0..5 {
+        let (status, _, _) = doh_exchange_h2(
+            h.addr,
+            post_req(
+                "/dns-query/phone",
+                Bytes::from_static(b"not-dns"),
+                Some("text/plain"),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    // Five malformed requests reached the strike threshold: the next
+    // connection is dropped before the TLS handshake.
+    let connector = connector(&[b"h2"]);
+    let tcp = TcpStream::connect(h.addr).await.unwrap();
+    let name = ServerName::try_from("dns.example.com").unwrap();
+    assert!(
+        connector.connect(name, tcp).await.is_err(),
+        "malformed DoH requests must accumulate ban strikes"
+    );
+
+    h.stop().await;
+}
+
+/// GL3: `max_inflight_per_listener` caps concurrent DoH requests across
+/// connections (in addition to the per-connection HTTP/2 stream cap).
+#[tokio::test]
+async fn listener_inflight_cap_applies_to_doh() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&[]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+
+    let (open_tx, open_rx) = watch::channel(false);
+    let count = Arc::new(AtomicUsize::new(0));
+    let handler = Arc::new(GatedDohHandler {
+        count: Arc::clone(&count),
+        open: open_rx,
+        answer: fake_a_answer(Ipv4Addr::new(192, 0, 2, 67)),
+    });
+    let h = DohHarness::spawn_with(
+        Exposure::Local,
+        Limits {
+            max_inflight_per_listener: 1,
+            ..Limits::default()
+        },
+        gate,
+        certs,
+        handler,
+    )
+    .await;
+
+    let q = encode_a_query(1, "example.com.");
+    let enc = URL_SAFE_NO_PAD.encode(&q);
+    let addr = h.addr;
+    let first = {
+        let enc = enc.clone();
+        tokio::spawn(async move {
+            doh_exchange_h1(addr, get_req(&format!("/dns-query?dns={enc}"))).await
+        })
+    };
+    let second = tokio::spawn(async move {
+        doh_exchange_h1(addr, get_req(&format!("/dns-query?dns={enc}"))).await
+    });
+
+    poll_until(|| count.load(Ordering::SeqCst) >= 1, Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        1,
+        "second DoH request must wait for the listener in-flight cap"
+    );
+
+    open_tx.send(true).unwrap();
+    let (s1, _, _) = tokio::time::timeout(Duration::from_secs(2), first)
+        .await
+        .expect("first request")
+        .unwrap();
+    let (s2, _, _) = tokio::time::timeout(Duration::from_secs(2), second)
+        .await
+        .expect("second request")
+        .unwrap();
+    assert_eq!(s1, StatusCode::OK);
+    assert_eq!(s2, StatusCode::OK);
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+
+    h.stop().await;
+}
+
+/// GL4: DoH shutdown waits for an in-flight request (up to the grace period)
+/// instead of dropping the connection immediately.
+#[tokio::test]
+async fn shutdown_drains_inflight_doh_request() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&[]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+
+    let (open_tx, open_rx) = watch::channel(false);
+    let count = Arc::new(AtomicUsize::new(0));
+    let handler = Arc::new(GatedDohHandler {
+        count: Arc::clone(&count),
+        open: open_rx,
+        answer: fake_a_answer(Ipv4Addr::new(192, 0, 2, 68)),
+    });
+    let mut h =
+        DohHarness::spawn_with(Exposure::Local, Limits::default(), gate, certs, handler).await;
+
+    let q = encode_a_query(1, "example.com.");
+    let enc = URL_SAFE_NO_PAD.encode(&q);
+    let addr = h.addr;
+    let request = tokio::spawn(async move {
+        doh_exchange_h1(addr, get_req(&format!("/dns-query?dns={enc}"))).await
+    });
+
+    poll_until(|| count.load(Ordering::SeqCst) >= 1, Duration::from_secs(2)).await;
+
+    let _ = h.shutdown.send(true);
+    // The serve loop must not finish while the request is in flight.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), &mut h.join)
+            .await
+            .is_err(),
+        "shutdown must wait for the in-flight DoH request"
+    );
+
+    open_tx.send(true).unwrap();
+    let (status, _, _) = tokio::time::timeout(Duration::from_secs(2), request)
+        .await
+        .expect("drained request")
+        .unwrap();
+    assert_eq!(status, StatusCode::OK);
+
+    tokio::time::timeout(Duration::from_secs(2), h.join)
+        .await
+        .expect("serve loop joins after drain")
+        .unwrap()
+        .unwrap();
 }

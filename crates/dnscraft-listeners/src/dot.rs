@@ -92,6 +92,9 @@ where
 
     let conn_cap_n = limits.max_connections_per_listener.max(1);
     let conn_cap = Arc::new(Semaphore::new(conn_cap_n as usize));
+    let inflight = Arc::new(Semaphore::new(
+        limits.max_inflight_per_listener.max(1) as usize
+    ));
     let shared = Arc::new(FramedShared {
         admission,
         listener,
@@ -100,6 +103,7 @@ where
         clock,
         stats,
         conn_cap,
+        inflight,
         per_source: Mutex::new(HashMap::new()),
         ddr: None,
         event_sink,

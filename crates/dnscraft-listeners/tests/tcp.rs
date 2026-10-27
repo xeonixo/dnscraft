@@ -7,7 +7,7 @@ mod support;
 use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use dnscraft_listeners::{
@@ -190,6 +190,79 @@ async fn pipelined_out_of_order() {
     let b = read_frame(&mut client).await.unwrap();
     assert_eq!(Message::decode(&a).unwrap().header.id, 200);
     assert_eq!(Message::decode(&b).unwrap().header.id, 100);
+
+    h.stop().await;
+}
+
+/// GL3: `max_inflight_per_listener` caps queries across a TCP connection (and
+/// listener), in addition to `max_queries_per_connection`.
+struct InflightCapHandler {
+    entered: Arc<AtomicUsize>,
+    release: Arc<Notify>,
+    answer: PolicyAnswer,
+}
+
+impl dnscraft_listeners::QueryHandler for InflightCapHandler {
+    async fn handle(
+        &self,
+        _ctx: RequestContext,
+    ) -> Result<PolicyAnswer, dnscraft_policy::PolicyError> {
+        let n = self.entered.fetch_add(1, Ordering::SeqCst) + 1;
+        if n == 1 {
+            self.release.notified().await;
+        }
+        Ok(self.answer.clone())
+    }
+}
+
+#[tokio::test]
+async fn listener_inflight_cap_applies_to_tcp() {
+    let entered = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(Notify::new());
+    let handler = Arc::new(InflightCapHandler {
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+        answer: fake_a_answer(Ipv4Addr::new(192, 0, 2, 66)),
+    });
+    let limits = Limits {
+        max_inflight_per_listener: 1,
+        ..Limits::default()
+    };
+    let h = TcpHarness::spawn(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        handler,
+        limits,
+        Arc::new(SystemClock),
+    )
+    .await;
+
+    let mut client = TcpStream::connect(h.addr).await.unwrap();
+    write_frame(&mut client, &encode_a_query(1, "one.example.com."))
+        .await
+        .unwrap();
+    write_frame(&mut client, &encode_a_query(2, "two.example.com."))
+        .await
+        .unwrap();
+
+    poll_until(
+        || entered.load(Ordering::SeqCst) >= 1,
+        Duration::from_secs(2),
+    )
+    .await;
+    // The second query must be held by the listener-wide cap.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        entered.load(Ordering::SeqCst),
+        1,
+        "second query must wait for the listener in-flight cap"
+    );
+
+    release.notify_waiters();
+    let a = read_frame(&mut client).await.unwrap();
+    let b = read_frame(&mut client).await.unwrap();
+    assert_eq!(Message::decode(&a).unwrap().header.id, 1);
+    assert_eq!(Message::decode(&b).unwrap().header.id, 2);
+    assert_eq!(entered.load(Ordering::SeqCst), 2);
 
     h.stop().await;
 }

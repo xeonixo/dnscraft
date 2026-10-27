@@ -9,7 +9,7 @@ use std::time::Duration;
 use dnscraft_policy::{ListenerId, PolicyEngine};
 use dnscraft_tls::{CertResolver, ClientIdRegistry, ReservedLabels};
 use tokio::sync::{Mutex as AsyncMutex, oneshot, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 
 use crate::admission::{Admission, SourceClassifier, default_classifier};
 use crate::clock::Clock;
@@ -154,12 +154,9 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             &config.public,
             classify,
         )));
-        let ddr = DdrEndpoints::new(
-            &config.ddr,
-            public_domain.clone(),
-            ddr_endpoints_from(&config),
-        )
-        .shared();
+        // Endpoints are filled after binding: DDR must advertise the addresses
+        // that actually bound, not the configured ones (port 0 / failures).
+        let ddr = DdrEndpoints::new(&config.ddr, public_domain.clone(), Vec::new()).shared();
 
         let set = Self {
             handler,
@@ -297,22 +294,51 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
         for r in running.values() {
             let _ = r.shutdown.send(true);
         }
-        let joins: Vec<_> = running.into_values().map(|r| r.join).collect();
+        let mut joins: Vec<_> = running.into_values().map(|r| r.join).collect();
         let wait = async {
-            for j in joins {
+            for j in &mut joins {
                 let _ = j.await;
             }
         };
-        let _ = tokio::time::timeout(grace, wait).await;
+        if tokio::time::timeout(grace, wait).await.is_err() {
+            // Grace expired: stop waiting for a drain that will not finish.
+            for j in &mut joins {
+                j.abort();
+            }
+        }
     }
 
     fn refresh_ddr(&self, cfg: &ListenersConfig) {
+        // Advertise successfully bound local encrypted listeners (bound
+        // addresses, so port 0 and bind failures are handled correctly).
+        let endpoints = {
+            let inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inner
+                .running
+                .values()
+                .filter_map(|r| {
+                    let bound = r.bound?;
+                    if r.config.exposure != Exposure::Local
+                        || !matches!(
+                            r.config.protocol,
+                            Protocol::Dot | Protocol::Doh | Protocol::Doq
+                        )
+                    {
+                        return None;
+                    }
+                    Some(DdrEndpoint {
+                        protocol: r.config.protocol,
+                        address: bound,
+                        h3: r.config.h3,
+                    })
+                })
+                .collect()
+        };
         if let Ok(mut guard) = self.ddr.write() {
-            *guard = DdrEndpoints::new(
-                &cfg.ddr,
-                self.public_domain.clone(),
-                ddr_endpoints_from(cfg),
-            );
+            *guard = DdrEndpoints::new(&cfg.ddr, self.public_domain.clone(), endpoints);
         }
     }
 
@@ -378,8 +404,12 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                 let tls = Arc::new(TlsStats::default());
                 let alt_svc_port = Arc::new(AtomicU16::new(listener.address.port()));
                 let join = if listener.h3 {
+                    let (tcp_bound_tx, tcp_bound_rx) = oneshot::channel();
                     let (h3_bound_tx, h3_bound_rx) = oneshot::channel();
-                    let h3_join = tokio::spawn(serve_doh_h3(DohH3ServeParams {
+                    // A JoinSet aborts both halves if the coordinator is
+                    // dropped (reload timeout), so neither socket leaks.
+                    let mut joins = JoinSet::new();
+                    joins.spawn(serve_doh_h3(DohH3ServeParams {
                         listener: listener.clone(),
                         limits: limits.clone(),
                         admission: Arc::clone(&self.admission),
@@ -394,7 +424,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                         bound: h3_bound_tx,
                         shutdown: shutdown_rx.clone(),
                     }));
-                    let tcp_join = tokio::spawn(serve_doh(DohServeParams {
+                    joins.spawn(serve_doh(DohServeParams {
                         listener: listener.clone(),
                         limits: limits.clone(),
                         admission: Arc::clone(&self.admission),
@@ -406,17 +436,45 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                         sni_gate: Arc::clone(&self.sni_gate),
                         event_sink: Some(Arc::clone(&self.sink)),
                         alt_svc_port: Arc::clone(&alt_svc_port),
-                        bound: bound_tx,
+                        bound: tcp_bound_tx,
                         shutdown: shutdown_rx,
                     }));
-                    // Prefer TCP bind for status; wait briefly for UDP too.
+                    let stop_tx = shutdown_tx.clone();
+                    // One listener owns both sockets: report bound only when
+                    // both halves bound. On a partial failure stop the half
+                    // that did bind so the listener fails as a whole and the
+                    // status path reports `listeners.bind`.
                     tokio::spawn(async move {
-                        let _ = h3_bound_rx.await;
-                        let (a, b) = tokio::join!(tcp_join, h3_join);
-                        match (a, b) {
-                            (Ok(Err(e)), _) | (_, Ok(Err(e))) => Err(e),
-                            (Err(e), _) | (_, Err(e)) => Err(ListenersError::bind("doh+h3", e)),
-                            _ => Ok(()),
+                        let (tcp_bound, h3_bound) = tokio::join!(tcp_bound_rx, h3_bound_rx);
+                        let both_bound = match (tcp_bound, h3_bound) {
+                            (Ok(tcp), Ok(_)) => {
+                                let _ = bound_tx.send(tcp);
+                                true
+                            }
+                            _ => {
+                                let _ = stop_tx.send(true);
+                                false
+                            }
+                        };
+                        let mut error = None;
+                        while let Some(result) = joins.join_next().await {
+                            match result {
+                                Ok(Err(e)) => {
+                                    error.get_or_insert(e);
+                                }
+                                Ok(Ok(())) => {}
+                                Err(e) => {
+                                    error.get_or_insert_with(|| ListenersError::bind("doh+h3", e));
+                                }
+                            }
+                        }
+                        match error {
+                            Some(e) => Err(e),
+                            None if both_bound => Ok(()),
+                            None => Err(ListenersError::bind(
+                                "doh+h3",
+                                "listener exited before bind",
+                            )),
                         }
                     })
                 } else {
@@ -510,7 +568,16 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
         };
         if let Some(r) = running {
             let _ = r.shutdown.send(true);
-            let _ = tokio::time::timeout(Duration::from_secs(2), r.join).await;
+            let mut join = r.join;
+            if tokio::time::timeout(Duration::from_secs(2), &mut join)
+                .await
+                .is_err()
+            {
+                // Draining exceeded the reload budget; abort so the old
+                // sockets are released before the replacement binds.
+                join.abort();
+                let _ = join.await;
+            }
         }
     }
 }
@@ -597,21 +664,6 @@ fn fill_tls(status: &mut ListenerStatus, tls: &TlsStats) {
         tls.handshake_fail.load(Ordering::Relaxed) + tls.handshake_timeouts.load(Ordering::Relaxed);
 }
 
-fn ddr_endpoints_from(cfg: &ListenersConfig) -> Vec<DdrEndpoint> {
-    cfg.listeners
-        .iter()
-        .filter(|l| {
-            l.exposure == Exposure::Local
-                && matches!(l.protocol, Protocol::Dot | Protocol::Doh | Protocol::Doq)
-        })
-        .map(|l| DdrEndpoint {
-            protocol: l.protocol,
-            address: l.address,
-            h3: l.h3,
-        })
-        .collect()
-}
-
 fn reserved_from_ddr(target: &str) -> ReservedLabels {
     let t = target.trim_matches('.');
     if t.is_empty() || t.eq_ignore_ascii_case("dns") {
@@ -667,6 +719,47 @@ mod tests {
             },
             loggable: true,
         }
+    }
+
+    /// GL11: DDR advertises the addresses that actually bound (port 0 resolved),
+    /// not the configured ones.
+    #[tokio::test]
+    async fn ddr_endpoints_use_bound_addresses() {
+        let cfg = ListenersConfig {
+            listeners: vec![ListenerConfig {
+                id: ListenerId::new("lan-dot").unwrap(),
+                protocol: Protocol::Dot,
+                address: SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),
+                exposure: Exposure::Local,
+                h3: false,
+                tls_policy: None,
+            }],
+            ..Default::default()
+        };
+        let (sink, _rx) = ChannelSink::new(4);
+        let set = ListenerSet::start_with(ListenerSetParams {
+            config: cfg,
+            handler: Arc::new(FakeHandler::new(dummy_answer())),
+            certs: None,
+            sink,
+            clock: Arc::new(SystemClock),
+            public_domain: "example.com".into(),
+            client_ids: Arc::new(EmptyClientIds),
+            classify: default_classifier(),
+        })
+        .await
+        .unwrap();
+
+        let bound = set.status().listeners[0].bound.unwrap();
+        assert_ne!(bound.port(), 0);
+        {
+            let ddr = set.ddr.read().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(ddr.endpoints.len(), 1);
+            assert_eq!(ddr.endpoints[0].address, bound);
+            assert_eq!(ddr.endpoints[0].address.port(), bound.port());
+        }
+
+        set.shutdown(Duration::from_secs(2)).await;
     }
 
     #[tokio::test]

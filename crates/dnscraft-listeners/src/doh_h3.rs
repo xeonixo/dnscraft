@@ -136,8 +136,10 @@ where
     )
     .map_err(|e| ListenersError::bind(listener.address, e))?;
 
-    let conn_cap = Arc::new(Semaphore::new(
-        limits.max_connections_per_listener.max(1) as usize
+    let conn_cap_n = limits.max_connections_per_listener.max(1);
+    let conn_cap = Arc::new(Semaphore::new(conn_cap_n as usize));
+    let inflight = Arc::new(Semaphore::new(
+        limits.max_inflight_per_listener.max(1) as usize
     ));
     let doh = Arc::new(DohShared {
         admission,
@@ -148,9 +150,11 @@ where
         stats,
         sni_gate,
         conn_cap: Arc::clone(&conn_cap),
+        inflight,
         per_source: Mutex::new(HashMap::new()),
         event_sink,
         alt_svc_port,
+        shutdown: shutdown.clone(),
     });
     let shared = Arc::new(DohH3Shared {
         doh,
@@ -164,6 +168,9 @@ where
             biased;
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
+                    // Stop accepting; connections drain in-flight requests and
+                    // release their permits, then the endpoint is closed.
+                    let _ = shared.conn_cap.acquire_many(conn_cap_n).await;
                     endpoint.close(VarInt::from_u32(0), b"shutdown");
                     return Ok(());
                 }
@@ -349,12 +356,23 @@ where
         wake: Notify::new(),
         in_flight: AtomicUsize::new(0),
     });
+    let mut listener_shutdown = shared.doh.shutdown.clone();
+    let mut draining = *listener_shutdown.borrow();
 
     loop {
         let deadline = add_duration(activity.last_activity(), idle);
         let in_flight = activity.in_flight.load(Ordering::Relaxed);
+        if draining && in_flight == 0 {
+            conn.close(VarInt::from_u32(0), b"shutdown");
+            return;
+        }
         tokio::select! {
-            accepted = h3_conn.accept() => {
+            changed = listener_shutdown.changed() => {
+                if changed.is_err() || *listener_shutdown.borrow() {
+                    draining = true;
+                }
+            }
+            accepted = h3_conn.accept(), if !draining => {
                 match accepted {
                     Ok(Some(resolver)) => {
                         activity.touch(shared.doh.clock.as_ref());
@@ -385,7 +403,7 @@ where
             // activity changes, so a stalled request that just timed out does
             // not leave the connection blocked on accept() forever.
             () = activity.wake.notified() => {}
-            () = wait_until(shared.doh.clock.as_ref(), deadline, &activity.wake), if in_flight == 0 => {
+            () = wait_until(shared.doh.clock.as_ref(), deadline, &activity.wake), if in_flight == 0 && !draining => {
                 if activity.in_flight.load(Ordering::Relaxed) == 0
                     && shared.doh.clock.now() >= deadline
                 {
@@ -442,6 +460,7 @@ where
         body.extend_from_slice(chunk.chunk());
         chunk.advance(chunk.remaining());
         if body.len() > MAX_MESSAGE_LEN {
+            crate::doh::strike_malformed(&shared.doh, peer);
             let resp = http::Response::builder()
                 .status(http::StatusCode::PAYLOAD_TOO_LARGE)
                 .body(())

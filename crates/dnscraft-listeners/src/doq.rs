@@ -107,8 +107,12 @@ struct DoqShared<H: ?Sized> {
     sni_gate: Arc<SniGate>,
     certs: Arc<CertResolver>,
     conn_cap: Arc<Semaphore>,
+    /// Listener-wide in-flight query cap (shared by all connections).
+    inflight: Arc<Semaphore>,
     per_source: Mutex<HashMap<IpAddr, u32>>,
     event_sink: Option<Arc<dyn QueryEventSink>>,
+    /// Listener shutdown signal (graceful connection drain).
+    shutdown: watch::Receiver<bool>,
 }
 
 /// Runs one DoQ listener until `params.shutdown` becomes `true`.
@@ -176,8 +180,10 @@ where
     )
     .map_err(|e| ListenersError::bind(listener.address, e))?;
 
-    let conn_cap = Arc::new(Semaphore::new(
-        limits.max_connections_per_listener.max(1) as usize
+    let conn_cap_n = limits.max_connections_per_listener.max(1);
+    let conn_cap = Arc::new(Semaphore::new(conn_cap_n as usize));
+    let inflight = Arc::new(Semaphore::new(
+        limits.max_inflight_per_listener.max(1) as usize
     ));
     let shared = Arc::new(DoqShared {
         admission,
@@ -190,8 +196,10 @@ where
         sni_gate,
         certs,
         conn_cap,
+        inflight,
         per_source: Mutex::new(HashMap::new()),
         event_sink,
+        shutdown: shutdown.clone(),
     });
 
     loop {
@@ -199,6 +207,9 @@ where
             biased;
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
+                    // Stop accepting; connections close once their in-flight
+                    // streams finish and release their permits.
+                    let _ = shared.conn_cap.acquire_many(conn_cap_n).await;
                     endpoint.close(DOQ_NO_ERROR, b"shutdown");
                     return Ok(());
                 }
@@ -386,12 +397,23 @@ async fn serve_connection<H>(
         // Streams currently answering a complete query (incomplete reads do not count).
         answering: AtomicUsize::new(0),
     });
+    let mut listener_shutdown = shared.shutdown.clone();
+    let mut draining = *listener_shutdown.borrow();
 
     loop {
         let deadline = add_duration(activity.last_activity(), idle);
         let answering_now = activity.answering.load(Ordering::Relaxed);
+        if draining && answering_now == 0 {
+            conn.close(DOQ_NO_ERROR, b"shutdown");
+            return;
+        }
         tokio::select! {
-            bi = conn.accept_bi() => {
+            changed = listener_shutdown.changed() => {
+                if changed.is_err() || *listener_shutdown.borrow() {
+                    draining = true;
+                }
+            }
+            bi = conn.accept_bi(), if !draining => {
                 match bi {
                     Ok((send, recv)) => {
                         // New stream accepted → re-arm application idle.
@@ -406,6 +428,12 @@ async fn serve_connection<H>(
                         let activity = Arc::clone(&activity);
                         tokio::spawn(async move {
                             let _permit = permit;
+                            // Listener-wide in-flight cap (per-stream backpressure).
+                            let Ok(_inflight) =
+                                Arc::clone(&shared.inflight).acquire_owned().await
+                            else {
+                                return;
+                            };
                             let r = handle_stream(
                                 Arc::clone(&shared),
                                 &conn,
@@ -433,7 +461,7 @@ async fn serve_connection<H>(
             // Re-evaluate idle when answering count or last_activity changes.
             () = activity.wake.notified() => {}
             () = wait_until(shared.clock.as_ref(), deadline, &activity.wake),
-                if answering_now == 0 => {
+                if answering_now == 0 && !draining => {
                 let still_idle = activity.answering.load(Ordering::Relaxed) == 0
                     && shared.clock.now() >= add_duration(activity.last_activity(), idle);
                 if still_idle {

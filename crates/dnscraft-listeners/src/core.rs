@@ -104,12 +104,15 @@ pub async fn handle_wire(
         }
     };
 
+    // Error replies generated after a successful decode echo the client's OPT
+    // (RFC 6891 §6.1.1: a response to a request with OPT carries OPT).
+    let client_opt = query_msg.edns.as_ref();
     if query_msg.opcode() != Opcode::QUERY {
         return Some(HandleWireResult {
             bytes: error_reply(
                 &query_msg,
                 Rcode::NOTIMP,
-                None,
+                client_opt,
                 meta.size_limit,
                 meta.udp_payload_max,
             )?,
@@ -122,7 +125,7 @@ pub async fn handle_wire(
             bytes: error_reply(
                 &query_msg,
                 Rcode::FORMERR,
-                None,
+                client_opt,
                 meta.size_limit,
                 meta.udp_payload_max,
             )?,
@@ -137,7 +140,7 @@ pub async fn handle_wire(
             bytes: error_reply(
                 &query_msg,
                 Rcode::REFUSED,
-                None,
+                client_opt,
                 meta.size_limit,
                 meta.udp_payload_max,
             )?,
@@ -149,7 +152,7 @@ pub async fn handle_wire(
             bytes: error_reply(
                 &query_msg,
                 Rcode::REFUSED,
-                None,
+                client_opt,
                 meta.size_limit,
                 meta.udp_payload_max,
             )?,

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use dnscraft_listeners::{
     ChannelSink, EmptyClientIds, Exposure, FakeHandler, Limits, ListenerConfig, ListenerSet,
-    ListenerSetParams, ListenersConfig, Protocol, PublicConfig, SystemClock, bind_udp,
+    ListenerSetParams, ListenersConfig, Protocol, PublicConfig, SystemClock, bind_tcp, bind_udp,
     default_classifier, emit_event, read_frame, write_frame,
 };
 use dnscraft_policy::{ListenerId, PolicyAnswer, RequestContext};
@@ -205,6 +205,91 @@ async fn runtime_partial_bind_failure_others_serve() {
     assert_eq!(msg.answers.len(), 1);
 
     drop(held);
+    set.shutdown(Duration::from_secs(2)).await;
+}
+
+/// GL1: a DoH `h3 = true` listener whose UDP/QUIC half fails to bind must be
+/// reported as failed (never as bound) and must not hang startup.
+#[tokio::test]
+async fn runtime_doh_h3_udp_bind_failure_reported_without_hang() {
+    // Reserve a port for TCP, then hold the same port with UDP so the h3 half
+    // fails while the TCP half binds.
+    let probe = bind_tcp(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+    let addr = probe.local_addr().unwrap();
+    drop(probe);
+    let held_udp = bind_udp(addr).unwrap();
+
+    let cfg = base_cfg(vec![doh_cfg("doh-h3", addr, true)]);
+    let (sink, _rx) = ChannelSink::new(64);
+    let handler = Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(
+        192, 0, 2, 31,
+    ))));
+    let params = ListenerSetParams {
+        config: cfg,
+        handler,
+        certs: None,
+        sink,
+        clock: Arc::new(SystemClock),
+        public_domain: "example.com".into(),
+        client_ids: Arc::new(EmptyClientIds),
+        classify: default_classifier(),
+    };
+    let set = tokio::time::timeout(Duration::from_secs(3), ListenerSet::start_with(params))
+        .await
+        .expect("start must not hang on a partial DoH h3 bind")
+        .unwrap();
+
+    let status = set.status();
+    let listener = &status.listeners[0];
+    assert!(
+        listener.bound.is_none(),
+        "a DoH listener whose h3 half failed must not be reported as bound"
+    );
+    assert_eq!(
+        listener.error.as_ref().map(|e| e.code()),
+        Some("listeners.bind")
+    );
+
+    drop(held_udp);
+    set.shutdown(Duration::from_secs(2)).await;
+}
+
+/// GL1 (reverse): TCP half fails, UDP/QUIC half binds — same reporting and no
+/// hang (the still-running QUIC listener must not block the bind report).
+#[tokio::test]
+async fn runtime_doh_h3_tcp_bind_failure_reported_without_hang() {
+    let held_tcp = bind_tcp(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+    let addr = held_tcp.local_addr().unwrap();
+
+    let cfg = base_cfg(vec![doh_cfg("doh-h3", addr, true)]);
+    let (sink, _rx) = ChannelSink::new(64);
+    let handler = Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(
+        192, 0, 2, 32,
+    ))));
+    let params = ListenerSetParams {
+        config: cfg,
+        handler,
+        certs: None,
+        sink,
+        clock: Arc::new(SystemClock),
+        public_domain: "example.com".into(),
+        client_ids: Arc::new(EmptyClientIds),
+        classify: default_classifier(),
+    };
+    let set = tokio::time::timeout(Duration::from_secs(3), ListenerSet::start_with(params))
+        .await
+        .expect("start must not hang when the DoH TCP half fails to bind")
+        .unwrap();
+
+    let status = set.status();
+    let listener = &status.listeners[0];
+    assert!(listener.bound.is_none());
+    assert_eq!(
+        listener.error.as_ref().map(|e| e.code()),
+        Some("listeners.bind")
+    );
+
+    drop(held_tcp);
     set.shutdown(Duration::from_secs(2)).await;
 }
 
@@ -708,6 +793,72 @@ async fn runtime_shutdown_drains_inflight_within_grace() {
         .expect("shutdown within grace")
         .unwrap();
     assert!(done.load(Ordering::SeqCst), "in-flight query must finish");
+}
+
+/// GL4: shutdown drains in-flight queries on TCP too (previously the
+/// connection loop aborted them on the listener-shutdown signal).
+#[tokio::test]
+async fn runtime_shutdown_drains_tcp_inflight_within_grace() {
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let done = Arc::new(AtomicBool::new(false));
+    let handler = Arc::new(GateHandler {
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+        done: Arc::clone(&done),
+        answer: fake_a_answer(Ipv4Addr::new(192, 0, 2, 33)),
+    });
+
+    let cfg = base_cfg(vec![tcp_cfg(
+        "lan-tcp",
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+    )]);
+    let (sink, _rx) = ChannelSink::new(16);
+    let set = ListenerSet::start_with(ListenerSetParams {
+        config: cfg,
+        handler,
+        certs: None,
+        sink,
+        clock: Arc::new(SystemClock),
+        public_domain: "example.com".into(),
+        client_ids: Arc::new(EmptyClientIds),
+        classify: default_classifier(),
+    })
+    .await
+    .unwrap();
+
+    let addr = set.status().listeners[0].bound.unwrap();
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    write_frame(&mut client, &encode_a_query(1, "example.com."))
+        .await
+        .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+        .await
+        .expect("handler should start");
+
+    let shutdown = tokio::spawn(async move {
+        set.shutdown(Duration::from_secs(3)).await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    release.notify_one();
+
+    tokio::time::timeout(Duration::from_secs(3), shutdown)
+        .await
+        .expect("shutdown within grace")
+        .unwrap();
+    assert!(
+        done.load(Ordering::SeqCst),
+        "in-flight TCP query must finish during drain"
+    );
+
+    // The answer is still written before the connection closes.
+    let resp = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut client))
+        .await
+        .expect("drained TCP answer")
+        .unwrap();
+    assert_eq!(Message::decode(&resp).unwrap().header.id, 1);
 }
 
 /// S2: a listener that fails to rebind during `apply_config` records the bind

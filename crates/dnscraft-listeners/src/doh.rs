@@ -118,9 +118,13 @@ pub(crate) struct DohShared<H: ?Sized> {
     pub(crate) stats: Arc<DohStats>,
     pub(crate) sni_gate: Arc<SniGate>,
     pub(crate) conn_cap: Arc<Semaphore>,
+    /// Listener-wide in-flight query cap (shared by all connections).
+    pub(crate) inflight: Arc<Semaphore>,
     pub(crate) per_source: Mutex<HashMap<IpAddr, u32>>,
     pub(crate) event_sink: Option<Arc<dyn QueryEventSink>>,
     pub(crate) alt_svc_port: Arc<AtomicU16>,
+    /// Listener shutdown signal (graceful connection drain).
+    pub(crate) shutdown: watch::Receiver<bool>,
 }
 
 /// Wire answer produced by [`process_doh_request`] (status + headers + body).
@@ -169,8 +173,10 @@ where
     let tls_config: Arc<ServerConfig> = tcp_server_config(resolver, &alpn, &tls_policy);
     let acceptor = tls_acceptor(Arc::clone(&tls_config));
 
-    let conn_cap = Arc::new(Semaphore::new(
-        limits.max_connections_per_listener.max(1) as usize
+    let conn_cap_n = limits.max_connections_per_listener.max(1);
+    let conn_cap = Arc::new(Semaphore::new(conn_cap_n as usize));
+    let inflight = Arc::new(Semaphore::new(
+        limits.max_inflight_per_listener.max(1) as usize
     ));
     let shared = Arc::new(DohShared {
         admission,
@@ -181,9 +187,11 @@ where
         stats,
         sni_gate,
         conn_cap,
+        inflight,
         per_source: Mutex::new(HashMap::new()),
         event_sink,
         alt_svc_port,
+        shutdown: shutdown.clone(),
     });
 
     loop {
@@ -191,6 +199,9 @@ where
             biased;
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
+                    // Stop accepting; connection tasks call `graceful_shutdown`
+                    // and release their permits once in-flight requests finish.
+                    let _ = shared.conn_cap.acquire_many(conn_cap_n).await;
                     return Ok(());
                 }
             }
@@ -330,7 +341,11 @@ fn handle_accept<H>(
 
         let conn = builder.serve_connection(io, service);
         tokio::pin!(conn);
-        let mut shutting_down = false;
+        let mut listener_shutdown = shared.shutdown.clone();
+        let mut shutting_down = *listener_shutdown.borrow();
+        if shutting_down {
+            conn.as_mut().graceful_shutdown();
+        }
         loop {
             let deadline = activity.idle_deadline(idle_timeout);
             let in_flight = activity.in_flight();
@@ -338,6 +353,12 @@ fn handle_accept<H>(
                 r = conn.as_mut() => {
                     let _ = r;
                     break;
+                }
+                changed = listener_shutdown.changed() => {
+                    if changed.is_err() || *listener_shutdown.borrow() {
+                        shutting_down = true;
+                        conn.as_mut().graceful_shutdown();
+                    }
                 }
                 () = activity.notified() => {}
                 () = tokio::time::sleep_until(deadline), if in_flight == 0 && !shutting_down => {
@@ -429,10 +450,12 @@ where
     let collected = match Limited::new(body, MAX_MESSAGE_LEN + 1).collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
+            strike_malformed(&shared, peer);
             return status_empty(StatusCode::PAYLOAD_TOO_LARGE);
         }
     };
     if collected.len() > MAX_MESSAGE_LEN {
+        strike_malformed(&shared, peer);
         return status_empty(StatusCode::PAYLOAD_TOO_LARGE);
     }
 
@@ -469,6 +492,7 @@ where
     let wire = match extract_wire(method, uri, content_type_of(headers), &body) {
         Ok(w) => w,
         Err(e) => {
+            strike_malformed(shared, peer);
             let status = match e {
                 DohWireError::BadRequest => StatusCode::BAD_REQUEST,
                 DohWireError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
@@ -508,6 +532,12 @@ where
         }
         AdmitDecision::Admit => {}
     }
+
+    // Listener-wide in-flight cap (in addition to per-connection HTTP limits):
+    // wait rather than reject so HTTP/2 streams apply backpressure.
+    let Ok(_inflight) = Arc::clone(&shared.inflight).acquire_owned().await else {
+        return empty_parts(StatusCode::SERVICE_UNAVAILABLE);
+    };
 
     let meta = QueryMeta {
         protocol: DnsProtocol::DoH,
@@ -586,6 +616,17 @@ fn maybe_alt_svc<H: ?Sized>(shared: &DohShared<H>, headers: &mut HeaderMap) {
     if let Ok(v) = header::HeaderValue::from_str(&value) {
         headers.insert(header::ALT_SVC, v);
     }
+}
+
+/// Records a [`StrikeReason::MalformedFraming`] ban strike for a malformed DoH
+/// request (bad method/type/base64 or oversized body). Public sources only.
+pub(crate) fn strike_malformed<H: ?Sized>(shared: &DohShared<H>, peer: IpAddr) {
+    let now = shared.clock.now();
+    let mut adm = shared
+        .admission
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    adm.strike(peer, StrikeReason::MalformedFraming, now);
 }
 
 fn empty_parts(status: StatusCode) -> DohHttpParts {

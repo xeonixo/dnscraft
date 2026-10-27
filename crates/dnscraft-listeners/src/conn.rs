@@ -72,6 +72,8 @@ pub(crate) struct FramedShared<H: ?Sized> {
     pub clock: Arc<dyn Clock>,
     pub stats: Arc<FramedStats>,
     pub conn_cap: Arc<Semaphore>,
+    /// Listener-wide in-flight query cap (shared by all connections).
+    pub inflight: Arc<Semaphore>,
     pub per_source: Mutex<std::collections::HashMap<IpAddr, u32>>,
     /// DDR endpoints for Do53 TCP; `None` on DoT.
     pub ddr: Option<Arc<RwLock<DdrEndpoints>>>,
@@ -107,6 +109,8 @@ pub(crate) enum ConnEnd {
     WriteTimeout,
     Peer,
     Io,
+    /// Listener shutdown: stop reading new queries, drain the in-flight ones.
+    Shutdown,
 }
 
 impl ConnEnd {
@@ -123,7 +127,7 @@ impl ConnEnd {
             ConnEnd::Idle => FramedStats::bump(&stats.idle_timeouts),
             ConnEnd::Banned => FramedStats::bump(&stats.dropped_admission),
             ConnEnd::WriteTimeout => FramedStats::bump(&stats.write_timeouts),
-            ConnEnd::Peer | ConnEnd::Io => {}
+            ConnEnd::Peer | ConnEnd::Io | ConnEnd::Shutdown => {}
         }
     }
 }
@@ -225,7 +229,7 @@ where
             break Err(ConnEnd::WriteTimeout);
         }
         if *listener_shutdown.borrow() {
-            break Err(ConnEnd::Io);
+            break Err(ConnEnd::Shutdown);
         }
 
         let no_outstanding = outstanding.get() == 0;
@@ -244,7 +248,7 @@ where
             }
             _ = listener_shutdown.changed() => {
                 if *listener_shutdown.borrow() {
-                    break Err(ConnEnd::Io);
+                    break Err(ConnEnd::Shutdown);
                 }
             }
             () = wait_idle_or_drain(
@@ -429,6 +433,11 @@ where
         }
         AdmitDecision::Admit => {
             FramedStats::bump(&shared.stats.queries);
+            // Listener-wide in-flight cap (backpressure, in addition to the
+            // per-connection query slots).
+            let Ok(listener_permit) = Arc::clone(&shared.inflight).acquire_owned().await else {
+                return Ok(());
+            };
             outstanding.acquire();
             let shared = Arc::clone(shared);
             let tx = tx.clone();
@@ -436,6 +445,7 @@ where
             let identity = Arc::clone(identity);
             queries.spawn(async move {
                 let _permit = permit;
+                let _listener_permit = listener_permit;
                 let _guard = OutstandingGuard(outstanding);
                 if let Some(bytes) = process_query(&shared, peer_ip, datagram, &identity).await {
                     let _ = tx.send(bytes).await;

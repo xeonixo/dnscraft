@@ -6,7 +6,7 @@ mod support;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use dnscraft_listeners::{
@@ -747,4 +747,158 @@ async fn stream_query_timeout_frees_cap_for_third() {
     assert_eq!(Message::decode(&third).unwrap().rcode(), Rcode::NOERROR);
 
     doq.stop().await;
+}
+
+/// Handler that counts entries and blocks until the watch gate opens.
+struct GatedDoqHandler {
+    count: Arc<AtomicUsize>,
+    open: watch::Receiver<bool>,
+    answer: dnscraft_policy::PolicyAnswer,
+}
+
+impl dnscraft_listeners::QueryHandler for GatedDoqHandler {
+    async fn handle(
+        &self,
+        _ctx: dnscraft_policy::RequestContext,
+    ) -> Result<dnscraft_policy::PolicyAnswer, dnscraft_policy::PolicyError> {
+        self.count.fetch_add(1, Ordering::SeqCst);
+        let mut open = self.open.clone();
+        while !*open.borrow() {
+            if open.changed().await.is_err() {
+                break;
+            }
+        }
+        Ok(self.answer.clone())
+    }
+}
+
+/// GL3: `max_inflight_per_listener` caps concurrent DoQ streams across a
+/// connection in addition to `max_quic_streams_per_connection`.
+#[tokio::test]
+async fn listener_inflight_cap_applies_to_doq() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&[]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+
+    let (open_tx, open_rx) = watch::channel(false);
+    let count = Arc::new(AtomicUsize::new(0));
+    let handler = Arc::new(GatedDoqHandler {
+        count: Arc::clone(&count),
+        open: open_rx,
+        answer: fake_a_answer(Ipv4Addr::new(192, 0, 2, 69)),
+    });
+    let h = DoqHarness::spawn_with(
+        Exposure::Local,
+        Limits {
+            max_inflight_per_listener: 1,
+            ..Limits::default()
+        },
+        gate,
+        certs,
+        handler,
+        Arc::new(SystemClock),
+    )
+    .await;
+
+    let conn = connect_doq(h.addr, "dns.example.com").await;
+    let wire = encode_a_query(0, "example.com.");
+    let (mut send1, mut recv1) = conn.open_bi().await.unwrap();
+    write_frame(&mut send1, &wire).await.unwrap();
+    send1.finish().unwrap();
+    let (mut send2, mut recv2) = conn.open_bi().await.unwrap();
+    write_frame(&mut send2, &wire).await.unwrap();
+    send2.finish().unwrap();
+
+    poll_until(|| count.load(Ordering::SeqCst) >= 1, Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        1,
+        "second DoQ stream must wait for the listener in-flight cap"
+    );
+
+    open_tx.send(true).unwrap();
+    let resp1 = tokio::time::timeout(Duration::from_secs(2), read_doq_response(&mut recv1))
+        .await
+        .expect("first answer");
+    let resp2 = tokio::time::timeout(Duration::from_secs(2), read_doq_response(&mut recv2))
+        .await
+        .expect("second answer");
+    assert_eq!(Message::decode(&resp1).unwrap().rcode(), Rcode::NOERROR);
+    assert_eq!(Message::decode(&resp2).unwrap().rcode(), Rcode::NOERROR);
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+
+    h.stop().await;
+}
+
+/// GL4: DoQ shutdown drains an in-flight stream instead of closing the
+/// connection immediately.
+#[tokio::test]
+async fn shutdown_drains_inflight_doq_stream() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&[]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+
+    let (open_tx, open_rx) = watch::channel(false);
+    let count = Arc::new(AtomicUsize::new(0));
+    let handler = Arc::new(GatedDoqHandler {
+        count: Arc::clone(&count),
+        open: open_rx,
+        answer: fake_a_answer(Ipv4Addr::new(192, 0, 2, 70)),
+    });
+    let mut h = DoqHarness::spawn_with(
+        Exposure::Local,
+        Limits::default(),
+        gate,
+        certs,
+        handler,
+        Arc::new(SystemClock),
+    )
+    .await;
+
+    let conn = connect_doq(h.addr, "dns.example.com").await;
+    let wire = encode_a_query(0, "example.com.");
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    write_frame(&mut send, &wire).await.unwrap();
+    send.finish().unwrap();
+
+    poll_until(|| count.load(Ordering::SeqCst) >= 1, Duration::from_secs(2)).await;
+
+    let _ = h.shutdown.send(true);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), &mut h.join)
+            .await
+            .is_err(),
+        "shutdown must wait for the in-flight DoQ stream"
+    );
+
+    open_tx.send(true).unwrap();
+    let resp = tokio::time::timeout(Duration::from_secs(2), read_doq_response(&mut recv))
+        .await
+        .expect("drained DoQ answer");
+    assert_eq!(Message::decode(&resp).unwrap().rcode(), Rcode::NOERROR);
+
+    tokio::time::timeout(Duration::from_secs(2), h.join)
+        .await
+        .expect("serve loop joins after drain")
+        .unwrap()
+        .unwrap();
 }

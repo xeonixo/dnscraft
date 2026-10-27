@@ -201,6 +201,47 @@ async fn core_refused_chaos() {
     assert!(fake.recorded().is_empty());
 }
 
+/// GL6: error replies generated after a successful decode echo the client OPT.
+#[tokio::test]
+async fn core_error_replies_echo_client_opt() {
+    let fake = FakeHandler::new(answer_for(&a_query(1)));
+
+    let mut notimp = a_query(1);
+    notimp.header.opcode = Opcode::NOTIFY;
+    let mut multi = a_query(1);
+    multi.questions.push(multi.questions[0].clone());
+    let mut bad_class = a_query(1);
+    bad_class.questions[0].qclass = Class(99);
+    let mut chaos = a_query(1);
+    chaos.questions[0].qclass = Class::CH;
+
+    for mut q in [notimp, multi, bad_class, chaos] {
+        q.edns = Some(Edns::new(1232));
+        let out = handle_wire(
+            &encode_query(q),
+            meta(DnsProtocol::Udp53, 1232, false),
+            &fake,
+        )
+        .await
+        .unwrap();
+        let resp = Message::decode(&out.bytes).unwrap();
+        assert!(
+            matches!(
+                resp.rcode(),
+                Rcode::NOTIMP | Rcode::FORMERR | Rcode::REFUSED
+            ),
+            "unexpected rcode {:?}",
+            resp.rcode()
+        );
+        let edns = resp
+            .edns
+            .expect("pre-policy error reply must echo the client OPT");
+        assert_eq!(edns.udp_payload, DEFAULT_UDP_PAYLOAD_MAX);
+        assert!(edns.options.is_empty(), "no ECS/cookies in the echoed OPT");
+    }
+    assert!(fake.recorded().is_empty(), "errors must not reach policy");
+}
+
 #[tokio::test]
 async fn core_badvers_on_edns_version() {
     let mut q = a_query(1);
