@@ -17,6 +17,9 @@
 //!   enroll, stream and heartbeat routes.
 //! - [`ClusterClient`] — the sub-node's outbound mTLS client (the master never
 //!   dials a sub-node).
+//! - [`StreamRecord`] / [`Hello`] / [`ConfigPush`] / [`ConfigAck`] — the NDJSON
+//!   stream records, plus [`ConfigApplier`] and [`ConfigSync`] for full-snapshot
+//!   configuration push, digest verification, acknowledgement, lag, and retry.
 
 #![deny(missing_docs)]
 
@@ -28,6 +31,7 @@ mod error;
 mod identity;
 mod server;
 mod store;
+mod sync;
 
 pub use ca::{ClusterCa, cert_fingerprint};
 pub use client::{ClusterClient, ClusterStream};
@@ -40,6 +44,10 @@ pub use error::ClusterError;
 pub use identity::{NodeIdentity, PendingNodeIdentity};
 pub use server::{ClusterServer, ClusterServerConfig, HeartbeatRequest, HeartbeatResponse};
 pub use store::{ClusterNode, ClusterStore, MintedJoinToken};
+pub use sync::{
+    ConfigAck, ConfigApplier, ConfigPush, ConfigSync, Hello, NodeLag, StreamError, StreamRecord,
+    canonical_snapshot_bytes, snapshot_digest,
+};
 
 use ring::digest::{SHA256, digest};
 

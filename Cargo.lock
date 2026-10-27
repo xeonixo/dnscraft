@@ -858,6 +858,7 @@ dependencies = [
 name = "dnscraft-cluster"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "dnscraft-common",
  "hyper",

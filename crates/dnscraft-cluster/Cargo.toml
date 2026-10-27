@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 dnscraft-common = { path = "../dnscraft-common" }
+async-trait = { workspace = true }
 axum = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }

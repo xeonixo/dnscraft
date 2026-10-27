@@ -53,6 +53,7 @@ use crate::config::ListenConfig;
 use crate::enroll::{PROTOCOL_VERSION, enroll as run_enroll};
 use crate::error::ClusterError;
 use crate::store::ClusterStore;
+use crate::sync::{ConfigAck, ConfigSync, Hello, StreamError, StreamRecord};
 
 /// Request header carrying the sub-node's cluster protocol version.
 pub(crate) const PROTOCOL_HEADER: &str = "x-cluster-protocol";
@@ -100,6 +101,7 @@ pub struct ClusterServer {
     addr: SocketAddr,
     ca_cert_pem: String,
     server_cert_pem: String,
+    config_sync: Arc<ConfigSync>,
     shutdown: watch::Sender<bool>,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -146,15 +148,18 @@ impl ClusterServer {
         let tls = server_tls_config(ca.cert_pem(), &server_cert_pem, &server_key_pem)?;
         let acceptor = TlsAcceptor::from(Arc::new(tls));
 
+        let (shutdown, mut shutdown_rx) = watch::channel(false);
+        let config_sync = ConfigSync::start(clock.clone(), shutdown_rx.clone());
+
         let state = Arc::new(ServerState {
             ca,
             store,
             clock,
             node_cert_ttl: config.node_cert_ttl,
+            config_sync: Arc::clone(&config_sync),
         });
         let router = router(Arc::clone(&state));
 
-        let (shutdown, mut shutdown_rx) = watch::channel(false);
         let handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -199,6 +204,7 @@ impl ClusterServer {
             addr,
             ca_cert_pem: state.ca.cert_pem().to_owned(),
             server_cert_pem,
+            config_sync,
             shutdown,
             handle: Some(handle),
         })
@@ -217,6 +223,14 @@ impl ClusterServer {
     /// The master's own server certificate (PEM), for bootstrap pinning.
     pub fn server_cert_pem(&self) -> &str {
         &self.server_cert_pem
+    }
+
+    /// The master-side config broadcast/lag registry.
+    ///
+    /// Call [`ConfigSync::publish`](crate::ConfigSync::publish) after every
+    /// successful local config apply or rollback.
+    pub fn config_sync(&self) -> &ConfigSync {
+        self.config_sync.as_ref()
     }
 
     /// Stops accepting new connections and waits for the accept loop to exit.
@@ -243,6 +257,7 @@ struct ServerState {
     store: ClusterStore,
     clock: Arc<dyn Clock>,
     node_cert_ttl: Duration,
+    config_sync: Arc<ConfigSync>,
 }
 
 /// Authenticated peer identity extracted from the client certificate chain.
@@ -268,6 +283,7 @@ struct AuthenticatedNode(String);
 fn router(state: Arc<ServerState>) -> Router {
     let protected = Router::new()
         .route("/cluster/v1/stream", get(stream))
+        .route("/cluster/v1/ack", post(config_ack))
         .route("/cluster/v1/heartbeat", post(heartbeat))
         .route("/cluster/v1/logs", post(not_found))
         .route("/cluster/v1/writes", post(not_found))
@@ -369,41 +385,107 @@ async fn heartbeat(
 
 /// Long-lived NDJSON downstream channel.
 ///
-/// This slice sends the `hello` handshake and keeps the connection open;
-/// config/cert/auth/runtime push records are later phases. A protocol mismatch
-/// ends the stream with a single `error` record.
-async fn stream(Extension(auth): Extension<AuthenticatedNode>, headers: HeaderMap) -> Response {
-    let peer_protocol = headers
-        .get(PROTOCOL_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u32>().ok());
-    let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(4);
-
-    match peer_protocol {
-        Some(version) if version != PROTOCOL_VERSION => {
-            let record = json!({
-                "type": "error",
-                "error": { "code": "cluster.protocol.version" },
-            });
-            let _ = tx.try_send(Ok(Bytes::from(format!("{record}\n"))));
-            // Dropping `tx` closes the body after the error record.
+/// The sub-node may send its [`Hello`] as the GET request body; the header is
+/// kept as a fallback for older peers. A protocol mismatch ends the stream with
+/// a single `error` record. On success the master sends its `hello`, registers
+/// the node for config pushes, and reconciles the node's `applied_version`
+/// (master-wins on divergence).
+async fn stream(
+    State(state): State<Arc<ServerState>>,
+    Extension(auth): Extension<AuthenticatedNode>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let hello = if body.is_empty() {
+        None
+    } else {
+        match serde_json::from_slice::<StreamRecord>(&body) {
+            Ok(StreamRecord::Hello(hello)) => Some(hello),
+            _ => return error_record(&ClusterError::ProtocolVersion),
         }
-        _ => {
-            let record = json!({
-                "type": "hello",
-                "protocol": PROTOCOL_VERSION,
-                "node_id": auth.0,
-            });
-            let _ = tx.try_send(Ok(Bytes::from(format!("{record}\n"))));
-            // Hold the sender until the client drops the response, so the
-            // stream stays open without a wall-clock timer.
-            tokio::spawn(async move {
-                let _ = tx.closed().await;
-            });
-        }
+    };
+    let peer_protocol = hello.as_ref().map(|hello| hello.protocol).or_else(|| {
+        headers
+            .get(PROTOCOL_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u32>().ok())
+    });
+    if peer_protocol.is_some_and(|version| version != PROTOCOL_VERSION) {
+        return error_record(&ClusterError::ProtocolVersion);
     }
 
+    let last_applied_version = hello.as_ref().and_then(|hello| hello.last_applied_version);
+    let (records, mut record_rx) = mpsc::channel::<StreamRecord>(8);
+    let _ = records.try_send(StreamRecord::Hello(Hello {
+        protocol: PROTOCOL_VERSION,
+        node_id: auth.0.clone(),
+        last_applied_version: state.config_sync.current_version(),
+        last_acked_log_seq: None,
+    }));
+    state
+        .config_sync
+        .register(&auth.0, last_applied_version, records);
+
+    let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(8);
+    let config_sync = Arc::clone(&state.config_sync);
+    let node_id = auth.0.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                record = record_rx.recv() => {
+                    let Some(record) = record else { break };
+                    let Ok(line) = serde_json::to_string(&record) else { continue };
+                    let mut bytes = line.into_bytes();
+                    bytes.push(b'\n');
+                    if tx.send(Ok(Bytes::from(bytes))).await.is_err() {
+                        break;
+                    }
+                }
+                () = tx.closed() => break,
+            }
+        }
+        config_sync.unregister(&node_id);
+    });
+
     let mut response = Body::from_stream(ReceiverStream::new(rx)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(NDJSON));
+    response
+}
+
+/// `POST /cluster/v1/ack` — records a sub-node's applied config version.
+async fn config_ack(
+    State(state): State<Arc<ServerState>>,
+    Extension(auth): Extension<AuthenticatedNode>,
+    Json(ack): Json<ConfigAck>,
+) -> Response {
+    if ack.applied_version < 0 {
+        return error_response(&ClusterError::ConfigApply {
+            message: "applied_version must not be negative".to_owned(),
+        });
+    }
+    state.config_sync.ack(&auth.0, ack.applied_version);
+    match state
+        .store
+        .set_applied_config_version(&auth.0, ack.applied_version)
+        .await
+    {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+/// A stream terminated by one `error` record.
+fn error_record(error: &ClusterError) -> Response {
+    let record = StreamRecord::Error {
+        error: StreamError {
+            code: error.code().to_owned(),
+            params: None,
+        },
+    };
+    let line = serde_json::to_string(&record).unwrap_or_default();
+    let mut response = Body::from(format!("{line}\n")).into_response();
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(NDJSON));

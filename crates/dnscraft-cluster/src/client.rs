@@ -29,10 +29,13 @@ use crate::enroll::{EnrollRequest, EnrollResponse, PROTOCOL_VERSION};
 use crate::error::ClusterError;
 use crate::identity::NodeIdentity;
 use crate::server::{HeartbeatRequest, HeartbeatResponse, PROTOCOL_HEADER};
+use crate::sync::{ConfigAck, ConfigApplier, ConfigPush, Hello, StreamError, StreamRecord};
 
 const ENROLL_PATH: &str = "/cluster/v1/enroll";
 const STREAM_PATH: &str = "/cluster/v1/stream";
 const HEARTBEAT_PATH: &str = "/cluster/v1/heartbeat";
+const ACK_PATH: &str = "/cluster/v1/ack";
+const NDJSON: &str = "application/x-ndjson";
 
 /// A sub-node's HTTP/2 mTLS client for the master's cluster listener.
 pub struct ClusterClient {
@@ -94,14 +97,36 @@ impl ClusterClient {
     }
 
     /// Opens the long-lived downstream stream and consumes the `hello`.
-    ///
-    /// The returned [`ClusterStream`] keeps the response (and therefore the
-    /// connection) alive. Downstream push records belong to later phases.
     pub async fn open_stream(&self) -> Result<ClusterStream, ClusterError> {
+        self.open_stream_with(None, None).await
+    }
+
+    /// Opens the stream, sending [`Hello`] with the node's applied version and
+    /// last acknowledged log sequence.
+    ///
+    /// The `Hello` travels as the GET request body (NDJSON); the protocol
+    /// header is kept for compatibility. The returned [`ClusterStream`] keeps
+    /// the response open for push records.
+    pub async fn open_stream_with(
+        &self,
+        last_applied_version: Option<i64>,
+        last_acked_log_seq: Option<u64>,
+    ) -> Result<ClusterStream, ClusterError> {
+        let hello = StreamRecord::Hello(Hello {
+            protocol: PROTOCOL_VERSION,
+            node_id: self.node_id.clone(),
+            last_applied_version,
+            last_acked_log_seq,
+        });
+        let body = serde_json::to_vec(&hello).map_err(|error| ClusterError::Internal {
+            message: format!("encode stream hello: {error}"),
+        })?;
         let response = self
             .http
             .get(format!("{}{STREAM_PATH}", self.base_url))
             .header(PROTOCOL_HEADER, PROTOCOL_VERSION.to_string())
+            .header(reqwest::header::CONTENT_TYPE, NDJSON)
+            .body(body)
             .send()
             .await
             .map_err(master_unavailable)?;
@@ -114,7 +139,9 @@ impl ClusterClient {
                 message: format!("invalid stream hello: {error}"),
             })?;
         match record {
-            StreamRecord::Hello { protocol, node_id } => {
+            StreamRecord::Hello(Hello {
+                protocol, node_id, ..
+            }) => {
                 if protocol != PROTOCOL_VERSION {
                     return Err(ClusterError::ProtocolVersion);
                 }
@@ -126,12 +153,70 @@ impl ClusterClient {
                 Ok(ClusterStream {
                     node_id,
                     protocol,
-                    _response: response,
-                    _buffer: buffer,
+                    response,
+                    buffer,
                 })
             }
             StreamRecord::Error { error } => Err(map_wire_error(&error)),
+            _ => Err(ClusterError::TransportTls {
+                message: "master did not start the stream with hello".to_owned(),
+            }),
         }
+    }
+
+    /// Reads one stream record, applying and acking a `config_push`.
+    ///
+    /// Returns the applied version when a push was handled, `None` for any
+    /// other record. A digest mismatch or applier failure is returned without
+    /// acking; the applier owns rollback.
+    pub async fn apply_next(
+        &self,
+        stream: &mut ClusterStream,
+        applier: &dyn ConfigApplier,
+    ) -> Result<Option<i64>, ClusterError> {
+        match stream.next_record().await? {
+            StreamRecord::ConfigPush(push) => self.apply_push(&push, applier).await.map(Some),
+            StreamRecord::Error { error } => Err(map_wire_error(&error)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Verifies a push digest, applies it, and posts [`ConfigAck`].
+    ///
+    /// The snapshot is never applied on a digest mismatch
+    /// (`cluster.config.apply`). An applier error propagates unchanged and no
+    /// ack is sent, so the master keeps retrying and the previous version
+    /// stays active.
+    pub async fn apply_push(
+        &self,
+        push: &ConfigPush,
+        applier: &dyn ConfigApplier,
+    ) -> Result<i64, ClusterError> {
+        if push.protocol != PROTOCOL_VERSION {
+            return Err(ClusterError::ProtocolVersion);
+        }
+        push.verify_digest()?;
+        let applied_version = applier.apply(push.config_version, &push.snapshot).await?;
+        self.post_ack(applied_version).await?;
+        Ok(applied_version)
+    }
+
+    async fn post_ack(&self, applied_version: i64) -> Result<(), ClusterError> {
+        let body = serde_json::to_vec(&StreamRecord::Ack(ConfigAck { applied_version })).map_err(
+            |error| ClusterError::Internal {
+                message: format!("encode config ack: {error}"),
+            },
+        )?;
+        let response = self
+            .http
+            .post(format!("{}{ACK_PATH}", self.base_url))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(master_unavailable)?;
+        ensure_success(response).await?;
+        Ok(())
     }
 
     /// Sends one heartbeat; `applied_version`/`queue_depth` are reported as-is.
@@ -171,9 +256,23 @@ impl ClusterClient {
         &self,
         shutdown: &tokio::sync::Notify,
     ) -> Result<ClusterStream, ClusterError> {
+        self.connect_with(None, None, shutdown).await
+    }
+
+    /// [`connect`](Self::connect) with the node's last applied version and log
+    /// sequence, so the master reconciles config immediately on reconnect.
+    pub async fn connect_with(
+        &self,
+        last_applied_version: Option<i64>,
+        last_acked_log_seq: Option<u64>,
+        shutdown: &tokio::sync::Notify,
+    ) -> Result<ClusterStream, ClusterError> {
         let mut backoff = Backoff::new(DEFAULT_RECONNECT_BACKOFF, DEFAULT_RECONNECT_BACKOFF_MAX);
         loop {
-            match self.open_stream().await {
+            match self
+                .open_stream_with(last_applied_version, last_acked_log_seq)
+                .await
+            {
                 Ok(stream) => return Ok(stream),
                 Err(ClusterError::MasterUnavailable) => {}
                 Err(error) => return Err(error),
@@ -194,9 +293,9 @@ pub struct ClusterStream {
     node_id: String,
     protocol: u32,
     /// Kept alive so the HTTP/2 response body stays open.
-    _response: reqwest::Response,
-    /// Leftover bytes after the `hello` line, for later record phases.
-    _buffer: Vec<u8>,
+    response: reqwest::Response,
+    /// Leftover bytes after the last record read.
+    buffer: Vec<u8>,
 }
 
 impl ClusterStream {
@@ -209,29 +308,27 @@ impl ClusterStream {
     pub fn protocol(&self) -> u32 {
         self.protocol
     }
-}
 
-/// One downstream NDJSON record (the only records this slice emits).
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum StreamRecord {
-    Hello { protocol: u32, node_id: String },
-    Error { error: WireError },
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct WireError {
-    code: String,
-    #[serde(default)]
-    params: Option<serde_json::Value>,
+    /// Reads the next NDJSON record from the master.
+    pub async fn next_record(&mut self) -> Result<StreamRecord, ClusterError> {
+        loop {
+            let line = read_line(&mut self.response, &mut self.buffer).await?;
+            if line.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            return serde_json::from_slice(&line).map_err(|error| ClusterError::TransportTls {
+                message: format!("invalid cluster stream record: {error}"),
+            });
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct ErrorEnvelope {
-    error: WireError,
+    error: StreamError,
 }
 
-fn map_wire_error(error: &WireError) -> ClusterError {
+fn map_wire_error(error: &StreamError) -> ClusterError {
     let node_id = error
         .params
         .as_ref()
@@ -486,7 +583,7 @@ mod tests {
 
     #[test]
     fn wire_errors_map_to_stable_cluster_variants() {
-        let error = WireError {
+        let error = StreamError {
             code: "cluster.node.revoked".to_owned(),
             params: Some(serde_json::json!({ "node_id": "node-a" })),
         };
@@ -497,7 +594,7 @@ mod tests {
             }
         );
         assert_eq!(
-            map_wire_error(&WireError {
+            map_wire_error(&StreamError {
                 code: "cluster.protocol.version".to_owned(),
                 params: None,
             }),
