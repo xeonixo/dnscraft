@@ -31,7 +31,10 @@ use crate::identity::NodeIdentity;
 use crate::log::{LogAck, LogBatch};
 use crate::relay::{RelayResponse, RuntimeCommand, RuntimeCommandApplier, WriteRelay};
 use crate::server::{HeartbeatRequest, HeartbeatResponse, PROTOCOL_HEADER};
-use crate::sync::{ConfigAck, ConfigApplier, ConfigPush, Hello, StreamError, StreamRecord};
+use crate::sync::{
+    AuthSnapshotApplier, AuthSnapshotPush, CertInstaller, CertPush, ConfigAck, ConfigApplier,
+    ConfigPush, Hello, StreamError, StreamRecord,
+};
 
 const ENROLL_PATH: &str = "/cluster/v1/enroll";
 const STREAM_PATH: &str = "/cluster/v1/stream";
@@ -246,6 +249,80 @@ impl ClusterClient {
                     message: other.to_string(),
                 },
             })
+    }
+
+    /// Reads one stream record; installs a pushed certificate.
+    ///
+    /// Returns `true` when a `cert_push` was handled, `false` for any other
+    /// record. The key is handed to the installer by reference and never
+    /// formatted or logged here.
+    pub async fn apply_cert_next(
+        &self,
+        stream: &mut ClusterStream,
+        installer: &dyn CertInstaller,
+    ) -> Result<bool, ClusterError> {
+        match stream.next_record().await? {
+            StreamRecord::CertPush(push) => {
+                self.apply_cert(&push, installer).await?;
+                Ok(true)
+            }
+            StreamRecord::Error { error } => Err(map_wire_error(&error)),
+            _ => Ok(false),
+        }
+    }
+
+    /// Installs one pushed certificate/key through `installer`.
+    ///
+    /// Any installer failure is reported as `cluster.cert_push.failed`.
+    pub async fn apply_cert(
+        &self,
+        push: &CertPush,
+        installer: &dyn CertInstaller,
+    ) -> Result<(), ClusterError> {
+        if push.protocol != PROTOCOL_VERSION {
+            return Err(ClusterError::ProtocolVersion);
+        }
+        installer
+            .install(&push.chain_pem, &push.private_key)
+            .await
+            .map_err(|error| match error {
+                ClusterError::CertPushFailed { .. } => error,
+                other => ClusterError::CertPushFailed {
+                    message: other.to_string(),
+                },
+            })
+    }
+
+    /// Reads one stream record; applies a pushed auth snapshot.
+    ///
+    /// Returns `true` when an `auth_snapshot` was applied, `false` for any
+    /// other record.
+    pub async fn apply_auth_snapshot_next(
+        &self,
+        stream: &mut ClusterStream,
+        applier: &dyn AuthSnapshotApplier,
+    ) -> Result<bool, ClusterError> {
+        match stream.next_record().await? {
+            StreamRecord::AuthSnapshotPush(push) => {
+                self.apply_auth_snapshot(&push, applier).await?;
+                Ok(true)
+            }
+            StreamRecord::Error { error } => Err(map_wire_error(&error)),
+            _ => Ok(false),
+        }
+    }
+
+    /// Applies one auth snapshot through `applier`; its error propagates
+    /// unchanged.
+    pub async fn apply_auth_snapshot(
+        &self,
+        push: &AuthSnapshotPush,
+        applier: &dyn AuthSnapshotApplier,
+    ) -> Result<(), ClusterError> {
+        if push.protocol != PROTOCOL_VERSION {
+            return Err(ClusterError::ProtocolVersion);
+        }
+        applier.apply(&push.snapshot).await
     }
 
     async fn post_ack(&self, applied_version: i64) -> Result<(), ClusterError> {

@@ -30,6 +30,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use dnscraft_common::clock::Clock;
+use dnscraft_common::secret::Secret;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::service::TowerToHyperService;
 use rcgen::{
@@ -55,7 +56,9 @@ use crate::error::ClusterError;
 use crate::log::{LogAck, LogBatch, LogIngest};
 use crate::relay::{RuntimeCommand, WriteExecutor, WriteRelay};
 use crate::store::ClusterStore;
-use crate::sync::{ConfigAck, ConfigSync, Hello, StreamError, StreamRecord};
+use crate::sync::{
+    AuthSnapshotPush, CertPush, ConfigAck, ConfigSync, Hello, StreamError, StreamRecord,
+};
 
 /// Request header carrying the sub-node's cluster protocol version.
 pub(crate) const PROTOCOL_HEADER: &str = "x-cluster-protocol";
@@ -257,6 +260,30 @@ impl ClusterServer {
         };
         self.config_sync
             .broadcast(StreamRecord::RuntimeCommand(command));
+    }
+
+    /// Broadcasts a renewed certificate/key to every connected node.
+    ///
+    /// Best-effort like [`Self::broadcast_runtime_command`]: a node that is
+    /// offline keeps its previous certificate. The key travels only over the
+    /// mTLS stream and is never logged.
+    pub fn push_cert(&self, chain_pem: &str, private_key: &Secret) {
+        self.config_sync.broadcast(StreamRecord::CertPush(CertPush {
+            protocol: PROTOCOL_VERSION,
+            chain_pem: chain_pem.to_owned(),
+            private_key: private_key.clone(),
+        }));
+    }
+
+    /// Broadcasts an encrypted auth snapshot to every connected node.
+    ///
+    /// Best-effort: offline nodes reconcile from the master's next snapshot.
+    pub fn push_auth_snapshot(&self, snapshot: &serde_json::Value) {
+        self.config_sync
+            .broadcast(StreamRecord::AuthSnapshotPush(AuthSnapshotPush {
+                protocol: PROTOCOL_VERSION,
+                snapshot: snapshot.clone(),
+            }));
     }
 
     /// Stops accepting new connections and waits for the accept loop to exit.

@@ -20,6 +20,9 @@
 //! - [`StreamRecord`] / [`Hello`] / [`ConfigPush`] / [`ConfigAck`] — the NDJSON
 //!   stream records, plus [`ConfigApplier`] and [`ConfigSync`] for full-snapshot
 //!   configuration push, digest verification, acknowledgement, lag, and retry.
+//! - [`CertPush`] / [`CertInstaller`] and [`AuthSnapshotPush`] /
+//!   [`AuthSnapshotApplier`] — master pushes for TLS certificate hot-reload and
+//!   encrypted auth-state replication.
 //! - [`WriteRelay`] / [`WriteExecutor`] / [`RelayResponse`] — live write relay
 //!   from a sub-node to the master (the caller re-checks RBAC and executes the
 //!   canonical handler).
@@ -70,8 +73,9 @@ pub use relay::{
 pub use server::{ClusterServer, ClusterServerConfig, HeartbeatRequest, HeartbeatResponse};
 pub use store::{ClusterNode, ClusterStore, MintedJoinToken};
 pub use sync::{
-    ConfigAck, ConfigApplier, ConfigPush, ConfigSync, Hello, NodeLag, StreamError, StreamRecord,
-    canonical_snapshot_bytes, snapshot_digest,
+    AuthSnapshotApplier, AuthSnapshotPush, CertInstaller, CertPush, ConfigAck, ConfigApplier,
+    ConfigPush, ConfigSync, Hello, NodeLag, StreamError, StreamRecord, canonical_snapshot_bytes,
+    snapshot_digest,
 };
 
 use ring::digest::{SHA256, digest};

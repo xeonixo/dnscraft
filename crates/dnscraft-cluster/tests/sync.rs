@@ -1,6 +1,7 @@
 //! Loopback proof of the config-sync slice: master push → digest check →
 //! applier → ack → zero lag, plus digest mismatch, apply failure, and
-//! reconnect reconciliation (stale node and master-wins).
+//! reconnect reconciliation (stale node and master-wins). Also proves the
+//! certificate push (exact chain+key, failure code) and auth-snapshot push.
 //!
 //! Real sockets on `127.0.0.1:0`, generated CA/certs via `rcgen`, an injectable
 //! [`ManualClock`], a mock [`ConfigApplier`], and no wall-clock waits.
@@ -16,9 +17,10 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use dnscraft_cluster::{
-    ClusterCa, ClusterClient, ClusterError, ClusterServer, ClusterServerConfig, ClusterStore,
-    ConfigApplier, ConfigPush, ListenConfig, LogIngest, LogRecord, NodeIdentity,
-    PendingNodeIdentity, RelayResponse, RelayedActor, TlsPaths, WriteExecutor,
+    AuthSnapshotApplier, CertInstaller, ClusterCa, ClusterClient, ClusterError, ClusterServer,
+    ClusterServerConfig, ClusterStore, ConfigApplier, ConfigPush, ListenConfig, LogIngest,
+    LogRecord, NodeIdentity, PendingNodeIdentity, RelayResponse, RelayedActor, TlsPaths,
+    WriteExecutor,
 };
 use dnscraft_common::clock::ManualClock;
 use dnscraft_common::secret::Secret;
@@ -66,6 +68,62 @@ impl ConfigApplier for MockApplier {
             .unwrap()
             .push((version, snapshot.clone()));
         Ok(version)
+    }
+}
+
+/// Records installed certificate material and can be told to fail.
+#[derive(Default)]
+struct MockCertInstaller {
+    seen: Mutex<Vec<(String, String)>>,
+    fail: bool,
+}
+
+impl MockCertInstaller {
+    fn failing() -> Self {
+        Self {
+            fail: true,
+            ..Self::default()
+        }
+    }
+
+    fn seen(&self) -> Vec<(String, String)> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl CertInstaller for MockCertInstaller {
+    async fn install(&self, chain_pem: &str, private_key: &Secret) -> Result<(), ClusterError> {
+        if self.fail {
+            return Err(ClusterError::Internal {
+                message: "mock install failure".to_owned(),
+            });
+        }
+        self.seen
+            .lock()
+            .unwrap()
+            .push((chain_pem.to_owned(), private_key.expose().to_owned()));
+        Ok(())
+    }
+}
+
+/// Records applied auth snapshots.
+#[derive(Default)]
+struct MockAuthSnapshot {
+    seen: Mutex<Vec<Value>>,
+}
+
+impl MockAuthSnapshot {
+    fn seen(&self) -> Vec<Value> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl AuthSnapshotApplier for MockAuthSnapshot {
+    async fn apply(&self, snapshot: &Value) -> Result<(), ClusterError> {
+        self.seen.lock().unwrap().push(snapshot.clone());
+        Ok(())
     }
 }
 
@@ -294,6 +352,81 @@ async fn a_sub_node_ahead_of_the_master_is_overwritten() {
 
     let lag = master.server.config_sync().node_lag("node-c").unwrap();
     assert_eq!(lag.lag, 0);
+
+    drop(stream);
+    master.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn cert_push_reaches_the_installer_with_the_exact_chain_and_key() {
+    let master = start_master("cert-push").await;
+    let client = client_for(&master, "node-a").await;
+    let mut stream = client.open_stream().await.unwrap();
+    let installer = MockCertInstaller::default();
+
+    let chain = "-----BEGIN CERTIFICATE-----\nleaf-certificate\n-----END CERTIFICATE-----\n";
+    let key = Secret::new("-----BEGIN PRIVATE KEY-----\nkey-material\n-----END PRIVATE KEY-----\n");
+    master.server.push_cert(chain, &key);
+
+    assert!(
+        client
+            .apply_cert_next(&mut stream, &installer)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        installer.seen(),
+        vec![(chain.to_owned(), key.expose().to_owned())]
+    );
+
+    drop(stream);
+    master.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn failing_cert_install_is_reported_as_cert_push_failed() {
+    let master = start_master("cert-fail").await;
+    let client = client_for(&master, "node-a").await;
+    let mut stream = client.open_stream().await.unwrap();
+    let installer = MockCertInstaller::failing();
+
+    master.server.push_cert(
+        "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n",
+        &Secret::new("-----BEGIN PRIVATE KEY-----\nkey-material\n-----END PRIVATE KEY-----\n"),
+    );
+
+    let error = client
+        .apply_cert_next(&mut stream, &installer)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "cluster.cert_push.failed");
+    assert!(installer.seen().is_empty());
+
+    drop(stream);
+    master.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn auth_snapshot_push_reaches_the_applier() {
+    let master = start_master("auth-snapshot").await;
+    let client = client_for(&master, "node-a").await;
+    let mut stream = client.open_stream().await.unwrap();
+    let applier = MockAuthSnapshot::default();
+
+    let snapshot = json!({
+        "token_hashes": ["sha256:abc"],
+        "session_epoch": 3,
+        "oidc": { "issuer": "https://id.example" },
+    });
+    master.server.push_auth_snapshot(&snapshot);
+
+    assert!(
+        client
+            .apply_auth_snapshot_next(&mut stream, &applier)
+            .await
+            .unwrap()
+    );
+    assert_eq!(applier.seen(), vec![snapshot]);
 
     drop(stream);
     master.server.shutdown().await;

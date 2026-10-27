@@ -20,7 +20,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use dnscraft_common::clock::{Clock, add_duration, wait_until};
-use serde::{Deserialize, Serialize};
+use dnscraft_common::secret::Secret;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use tokio::sync::{Notify, mpsc, watch};
 
@@ -167,6 +168,64 @@ impl fmt::Debug for ConfigPush {
     }
 }
 
+/// Master → sub-node certificate/key push (`cert_push`).
+///
+/// The chain is a public PEM bundle; the private key is a [`Secret`] that is
+/// redacted by [`Debug`] and transmitted only over the already-mTLS stream.
+/// `Secret`'s own [`Serialize`] redacts, so the wire form is written explicitly
+/// with the key for transport and rebuilt as a `Secret` on receipt.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertPush {
+    /// Cluster protocol version.
+    pub protocol: u32,
+    /// Certificate chain (PEM), leaf first.
+    pub chain_pem: String,
+    /// Matching private key (PEM), never logged or formatted.
+    #[serde(
+        serialize_with = "serialize_secret",
+        deserialize_with = "deserialize_secret"
+    )]
+    pub private_key: Secret,
+}
+
+impl fmt::Debug for CertPush {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CertPush")
+            .field("protocol", &self.protocol)
+            .field("chain_pem", &self.chain_pem)
+            .field("private_key", &"<redacted>")
+            .finish()
+    }
+}
+
+fn serialize_secret<S: Serializer>(secret: &Secret, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(secret.expose())
+}
+
+fn deserialize_secret<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Secret, D::Error> {
+    Ok(Secret::new(String::deserialize(deserializer)?))
+}
+
+/// Master → sub-node encrypted auth-state push (`auth_snapshot`).
+///
+/// The snapshot is opaque and its [`Debug`] representation is redacted.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct AuthSnapshotPush {
+    /// Cluster protocol version.
+    pub protocol: u32,
+    /// Opaque encrypted auth snapshot.
+    pub snapshot: Value,
+}
+
+impl fmt::Debug for AuthSnapshotPush {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthSnapshotPush")
+            .field("protocol", &self.protocol)
+            .field("snapshot", &"<opaque>")
+            .finish()
+    }
+}
+
 /// Sub-node → master acknowledgement of an applied snapshot (`ack`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigAck {
@@ -187,8 +246,8 @@ pub struct StreamError {
 /// One NDJSON record exchanged over the cluster stream.
 ///
 /// Serialized as a single JSON object with a `type` tag
-/// (`hello`, `config_push`, `ack`, `runtime_command`, `error`) followed by a
-/// newline.
+/// (`hello`, `config_push`, `cert_push`, `auth_snapshot`, `ack`,
+/// `runtime_command`, `error`) followed by a newline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamRecord {
@@ -196,6 +255,11 @@ pub enum StreamRecord {
     Hello(Hello),
     /// Full configuration snapshot.
     ConfigPush(ConfigPush),
+    /// Certificate chain + private key for hot reload.
+    CertPush(CertPush),
+    /// Encrypted auth-state snapshot.
+    #[serde(rename = "auth_snapshot")]
+    AuthSnapshotPush(AuthSnapshotPush),
     /// Applied-version acknowledgement.
     #[serde(rename = "ack")]
     Ack(ConfigAck),
@@ -217,6 +281,28 @@ pub enum StreamRecord {
 pub trait ConfigApplier: Send + Sync {
     /// Applies `snapshot` as `version` and returns the applied version.
     async fn apply(&self, version: i64, snapshot: &Value) -> Result<i64, ClusterError>;
+}
+
+/// Sub-node hook that installs a pushed certificate/key through the TLS
+/// module's hot-reload path.
+///
+/// A failure is surfaced as [`ClusterError::CertPushFailed`]
+/// (`cluster.cert_push.failed`); the key is only ever read via
+/// [`Secret::expose`] inside the implementation.
+#[async_trait::async_trait]
+pub trait CertInstaller: Send + Sync {
+    /// Installs `chain_pem` and its `private_key`.
+    async fn install(&self, chain_pem: &str, private_key: &Secret) -> Result<(), ClusterError>;
+}
+
+/// Sub-node hook that applies a pushed auth snapshot.
+///
+/// The snapshot is opaque to this crate; the implementation owns decryption
+/// and replacement of local auth state.
+#[async_trait::async_trait]
+pub trait AuthSnapshotApplier: Send + Sync {
+    /// Applies an opaque encrypted auth snapshot.
+    async fn apply(&self, snapshot: &Value) -> Result<(), ClusterError>;
 }
 
 /// Per-node lag snapshot reported by [`ConfigSync::lag`].
@@ -524,6 +610,63 @@ mod tests {
         let rendered = format!("{push:?}");
         assert!(!rendered.contains("do-not-log"));
         assert!(rendered.contains("<opaque>"));
+    }
+
+    #[test]
+    fn cert_push_debug_and_auth_snapshot_never_leak_material() {
+        let key_material =
+            "-----BEGIN PRIVATE KEY-----\nsuper-secret-key\n-----END PRIVATE KEY-----";
+        let cert = CertPush {
+            protocol: crate::PROTOCOL_VERSION,
+            chain_pem: "chain".to_owned(),
+            private_key: Secret::new(key_material),
+        };
+        for rendered in [
+            format!("{cert:?}"),
+            format!("{:?}", StreamRecord::CertPush(cert.clone())),
+        ] {
+            assert!(!rendered.contains("super-secret-key"));
+            assert!(rendered.contains("<redacted>"));
+        }
+
+        let auth = AuthSnapshotPush {
+            protocol: crate::PROTOCOL_VERSION,
+            snapshot: json!({ "secret": "do-not-log" }),
+        };
+        for rendered in [
+            format!("{auth:?}"),
+            format!("{:?}", StreamRecord::AuthSnapshotPush(auth.clone())),
+        ] {
+            assert!(!rendered.contains("do-not-log"));
+            assert!(rendered.contains("<opaque>"));
+        }
+    }
+
+    #[test]
+    fn cert_push_round_trips_over_the_wire_with_the_key() {
+        let key_material =
+            "-----BEGIN PRIVATE KEY-----\nsuper-secret-key\n-----END PRIVATE KEY-----";
+        let record = StreamRecord::CertPush(CertPush {
+            protocol: crate::PROTOCOL_VERSION,
+            chain_pem: "chain".to_owned(),
+            private_key: Secret::new(key_material),
+        });
+        let line = serde_json::to_string(&record).unwrap();
+        assert!(line.starts_with(r#"{"type":"cert_push""#));
+        assert!(line.contains("super-secret-key"));
+        let StreamRecord::CertPush(decoded) = serde_json::from_str(&line).unwrap() else {
+            panic!("expected cert_push record");
+        };
+        assert_eq!(decoded.private_key.expose(), key_material);
+        assert_eq!(decoded.chain_pem, "chain");
+
+        let auth = StreamRecord::AuthSnapshotPush(AuthSnapshotPush {
+            protocol: crate::PROTOCOL_VERSION,
+            snapshot: json!({ "epoch": 2 }),
+        });
+        let line = serde_json::to_string(&auth).unwrap();
+        assert!(line.starts_with(r#"{"type":"auth_snapshot""#));
+        assert_eq!(serde_json::from_str::<StreamRecord>(&line).unwrap(), auth);
     }
 
     #[test]
