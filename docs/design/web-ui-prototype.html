@@ -340,14 +340,9 @@ body {
       Dashboard
     </button>
 
-    <div class="nav-section">Aktivität</div>
     <button class="nav-item" data-target="screen-queries" data-title="Anfragen">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       Anfragen
-    </button>
-    <button class="nav-item" data-target="screen-stats" data-title="Statistik">
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
-      Statistik
     </button>
 
     <div class="nav-section">Filterung</div>
@@ -404,20 +399,9 @@ body {
       TLS
     </button>
 
-    <div class="nav-section">Cluster</div>
     <button class="nav-item" data-target="screen-cluster" data-title="Knoten">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
       Knoten
-    </button>
-
-    <div class="nav-section">Integrationen</div>
-    <button class="nav-item" data-target="screen-mcp" data-title="MCP">
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
-      MCP
-    </button>
-    <button class="nav-item" data-target="screen-api-explorer" data-title="API-Explorer">
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-      API-Explorer
     </button>
 
     <div class="nav-section">System</div>
@@ -428,6 +412,14 @@ body {
     <button class="nav-item" data-target="screen-config" data-title="Konfiguration">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
       Konfiguration
+    </button>
+    <button class="nav-item" data-target="screen-mcp" data-title="MCP">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+      MCP
+    </button>
+    <button class="nav-item" data-target="screen-api-explorer" data-title="API-Explorer">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+      API-Explorer
     </button>
 
     <div class="sidebar-foot">
@@ -464,6 +456,15 @@ body {
             <b>Selbstsigniertes Zertifikat aktiv</b>
             <p>Bis ein ACME-Zertifikat vorliegt, ist die Verbindung nicht vertrauenswürdig. Das Zertifikat gilt für <span class="mono">node1.dns.example.com</span>.</p>
             <span class="fp">SHA-256&nbsp; 3A:9C:7F:11:DE:42:0B:88:65:01:EE:2A:94:C3:0D:77</span>
+          </div>
+        </div>
+
+        <div class="filter-row">
+          <div class="seg" role="tablist" aria-label="Zeitraum">
+            <button role="tab" aria-selected="true">24 h</button>
+            <button role="tab" aria-selected="false">7 d</button>
+            <button role="tab" aria-selected="false">30 d</button>
+            <button role="tab" aria-selected="false">1 Jahr</button>
           </div>
         </div>
 
@@ -577,6 +578,18 @@ body {
             <div class="main"><div class="domain">DynDNS fehlgeschlagen</div><div class="meta">letzter Versuch vor 3 min · Cloudflare 502</div></div>
             <div class="tail"><div class="time">14:29</div></div>
           </div>
+        </div>
+
+        <div class="section-head">Top-Domains</div>
+        <div class="group">
+          <div class="row"><div class="main"><div class="domain">www.example.com</div></div><div class="tail"><div class="domain">18.204</div></div></div>
+          <div class="row"><div class="main"><div class="domain">cdn.example.com</div></div><div class="tail"><div class="domain">12.771</div></div></div>
+          <div class="row"><div class="main"><div class="domain">api.example.net</div></div><div class="tail"><div class="domain">9.403</div></div></div>
+        </div>
+        <div class="section-head">Top-Geräte</div>
+        <div class="group">
+          <div class="row"><div class="main"><div class="domain">iPhone</div><div class="meta">192.0.2.11</div></div><div class="tail"><div class="domain">31.205</div></div></div>
+          <div class="row"><div class="main"><div class="domain">MacBook</div><div class="meta">192.0.2.4</div></div><div class="tail"><div class="domain">27.880</div></div></div>
         </div>
 
         <div class="section-head">Letzte blockierte Anfragen</div>
@@ -1083,53 +1096,6 @@ body {
     </section>
 
     <!-- placeholders: feature inventory for the remaining screens -->
-    <section class="screen" id="screen-stats" hidden>
-      <div class="content">
-        <div class="filter-row">
-          <div class="seg" role="tablist" aria-label="Zeitraum">
-            <button role="tab" aria-selected="true">24 h</button>
-            <button role="tab" aria-selected="false">7 d</button>
-            <button role="tab" aria-selected="false">30 d</button>
-            <button role="tab" aria-selected="false">1 Jahr</button>
-          </div>
-        </div>
-        <div class="tiles">
-          <div class="tile">
-            <div class="top"><span class="name">Anfragen</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg></div>
-            <div class="value num">128.431</div>
-            <div class="delta"><span class="up">+12&nbsp;%</span> gegenüber Vorperiode</div>
-          </div>
-          <div class="tile">
-            <div class="top"><span class="name">Blockiert</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/></svg></div>
-            <div class="value num">4.209<span class="unit">3,3&nbsp;%</span></div>
-            <div class="delta"><span class="down">−1,1&nbsp;%</span></div>
-          </div>
-          <div class="tile">
-            <div class="top"><span class="name">Cache-Treffer</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-9-9"/><polyline points="21 3 21 9 15 9"/></svg></div>
-            <div class="value num">91,8<span class="unit">%</span></div>
-            <div class="delta"><span class="up">+0,4&nbsp;%</span></div>
-          </div>
-          <div class="tile">
-            <div class="top"><span class="name">Eindeutige Geräte</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="2" y="4" width="13" height="16" rx="2"/><path d="M7 4h10a2 2 0 0 1 2 2v12"/></svg></div>
-            <div class="value num">37</div>
-            <div class="delta">im Zeitraum</div>
-          </div>
-        </div>
-        <div class="section-head">Top-Domains</div>
-        <div class="group">
-          <div class="row"><div class="main"><div class="domain">www.example.com</div></div><div class="tail"><div class="domain">18.204</div></div></div>
-          <div class="row"><div class="main"><div class="domain">cdn.example.com</div></div><div class="tail"><div class="domain">12.771</div></div></div>
-          <div class="row"><div class="main"><div class="domain">api.example.net</div></div><div class="tail"><div class="domain">9.403</div></div></div>
-        </div>
-        <div class="section-head">Top-Geräte</div>
-        <div class="group">
-          <div class="row"><div class="main"><div class="domain">iPhone</div><div class="meta">192.0.2.11</div></div><div class="tail"><div class="domain">31.205</div></div></div>
-          <div class="row"><div class="main"><div class="domain">MacBook</div><div class="meta">192.0.2.4</div></div><div class="tail"><div class="domain">27.880</div></div></div>
-        </div>
-        <div class="footnote">Rollups stündlich/täglich; bis zu einem Jahr verfügbar.</div>
-      </div>
-    </section>
-
     <section class="screen" id="screen-filter-lists" hidden>
       <div class="content">
         <p class="lead">Quellen für Filterlisten (https-URL oder lokale Datei).</p>

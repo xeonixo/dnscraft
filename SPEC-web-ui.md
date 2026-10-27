@@ -449,20 +449,17 @@ durations, caps) are configuration, edited through `/config` (`GET/PUT
 
 ### Navigation (sidebar)
 
-The persistent sidebar is a grouped source list — never a flat run of links. Eight
+The persistent sidebar is a grouped source list — never a flat run of links. Five
 sections order the screens by concern, from operational ("what is happening") to
 administrative ("who can change things"):
 
 | Section | Screens |
 |---|---|
-| Übersicht | Dashboard |
-| Aktivität | Anfragen, Statistik |
+| Übersicht | Dashboard (inkl. Statistik), Anfragen |
 | Filterung | Filtersätze, Filterlisten, Regeln & Freigaben |
 | DNS-Regelwerk | Zonen, Namen, Forward-Zonen, Profile, Test-Abfrage |
-| Netzwerk | Geräte, DoH-Clients, Listener, TLS |
-| Cluster | Knoten |
-| Integrationen | MCP, API-Explorer |
-| System | System (Konto, Darstellung, Protokollierung, API-Tokens, Audit-Log), Konfiguration (Editor, Import/Export, Versionen, Backups) |
+| Netzwerk | Geräte, DoH-Clients, Listener, TLS, Knoten |
+| System | System (Konto, Darstellung, Protokollierung, API-Tokens, Audit-Log), Konfiguration (Editor, Import/Export, Versionen, Backups), MCP, API-Explorer |
 
 `/login` and `/setup` are public and appear outside the sidebar. The system-level
 configuration is consolidated into a single **System** screen rather than split
@@ -484,9 +481,11 @@ collapses to a drawer/list opened from the toolbar below it. Every screen has on
 toolbar (title leading, primary action trailing, overflow for destructive/secondary
 actions) and one scrollable content region.
 
-- **Dashboard and statistics** use stat tiles for the headline numbers and inset
-  grouped lists/tables for the detail; blocked and allowed always carry a label and
-  an icon in addition to the semantic color.
+- **Dashboard** merges statistics into one operational overview: stat tiles for the
+  headline numbers, a period selector (24 h – 1 Jahr), response-time percentiles,
+  top domains/clients, and inset grouped lists/tables for module status and
+  warnings; blocked and allowed always carry a label and an icon in addition to
+  the semantic color.
 - **Query log and clients** use an inset grouped table at regular/wide width and the
   same data as a card list at compact width. Rows expose primary and secondary
   labels, with domains, IPs, MACs, timestamps and IDs in SF Mono. Filters live in a
