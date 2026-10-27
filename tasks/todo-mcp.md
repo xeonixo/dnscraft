@@ -582,13 +582,13 @@ stats, resolver `no_cache_write` via M5), `GET /api/v1/filtering/mcp-rules` (`ki
 temporary_allows | pauses; only active entries).
 
 **Acceptance criteria:**
-- [ ] Endpoints in the endpoint table of SPEC-control-api.md (already aligned) behave exactly as specified;
+- [x] Endpoints in the endpoint table of SPEC-control-api.md (already aligned) behave exactly as specified;
       viewer and admin may read; unauthenticated → 401.
-- [ ] `test-query`: query-log row count and resolver cache entry count unchanged after the call (test with
+- [x] `test-query`: query-log row count and resolver cache entry count unchanged after the call (test with
       testkit); response contains the full decision record.
-- [ ] `mcp-rules`: expired entries excluded, pagination envelope, sanitization not applied here (the MCP layer
+- [x] `mcp-rules`: expired entries excluded, pagination envelope, sanitization not applied here (the MCP layer
       sanitizes) but strings length-capped.
-- [ ] Error codes unique and documented; `control_api.internal` hides detail.
+- [x] Error codes unique and documented; `control_api.internal` hides detail.
 
 **Verification:** `cargo test -p dnscraft-api filtering_read policy_test_query`
 
@@ -609,15 +609,15 @@ validation uses the A7 token store: only `mcp:*` scopes are valid here; the A5 r
 route (401 responses count towards the auth bucket).
 
 **Acceptance criteria:**
-- [ ] `enabled = false` → `/mcp/v1` returns 404 `control_api.not_found` (no MCP-specific code), also for
+- [x] `enabled = false` → `/mcp/v1` returns 404 `control_api.not_found` (no MCP-specific code), also for
       GET/POST/OPTIONS.
-- [ ] Scope isolation in both directions: `viewer`/`admin` token on `/mcp/v1` → 403 `invalid_scope`; `mcp:*`
+- [x] Scope isolation in both directions: `viewer`/`admin` token on `/mcp/v1` → 403 `invalid_scope`; `mcp:*`
       token on `/api/v1/*` → 403 `invalid_scope`; revoked/expired token → 401 immediately.
-- [ ] TLS, trusted-proxy and forwarded-header handling are inherited from the API listener (test through the
+- [x] TLS, trusted-proxy and forwarded-header handling are inherited from the API listener (test through the
       real server fixture from A3/A4).
-- [ ] Read tools work end to end against real SQLite + real stores (query log with enrichment fields).
-- [ ] MCP routes appear in the audit/rate-limit/metrics layers like API routes; a token flood is limited.
-- [ ] No `dnscraft-api` code path returns a raw module error string to the MCP client.
+- [x] Read tools work end to end against real SQLite + real stores (query log with enrichment fields).
+- [x] MCP routes appear in the audit/rate-limit/metrics layers like API routes; a token flood is limited.
+- [x] No `dnscraft-api` code path returns a raw module error string to the MCP client.
 
 **Verification:** `cargo test -p dnscraft-api mcp_backend_read`
 
@@ -639,14 +639,14 @@ existing rules over; explicit `[]` deletes; rollback restores the rules of the t
 max_block_rule_lifetime` (the endpoint may accept an earlier expiry, never a later one).
 
 **Acceptance criteria:**
-- [ ] Contract tests: PUT omitting the field keeps rules; PUT with `[]` deletes; PUT with a modified list
+- [x] Contract tests: PUT omitting the field keeps rules; PUT with `[]` deletes; PUT with a modified list
       replaces; rollback to a version before/after the rules existed restores exactly that state.
-- [ ] Two concurrent adds at cap−1: exactly one succeeds, the other gets `mcp.rule_limit_exceeded`
+- [x] Two concurrent adds at cap−1: exactly one succeeds, the other gets `mcp.rule_limit_exceeded`
       (deterministic test using the apply lock).
-- [ ] Each add/remove writes one audit entry with the resulting `config_version` and redacted snapshots.
-- [ ] Domain validated by `filtering` (`DomainName::parse`, `build_rule`); wildcard/IP/single-label rejected;
+- [x] Each add/remove writes one audit entry with the resulting `config_version` and redacted snapshots.
+- [x] Domain validated by `filtering` (`DomainName::parse`, `build_rule`); wildcard/IP/single-label rejected;
       `remove` only deletes MCP-origin rules, never `custom_rules` lines.
-- [ ] Expiry: a rule created through the endpoint stops blocking at `expires_at` (M2 mechanism) and disappears
+- [x] Expiry: a rule created through the endpoint stops blocking at `expires_at` (M2 mechanism) and disappears
       from `GET /config` after the next snapshot build.
 
 **Verification:** `cargo test -p dnscraft-api custom_rules mcp_rules_contract`
@@ -668,16 +668,16 @@ labels, `ddr.target`, OIDC issuer host, ACME directory host, `api.cloudflare.com
 filter-list URL hosts, forward-zone apex names) plus `control_api.mcp.protected_domains`.
 
 **Acceptance criteria:**
-- [ ] Endpoints validate input (canonical domain via `filtering`, durations from the allowed set, unknown set →
+- [x] Endpoints validate input (canonical domain via `filtering`, durations from the allowed set, unknown set →
       `policy.config.unknown_filter_set`) and apply the protected-domain rule server-side as well
       (defence in depth, same `ProtectedDomains` type).
-- [ ] Derivation test from a real config snapshot yields the expected host set for all five sources; a config
+- [x] Derivation test from a real config snapshot yields the expected host set for all five sources; a config
       change updates the list on the next apply without restart.
-- [ ] Canonicalisation parity test: a corpus of domains (case, trailing dot, IDN) gives identical results in
+- [x] Canonicalisation parity test: a corpus of domains (case, trailing dot, IDN) gives identical results in
       `dnscraft-mcp::protected` and `filtering::DomainName::parse`.
-- [ ] Temporary allow and pause take effect immediately in the running engine (`match_name` test) and are
+- [x] Temporary allow and pause take effect immediately in the running engine (`match_name` test) and are
       **not** present in a later `config_version`.
-- [ ] Audit entries for all three endpoints; `control_api.internal` hides detail.
+- [x] Audit entries for all three endpoints; `control_api.internal` hides detail.
 
 **Verification:** `cargo test -p dnscraft-api temp_allows pause protected_derivation`
 
@@ -696,13 +696,13 @@ M22/M23 services; MCP audit entries carry `action: "mcp.<tool>"`, `actor_type: "
 and the optional MCP client name/version.
 
 **Acceptance criteria:**
-- [ ] With `write_tools_enabled = true` and an `mcp:write` token every write tool works against real
+- [x] With `write_tools_enabled = true` and an `mcp:write` token every write tool works against real
       stores; with the gate off nothing is listed or executed (`mcp.write_tools_disabled`).
-- [ ] Audit rows for success and failure of each tool with the labels above; redaction/secret tests from A2
+- [x] Audit rows for success and failure of each tool with the labels above; redaction/secret tests from A2
       still pass; `reason` stored sanitized.
-- [ ] Backend errors map to the mcp error codes (`mcp.rule_limit_exceeded`, `mcp.protected_domain`, module
+- [x] Backend errors map to the mcp error codes (`mcp.rule_limit_exceeded`, `mcp.protected_domain`, module
       codes forwarded unchanged).
-- [ ] No write path bypasses the config-apply lock or the audit log (grep-able single entry points; a test
+- [x] No write path bypasses the config-apply lock or the audit log (grep-able single entry points; a test
       asserts one audit row per mutation).
 
 **Verification:** `cargo test -p dnscraft-api mcp_backend_write`
@@ -720,16 +720,16 @@ and the optional MCP client name/version.
 acceptance evidence for SPEC-mcp.md criteria 1, 2, 7, 10, 12, 13.
 
 **Acceptance criteria:**
-- [ ] Flow 1: `add_rule(block ads.example.com)` → `test_query` shows blocked → a real policy query is
+- [x] Flow 1: `add_rule(block ads.example.com)` → `test_query` shows blocked → a real policy query is
       blocked; advance the clock past `expires_at` → no longer blocked; `list_mcp_rules` reflects each step.
-- [ ] Flow 2: `allow_temporarily` beats the block; expires exactly; `pause_filter_set` passes everything;
+- [x] Flow 2: `allow_temporarily` beats the block; expires exactly; `pause_filter_set` passes everything;
       `resume_filter_set` restores filtering; restarting the engines from the stored config keeps the rule and
       drops the allow/pause.
-- [ ] Flow 3: `PUT /config` without `mcp_rules` keeps them; rollback restores; cap reached →
+- [x] Flow 3: `PUT /config` without `mcp_rules` keeps them; rollback restores; cap reached →
       `mcp.rule_limit_exceeded`; protected domain (the node hostname, the OIDC issuer host) → `mcp.protected_domain`.
-- [ ] Flow 4: token scope matrix across `/mcp/v1` and `/api/v1`, gate on/off, revoked token, `enabled = false`.
-- [ ] `test_query` leaves query-log row count and resolver cache entry count unchanged.
-- [ ] No test uses the internet or a real OIDC/ACME/Cloudflare endpoint.
+- [x] Flow 4: token scope matrix across `/mcp/v1` and `/api/v1`, gate on/off, revoked token, `enabled = false`.
+- [x] `test_query` leaves query-log row count and resolver cache entry count unchanged.
+- [x] No test uses the internet or a real OIDC/ACME/Cloudflare endpoint.
 
 **Verification:** `cargo test -p dnscraft-api --test mcp_e2e`
 
@@ -740,9 +740,9 @@ acceptance evidence for SPEC-mcp.md criteria 1, 2, 7, 10, 12, 13.
 **Scope:** M
 
 ## Checkpoint I: Integration
-- [ ] DoD green on the whole workspace; success criteria 1, 2, 7, 10, 12, 13 evidenced by named tests
-- [ ] Claude review (config contract, locks, audit completeness, scope isolation) with mutation probes
-- [ ] progress.md updated
+- [x] DoD green on the whole workspace; success criteria 1, 2, 7, 10, 12, 13 evidenced by named tests
+- [x] Claude review (config contract, locks, audit completeness, scope isolation) with mutation probes
+- [x] progress.md updated
 
 ## Phase 4: Hardening and documentation
 
