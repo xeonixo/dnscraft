@@ -20,14 +20,14 @@
 
 ## Phase 1 — Module assembly
 
-- [ ] **AS3** Real resolver from `[resolver]` (replaces `ResolverConfig::default()` in `build_engine`).
-- [ ] **AS4** Real filtering: open `ListStore` under `data_dir`, build `FilterEngine` from
+- [x] **AS3** Real resolver from `[resolver]` (replaces `ResolverConfig::default()` in `build_engine`).
+- [x] **AS4** Real filtering: open `ListStore` under `data_dir`, build `FilterEngine` from
       `[filtering]` lists/sets (replaces `empty_filter`).
-- [ ] **AS5** Real clients: build `ClientEngine` from `[clients]`, add a `ClientDirectory` adapter,
+- [~] **AS5** Real clients: build `ClientEngine` from `[clients]`, add a `ClientDirectory` adapter,
       feed it to policy and to the query-log `ClientEnricher` (closes GC1).
-- [ ] **AS6** Real policy from `[policy]` (views/profiles/records) wired to filter + resolver + clients
+- [x] **AS6** Real policy from `[policy]` (views/profiles/records) wired to filter + resolver + clients
       (replaces the hardcoded default view).
-- [ ] **AS7** Real TLS: build `TlsEngine` (ACME/DynDNS) from `[tls]`, hand its `CertResolver` to the
+- [~] **AS7** Real TLS: build `TlsEngine` (ACME/DynDNS) from `[tls]`, hand its `CertResolver` to the
       listener set, and its `TlsStatusProvider`/`TlsAdmin` to control-api (replaces env-PEM install).
 
 ## Phase 2 — Apply + store
