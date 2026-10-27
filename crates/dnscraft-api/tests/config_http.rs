@@ -17,7 +17,10 @@ use axum::http::{Request, StatusCode, header};
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
-use dnscraft_api::{AppState, Audit, ConfigService, ConfigStore, Db, ManualClock, ModuleAppliers};
+use dnscraft_api::{
+    AppState, Audit, AuthState, ConfigService, ConfigStore, Db, ManualClock, ModuleAppliers, Scope,
+    SessionStore, TokenStore,
+};
 
 struct Harness {
     state: AppState,
@@ -450,4 +453,155 @@ async fn cross_module_references_are_validated_before_apply() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{response}");
+}
+
+const IDLE: Duration = Duration::from_secs(60 * 60);
+const ABSOLUTE: Duration = Duration::from_secs(12 * 3600);
+const MAX_TTL: Duration = Duration::from_secs(365 * 24 * 3600);
+
+/// A full snapshot with one filter set that references a list which does not exist.
+fn invalid_snapshot() -> Value {
+    json!({
+        "filtering": { "sets": [{ "id": "default", "lists": ["missing"] }] },
+        "clients": {},
+        "policy": {},
+        "listeners": {},
+        "tls": {},
+    })
+}
+
+fn valid_snapshot() -> Value {
+    json!({
+        "filtering": {},
+        "clients": {},
+        "policy": {},
+        "listeners": {},
+        "tls": {},
+    })
+}
+
+async fn validate(state: &AppState, body: Value, auth: Option<&str>) -> (StatusCode, Value) {
+    let router = state
+        .clone()
+        .router()
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/api/v1/config/validate")
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(auth) = auth {
+        builder = builder.header(header::AUTHORIZATION, auth);
+    }
+    let request = builder.body(Body::from(body.to_string())).unwrap();
+    let res = router.oneshot(request).await.unwrap();
+    let status = res.status();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+#[tokio::test]
+async fn validate_valid_config_ok_no_apply() {
+    let h = harness().await;
+    let (status, response) = validate(&h.state, valid_snapshot(), None).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["data"]["valid"], true);
+    assert_eq!(response["data"]["errors"], json!([]));
+    assert_eq!(current_version(&h).await, None, "nothing was stored");
+    let (_, config) = get(&h.state, "/api/v1/config").await;
+    assert!(config["data"]["config"].is_null(), "nothing was applied");
+}
+
+#[tokio::test]
+async fn validate_invalid_config_returns_errors() {
+    let h = harness().await;
+    let (status, response) = validate(&h.state, invalid_snapshot(), None).await;
+    assert_eq!(status, StatusCode::OK, "errors are data: {response}");
+    assert_eq!(response["data"]["valid"], false);
+    let errors = response["data"]["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0]["code"], "filter_set.unknown_list");
+    assert_eq!(errors[0]["params"]["list"], "missing");
+    assert!(errors[0]["path"].is_null());
+}
+
+#[tokio::test]
+async fn validate_does_not_bump_config_version() {
+    let h = harness().await;
+    let (status, _) = put(&h.state, "/api/v1/config", valid_snapshot()).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, before) = get(&h.state, "/api/v1/config/versions").await;
+
+    validate(&h.state, valid_snapshot(), None).await;
+    validate(&h.state, invalid_snapshot(), None).await;
+
+    assert_eq!(current_version(&h).await, Some(1));
+    let (_, after) = get(&h.state, "/api/v1/config/versions").await;
+    assert_eq!(before, after, "no version row and no audit-visible change");
+}
+
+#[tokio::test]
+async fn validate_reports_diff() {
+    let h = harness().await;
+    let (status, _) = put(&h.state, "/api/v1/config", valid_snapshot()).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, response) = validate(&h.state, invalid_snapshot(), None).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let diff = &response["data"]["diff"];
+    assert_eq!(diff["changed_sections"], json!(["filtering"]));
+    assert_eq!(diff["added"], json!(["filtering.sets"]));
+    assert_eq!(diff["removed"], json!([]));
+    assert_eq!(diff["changed"], json!([]));
+}
+
+#[tokio::test]
+async fn validate_unauthenticated_401() {
+    let clock = Arc::new(ManualClock::new(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+    ));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    let service = Arc::new(ConfigService::new(
+        ConfigStore::new(db.clone()),
+        Audit::new(db.clone()),
+        ModuleAppliers::default(),
+        "node-a",
+    ));
+    let auth = AuthState::new(
+        SessionStore::new(db.clone(), IDLE, ABSOLUTE),
+        TokenStore::new(db.clone(), MAX_TTL),
+    );
+    let state = AppState::new().with_config_service(service).with_auth(auth);
+    let (status, response) = validate(&state, valid_snapshot(), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{response}");
+    assert_eq!(code(&response), "control_api.auth.unauthenticated");
+}
+
+#[tokio::test]
+async fn validate_viewer_403() {
+    let clock = Arc::new(ManualClock::new(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+    ));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    let service = Arc::new(ConfigService::new(
+        ConfigStore::new(db.clone()),
+        Audit::new(db.clone()),
+        ModuleAppliers::default(),
+        "node-a",
+    ));
+    let tokens = TokenStore::new(db.clone(), MAX_TTL);
+    let auth = AuthState::new(
+        SessionStore::new(db.clone(), IDLE, ABSOLUTE),
+        TokenStore::new(db.clone(), MAX_TTL),
+    );
+    let viewer = tokens
+        .create("v".into(), "viewer".into(), Scope::Viewer, None)
+        .await
+        .unwrap();
+    let state = AppState::new().with_config_service(service).with_auth(auth);
+    let bearer = format!("Bearer {}", viewer.plaintext().expose());
+    let (status, response) = validate(&state, valid_snapshot(), Some(&bearer)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{response}");
+    assert_eq!(code(&response), "control_api.auth.insufficient_scope");
 }

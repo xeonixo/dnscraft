@@ -203,6 +203,41 @@ pub(crate) async fn put_config(
     Ok(success(json!({ "version": version })))
 }
 
+/// `POST /api/v1/config/validate` — dry run of `PUT /api/v1/config`.
+///
+/// Rejections come back as data with HTTP 200; nothing is stored, applied or
+/// audited. Only a malformed JSON body is a 400.
+pub(crate) async fn validate_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let Json(body) = body.map_err(|rejection| ControlApiError::ConfigInvalid {
+        reason: rejection.body_text(),
+    })?;
+    let outcome = service(&state)?.validate(body, if_match(&headers)).await?;
+    let errors: Vec<Value> = outcome.errors.iter().map(error_entry).collect();
+    Ok(success(json!({
+        "valid": errors.is_empty(),
+        "config_version": outcome.config_version,
+        "errors": errors,
+        "warnings": [],
+        "diff": outcome.diff,
+    })))
+}
+
+/// One `{ code, path, params }` entry; `path` is taken from the error's params
+/// when the module supplies one.
+fn error_entry(err: &ControlApiError) -> Value {
+    let params = err.params();
+    let path = params
+        .as_ref()
+        .and_then(|params| params.get("path"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    json!({ "code": err.code(), "path": path, "params": params })
+}
+
 /// `GET /api/v1/config/versions` — newest first, paginated.
 pub(crate) async fn list_versions(
     State(state): State<AppState>,

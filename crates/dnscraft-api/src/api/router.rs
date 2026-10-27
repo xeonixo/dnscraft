@@ -23,6 +23,7 @@ use super::cluster_endpoints::{get_write, list_nodes, mint_join_token, revoke_no
 use super::config_routes::{
     delete_pause, delete_profile, delete_view, get_config, get_pause, get_profile, get_view,
     list_versions, list_views, put_config, put_pause, put_profile, put_view, rollback,
+    validate_config,
 };
 use super::filter_routes::{
     delete_filter_list, delete_filter_set, list_filter_lists, list_filter_sets, put_filter_list,
@@ -66,6 +67,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
     if state.config_service().is_some() {
         api = api
             .route("/config", get(get_config).put(put_config))
+            .route("/config/validate", post(validate_config))
             .route("/config/versions", get(list_versions))
             .route("/config/versions/{version}/rollback", post(rollback))
             .route("/policy/views", get(list_views))

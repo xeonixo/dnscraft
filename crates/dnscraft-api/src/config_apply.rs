@@ -16,7 +16,7 @@
 //! empty array deletes them; any unknown field is rejected instead of being
 //! silently dropped.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use serde_json::{Map, Value, json};
 
@@ -128,6 +128,16 @@ pub struct RollbackOutcome {
     pub version: i64,
     /// Version whose snapshot was restored.
     pub restored_from: i64,
+}
+
+/// Result of a dry run ([`ConfigService::validate`]).
+pub(crate) struct Validation {
+    /// The stored version the check ran against.
+    pub(crate) config_version: Option<i64>,
+    /// Every rejection the real write would hit; empty when it would pass.
+    pub(crate) errors: Vec<ControlApiError>,
+    /// Section and sub-key diff of the merged snapshot against the stored one.
+    pub(crate) diff: Value,
 }
 
 /// The atomic config service shared by every config route.
@@ -526,9 +536,51 @@ impl ConfigService {
         snapshot: &Value,
         previous: Option<&Value>,
     ) -> Result<(), ControlApiError> {
-        validate_cross_module(snapshot)?;
-        self.validate_modules(snapshot)?;
+        self.check_snapshot(snapshot)?;
         self.apply_with_replay(snapshot, previous).await
+    }
+
+    /// The side-effect-free checks shared by apply and the dry run: cross-module
+    /// references first, then each module's own section validation.
+    fn check_snapshot(&self, snapshot: &Value) -> Result<(), ControlApiError> {
+        validate_cross_module(snapshot)?;
+        self.validate_modules(snapshot)
+    }
+
+    /// Dry run of [`Self::replace`]: the same merge and checks, but nothing is
+    /// applied, stored or audited, and `config_version` does not move.
+    ///
+    /// Rejections are returned as data in [`Validation::errors`]; only store
+    /// read failures are `Err`.
+    pub(crate) async fn validate(
+        &self,
+        body: Value,
+        if_match: Option<&str>,
+    ) -> Result<Validation, ControlApiError> {
+        let current = self.store.current().await?;
+        let previous = match current {
+            Some(version) => self.store.load(version).await?,
+            None => None,
+        };
+        let mut errors = Vec::new();
+        if let Err(err) = check_if_match(if_match, current) {
+            errors.push(err);
+        }
+        let mut diff = diff_snapshots(None, None);
+        match merge_mcp_rules(body, previous.as_ref()) {
+            Ok(snapshot) => {
+                if let Err(err) = self.check_snapshot(&snapshot) {
+                    errors.push(err);
+                }
+                diff = diff_snapshots(previous.as_ref(), Some(&snapshot));
+            }
+            Err(err) => errors.push(err),
+        }
+        Ok(Validation {
+            config_version: current,
+            errors,
+            diff,
+        })
     }
 
     /// Restores a stored version through the same atomic apply path.
@@ -902,6 +954,47 @@ fn module_error(code: &'static str, params: Value) -> ControlApiError {
         code,
         params: Some(params),
     }
+}
+
+/// Section and sub-key diff (`section` or `section.key`) of `next` against
+/// `previous`. Only key names are returned, never values, so secrets cannot
+/// leak through a dry run.
+fn diff_snapshots(previous: Option<&Value>, next: Option<&Value>) -> Value {
+    let none = Map::new();
+    let old = previous.and_then(Value::as_object).unwrap_or(&none);
+    let new = next.and_then(Value::as_object).unwrap_or(&none);
+    let mut changed_sections = Vec::new();
+    let (mut added, mut removed, mut changed) = (Vec::new(), Vec::new(), Vec::new());
+    let names: BTreeSet<&String> = old.keys().chain(new.keys()).collect();
+    for name in names {
+        let (before, after) = (old.get(name), new.get(name));
+        if before == after {
+            continue;
+        }
+        changed_sections.push(name.clone());
+        match (before, after) {
+            (None, _) => added.push(name.clone()),
+            (_, None) => removed.push(name.clone()),
+            (Some(Value::Object(b)), Some(Value::Object(a))) => {
+                for key in b.keys().chain(a.keys()).collect::<BTreeSet<_>>() {
+                    let path = format!("{name}.{key}");
+                    match (b.get(key.as_str()), a.get(key.as_str())) {
+                        (None, Some(_)) => added.push(path),
+                        (Some(_), None) => removed.push(path),
+                        (Some(x), Some(y)) if x != y => changed.push(path),
+                        _ => {}
+                    }
+                }
+            }
+            _ => changed.push(name.clone()),
+        }
+    }
+    json!({
+        "changed_sections": changed_sections,
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+    })
 }
 
 /// Checks the raw `If-Match` value against the current version.
