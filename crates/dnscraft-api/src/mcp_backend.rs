@@ -367,7 +367,7 @@ fn paginate<T: Clone>(all: Vec<T>, limit: u32, offset: u32) -> (Vec<T>, bool, Op
 }
 
 /// Parses a stored `created_at`/`expires_at`: unix seconds or RFC 3339.
-fn stored_time(value: &Value) -> Option<SystemTime> {
+pub(crate) fn stored_time(value: &Value) -> Option<SystemTime> {
     match value {
         Value::Number(number) => number
             .as_u64()

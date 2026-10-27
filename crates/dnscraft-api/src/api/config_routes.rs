@@ -31,7 +31,7 @@ use crate::server::AppState;
 
 /// The actor for this request; falls back to the embedded `local` actor when the
 /// API runs without authentication configured.
-fn actor(auth: Option<Extension<Authenticated>>) -> ConfigActor {
+pub(crate) fn actor(auth: Option<Extension<Authenticated>>) -> ConfigActor {
     match auth {
         Some(Extension(auth)) => ConfigActor::new(auth.actor_id(), auth.actor_type().as_str()),
         None => ConfigActor::local(),

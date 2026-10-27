@@ -925,7 +925,7 @@ fn format_rfc3339_micros(time: SystemTime) -> String {
 }
 
 /// Generates an opaque, UUID-shaped record id (16 random bytes, v4 layout).
-fn new_id() -> Result<String, ControlApiError> {
+pub(crate) fn new_id() -> Result<String, ControlApiError> {
     let mut bytes = [0u8; 16];
     SystemRandom::new()
         .fill(&mut bytes)

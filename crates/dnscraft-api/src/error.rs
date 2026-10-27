@@ -318,6 +318,30 @@ mod tests {
                 code: "mcp.invalid_input",
                 params: None,
             },
+            ControlApiError::Module {
+                code: "filter_build.invalid_domain",
+                params: None,
+            },
+            ControlApiError::Module {
+                code: "filter_build.pattern_not_allowed",
+                params: None,
+            },
+            ControlApiError::Module {
+                code: "mcp.protected_domain",
+                params: None,
+            },
+            ControlApiError::Module {
+                code: "mcp.rule_limit_exceeded",
+                params: None,
+            },
+            ControlApiError::Module {
+                code: "mcp.duration_exceeds_maximum",
+                params: None,
+            },
+            ControlApiError::Module {
+                code: "mcp.config.protected_domain",
+                params: None,
+            },
         ];
         let mut codes: Vec<&str> = all.iter().map(ControlApiError::code).collect();
         for (error, code) in all.iter().zip(&codes) {

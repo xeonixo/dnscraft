@@ -153,7 +153,14 @@ impl AppState {
         self.mcp_backend.as_ref()
     }
 
-    /// The MCP config, if a backend is attached.
+    /// Attaches the MCP limits and protected-domain additions used by the
+    /// MCP-facing control-api endpoints.
+    pub fn with_mcp_config(mut self, config: McpConfig) -> Self {
+        self.mcp_config = config;
+        self
+    }
+
+    /// The MCP config used by the endpoint gating and limits.
     pub(crate) fn mcp_config(&self) -> &McpConfig {
         &self.mcp_config
     }
@@ -315,15 +322,10 @@ pub async fn serve(
         // ponytail: derive origins from the TLS public domain (TLS module
         // stores the public domain used for certificate requests).
     }
-    // If the backend is attached and MCP is enabled, wire the config.
-    let state = if state.mcp_backend_inner().is_some() {
-        // Store the MCP config on AppState so build_router can read it.
-        let mut s = state;
-        s.mcp_config = mcp_config;
-        s
-    } else {
-        state
-    };
+    // Store the MCP config on AppState so build_router and the filtering
+    // endpoints can read it, whether or not a backend is attached.
+    let mut state = state;
+    state.mcp_config = mcp_config;
     let router = state.router();
     if config.tls {
         let server_config = tls.ok_or_else(|| ControlApiError::Internal {

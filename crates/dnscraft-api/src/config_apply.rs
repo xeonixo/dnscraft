@@ -176,39 +176,103 @@ impl ConfigService {
                 return Err(err);
             }
         };
-        if let Err(err) = validate_cross_module(&snapshot) {
+        self.commit(
+            actor,
+            "config.write",
+            previous_version,
+            previous.as_ref(),
+            &snapshot,
+        )
+        .await
+    }
+
+    /// Applies an in-place mutation of the current snapshot under the config
+    /// apply lock.
+    ///
+    /// `mutate` must return `Ok(false)` when it made no change; that stores no
+    /// version and writes no audit entry. `Ok(true)` takes the same validate →
+    /// apply → store → audit path as [`Self::replace`].
+    pub async fn mutate<F>(
+        &self,
+        actor: &ConfigActor,
+        action: &str,
+        mutate: F,
+    ) -> Result<Option<i64>, ControlApiError>
+    where
+        F: FnOnce(&mut Value) -> Result<bool, ControlApiError>,
+    {
+        let _guard = self.apply_lock.lock().await;
+        let current_version = self.store.current().await?;
+        let previous = match current_version {
+            Some(version) => self.store.load(version).await?,
+            None => None,
+        };
+        let mut snapshot = previous.clone().unwrap_or_else(empty_snapshot);
+        match mutate(&mut snapshot) {
+            Ok(true) => {}
+            Ok(false) => return Ok(None),
+            Err(err) => {
+                self.record(
+                    actor,
+                    action,
+                    current_version,
+                    previous.as_ref(),
+                    None,
+                    "error",
+                    Some(err.code()),
+                )
+                .await;
+                return Err(err);
+            }
+        }
+        self.commit(actor, action, current_version, previous.as_ref(), &snapshot)
+            .await
+            .map(Some)
+    }
+
+    /// Shared validate → apply → store → audit path used by [`Self::replace`]
+    /// and [`Self::mutate`].
+    async fn commit(
+        &self,
+        actor: &ConfigActor,
+        action: &str,
+        previous_version: Option<i64>,
+        previous: Option<&Value>,
+        snapshot: &Value,
+    ) -> Result<i64, ControlApiError> {
+        if let Err(err) = validate_cross_module(snapshot) {
             self.record(
                 actor,
-                "config.write",
+                action,
                 previous_version,
-                previous.as_ref(),
-                Some(&snapshot),
+                previous,
+                Some(snapshot),
                 "error",
                 Some(err.code()),
             )
             .await;
             return Err(err);
         }
-        if let Err(err) = self.validate_modules(&snapshot) {
+        if let Err(err) = self.validate_modules(snapshot) {
             self.record(
                 actor,
-                "config.write",
+                action,
                 previous_version,
-                previous.as_ref(),
-                Some(&snapshot),
+                previous,
+                Some(snapshot),
                 "error",
                 Some(err.code()),
             )
             .await;
             return Err(err);
         }
-        if let Err(err) = self.apply_with_replay(&snapshot, previous.as_ref()).await {
+        if let Err(err) = self.apply_with_replay(snapshot, previous).await {
             self.record(
                 actor,
-                "config.write",
+                action,
                 previous_version,
-                previous.as_ref(),
-                Some(&snapshot),
+                previous,
+                Some(snapshot),
                 "error",
                 Some(err.code()),
             )
@@ -216,13 +280,13 @@ impl ConfigService {
             return Err(err);
         }
 
-        let version = self.store.store(&snapshot).await?;
+        let version = self.store.store(snapshot).await?;
         self.record(
             actor,
-            "config.write",
+            action,
             Some(version),
-            previous.as_ref(),
-            Some(&snapshot),
+            previous,
+            Some(snapshot),
             "ok",
             None,
         )
@@ -572,6 +636,18 @@ fn validate_cross_module(snapshot: &Value) -> Result<(), ControlApiError> {
 }
 
 /// Builds a forwarded module error with non-secret `params`.
+/// The five required sections, empty. Used when a mutation starts on a fresh
+/// install; closures then reject references to missing sets like any replace.
+fn empty_snapshot() -> Value {
+    json!({
+        "filtering": {},
+        "clients": {},
+        "policy": {},
+        "listeners": {},
+        "tls": {},
+    })
+}
+
 fn module_error(code: &'static str, params: Value) -> ControlApiError {
     ControlApiError::Module {
         code,
