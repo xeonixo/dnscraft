@@ -39,9 +39,9 @@
 
 ## Phase 3 — Config sync
 
-- [ ] CL13 snapshot push `ConfigPush {version, sha256, snapshot}` on apply/rollback; digest check;
+- [x] CL13 snapshot push `ConfigPush {version, sha256, snapshot}` on apply/rollback; digest check;
        ack; lag tracking; retry/backoff (never partial).
-- [ ] CL14 reconnect `Hello {last_applied_version, last_acked_log_seq}` + reconciliation (master-wins).
+- [x] CL14 reconnect `Hello {last_applied_version, last_acked_log_seq}` + reconciliation (master-wins).
 - [ ] CL15 sub-node apply via `apply_synced_config` (leaf-first); failure → rollback + keep answering
        + `cluster.config.apply`; node-scoped policy views filtered.
 
