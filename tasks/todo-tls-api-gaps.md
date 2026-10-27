@@ -35,3 +35,14 @@
 - [x] `cargo deny check` green (advisories/bans/licenses/sources ok)
 - [~] `cargo fmt` — `dnscraft-tls`/`-api`/`-listeners` clean; 2 pre-existing diffs on HEAD remain in `crates/dnscraft-clients/src/clock.rs` and `crates/dnscraft-policy/src/synth.rs` (edition-2024 rustfmt drift, not touched by this task)
 - [ ] No real LE/Cloudflare/OIDC contacted in tests
+
+---
+
+## Spec-gap additions (independent review 2026-10-27)
+
+> Full detail, severity and evidence: [`todo-spec-gaps.md`](todo-spec-gaps.md) § TLS (`GT1`–`GT12`).
+
+- [ ] **GT1** manual DNS-01 (`manual`) can never complete (🟠)
+- [ ] **GT2** `next_attempt_at` never populated; stale `order_status` on early errors (🟠)
+- [ ] **GT3** `apply_config` re-uploads `config.manual`, reverting API uploads + clearing `revoked` (🟠)
+- [ ] **GT4–GT12** `deactivated`, key rollover surface, `tls.dns.provider.zone`, stale rate-limit status, preflight when ACME off, ACME revoke when off, DynDNS echo handling, audit drop on partial write, metrics (🟡)

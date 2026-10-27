@@ -526,3 +526,15 @@ dependency approval recorded in SPEC-mcp.md.
 **Acceptance criteria:** defined by the approved MCP-phase plan.
 
 **Dependencies:** M1, M2; owner approval of the `mcp`/`rmcp` dependencies.
+
+---
+
+## Spec-gap additions (independent review 2026-10-27)
+
+> Full detail, severity and evidence: [`todo-spec-gaps.md`](todo-spec-gaps.md) § control-api (`GA1`–`GA29`).
+> Deferred until cluster CL6–CL8 land (dnscraft-api is under active cluster work).
+
+- [ ] **GA1–GA4** missing routes: `GET /auth/me`, `GET /auth/tokens`, `DELETE /auth/tokens/{id}`, `GET /audit` (🔴)
+- [ ] **GA6–GA19** client routes, idempotency, per-principal rate-limit, forwarded-proto check, OIDC/audit gaps, `/status` fields, runtime-editable keys, stats counters+rollups, `query_log.read` mapping, `paused_until` versioning, TLS `status.mode` (🟠)
+- [ ] **GA20–GA29** RFC-3339 timestamps, dead codes, filter-value validation, manual-cert upload guard, typed UniFi routes, fuzz target, bootstrap seeding, readiness producers (🟡)
+- [ ] **GA5** `Apply*` trait impls — tracked under [`todo-spec-gaps.md`](todo-spec-gaps.md) G0 (assembler)
