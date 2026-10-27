@@ -261,13 +261,13 @@ pub fn validate_dnskey_rrset_budgeted(
                         digest_type,
                         digest,
                         ..
-                    } => ds.push((*key_tag, *algorithm, *digest_type, digest.clone())),
+                    } => ds.push((key_tag, algorithm, digest_type, digest)),
                     Anchor::Dnskey {
                         flags,
                         algorithm,
                         public_key,
                         ..
-                    } => direct.push((*flags, *algorithm, public_key.clone())),
+                    } => direct.push((flags, algorithm, public_key)),
                 }
             }
         }

@@ -534,6 +534,92 @@ impl Chain<'_> {
     }
 }
 
+/// Whether `r` can be part of an NSEC/NSEC3 denial proof for one of `names`
+/// (the question and its CNAME chain).
+///
+/// A proof uses a record matching a witness name (the name itself, one of
+/// its ancestors, or the wildcard at an ancestor) or a record covering it.
+/// Anything else in the authority section is unrelated to the question and
+/// is not part of the answer. `zone` must contain `r.name`.
+pub(crate) fn relevant(zone: &Name, names: &[Name], r: &Record, budget: &ValidationBudget) -> bool {
+    let witnesses = witness_names(zone, names);
+    match &r.rdata {
+        RData::NSEC { next_domain, types } => {
+            let nsec = Nsec {
+                owner: &r.name,
+                next: next_domain,
+                types,
+            };
+            witnesses
+                .iter()
+                .any(|w| r.name.zone_of(w) || nsec.covers(w))
+        }
+        RData::NSEC3 {
+            hash_algorithm,
+            iterations,
+            salt,
+            next_hashed_owner,
+            types,
+            ..
+        } => {
+            if r.name.parent().as_ref() != Some(zone) {
+                return false;
+            }
+            let Some(owner_hash) = r
+                .name
+                .labels()
+                .next()
+                .and_then(|l| std::str::from_utf8(l).ok())
+                .and_then(|l| base32hex_decode(l).ok())
+            else {
+                return false;
+            };
+            let nsec3 = Nsec3 {
+                owner_hash: owner_hash.clone(),
+                next: next_hashed_owner,
+                opt_out: false,
+                types,
+            };
+            witnesses.iter().any(|w| {
+                if !budget.charge_nsec3_hash() {
+                    return false;
+                }
+                match nsec3_hash(*hash_algorithm, w, salt, *iterations, NSEC3_MAX_ITERATIONS) {
+                    Ok(h) => owner_hash == h || nsec3.covers(&h),
+                    // Unsupported parameters: the denial code classifies this
+                    // chain as insecure, so keep its records rather than
+                    // turning the answer bogus here.
+                    Err(_) => true,
+                }
+            })
+        }
+        _ => false,
+    }
+}
+
+/// The names whose existence a denial proof for `names` may talk about: each
+/// name, its ancestors down to `zone`, and the wildcard at each of them.
+fn witness_names(zone: &Name, names: &[Name]) -> Vec<Name> {
+    let mut out = Vec::new();
+    for name in names {
+        let mut cur = Some(name.clone());
+        while let Some(n) = cur {
+            if !zone.zone_of(&n) {
+                break;
+            }
+            if let Some(w) = wildcard_of(&n) {
+                out.push(w);
+            }
+            out.push(n.clone());
+            if n == *zone {
+                break;
+            }
+            cur = n.parent();
+        }
+    }
+    out
+}
+
 /// Closest encloser proof (RFC 5155 section 8.3): the longest proper
 /// ancestor of `qname` inside `zone` with a matching NSEC3, plus the NSEC3
 /// covering the next closer name.

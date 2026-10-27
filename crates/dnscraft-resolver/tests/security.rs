@@ -966,6 +966,37 @@ async fn root_set_is_primed_again_after_the_interval() {
     assert_eq!(ns_queries(), 2);
 }
 
+#[tokio::test]
+async fn root_set_is_refreshed_while_the_resolver_is_idle() {
+    let h = Hierarchy::start().await.unwrap();
+    let clock = Arc::new(ManualClock::new(SystemTime::now()));
+    let mut config = plain_config(&h);
+    config.clock = clock.clone();
+    config.root_reprime_interval = Duration::from_secs(3600);
+    let _r = Resolver::new(config).await.unwrap();
+    let ns_queries = || {
+        h.server(".")
+            .unwrap()
+            .queries()
+            .iter()
+            .filter(|q| RecordType(u16::from(q.query_type)) == RecordType::NS && q.name.is_root())
+            .count()
+    };
+    assert_eq!(ns_queries(), 1);
+
+    // No query is issued: only the clock moves, and the background refresh has
+    // to prime again on its own.
+    clock.advance(Duration::from_secs(3601));
+    timeout(Duration::from_secs(2), async {
+        while ns_queries() < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("idle resolver did not re-prime the root set");
+    assert_eq!(ns_queries(), 2);
+}
+
 // ===========================================================================
 // 7. Overall deadline
 // ===========================================================================

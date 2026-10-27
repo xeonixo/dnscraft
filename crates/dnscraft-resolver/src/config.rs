@@ -234,8 +234,9 @@ pub struct ResolverConfig {
     /// are not filtered.
     pub allow_private_nameservers: bool,
     /// How often the root server set is refreshed by priming again
-    /// (RFC 8109), checked when a resolution starts. [`Duration::ZERO`]
-    /// primes only once at start-up. Default: 24 hours.
+    /// (RFC 8109). A background task refreshes it when due even while the
+    /// resolver is idle; a resolution that finds the refresh due also runs it.
+    /// [`Duration::ZERO`] primes only once at start-up. Default: 24 hours.
     #[serde(with = "dnscraft_common::duration::serde")]
     pub root_reprime_interval: Duration,
     /// Upper bound on the time of one upstream resolution (everything from

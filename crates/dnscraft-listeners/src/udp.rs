@@ -38,6 +38,8 @@ pub struct UdpStats {
     pub dropped_public: AtomicU64,
     /// Dropped by other admission decisions (rate / ban).
     pub dropped_admission: AtomicU64,
+    /// Admission drops because the source was banned.
+    pub banned: AtomicU64,
     /// Dropped because the in-flight cap was full.
     pub dropped_inflight: AtomicU64,
     /// Dropped because [`Limits::query_timeout`] expired.
@@ -357,6 +359,9 @@ fn record_admission_drop(stats: &UdpStats, code: &str) {
         UdpStats::bump(&stats.dropped_public);
     } else {
         UdpStats::bump(&stats.dropped_admission);
+        if code == "listeners.banned" {
+            UdpStats::bump(&stats.banned);
+        }
     }
 }
 
@@ -372,5 +377,8 @@ mod tests {
         assert_eq!(stats.dropped_public.load(Ordering::Relaxed), 1);
         record_admission_drop(&stats, "listeners.rate_limited");
         assert_eq!(stats.dropped_admission.load(Ordering::Relaxed), 1);
+        record_admission_drop(&stats, "listeners.banned");
+        assert_eq!(stats.banned.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.dropped_admission.load(Ordering::Relaxed), 2);
     }
 }

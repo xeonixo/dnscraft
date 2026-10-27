@@ -60,7 +60,10 @@ pub use config::{
     ListenersConfig, Protocol, PublicConfig, TlsPolicy, TokenRate,
 };
 pub use conn::FramedStats;
-pub use core::{HandleWireResult, QueryEvent, QueryMeta, error_reply_from_wire, handle_wire};
+pub use core::{
+    HandleWireResult, QueryEvent, QueryMeta, error_event_from_wire, error_reply_from_wire,
+    error_result_from_wire, handle_wire,
+};
 pub use ddr::{
     DDR_QNAME, DDR_TTL, DOH_PATH, DdrEndpoint, DdrEndpoints, ddr_decision_record, is_ddr_qname,
     try_answer_ddr,
@@ -88,9 +91,9 @@ pub use tcp::{
 };
 pub use tls::{
     ALPN_DOQ, ALPN_DOT, ALPN_H2, ALPN_H3, ALPN_HTTP_1_1, AcceptEncrypted, AcceptedTls,
-    ListenerCertResolver, PolicyClientIds, PublicSniOutcome, SniGate, SniRejectKind, TlsStats,
-    accept_encrypted, apply_sni_strike, apply_tls_handshake_strike, client_id_state_local,
-    handshake_until, inspect_public_sni, is_handshake_timeout, quic_server_config,
-    tcp_server_config, tls_acceptor, tls_handshake_timeout,
+    GatedCertResolver, ListenerCertResolver, PolicyClientIds, PublicSniOutcome, SniGate,
+    SniRejectKind, TlsStats, accept_encrypted, apply_sni_strike, apply_tls_handshake_strike,
+    client_id_state_local, handshake_until, inspect_public_sni, is_handshake_timeout,
+    quic_server_config, tcp_server_config, tls_acceptor, tls_handshake_timeout,
 };
 pub use udp::{CLASSIC_UDP_LIMIT, UdpServeParams, UdpStats, serve_udp, udp_size_limit};

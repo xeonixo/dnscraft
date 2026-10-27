@@ -101,7 +101,18 @@ async fn ns_set_is_signed(ctx: &Context<'_>, server: SocketAddr, resp: &Message)
         now,
         &ctx.dnssec_budget,
     ) {
-        Ok(KeysOutcome::Secure(keys)) => keys,
+        Ok(KeysOutcome::Secure(keys)) => {
+            // A validated root DNSKEY RRset is also the RFC 5011 observation
+            // point: the 24 h priming refresh drives trust-anchor rollover.
+            ctx.config.trust_anchors.observe_dnskeys(
+                &root,
+                keys.keys(),
+                &keys_msg.answers,
+                now,
+                &ctx.dnssec_budget,
+            );
+            keys
+        }
         _ => return false,
     };
     validate_rrset_budgeted(&ns, &resp.answers, &keys, now, &ctx.dnssec_budget)

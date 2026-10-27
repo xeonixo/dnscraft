@@ -30,6 +30,8 @@ pub struct ListenerStatus {
     pub dropped: u64,
     /// Rate-limit refusals / drops attributed to rate.
     pub rate_limited: u64,
+    /// Admission drops because the source was banned.
+    pub banned_sources: u64,
     /// TLS: no certificate installed (handshake attempts).
     pub tls_no_cert: u64,
     /// TLS: handshake failures + timeouts.

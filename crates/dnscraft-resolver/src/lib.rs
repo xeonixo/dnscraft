@@ -40,14 +40,15 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
+use dnscraft_common::clock::wait_until;
 use dnscraft_proto::{Class, Message, Name, Rcode, Record, RecordType};
 use dnssec::status::Status;
 use local_zones::LocalZones;
 use server_selection::ServerStats;
 use stats::Counters;
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore};
 
 pub use config::{ForwardZone, ForwardZoneId, ResolverConfig};
 pub use dnscraft_common::clock::{Clock, ManualClock, SystemClock};
@@ -109,6 +110,42 @@ fn next_prime_after(config: &ResolverConfig, primed: bool) -> Instant {
     now.checked_add(wait).unwrap_or(now)
 }
 
+/// Spawns the time-driven root refresh (RFC 8109).
+///
+/// A refresh at start-up followed by queries alone would leave an idle
+/// resolver with a stale root set, so a background task primes again each
+/// `root_reprime_interval`. It holds only a weak reference: dropping the
+/// resolver ends it. The deadline comes from `next_prime`, which
+/// query-driven refreshes also update, so both triggers stay in step.
+fn spawn_reprimer(shared: &Arc<Shared>) {
+    if shared.config.root_reprime_interval.is_zero() {
+        return;
+    }
+    let weak = Arc::downgrade(shared);
+    let clock = Arc::clone(&shared.config.clock);
+    tokio::spawn(async move {
+        let extra = Notify::new();
+        loop {
+            let remaining = {
+                let Some(shared) = weak.upgrade() else {
+                    return;
+                };
+                let next = *lock(&shared.next_prime);
+                next.saturating_duration_since(clock.instant())
+            };
+            let deadline = clock
+                .now()
+                .checked_add(remaining)
+                .unwrap_or_else(SystemTime::now);
+            wait_until(&*clock, deadline, &extra).await;
+            let Some(shared) = weak.upgrade() else {
+                return;
+            };
+            shared.reprime_if_due().await;
+        }
+    });
+}
+
 /// After a failed prefetch of a key, the next attempt for it waits this long.
 const PREFETCH_BACKOFF: Duration = Duration::from_secs(30);
 
@@ -161,21 +198,21 @@ impl Resolver {
         };
         let cache = cache::Cache::new(cache::budget_bytes(&config));
         let next_prime = Mutex::new(next_prime_after(&config, status_ok(&status)));
-        Ok(Self {
-            shared: Arc::new(Shared {
-                config,
-                local_zones: LocalZones::rfc6303(),
-                cache,
-                roots: Mutex::new(roots),
-                priming: Mutex::new(status),
-                next_prime,
-                counters,
-                stats,
-                inflight: inflight::Inflight::new(),
-                permits,
-                prefetch_failed: Mutex::new(HashMap::new()),
-            }),
-        })
+        let shared = Arc::new(Shared {
+            config,
+            local_zones: LocalZones::rfc6303(),
+            cache,
+            roots: Mutex::new(roots),
+            priming: Mutex::new(status),
+            next_prime,
+            counters,
+            stats,
+            inflight: inflight::Inflight::new(),
+            permits,
+            prefetch_failed: Mutex::new(HashMap::new()),
+        });
+        spawn_reprimer(&shared);
+        Ok(Self { shared })
     }
 
     /// Ids of every configured forward zone, in config order.
@@ -615,7 +652,13 @@ impl Shared {
         let message = self
             .exchange_forward(&zone.targets, &zone.zone, &query.name, query.qtype)
             .await?;
-        let message = forward::scrub(message, &query.name, query.qtype, &zone.zone);
+        let message = forward::scrub(
+            message,
+            &query.name,
+            query.qtype,
+            &zone.zone,
+            &dnssec::ValidationBudget::default(),
+        );
         // One validation budget for the whole forwarded resolution.
         let budget = dnssec::ValidationBudget::default();
         let mut caps = Vec::new();

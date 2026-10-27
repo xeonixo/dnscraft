@@ -595,6 +595,7 @@ impl RunningListener {
             answered: 0,
             dropped: 0,
             rate_limited: 0,
+            banned_sources: 0,
             tls_no_cert: 0,
             tls_handshake_failures: 0,
         };
@@ -607,6 +608,7 @@ impl RunningListener {
                     + stats.dropped_inflight.load(Ordering::Relaxed)
                     + stats.dropped_timeout.load(Ordering::Relaxed)
                     + stats.dropped_silent.load(Ordering::Relaxed);
+                status.banned_sources = stats.banned.load(Ordering::Relaxed);
             }
             ListenerKind::Tcp { stats } => fill_framed(&mut status, stats),
             ListenerKind::Dot { stats, tls } => {
@@ -624,6 +626,7 @@ impl RunningListener {
                     + stats.rejected_conn_cap.load(Ordering::Relaxed)
                     + stats.rejected_per_source.load(Ordering::Relaxed);
                 status.rate_limited = stats.http_429.load(Ordering::Relaxed);
+                status.banned_sources = stats.dropped_banned.load(Ordering::Relaxed);
                 fill_tls(&mut status, tls);
             }
             ListenerKind::Doq { stats, tls } => {
@@ -637,6 +640,7 @@ impl RunningListener {
                     + stats.rejected_conn_cap.load(Ordering::Relaxed)
                     + stats.rejected_per_source.load(Ordering::Relaxed);
                 status.rate_limited = stats.refused.load(Ordering::Relaxed);
+                status.banned_sources = stats.dropped_banned.load(Ordering::Relaxed);
                 fill_tls(&mut status, tls);
             }
         }
@@ -656,6 +660,7 @@ fn fill_framed(status: &mut ListenerStatus, stats: &FramedStats) {
         + stats.rejected_conn_cap.load(Ordering::Relaxed)
         + stats.rejected_per_source.load(Ordering::Relaxed);
     status.rate_limited = stats.refused.load(Ordering::Relaxed);
+    status.banned_sources = stats.banned.load(Ordering::Relaxed);
 }
 
 fn fill_tls(status: &mut ListenerStatus, tls: &TlsStats) {
@@ -806,5 +811,28 @@ mod tests {
         );
 
         set.shutdown(Duration::from_secs(2)).await;
+    }
+
+    #[test]
+    fn fill_framed_reports_per_listener_bans() {
+        let stats = FramedStats::default();
+        stats.banned.store(3, Ordering::Relaxed);
+        let mut status = ListenerStatus {
+            id: ListenerId::new("tcp").unwrap(),
+            protocol: Protocol::Tcp53,
+            configured_address: "127.0.0.1:0".parse().unwrap(),
+            bound: None,
+            error: None,
+            connections: 0,
+            queries: 0,
+            answered: 0,
+            dropped: 0,
+            rate_limited: 0,
+            banned_sources: 0,
+            tls_no_cert: 0,
+            tls_handshake_failures: 0,
+        };
+        fill_framed(&mut status, &stats);
+        assert_eq!(status.banned_sources, 3);
     }
 }

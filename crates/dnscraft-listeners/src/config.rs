@@ -11,8 +11,8 @@ use crate::error::ListenersError;
 
 /// Default EDNS UDP payload size (DNS Flag Day 2020).
 pub const DEFAULT_UDP_PAYLOAD_MAX: u16 = 1232;
-/// Default per-query deadline.
-pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+/// Default per-query deadline (matches the resolver's historical 5 s).
+pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Default TCP/DoT idle timeout.
 pub const DEFAULT_TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Default TLS handshake timeout.
@@ -508,6 +508,14 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     use super::*;
+
+    #[test]
+    fn query_timeout_default_matches_resolver() {
+        // The binary resolver keeps its historical 5 s; listeners must not
+        // hold queries (and in-flight slots) twice as long.
+        assert_eq!(DEFAULT_QUERY_TIMEOUT, Duration::from_secs(5));
+        assert_eq!(Limits::default().query_timeout, DEFAULT_QUERY_TIMEOUT);
+    }
 
     #[test]
     fn config_round_trips_through_json() {

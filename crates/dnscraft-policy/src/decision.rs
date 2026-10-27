@@ -146,7 +146,7 @@ pub struct FilterHit {
 pub struct DecisionTimings {
     /// Selection.
     pub select_us: u64,
-    /// Filter match (0 until filter steps land).
+    /// Filter-engine matching (steps 4 / 6 / 8 / 9).
     pub filter_us: u64,
     /// Resolver call (0 for synthetic answers that skip resolve).
     pub resolve_us: u64,

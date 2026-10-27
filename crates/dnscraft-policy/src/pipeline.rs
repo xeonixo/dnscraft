@@ -1,5 +1,7 @@
 //! Pipeline step framework: draft answer and control flow.
 
+use std::time::Instant;
+
 use dnscraft_filtering::SetId;
 use dnscraft_proto::Message;
 use dnscraft_resolver::{DnssecStatus, ExtendedError, ForwardZoneId};
@@ -106,6 +108,18 @@ impl Draft {
     }
 }
 
+/// Runs a filter-engine call and accumulates its duration into
+/// [`DecisionTimings::filter_us`].
+pub(crate) fn timed_filter<R>(draft: &mut Draft, call: impl FnOnce() -> R) -> R {
+    let start = Instant::now();
+    let result = call();
+    draft.timings.filter_us = draft
+        .timings
+        .filter_us
+        .saturating_add(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
+    result
+}
+
 /// Shared inputs for pipeline steps.
 #[derive(Clone, Copy)]
 pub struct StepCtx<'a> {
@@ -161,5 +175,23 @@ mod tests {
             apply_ad_policy(&mut message, status);
             assert!(!message.header.ad, "{status:?}");
         }
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn timed_filter_accumulates_into_filter_us() {
+        let selection = Selection {
+            view_id: crate::ids::ViewId::new("default").unwrap(),
+            profile_id: crate::ids::ProfileId::new("default").unwrap(),
+            matched_by: crate::select::SelectionCause::Default,
+            view_idx: 0,
+        };
+        let mut draft = Draft::new(selection, SetId::new("default").unwrap());
+        let out = timed_filter(&mut draft, || {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            7
+        });
+        assert_eq!(out, 7);
+        assert!(draft.timings.filter_us >= 1_000, "{:?}", draft.timings);
     }
 }

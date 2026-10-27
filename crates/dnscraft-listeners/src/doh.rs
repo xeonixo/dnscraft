@@ -18,7 +18,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 use tokio::sync::{Notify, Semaphore, oneshot, watch};
 use tokio_rustls::TlsAcceptor;
@@ -27,7 +27,7 @@ use crate::admission::{Admission, AdmitDecision, ClientIdState, public_client_id
 use crate::bans::StrikeReason;
 use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Exposure, Limits, ListenerConfig};
-use crate::core::{QueryMeta, error_reply_from_wire, handle_wire};
+use crate::core::{QueryMeta, error_event_from_wire, error_result_from_wire, handle_wire};
 use crate::doh_request::{
     DNS_MESSAGE_TYPE, DohPath, DohWireError, MAX_DOH_HEADER_LIST_SIZE, content_type_of,
     extract_wire, parse_doh_path,
@@ -517,42 +517,7 @@ where
         }
     };
 
-    let now = shared.clock.now();
-    let decision = {
-        let mut adm = shared
-            .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        adm.check(&shared.listener, peer, &client_id_state, now)
-    };
-
-    match decision {
-        AdmitDecision::Drop {
-            code: "listeners.banned",
-        } => {
-            return empty_parts(StatusCode::FORBIDDEN);
-        }
-        AdmitDecision::Drop { .. } => {
-            return empty_parts(StatusCode::FORBIDDEN);
-        }
-        AdmitDecision::Refuse {
-            code: "listeners.rate_limited",
-        } => {
-            DohStats::bump(&shared.stats.http_429);
-            return empty_parts(StatusCode::TOO_MANY_REQUESTS);
-        }
-        AdmitDecision::Refuse { .. } => {
-            return empty_parts(StatusCode::FORBIDDEN);
-        }
-        AdmitDecision::Admit => {}
-    }
-
-    // Listener-wide in-flight cap (in addition to per-connection HTTP limits):
-    // wait rather than reject so HTTP/2 streams apply backpressure.
-    let Ok(_inflight) = Arc::clone(&shared.inflight).acquire_owned().await else {
-        return empty_parts(StatusCode::SERVICE_UNAVAILABLE);
-    };
-
+    let started = Instant::now();
     let meta = QueryMeta {
         protocol: DnsProtocol::DoH,
         listener_id: shared.listener.id.clone(),
@@ -569,24 +534,76 @@ where
         ddr: None,
     };
 
+    let now = shared.clock.now();
+    let decision = {
+        let mut adm = shared
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        adm.check(&shared.listener, peer, &client_id_state, now)
+    };
+
+    match decision {
+        AdmitDecision::Drop {
+            code: "listeners.banned",
+        } => {
+            DohStats::bump(&shared.stats.dropped_banned);
+            return empty_parts(StatusCode::FORBIDDEN);
+        }
+        AdmitDecision::Drop { .. } => {
+            return empty_parts(StatusCode::FORBIDDEN);
+        }
+        AdmitDecision::Refuse {
+            code: "listeners.rate_limited",
+        } => {
+            DohStats::bump(&shared.stats.http_429);
+            emit_optional(
+                &shared.event_sink,
+                shared.clock.as_ref(),
+                error_event_from_wire(&wire, &meta, Rcode::REFUSED, 0, started.elapsed()),
+            );
+            return empty_parts(StatusCode::TOO_MANY_REQUESTS);
+        }
+        AdmitDecision::Refuse { .. } => {
+            emit_optional(
+                &shared.event_sink,
+                shared.clock.as_ref(),
+                error_event_from_wire(&wire, &meta, Rcode::REFUSED, 0, started.elapsed()),
+            );
+            return empty_parts(StatusCode::FORBIDDEN);
+        }
+        AdmitDecision::Admit => {}
+    }
+
+    // Listener-wide in-flight cap (in addition to per-connection HTTP limits):
+    // wait rather than reject so HTTP/2 streams apply backpressure.
+    let Ok(_inflight) = Arc::clone(&shared.inflight).acquire_owned().await else {
+        return empty_parts(StatusCode::SERVICE_UNAVAILABLE);
+    };
+
     let deadline = add_duration(shared.clock.now(), shared.limits.query_timeout);
     let wake = Notify::new();
     let out_bytes = tokio::select! {
-        r = handle_wire(&wire, meta, &*shared.handler) => match r {
+        r = handle_wire(&wire, meta.clone(), &*shared.handler) => match r {
             Some(out) => {
                 emit_optional(&shared.event_sink, shared.clock.as_ref(), out.event);
                 out.bytes
             }
+            // Core drop rule (QR=1 / unparseable header): no DNS answer.
             None => return empty_parts(StatusCode::BAD_REQUEST),
         },
         () = wait_until(shared.clock.as_ref(), deadline, &wake) => {
-            match error_reply_from_wire(
+            match error_result_from_wire(
                 &wire,
                 Rcode::SERVFAIL,
                 MAX_MESSAGE_LEN,
                 shared.limits.udp_payload_max,
+                &meta,
+                started,
             ) {
-                Some(mut bytes) => {
+                Some(out) => {
+                    emit_optional(&shared.event_sink, shared.clock.as_ref(), out.event);
+                    let mut bytes = out.bytes;
                     if bytes.len() >= 2 {
                         bytes[0] = 0;
                         bytes[1] = 0;

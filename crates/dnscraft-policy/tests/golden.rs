@@ -431,3 +431,35 @@ async fn golden_local_domain_fallthrough_vs_special_use_nxdomain() {
     assert_eq!(public.message.rcode(), Rcode::NOERROR);
     assert!(root_queries(&h) > before);
 }
+
+/// RFC 8375: `home.arpa` is the resolver's local zone, so policy falls
+/// through step 2 and the resolver answers NXDOMAIN without root traffic.
+#[tokio::test]
+async fn golden_home_arpa_falls_through_to_resolver_local_zone() {
+    let h = Hierarchy::start_with(specs_golden()).await.unwrap();
+    let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
+    let eng = PolicyEngine::new(
+        policy_cfg(profile_base(), vec![default_view(Vec::new())]),
+        empty_filter(),
+        resolver,
+        Arc::new(NoClients),
+        clock(),
+    )
+    .unwrap();
+    let before = root_queries(&h);
+
+    let answer = eng
+        .handle(ctx("unknown.home.arpa.", RecordType::A))
+        .await
+        .unwrap();
+    assert_eq!(answer.message.rcode(), Rcode::NXDOMAIN);
+    assert_eq!(answer.record.answer_source, AnswerOrigin::Resolver);
+    assert!(
+        !answer
+            .record
+            .steps
+            .contains(&DecisionStep::SpecialUseNxdomain),
+        "home.arpa must be answered by the resolver local zone"
+    );
+    assert_eq!(root_queries(&h), before, "home.arpa leaked to the root");
+}

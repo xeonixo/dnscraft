@@ -231,6 +231,33 @@ pub(crate) fn verify_rrsig_budgeted(
     budget: &ValidationBudget,
     input: &mut Option<Vec<u8>>,
 ) -> Result<(), VerifyFailure> {
+    verify_rrsig_inner(rrset, rrsig, dnskey, now, budget, input, false)
+}
+
+/// Like [`verify_rrsig_budgeted`], but accepts the DNSKEY's REVOKE bit.
+///
+/// RFC 5011 section 2.3 revocation is proved by the revoked key signing the
+/// DNSKEY RRset itself; every other check still applies.
+pub(crate) fn verify_revocation_budgeted(
+    rrset: &[Record],
+    rrsig: &Record,
+    dnskey: &Record,
+    now: SystemTime,
+    budget: &ValidationBudget,
+    input: &mut Option<Vec<u8>>,
+) -> Result<(), VerifyFailure> {
+    verify_rrsig_inner(rrset, rrsig, dnskey, now, budget, input, true)
+}
+
+fn verify_rrsig_inner(
+    rrset: &[Record],
+    rrsig: &Record,
+    dnskey: &Record,
+    now: SystemTime,
+    budget: &ValidationBudget,
+    input: &mut Option<Vec<u8>>,
+    allow_revoked: bool,
+) -> Result<(), VerifyFailure> {
     let RData::RRSIG {
         type_covered,
         algorithm,
@@ -270,7 +297,7 @@ pub(crate) fn verify_rrsig_budgeted(
     if dnskey.name != *signer_name || !signer_name.zone_of(&first.name) {
         return Err(VerifyFailure::SignerNotZone);
     }
-    if flags & ZONE_FLAG == 0 || *protocol != 3 || flags & REVOKE_FLAG != 0 {
+    if flags & ZONE_FLAG == 0 || *protocol != 3 || (flags & REVOKE_FLAG != 0 && !allow_revoked) {
         return Err(VerifyFailure::KeyNotZoneKey);
     }
     if algorithm != key_alg {

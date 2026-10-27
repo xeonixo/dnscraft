@@ -69,6 +69,7 @@ pub(crate) async fn settle(
     let settled = match response {
         None => Trust::Bogus(BogusReason::DnskeyUnavailable),
         Some(msg) => {
+            let anchored = matches!(trust, Trust::Anchor);
             let delegation = match &trust {
                 Trust::Ds(ds) => DelegationTrust::Ds(ds),
                 _ => DelegationTrust::Anchors(&ctx.config.trust_anchors),
@@ -81,7 +82,18 @@ pub(crate) async fn settle(
                 ctx.config.clock.now(),
                 &ctx.dnssec_budget,
             ) {
-                Ok(KeysOutcome::Secure(keys)) => Trust::Secure(Arc::new(keys)),
+                Ok(KeysOutcome::Secure(keys)) => {
+                    if anchored {
+                        ctx.config.trust_anchors.observe_dnskeys(
+                            zone,
+                            keys.keys(),
+                            &msg.answers,
+                            ctx.config.clock.now(),
+                            &ctx.dnssec_budget,
+                        );
+                    }
+                    Trust::Secure(Arc::new(keys))
+                }
                 Ok(KeysOutcome::Insecure(_)) => Trust::Insecure,
                 Err(e) => Trust::Bogus(BogusReason::Chain(e)),
             }

@@ -233,8 +233,8 @@ pub fn apply_tls_handshake_strike(
 /// [`ResolvesServerCert`] over [`CertResolver`]: cert presence only.
 ///
 /// Public SNI / Client-ID admission is enforced in [`accept_encrypted`] (DoT)
-/// or after the QUIC handshake (DoQ), where the peer IP is available for
-/// strikes. Hot reload remains via [`CertResolver::install`].
+/// or in the QUIC handshake via [`GatedCertResolver`] (DoQ), where the peer IP
+/// is available for strikes. Hot reload remains via [`CertResolver::install`].
 pub struct ListenerCertResolver {
     inner: Arc<CertResolver>,
     stats: Arc<TlsStats>,
@@ -272,6 +272,64 @@ impl ResolvesServerCert for ListenerCertResolver {
             return None;
         }
         self.inner.resolve(client_hello)
+    }
+}
+
+/// [`ResolvesServerCert`] that enforces the public SNI Client-ID gate during
+/// the QUIC handshake and records the outcome for the accept path.
+///
+/// A rejected ClientHello returns no certificate, so the handshake fails
+/// instead of completing and being closed afterwards (DoQ).
+#[derive(Debug)]
+pub struct GatedCertResolver {
+    inner: Arc<ListenerCertResolver>,
+    gate: Arc<SniGate>,
+    required: bool,
+    outcome: Mutex<Option<PublicSniOutcome>>,
+}
+
+impl GatedCertResolver {
+    /// Wraps the shared certificate store for one connection.
+    ///
+    /// `required` is true when the listener is public and the source class is
+    /// public; the gate is skipped otherwise (local rules).
+    pub fn new(
+        certs: Arc<CertResolver>,
+        stats: Arc<TlsStats>,
+        gate: Arc<SniGate>,
+        required: bool,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            inner: ListenerCertResolver::local(certs, stats),
+            gate,
+            required,
+            outcome: Mutex::new(None),
+        })
+    }
+
+    /// SNI gate outcome observed during the handshake (`None` when the gate
+    /// did not apply or no ClientHello was resolved).
+    pub fn outcome(&self) -> Option<PublicSniOutcome> {
+        self.outcome
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
+impl ResolvesServerCert for GatedCertResolver {
+    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        if !self.required {
+            return self.inner.resolve(client_hello);
+        }
+        let outcome = inspect_public_sni(client_hello.server_name(), &self.gate);
+        let accept = matches!(outcome, PublicSniOutcome::Accept { .. });
+        *self.outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
+        if accept {
+            self.inner.resolve(client_hello)
+        } else {
+            None
+        }
     }
 }
 

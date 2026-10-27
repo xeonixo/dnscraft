@@ -7,7 +7,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use dnscraft_policy::{ClientId, DnsProtocol};
 use dnscraft_proto::{EdnsOption, Message, Rcode};
@@ -18,7 +18,7 @@ use tokio::task::JoinSet;
 use crate::admission::{Admission, AdmitDecision, ClientIdState};
 use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Limits, ListenerConfig};
-use crate::core::{QueryMeta, error_reply_from_wire, handle_wire};
+use crate::core::{QueryMeta, error_result_from_wire, handle_wire};
 use crate::ddr::DdrEndpoints;
 use crate::events::{QueryEventSink, emit_optional};
 use crate::framing::{self, FrameError, MAX_MESSAGE_LEN};
@@ -39,6 +39,8 @@ pub struct FramedStats {
     pub dropped_public: AtomicU64,
     /// Rejected by admission Drop (e.g. ban).
     pub dropped_admission: AtomicU64,
+    /// Admission drops because the source was banned.
+    pub banned: AtomicU64,
     /// Per-query REFUSED answers (rate limit).
     pub refused: AtomicU64,
     /// Rejected because `max_connections_per_listener` was full.
@@ -405,6 +407,19 @@ where
     H: QueryHandler + 'static,
 {
     let now = shared.clock.now();
+    let started = Instant::now();
+    let meta = QueryMeta {
+        protocol: identity.protocol,
+        listener_id: shared.listener.id.clone(),
+        exposure: shared.listener.exposure,
+        source: peer_ip,
+        arrival: identity.arrival.to_canonical(),
+        client_id: identity.meta_client_id(),
+        size_limit: MAX_MESSAGE_LEN,
+        pad: identity.pad,
+        udp_payload_max: shared.limits.udp_payload_max,
+        ddr: shared.ddr.clone(),
+    };
     let decision = {
         let mut adm = shared
             .admission
@@ -414,19 +429,25 @@ where
     };
 
     match decision {
-        AdmitDecision::Drop { .. } => {
+        AdmitDecision::Drop { code } => {
+            if code == "listeners.banned" {
+                FramedStats::bump(&shared.stats.banned);
+            }
             drop(permit);
             Err(ConnEnd::Banned)
         }
         AdmitDecision::Refuse { .. } => {
             FramedStats::bump(&shared.stats.refused);
-            if let Some(bytes) = error_reply_from_wire(
+            if let Some(out) = error_result_from_wire(
                 &datagram,
                 Rcode::REFUSED,
                 MAX_MESSAGE_LEN,
                 shared.limits.udp_payload_max,
+                &meta,
+                started,
             ) {
-                let _ = tx.send(bytes).await;
+                emit_optional(&shared.event_sink, shared.clock.as_ref(), out.event);
+                let _ = tx.send(out.bytes).await;
             }
             drop(permit);
             Ok(())
@@ -442,12 +463,11 @@ where
             let shared = Arc::clone(shared);
             let tx = tx.clone();
             let outstanding = Arc::clone(outstanding);
-            let identity = Arc::clone(identity);
             queries.spawn(async move {
                 let _permit = permit;
                 let _listener_permit = listener_permit;
                 let _guard = OutstandingGuard(outstanding);
-                if let Some(bytes) = process_query(&shared, peer_ip, datagram, &identity).await {
+                if let Some(bytes) = process_query(&shared, meta, datagram).await {
                     let _ = tx.send(bytes).await;
                 }
             });
@@ -495,37 +515,29 @@ async fn writer_loop<W: AsyncWrite + Unpin>(
 
 async fn process_query<H>(
     shared: &FramedShared<H>,
-    peer_ip: IpAddr,
+    meta: QueryMeta,
     datagram: Vec<u8>,
-    identity: &ConnIdentity,
 ) -> Option<Vec<u8>>
 where
     H: QueryHandler,
 {
     let want_keepalive = client_requested_keepalive(&datagram);
-    let meta = QueryMeta {
-        protocol: identity.protocol,
-        listener_id: shared.listener.id.clone(),
-        exposure: shared.listener.exposure,
-        source: peer_ip,
-        arrival: identity.arrival.to_canonical(),
-        client_id: identity.meta_client_id(),
-        size_limit: MAX_MESSAGE_LEN,
-        pad: identity.pad,
-        udp_payload_max: shared.limits.udp_payload_max,
-        ddr: shared.ddr.clone(),
-    };
+    let started = Instant::now();
     let deadline = add_duration(shared.clock.now(), shared.limits.query_timeout);
     let wake = Notify::new();
     let out = tokio::select! {
-        r = handle_wire(&datagram, meta, &*shared.handler) => r,
+        r = handle_wire(&datagram, meta.clone(), &*shared.handler) => r,
         () = wait_until(shared.clock.as_ref(), deadline, &wake) => {
-            return error_reply_from_wire(
+            let out = error_result_from_wire(
                 &datagram,
                 Rcode::SERVFAIL,
                 MAX_MESSAGE_LEN,
                 shared.limits.udp_payload_max,
-            );
+                &meta,
+                started,
+            )?;
+            emit_optional(&shared.event_sink, shared.clock.as_ref(), out.event);
+            return Some(out.bytes);
         }
     }?;
 

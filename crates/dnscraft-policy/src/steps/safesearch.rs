@@ -19,7 +19,7 @@ use tracing::warn;
 
 use crate::config::RequestContext;
 use crate::decision::{DecisionStep, FilterHit};
-use crate::pipeline::{Draft, Flow, StepCtx};
+use crate::pipeline::{Draft, Flow, StepCtx, timed_filter};
 use crate::safesearch_table::{self, SafeSearchProvider};
 use crate::steps::filter::follow_cname_rewrite;
 use crate::synth::{
@@ -74,10 +74,10 @@ pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Dra
             return Flow::Continue;
         };
         let now = step.clock.now();
-        match step
-            .filter
-            .match_name(set_id, &domain, u16::from(ctx.query.qtype), now)
-        {
+        match timed_filter(draft, || {
+            step.filter
+                .match_name(set_id, &domain, u16::from(ctx.query.qtype), now)
+        }) {
             Ok(Verdict::Pass) | Ok(Verdict::Allowed(_)) => {}
             Ok(Verdict::Blocked(reason)) => {
                 draft.filter = Some(FilterHit {

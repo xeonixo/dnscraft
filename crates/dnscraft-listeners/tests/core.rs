@@ -3,6 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::time::Instant;
 
 use dnscraft_filtering::SetId;
 use dnscraft_listeners::{
@@ -120,6 +121,71 @@ async fn core_notimp_on_non_query_opcode() {
     .unwrap();
     let resp = Message::decode(&out.bytes).unwrap();
     assert_eq!(resp.rcode(), Rcode::NOTIMP);
+    let event = out.event.expect("pre-policy answers are logged");
+    assert_eq!(event.rcode, Rcode::NOTIMP);
+    assert_eq!(event.query.name, Name::from_ascii("example.com.").unwrap());
+}
+
+#[tokio::test]
+async fn core_logs_pre_policy_error_answers() {
+    let fake = FakeHandler::new(answer_for(&a_query(1)));
+
+    // FORMERR (QDCOUNT != 1).
+    let mut q = a_query(1);
+    q.questions.push(q.questions[0].clone());
+    let out = handle_wire(
+        &encode_query(q),
+        meta(DnsProtocol::Udp53, 512, false),
+        &fake,
+    )
+    .await
+    .unwrap();
+    let event = out.event.expect("FORMERR must be logged");
+    assert_eq!(event.rcode, Rcode::FORMERR);
+
+    // REFUSED (class != IN/CH/ANY): use the first question so it is loggable.
+    let mut q = a_query(2);
+    q.questions[0].qclass = Class::NONE;
+    let out = handle_wire(
+        &encode_query(q),
+        meta(DnsProtocol::Udp53, 512, false),
+        &fake,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        out.event.expect("REFUSED must be logged").rcode,
+        Rcode::REFUSED
+    );
+}
+
+#[tokio::test]
+async fn core_drops_without_header_and_logs_nothing() {
+    // A valid-looking header whose body cannot decode: FORMERR, no question
+    // to log (the event is absent rather than fabricated).
+    let buf = {
+        let hdr = Header {
+            id: 7,
+            rd: true,
+            ..Header::default()
+        };
+        let mut buf = Vec::new();
+        hdr.encode(
+            &mut buf,
+            dnscraft_proto::Counts {
+                qd: 1,
+                an: 0,
+                ns: 0,
+                ar: 0,
+            },
+        );
+        buf
+    };
+    let fake = FakeHandler::new(answer_for(&a_query(1)));
+    let out = handle_wire(&buf, meta(DnsProtocol::Udp53, 512, false), &fake)
+        .await
+        .unwrap();
+    assert_eq!(Message::decode(&out.bytes).unwrap().rcode(), Rcode::FORMERR);
     assert!(out.event.is_none());
 }
 
@@ -136,6 +202,30 @@ async fn core_formerr_on_qdcount_not_one() {
     .await
     .unwrap();
     assert_eq!(Message::decode(&out.bytes).unwrap().rcode(), Rcode::FORMERR);
+}
+
+#[tokio::test]
+async fn error_result_from_wire_logs_admission_and_timeout_answers() {
+    let q = a_query(9);
+    let wire = encode_query(q);
+    let m = meta(DnsProtocol::Tcp53, 65_535, false);
+    let out = dnscraft_listeners::error_result_from_wire(
+        &wire,
+        Rcode::SERVFAIL,
+        65_535,
+        DEFAULT_UDP_PAYLOAD_MAX,
+        &m,
+        Instant::now(),
+    )
+    .unwrap();
+    assert_eq!(
+        Message::decode(&out.bytes).unwrap().rcode(),
+        Rcode::SERVFAIL
+    );
+    let event = out.event.expect("timeout SERVFAIL must be logged");
+    assert_eq!(event.rcode, Rcode::SERVFAIL);
+    assert_eq!(event.protocol, DnsProtocol::Tcp53);
+    assert_eq!(event.query.qtype, RecordType::A);
 }
 
 #[tokio::test]

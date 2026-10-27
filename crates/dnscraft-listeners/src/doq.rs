@@ -5,6 +5,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use dnscraft_policy::DnsProtocol;
 use dnscraft_proto::{Message, Rcode};
@@ -18,7 +19,7 @@ use crate::admission::{Admission, AdmitDecision, ClientIdState, public_client_id
 use crate::bans::StrikeReason;
 use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Exposure, Limits, ListenerConfig};
-use crate::core::{QueryMeta, error_reply_from_wire, handle_wire};
+use crate::core::{QueryMeta, error_result_from_wire, handle_wire};
 use crate::doh::{ConnActivity, release_per_source};
 use crate::error::ListenersError;
 use crate::events::{QueryEventSink, emit_optional};
@@ -26,8 +27,9 @@ use crate::framing::{MAX_MESSAGE_LEN, write_frame};
 use crate::handler::QueryHandler;
 use crate::socket::bind_udp;
 use crate::tls::{
-    ALPN_DOQ, ListenerCertResolver, PublicSniOutcome, SniGate, TlsStats, apply_sni_strike,
-    apply_tls_handshake_strike, client_id_state_local, inspect_public_sni, quic_server_config,
+    ALPN_DOQ, GatedCertResolver, ListenerCertResolver, PublicSniOutcome, SniGate, TlsStats,
+    apply_sni_strike, apply_tls_handshake_strike, client_id_state_local, inspect_public_sni,
+    quic_server_config,
 };
 
 /// RFC 9250 §4.3: `DOQ_PROTOCOL_ERROR` (0x2).
@@ -48,7 +50,7 @@ pub struct DoqStats {
     pub rejected_conn_cap: AtomicU64,
     /// Rejected because `max_connections_per_source` was full.
     pub rejected_per_source: AtomicU64,
-    /// Banned public source refused before handshake.
+    /// Banned public source refused before handshake or while serving streams.
     pub dropped_banned: AtomicU64,
     /// Queries admitted into `handle_wire`.
     pub queries: AtomicU64,
@@ -106,6 +108,9 @@ struct DoqShared<H: ?Sized> {
     tls_stats: Arc<TlsStats>,
     sni_gate: Arc<SniGate>,
     certs: Arc<CertResolver>,
+    /// Prebuilt QUIC server config; each connection clones it with its own SNI
+    /// gate so rejection happens during the handshake.
+    base_server_config: ServerConfig,
     conn_cap: Arc<Semaphore>,
     /// Listener-wide in-flight query cap (shared by all connections).
     inflight: Arc<Semaphore>,
@@ -171,6 +176,7 @@ where
     })?;
     transport.max_idle_timeout(Some(idle_timeout));
     server_config.transport_config(Arc::new(transport));
+    let base_server_config = server_config.clone();
 
     let endpoint = Endpoint::new(
         EndpointConfig::default(),
@@ -195,6 +201,7 @@ where
         tls_stats,
         sni_gate,
         certs,
+        base_server_config,
         conn_cap,
         inflight,
         per_source: Mutex::new(HashMap::new()),
@@ -232,8 +239,9 @@ where
     let peer = incoming.remote_address();
     let source = peer.ip().to_canonical();
 
-    // Banned public source: refuse before any QUIC/TLS work.
-    {
+    // Banned public source: refuse before any QUIC/TLS work. Also decide
+    // whether the SNI Client-ID gate applies to this connection.
+    let required = {
         let now = shared.clock.now();
         let mut adm = shared
             .admission
@@ -244,7 +252,8 @@ where
             incoming.refuse();
             return;
         }
-    }
+        public_client_id_required(shared.listener.exposure, adm.classify(source))
+    };
 
     let Ok(conn_permit) = shared.conn_cap.clone().try_acquire_owned() else {
         DoqStats::bump(&shared.stats.rejected_conn_cap);
@@ -279,13 +288,26 @@ where
         let _conn_permit = conn_permit;
         let handshake_timeout = shared.limits.tls_handshake_timeout;
         let exposure = shared.listener.exposure;
-        let connecting = match incoming.accept() {
+
+        // Per-connection SNI gate: rejecting the ClientHello fails the QUIC
+        // handshake instead of completing it and closing the connection later.
+        let resolver = GatedCertResolver::new(
+            Arc::clone(&shared.certs),
+            Arc::clone(&shared.tls_stats),
+            Arc::clone(&shared.sni_gate),
+            required,
+        );
+        let Some(config) = connection_server_config(&shared, Arc::clone(&resolver)) else {
+            // Validated policy must always convert; treat as a handshake error.
+            TlsStats::bump(&shared.tls_stats.handshake_fail);
+            release_per_source(&shared.per_source, source);
+            DoqStats::bump(&shared.stats.closed);
+            return;
+        };
+        let connecting = match incoming.accept_with(Arc::new(config)) {
             Ok(c) => c,
             Err(_) => {
-                TlsStats::bump(&shared.tls_stats.handshake_fail);
-                strike_tls_handshake(&shared, exposure, source);
-                release_per_source(&shared.per_source, source);
-                DoqStats::bump(&shared.stats.closed);
+                record_handshake_failure(&shared, &resolver, exposure, source);
                 return;
             }
         };
@@ -296,10 +318,7 @@ where
             r = connecting => match r {
                 Ok(c) => c,
                 Err(_) => {
-                    TlsStats::bump(&shared.tls_stats.handshake_fail);
-                    strike_tls_handshake(&shared, exposure, source);
-                    release_per_source(&shared.per_source, source);
-                    DoqStats::bump(&shared.stats.closed);
+                    record_handshake_failure(&shared, &resolver, exposure, source);
                     return;
                 }
             },
@@ -315,7 +334,7 @@ where
         let client_id = match resolve_sni_client_id(&shared, &conn, source) {
             Ok(id) => id,
             Err(()) => {
-                // Public SNI reject: stats/strikes already applied; close quietly.
+                // Safety net: the handshake gate normally rejects before this.
                 conn.close(DOQ_NO_ERROR, b"");
                 release_per_source(&shared.per_source, source);
                 DoqStats::bump(&shared.stats.closed);
@@ -328,6 +347,51 @@ where
         release_per_source(&shared.per_source, source);
         DoqStats::bump(&shared.stats.closed);
     });
+}
+
+/// Builds a per-connection QUIC config whose resolver enforces `resolver`
+/// during the handshake; transport/token settings come from the listener base.
+fn connection_server_config<H: ?Sized>(
+    shared: &DoqShared<H>,
+    resolver: Arc<GatedCertResolver>,
+) -> Option<ServerConfig> {
+    let policy = shared.listener.tls_policy.clone().unwrap_or_default();
+    let mut rustls_cfg: RustlsServerConfig = (*quic_server_config(resolver, &policy)).clone();
+    rustls_cfg.alpn_protocols = vec![ALPN_DOQ.to_vec()];
+    let quic_crypto = QuicServerConfig::try_from(rustls_cfg).ok()?;
+    let mut config = shared.base_server_config.clone();
+    config.crypto = Arc::new(quic_crypto);
+    Some(config)
+}
+
+/// Records a failed handshake: SNI rejections get their own counters/strike,
+/// everything else is a generic TLS handshake failure.
+fn record_handshake_failure<H: ?Sized>(
+    shared: &DoqShared<H>,
+    resolver: &GatedCertResolver,
+    exposure: Exposure,
+    source: IpAddr,
+) {
+    match resolver.outcome() {
+        Some(outcome @ PublicSniOutcome::Reject { .. }) => {
+            if outcome.should_strike() {
+                TlsStats::bump(&shared.tls_stats.sni_reject_strike);
+            } else {
+                TlsStats::bump(&shared.tls_stats.sni_reject_no_strike);
+            }
+            let mut adm = shared
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            apply_sni_strike(&mut adm, source, &outcome, shared.clock.now());
+        }
+        _ => {
+            TlsStats::bump(&shared.tls_stats.handshake_fail);
+            strike_tls_handshake(shared, exposure, source);
+        }
+    }
+    release_per_source(&shared.per_source, source);
+    DoqStats::bump(&shared.stats.closed);
 }
 
 /// Returns Client ID state, or `Err(())` when the connection must be dropped
@@ -507,50 +571,17 @@ where
     // Complete message → answering (blocks application idle until done).
     activity.begin();
     let _answering_guard = AnsweringGuard { activity };
+    let started = Instant::now();
 
-    // RFC 9250 §4.2.1: Message ID must be 0.
-    match Message::decode(&wire) {
-        Ok(msg) if msg.header.id == 0 => {}
-        Ok(_) => {
-            strike_framing(&shared, peer.ip());
-            return Err(DOQ_PROTOCOL_ERROR);
-        }
-        Err(_) => {
-            strike_framing(&shared, peer.ip());
-            return Err(DOQ_PROTOCOL_ERROR);
-        }
-    }
-
-    let now = shared.clock.now();
-    let decision = {
-        let mut adm = shared
-            .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        adm.check(&shared.listener, peer.ip(), client_id, now)
-    };
-
-    match decision {
-        AdmitDecision::Drop { .. } => {
-            conn.close(DOQ_NO_ERROR, b"banned");
-            return Ok(());
-        }
-        AdmitDecision::Refuse { .. } => {
-            DoqStats::bump(&shared.stats.refused);
-            if let Some(bytes) = error_reply_from_wire(
-                &wire,
-                Rcode::REFUSED,
-                MAX_MESSAGE_LEN,
-                shared.limits.udp_payload_max,
-            ) {
-                let out = force_doq_id0(bytes);
-                let _ = write_frame(&mut send, &out).await;
-                let _ = send.finish();
-            }
-            activity.touch(shared.clock.as_ref());
-            return Ok(());
-        }
-        AdmitDecision::Admit => {}
+    // RFC 9250 §4.2.1: Message ID must be 0. QR=1 and undecodable messages
+    // fall through to `handle_wire`, which applies the shared drop/FORMERR
+    // rules (drop silently / FORMERR when a header could be parsed).
+    if let Ok(msg) = Message::decode(&wire)
+        && !msg.header.qr
+        && msg.header.id != 0
+    {
+        strike_framing(&shared, peer.ip());
+        return Err(DOQ_PROTOCOL_ERROR);
     }
 
     let meta = QueryMeta {
@@ -569,27 +600,69 @@ where
         ddr: None,
     };
 
+    let now = shared.clock.now();
+    let decision = {
+        let mut adm = shared
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        adm.check(&shared.listener, peer.ip(), client_id, now)
+    };
+
+    match decision {
+        AdmitDecision::Drop { .. } => {
+            DoqStats::bump(&shared.stats.dropped_banned);
+            conn.close(DOQ_NO_ERROR, b"banned");
+            return Ok(());
+        }
+        AdmitDecision::Refuse { .. } => {
+            DoqStats::bump(&shared.stats.refused);
+            if let Some(out) = error_result_from_wire(
+                &wire,
+                Rcode::REFUSED,
+                MAX_MESSAGE_LEN,
+                shared.limits.udp_payload_max,
+                &meta,
+                started,
+            ) {
+                emit_optional(&shared.event_sink, shared.clock.as_ref(), out.event);
+                let out = force_doq_id0(out.bytes);
+                let _ = write_frame(&mut send, &out).await;
+                let _ = send.finish();
+            }
+            activity.touch(shared.clock.as_ref());
+            return Ok(());
+        }
+        AdmitDecision::Admit => {}
+    }
+
     DoqStats::bump(&shared.stats.queries);
     let out_bytes = tokio::select! {
-        r = handle_wire(&wire, meta, &*shared.handler) => match r {
+        r = handle_wire(&wire, meta.clone(), &*shared.handler) => match r {
             Some(out) => {
                 emit_optional(&shared.event_sink, shared.clock.as_ref(), out.event);
                 out.bytes
             }
             None => {
-                strike_framing(&shared, peer.ip());
-                return Err(DOQ_PROTOCOL_ERROR);
+                // Core drop rule (QR=1 / unparseable header): no answer, no strike.
+                let _ = send.reset(DOQ_NO_ERROR);
+                return Ok(());
             }
         },
         () = wait_until(shared.clock.as_ref(), deadline, &wake) => {
             // Message was complete: answer SERVFAIL within the remaining budget.
-            match error_reply_from_wire(
+            match error_result_from_wire(
                 &wire,
                 Rcode::SERVFAIL,
                 MAX_MESSAGE_LEN,
                 shared.limits.udp_payload_max,
+                &meta,
+                started,
             ) {
-                Some(bytes) => force_doq_id0(bytes),
+                Some(out) => {
+                    emit_optional(&shared.event_sink, shared.clock.as_ref(), out.event);
+                    force_doq_id0(out.bytes)
+                }
                 None => {
                     let _ = send.reset(DOQ_NO_ERROR);
                     return Ok(());

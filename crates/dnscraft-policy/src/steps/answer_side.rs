@@ -8,7 +8,7 @@ use tracing::warn;
 
 use crate::config::RequestContext;
 use crate::decision::{DecisionStep, FilterHit};
-use crate::pipeline::{Draft, StepCtx};
+use crate::pipeline::{Draft, StepCtx, timed_filter};
 use crate::synth::{DEFAULT_BLOCK_TTL, block_answer, filter_internal_servfail};
 use crate::util::truncate_ede_text;
 
@@ -46,7 +46,9 @@ pub(crate) fn run(
     // Step 8: CNAME uncloaking.
     let chain = collect_chain_names(&ctx.query.name, &message.answers);
     if !chain.is_empty() {
-        match step.filter.match_chain(set_id, &chain, qtype, now) {
+        match timed_filter(draft, || {
+            step.filter.match_chain(set_id, &chain, qtype, now)
+        }) {
             Ok(Verdict::Blocked(reason)) => {
                 return replace_blocked(
                     draft,
@@ -70,7 +72,7 @@ pub(crate) fn run(
 
     // Step 9: answer-IP rules.
     for ip in answer_ips(&message.answers) {
-        match step.filter.match_answer_ip(set_id, ip, now) {
+        match timed_filter(draft, || step.filter.match_answer_ip(set_id, ip, now)) {
             Ok(Verdict::Blocked(reason)) => {
                 return replace_blocked(
                     draft,

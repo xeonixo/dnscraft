@@ -1,14 +1,27 @@
 //! Transport-independent DNS message core (`handle_wire`).
 
 use std::net::IpAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use dnscraft_filtering::SetId;
 use dnscraft_policy::{
-    ClientFlags, ClientId, DecisionRecord, DnsProtocol, ListenerId, RequestContext,
+    AnswerOrigin, ClientFlags, ClientId, DecisionRecord, DecisionTimings, DnsProtocol, ListenerId,
+    ProfileId, RequestContext, SelectionCause, ViewId,
 };
-use dnscraft_proto::{Class, Header, Message, Opcode, Rcode};
+use dnscraft_proto::{Class, Header, Message, Opcode, Question, Rcode};
 use dnscraft_resolver::Query;
+
+/// Placeholder ids for listener-generated (pre-policy) decision records.
+#[allow(clippy::expect_used)]
+static DEFAULT_VIEW: LazyLock<ViewId> =
+    LazyLock::new(|| ViewId::new("default").expect("default view id"));
+#[allow(clippy::expect_used)]
+static DEFAULT_PROFILE: LazyLock<ProfileId> =
+    LazyLock::new(|| ProfileId::new("default").expect("default profile id"));
+#[allow(clippy::expect_used)]
+static DEFAULT_SET: LazyLock<SetId> =
+    LazyLock::new(|| SetId::new("default").expect("default set id"));
 
 use crate::config::Exposure;
 use crate::ddr::{DdrEndpoints, ddr_decision_record, try_answer_ddr};
@@ -72,7 +85,9 @@ pub struct QueryEvent {
 pub struct HandleWireResult {
     /// Encoded DNS response.
     pub bytes: Vec<u8>,
-    /// Present when [`QueryHandler`] ran; absent for pre-handler error replies.
+    /// Present when a query decoded, including pre-policy error replies.
+    /// Absent when there is no question to log (unparseable header) or the
+    /// answer is not loggable (`test_query`).
     pub event: Option<QueryEvent>,
 }
 
@@ -97,6 +112,7 @@ pub async fn handle_wire(
     let query_msg = match Message::decode(bytes) {
         Ok(m) => m,
         Err(_) => {
+            // No question could be decoded: drop or FORMERR, but nothing to log.
             return Some(HandleWireResult {
                 bytes: error_reply_from_header(&header, Rcode::FORMERR, None, meta.size_limit)?,
                 event: None,
@@ -108,72 +124,92 @@ pub async fn handle_wire(
     // (RFC 6891 §6.1.1: a response to a request with OPT carries OPT).
     let client_opt = query_msg.edns.as_ref();
     if query_msg.opcode() != Opcode::QUERY {
-        return Some(HandleWireResult {
-            bytes: error_reply(
+        return Some(pre_policy_result(
+            &meta,
+            source,
+            query_msg.questions.first(),
+            Rcode::NOTIMP,
+            error_reply(
                 &query_msg,
                 Rcode::NOTIMP,
                 client_opt,
                 meta.size_limit,
                 meta.udp_payload_max,
             )?,
-            event: None,
-        });
+            started,
+        ));
     }
 
     if query_msg.questions.len() != 1 {
-        return Some(HandleWireResult {
-            bytes: error_reply(
+        return Some(pre_policy_result(
+            &meta,
+            source,
+            query_msg.questions.first(),
+            Rcode::FORMERR,
+            error_reply(
                 &query_msg,
                 Rcode::FORMERR,
                 client_opt,
                 meta.size_limit,
                 meta.udp_payload_max,
             )?,
-            event: None,
-        });
+            started,
+        ));
     }
 
     let question = &query_msg.questions[0];
     let qclass = question.qclass;
     if qclass != Class::IN && qclass != Class::CH && qclass != Class::ANY {
-        return Some(HandleWireResult {
-            bytes: error_reply(
+        return Some(pre_policy_result(
+            &meta,
+            source,
+            Some(question),
+            Rcode::REFUSED,
+            error_reply(
                 &query_msg,
                 Rcode::REFUSED,
                 client_opt,
                 meta.size_limit,
                 meta.udp_payload_max,
             )?,
-            event: None,
-        });
+            started,
+        ));
     }
     if qclass == Class::CH {
-        return Some(HandleWireResult {
-            bytes: error_reply(
+        return Some(pre_policy_result(
+            &meta,
+            source,
+            Some(question),
+            Rcode::REFUSED,
+            error_reply(
                 &query_msg,
                 Rcode::REFUSED,
                 client_opt,
                 meta.size_limit,
                 meta.udp_payload_max,
             )?,
-            event: None,
-        });
+            started,
+        ));
     }
 
     let client_had_opt = query_msg.edns.is_some();
     if let Some(edns) = &query_msg.edns
         && edns.version != 0
     {
-        return Some(HandleWireResult {
-            bytes: error_reply(
+        return Some(pre_policy_result(
+            &meta,
+            source,
+            Some(question),
+            Rcode::BADVERS,
+            error_reply(
                 &query_msg,
                 Rcode::BADVERS,
                 Some(edns),
                 meta.size_limit,
                 meta.udp_payload_max,
             )?,
-            event: None,
-        });
+            started,
+        ));
     }
 
     // Response OPT is built fresh by `build_response_edns` (no ECS/cookies), so
@@ -216,16 +252,20 @@ pub async fn handle_wire(
     let answer = match handler.handle(ctx).await {
         Ok(a) => a,
         Err(_) => {
-            return Some(HandleWireResult {
-                bytes: error_reply(
+            return Some(pre_policy_result(
+                &meta,
+                source,
+                Some(question),
+                Rcode::SERVFAIL,
+                error_reply(
                     &query_msg,
                     Rcode::SERVFAIL,
                     query_msg.edns.as_ref(),
                     meta.size_limit,
                     meta.udp_payload_max,
                 )?,
-                event: None,
-            });
+                started,
+            ));
         }
     };
 
@@ -251,6 +291,105 @@ fn try_intercept_ddr(query: &Message, meta: &QueryMeta) -> Option<Message> {
     }
     let guard = meta.ddr.as_ref()?.read().ok()?;
     try_answer_ddr(query, meta.arrival.to_canonical(), &guard)
+}
+
+/// Builds a [`QueryEvent`] for one answered query.
+#[allow(clippy::too_many_arguments)]
+fn make_event(
+    meta: &QueryMeta,
+    source: IpAddr,
+    question: &Question,
+    rcode: Rcode,
+    answer_size: usize,
+    duration: Duration,
+    decision: DecisionRecord,
+    loggable: bool,
+) -> QueryEvent {
+    QueryEvent {
+        time: crate::events::placeholder_time(),
+        protocol: meta.protocol,
+        listener_id: meta.listener_id.clone(),
+        source,
+        client_id: meta.client_id.clone(),
+        query: Query {
+            name: question.name.clone(),
+            qtype: question.qtype,
+            qclass: question.qclass,
+        },
+        rcode,
+        answer_size,
+        duration,
+        decision,
+        loggable,
+    }
+}
+
+/// Listener-generated error record (no policy decision ran).
+fn listener_error_decision(rcode: Rcode) -> DecisionRecord {
+    DecisionRecord {
+        view_id: DEFAULT_VIEW.clone(),
+        profile_id: DEFAULT_PROFILE.clone(),
+        selection: SelectionCause::Default,
+        client_id: None,
+        filter_set: DEFAULT_SET.clone(),
+        steps: Vec::new(),
+        filter: None,
+        forward_zone: None,
+        dnssec: None,
+        // Pre-policy errors and timeouts are all listener-synthesised errors.
+        answer_source: AnswerOrigin::ResolveError,
+        timings: DecisionTimings::default(),
+        rcode,
+    }
+}
+
+/// Wraps a pre-policy error reply with its query event (when a question decoded).
+fn pre_policy_result(
+    meta: &QueryMeta,
+    source: IpAddr,
+    question: Option<&Question>,
+    rcode: Rcode,
+    bytes: Vec<u8>,
+    started: Instant,
+) -> HandleWireResult {
+    let event = question.map(|q| {
+        make_event(
+            meta,
+            source,
+            q,
+            rcode,
+            bytes.len(),
+            started.elapsed(),
+            listener_error_decision(rcode),
+            true,
+        )
+    });
+    HandleWireResult { bytes, event }
+}
+
+/// Query event for a listener-generated error reply produced outside
+/// [`handle_wire`] (admission refusal / deadline `SERVFAIL`).
+///
+/// Returns `None` when the wire has no decodable question.
+pub fn error_event_from_wire(
+    wire: &[u8],
+    meta: &QueryMeta,
+    rcode: Rcode,
+    answer_size: usize,
+    duration: Duration,
+) -> Option<QueryEvent> {
+    let msg = Message::decode(wire).ok()?;
+    let question = msg.questions.first()?;
+    Some(make_event(
+        meta,
+        meta.source.to_canonical(),
+        question,
+        rcode,
+        answer_size,
+        duration,
+        listener_error_decision(rcode),
+        true,
+    ))
 }
 
 struct FinishArgs<'a> {
@@ -303,23 +442,16 @@ fn finish_response(args: FinishArgs<'_>) -> Option<HandleWireResult> {
         resp.encode_with_limit(meta.size_limit).ok()?
     };
 
-    let event = QueryEvent {
-        time: crate::events::placeholder_time(),
-        protocol: meta.protocol,
-        listener_id: meta.listener_id.clone(),
+    let event = make_event(
+        meta,
         source,
-        client_id: meta.client_id.clone(),
-        query: Query {
-            name: question.name.clone(),
-            qtype: question.qtype,
-            qclass: question.qclass,
-        },
-        rcode: resp.rcode(),
-        answer_size: bytes.len(),
-        duration: started.elapsed(),
+        question,
+        resp.rcode(),
+        bytes.len(),
+        started.elapsed(),
         decision,
         loggable,
-    };
+    );
 
     Some(HandleWireResult {
         bytes,
@@ -386,4 +518,25 @@ pub fn error_reply_from_wire(
 ) -> Option<Vec<u8>> {
     let msg = Message::decode(bytes).ok()?;
     error_reply(&msg, rcode, msg.edns.as_ref(), size_limit, udp_payload_max)
+}
+
+/// Pre-policy error reply plus its query event (admission / timeout answers).
+///
+/// Same bytes as [`error_reply_from_wire`]; `event` is present when the wire
+/// carried a question, so the query log records admission refusals and
+/// deadline `SERVFAIL`s too.
+pub fn error_result_from_wire(
+    bytes: &[u8],
+    rcode: Rcode,
+    size_limit: usize,
+    udp_payload_max: u16,
+    meta: &QueryMeta,
+    since: Instant,
+) -> Option<HandleWireResult> {
+    let reply = error_reply_from_wire(bytes, rcode, size_limit, udp_payload_max)?;
+    let event = error_event_from_wire(bytes, meta, rcode, reply.len(), since.elapsed());
+    Some(HandleWireResult {
+        bytes: reply,
+        event,
+    })
 }

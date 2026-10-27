@@ -269,6 +269,64 @@ fn path_and_wire_helpers() {
 }
 
 #[tokio::test]
+async fn doh_follows_core_formerr_and_drop_rules() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+    let h = DohHarness::spawn(Exposure::Local, Limits::default(), gate, certs, 60).await;
+
+    // Undecodable body with a parseable header → FORMERR (core rule).
+    let mut hdr = Vec::new();
+    dnscraft_proto::Header {
+        id: 0,
+        rd: true,
+        ..dnscraft_proto::Header::default()
+    }
+    .encode(
+        &mut hdr,
+        dnscraft_proto::Counts {
+            qd: 1,
+            an: 0,
+            ns: 0,
+            ar: 0,
+        },
+    );
+    let (status, _, body) = doh_exchange_h2(
+        h.addr,
+        post_req("/dns-query", Bytes::from(hdr), Some(DNS_MESSAGE_TYPE)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(Message::decode(&body).unwrap().rcode(), Rcode::FORMERR);
+
+    // QR=1 → dropped silently: no DNS answer, HTTP 400.
+    let mut q = Message::query(0, Name::from_ascii("example.com.").unwrap(), RecordType::A);
+    q.header.qr = true;
+    let (status, _, body) = doh_exchange_h2(
+        h.addr,
+        post_req(
+            "/dns-query",
+            Bytes::from(q.encode().unwrap()),
+            Some(DNS_MESSAGE_TYPE),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.is_empty());
+
+    h.stop().await;
+}
+
+#[tokio::test]
 async fn get_post_match_do53_h2_and_h1() {
     install_ring();
     let engine = policy_engine_with_client_ids(&["phone"]).await;

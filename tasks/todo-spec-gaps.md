@@ -52,15 +52,15 @@ approval before Phase 0 code.
       Note: the spec's forward-zone excerpt omits the `id` the code requires.
 - [x] **GR2** 🟠 [code] `outgoing_ipv6` key has no counterpart; transport always follows the target
       address family. Add field + honour it. *(config.rs:66-155, transport.rs:83-87)*
-- [ ] **GR3** 🟠 [code] RFC 5011 rollover tracking not implemented (static ROOT_DS only). *(dnssec/anchors.rs:63-96)*
+- [x] **GR3** 🟠 [code] RFC 5011 rollover tracking not implemented (static ROOT_DS only). *(dnssec/anchors.rs:63-96)*
 - [x] **GR4** 🟠 [code] Forward zones with `validate=true` never check NXDOMAIN/NODATA denial
       proofs and miss the "rcode is not signed" rule → a validating forwarder accepts forged
       negative answers. *(forward.rs:217-290)*
 - [x] **GR5** 🟠 [code] 16-address referral cap enforced only for glue candidates; glueless host
       lookups can inject up to ~64 addresses. *(iterate.rs:71-72, 197-200, 928-931)*
-- [ ] **GR6** 🟡 [code] Root re-prime is query-driven, not time-driven — an idle resolver never
+- [x] **GR6** 🟡 [code] Root re-prime is query-driven, not time-driven — an idle resolver never
       refreshes the 24 h root set. *(lib.rs:530, 566-593)*
-- [~] **GR7** 🟡 [code] `forward::scrub` keeps every NSEC/NSEC3 in the authority section
+- [x] **GR7** 🟡 [code] `forward::scrub` keeps every NSEC/NSEC3 in the authority section
       regardless of owner. *(forward.rs:97-101)*
 
 ## Filtering (`SPEC-filtering.md` ↔ `crates/dnscraft-filtering`)

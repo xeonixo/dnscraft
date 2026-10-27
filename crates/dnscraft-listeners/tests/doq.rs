@@ -16,7 +16,7 @@ use dnscraft_listeners::{
     write_frame,
 };
 use dnscraft_policy::ListenerId;
-use dnscraft_proto::{Message, Rcode};
+use dnscraft_proto::{Message, Name, Rcode, RecordType};
 use dnscraft_tls::{CertResolver, ReservedLabels};
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Connection, Endpoint, RecvStream, TransportConfig};
@@ -398,6 +398,104 @@ async fn nonzero_id_closes_with_protocol_error() {
 }
 
 #[tokio::test]
+async fn undecodable_with_header_gets_formerr() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+    let doq = DoqHarness::spawn(
+        Exposure::Local,
+        Limits::default(),
+        gate,
+        certs,
+        Ipv4Addr::new(192, 0, 2, 9),
+    )
+    .await;
+
+    let conn = connect_doq(doq.addr, "localhost").await;
+    // Valid 12-byte header, truncated question → core FORMERR rule.
+    let mut wire = Vec::new();
+    dnscraft_proto::Header {
+        id: 0,
+        rd: true,
+        ..dnscraft_proto::Header::default()
+    }
+    .encode(
+        &mut wire,
+        dnscraft_proto::Counts {
+            qd: 1,
+            an: 0,
+            ns: 0,
+            ar: 0,
+        },
+    );
+    let resp = query_on_stream(&conn, &wire).await;
+    assert_eq!(Message::decode(&resp).unwrap().rcode(), Rcode::FORMERR);
+    assert_eq!(doq.stats.protocol_errors.load(Ordering::Relaxed), 0);
+    doq.stop().await;
+}
+
+#[tokio::test]
+async fn qr1_and_headerless_messages_are_dropped_silently() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+    let doq = DoqHarness::spawn(
+        Exposure::Local,
+        Limits::default(),
+        gate,
+        certs,
+        Ipv4Addr::new(192, 0, 2, 9),
+    )
+    .await;
+
+    let conn = connect_doq(doq.addr, "localhost").await;
+
+    // QR=1: core drops silently (no DNS answer, no protocol error).
+    let mut q = Message::query(0, Name::from_ascii("example.com.").unwrap(), RecordType::A);
+    q.header.qr = true;
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    write_frame(&mut send, &q.encode().unwrap()).await.unwrap();
+    send.finish().unwrap();
+    assert!(
+        recv.read_to_end(64).await.is_err(),
+        "QR=1 must not be answered"
+    );
+
+    // Header too short to parse: drop, not DOQ_PROTOCOL_ERROR.
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    write_frame(&mut send, &[0u8; 4]).await.unwrap();
+    send.finish().unwrap();
+    assert!(
+        recv.read_to_end(64).await.is_err(),
+        "unparseable header must not be answered"
+    );
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(doq.stats.protocol_errors.load(Ordering::Relaxed), 0);
+    assert_eq!(doq.stats.answered.load(Ordering::Relaxed), 0);
+    drop(conn);
+    doq.stop().await;
+}
+
+#[tokio::test]
 async fn stream_cap_blocks_extra_stream() {
     install_ring();
     let engine = policy_engine_with_client_ids(&["phone"]).await;
@@ -649,39 +747,39 @@ async fn public_sni_matrix() {
     assert_eq!(Message::decode(&ok).unwrap().rcode(), Rcode::NOERROR);
     drop(conn);
 
-    // Unknown id → post-handshake SNI reject + strike (QUIC handshake itself may
-    // complete; the server then closes before serving streams).
+    // Unknown id → rejected during the QUIC handshake + strike.
     let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
     endpoint.set_default_client_config(doq_client_config());
-    let bad_conn = endpoint
+    let bad = endpoint
         .connect(doq.addr, "unknown.dns.example.com")
-        .unwrap()
+        .unwrap();
+    let bad = tokio::time::timeout(Duration::from_secs(2), bad)
         .await
-        .expect("QUIC handshake completes before SNI gate");
+        .expect("handshake must fail promptly");
+    assert!(
+        bad.is_err(),
+        "unknown SNI must be rejected during the handshake"
+    );
     poll_until(
         || doq.tls_stats.sni_reject_strike.load(Ordering::Relaxed) >= 1,
         Duration::from_secs(2),
     )
     .await;
-    assert!(
-        bad_conn.open_bi().await.is_err(),
-        "unknown SNI connection must not serve streams"
-    );
-    drop(bad_conn);
 
-    // Node hostname → reject without strike.
-    let node_conn = endpoint
-        .connect(doq.addr, "node1.dns.example.com")
-        .unwrap()
+    // Node hostname → rejected during the handshake without a strike.
+    let node = endpoint.connect(doq.addr, "node1.dns.example.com").unwrap();
+    let node = tokio::time::timeout(Duration::from_secs(2), node)
         .await
-        .expect("QUIC handshake completes before SNI gate");
+        .expect("handshake must fail promptly");
+    assert!(
+        node.is_err(),
+        "node hostname must be rejected during the handshake"
+    );
     poll_until(
         || doq.tls_stats.sni_reject_no_strike.load(Ordering::Relaxed) >= 1,
         Duration::from_secs(2),
     )
     .await;
-    assert!(node_conn.open_bi().await.is_err());
-    drop(node_conn);
 
     doq.stop().await;
 }

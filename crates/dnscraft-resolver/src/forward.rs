@@ -43,7 +43,7 @@ use std::net::SocketAddr;
 use dnscraft_proto::{Message, Name, RData, Rcode, Record, RecordType};
 
 use crate::config::{ForwardZone, ForwardZoneId};
-use crate::dnssec::denial::{Denial, prove_nodata, prove_nxdomain};
+use crate::dnssec::denial::{Denial, prove_nodata, prove_nxdomain, relevant};
 use crate::dnssec::status::{BogusReason, Status, rrsets};
 use crate::dnssec::walk::{TtlCap, nxdomain_contradicted};
 use crate::dnssec::{
@@ -63,11 +63,18 @@ const MAX_SCRUB_CHAIN: usize = 32;
 /// The answer section keeps the records owned by the names of the CNAME
 /// chain that starts at `qname` (RRsets of the queried type and the CNAMEs
 /// themselves, plus their RRSIGs) and the DNAMEs above those names. The
-/// authority section keeps the SOA and NSEC/NSEC3 records (with RRSIGs) of a
-/// negative answer; the additional section is emptied. Everything else,
-/// whatever its owner, is dropped: a forwarder is trusted for the answer to
-/// the question, not for unrelated names.
-pub(crate) fn scrub(mut message: Message, qname: &Name, qtype: RecordType, zone: &Name) -> Message {
+/// authority section keeps the SOA and the NSEC/NSEC3 proof of a negative
+/// answer; a denial record is kept only when its owner or span takes part in
+/// the proof for the question. The additional section is emptied. Everything
+/// else, whatever its owner, is dropped: a forwarder is trusted for the
+/// answer to the question, not for unrelated names.
+pub(crate) fn scrub(
+    mut message: Message,
+    qname: &Name,
+    qtype: RecordType,
+    zone: &Name,
+    budget: &ValidationBudget,
+) -> Message {
     let mut names = vec![qname.clone()];
     let mut i = 0;
     while i < names.len() && names.len() < MAX_SCRUB_CHAIN {
@@ -97,11 +104,22 @@ pub(crate) fn scrub(mut message: Message, qname: &Name, qtype: RecordType, zone:
         names.contains(&r.name)
             && (qtype == RecordType::ANY || kind == RecordType::CNAME || kind == qtype)
     });
+    // Owners of the denial records that take part in the proof for this
+    // question; their RRSIGs travel with them, unrelated NSEC/NSEC3 records
+    // (and their signatures) do not.
+    let proof_owners: Vec<Name> = message
+        .authorities
+        .iter()
+        .filter(|r| r.rtype() != RecordType::RRSIG)
+        .filter(|r| matches!(&r.rdata, RData::NSEC { .. } | RData::NSEC3 { .. }))
+        .filter(|r| zone.zone_of(&r.name) && relevant(zone, &names, r, budget))
+        .map(|r| r.name.clone())
+        .collect();
     message.authorities.retain(|r| match covered(r) {
         Some(RecordType::SOA) => names.iter().any(|n| r.name.zone_of(n)),
-        // A denial proof must belong to the forwarded zone; records injected
-        // for other zones are dropped.
-        Some(RecordType::NSEC | RecordType::NSEC3) => zone.zone_of(&r.name),
+        // A denial proof must belong to the forwarded zone and to the proof
+        // of this question; records injected for other names are dropped.
+        Some(RecordType::NSEC | RecordType::NSEC3) => proof_owners.contains(&r.name),
         _ => false,
     });
     message.additionals.clear();
@@ -609,7 +627,13 @@ mod tests {
         let flags = RequestFlags::default();
 
         let nxdomain = forward_message(&r, &fz, &origin, "nope.fz.test.", RecordType::A).await;
-        let nxdomain = scrub(nxdomain, &name("nope.fz.test."), RecordType::A, &origin);
+        let nxdomain = scrub(
+            nxdomain,
+            &name("nope.fz.test."),
+            RecordType::A,
+            &origin,
+            &ValidationBudget::default(),
+        );
         assert_eq!(nxdomain.rcode(), Rcode::NXDOMAIN);
         let status = r
             .shared
@@ -628,7 +652,13 @@ mod tests {
 
         // NODATA: the name exists, AAAA does not.
         let nodata = forward_message(&r, &fz, &origin, "www.fz.test.", RecordType::AAAA).await;
-        let nodata = scrub(nodata, &name("www.fz.test."), RecordType::AAAA, &origin);
+        let nodata = scrub(
+            nodata,
+            &name("www.fz.test."),
+            RecordType::AAAA,
+            &origin,
+            &ValidationBudget::default(),
+        );
         assert_eq!(nodata.rcode(), Rcode::NOERROR);
         assert!(nodata.answers.is_empty());
         let status = r
@@ -670,7 +700,13 @@ mod tests {
         let (_h, r, fz, origin) = signed_fixture().await;
         let mut message = forward_message(&r, &fz, &origin, "www.fz.test.", RecordType::A).await;
         message.set_rcode(Rcode::NXDOMAIN).unwrap();
-        let message = scrub(message, &name("www.fz.test."), RecordType::A, &origin);
+        let message = scrub(
+            message,
+            &name("www.fz.test."),
+            RecordType::A,
+            &origin,
+            &ValidationBudget::default(),
+        );
         let status = r
             .shared
             .forwarded_status(
@@ -685,5 +721,49 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status, Status::Bogus(BogusReason::RcodeMismatch));
+    }
+
+    #[test]
+    fn scrub_keeps_only_denial_records_that_take_part_in_the_proof() {
+        use dnscraft_proto::{Class, TypeBitmap};
+
+        let origin = name("fz.test.");
+        let nsec = |owner: &str, next: &str| Record {
+            name: name(owner),
+            class: Class::IN,
+            ttl: 60,
+            rdata: RData::NSEC {
+                next_domain: name(next),
+                types: TypeBitmap::new([RecordType::A]),
+            },
+        };
+        let mut message = Message::query(1, name("www.fz.test."), RecordType::A);
+        // Matches the question.
+        message
+            .authorities
+            .push(nsec("www.fz.test.", "zzz.fz.test."));
+        // In the zone, but its span does not touch the question or a wildcard
+        // above it.
+        message
+            .authorities
+            .push(nsec("aaa.fz.test.", "bbb.fz.test."));
+        // Another zone entirely.
+        message
+            .authorities
+            .push(nsec("www.other.test.", "zzz.other.test."));
+
+        let scrubbed = scrub(
+            message,
+            &name("www.fz.test."),
+            RecordType::A,
+            &origin,
+            &ValidationBudget::default(),
+        );
+        let owners: Vec<String> = scrubbed
+            .authorities
+            .iter()
+            .map(|r| r.name.to_string())
+            .collect();
+        assert_eq!(owners, ["www.fz.test.".to_owned()]);
     }
 }

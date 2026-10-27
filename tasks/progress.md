@@ -238,6 +238,15 @@ the CL15 follow-up).
 
 ## Log
 
+- 2026-10-27 — **resolver gaps GR3/GR6/GR7.** RFC 5011 rollover: Valid/AddPending/Missing state
+  machine with 30-day add/remove hold-downs, SEP+ZONE candidate selection, DS+DNSKEY anchor
+  matching, and self-signature revocation over the observed root DNSKEY RRset (seeded from the
+  configured anchors, observed at priming + every anchor-validated root DNSKEY). Root re-prime is
+  now time-driven (background re-primer on the config clock, `Weak<Shared>`, refreshes while idle).
+  `forward::scrub` keeps only NSEC/NSEC3 records whose owner/span takes part in the denial proof.
+  Gates: `fmt --check` clean, `clippy -p dnscraft-resolver --all-targets` clean,
+  `cargo test -p dnscraft-resolver` 272 passed / 0 failed; `cargo check --workspace` green.
+
 - 2026-10-27 — **clients gaps GC8/GC9/GC10/GC11/GC12/GC15.** `local_domains()` omits the unused
   fallback domain; a missing `vlanId` yields `vlan: None` (not id 0) while the DHCP domain still
   resolves; the memory cap counts indexed addresses in addition to rows; `ip_conflicts` +

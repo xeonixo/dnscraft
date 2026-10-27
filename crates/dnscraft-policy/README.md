@@ -31,6 +31,15 @@ AAAA suppression.
 
 ECS is never forwarded. Synthesised / modified answers always clear AD.
 
+## IPv6 source addresses (RFC 6724 / ULA)
+
+Clients are expected to use a **ULA source** (`fc00::/7`) when querying a
+DNScraft ULA address, per RFC 6724 default source-address selection. IPv6
+subnet-based view selection depends on that assumption, so a client that sends
+GUA-sourced queries to a ULA listener may not match the expected view. This is
+a documented assumption, not a full OS verification matrix: spot-check IPv6
+views on real devices when first configured.
+
 ## Pause protection
 
 `pause(Global | Profile(id), For(duration) | UntilResumed)` skips filter steps

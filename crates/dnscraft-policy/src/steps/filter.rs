@@ -10,7 +10,7 @@ use tracing::warn;
 
 use crate::config::RequestContext;
 use crate::decision::{DecisionStep, FilterHit};
-use crate::pipeline::{Draft, Flow, StepCtx};
+use crate::pipeline::{Draft, Flow, StepCtx, timed_filter};
 use crate::synth::{
     DEFAULT_BLOCK_TTL, block_answer, filter_internal_servfail, rewrite_answer, rewrite_cname_follow,
 };
@@ -37,10 +37,10 @@ pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Dra
     };
 
     let now = step.clock.now();
-    let verdict = match step
-        .filter
-        .match_name(set_id, &domain, u16::from(ctx.query.qtype), now)
-    {
+    let verdict = match timed_filter(draft, || {
+        step.filter
+            .match_name(set_id, &domain, u16::from(ctx.query.qtype), now)
+    }) {
         Ok(v) => v,
         Err(FilterError::UnknownSet(_)) => {
             if !UNKNOWN_SET_LOGGED.swap(true, Ordering::Relaxed) {
@@ -129,10 +129,10 @@ pub(crate) async fn follow_cname_rewrite(
     // Filter the rewrite target once more; a block wins.
     if let Ok(domain) = DomainName::parse(target.as_str()) {
         let now = step.clock.now();
-        match step
-            .filter
-            .match_name(set_id, &domain, u16::from(ctx.query.qtype), now)
-        {
+        match timed_filter(draft, || {
+            step.filter
+                .match_name(set_id, &domain, u16::from(ctx.query.qtype), now)
+        }) {
             Ok(Verdict::Blocked(reason)) => {
                 draft.filter = Some(FilterHit {
                     reason: reason.clone(),
