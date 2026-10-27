@@ -385,11 +385,48 @@ pub fn filter_config_from_json(value: &Value) -> Result<FilterConfig, ControlApi
     })
 }
 
-fn install_crypto() {
+/// Installs the rustls ring provider once per test process.
+///
+/// Required before a [`reqwest`] client (built with `rustls-no-provider`) or a
+/// TLS peer is created.
+pub fn install_crypto() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
+}
+
+/// A real loopback HTTP server for `router`, aborted on drop.
+pub struct TestServer {
+    address: std::net::SocketAddr,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl TestServer {
+    /// Binds an OS-assigned loopback port and serves `router` on it.
+    pub async fn start(router: Router) -> Self {
+        install_crypto();
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let task = tokio::spawn(async move {
+            let service = router.into_make_service_with_connect_info::<std::net::SocketAddr>();
+            let _ = axum::serve(listener, service).await;
+        });
+        Self { address, task }
+    }
+
+    /// Absolute URL of `path` on this server.
+    pub fn url(&self, path: &str) -> String {
+        format!("http://{}{path}", self.address)
+    }
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 /// Mounts the MCP service for `backend` on a bare router.
@@ -406,6 +443,49 @@ fn meta() -> Value {
         "io.modelcontextprotocol/protocolVersion": MCP_VERSION,
         "io.modelcontextprotocol/clientCapabilities": {},
     })
+}
+
+/// Calls the MCP endpoint over a real HTTP connection.
+///
+/// `bearer` is omitted entirely when `None`, which exercises the
+/// unauthenticated path.
+pub async fn mcp_http(
+    client: &reqwest::Client,
+    url: &str,
+    bearer: Option<&str>,
+    method: &str,
+    name: Option<&str>,
+    mut params: Value,
+) -> (reqwest::StatusCode, Value) {
+    if let Value::Object(map) = &mut params {
+        map.insert("_meta".into(), meta());
+    }
+    let mut request = client
+        .post(url)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCEPT, "application/json, text/event-stream")
+        .header("MCP-Protocol-Version", MCP_VERSION)
+        .header("Mcp-Method", method);
+    if let Some(bearer) = bearer {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {bearer}"));
+    }
+    if let Some(name) = name {
+        request = request.header("Mcp-Name", name);
+    }
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params,
+    });
+    let response = request
+        .body(body.to_string())
+        .send()
+        .await
+        .expect("MCP request");
+    let status = response.status();
+    let text = response.text().await.expect("MCP response body");
+    (status, serde_json::from_str(&text).unwrap_or(Value::Null))
 }
 
 /// Scripted MCP client: calls `method` with `params` and returns the status and

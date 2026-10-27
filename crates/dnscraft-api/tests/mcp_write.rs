@@ -83,6 +83,8 @@ async fn harness_with(
     let tokens = TokenStore::new(db.clone(), MAX_TTL);
     let backend = mcp_backend_for_test_writes(
         Arc::clone(&engine),
+        None,
+        None,
         Arc::clone(&service),
         audit,
         Some(tokens.clone()),

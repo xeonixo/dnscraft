@@ -805,6 +805,7 @@ dependencies = [
  "dnscraft-policy",
  "dnscraft-proto",
  "dnscraft-resolver",
+ "dnscraft-testkit",
  "dnscraft-tls",
  "hyper",
  "hyper-util",

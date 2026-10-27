@@ -46,3 +46,6 @@ tower-http = { workspace = true }
 tracing = { workspace = true }
 webpki-roots = { workspace = true }
 zeroize = { workspace = true }
+
+[dev-dependencies]
+dnscraft-testkit = { path = "../dnscraft-testkit" }

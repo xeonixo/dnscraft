@@ -149,11 +149,14 @@ pub fn mcp_backend_for_test(query_log: Option<Arc<QueryLog>>) -> Arc<dyn McpBack
 ///
 /// [`mcp_backend_for_test`] deliberately leaves the write services unconfigured
 /// (the read tools never touch them). This variant wires the engines and stores
-/// the five write tools need, so the real backend can be exercised without a
-/// production assembler. Not part of the supported public API.
+/// the read and write tools need, so the real backend can be exercised without
+/// a production assembler. Not part of the supported public API.
 #[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
 pub fn mcp_backend_for_test_writes(
     filter: Arc<FilterEngine>,
+    policy: Option<Arc<dnscraft_policy::PolicyEngine>>,
+    query_log: Option<Arc<QueryLog>>,
     config: Arc<ConfigService>,
     audit: Option<Arc<Audit>>,
     tokens: Option<crate::api::auth::TokenStore>,
@@ -162,9 +165,9 @@ pub fn mcp_backend_for_test_writes(
     oidc_issuer: Option<String>,
 ) -> Arc<dyn McpBackend> {
     Arc::new(ControlMcpBackend::new(Arc::new(McpBackendInner {
-        policy: None,
+        policy,
         filter: Some(filter),
-        query_log: None,
+        query_log,
         tokens,
         audit,
         config: Some(config),
