@@ -1689,19 +1689,32 @@ body {
             <div class="main"><b style="font-weight:500;color:var(--accent)">Gerät manuell hinzufügen</b><div class="meta">Name, IP/CIDR, MAC, optionale Domain</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="row">
-            <div class="main"><div class="domain">iPhone</div><div class="meta mono">192.0.2.11 · aa:bb:cc:00:00:11</div></div>
+          <div class="row" onclick="openDeviceSheet('iPhone')" style="cursor:pointer">
+            <span class="node-dot"></span>
+            <div class="main"><div class="domain">iPhone</div><div class="meta mono">192.0.2.11 · aa:bb:cc:00:00:11 · IoT (40) · iphone.home.arpa</div></div>
             <span class="tag">UniFi</span>
+            <div class="tail"><div class="time">vor 2 min</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="row">
-            <div class="main"><div class="domain">MacBook</div><div class="meta mono">192.0.2.4 · aa:bb:cc:00:00:04</div></div>
+          <div class="row" onclick="openDeviceSheet('MacBook')" style="cursor:pointer">
+            <span class="node-dot"></span>
+            <div class="main"><div class="domain">MacBook</div><div class="meta mono">192.0.2.4 · aa:bb:cc:00:00:04 · IoT (40) · macbook.home.arpa</div></div>
             <span class="tag">UniFi</span>
+            <div class="tail"><div class="time">vor 5 min</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="row">
-            <div class="main"><div class="domain">Wohnzimmer-TV</div><div class="meta mono">192.0.2.18 · manuell</div></div>
+          <div class="row" onclick="openDeviceSheet('Wohnzimmer-TV')" style="cursor:pointer">
+            <span class="node-dot" style="background:var(--label-3)"></span>
+            <div class="main"><div class="domain">Wohnzimmer-TV</div><div class="meta mono">192.0.2.18 · manuell · LAN (1) · tv.lan</div></div>
             <span class="tag" style="color:var(--label-2);border-color:var(--separator)">manuell</span>
+            <div class="tail"><div class="time">vor 3 h</div></div>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+          </div>
+          <div class="row" onclick="openDeviceSheet('Drucker')" style="cursor:pointer;opacity:.6">
+            <span class="node-dot" style="background:var(--label-3)"></span>
+            <div class="main"><div class="domain">Drucker</div><div class="meta mono">192.0.2.30 · LAN (1) · drucker.home.arpa</div></div>
+            <span class="tag" style="color:var(--label-2);border-color:var(--separator)">aufbewahrt</span>
+            <div class="tail"><div class="time">vor 2 Tagen</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
         </div>
@@ -1735,13 +1748,13 @@ body {
 
         <div class="section-head">LAN</div>
         <div class="group">
-          <div class="row">
+          <div class="row" onclick="openDohDetail('iPhone')" style="cursor:pointer">
             <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
             <div class="main"><div class="domain">iPhone</div><div class="meta mono">iphone-k7q2x9 · DoH · 192.0.2.11 → LAN · zuletzt vor 2 min</div></div>
             <div class="tail"><div class="verdict allow">verifiziert</div></div>
             <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
           </div>
-          <div class="row">
+          <div class="row" onclick="openDohDetail('MacBook')" style="cursor:pointer">
             <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
             <div class="main"><div class="domain">MacBook</div><div class="meta mono">macbook-r4t8vn · DoT · 192.0.2.4 → LAN</div></div>
             <div class="tail"><div class="verdict allow">verifiziert</div></div>
@@ -1751,7 +1764,7 @@ body {
 
         <div class="section-head">Gäste</div>
         <div class="group">
-          <div class="row">
+          <div class="row" onclick="openDohDetail('Gäste-iPad')" style="cursor:pointer">
             <span class="status-ic allow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9"/></svg></span>
             <div class="main"><div class="domain">Gäste-iPad</div><div class="meta mono">guest-j4m2pz · DoH · 198.51.100.7 → Gäste</div></div>
             <div class="tail"><div class="verdict allow">verifiziert</div></div>
@@ -1814,6 +1827,69 @@ body {
           <button class="btn-sec" onclick="closeManualClientSheet()">Abbrechen</button>
           <button class="btn-primary" onclick="closeManualClientSheet()">Anlegen</button>
         </div>
+      </div>
+    </div>
+
+    <div class="sheet-scrim" id="device-sheet" hidden onclick="closeDeviceSheet()">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <div class="grab"></div>
+        <h2 id="device-sheet-name">iPhone</h2>
+        <div class="group" style="margin:0 0 12px">
+          <div class="row">
+            <span class="node-dot" id="ds-dot"></span>
+            <div class="main"><div class="domain" id="ds-status">online</div><div class="meta" id="ds-meta">Quelle UniFi · zuletzt vor 2 min</div></div>
+            <span class="tag" id="ds-src">UniFi</span>
+          </div>
+        </div>
+        <label>Identität</label>
+        <div class="group" style="margin:0 0 12px">
+          <div class="row"><div class="main"><b style="font-weight:500">MAC</b></div><div class="meta mono" id="ds-mac">aa:bb:cc:00:00:11</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Adressen</b></div><div class="meta mono" id="ds-addrs">192.0.2.11 · 2001:db8::11</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">VLAN</b></div><div class="meta" id="ds-vlan">IoT (40)</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">Lokaler Name</b></div><div class="meta mono" id="ds-fqdn">iphone.home.arpa</div></div>
+        </div>
+        <label>Aktivität · 24 h</label>
+        <div class="group" style="margin:0 0 12px">
+          <div class="row"><div class="main"><div class="domain">Anfragen</div></div><div class="meta num" id="ds-q">1.204</div></div>
+          <div class="row"><div class="main"><div class="domain">Blockiert</div></div><div class="meta num" id="ds-b">18 · 1,5 %</div></div>
+          <div class="row" onclick="closeDeviceSheet();showScreen('screen-queries','Anfragen')" style="cursor:pointer"><div class="main"><b style="font-weight:500;color:var(--accent)">Im Query-Log filtern</b></div></div>
+        </div>
+        <div class="actions">
+          <button class="btn-sec" onclick="closeDeviceSheet()">Abbrechen</button>
+          <button class="btn-sec" onclick="closeDeviceSheet()">Umbenennen</button>
+          <button class="btn-primary" style="background:var(--danger)" onclick="closeDeviceSheet()">Blockieren</button>
+        </div>
+        <div class="footnote" style="margin-top:10px">UniFi-Geräte werden per Sync verwaltet; Umbenennen/Löschen nur für manuelle Einträge.</div>
+      </div>
+    </div>
+
+    <div class="sheet-scrim" id="doh-detail-sheet" hidden onclick="closeDohDetail()">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <div class="grab"></div>
+        <h2 id="doh-detail-name">iPhone</h2>
+        <div class="group" style="margin:0 0 12px">
+          <div class="row">
+            <div class="main"><div class="domain mono" id="dd-id">iphone-k7q2x9</div><div class="meta" id="dd-meta">DoH · Zone LAN (aus Source-IP 192.0.2.11)</div></div>
+            <span class="tag" id="dd-proto">DoH</span>
+          </div>
+        </div>
+        <label>Endpunkte</label>
+        <div class="group" style="margin:0 0 12px">
+          <div class="row"><div class="main"><b style="font-weight:500">DoH</b></div><div class="meta mono" id="dd-doh">https://dns.example.com/dns-query/iphone-k7q2x9</div></div>
+          <div class="row"><div class="main"><b style="font-weight:500">DoT</b></div><div class="meta mono" id="dd-dot">iphone-k7q2x9.dns.example.com</div></div>
+          <div class="row" style="cursor:pointer"><div class="main"><b style="font-weight:500;color:var(--accent)">QR-Code für die Einrichtung anzeigen</b></div></div>
+        </div>
+        <label>Geräteprofil</label>
+        <div class="group" style="margin:0 0 12px">
+          <div class="row" style="cursor:pointer"><div class="main"><b style="font-weight:500;color:var(--accent)">Apple (.mobileconfig) herunterladen</b></div></div>
+          <div class="row"><div class="main"><div class="domain">Android · Private DNS</div></div><div class="meta mono">node1.dns.example.com</div></div>
+        </div>
+        <div class="actions">
+          <button class="btn-sec" onclick="closeDohDetail()">Abbrechen</button>
+          <button class="btn-sec" onclick="closeDohDetail()">Umbenennen</button>
+          <button class="btn-primary" style="background:var(--danger)" onclick="closeDohDetail()">Widerrufen</button>
+        </div>
+        <div class="footnote" style="margin-top:10px">Umbenennen/Widerruf noch ohne Endpunkt (SPEC-control-api § Open questions).</div>
       </div>
     </div>
 
@@ -2601,6 +2677,48 @@ function openClientSheet() { document.getElementById('client-sheet').hidden = fa
 function closeClientSheet() { document.getElementById('client-sheet').hidden = true; }
 function openManualClientSheet() { document.getElementById('manual-client-sheet').hidden = false; }
 function closeManualClientSheet() { document.getElementById('manual-client-sheet').hidden = true; }
+var DEVICES = {
+  'iPhone':        { source:'UniFi',   online:true,  muted:false, srcTag:'UniFi',      mac:'aa:bb:cc:00:00:11', addrs:'192.0.2.11 · 2001:db8::11', vlan:'IoT (40)', fqdn:'iphone.home.arpa',   last:'vor 2 min',   q:'1.204', b:'18 · 1,5 %' },
+  'MacBook':       { source:'UniFi',   online:true,  muted:false, srcTag:'UniFi',      mac:'aa:bb:cc:00:00:04', addrs:'192.0.2.4 · 2001:db8::4',  vlan:'IoT (40)', fqdn:'macbook.home.arpa',  last:'vor 5 min',   q:'2.847', b:'41 · 1,4 %' },
+  'Wohnzimmer-TV': { source:'manuell', online:false, muted:true,  srcTag:'manuell',    mac:'—',                addrs:'192.0.2.18',                  vlan:'LAN (1)',  fqdn:'tv.lan',             last:'vor 3 h',     q:'96',    b:'3 · 3,1 %' },
+  'Drucker':       { source:'UniFi',   online:false, muted:true,  srcTag:'aufbewahrt', mac:'aa:bb:cc:00:00:30', addrs:'192.0.2.30',                  vlan:'LAN (1)',  fqdn:'drucker.home.arpa',  last:'vor 2 Tagen', q:'12',    b:'0 · 0 %' }
+};
+function openDeviceSheet(name) {
+  var d = DEVICES[name] || DEVICES['iPhone'];
+  document.getElementById('device-sheet-name').textContent = name;
+  document.getElementById('ds-dot').style.background = d.online ? 'var(--ok)' : 'var(--label-3)';
+  document.getElementById('ds-status').textContent = d.online ? 'online' : 'offline';
+  document.getElementById('ds-meta').textContent = 'Quelle ' + d.source + ' · zuletzt ' + d.last;
+  var src = document.getElementById('ds-src');
+  src.textContent = d.srcTag;
+  src.className = 'tag';
+  src.style.cssText = d.muted ? 'color:var(--label-2);border-color:var(--separator)' : '';
+  document.getElementById('ds-mac').textContent = d.mac;
+  document.getElementById('ds-addrs').textContent = d.addrs;
+  document.getElementById('ds-vlan').textContent = d.vlan;
+  document.getElementById('ds-fqdn').textContent = d.fqdn;
+  document.getElementById('ds-q').textContent = d.q;
+  document.getElementById('ds-b').textContent = d.b;
+  document.getElementById('device-sheet').hidden = false;
+}
+function closeDeviceSheet() { document.getElementById('device-sheet').hidden = true; }
+
+var DOH_CLIENTS = {
+  'iPhone':     { id:'iphone-k7q2x9',  proto:'DoH', zone:'LAN',  srcIp:'192.0.2.11' },
+  'MacBook':    { id:'macbook-r4t8vn', proto:'DoT', zone:'LAN',  srcIp:'192.0.2.4' },
+  'Gäste-iPad': { id:'guest-j4m2pz',   proto:'DoH', zone:'Gäste', srcIp:'198.51.100.7' }
+};
+function openDohDetail(name) {
+  var c = DOH_CLIENTS[name] || DOH_CLIENTS['iPhone'];
+  document.getElementById('doh-detail-name').textContent = name;
+  document.getElementById('dd-id').textContent = c.id;
+  document.getElementById('dd-meta').textContent = c.proto + ' · Zone ' + c.zone + ' (aus Source-IP ' + c.srcIp + ')';
+  document.getElementById('dd-proto').textContent = c.proto;
+  document.getElementById('dd-doh').textContent = 'https://dns.example.com/dns-query/' + c.id;
+  document.getElementById('dd-dot').textContent = c.id + '.dns.example.com';
+  document.getElementById('doh-detail-sheet').hidden = false;
+}
+function closeDohDetail() { document.getElementById('doh-detail-sheet').hidden = true; }
 function openZoneSheet() { document.getElementById('zone-sheet').hidden = false; }
 function closeZoneSheet() { document.getElementById('zone-sheet').hidden = true; }
 function openForwardZoneSheet() { document.getElementById('forward-zone-sheet').hidden = false; }
