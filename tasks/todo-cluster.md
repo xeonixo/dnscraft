@@ -48,7 +48,7 @@
 ## Phase 4 — Write relay + offline queue + runtime broadcast
 
 - [x] CL16 live relay (`WriteRelay` + master RBAC re-check + audit `node_id` + idempotency, no role escalation).
-- [ ] CL17 offline queue (SQLite, FIFO, `202`/`400`/`503`, replay conflict + head-of-line blocking, expiry).
+- [x] CL17 offline queue (SQLite, FIFO, `202`/`400`/`503`, replay conflict + head-of-line blocking, expiry).
 - [x] CL18 runtime broadcast (pause/resume, temporary allow) cluster-wide; master-only ops never queued offline.
 
 ## Phase 5 — Log aggregation + stats
