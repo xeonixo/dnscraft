@@ -46,57 +46,57 @@ is a plan/spec task, not a per-crate fix. Deferred until the owner signs off on 
       and no TOML loader maps the spec keys (`cache_size_mb`, `ttl_min/max`, `serve_stale`,
       `prefetch`, `negative_trust_anchors`, `forward_zones`). *(config.rs:64-65, 181-195)*
       Note: the spec's forward-zone excerpt omits the `id` the code requires.
-- [ ] **GR2** 🟠 [code] `outgoing_ipv6` key has no counterpart; transport always follows the target
+- [x] **GR2** 🟠 [code] `outgoing_ipv6` key has no counterpart; transport always follows the target
       address family. Add field + honour it. *(config.rs:66-155, transport.rs:83-87)*
 - [ ] **GR3** 🟠 [code] RFC 5011 rollover tracking not implemented (static ROOT_DS only). *(dnssec/anchors.rs:63-96)*
-- [ ] **GR4** 🟠 [code] Forward zones with `validate=true` never check NXDOMAIN/NODATA denial
+- [x] **GR4** 🟠 [code] Forward zones with `validate=true` never check NXDOMAIN/NODATA denial
       proofs and miss the "rcode is not signed" rule → a validating forwarder accepts forged
       negative answers. *(forward.rs:217-290)*
-- [ ] **GR5** 🟠 [code] 16-address referral cap enforced only for glue candidates; glueless host
+- [x] **GR5** 🟠 [code] 16-address referral cap enforced only for glue candidates; glueless host
       lookups can inject up to ~64 addresses. *(iterate.rs:71-72, 197-200, 928-931)*
 - [ ] **GR6** 🟡 [code] Root re-prime is query-driven, not time-driven — an idle resolver never
       refreshes the 24 h root set. *(lib.rs:530, 566-593)*
-- [ ] **GR7** 🟡 [code] `forward::scrub` keeps every NSEC/NSEC3 in the authority section
+- [~] **GR7** 🟡 [code] `forward::scrub` keeps every NSEC/NSEC3 in the authority section
       regardless of owner. *(forward.rs:97-101)*
 
 ## Filtering (`SPEC-filtering.md` ↔ `crates/dnscraft-filtering`)
 
-- [ ] **GF1** 🟠 [code] `max_list_size_mb` key has no counterpart; the 64 MiB cap lives only in
+- [x] **GF1** 🟠 [code] `max_list_size_mb` key has no counterpart; the 64 MiB cap lives only in
       `StoreConfig.max_body_bytes`, unreachable via `FilterConfig`. Plumb it through. *(set.rs:92-99, store.rs:62)*
-- [ ] **GF2** 🟠 [code] `filter_list.fetch_failed` / `filter_list.too_large` error codes don't
+- [~] **GF2** 🟠 [code] `filter_list.fetch_failed` / `filter_list.too_large` error codes don't
       exist (only `filter_fetch.*` / `filter_store.*`); params differ from SPEC.md. Add codes +
       map in control-api. *(fetch.rs:116-128, store.rs:103-110)*
-- [ ] **GF3** 🟠 [code] `$client`/`$ctag` modifiers reject the whole rule instead of ignoring the
+- [x] **GF3** 🟠 [code] `$client`/`$ctag` modifiers reject the whole rule instead of ignoring the
       modifier (rule still applies) with a warning. *(modifiers.rs:290-294)*
-- [ ] **GF4** 🟠 [code] `list_status()` omits last HTTP status and skip breakdown by reason.
+- [x] **GF4** 🟠 [code] `list_status()` omits last HTTP status and skip breakdown by reason.
       *(engine.rs:42-59, 925-961; store.rs:223; snapshot.rs:58-76)*
-- [ ] **GF5** 🟡 [code] No `tracing::warn` is emitted for any skipped rule (client modifier,
+- [x] **GF5** 🟡 [code] No `tracing::warn` is emitted for any skipped rule (client modifier,
       invalid IDNA, record rewrite). *(parser.rs:440-456)*
-- [ ] **GF6** 🟡 [spec] `$badfilter` from a list/service cannot disable an identical custom rule;
+- [x] **GF6** 🟡 [spec] `$badfilter` from a list/service cannot disable an identical custom rule;
       the spec says "everywhere in the set" without that exception. *(index.rs:66-70, 508-548)*
-- [ ] **GF7** 🟡 [spec] Record-form `$dnsrewrite` from a list drops the whole rule (loses the
+- [x] **GF7** 🟡 [spec] Record-form `$dnsrewrite` from a list drops the whole rule (loses the
       block); spec's hosts analogy suggests only the rewrite should be ignored. *(modifiers.rs:450-452)*
 - [ ] **GF8** 🟡 [code] No `tests/data/` golden fixtures; parser proptest only for the builder
       round-trip. *(tests/ has no data dir)*
 - [ ] **GF9** 🟡 [spec] Interface sketch drift: `new` returns `Arc<Self>`, `match_*` take `now`
       + return `Result`, `TempAllow` requires `created_at`. *(engine.rs:138-142 etc.)*
 - [ ] **GF10** 🟡 [spec] No backoff state for list/catalog update retries (fixed interval only). *(scheduler.rs:94-111)*
-- [ ] **GF11** 🟡 [spec] Match budget p99 ~18.9 µs > 10 µs for deep names; owner waived at
+- [x] **GF11** 🟡 [spec] Match budget p99 ~18.9 µs > 10 µs for deep names; owner waived at
       Checkpoint B but spec not updated. *(README.md:209)*
 
 ## Clients (`SPEC-clients.md` ↔ `crates/dnscraft-clients`)
 
 - [ ] **GC1** 🔴 [owner] No `ClientLookup` → `ClientDirectory` adapter; policy/MCP/query-log never
       get clients. *(policy/src/directory.rs:12-27; api clients_routes.rs:3-5,130-137)* — belongs to G0.
-- [ ] **GC2** 🟠 [code] `UnifiConfig::default()` is `TlsMode::Insecure`; skip-verify must be
+- [x] **GC2** 🟠 [code] `UnifiConfig::default()` is `TlsMode::Insecure`; skip-verify must be
       opt-in, not the default. *(config.rs:101-113, 229-240)*
-- [ ] **GC3** 🟠 [code] With UniFi disabled, startup still merges cached observations/networks.
+- [x] **GC3** 🟠 [code] With UniFi disabled, startup still merges cached observations/networks.
       *(engine.rs:165-199)*
-- [ ] **GC4** 🟠 [code] `apply_config { enabled:true }` does not load the API key from
+- [x] **GC4** 🟠 [code] `apply_config { enabled:true }` does not load the API key from
       `DNSCRAFT_UNIFI_API_KEY`/`_FILE` (read only at construction). *(engine.rs:151-162, 323-333)*
-- [ ] **GC5** 🟠 [code] Change-detection hash omits `display_name`, `macs`, `last_seen`, VLAN,
+- [x] **GC5** 🟠 [code] Change-detection hash omits `display_name`, `macs`, `last_seen`, VLAN,
       network name/prefixes → stale log/UI + stale cache survive restart. *(engine.rs:860-903, 664-683)*
-- [ ] **GC6** 🟠 [code] Manual client ids are `manual-{index}`, not a stable manual uuid → reorder
+- [x] **GC6** 🟠 [code] Manual client ids are `manual-{index}`, not a stable manual uuid → reorder
       shifts ids/labels/FQDNs. *(merge.rs:187-206, state.rs:14-16)*
 - [ ] **GC7** 🟠 [code] `[clients]`/`[clients.unifi]` keys (`enabled`, `base_url`, `site_id`,
       TLS mode, `local_domain_mode`, `offline_retain`, `ipv6_address_ttl`, `classic_clients`,
@@ -107,27 +107,27 @@ is a plan/spec task, not a per-crate fix. Deferred until the owner signs off on 
 - [ ] **GC10** 🟡 [code] Memory cap counts rows, not indexed addresses. *(merge.rs:160-165)*
 - [ ] **GC11** 🟡 [code] `clients.ip.conflict` counter computed but not surfaced. *(merge.rs:60-66, engine.rs:36-53)*
 - [ ] **GC12** 🟡 [code] No sync success/failure counters exposed. *(status.rs:6-29)*
-- [ ] **GC13** 🟡 [code] Link-local `fe80::/10` exclusion applies only to UniFi observations, not
+- [x] **GC13** 🟡 [code] Link-local `fe80::/10` exclusion applies only to UniFi observations, not
       manual entries. *(merge.rs:516-518 vs 208-222)*
-- [ ] **GC14** 🟡 [code] URL validation accepts malformed hosts/ports and paths. *(config.rs:305-331)*
+- [x] **GC14** 🟡 [code] URL validation accepts malformed hosts/ports and paths. *(config.rs:305-331)*
 - [ ] **GC15** 🟡 [code] Manual CIDR lookup is O(n), not O(1). *(lookup.rs:109-121)*
 
 ## TLS (`SPEC-tls.md` ↔ `crates/dnscraft-tls`)
 
-- [ ] **GT1** 🟠 [code] Manual DNS-01 (`manual`) can never complete: single `manual_txt` vs two
+- [x] **GT1** 🟠 [code] Manual DNS-01 (`manual`) can never complete: single `manual_txt` vs two
       distinct challenge values, and no "published" signal. *(issue.rs:231-252, 185-194; config.rs:198-217)*
-- [ ] **GT2** 🟠 [code] `AcmeOrderStatus.next_attempt_at` never populated; early errors skip
+- [x] **GT2** 🟠 [code] `AcmeOrderStatus.next_attempt_at` never populated; early errors skip
       progress update so `order_status()` can report stale state. *(acme.rs:60-71, 422-506)*
-- [ ] **GT3** 🟠 [code] `apply_config` unconditionally re-uploads `config.manual` when present,
+- [x] **GT3** 🟠 [code] `apply_config` unconditionally re-uploads `config.manual` when present,
       reverting API uploads and clearing the `revoked` flag. *(engine.rs:306-309, 388-390)*
-- [ ] **GT4** 🟡 [code] `acme_account_status().deactivated` hardcoded `false`. *(acme.rs:755-777)*
+- [x] **GT4** 🟡 [code] `acme_account_status().deactivated` hardcoded `false`. *(acme.rs:755-777)*
 - [ ] **GT5** 🟡 [code] Account-key rollover not exposed through `TlsEngine`. *(acme.rs:173-177; engine.rs)*
-- [ ] **GT6** 🟡 [code] `tls.dns.provider.zone` defined but never emitted (`CloudflareZone` used). *(error.rs:216, cloudflare.rs:161-179)*
-- [ ] **GT7** 🟡 [code] `rate_limit_status()` goes stale when a later non-429 attempt fails. *(engine.rs:652-663)*
+- [x] **GT6** 🟡 [code] `tls.dns.provider.zone` defined but never emitted (`CloudflareZone` used). *(error.rs:216, cloudflare.rs:161-179)*
+- [x] **GT7** 🟡 [code] `rate_limit_status()` goes stale when a later non-429 attempt fails. *(engine.rs:652-663)*
 - [ ] **GT8** 🟡 [code] Preflight omits ACME/DNS checks entirely when `acme.enabled=false`. *(engine.rs:492-537)*
 - [ ] **GT9** 🟡 [code] ACME-sourced revocation skips the CA when `acme.enabled==false`. *(engine.rs:411-421)*
-- [ ] **GT10** 🟡 [code] DynDNS echo transport failure treated as "no route"/success. *(dyndns.rs:90-96, 300-350)*
-- [ ] **GT11** 🟡 [code] Audit entries for successful writes dropped if a later write in the same
+- [x] **GT10** 🟡 [code] DynDNS echo transport failure treated as "no route"/success. *(dyndns.rs:90-96, 300-350)*
+- [x] **GT11** 🟡 [code] Audit entries for successful writes dropped if a later write in the same
       pass fails. *(dyndns.rs:355-362, engine.rs:702-708)*
 - [ ] **GT12** 🟡 [code] No metrics (days-to-expiry gauge, renew counters) anywhere. *(not found)*
 
@@ -147,20 +147,20 @@ is a plan/spec task, not a per-crate fix. Deferred until the owner signs off on 
 
 ## Listeners (`SPEC-listeners.md` ↔ `crates/dnscraft-listeners`)
 
-- [ ] **GL1** 🔴 [code] DoH `h3=true` bind failure hangs startup/reload: the TCP+UDP wrapper
+- [x] **GL1** 🔴 [code] DoH `h3=true` bind failure hangs startup/reload: the TCP+UDP wrapper
       `join!` waits forever on the surviving QUIC listener; reverse case ignores the h3 failure.
       *(set.rs:380-421, 462-484)*
 - [ ] **GL2** 🔴 [owner] `listeners_public.enabled` not expressible — assembler derives it from any
       `exposure="public"` entry. *(crates/dnscraft/src/config.rs:328-348)* — belongs to G0.
-- [ ] **GL3** 🟠 [code] `max_inflight_per_listener` enforced only on Do53 UDP. *(only udp.rs:138)*
-- [ ] **GL4** 🟠 [code] Shutdown drains only UDP; TCP/DoT/DoH/DoQ abort in-flight queries. *(conn.rs:227-305, doh.rs:190-196, doq.rs:198-205)*
-- [ ] **GL5** 🟠 [code] Malformed DoH never records a ban strike. *(bans.rs:11-18; only doq.rs uses it)*
-- [ ] **GL6** 🟠 [code] Error replies (NOTIMP/FORMERR/REFUSED) drop EDNS OPT. *(core.rs:107-158)*
+- [x] **GL3** 🟠 [code] `max_inflight_per_listener` enforced only on Do53 UDP. *(only udp.rs:138)*
+- [x] **GL4** 🟠 [code] Shutdown drains only UDP; TCP/DoT/DoH/DoQ abort in-flight queries. *(conn.rs:227-305, doh.rs:190-196, doq.rs:198-205)*
+- [x] **GL5** 🟠 [code] Malformed DoH never records a ban strike. *(bans.rs:11-18; only doq.rs uses it)*
+- [x] **GL6** 🟠 [code] Error replies (NOTIMP/FORMERR/REFUSED) drop EDNS OPT. *(core.rs:107-158)*
 - [ ] **GL7** 🟡 [code] Query events omitted for pre-policy/admission/timeout answers. *(core.rs:99-174, conn.rs:417-429)*
 - [ ] **GL8** 🟡 [code] DoQ/DoH diverge from the core's FORMERR/drop rules (QR=1, undecodable). *(doq.rs:518-588, doh.rs:531-537)*
 - [ ] **GL9** 🟡 [code] DoQ completes handshake before SNI Client-ID check (no handshake rejection). *(doq.rs:304-369)*
 - [ ] **GL10** 🟡 [code] Banned sources aggregated globally, not per listener. *(status.rs:12-37)*
-- [ ] **GL11** 🟡 [code] DDR endpoints built from config, not from successfully bound listeners. *(set.rs:600-613)*
+- [x] **GL11** 🟡 [code] DDR endpoints built from config, not from successfully bound listeners. *(set.rs:600-613)*
 - [ ] **GL12** 🟡 [code] Listener default query timeout 10 s vs binary resolver 5 s. *(config.rs:14; engine.rs:49-52)*
 
 ## control-api (`SPEC-control-api.md` ↔ `crates/dnscraft-api`)
