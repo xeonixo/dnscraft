@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use dnscraft_tls::{
     AcmeConfig, AcmeDirectory, AcmeDirectoryKind, CertStore, FakeAcmeDirectory, KeyType, TlsConfig,
+    account_status,
 };
 
 fn temp_data_dir(label: &str) -> PathBuf {
@@ -102,6 +103,36 @@ async fn acme_fake_rewrites_account_when_directory_changes() {
     let v: serde_json::Value =
         serde_json::from_slice(&store.load_account().unwrap().unwrap()).unwrap();
     assert_eq!(v["id"], "fake");
+
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+async fn account_status_reports_deactivation_and_reactivation() {
+    let data = temp_data_dir("deactivated");
+    let store = CertStore::open(&data).unwrap();
+    let cfg = acme_cfg();
+    let fake = FakeAcmeDirectory::with_account_id("acct-deactivate");
+
+    fake.ensure_account(&store, &cfg).await.unwrap();
+    let status = account_status(&store, &cfg).unwrap();
+    assert!(status.exists);
+    assert!(!status.deactivated);
+
+    fake.deactivate_account(&store, &cfg).await.unwrap();
+    assert!(store.load_account().unwrap().is_none());
+    let status = account_status(&store, &cfg).unwrap();
+    assert!(!status.exists);
+    assert!(
+        status.deactivated,
+        "removed credentials must surface as deactivated"
+    );
+
+    // Creating an account again clears the marker.
+    fake.ensure_account(&store, &cfg).await.unwrap();
+    let status = account_status(&store, &cfg).unwrap();
+    assert!(status.exists);
+    assert!(!status.deactivated);
 
     let _ = fs::remove_dir_all(&data);
 }

@@ -117,6 +117,23 @@ async fn zone_by_configured_id() {
 }
 
 #[tokio::test]
+async fn record_outside_all_zones_is_dns_provider_zone() {
+    let (_mock, client) = mock_and_client().await;
+
+    // Nothing configured and the name is outside the fallback public_domain.
+    let err = client
+        .zone_for_name("host.unrelated.net")
+        .await
+        .expect_err("no zone owns the name");
+    assert_eq!(err.code(), "tls.dns.provider.zone");
+    assert!(err.to_string().contains("host.unrelated.net"));
+
+    // A name under the fallback zone still resolves.
+    let zone = client.zone_for_name("node1.dns.example.com").await.unwrap();
+    assert_eq!(zone.name, DOMAIN);
+}
+
+#[tokio::test]
 async fn rate_limit_keeps_retry_after_hint() {
     let (mock, client) = mock_and_client().await;
     mock.force_next_status(429, Some("30")).await;

@@ -157,10 +157,17 @@ impl CloudflareClient {
     /// Resolves the zone that owns `name`.
     ///
     /// Uses the longest configured zone suffix match, falling back to
-    /// [`Self::zone`] (public domain / `cloudflare.zone_id`).
+    /// [`Self::zone`] (public domain / `cloudflare.zone_id`). A name owned by
+    /// neither is [`TlsError::DnsProviderZone`].
     pub async fn zone_for_name(&self, name: &str) -> Result<ZoneInfo, TlsError> {
         let Some(index) = pick_zone(&self.zones, name) else {
-            return self.zone().await;
+            let fallback = self.zone().await?;
+            if zone_contains(&fallback.name, name) {
+                return Ok(fallback);
+            }
+            return Err(TlsError::DnsProviderZone {
+                message: format!("no configured zone matches {name}"),
+            });
         };
         let zone_name = self.zones[index].name.clone();
         {
@@ -397,6 +404,13 @@ impl CloudflareClient {
 
         Ok(envelope)
     }
+}
+
+/// Whether `name` is `zone` or a subdomain of it (case-insensitive).
+fn zone_contains(zone: &str, name: &str) -> bool {
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    let zone = zone.trim_end_matches('.').to_ascii_lowercase();
+    !zone.is_empty() && (name == zone || name.ends_with(&format!(".{zone}")))
 }
 
 /// Index of the configured zone that owns `name` (longest suffix wins).

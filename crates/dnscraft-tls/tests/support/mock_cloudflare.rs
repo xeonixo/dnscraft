@@ -63,6 +63,8 @@ struct State {
     next_id: AtomicU64,
     /// When set, the next matching response is forced (status, optional Retry-After).
     force_http: Option<(u16, Option<String>)>,
+    /// When set, the response at this 1-based request ordinal is forced.
+    force_at: Option<(usize, u16, Option<String>)>,
     /// When set, the next response is an oversized body.
     force_oversize: Option<OversizeBody>,
 }
@@ -86,6 +88,7 @@ impl MockCloudflare {
             records: Vec::new(),
             next_id: AtomicU64::new(1),
             force_http: None,
+            force_at: None,
             force_oversize: None,
         }));
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -134,6 +137,17 @@ impl MockCloudflare {
     /// Force the next API response to this HTTP status (and optional Retry-After).
     pub async fn force_next_status(&self, status: u16, retry_after: Option<&str>) {
         self.state.lock().await.force_http = Some((status, retry_after.map(str::to_owned)));
+    }
+
+    /// Force the response to the request with this 1-based ordinal (across all
+    /// routes) to `status`. Used to fail midway through a multi-write pass.
+    pub async fn force_status_on_request(
+        &self,
+        ordinal: usize,
+        status: u16,
+        retry_after: Option<&str>,
+    ) {
+        self.state.lock().await.force_at = Some((ordinal, status, retry_after.map(str::to_owned)));
     }
 }
 
@@ -192,6 +206,7 @@ async fn serve(
         headers: headers.clone(),
         body: body.clone(),
     });
+    let ordinal = log.lock().await.len();
 
     let mut st = state.lock().await;
 
@@ -221,6 +236,18 @@ async fn serve(
         }
         let _ = sock.flush().await;
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        return;
+    }
+
+    if let Some((at, status, retry)) = st.force_at.clone()
+        && ordinal == at
+    {
+        st.force_at = None;
+        let body = format!(
+            r#"{{"success":false,"errors":[{{"code":{status},"message":"forced"}}],"messages":[],"result":null}}"#
+        );
+        drop(st);
+        write_response(&mut sock, status, retry.as_deref(), &body).await;
         return;
     }
 

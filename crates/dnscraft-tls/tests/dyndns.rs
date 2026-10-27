@@ -172,6 +172,28 @@ async fn non_entry_never_touches_wildcard_or_apex() {
 }
 
 #[tokio::test]
+async fn unreachable_echo_is_dyndns_echo_not_no_route() {
+    // Bind then drop so the port is definitely closed (connection refused, not
+    // a missing route).
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let (cf_mock, cf) = mock_cf().await;
+    let echo_client = EchoClient::unbound().unwrap();
+    let dyndns = cfg(&format!("http://{addr}/cdn-cgi/trace"));
+
+    let err = dyndns_once(&dyndns, DOMAIN, &echo_client, &cf)
+        .await
+        .expect_err("unreachable echo must fail the pass");
+    assert_eq!(err.code(), "tls.dyndns.echo");
+    assert!(
+        cf_mock.requests().await.is_empty(),
+        "must not touch DNS when the echo is unreachable"
+    );
+}
+
+#[tokio::test]
 async fn echo_garbage_is_dyndns_echo() {
     let echo = MockEcho::start(["not a trace body\n".into()]).await;
     let (_cf_mock, cf) = mock_cf().await;

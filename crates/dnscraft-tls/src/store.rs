@@ -88,6 +88,9 @@ pub struct IssueState {
     /// `true` when the stored certificate was revoked locally.
     #[serde(default)]
     pub revoked: bool,
+    /// `true` when the ACME account was deactivated (`account.json` removed).
+    #[serde(default)]
+    pub acme_account_deactivated: bool,
     /// Revocation reason as supplied by the operator.
     #[serde(default)]
     pub revoked_reason: Option<String>,

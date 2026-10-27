@@ -196,6 +196,9 @@ pub enum DnsProviderKind {
 }
 
 /// Operator-published `_acme-challenge` TXT record.
+///
+/// One certificate order needs two distinct values at the same owner
+/// (`dns.<domain>` and `*.dns.<domain>`); configure one entry per value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManualDns01Config {
     /// TXT owner name (e.g. `_acme-challenge.dns.example.com`).
@@ -213,8 +216,9 @@ pub struct DnsProvider {
     pub cloudflare: CloudflareConfig,
     /// Additional zones resolved by longest suffix match.
     pub zones: Vec<ZoneConfig>,
-    /// Pre-published TXT value (used when `kind = manual`).
-    pub manual_txt: Option<ManualDns01Config>,
+    /// Pre-published TXT records (used when `kind = manual`). One entry per
+    /// DNS-01 challenge value; two share the same owner for apex + wildcard.
+    pub manual_txt: Vec<ManualDns01Config>,
 }
 
 impl DnsProvider {
@@ -447,7 +451,7 @@ impl TlsConfig {
         }
         self.dns_provider.zones.sort_by(|a, b| a.name.cmp(&b.name));
         self.dns_provider.zones.dedup_by(|a, b| a.name == b.name);
-        if let Some(txt) = &mut self.dns_provider.manual_txt {
+        for txt in &mut self.dns_provider.manual_txt {
             txt.name = normalise_domain(&txt.name)?;
             txt.value = txt.value.trim().to_owned();
             if txt.name.is_empty() || txt.value.is_empty() {

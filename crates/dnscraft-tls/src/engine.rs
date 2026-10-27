@@ -15,7 +15,7 @@ use crate::acme::{
 use crate::clock::Clock;
 use crate::cloudflare::{CLOUDFLARE_API_BASE, CloudflareClient};
 use crate::config::{DnsProviderKind, TlsConfig};
-use crate::dyndns::{DynDnsResult, EchoClient, InventoryRecord, dyndns_interval, dyndns_once};
+use crate::dyndns::{DynDnsResult, EchoClient, InventoryRecord, dyndns_interval, dyndns_pass};
 use crate::error::TlsError;
 use crate::issue::issue;
 use crate::pem_util::{certified_key_from_pem, fingerprint_sha256, parse_leaf_info};
@@ -303,7 +303,14 @@ impl TlsEngine {
         *self.inner.cloudflare.write().await = cf;
         *self.inner.config.write().await = config;
 
-        if let Some(manual) = manual {
+        // Bootstrap manual material only when the store has no certificate yet
+        // (mirror `open`): never revert a newer API upload, and never clear a
+        // persisted revocation by re-installing configured material.
+        let no_cert = matches!(self.inner.store.load(), Ok(None));
+        if let Some(manual) = manual
+            && no_cert
+            && !state_revoked(&self.inner.store)
+        {
             self.upload_manual_cert(&manual.cert_pem, &manual.key_pem, &manual.chain_pem)
                 .await?;
         }
@@ -649,18 +656,7 @@ impl EngineInner {
         let _ = tx.send(result.clone());
         *self.issue_flight.lock().await = None;
 
-        match &result {
-            Ok(()) => *self.rate_limit.write().await = RateLimitStatus::default(),
-            Err(e) if e.code() == "tls.acme.rate_limited" => {
-                let now = self.clock.now();
-                *self.rate_limit.write().await = RateLimitStatus {
-                    limited: true,
-                    retry_after: e.retry_after(),
-                    retry_at: e.retry_after().map(|delay| now + delay),
-                };
-            }
-            Err(_) => {}
-        }
+        *self.rate_limit.write().await = rate_limit_after(&result, self.clock.now());
 
         // Refresh ARI so ScheduleFn does not immediately re-fire after a kick
         // that arrived during this renew.
@@ -676,35 +672,37 @@ impl EngineInner {
             return Ok(DynDnsResult::default());
         }
         let cf = self.cloudflare.read().await.clone();
-        let result = dyndns_once(&cfg.dyndns, &cfg.public_domain, &self.echo, &cf).await;
+        let (result, outcome) = dyndns_pass(&cfg.dyndns, &cfg.public_domain, &self.echo, &cf).await;
         let now = self.clock.now();
         let next = now + dyndns_interval(cfg.dyndns.interval);
-        match &result {
-            Ok(r) => {
-                {
-                    let mut st = self.status.write().await;
-                    if let Some(v4) = r.ipv4 {
-                        st.dyndns_ipv4 = Some(v4.to_string());
-                    }
-                    if let Some(v6) = r.ipv6 {
-                        st.dyndns_ipv6 = Some(v6.to_string());
-                    }
-                    if let Some(t) = r.last_change {
-                        st.dyndns_last_change = Some(t);
-                    }
-                    st.dyndns_stale = false;
-                    st.last_dyndns_success = Some(now);
-                    st.next_dyndns_at = Some(next);
-                    if r.changed {
-                        st.last_error = None;
-                    }
+
+        // Persist audit for every write that succeeded, even when a later write
+        // in this pass failed.
+        if !result.audit.is_empty() {
+            let mut state = self.store.load_state();
+            push_dyndns_audit(&mut state, result.audit.iter().cloned());
+            if let Err(e) = self.store.save_state(&state) {
+                warn!(code = e.code(), "could not persist DynDNS audit: {e}");
+            }
+        }
+
+        match &outcome {
+            Ok(()) => {
+                let mut st = self.status.write().await;
+                if let Some(v4) = result.ipv4 {
+                    st.dyndns_ipv4 = Some(v4.to_string());
                 }
-                if !r.audit.is_empty() {
-                    let mut state = self.store.load_state();
-                    push_dyndns_audit(&mut state, r.audit.iter().cloned());
-                    if let Err(e) = self.store.save_state(&state) {
-                        warn!(code = e.code(), "could not persist DynDNS audit: {e}");
-                    }
+                if let Some(v6) = result.ipv6 {
+                    st.dyndns_ipv6 = Some(v6.to_string());
+                }
+                if let Some(t) = result.last_change {
+                    st.dyndns_last_change = Some(t);
+                }
+                st.dyndns_stale = false;
+                st.last_dyndns_success = Some(now);
+                st.next_dyndns_at = Some(next);
+                if result.changed {
+                    st.last_error = None;
                 }
             }
             Err(e) => {
@@ -714,7 +712,7 @@ impl EngineInner {
                 st.next_dyndns_at = Some(next);
             }
         }
-        result
+        outcome.map(|()| result)
     }
 
     async fn refresh_ari(&self) {
@@ -742,6 +740,21 @@ impl EngineInner {
 
 fn state_revoked(store: &CertStore) -> bool {
     store.load_state().revoked
+}
+
+/// Rate-limit status for the most recent ACME attempt.
+///
+/// A non-rate-limit failure (or success) clears a previous rate-limit state:
+/// the status always describes the latest attempt, never an older one.
+fn rate_limit_after(result: &Result<(), TlsError>, now: SystemTime) -> RateLimitStatus {
+    match result {
+        Err(e) if e.code() == "tls.acme.rate_limited" => RateLimitStatus {
+            limited: true,
+            retry_after: e.retry_after(),
+            retry_at: e.retry_after().map(|delay| now + delay),
+        },
+        _ => RateLimitStatus::default(),
+    }
 }
 
 /// Leaf PEM followed by an optional intermediate chain PEM.
@@ -885,4 +898,32 @@ fn start_dyndns_loop(inner: Arc<EngineInner>, stop: Arc<Notify>) -> JoinHandle<(
             }
         }
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod unit {
+    use super::*;
+
+    #[test]
+    fn rate_limit_status_reflects_most_recent_attempt() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let limited = Err(TlsError::AcmeRateLimited {
+            message: "slow down".into(),
+            retry_after: Some(Duration::from_secs(120)),
+        });
+        let status = rate_limit_after(&limited, now);
+        assert!(status.limited);
+        assert_eq!(status.retry_after, Some(Duration::from_secs(120)));
+        assert_eq!(status.retry_at, Some(now + Duration::from_secs(120)));
+
+        // A later attempt failing for another reason clears the stale state.
+        let other = Err(TlsError::AcmeOrder {
+            message: "boom".into(),
+        });
+        let status = rate_limit_after(&other, now);
+        assert!(!status.limited);
+        assert_eq!(status.retry_after, None);
+        assert_eq!(status.retry_at, None);
+    }
 }

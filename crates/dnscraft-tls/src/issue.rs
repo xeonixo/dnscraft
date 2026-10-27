@@ -186,7 +186,7 @@ async fn publish_and_wait(
         DnsProviderKind::Cloudflare => {
             publish_cloudflare(cloudflare, txts, challenge_name, cfg, clock).await
         }
-        DnsProviderKind::Manual => publish_manual(cfg.dns_provider.manual_txt.as_ref(), txts),
+        DnsProviderKind::Manual => publish_manual(&cfg.dns_provider.manual_txt, txts),
         DnsProviderKind::None => Err(TlsError::DnsProviderAuth {
             message: "dns_provider.kind = none cannot publish ACME DNS-01 records".into(),
         }),
@@ -227,14 +227,15 @@ async fn publish_cloudflare(
     Ok(())
 }
 
-/// Manual DNS-01: the operator asserts a TXT value is already published.
-fn publish_manual(
-    configured: Option<&ManualDns01Config>,
-    txts: &[Dns01Txt],
-) -> Result<(), TlsError> {
-    let covered = configured.is_some_and(|cfg| {
-        txts.iter()
-            .all(|t| t.name.eq_ignore_ascii_case(&cfg.name) && t.value == cfg.value)
+/// Manual DNS-01: each challenge TXT value must be pre-published by the operator.
+///
+/// The order carries one value per identifier but apex + wildcard share an
+/// owner, so `configured` is a list with one entry per value.
+fn publish_manual(configured: &[ManualDns01Config], txts: &[Dns01Txt]) -> Result<(), TlsError> {
+    let covered = txts.iter().all(|t| {
+        configured
+            .iter()
+            .any(|cfg| t.name.eq_ignore_ascii_case(&cfg.name) && t.value == cfg.value)
     });
     if covered {
         return Ok(());

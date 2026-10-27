@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime};
 use dnscraft_proto::{Class, Message, RData, Record};
 use dnscraft_tls::{
     AcmeConfig, AcmeDirectoryKind, CertMeta, CertStore, DynDnsConfig, EchoClient, EngineDeps,
-    FakeAcmeDirectory, KeyType, ManualClock, Secret, TlsConfig, TlsEngine,
+    FakeAcmeDirectory, KeyType, ManualCertConfig, ManualClock, Secret, TlsConfig, TlsEngine,
 };
 use mock_cloudflare::{MockCloudflare, MockZone};
 use mock_echo::{MockEcho, trace_body};
@@ -600,6 +600,168 @@ async fn rotate_key_maps_failure_and_dyndns_records_audit_and_inventory() {
     assert!(!status.dyndns_stale);
     assert!(status.last_dyndns_success.is_some());
     assert!(status.next_dyndns_at.is_some());
+
+    drop(engine);
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+async fn apply_config_does_not_revert_upload_or_unrevoke() {
+    let data = temp_dir("apply-manual");
+    let (chain_a, key_a) = self_signed();
+    let cert_a = String::from_utf8(chain_a).unwrap();
+    let key_a = String::from_utf8(key_a).unwrap();
+
+    let mut cfg = base_cfg();
+    cfg.acme.enabled = false;
+    cfg.dyndns.enabled = false;
+    cfg.validate_with_token(|_| Ok(Secret::new(TOKEN))).unwrap();
+
+    let engine = TlsEngine::open_with(
+        cfg.clone(),
+        &data,
+        clock(),
+        EngineDeps {
+            acme: Arc::new(FakeAcmeDirectory::new()),
+            cloudflare_base_url: Some("http://127.0.0.1:1/client/v4".into()),
+            echo: EchoClient::unbound().unwrap(),
+            token: Secret::new(TOKEN),
+        },
+    )
+    .unwrap();
+
+    // A newer API upload lands after the engine opened.
+    engine
+        .upload_manual_cert(&cert_a, &Secret::new(key_a), "")
+        .await
+        .expect("manual upload");
+
+    // Re-applying the (older) bootstrap config must not revert it.
+    let (chain_b, key_b) = self_signed();
+    let mut cfg_b = cfg.clone();
+    cfg_b.manual = Some(ManualCertConfig {
+        cert_pem: String::from_utf8(chain_b).unwrap(),
+        chain_pem: String::new(),
+        key_pem: Secret::new(String::from_utf8(key_b).unwrap()),
+    });
+    engine
+        .apply_config(cfg_b.clone())
+        .await
+        .expect("apply config");
+    assert_eq!(
+        engine.export_cert().unwrap(),
+        cert_a,
+        "apply_config must not overwrite a newer manual upload"
+    );
+    assert!(engine.resolver().has_cert());
+
+    // Revoked state must survive re-applying the bootstrap config.
+    engine.revoke(Some("superseded")).await.expect("revoke");
+    engine.apply_config(cfg_b).await.expect("apply config");
+    assert!(engine.status_async().await.revoked);
+    assert!(!engine.resolver().has_cert());
+
+    drop(engine);
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+async fn unreachable_echo_marks_dyndns_stale_with_echo_error() {
+    let data = temp_dir("echo-down");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let mut cfg = base_cfg();
+    cfg.acme.enabled = false;
+    cfg.dyndns.enabled = false;
+    cfg.validate_with_token(|_| Ok(Secret::new(TOKEN))).unwrap();
+
+    let engine = TlsEngine::open_with(
+        cfg.clone(),
+        &data,
+        clock(),
+        EngineDeps {
+            acme: Arc::new(FakeAcmeDirectory::new()),
+            cloudflare_base_url: Some("http://127.0.0.1:1/client/v4".into()),
+            echo: EchoClient::unbound().unwrap(),
+            token: Secret::new(TOKEN),
+        },
+    )
+    .unwrap();
+
+    let mut enabled = cfg;
+    enabled.dyndns.enabled = true;
+    enabled.dyndns.ipv6 = false;
+    enabled.dyndns.echo_url = format!("http://{addr}/cdn-cgi/trace");
+    enabled
+        .validate_with_token(|_| Ok(Secret::new(TOKEN)))
+        .unwrap();
+    engine.apply_config(enabled).await.unwrap();
+
+    let err = engine.dyndns_now().await.expect_err("echo unreachable");
+    assert_eq!(err.code(), "tls.dyndns.echo");
+
+    let status = engine.status_async().await;
+    assert!(status.dyndns_stale);
+    assert_eq!(status.last_error.as_deref(), Some("tls.dyndns.echo"));
+    assert!(
+        status.last_dyndns_success.is_none(),
+        "a failed echo must not advance last_dyndns_success"
+    );
+
+    drop(engine);
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+async fn partial_dyndns_write_failure_keeps_audit_for_successful_writes() {
+    let data = temp_dir("partial-audit");
+    let (mock, _ns) = mock_cf_with_ns().await;
+    let echo = MockEcho::start([trace_body("203.0.113.70")]).await;
+
+    let mut cfg = base_cfg();
+    cfg.acme.enabled = false;
+    cfg.dyndns.enabled = false;
+    cfg.validate_with_token(|_| Ok(Secret::new(TOKEN))).unwrap();
+
+    let engine = TlsEngine::open_with(
+        cfg.clone(),
+        &data,
+        clock(),
+        EngineDeps {
+            acme: Arc::new(FakeAcmeDirectory::new()),
+            cloudflare_base_url: Some(mock.base_url()),
+            echo: EchoClient::unbound().unwrap(),
+            token: Secret::new(TOKEN),
+        },
+    )
+    .unwrap();
+
+    let mut enabled = cfg;
+    enabled.dyndns.enabled = true;
+    enabled.dyndns.public_entry = true;
+    enabled.dyndns.ipv6 = false;
+    enabled.dyndns.echo_url = echo.url();
+    enabled
+        .validate_with_token(|_| Ok(Secret::new(TOKEN)))
+        .unwrap();
+    engine.apply_config(enabled).await.unwrap();
+
+    // Requests: zone lookup, two node1 lists + create, then fail the wildcard
+    // list (the create already succeeded).
+    mock.force_status_on_request(5, 500, None).await;
+    let err = engine.dyndns_now().await.expect_err("second write fails");
+    assert_eq!(err.code(), "tls.dyndns.update");
+
+    let audit = engine.dyndns_audit().await;
+    assert!(
+        audit
+            .iter()
+            .any(|e| e.name == "node1.dns.example.com" && e.content == "203.0.113.70"),
+        "audit for the successful write must be persisted: {audit:?}"
+    );
+    assert!(engine.status_async().await.dyndns_stale);
 
     drop(engine);
     let _ = fs::remove_dir_all(&data);

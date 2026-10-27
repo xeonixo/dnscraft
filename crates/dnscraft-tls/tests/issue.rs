@@ -15,10 +15,11 @@ static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 use dnscraft_proto::{Class, Message, RData, Record};
 use dnscraft_tls::{
-    AcmeConfig, AcmeDirectoryKind, AriWindow, CertResolver, CertStore, Clock, CloudflareClient,
-    CloudflareConfig, DEFAULT_EXPIRY_WARN, DynDnsConfig, FakeAcmeDirectory, FakeAcmeFail, KeyType,
-    ManualClock, Secret, TlsConfig, TlsError, TlsStatus, ari_certificate_id, challenge_txt_name,
-    current_ari_window, issue, plan_renewal,
+    AcmeConfig, AcmeDirectoryKind, AcmeOrder, AriWindow, CertResolver, CertStore, Clock,
+    CloudflareClient, CloudflareConfig, DEFAULT_EXPIRY_WARN, DnsProviderKind, DynDnsConfig,
+    FakeAcmeDirectory, FakeAcmeFail, KeyType, ManualClock, ManualDns01Config, Secret, TlsConfig,
+    TlsError, TlsStatus, ari_certificate_id, challenge_txt_name, current_ari_window, issue,
+    plan_renewal,
 };
 use mock_cloudflare::{MockCloudflare, MockZone};
 use tokio::net::UdpSocket;
@@ -491,6 +492,98 @@ async fn stale_challenge_txt_is_deleted_before_new_ones_are_created() {
         delete_stale < first_create,
         "orphan cleanup must precede creation: delete@{delete_stale} create@{first_create}"
     );
+    let _ = fs::remove_dir_all(&env.data);
+}
+
+#[tokio::test]
+async fn manual_provider_succeeds_with_both_published_values() {
+    let data = temp_dir("manual-provider");
+    let store = CertStore::open(&data).unwrap();
+    let resolver = CertResolver::new();
+    // Manual issuance never calls Cloudflare, so an unreachable base is fine.
+    let cf = CloudflareClient::with_base_url(
+        Secret::new(TOKEN),
+        DOMAIN,
+        &CloudflareConfig { zone_id: None },
+        "http://127.0.0.1:1/client/v4",
+    )
+    .unwrap();
+    let challenge = challenge_txt_name(&format!("dns.{DOMAIN}"));
+
+    let mut cfg = TlsConfig {
+        public_domain: DOMAIN.into(),
+        key_type: KeyType::EcdsaP256,
+        acme: AcmeConfig {
+            enabled: true,
+            directory: AcmeDirectoryKind::Staging,
+            email: "admin@example.com".into(),
+            propagation_timeout: Duration::from_secs(60),
+            propagation_poll: Duration::from_secs(5),
+            account: dnscraft_tls::AcmeAccountConfig {
+                tos_agreed: true,
+                ..Default::default()
+            },
+        },
+        dyndns: DynDnsConfig {
+            enabled: false,
+            ..DynDnsConfig::default()
+        },
+        allow_http_for_tests: true,
+        ..TlsConfig::default()
+    };
+    cfg.dns_provider.kind = DnsProviderKind::Manual;
+    cfg.dns_provider.manual_txt = vec![
+        ManualDns01Config {
+            name: challenge.clone(),
+            value: "fake-dns01-value-0".into(),
+        },
+        ManualDns01Config {
+            name: challenge.clone(),
+            value: "fake-dns01-value-1".into(),
+        },
+    ];
+    cfg.dyndns.enabled = false;
+    cfg.validate_with_token(|_| Ok(Secret::new(TOKEN))).unwrap();
+
+    let clock = new_clock();
+    let acme = FakeAcmeDirectory::new();
+    issue(&acme, &cf, &store, &resolver, &cfg, clock.as_ref())
+        .await
+        .expect("both challenge values are pre-published");
+    assert!(resolver.has_cert());
+    assert!(store.load().unwrap().is_some());
+
+    // One value missing -> the operator still has to publish it.
+    cfg.dns_provider.manual_txt.truncate(1);
+    let err = issue(&acme, &cf, &store, &resolver, &cfg, clock.as_ref())
+        .await
+        .expect_err("missing second value");
+    assert_eq!(err.code(), "tls.dns.manual");
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+async fn early_order_failure_updates_progress_and_next_attempt() {
+    let env = setup(KeyType::EcdsaP256, Duration::from_secs(60)).await;
+    let acme = FakeAcmeDirectory::failing(FakeAcmeFail::Start);
+
+    let err = issue_with_clock_drive(&acme, &env)
+        .await
+        .expect_err("start fails");
+    assert_eq!(err.code(), "tls.acme.order");
+
+    let order = acme.order_status();
+    assert_eq!(order.state, "invalid", "{order:?}");
+    assert_eq!(order.last_error.as_deref(), Some("tls.acme.order"));
+    assert_eq!(
+        order.identifiers,
+        vec!["dns.example.com", "*.dns.example.com"]
+    );
+    assert!(
+        order.next_attempt_at.is_some(),
+        "early start failure must schedule the next attempt: {order:?}"
+    );
+    assert!(order.challenges.is_empty());
     let _ = fs::remove_dir_all(&env.data);
 }
 

@@ -81,7 +81,9 @@ impl EchoClient {
 
     /// Fetches `url` with the family-specific client and parses the `ip=` line.
     ///
-    /// Returns `Ok(None)` when the family has no route (transport failure).
+    /// Returns `Ok(None)` only when the family genuinely has no route (e.g.
+    /// `ENETUNREACH`). Any other transport failure is [`TlsError::DyndnsEcho`],
+    /// so an unreachable echo never looks like a successful "no route" pass.
     /// Garbage body or wrong address family → [`TlsError::DyndnsEcho`].
     pub async fn discover(&self, url: &str, want_v4: bool) -> Result<Option<IpAddr>, TlsError> {
         let client = if want_v4 { &self.v4 } else { &self.v6 };
@@ -89,9 +91,14 @@ impl EchoClient {
 
         let response = match client.get(url).send().await {
             Ok(r) => r,
-            Err(e) => {
-                debug!(family, error = %e, "DynDNS echo: no route / transport");
+            Err(e) if is_no_route(&e) => {
+                debug!(family, "DynDNS echo: no route");
                 return Ok(None);
+            }
+            Err(e) => {
+                return Err(TlsError::DyndnsEcho {
+                    message: format!("echo request failed ({family}): {e}"),
+                });
             }
         };
 
@@ -118,6 +125,26 @@ impl EchoClient {
             }),
         }
     }
+}
+
+/// `true` when a reqwest error came from a missing route rather than an echo
+/// outage. Walks the source chain for the underlying [`std::io::Error`] kind.
+fn is_no_route(err: &reqwest::Error) -> bool {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = source {
+        if let Some(io) = e.downcast_ref::<std::io::Error>()
+            && matches!(
+                io.kind(),
+                std::io::ErrorKind::NetworkUnreachable
+                    | std::io::ErrorKind::HostUnreachable
+                    | std::io::ErrorKind::AddrNotAvailable
+            )
+        {
+            return true;
+        }
+        source = e.source();
+    }
+    false
 }
 
 fn build_client(local: Option<SocketAddr>) -> Result<Client, TlsError> {
@@ -291,77 +318,93 @@ pub async fn dyndns_once(
     echo: &EchoClient,
     cloudflare: &CloudflareClient,
 ) -> Result<DynDnsResult, TlsError> {
-    if !cfg.enabled {
-        return Ok(DynDnsResult::default());
-    }
+    let (result, outcome) = dyndns_pass(cfg, public_domain, echo, cloudflare).await;
+    outcome.map(|()| result)
+}
 
+/// Like [`dyndns_once`] but keeps the partial [`DynDnsResult`] on failure, so
+/// the audit trail of writes that did succeed is not lost.
+pub(crate) async fn dyndns_pass(
+    cfg: &DynDnsConfig,
+    public_domain: &str,
+    echo: &EchoClient,
+    cloudflare: &CloudflareClient,
+) -> (DynDnsResult, Result<(), TlsError>) {
     let mut result = DynDnsResult::default();
-
-    if cfg.ipv4 {
-        match echo.discover(&cfg.echo_url, true).await? {
-            Some(IpAddr::V4(v4)) => result.ipv4 = Some(v4),
-            Some(IpAddr::V6(_)) => unreachable!("discover validates family"),
-            None => result.skipped_no_route.push("ipv4"),
-        }
+    if !cfg.enabled {
+        return (result, Ok(()));
     }
-    if cfg.ipv6 {
-        match cfg.ipv6_identifier.mode {
-            Ipv6IdentifierMode::Static => {
-                let addr = cfg
-                    .ipv6_identifier
-                    .static_address
-                    .as_deref()
-                    .and_then(|s| s.trim().parse::<Ipv6Addr>().ok())
-                    .ok_or_else(|| TlsError::DyndnsIpv6 {
-                        message: "static IPv6 identifier is missing or invalid".into(),
-                    })?;
-                result.ipv6 = Some(addr);
+
+    let outcome: Result<(), TlsError> = async {
+        if cfg.ipv4 {
+            match echo.discover(&cfg.echo_url, true).await? {
+                Some(IpAddr::V4(v4)) => result.ipv4 = Some(v4),
+                Some(IpAddr::V6(_)) => unreachable!("discover validates family"),
+                None => result.skipped_no_route.push("ipv4"),
             }
-            // Named interfaces: read the OS-assigned (EUI-64 / stable-privacy)
-            // global address instead of asking the echo service.
-            Ipv6IdentifierMode::Eui64 | Ipv6IdentifierMode::StablePrivacy
-                if !cfg.interfaces.is_empty() =>
-            {
-                match interface_ipv6(&cfg.interfaces) {
-                    Some(addr) => result.ipv6 = Some(addr),
-                    None => {
-                        return Err(TlsError::DyndnsIpv6 {
-                            message: format!(
-                                "no global IPv6 address on interfaces {:?}",
-                                cfg.interfaces
-                            ),
-                        });
+        }
+        if cfg.ipv6 {
+            match cfg.ipv6_identifier.mode {
+                Ipv6IdentifierMode::Static => {
+                    let addr = cfg
+                        .ipv6_identifier
+                        .static_address
+                        .as_deref()
+                        .and_then(|s| s.trim().parse::<Ipv6Addr>().ok())
+                        .ok_or_else(|| TlsError::DyndnsIpv6 {
+                            message: "static IPv6 identifier is missing or invalid".into(),
+                        })?;
+                    result.ipv6 = Some(addr);
+                }
+                // Named interfaces: read the OS-assigned (EUI-64 / stable-privacy)
+                // global address instead of asking the echo service.
+                Ipv6IdentifierMode::Eui64 | Ipv6IdentifierMode::StablePrivacy
+                    if !cfg.interfaces.is_empty() =>
+                {
+                    match interface_ipv6(&cfg.interfaces) {
+                        Some(addr) => result.ipv6 = Some(addr),
+                        None => {
+                            return Err(TlsError::DyndnsIpv6 {
+                                message: format!(
+                                    "no global IPv6 address on interfaces {:?}",
+                                    cfg.interfaces
+                                ),
+                            });
+                        }
+                    }
+                }
+                Ipv6IdentifierMode::Eui64 | Ipv6IdentifierMode::StablePrivacy => {
+                    match echo.discover(&cfg.echo_url, false).await? {
+                        Some(IpAddr::V6(v6)) => result.ipv6 = Some(v6),
+                        Some(IpAddr::V4(_)) => unreachable!("discover validates family"),
+                        None => result.skipped_no_route.push("ipv6"),
                     }
                 }
             }
-            Ipv6IdentifierMode::Eui64 | Ipv6IdentifierMode::StablePrivacy => {
-                match echo.discover(&cfg.echo_url, false).await? {
-                    Some(IpAddr::V6(v6)) => result.ipv6 = Some(v6),
-                    Some(IpAddr::V4(_)) => unreachable!("discover validates family"),
-                    None => result.skipped_no_route.push("ipv6"),
-                }
+        }
+
+        if result.ipv4.is_none() && result.ipv6.is_none() {
+            // All enabled families skipped (no route) — not an error.
+            return Ok(());
+        }
+
+        let names = dyndns_names(cfg, public_domain);
+        let _guard = cloudflare.write_guard().await;
+
+        for name in &names {
+            if let Some(v4) = result.ipv4 {
+                ensure_address(cloudflare, name, "A", &v4.to_string(), &mut result).await?;
+            }
+            if let Some(v6) = result.ipv6 {
+                ensure_address(cloudflare, name, "AAAA", &v6.to_string(), &mut result).await?;
             }
         }
+
+        Ok(())
     }
+    .await;
 
-    if result.ipv4.is_none() && result.ipv6.is_none() {
-        // All enabled families skipped (no route) — not an error.
-        return Ok(result);
-    }
-
-    let names = dyndns_names(cfg, public_domain);
-    let _guard = cloudflare.write_guard().await;
-
-    for name in &names {
-        if let Some(v4) = result.ipv4 {
-            ensure_address(cloudflare, name, "A", &v4.to_string(), &mut result).await?;
-        }
-        if let Some(v6) = result.ipv6 {
-            ensure_address(cloudflare, name, "AAAA", &v6.to_string(), &mut result).await?;
-        }
-    }
-
-    Ok(result)
+    (result, outcome)
 }
 
 async fn ensure_address(
@@ -396,9 +439,9 @@ async fn ensure_address(
 
 fn map_update_err(err: TlsError) -> TlsError {
     match err {
-        TlsError::CloudflareHttp { message, .. } | TlsError::CloudflareZone { message } => {
-            TlsError::DyndnsUpdate { message }
-        }
+        TlsError::CloudflareHttp { message, .. }
+        | TlsError::CloudflareZone { message }
+        | TlsError::DnsProviderZone { message } => TlsError::DyndnsUpdate { message },
         other => other,
     }
 }

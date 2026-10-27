@@ -24,7 +24,7 @@ use crate::acme_http::ReqwestHttpClient;
 use crate::config::{AcmeConfig, KeyType};
 use crate::error::TlsError;
 use crate::pem_util::parse_cert_chain;
-use crate::renew::AriWindow;
+use crate::renew::{AriWindow, backoff_delay};
 use crate::store::CertStore;
 
 /// One DNS-01 TXT value that must be published before challenges are marked ready.
@@ -380,46 +380,26 @@ fn save_account_credentials(store: &CertStore, creds: &AccountCredentials) -> Re
     store.save_account(&json)
 }
 
-#[async_trait]
-impl AcmeDirectory for InstantAcme {
-    async fn ensure_account(&self, store: &CertStore, cfg: &AcmeConfig) -> Result<(), TlsError> {
-        if !cfg.enabled {
-            return Ok(());
-        }
-        let _ = self.load_or_create_account(store, cfg).await?;
-        Ok(())
-    }
-
-    async fn rollover_key(&self, store: &CertStore, cfg: &AcmeConfig) -> Result<(), TlsError> {
-        let mut account = self.load_or_create_account(store, cfg).await?;
-        let creds = account
-            .update_key()
-            .await
-            .map_err(|e| TlsError::AcmeAccountRollover {
-                message: redact_acme_err(&e),
-            })?;
-        save_account_credentials(store, &creds)
-    }
-
-    async fn deactivate_account(
-        &self,
-        store: &CertStore,
-        cfg: &AcmeConfig,
-    ) -> Result<(), TlsError> {
-        let account = self.load_or_create_account(store, cfg).await?;
-        account
-            .deactivate()
-            .await
-            .map_err(|e| TlsError::AcmeAccount {
-                message: redact_acme_err(&e),
-            })?;
-        store.clear_account()
-    }
+/// Persists that the account was deactivated (credentials removed).
+fn mark_account_deactivated(store: &CertStore) -> Result<(), TlsError> {
+    let mut state = store.load_state();
+    state.acme_account_deactivated = true;
+    store.save_state(&state)
 }
 
-#[async_trait]
-impl AcmeOrder for InstantAcme {
-    async fn start_dns01_order(
+/// Clears the deactivated marker after an account exists again.
+fn mark_account_active(store: &CertStore) -> Result<(), TlsError> {
+    let mut state = store.load_state();
+    if state.acme_account_deactivated {
+        state.acme_account_deactivated = false;
+        store.save_state(&state)?;
+    }
+    Ok(())
+}
+
+impl InstantAcme {
+    /// Creates the order and collects its DNS-01 TXT values (no progress writes).
+    async fn start_dns01_order_inner(
         &self,
         store: &CertStore,
         cfg: &AcmeConfig,
@@ -481,28 +461,99 @@ impl AcmeOrder for InstantAcme {
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(order);
-        *self
-            .progress
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = AcmeOrderStatus {
-            state: "pending".into(),
-            identifiers: identifiers.to_vec(),
-            challenges: txts
-                .iter()
-                .map(|t| ChallengeProgress {
-                    identifier: t
-                        .name
-                        .strip_prefix("_acme-challenge.")
-                        .unwrap_or(&t.name)
-                        .to_owned(),
-                    txt_name: t.name.clone(),
-                    status: "pending".into(),
-                })
-                .collect(),
-            next_attempt_at: None,
-            last_error: None,
-        };
         Ok(txts)
+    }
+}
+
+#[async_trait]
+impl AcmeDirectory for InstantAcme {
+    async fn ensure_account(&self, store: &CertStore, cfg: &AcmeConfig) -> Result<(), TlsError> {
+        if !cfg.enabled {
+            return Ok(());
+        }
+        let _ = self.load_or_create_account(store, cfg).await?;
+        mark_account_active(store)?;
+        Ok(())
+    }
+
+    async fn rollover_key(&self, store: &CertStore, cfg: &AcmeConfig) -> Result<(), TlsError> {
+        let mut account = self.load_or_create_account(store, cfg).await?;
+        let creds = account
+            .update_key()
+            .await
+            .map_err(|e| TlsError::AcmeAccountRollover {
+                message: redact_acme_err(&e),
+            })?;
+        save_account_credentials(store, &creds)
+    }
+
+    async fn deactivate_account(
+        &self,
+        store: &CertStore,
+        cfg: &AcmeConfig,
+    ) -> Result<(), TlsError> {
+        let account = self.load_or_create_account(store, cfg).await?;
+        account
+            .deactivate()
+            .await
+            .map_err(|e| TlsError::AcmeAccount {
+                message: redact_acme_err(&e),
+            })?;
+        store.clear_account()?;
+        mark_account_deactivated(store)
+    }
+}
+
+#[async_trait]
+impl AcmeOrder for InstantAcme {
+    async fn start_dns01_order(
+        &self,
+        store: &CertStore,
+        cfg: &AcmeConfig,
+        identifiers: &[String],
+        replaces: Option<&str>,
+    ) -> Result<Vec<Dns01Txt>, TlsError> {
+        match self
+            .start_dns01_order_inner(store, cfg, identifiers, replaces)
+            .await
+        {
+            Ok(txts) => {
+                *self
+                    .progress
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = AcmeOrderStatus {
+                    state: "pending".into(),
+                    identifiers: identifiers.to_vec(),
+                    challenges: txts
+                        .iter()
+                        .map(|t| ChallengeProgress {
+                            identifier: t
+                                .name
+                                .strip_prefix("_acme-challenge.")
+                                .unwrap_or(&t.name)
+                                .to_owned(),
+                            txt_name: t.name.clone(),
+                            status: "pending".into(),
+                        })
+                        .collect(),
+                    next_attempt_at: None,
+                    last_error: None,
+                };
+                Ok(txts)
+            }
+            Err(e) => {
+                // Early failures must not leave the previous order's progress
+                // visible through `order_status`.
+                let mut progress = self
+                    .progress
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                progress.identifiers = identifiers.to_vec();
+                progress.challenges.clear();
+                mark_failed(&mut progress, &e);
+                Err(e)
+            }
+        }
     }
 
     async fn finish_dns01_order(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), TlsError> {
@@ -558,14 +609,13 @@ impl AcmeOrder for InstantAcme {
             match &result {
                 Ok(_) => {
                     progress.state = "valid".into();
+                    progress.next_attempt_at = None;
+                    progress.last_error = None;
                     for challenge in &mut progress.challenges {
                         challenge.status = "valid".into();
                     }
                 }
-                Err(e) => {
-                    progress.state = "invalid".into();
-                    progress.last_error = Some(e.code().to_owned());
-                }
+                Err(e) => mark_failed(&mut progress, e),
             }
         }
         result
@@ -772,14 +822,26 @@ pub fn account_status(store: &CertStore, cfg: &AcmeConfig) -> Result<AcmeAccount
         tos_agreed: cfg.account.tos_agreed,
         eab_configured: cfg.account.eab.is_some(),
         auto_deactivate: cfg.account.auto_deactivate,
-        deactivated: false,
+        // Credentials are removed on deactivation; the marker survives so the
+        // status can distinguish "deactivated" from "never created".
+        deactivated: stored.is_none() && store.load_state().acme_account_deactivated,
     })
+}
+
+/// Marks `progress` invalid and schedules the next attempt from the renew
+/// backoff (honouring a CA `Retry-After` hint).
+fn mark_failed(progress: &mut AcmeOrderStatus, err: &TlsError) {
+    progress.state = "invalid".into();
+    progress.last_error = Some(err.code().to_owned());
+    progress.next_attempt_at = Some(SystemTime::now() + backoff_delay(0, err.retry_after()));
 }
 
 /// Where [`FakeAcmeDirectory`] should fail (for negative tests).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 
 pub enum FakeAcmeFail {
+    /// Fail while creating the order (before any challenge TXT is returned).
+    Start,
     /// Fail when challenges would be marked ready.
     Challenge,
     /// Fail at finalize / certificate mint.
@@ -853,6 +915,43 @@ impl FakeAcmeDirectory {
     }
 }
 
+impl FakeAcmeDirectory {
+    /// Fake order creation (no progress writes).
+    async fn start_dns01_order_inner(
+        &self,
+        store: &CertStore,
+        cfg: &AcmeConfig,
+        identifiers: &[String],
+        replaces: Option<&str>,
+    ) -> Result<Vec<Dns01Txt>, TlsError> {
+        self.ensure_account(store, cfg).await?;
+        if self.fail_at == Some(FakeAcmeFail::Start) {
+            return Err(TlsError::AcmeOrder {
+                message: "fake start failure".into(),
+            });
+        }
+        self.replaces_log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(replaces.map(str::to_owned));
+        let mut txts = Vec::new();
+        for (i, ident) in identifiers.iter().enumerate() {
+            let host = ident.strip_prefix("*.").unwrap_or(ident.as_str());
+            txts.push(Dns01Txt {
+                name: format!("_acme-challenge.{host}"),
+                value: format!("fake-dns01-value-{i}"),
+            });
+        }
+        *self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(FakePending {
+            identifiers: identifiers.to_vec(),
+        });
+        Ok(txts)
+    }
+}
+
 #[async_trait]
 impl AcmeDirectory for FakeAcmeDirectory {
     async fn ensure_account(&self, store: &CertStore, cfg: &AcmeConfig) -> Result<(), TlsError> {
@@ -863,6 +962,7 @@ impl AcmeDirectory for FakeAcmeDirectory {
         if let Some(bytes) = store.load_account()?
             && stored_directory_matches(&bytes, url)
         {
+            mark_account_active(store)?;
             return Ok(());
         }
         if !cfg.account.tos_agreed {
@@ -884,6 +984,7 @@ impl AcmeDirectory for FakeAcmeDirectory {
             message: format!("serialize fake account: {e}"),
         })?;
         store.save_account(&payload)?;
+        mark_account_active(store)?;
         Ok(())
     }
 
@@ -896,7 +997,8 @@ impl AcmeDirectory for FakeAcmeDirectory {
         store: &CertStore,
         _cfg: &AcmeConfig,
     ) -> Result<(), TlsError> {
-        store.clear_account()
+        store.clear_account()?;
+        mark_account_deactivated(store)
     }
 }
 
@@ -909,47 +1011,45 @@ impl AcmeOrder for FakeAcmeDirectory {
         identifiers: &[String],
         replaces: Option<&str>,
     ) -> Result<Vec<Dns01Txt>, TlsError> {
-        self.ensure_account(store, cfg).await?;
-        self.replaces_log
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(replaces.map(str::to_owned));
-        let mut txts = Vec::new();
-        for (i, ident) in identifiers.iter().enumerate() {
-            let host = ident.strip_prefix("*.").unwrap_or(ident.as_str());
-            txts.push(Dns01Txt {
-                name: format!("_acme-challenge.{host}"),
-                value: format!("fake-dns01-value-{i}"),
-            });
+        match self
+            .start_dns01_order_inner(store, cfg, identifiers, replaces)
+            .await
+        {
+            Ok(txts) => {
+                *self
+                    .progress
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = AcmeOrderStatus {
+                    state: "pending".into(),
+                    identifiers: identifiers.to_vec(),
+                    challenges: txts
+                        .iter()
+                        .map(|t| ChallengeProgress {
+                            identifier: t
+                                .name
+                                .strip_prefix("_acme-challenge.")
+                                .unwrap_or(&t.name)
+                                .to_owned(),
+                            txt_name: t.name.clone(),
+                            status: "pending".into(),
+                        })
+                        .collect(),
+                    next_attempt_at: None,
+                    last_error: None,
+                };
+                Ok(txts)
+            }
+            Err(e) => {
+                let mut progress = self
+                    .progress
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                progress.identifiers = identifiers.to_vec();
+                progress.challenges.clear();
+                mark_failed(&mut progress, &e);
+                Err(e)
+            }
         }
-        *self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(FakePending {
-            identifiers: identifiers.to_vec(),
-        });
-        *self
-            .progress
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = AcmeOrderStatus {
-            state: "pending".into(),
-            identifiers: identifiers.to_vec(),
-            challenges: txts
-                .iter()
-                .map(|t| ChallengeProgress {
-                    identifier: t
-                        .name
-                        .strip_prefix("_acme-challenge.")
-                        .unwrap_or(&t.name)
-                        .to_owned(),
-                    txt_name: t.name.clone(),
-                    status: "pending".into(),
-                })
-                .collect(),
-            next_attempt_at: None,
-            last_error: None,
-        };
-        Ok(txts)
     }
 
     async fn finish_dns01_order(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), TlsError> {
@@ -981,14 +1081,13 @@ impl AcmeOrder for FakeAcmeDirectory {
             match &result {
                 Ok(_) => {
                     progress.state = "valid".into();
+                    progress.next_attempt_at = None;
+                    progress.last_error = None;
                     for challenge in &mut progress.challenges {
                         challenge.status = "valid".into();
                     }
                 }
-                Err(e) => {
-                    progress.state = "invalid".into();
-                    progress.last_error = Some(e.code().to_owned());
-                }
+                Err(e) => mark_failed(&mut progress, e),
             }
         }
         result
