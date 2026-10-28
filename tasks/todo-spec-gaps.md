@@ -197,7 +197,7 @@ approval before Phase 0 code.
 - [x] **GA21** 🟡 [spec] Config persisted-after-apply vs spec's persist-then-mark-failed. *(config_apply.rs:9-12, 462-473)*
 - [ ] **GA22** 🟡 [code] Dead codes: `config.apply`, `query_log.dropped`, `audit.read`, `auth.unknown_token`. *(error.rs, response.rs)*
 - [x] **GA23** 🟡 [code] `protocol`/`status` filter values not validated as enums. *(query_log_routes.rs:59-76)*
-- [ ] **GA24** 🟡 [spec] `filter.reason` stores provenance, not the documented `"adblock"`-style reason. *(query_log.rs:824-838)*
+- [x] **GA24** 🟡 [spec] `filter.reason` stores provenance, not the documented `"adblock"`-style reason. *(query_log.rs:824-838)*
 - [ ] **GA25** 🟡 [code] Manual cert upload accepts private-key material. *(tls_routes.rs:348-377)*
 - [ ] **GA26** 🟡 [code] UniFi settings / local-domain mode have no typed route. *(clients_routes.rs)*
 - [ ] **GA27** 🟡 [code] No control-api fuzz target. *(fuzz/fuzz_targets/)*

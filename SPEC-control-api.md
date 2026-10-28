@@ -455,13 +455,17 @@ For a blocked query the `filter` field contains:
 
 ```json
 {
-  "reason": "adblock",
+  "reason": "list",
   "block_mode": "nxdomain",
   "rule_text": "||example.com^",
   "list_id": "adguard-dns-filter",
   "important": false
 }
 ```
+
+`reason` is the rule **provenance**: `list`, `custom`, `service`,
+`temporary_allow` or `mcp`. The engine exposes provenance rather than a
+category such as `adblock` (decision recorded with GA24).
 
 ### Retention and privacy
 
