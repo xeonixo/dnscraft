@@ -145,6 +145,14 @@ pub(crate) struct Validation {
     pub(crate) diff: Value,
 }
 
+/// How a committed snapshot is versioned and whether GF2 list refresh runs first.
+enum ApplyStoreMode {
+    /// Auto-increment; optionally refresh remote lists before store.
+    Bump { refresh_lists: bool },
+    /// Adopt the master's version; refresh is deferred to the filtering scheduler.
+    Adopt(i64),
+}
+
 /// The atomic config service shared by every config route.
 pub struct ConfigService {
     store: ConfigStore,
@@ -249,9 +257,20 @@ impl ConfigService {
         if self.store.current().await?.is_some() {
             return Ok(None);
         }
-        self.replace(snapshot, &ConfigActor::local(), None)
-            .await
-            .map(Some)
+        let _guard = self.apply_lock.lock().await;
+        let snapshot = merge_mcp_rules(snapshot, None)?;
+        self.commit(
+            &ConfigActor::local(),
+            "config.write",
+            None,
+            None,
+            &snapshot,
+            ApplyStoreMode::Bump {
+                refresh_lists: false,
+            },
+        )
+        .await
+        .map(Some)
     }
 
     /// Applies the current stored snapshot to live modules without writing a
@@ -316,7 +335,9 @@ impl ConfigService {
             previous_version,
             previous.as_ref(),
             &snapshot,
-            None,
+            ApplyStoreMode::Bump {
+                refresh_lists: true,
+            },
         )
         .await
     }
@@ -326,8 +347,10 @@ impl ConfigService {
     ///
     /// Takes the same validate → apply → store path as [`Self::replace`] under
     /// the same serial apply lock, including re-applying the previous snapshot
-    /// on a module failure. The `mcp_rules` merge is deliberately not applied:
-    /// the pushed snapshot is complete and is adopted as-is.
+    /// on a module failure. Remote filter-list refresh (GF2) is skipped here so
+    /// cluster status and acks are not blocked on the network; the filtering
+    /// scheduler refreshes lists later. The `mcp_rules` merge is deliberately
+    /// not applied: the pushed snapshot is complete and is adopted as-is.
     pub async fn apply_synced_config(
         &self,
         snapshot: Value,
@@ -352,7 +375,7 @@ impl ConfigService {
             previous_version,
             previous.as_ref(),
             &snapshot,
-            Some(version),
+            ApplyStoreMode::Adopt(version),
         )
         .await
     }
@@ -402,7 +425,9 @@ impl ConfigService {
             current_version,
             previous.as_ref(),
             &snapshot,
-            None,
+            ApplyStoreMode::Bump {
+                refresh_lists: true,
+            },
         )
         .await
         .map(Some)
@@ -525,8 +550,6 @@ impl ConfigService {
     /// Shared validate → apply → store → audit path used by [`Self::replace`],
     /// [`Self::mutate`] and [`Self::apply_synced_config`].
     ///
-    /// `version` is `Some` only for a cluster sync, which stores under the
-    /// master's explicit version; `None` auto-increments.
     async fn commit(
         &self,
         actor: &ConfigActor,
@@ -534,9 +557,9 @@ impl ConfigService {
         previous_version: Option<i64>,
         previous: Option<&Value>,
         snapshot: &Value,
-        version: Option<i64>,
+        mode: ApplyStoreMode,
     ) -> Result<i64, ControlApiError> {
-        match self.validate_apply_store(snapshot, previous, version).await {
+        match self.validate_apply_store(snapshot, previous, mode).await {
             Ok(version) => {
                 self.record(
                     actor,
@@ -575,13 +598,20 @@ impl ConfigService {
         &self,
         snapshot: &Value,
         previous: Option<&Value>,
-        version: Option<i64>,
+        mode: ApplyStoreMode,
     ) -> Result<i64, ControlApiError> {
         self.validate_and_apply(snapshot, previous).await?;
-        self.refresh_filtering_lists(snapshot).await?;
-        let version = match version {
-            Some(version) => self.store.store_at(snapshot, version).await?,
-            None => self.store.store(snapshot).await?,
+        if matches!(
+            mode,
+            ApplyStoreMode::Bump {
+                refresh_lists: true
+            }
+        ) {
+            self.refresh_filtering_lists(snapshot).await?;
+        }
+        let version = match mode {
+            ApplyStoreMode::Bump { .. } => self.store.store(snapshot).await?,
+            ApplyStoreMode::Adopt(version) => self.store.store_at(snapshot, version).await?,
         };
         self.notify_change(version);
         Ok(version)
@@ -760,8 +790,10 @@ impl ConfigService {
         Ok(())
     }
 
-    /// Refreshes remote filter lists after a versioned apply (GF2). Boot via
-    /// [`Self::apply_stored_current`] skips this so startup stays offline.
+    /// Refreshes remote filter lists after a versioned apply (GF2). Bootstrap
+    /// [`Self::seed_if_empty`], boot reconcile [`Self::apply_stored_current`],
+    /// and [`Self::apply_synced_config`] skip this so startup and cluster sync
+    /// stay offline-first.
     async fn refresh_filtering_lists(&self, _snapshot: &Value) -> Result<(), ControlApiError> {
         let Some(engine) = self.modules.filtering_engine.as_ref() else {
             return Ok(());

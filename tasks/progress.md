@@ -2,6 +2,12 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — boot/cluster: seed + sync skip GF2 catalog fetch
+
+- **Fix:** `seed_if_empty` and `apply_synced_config` store/apply offline (`refresh_lists: false`); admin `replace`/`mutate`/rollback still refresh (GF2).
+- **Why:** first-boot smoke saw `services.json` via `seed_if_empty` → `replace`; cluster `applied_version` stayed null until blocking refresh finished.
+- **Tests:** `seed_if_empty_does_not_fetch_remote_catalog`, `apply_synced_config_does_not_fetch_remote_catalog` (`apply_stored_offline.rs`).
+
 ## 2026-10-28 — boot: apply stored config offline (no catalog fetch)
 
 - **Fix:** `FilteringApplier` / `apply_stored_current` rebuild filtering from cache only; versioned writes (`replace`, rollback, `mutate_audited`, cluster sync) call `refresh_filter_lists_after_config` via `ModuleAppliers::filtering_engine` (GF2 unchanged).

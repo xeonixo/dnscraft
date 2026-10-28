@@ -60,7 +60,7 @@ pub struct ModuleAppliers {
     pub tls: Option<Arc<dyn ApplyTls>>,
     /// Filtering engine used to refresh remote lists after a versioned write (GF2).
     ///
-    /// Boot via [`crate::ConfigService::apply_stored_current`] applies filtering
-    /// offline only; this handle is not used there.
+    /// Bootstrap seed, boot reconcile, and cluster sync apply filtering offline
+    /// only; this handle is used for admin versioned writes (GF2).
     pub filtering_engine: Option<Arc<FilterEngine>>,
 }
