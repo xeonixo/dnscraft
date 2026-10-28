@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use serde_json::json;
 
+use super::alerts_routes::list_alerts;
 use super::audit_routes::list_audit;
 use super::auth::local::local_login;
 use super::auth::oidc::{oidc_authorize_url, oidc_callback};
@@ -70,7 +71,9 @@ pub(crate) fn build_router(state: AppState) -> Router {
         // Resolver admin: upstream health (viewer) and cache flush (admin).
         // Unwired resolvers answer `control_api.not_ready`, as TLS does.
         .route("/resolver/upstreams", get(list_upstreams))
-        .route("/resolver/cache/flush", post(flush_cache));
+        .route("/resolver/cache/flush", post(flush_cache))
+        // Active alerts (WP1): viewer and admin read.
+        .route("/alerts", get(list_alerts));
     if state.config_service().is_some() {
         api = api
             .route("/config", get(get_config).put(put_config))
