@@ -22,7 +22,7 @@
 
 ## Phase 1 — backend
 
-- [ ] **WP1** Implement `GET /api/v1/alerts` in `control-api` (viewer/admin) aggregating
+- [x] **WP1** Implement `GET /api/v1/alerts` in `control-api` (viewer/admin) aggregating
       TLS expiry, failed filter-list updates, cluster node offline and DynDNS failures,
       with `active_count` and `items[]` (`id`, `severity`, `module`, `params`, `target_route`).
       Tests: no alerts → empty list; cert within threshold → one item; viewer allowed.

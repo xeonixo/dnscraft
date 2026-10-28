@@ -2,6 +2,23 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — control-api spec-gap audit (GA1–GA29) + web-ui backends
+
+- **Done (code):** GA6a/b (`ClientDirectory` adapter, `POST /clients/sync` report), GA8 (per-principal
+  bucket), GA9 (401 on `/mcp/v1` charged to the auth bucket), GA10 (`X-Forwarded-Proto` only from trusted
+  proxies), GA11 (per-source login lockout), GA12 (`auth.oidc_groups_claim`), GA13 (audit: OIDC, logout,
+  token create/revoke), GA14 (`/status` version + readiness), GA17, GA18 (filter-set pause is runtime),
+  GA19 (manual TLS mode), GA20 (RFC 3339 timestamps), GA23, GA25, GA28 (`seed_if_empty`), GA29 (readiness
+  producers, API side).
+- **Done (spec):** GA7, GA21, GA24, GA26 decided in `SPEC-control-api.md`.
+- **Web-ui backends:** WX8 sessions (`/auth/sessions`, migration v9), WX5 `/stats/domains/{name}`, WP1
+  `/alerts`; WX3/WX4/WX6 backend sub-items ticked.
+- **Open:** GA5/GA6c/GA29 wiring (assembler must `with_clients`, `expect_module`/`set_ready`, `seed_if_empty`);
+  GA15 (runtime keys via `/config`), GA16 (stats rollups), GA22 (`config.apply`, `query_log.dropped` unused),
+  GA27 (fuzz target lives outside the crate). WX2 (SSE), WX7 (notifications, owner decisions a–e),
+  WP2 (update check), WP3 (backups), WP5 (services, needs WP4 catalog) not built.
+- Gates: `cargo test -p dnscraft-api` green, clippy `-D warnings` clean, fmt clean.
+
 ## 2026-10-28 — resolver + filtering spec-gap audit (GR1, GF9, GF10, WP4, WX3)
 
 - **GR1** closed: `ResolverConfig` already has serde and the assembler maps `[resolver]` (AS1–AS3).

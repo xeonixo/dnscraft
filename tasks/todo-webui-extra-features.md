@@ -46,7 +46,7 @@
 - [ ] **WX3** Upstream health, owner `resolver` (counters) and `control-api` (route).
   - [ ] Phase 0: sign off the aggregate recursion row (no per-root rows), passive-only
         sampling, 5 min window, 256-sample ring and default state thresholds.
-  - [ ] Phase 1: `dnscraft-resolver` sampling ring and `Resolver::upstreams()`. Tests:
+  - [x] Phase 1: `dnscraft-resolver` sampling ring and `Resolver::upstreams()`. Tests:
         `upstream_unknown_below_three_samples`, `upstream_down_when_success_below_half`,
         `upstream_samples_outside_window_ignored`, `upstream_last_error_is_stable_code`,
         `upstream_health_sends_no_probe_queries`.
@@ -54,7 +54,7 @@
         (SPEC-resolver.md § Upstream health lists them). The verdict is per zone/answer and
         the answering target is unknown there; needs the responder address threaded out of
         `exchange_forward`. Test when done: `upstream_bogus_counts_as_failure`.
-  - [ ] Phase 2: `GET /api/v1/resolver/upstreams` in `dnscraft-api`. Tests:
+  - [x] Phase 2: `GET /api/v1/resolver/upstreams` in `dnscraft-api`. Tests:
         `upstreams_viewer_200`, `upstreams_unauthenticated_401`,
         `upstreams_without_forward_zones_returns_recursion_only`.
   - [ ] Phase 3: "Upstreams" section on `/statistics` with state badge (icon, colour and
@@ -67,11 +67,11 @@
       `control-api` (route), role admin, audited.
   - [ ] Phase 0: sign off node-local scope, subtree semantics (existing resolver
         behaviour), empty body meaning "all", and no `Idempotency-Key`.
-  - [ ] Phase 1: `Resolver::flush` returns `FlushReport { evicted }`. Tests:
+  - [x] Phase 1: `Resolver::flush` returns `FlushReport { evicted }`. Tests:
         `flush_all_reports_evicted_count`, `flush_domain_removes_subtree_only`,
         `flush_removes_stale_entries`, `flush_during_inflight_does_not_repopulate`
         (epoch guard), `flush_twice_is_noop_with_zero`.
-  - [ ] Phase 2: route in `dnscraft-api`, audit entry with `scope`, `domain`, `evicted`.
+  - [x] Phase 2: route in `dnscraft-api`, audit entry with `scope`, `domain`, `evicted`.
         Tests: `flush_admin_200_audited`, `flush_viewer_403`,
         `flush_invalid_domain_400`, `flush_empty_body_flushes_all`.
   - [ ] Phase 3: confirmation sheet with segmented scope control and domain field; viewer
@@ -85,11 +85,11 @@
   - [ ] Phase 0: sign off the retention-bounded `first_seen` (or an approved per-domain
         first-seen index), the per-domain daily table for the top-domains set, and the
         10-client cap.
-  - [ ] Phase 1: aggregation over the raw query log and daily table. Tests:
+  - [x] Phase 1: aggregation over the raw query log and daily table. Tests:
         `domain_counts_7d_and_30d`, `domain_blocked_allowed_split`,
         `domain_top_clients_capped_at_10`, `domain_retention_limited_flag_set`,
         `domain_client_ip_truncated_per_setting`.
-  - [ ] Phase 2: route with name normalization. Tests: `domain_name_normalized_and_validated`,
+  - [x] Phase 2: route with name normalization. Tests: `domain_name_normalized_and_validated`,
         `domain_unseen_returns_404`, `domain_viewer_200`, `domain_days_only_7_or_30`.
   - [ ] Phase 3: `/statistics/domains/:name` screen, links from top-domains table and
         query-log domain cell. Vitest: `domain_detail_renders_client_names_as_text`.
@@ -100,10 +100,10 @@
 - [ ] **WX6** `POST /api/v1/config/validate`, owner `control-api`, role admin.
   - [ ] Phase 0: sign off no audit, no `config_version` bump, no network checks, write
         bucket for rate limiting, and HTTP 200 with errors as data.
-  - [ ] Phase 1: reuse the module and cross-module validation without `apply_config`.
+  - [x] Phase 1: reuse the module and cross-module validation without `apply_config`.
         Tests: `validate_does_not_bump_version`, `validate_never_calls_apply`,
         `validate_reports_errors_as_data_200`, `validate_diff_redacts_secrets`.
-  - [ ] Phase 2: route. Tests: `validate_viewer_403`, `validate_malformed_body_400`,
+  - [x] Phase 2: route. Tests: `validate_viewer_403`, `validate_malformed_body_400`,
         `validate_if_match_conflict_reported_as_error`.
   - [ ] Phase 3: "Prüfen" button in `/config` toolbar, diff sheet shows errors, warnings and
         change summary; "Speichern" gated on the last result. Vitest:
@@ -142,10 +142,10 @@
   - [ ] Phase 0: sign off admin default scope `all`, IP truncation at write time with
         `query_log_ip_truncate`, parsed browser label instead of raw user agent, and 404
         for foreign ids to viewers.
-  - [ ] Phase 1: session store changes: public `id` separate from the cookie value,
+  - [x] Phase 1: session store changes: public `id` separate from the cookie value,
         truncated IP and label stored at login. Tests: `sessions_ip_truncated_at_write`,
         `sessions_user_agent_not_stored_raw`, `session_id_differs_from_cookie_value`.
-  - [ ] Phase 2: routes. Tests: `sessions_viewer_sees_own_only`, `sessions_admin_sees_all`,
+  - [x] Phase 2: routes. Tests: `sessions_viewer_sees_own_only`, `sessions_admin_sees_all`,
         `sessions_viewer_scope_all_403`, `session_delete_current_409`,
         `session_viewer_foreign_id_404`, `session_admin_revokes_other_then_401`,
         `session_delete_requires_csrf_for_cookie`, `session_revoke_audited`.
