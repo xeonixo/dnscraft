@@ -464,7 +464,12 @@ pub(crate) async fn local_login(
     let role = local
         .authenticate_from(source, &req.username, req.password)
         .await?;
-    let created = sessions.create(actor_id, role).await?;
+    let truncate = state
+        .query_log()
+        .map(|log| log.config().ip_truncate)
+        .unwrap_or_default();
+    let meta = super::session_routes::session_meta(source, &headers, truncate);
+    let created = sessions.create_with_meta(actor_id, role, meta).await?;
 
     // `Secure` follows direct TLS or a terminating reverse proxy's
     // `X-Forwarded-Proto`, so the cookie is never sent over plaintext.

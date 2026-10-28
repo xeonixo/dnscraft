@@ -198,6 +198,10 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS query_log_status_idx ON query_log(status);
     CREATE UNIQUE INDEX IF NOT EXISTS query_log_node_seq_idx ON query_log(node_id, seq);
     CREATE UNIQUE INDEX IF NOT EXISTS query_log_node_id_idx ON query_log(node_id, id);",
+    // v9: session list metadata (WX8): a truncated IP and a parsed browser label.
+    // The raw user agent is never stored.
+    "ALTER TABLE sessions ADD COLUMN ip TEXT;
+     ALTER TABLE sessions ADD COLUMN client_label TEXT;",
 ];
 
 /// Applies every migration newer than the recorded version, then records it.
@@ -233,7 +237,7 @@ mod tests {
     fn audit_log_rejects_update_and_delete_after_v2() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 8);
+        assert_eq!(schema_version(&conn).unwrap(), 9);
 
         conn.execute(
             "INSERT INTO audit_log (

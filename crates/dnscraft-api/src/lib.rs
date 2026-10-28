@@ -36,7 +36,7 @@ mod tls;
 pub use api::auth::{
     ActorType, AuthSnapshot, AuthState, Authenticated, CreatedSession, CreatedToken,
     EndpointFamily, LocalAccountSnapshot, LocalAccountStore, OidcSettings, OidcState, Principal,
-    Requirement, Role, Scope, SessionStore, TokenPrincipal, TokenSnapshot, TokenStore,
+    Requirement, Role, Scope, SessionMeta, SessionStore, TokenPrincipal, TokenSnapshot, TokenStore,
     auth_middleware, authorize, rbac_middleware, requirement, secure_cookie, session_set_cookie,
 };
 pub use api::clients_routes::{ClientDirectory, DirectoryClient, SyncSummary};

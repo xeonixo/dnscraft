@@ -14,6 +14,7 @@ use serde_json::json;
 use super::audit_routes::list_audit;
 use super::auth::local::local_login;
 use super::auth::oidc::{oidc_authorize_url, oidc_callback};
+use super::auth::session_routes::{list_sessions, revoke_session};
 use super::auth::tokens::{create_token, delete_token, list_tokens};
 use super::auth::{auth_me, auth_middleware, logout, rbac_middleware};
 use super::clients_routes::{
@@ -189,6 +190,10 @@ pub(crate) fn build_router(state: AppState) -> Router {
         api = api.route("/auth/me", get(auth_me));
         // Logout revokes the cookie session; available whenever sessions exist.
         api = api.route("/auth/logout", post(logout));
+        // Session list and revoke (WX8); the handlers enforce ownership.
+        api = api
+            .route("/auth/sessions", get(list_sessions))
+            .route("/auth/sessions/{id}", delete(revoke_session));
         // Break-glass login is mounted only when local accounts are provisioned.
         if state.local_login_store().is_some() {
             api = api.route("/auth/local/login", post(local_login));

@@ -12,6 +12,7 @@ mod csrf;
 pub(crate) mod local;
 pub(crate) mod oidc;
 pub(crate) mod roles;
+pub(crate) mod session_routes;
 mod sessions;
 pub(crate) mod tokens;
 
@@ -22,7 +23,7 @@ pub use roles::{
     requirement,
 };
 pub use sessions::{
-    CreatedSession, Principal, Role, SessionStore, secure_cookie, session_set_cookie,
+    CreatedSession, Principal, Role, SessionMeta, SessionStore, secure_cookie, session_set_cookie,
 };
 pub use tokens::{CreatedToken, TokenPrincipal, TokenSnapshot, TokenStore};
 

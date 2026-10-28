@@ -41,8 +41,6 @@ fn store(state: &AppState) -> Result<&Arc<ClusterStore>, ControlApiError> {
         })
 }
 
-/// Unix seconds as an RFC 3339 UTC timestamp.
-
 /// `POST /api/v1/cluster/join-tokens` — mint a one-time token for `node_id`.
 ///
 /// The plaintext is returned once and never stored; the registry keeps only its

@@ -23,7 +23,9 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use axum::extract::{Query, State};
+use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use openidconnect::core::{
@@ -460,6 +462,7 @@ pub(crate) struct OidcCallbackQuery {
 /// and mints a cookie session for the mapped role.
 pub(crate) async fn oidc_callback(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Query(query): Query<OidcCallbackQuery>,
 ) -> Result<Response, ControlApiError> {
@@ -504,7 +507,15 @@ pub(crate) async fn oidc_callback(
         .ok_or_else(|| ControlApiError::Internal {
             message: "session authentication is not configured".to_owned(),
         })?;
-    let created = sessions.create(actor_id.clone(), role).await?;
+    let truncate = state
+        .query_log()
+        .map(|log| log.config().ip_truncate)
+        .unwrap_or_default();
+    let source = crate::api::rate_limit::client_source(&state, peer.ip().to_canonical(), &headers);
+    let meta = super::session_routes::session_meta(source, &headers, truncate);
+    let created = sessions
+        .create_with_meta(actor_id.clone(), role, meta)
+        .await?;
     crate::audit::record_auth_event(
         state.db(),
         &actor_id,

@@ -47,11 +47,11 @@ async fn migrations_are_idempotent() {
     let path = temp_db_path("idempotent");
     {
         let db = Db::open(&path, db_clock()).await.unwrap();
-        assert_eq!(db.schema_version().await.unwrap(), 8);
+        assert_eq!(db.schema_version().await.unwrap(), 9);
     }
     // Reopening the same file re-runs migrations; they must be a no-op.
     let db = Db::open(&path, db_clock()).await.unwrap();
-    assert_eq!(db.schema_version().await.unwrap(), 8);
+    assert_eq!(db.schema_version().await.unwrap(), 9);
     let _ = std::fs::remove_file(&path);
 }
 

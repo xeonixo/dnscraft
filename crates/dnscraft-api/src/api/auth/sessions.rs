@@ -110,11 +110,22 @@ impl SessionStore {
         self.epoch = epoch;
     }
 
-    /// Creates a session for `actor_id` with `role`.
+    /// Creates a session for `actor_id` with `role` and no list metadata.
     pub async fn create(
         &self,
         actor_id: String,
         role: Role,
+    ) -> Result<CreatedSession, ControlApiError> {
+        self.create_with_meta(actor_id, role, SessionMeta::default())
+            .await
+    }
+
+    /// Creates a session carrying the list metadata captured at login (WX8).
+    pub async fn create_with_meta(
+        &self,
+        actor_id: String,
+        role: Role,
+        meta: SessionMeta,
     ) -> Result<CreatedSession, ControlApiError> {
         let cookie = random_session_id()?;
         let id_hash = hash_session_id(cookie.expose());
@@ -126,9 +137,19 @@ impl SessionStore {
         self.db
             .with_conn(move |conn| {
                 conn.execute(
-                    "INSERT INTO sessions (id_hash, actor_id, role, created_at, last_active, expires_at, epoch)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![id_hash, actor_for_db, role_str, now, now, expires_at, epoch],
+                    "INSERT INTO sessions (id_hash, actor_id, role, created_at, last_active, expires_at, epoch, ip, client_label)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        id_hash,
+                        actor_for_db,
+                        role_str,
+                        now,
+                        now,
+                        expires_at,
+                        epoch,
+                        meta.ip,
+                        meta.client_label
+                    ],
                 )
                 .map_err(db_err)?;
                 Ok(())
@@ -233,6 +254,120 @@ fn random_session_id() -> Result<Secret, ControlApiError> {
             message: "failed to generate session id".to_owned(),
         })?;
     Ok(Secret::new(hex(&bytes)))
+}
+
+/// Metadata shown in the session list (WX8). Both fields are already
+/// minimised: the IP is truncated and the label is parsed, never raw.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionMeta {
+    /// Client IP after `query_log_ip_truncate`.
+    pub ip: Option<String>,
+    /// Browser and OS label, e.g. `Firefox on macOS`.
+    pub client_label: Option<String>,
+}
+
+/// One live session as listed by `GET /api/v1/auth/sessions`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionRow {
+    /// Public id: the SHA-256 of the cookie value (one-way, never the cookie).
+    pub id: String,
+    /// Owning actor.
+    pub actor_id: String,
+    /// Role the session was created with.
+    pub role: Role,
+    /// Stored list metadata.
+    pub meta: SessionMeta,
+    /// Unix seconds at login.
+    pub created_at: i64,
+    /// Unix seconds of the last validated request.
+    pub last_active: i64,
+    /// Unix seconds of the absolute expiry.
+    pub expires_at: i64,
+}
+
+impl SessionStore {
+    /// Live (unexpired) sessions, newest first. `actor` restricts the list to
+    /// one owner; `None` lists every actor.
+    pub async fn list(
+        &self,
+        actor: Option<&str>,
+        limit: u32,
+        offset: u64,
+    ) -> Result<Vec<SessionRow>, ControlApiError> {
+        let actor = actor.map(str::to_owned);
+        let now = self.db.now_unix();
+        let offset = i64::try_from(offset).unwrap_or(i64::MAX);
+        self.db
+            .with_conn(move |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id_hash, actor_id, role, ip, client_label, created_at, last_active, expires_at
+                         FROM sessions
+                         WHERE expires_at > ?1 AND (?2 IS NULL OR actor_id = ?2)
+                         ORDER BY created_at DESC, id_hash
+                         LIMIT ?3 OFFSET ?4",
+                    )
+                    .map_err(db_err)?;
+                let rows = stmt
+                    .query_map(params![now, actor, i64::from(limit), offset], session_row)
+                    .map_err(db_err)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+            })
+            .await
+    }
+
+    /// The live session with public id `id`, if any.
+    pub async fn find(&self, id: &str) -> Result<Option<SessionRow>, ControlApiError> {
+        let id = id.to_owned();
+        let now = self.db.now_unix();
+        self.db
+            .with_conn(move |conn| {
+                use rusqlite::OptionalExtension as _;
+                conn.query_row(
+                    "SELECT id_hash, actor_id, role, ip, client_label, created_at, last_active, expires_at
+                     FROM sessions WHERE id_hash = ?1 AND expires_at > ?2",
+                    params![id, now],
+                    session_row,
+                )
+                .optional()
+                .map_err(db_err)
+            })
+            .await
+    }
+
+    /// Deletes the session with public id `id`. Returns whether a row was removed.
+    pub async fn revoke(&self, id: &str) -> Result<bool, ControlApiError> {
+        let id = id.to_owned();
+        self.db
+            .with_conn(move |conn| {
+                conn.execute("DELETE FROM sessions WHERE id_hash = ?1", params![id])
+                    .map(|n| n > 0)
+                    .map_err(db_err)
+            })
+            .await
+    }
+}
+
+/// Maps one `sessions` row (column order as in [`SessionStore::list`]).
+fn session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
+    let role: String = row.get(2)?;
+    Ok(SessionRow {
+        id: row.get(0)?,
+        actor_id: row.get(1)?,
+        role: Role::parse(&role).unwrap_or(Role::Viewer),
+        meta: SessionMeta {
+            ip: row.get(3)?,
+            client_label: row.get(4)?,
+        },
+        created_at: row.get(5)?,
+        last_active: row.get(6)?,
+        expires_at: row.get(7)?,
+    })
+}
+
+/// The public session id for a cookie value (its SHA-256, as stored).
+pub(crate) fn session_id_for_cookie(cookie: &str) -> String {
+    hash_session_id(cookie)
 }
 
 /// SHA-256 of the plaintext session id, hex-encoded (the only persisted form).

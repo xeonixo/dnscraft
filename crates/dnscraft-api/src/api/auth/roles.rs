@@ -184,6 +184,11 @@ pub fn requirement(method: &Method, path: &str) -> Requirement {
     if path == "/api/v1/auth/logout" || path == "/api/v1/auth/me" {
         return Requirement::Api;
     }
+    // Session list/revoke: viewers reach their own sessions; the handlers
+    // enforce the admin-only `scope=all` and foreign-session rules (WX8).
+    if path == "/api/v1/auth/sessions" || path.starts_with("/api/v1/auth/sessions/") {
+        return Requirement::Api;
+    }
     // Dry-run reads: they do not mutate config, so viewer may use them even
     // though they are POSTs under the config-family `/policy` prefix.
     if path == "/api/v1/filtering/explain-block" || path == "/api/v1/policy/test-query" {
@@ -318,10 +323,10 @@ pub async fn rbac_middleware(
     }
     // Per-principal bucket (SPEC-control-api § General rules): the same
     // class the source bucket uses, charged to the authenticated actor.
-    if let Err(response) =
+    if let Err(seconds) =
         crate::api::rate_limit::check_principal(&state, &actor_id, req.method(), req.uri().path())
     {
-        return response;
+        return crate::api::rate_limit::rate_limited_response(seconds);
     }
     req.extensions_mut().insert(Authenticated {
         actor_id,

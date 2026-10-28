@@ -24,6 +24,8 @@
 //! | [`ControlApiError::AuthLocked`] | `control_api.auth.locked` |
 //! | [`ControlApiError::TlsSelfSigned`] | `control_api.tls.self_signed` |
 //! | [`ControlApiError::AuthUnknownToken`] | `control_api.auth.unknown_token` |
+//! | [`ControlApiError::AuthUnknownSession`] | `control_api.auth.unknown_session` |
+//! | [`ControlApiError::AuthSessionCurrent`] | `control_api.auth.session_current` |
 //! | [`ControlApiError::AuthUnauthenticated`] | `control_api.auth.unauthenticated` |
 //! | [`ControlApiError::AuthInvalidScope`] | `control_api.auth.invalid_scope` |
 //! | [`ControlApiError::AuthInvalidOrigin`] | `control_api.auth.invalid_origin` |
@@ -130,6 +132,12 @@ pub enum ControlApiError {
     /// Token id not found or not owned by the actor.
     #[error("unknown or revoked API token")]
     AuthUnknownToken,
+    /// Session id not found, expired, or not visible to the caller (WX8).
+    #[error("unknown or expired session")]
+    AuthUnknownSession,
+    /// The caller tried to revoke its own current session; use logout (WX8).
+    #[error("the current session is revoked with logout")]
+    AuthSessionCurrent,
     /// Missing, malformed, unknown, revoked or expired bearer token.
     #[error("missing or invalid bearer token")]
     AuthUnauthenticated,
@@ -228,6 +236,8 @@ impl ControlApiError {
             Self::AuthLocked => "control_api.auth.locked",
             Self::TlsSelfSigned => "control_api.tls.self_signed",
             Self::AuthUnknownToken => "control_api.auth.unknown_token",
+            Self::AuthUnknownSession => "control_api.auth.unknown_session",
+            Self::AuthSessionCurrent => "control_api.auth.session_current",
             Self::AuthUnauthenticated => "control_api.auth.unauthenticated",
             Self::AuthInvalidScope => "control_api.auth.invalid_scope",
             Self::AuthInvalidOrigin => "control_api.auth.invalid_origin",
@@ -325,6 +335,8 @@ mod tests {
             ControlApiError::AuthLocked,
             ControlApiError::TlsSelfSigned,
             ControlApiError::AuthUnknownToken,
+            ControlApiError::AuthUnknownSession,
+            ControlApiError::AuthSessionCurrent,
             ControlApiError::AuthUnauthenticated,
             ControlApiError::AuthInvalidScope,
             ControlApiError::AuthInvalidOrigin,

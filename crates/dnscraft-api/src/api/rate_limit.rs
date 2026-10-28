@@ -319,15 +319,14 @@ pub(crate) fn check_principal(
     actor_id: &str,
     method: &Method,
     path: &str,
-) -> Result<(), Response> {
+) -> Result<(), u64> {
     state
         .rate_limiter()
         .check(&format!("principal:{actor_id}"), classify(method, path))
-        .map_err(rate_limited_response)
 }
 
 /// The `429` envelope with `Retry-After` in seconds.
-fn rate_limited_response(seconds: u64) -> Response {
+pub(crate) fn rate_limited_response(seconds: u64) -> Response {
     let mut res = ControlApiError::RateLimited.into_response();
     if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
         res.headers_mut()
