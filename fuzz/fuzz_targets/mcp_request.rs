@@ -71,14 +71,11 @@ fuzz_target!(|data: &[u8]| {
     let allowed_origins = [String::from("https://ui.example.com")];
     let supported_versions = [String::from("2026-07-28")];
 
-    // Both stateless and legacy modes matter for a missing version header.
-    for allow_missing_version in [false, true] {
-        let limits = RequestLimits {
-            max_body_bytes: MAX_BODY_BYTES,
-            allowed_origins: &allowed_origins,
-            supported_versions: &supported_versions,
-            allow_missing_version,
-        };
-        let _ = validate_mcp_request(method, &headers, body.len(), &limits);
-    }
+    // The version header is always required (no legacy bypass), so one pass suffices.
+    let limits = RequestLimits {
+        max_body_bytes: MAX_BODY_BYTES,
+        allowed_origins: &allowed_origins,
+        supported_versions: &supported_versions,
+    };
+    let _ = validate_mcp_request(method, &headers, body.len(), &limits);
 });

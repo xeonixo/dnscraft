@@ -341,11 +341,7 @@ async fn not_found(req: Request) -> Response {
     let path = req.uri().path();
     // Nested `/api/v1` and `/mcp/v1` misses bubble to this fallback; keep those JSON.
     // Exact `/api` and `/mcp` too — avoid serving SPA HTML for truncated/misspelled API paths.
-    if path == "/api"
-        || path == "/mcp"
-        || path.starts_with("/api/")
-        || path.starts_with("/mcp/")
-    {
+    if path == "/api" || path == "/mcp" || path.starts_with("/api/") || path.starts_with("/mcp/") {
         return ControlApiError::NotFound {
             what: path.to_owned(),
         }

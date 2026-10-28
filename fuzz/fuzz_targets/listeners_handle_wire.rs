@@ -137,6 +137,7 @@ fn meta_from(data: &[u8]) -> QueryMeta {
         } else {
             None
         },
+        node_id: None,
         size_limit: 512 + usize::from(b(20)) * 64,
         pad: b(21) & 1 == 0,
         udp_payload_max: 512 + u16::from(b(22)) * 2,

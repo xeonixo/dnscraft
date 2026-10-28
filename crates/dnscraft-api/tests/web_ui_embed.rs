@@ -49,10 +49,7 @@ fn assert_html_security_headers(res: &Response) {
         csp.contains("form-action 'self'"),
         "CSP missing form-action 'self': {csp:?}"
     );
-    assert_eq!(
-        header_str(res, header::X_CONTENT_TYPE_OPTIONS),
-        "nosniff"
-    );
+    assert_eq!(header_str(res, header::X_CONTENT_TYPE_OPTIONS), "nosniff");
     assert_eq!(header_str(res, header::REFERRER_POLICY), "no-referrer");
 }
 
