@@ -1,0 +1,152 @@
+/*
+ * Design tokens (SPEC-web-ui.md, "Visual design language"; values from
+ * docs/design/web-ui-prototype.html, which is authoritative where they differ).
+ * Components reference these custom properties only; no literal colors outside
+ * this file. Modes: light (default), dark (prefers-color-scheme or data-theme),
+ * and prefers-contrast: more.
+ */
+
+:root {
+	color-scheme: light;
+
+	/* Surfaces and labels */
+	--canvas: #f2f2f7;
+	--surface: #ffffff;
+	--surface-2: #f7f7fa;
+	--label: #000000;
+	--label-2: #6e6e73;
+	--label-3: #6c6c70;
+	--separator: rgba(60, 60, 67, 0.14);
+	--track-off: #8e8e93;
+	--scrim: rgba(0, 0, 0, 0.32);
+
+	/* Accent and status */
+	--accent: #0060df;
+	--accent-solid: #0060df;
+	--accent-fill: rgba(0, 96, 223, 0.12);
+	--on-accent: #ffffff;
+	--ok: #18803a;
+	--danger: #e0362f;
+	--danger-fill: #d0302a;
+	--warn: #b55a00;
+	--warn-fill: rgba(255, 149, 0, 0.12);
+
+	/* Translucent navigation materials (reduced to opaque under prefers-reduced-transparency) */
+	--material-bg: color-mix(in srgb, var(--canvas) 82%, transparent);
+	--material-blur: saturate(180%) blur(20px);
+
+	/* Typography */
+	--font-ui:
+		-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+		sans-serif;
+	--font-mono:
+		ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+
+	/* Shape and depth (rem so browser zoom and text scaling carry through) */
+	--r-card: 0.75rem;
+	--r-ctl: 0.5rem;
+	--shadow: 0 1px 1px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.03);
+
+	/* 8-pt grid with 4-pt baseline */
+	--space-1: 0.25rem;
+	--space-2: 0.5rem;
+	--space-3: 0.75rem;
+	--space-4: 1rem;
+	--space-5: 1.25rem;
+	--space-6: 1.5rem;
+	--space-7: 2rem;
+
+	/* Motion */
+	--duration-fast: 150ms;
+	--duration-normal: 200ms;
+	--duration-slow: 300ms;
+	--ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme='light']) {
+		color-scheme: dark;
+		--canvas: #000000;
+		--surface: #1c1c1e;
+		--surface-2: #2c2c2e;
+		--label: #ffffff;
+		--label-2: rgba(235, 235, 245, 0.6);
+		--label-3: #8e8e93;
+		--separator: rgba(84, 84, 88, 0.6);
+		--track-off: #6c6c70;
+		--scrim: rgba(0, 0, 0, 0.5);
+		--accent: #0a84ff;
+		--accent-solid: #0a66d6;
+		--accent-fill: rgba(10, 132, 255, 0.2);
+		--ok: #30d158;
+		--danger: #ff453a;
+		--danger-fill: #d70015;
+		--warn: #ff9f0a;
+		--warn-fill: rgba(255, 159, 10, 0.16);
+		--shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
+	}
+}
+
+:root[data-theme='dark'] {
+	color-scheme: dark;
+	--canvas: #000000;
+	--surface: #1c1c1e;
+	--surface-2: #2c2c2e;
+	--label: #ffffff;
+	--label-2: rgba(235, 235, 245, 0.6);
+	--label-3: #8e8e93;
+	--separator: rgba(84, 84, 88, 0.6);
+	--track-off: #6c6c70;
+	--scrim: rgba(0, 0, 0, 0.5);
+	--accent: #0a84ff;
+	--accent-solid: #0a66d6;
+	--accent-fill: rgba(10, 132, 255, 0.2);
+	--ok: #30d158;
+	--danger: #ff453a;
+	--danger-fill: #d70015;
+	--warn: #ff9f0a;
+	--warn-fill: rgba(255, 159, 10, 0.16);
+	--shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
+}
+
+/* Increased contrast: opaque labels, stronger separators. A separate token set, not a
+   component-level opacity tweak. */
+@media (prefers-contrast: more) {
+	:root {
+		--label-2: #4a4a4f;
+		--label-3: #5a5a5e;
+		--separator: rgba(60, 60, 67, 0.6);
+	}
+
+	@media (prefers-color-scheme: dark) {
+		:root:not([data-theme='light']) {
+			--label-2: #c7c7cc;
+			--label-3: #a8a8ad;
+			--separator: rgba(235, 235, 245, 0.4);
+		}
+	}
+
+	:root[data-theme='dark'] {
+		--label-2: #c7c7cc;
+		--label-3: #a8a8ad;
+		--separator: rgba(235, 235, 245, 0.4);
+	}
+}
+
+/* Reduced transparency: opaque materials, no backdrop blur. */
+@media (prefers-reduced-transparency: reduce) {
+	:root {
+		--material-bg: var(--canvas);
+		--material-blur: none;
+		--scrim: rgba(0, 0, 0, 0.5);
+	}
+}
+
+/* Reduced motion: no visible transition time; state changes are instant swaps. */
+@media (prefers-reduced-motion: reduce) {
+	:root {
+		--duration-fast: 0ms;
+		--duration-normal: 0ms;
+		--duration-slow: 0ms;
+	}
+}
