@@ -102,7 +102,7 @@ approval before Phase 0 code.
       network name/prefixes → stale log/UI + stale cache survive restart. *(engine.rs:860-903, 664-683)*
 - [x] **GC6** 🟠 [code] Manual client ids are `manual-{index}`, not a stable manual uuid → reorder
       shifts ids/labels/FQDNs. *(merge.rs:187-206, state.rs:14-16)*
-- [ ] **GC7** 🟠 [code] `[clients]`/`[clients.unifi]` keys (`enabled`, `base_url`, `site_id`,
+- [x] **GC7** 🟠 [code] `[clients]`/`[clients.unifi]` keys (`enabled`, `base_url`, `site_id`,
       TLS mode, `local_domain_mode`, `offline_retain`, `ipv6_address_ttl`, `classic_clients`,
       `tls_pin_sha256`) are not mapped anywhere in the product. *(api config_routes.rs:60)*
 - [x] **GC8** 🟡 [code] `local_domains()` always inserts the config fallback domain even when
@@ -133,7 +133,7 @@ approval before Phase 0 code.
 - [x] **GT10** 🟡 [code] DynDNS echo transport failure treated as "no route"/success. *(dyndns.rs:90-96, 300-350)*
 - [x] **GT11** 🟡 [code] Audit entries for successful writes dropped if a later write in the same
       pass fails. *(dyndns.rs:355-362, engine.rs:702-708)*
-- [ ] **GT12** 🟡 [code] No metrics (days-to-expiry gauge, renew counters) anywhere. *(not found)*
+- [x] **GT12** 🟡 [code] No metrics (days-to-expiry gauge, renew counters) anywhere. *(not found)*
 
 ## Policy (`SPEC-policy.md` ↔ `crates/dnscraft-policy`)
 

@@ -45,4 +45,4 @@
 - [ ] **GT1** manual DNS-01 (`manual`) can never complete (🟠)
 - [ ] **GT2** `next_attempt_at` never populated; stale `order_status` on early errors (🟠)
 - [ ] **GT3** `apply_config` re-uploads `config.manual`, reverting API uploads + clearing `revoked` (🟠)
-- [ ] **GT4–GT12** `deactivated`, key rollover surface, `tls.dns.provider.zone`, stale rate-limit status, preflight when ACME off, ACME revoke when off, DynDNS echo handling, audit drop on partial write, metrics (🟡)
+- [x] **GT4–GT12** `deactivated`, key rollover surface, `tls.dns.provider.zone`, stale rate-limit status, preflight when ACME off, ACME revoke when off, DynDNS echo handling, audit drop on partial write, metrics (🟡)

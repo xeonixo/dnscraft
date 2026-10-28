@@ -2,6 +2,21 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — clients GC7 + tls GT12 (spec-gap audit)
+
+- **GC7 — `[clients.unifi]` keys.** `UnifiConfig` now (de)serialises as the flat SPEC-clients.md keys
+  `tls_pin_sha256` / `ca_file` / `insecure_skip_verify` (at most one; none = system CA bundle) via a
+  private `UnifiWire` with `deny_unknown_fields`. The Rust struct and `TlsMode` are unchanged.
+  `LocalDomainMode` is `snake_case` (`unifi_then_config`), keeping `UnifiThenConfig` as a serde alias.
+  Tests: `unifi_uses_flat_spec_keys_and_round_trips_every_tls_mode`,
+  `unifi_tls_keys_are_flat_and_mutually_exclusive`, `local_domain_mode_uses_snake_case_with_legacy_alias`.
+  Cross-crate note: the old `tls = "Secure"` key is rejected now (`crates/dnscraft/src/config.rs` test sample).
+- **GT12 — metrics.** `TlsEngine::metrics() -> TlsMetrics` (days-to-expiry + renew success/failure
+  totals, counted per ACME attempt). No exporter: the workspace has no metrics crate and no new
+  dependencies are allowed; Prometheus stays in SPEC.md "Later". Test: extended `engine.rs` renew tests.
+- GC1 is not in this crate: the `ClientDirectory` adapter already exists in `crates/dnscraft/src/engine.rs`
+  (`EngineClients`). Gates: fmt, clippy `-D warnings`, `cargo test -p dnscraft-clients -p dnscraft-tls` green.
+
 ## 2026-10-27 — cluster: LOW/Info hardening from the security review
 
 - **A — relay exactly-once.** `ConfigWriteExecutor` now caches the relay response under
