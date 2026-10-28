@@ -131,13 +131,16 @@ outgoing_ipv6 = true
 negative_trust_anchors = []
 
 [[resolver.forward_zones]]
+id = "site-b"
 zone = "site-b.internal"
-targets = ["192.0.2.1", "192.0.2.2"]
+targets = ["192.0.2.1:53", "192.0.2.2:53"]
 validate = false
 
 [[resolver.forward_zones]]
+id = "reverse-192-0-2"
 zone = "2.0.192.in-addr.arpa"
-targets = ["192.0.2.1"]
+targets = ["192.0.2.1:53"]
+validate = false
 ```
 
 ## Out of scope for this module
@@ -167,7 +170,8 @@ which profile may use which forward zone (decided in `policy`), any user-facing 
 7. A forward zone is resolved via its targets only (no root traffic), fails over when the first target is down, and a forwarding loop ends in `SERVFAIL` instead of hanging; a private-range PTR without forward zone is answered locally and never sent upstream.
 8. (WX3) Upstream health: a target whose exchanges all time out is reported `down` with `last_error` set; a target with fewer than 3 samples is `unknown`; samples older than 5 minutes are not counted; no probe query is sent to any upstream by the health code.
 9. (WX4) A domain flush removes the name and its subtree, returns the evicted count, and an answer that was in flight during the flush is not cached afterwards.
-8. Line coverage ≥ 80 %.
+10. (WX3) A forwarded answer that fails DNSSEC validation is counted as one failed exchange of its target (the DNSKEY exchange stays a separate sample), with the `dnssec.*` code as `last_error`.
+11. Line coverage ≥ 80 %.
 
 ## Decisions
 
