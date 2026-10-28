@@ -180,7 +180,7 @@ approval before Phase 0 code.
 - [x] **GA4** 🔴 [code] `GET /api/v1/audit` missing (`Db::audit_list` + `AuditRead` exist but unwired). *(storage/audit.rs:118-125; error.rs:154-159)*
 - [ ] **GA5** 🔴 [owner] `Apply*` traits have no production impl → `PUT /config` persists but applies nothing. *(modules.rs:49-60)* — belongs to G0.
 - [ ] **GA6** 🟠 [code] `GET /api/v1/clients` hardcodes `[]`; `POST /clients/sync` always `not_configured`. *(clients_routes.rs:129-138, 230-242)* — API side done: `ClientDirectory` trait + `AppState::with_clients`; **open for the assembler (GA6c, `crates/dnscraft`): implement the trait over `ClientEngine` and call `with_clients`.**
-- [ ] **GA7** 🟠 [code] Idempotency-Key not read or stored anywhere. *(grep Idempotency → 0)*
+- [x] **GA7** 🟠 [code] Idempotency-Key not read or stored anywhere. *(grep Idempotency → 0)*
 - [x] **GA8** 🟠 [code] Rate limit keyed only by source IP, not per principal. *(rate_limit.rs:1-9, 242-293)*
 - [x] **GA9** 🟠 [code] `/mcp/v1` requests don't count against the auth bucket. *(rate_limit.rs:256-264)*
 - [x] **GA10** 🟠 [code] `X-Forwarded-Proto` honoured unconditionally (spoofable); only `X-Forwarded-For` checks `trusted_proxies`. *(local.rs:346-351, oidc.rs:495-513)*

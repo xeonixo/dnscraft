@@ -219,9 +219,12 @@ or secret token material. The `CertResolver` is passed to listeners as
 - Timestamps are UTC RFC 3339 (`2026-10-26T08:15:30Z`).
 - Pagination uses `limit` (default 50, max 500) and `offset` (default 0), plus
   a stable `next_offset`/`has_more` response or a `Link` header.
-- Mutating endpoints that cannot be safely repeated require `Idempotency-Key`
-  headers for cluster relay. The server stores successful responses for at
-  least 24 hours.
+- Cluster relay deduplicates writes on the always-present `request_id` (the
+  offline-queue key); an `Idempotency-Key` supplied by the relay is honoured as
+  well. Relayed successful responses are kept for at least 24 hours. Direct HTTP
+  calls are not deduplicated: the mutating endpoints are repeat-safe by design
+  (`PUT`/`DELETE` are idempotent, creates use unique ids or `If-Match`), so the
+  API does not read an `Idempotency-Key` header (GA7 decision, 2026-10-28).
 - Rate limits: internal API per source IP and per authenticated principal:
   - read endpoints: `100/s` burst `200`
   - write endpoints: `20/s` burst `40`
