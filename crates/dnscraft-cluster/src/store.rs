@@ -53,6 +53,11 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX IF NOT EXISTS offline_writes_state_idx
         ON offline_writes(state, enqueued_at);",
+    // v3: read fields for `GET /api/v1/cluster/writes/{request_id}`. `expires_at`
+    // is the deadline returned in the 202; `result_status` is the HTTP status of
+    // the master's replay answer. Both are NULL for rows queued before v3.
+    "ALTER TABLE offline_writes ADD COLUMN expires_at INTEGER;
+     ALTER TABLE offline_writes ADD COLUMN result_status INTEGER;",
 ];
 
 /// One registered cluster node.

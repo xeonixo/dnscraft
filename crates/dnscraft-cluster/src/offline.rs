@@ -146,6 +146,12 @@ pub struct OfflineWriteEntry {
     pub state: OfflineWriteState,
     /// Number of transport attempts made so far.
     pub attempts: u32,
+    /// Unix seconds after which the write is dropped (the 202 deadline).
+    /// `None` for rows queued before schema v3.
+    pub expires_at: Option<i64>,
+    /// HTTP status of the master's replay answer for a terminal state
+    /// (`applied`, `failed`, `conflict`). `None` while pending or expired.
+    pub result_status: Option<u16>,
 }
 
 /// Counters for every state in the queue (status surface).
@@ -263,8 +269,8 @@ impl OfflineWriteQueue {
                 tx.execute(
                     "INSERT INTO offline_writes
                         (request_id, idempotency_key, if_match, method, path,
-                         body, actor, enqueued_at, state, attempts)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)",
+                         body, actor, enqueued_at, state, attempts, expires_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10)",
                     params![
                         request_id,
                         idempotency_key,
@@ -275,6 +281,7 @@ impl OfflineWriteQueue {
                         actor,
                         queued_at,
                         OfflineWriteState::Pending.as_str(),
+                        expires_at,
                     ],
                 )
                 .map_err(db_err)?;
@@ -315,30 +322,42 @@ impl OfflineWriteQueue {
             if let Some(validator) = &self.validator
                 && !validator.is_valid(&row.relay.actor).await?
             {
-                self.set_state(&row.relay.request_id, OfflineWriteState::Expired)
+                self.set_state(&row.relay.request_id, OfflineWriteState::Expired, None)
                     .await?;
                 outcome.expired += 1;
                 continue;
             }
             match self.send_with_retry(executor, &row).await? {
-                SendOutcome::Applied => {
-                    self.set_state(&row.relay.request_id, OfflineWriteState::Applied)
-                        .await?;
+                SendOutcome::Applied(status) => {
+                    self.set_state(
+                        &row.relay.request_id,
+                        OfflineWriteState::Applied,
+                        Some(status),
+                    )
+                    .await?;
                     outcome.applied += 1;
                 }
-                SendOutcome::Failed => {
-                    self.set_state(&row.relay.request_id, OfflineWriteState::Failed)
-                        .await?;
+                SendOutcome::Failed(status) => {
+                    self.set_state(
+                        &row.relay.request_id,
+                        OfflineWriteState::Failed,
+                        Some(status),
+                    )
+                    .await?;
                     outcome.failed += 1;
                 }
                 SendOutcome::Expired => {
-                    self.set_state(&row.relay.request_id, OfflineWriteState::Expired)
+                    self.set_state(&row.relay.request_id, OfflineWriteState::Expired, None)
                         .await?;
                     outcome.expired += 1;
                 }
-                SendOutcome::Conflict => {
-                    self.set_state(&row.relay.request_id, OfflineWriteState::Conflict)
-                        .await?;
+                SendOutcome::Conflict(status) => {
+                    self.set_state(
+                        &row.relay.request_id,
+                        OfflineWriteState::Conflict,
+                        Some(status),
+                    )
+                    .await?;
                     outcome.conflict = Some(row.relay.request_id.clone());
                     outcome.blocked = self.block_pending().await?;
                     break;
@@ -386,7 +405,7 @@ impl OfflineWriteQueue {
             .with_conn(move |conn| {
                 conn.query_row(
                     "SELECT request_id, idempotency_key, if_match, method, path,
-                            enqueued_at, state, attempts
+                            enqueued_at, state, attempts, expires_at, result_status
                      FROM offline_writes WHERE request_id = ?1",
                     params![request_id],
                     |row| {
@@ -399,6 +418,8 @@ impl OfflineWriteQueue {
                             row.get::<_, i64>(5)?,
                             row.get::<_, String>(6)?,
                             row.get::<_, i64>(7)?,
+                            row.get::<_, Option<i64>>(8)?,
+                            row.get::<_, Option<i64>>(9)?,
                         ))
                     },
                 )
@@ -416,6 +437,8 @@ impl OfflineWriteQueue {
             enqueued_at,
             state,
             attempts,
+            expires_at,
+            result_status,
         )) = row
         else {
             return Ok(None);
@@ -429,6 +452,8 @@ impl OfflineWriteQueue {
             enqueued_at,
             state: OfflineWriteState::from_db(&state)?,
             attempts: u32::try_from(attempts).unwrap_or(u32::MAX),
+            expires_at,
+            result_status: result_status.and_then(|status| u16::try_from(status).ok()),
         }))
     }
 
@@ -466,13 +491,13 @@ impl OfflineWriteQueue {
 
             match response {
                 Ok(response) if (200..300).contains(&response.status) => {
-                    return Ok(SendOutcome::Applied);
+                    return Ok(SendOutcome::Applied(response.status));
                 }
                 Ok(response) if response.status == 409 && is_version_conflict(&response.body) => {
-                    return Ok(SendOutcome::Conflict);
+                    return Ok(SendOutcome::Conflict(response.status));
                 }
                 Ok(response) if (400..500).contains(&response.status) => {
-                    return Ok(SendOutcome::Failed);
+                    return Ok(SendOutcome::Failed(response.status));
                 }
                 // 5xx or transport failure: retry with backoff until `max_age`.
                 Ok(_) | Err(_) => {
@@ -539,13 +564,16 @@ impl OfflineWriteQueue {
         &self,
         request_id: &str,
         state: OfflineWriteState,
+        result_status: Option<u16>,
     ) -> Result<(), ClusterError> {
         let request_id = request_id.to_owned();
+        let result_status = result_status.map(i64::from);
         self.store
             .with_conn(move |conn| {
                 conn.execute(
-                    "UPDATE offline_writes SET state = ?1 WHERE request_id = ?2",
-                    params![state.as_str(), request_id],
+                    "UPDATE offline_writes SET state = ?1, result_status = ?2
+                     WHERE request_id = ?3",
+                    params![state.as_str(), result_status, request_id],
                 )
                 .map_err(db_err)?;
                 Ok(())
@@ -581,12 +609,12 @@ struct StoredWrite {
     enqueued_at: i64,
 }
 
-/// Terminal classification of one transport attempt.
+/// Terminal classification of one write; the status is the master's answer.
 enum SendOutcome {
-    Applied,
-    Failed,
+    Applied(u16),
+    Failed(u16),
     Expired,
-    Conflict,
+    Conflict(u16),
 }
 
 fn stored_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredWrite> {
@@ -1013,6 +1041,33 @@ mod tests {
         assert_eq!(outcome.applied, 1);
         assert_eq!(executor.calls.load(Ordering::SeqCst), 2);
         assert_eq!(queue.get("a").await.unwrap().unwrap().attempts, 2);
+    }
+
+    #[tokio::test]
+    async fn read_fields_report_deadline_and_replay_status() {
+        let (queue, _clock) = queue(10).await;
+        for id in ["a", "b", "c"] {
+            queue.enqueue(relay(id)).await.unwrap();
+        }
+        let pending = queue.get("a").await.unwrap().unwrap();
+        assert_eq!(pending.expires_at, Some(NOW + MAX_AGE.as_secs() as i64));
+        assert_eq!(pending.result_status, None);
+
+        let executor = MockExecutor::with_replies(&[200, 409]);
+        queue.replay_all(&executor).await.unwrap();
+
+        let applied = queue.get("a").await.unwrap().unwrap();
+        assert_eq!(applied.state, OfflineWriteState::Applied);
+        assert_eq!(applied.result_status, Some(200));
+        assert_eq!(applied.expires_at, pending.expires_at);
+
+        let conflict = queue.get("b").await.unwrap().unwrap();
+        assert_eq!(conflict.state, OfflineWriteState::Conflict);
+        assert_eq!(conflict.result_status, Some(409));
+
+        let blocked = queue.get("c").await.unwrap().unwrap();
+        assert_eq!(blocked.state, OfflineWriteState::Blocked);
+        assert_eq!(blocked.result_status, None);
     }
 
     #[tokio::test]
