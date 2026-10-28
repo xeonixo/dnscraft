@@ -5,15 +5,21 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
+		"predev": "node scripts/gen-inlang.mjs",
 		"build": "vite build",
+		"prebuild": "node scripts/gen-inlang.mjs",
 		"preview": "vite preview",
-		"prepare": "svelte-kit sync",
-		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
-		"lint": "eslint . && prettier --check .",
+		"prepare": "svelte-kit sync && node scripts/gen-inlang.mjs",
+		"i18n": "node scripts/gen-inlang.mjs && paraglide-js compile --project ./.generated/project.inlang --outdir ./src/lib/paraglide --disable-async-local-storage",
+		"check": "pnpm run i18n && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
+		"lint": "pnpm run i18n && eslint . && prettier --check .",
 		"format": "prettier --write .",
-		"test": "vitest run"
+		"test": "vitest run",
+		"pretest": "node scripts/gen-inlang.mjs"
 	},
 	"devDependencies": {
+		"@inlang/paraglide-js": "2.26.0",
+		"@inlang/plugin-message-format": "4.4.0",
 		"@sveltejs/adapter-static": "3.0.10",
 		"@sveltejs/kit": "2.70.3",
 		"@sveltejs/vite-plugin-svelte": "6.2.4",

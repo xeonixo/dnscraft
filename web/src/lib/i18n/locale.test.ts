@@ -1,0 +1,87 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const paraglide = vi.hoisted(() => ({
+	setLocale: vi.fn(),
+	getLocale: vi.fn(() => 'en'),
+}));
+
+vi.mock('$lib/paraglide/runtime', () => ({
+	setLocale: paraglide.setLocale,
+	getLocale: paraglide.getLocale,
+	locales: ['en', 'de'],
+}));
+
+import { LOCALE_STORAGE_KEY, errorMessageKey, setLocale } from './locale';
+
+const AUTH_CODES = [
+	'control_api.auth.oidc',
+	'control_api.auth.local',
+	'control_api.auth.locked',
+	'control_api.auth.session_expired',
+	'control_api.auth.unauthenticated',
+	'control_api.auth.csrf',
+	'control_api.auth.insufficient_scope',
+	'control_api.auth.unknown_token',
+];
+
+describe('errorMessageKey', () => {
+	it.each(AUTH_CODES)('maps %s to its own message', (code) => {
+		const key = errorMessageKey(code);
+		expect(key).toBe('error_' + code.replace(/\./g, '_'));
+		expect(key).not.toBe('error_unknown');
+	});
+
+	it('encodes non-alphanumerics as underscores', () => {
+		expect(errorMessageKey('control_api.auth.locked')).toBe('error_control_api_auth_locked');
+	});
+
+	it('falls back to error_unknown for codes without a message', () => {
+		expect(errorMessageKey('control_api.internal')).toBe('error_unknown');
+		expect(errorMessageKey('control_api.rate_limited')).toBe('error_unknown');
+		expect(errorMessageKey('filter_list.fetch_failed')).toBe('error_unknown');
+	});
+
+	it('never invents a key for prototype-like input', () => {
+		expect(errorMessageKey('constructor')).toBe('error_unknown');
+		expect(errorMessageKey('')).toBe('error_unknown');
+	});
+});
+
+describe('setLocale', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		paraglide.setLocale.mockClear();
+	});
+
+	it('persists the choice under dnscraft_locale and switches the locale', () => {
+		const store = new Map<string, string>();
+		vi.stubGlobal('localStorage', {
+			setItem: (k: string, v: string) => store.set(k, v),
+			getItem: (k: string) => store.get(k) ?? null,
+		});
+
+		setLocale('de');
+
+		expect(LOCALE_STORAGE_KEY).toBe('dnscraft_locale');
+		expect(store.get('dnscraft_locale')).toBe('de');
+		expect(paraglide.setLocale).toHaveBeenCalledWith('de');
+	});
+
+	it('still switches the locale when storage throws', () => {
+		vi.stubGlobal('localStorage', {
+			setItem: () => {
+				throw new DOMException('blocked', 'SecurityError');
+			},
+		});
+
+		expect(() => setLocale('de')).not.toThrow();
+		expect(paraglide.setLocale).toHaveBeenCalledWith('de');
+	});
+
+	it('still switches the locale when localStorage is absent', () => {
+		vi.stubGlobal('localStorage', undefined);
+
+		expect(() => setLocale('en')).not.toThrow();
+		expect(paraglide.setLocale).toHaveBeenCalledWith('en');
+	});
+});

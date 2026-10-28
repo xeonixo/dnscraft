@@ -2,7 +2,7 @@ import eslintPluginSvelte from 'eslint-plugin-svelte';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-	{ ignores: ['build/', '.svelte-kit/', 'node_modules/'] },
+	{ ignores: ['build/', '.svelte-kit/', 'node_modules/', 'src/lib/paraglide/', '.generated/'] },
 	...tseslint.configs.recommended,
 	...eslintPluginSvelte.configs.recommended,
 	...eslintPluginSvelte.configs.prettier,

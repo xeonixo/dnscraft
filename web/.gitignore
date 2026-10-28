@@ -1,3 +1,6 @@
 node_modules
 build
 .svelte-kit
+# Paraglide output and generated inlang project (scripts/gen-inlang.mjs)
+src/lib/paraglide/
+.generated/

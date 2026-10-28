@@ -1,4 +1,6 @@
 build/
 .svelte-kit/
+src/lib/paraglide/
 node_modules/
 pnpm-lock.yaml
+.generated/
