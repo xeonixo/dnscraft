@@ -1,14 +1,35 @@
 # DNScraft web UI
 
-Client-side SvelteKit SPA (adapter-static, `index.html` fallback), built into `web/build` and embedded into the binary.
+Client-side SvelteKit SPA (adapter-static, `index.html` fallback). Production
+assets land in `web/build/` and are embedded into `dnscraft-api` via the
+`web-ui` Cargo feature (`rust-embed` of `embed-web-ui/`).
 
-- `pnpm install --frozen-lockfile`: install dependencies (pnpm 10)
-- `pnpm dev`: local dev server
-- `pnpm check`: svelte-check and `tsc --noEmit`
-- `pnpm lint`: ESLint and Prettier check
-- `pnpm test`: Vitest (token contrast and no-literal-color scan, message catalog coverage, locale helpers, raw-literal scan)
-- `pnpm build`: production build to `build/` (generates PWA icons, then `build/sw.js` after the Vite build)
-- `pnpm test:e2e`: Playwright smoke tests against the local mock (`pnpm build` first; uses installed Google Chrome via `channel: 'chrome'`)
+Spec: [`SPEC-web-ui.md`](../SPEC-web-ui.md). Control plane contract:
+[`docs/API-REFERENCE.md`](../docs/API-REFERENCE.md).
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `pnpm install --frozen-lockfile` | Install dependencies (pnpm 10) |
+| `pnpm dev` | Vite dev server |
+| `pnpm check` | svelte-check + `tsc --noEmit` |
+| `pnpm lint` | ESLint + Prettier check |
+| `pnpm test` | Vitest (contrast, i18n, locale, no-literal scans) + mock server tests |
+| `pnpm build` | Production build → `build/` (PWA icons, `sw.js`, CSP script hashes) |
+| `pnpm mock` | Loopback fake control-api serving `build/` (run `pnpm build` first) |
+| `pnpm test:e2e` | Playwright smoke against the mock (`channel: 'chrome'`) |
+
+## Embed into the binary
+
+1. `pnpm build` (writes `build/csp-script-hashes.json` used by the CSP header).
+2. Replace `crates/dnscraft-api/embed-web-ui/` with the contents of `web/build/`
+   (keep the hashes file). The repo ships a placeholder `index.html` so
+   `--features web-ui` compiles without a UI build.
+3. Build `dnscraft-api` with `--features web-ui`.
+
+Routing when embedded: `/api/*` and `/mcp/*` stay JSON; other `GET`/`HEAD`
+paths get the SPA (see [`tasks/w10-rust-embed-notes.md`](../tasks/w10-rust-embed-notes.md)).
 
 ## PWA
 

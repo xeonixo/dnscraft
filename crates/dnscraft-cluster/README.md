@@ -14,10 +14,12 @@ control API implements the hooks in [`src/sync.rs`](src/sync.rs),
 [`ClusterServer`] on its own internal listener. DNS answering never waits on
 the master.
 
-**Status:** the crate is implemented and tested in isolation. The
-control-api admin routes/status fields (CL6/CL7), the sub-node apply + TLS +
-auth-snapshot wiring (CL15) and the assembler remain. See
-[`SPEC-cluster.md`](../../SPEC-cluster.md) for the authoritative contract.
+**Status:** crate complete (Checkpoint F) and wired into the `dnscraft`
+assembler / control-api (`ClusterRuntime`, config sync, write relay, log
+outbox, TLS CSR signing via `TlsEngineCsrSigner`). See
+[`SPEC-cluster.md`](../../SPEC-cluster.md) for the authoritative contract and
+[`crates/dnscraft/README.md`](../dnscraft/README.md) for how the binary starts
+master vs sub-node.
 
 ## Module layout
 
