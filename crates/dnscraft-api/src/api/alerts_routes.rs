@@ -22,6 +22,15 @@ const NODE_OFFLINE_AFTER_SECS: i64 = 300;
 pub(crate) async fn list_alerts(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ControlApiError> {
+    let items = collect_alerts(&state).await;
+    Ok(success(json!({
+        "active_count": items.len(),
+        "items": items,
+    })))
+}
+
+/// The active alert items. Shared by the route and the webhook dispatcher (WX7).
+pub(crate) async fn collect_alerts(state: &AppState) -> Vec<Value> {
     let mut items: Vec<Value> = Vec::new();
 
     if let Some(tls) = state.tls_status_async().await {
@@ -95,12 +104,9 @@ pub(crate) async fn list_alerts(
         && let Some(store) = state.cluster_store()
         && let Ok(nodes) = store.list_nodes().await
     {
-        items.extend(offline_node_alerts(&nodes, unix_now(&state)));
+        items.extend(offline_node_alerts(&nodes, unix_now(state)));
     }
-    Ok(success(json!({
-        "active_count": items.len(),
-        "items": items,
-    })))
+    items
 }
 
 /// One alert item in the documented shape.

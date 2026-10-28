@@ -64,6 +64,7 @@ pub struct AppState {
     update_cache: Arc<tokio::sync::Mutex<crate::system::UpdateCache>>,
     backup_dir: Option<PathBuf>,
     service_catalog: Option<Arc<dyn ServiceCatalogProvider>>,
+    webhook_trust_roots: Vec<Vec<u8>>,
 }
 
 impl Default for AppState {
@@ -107,6 +108,7 @@ impl AppState {
             update_cache: Arc::new(tokio::sync::Mutex::new(None)),
             backup_dir: None,
             service_catalog: None,
+            webhook_trust_roots: Vec::new(),
         }
     }
 
@@ -167,6 +169,17 @@ impl AppState {
 
     pub(crate) fn update_cache(&self) -> &Arc<tokio::sync::Mutex<crate::system::UpdateCache>> {
         &self.update_cache
+    }
+
+    /// Trusts one extra CA certificate (DER) for webhook receivers, for a
+    /// private CA. Not set by default; tests use it for a loopback receiver.
+    pub fn with_webhook_trust_root(mut self, der: impl Into<Vec<u8>>) -> Self {
+        self.webhook_trust_roots.push(der.into());
+        self
+    }
+
+    pub(crate) fn webhook_trust_roots(&self) -> &[Vec<u8>] {
+        &self.webhook_trust_roots
     }
 
     /// Sets the backup directory (the binary passes `<data_dir>/backups`).

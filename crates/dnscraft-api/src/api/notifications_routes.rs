@@ -296,6 +296,7 @@ pub(crate) async fn post_notification_test(
         allow_private,
         secret.as_deref(),
         &message,
+        state.webhook_trust_roots(),
     )
     .await;
 

@@ -17,19 +17,24 @@ use ring::rand::{SecureRandom, SystemRandom};
 use serde_json::{Value, json};
 use url::Url;
 
+use crate::api::alerts_routes::collect_alerts;
 use crate::api::config_routes::valid_id;
 use crate::error::ControlApiError;
-use crate::notifications::ring_client_builder;
+use crate::notifications::ring_client_builder_with;
+use crate::server::AppState;
 use crate::storage::Db;
 
 /// Config snapshot section for notification channels.
 pub(crate) const SECTION: &str = "notifications";
-/// Event codes a channel may subscribe to.
-pub(crate) const EVENT_CATALOG: [&str; 4] = [
+/// Event codes a channel may subscribe to: the alert ids of `GET /api/v1/alerts`.
+pub(crate) const EVENT_CATALOG: [&str; 7] = [
+    "tls.cert.revoked",
+    "tls.cert.expired",
     "tls.cert.expiring",
-    "tls.dyndns.failure",
-    "cluster.node.offline",
+    "tls.dyndns.stale",
     "filtering.list.update_failed",
+    "cluster.master.unreachable",
+    "cluster.node.offline",
 ];
 /// Longest accepted webhook secret.
 pub(crate) const MAX_SECRET_BYTES: usize = 256;
@@ -313,6 +318,7 @@ pub(crate) async fn deliver(
     allow_private: bool,
     secret: Option<&str>,
     body: &Value,
+    trust: &[Vec<u8>],
 ) -> Result<Delivery, NotificationError> {
     let host = url.host_str().ok_or_else(|| {
         NotificationError::new("control_api.notifications.invalid", "url has no host")
@@ -324,7 +330,7 @@ pub(crate) async fn deliver(
         ));
     }
     let addr = check_egress(url, allow_private).await?;
-    let client = ring_client_builder()
+    let client = ring_client_builder_with(trust)
         .and_then(|builder| {
             builder
                 .resolve(host, addr)
@@ -442,4 +448,130 @@ mod tests {
         );
         assert_eq!(body["id"].as_str().unwrap().len(), 32);
     }
+}
+
+/// Alert-to-webhook cooldown: one attempt per channel and alert per hour.
+const DISPATCH_COOLDOWN_SECS: i64 = 3600;
+/// `kv` key of the dispatch ledger: `"<channel>:<alert>" -> last attempt (unix s)`.
+const DISPATCH_LEDGER_KEY: &str = "notifications.dispatch";
+
+/// Sends every active alert to each enabled channel subscribed to it, at most
+/// once per channel and alert per cooldown. A cleared alert leaves the ledger, so
+/// its recurrence is sent again. Failures are logged and count as an attempt.
+/// Meant to be called periodically by the binary (WX7). Returns the number of
+/// successful deliveries.
+pub async fn dispatch_alerts(state: &AppState) -> Result<usize, ControlApiError> {
+    let (Some(db), Some(service)) = (state.db(), state.config_service()) else {
+        return Ok(0);
+    };
+    let snapshot = service.current().await?.1.unwrap_or(Value::Null);
+    let section = snapshot.get(SECTION).cloned().unwrap_or(Value::Null);
+    let channels: Vec<Value> = section
+        .get("channels")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if channels.is_empty() {
+        return Ok(0);
+    }
+    let alerts = collect_alerts(state).await;
+    let now = crate::system::unix_now(state);
+    let mut ledger: serde_json::Map<String, Value> = db
+        .kv_get(DISPATCH_LEDGER_KEY)
+        .await?
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let active: std::collections::BTreeSet<&str> = alerts
+        .iter()
+        .filter_map(|alert| alert["id"].as_str())
+        .collect();
+    ledger.retain(|key, _| {
+        key.split_once(':')
+            .is_some_and(|(_, alert)| active.contains(alert))
+    });
+    let allowed: Vec<String> = section
+        .get("allowed_hosts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|host| host.as_str().map(str::to_owned))
+        .collect();
+    let allow_private = section
+        .get("allow_private_destinations")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let mut delivered = 0;
+    for alert in &alerts {
+        let Some(id) = alert["id"].as_str() else {
+            continue;
+        };
+        for channel in &channels {
+            let Some(channel_id) = channel["id"].as_str() else {
+                continue;
+            };
+            if channel.get("enabled").and_then(Value::as_bool) == Some(false) {
+                continue;
+            }
+            let subscribed = channel["events"]
+                .as_array()
+                .is_some_and(|events| events.iter().any(|event| event.as_str() == Some(id)));
+            if !subscribed {
+                continue;
+            }
+            let key = format!("{channel_id}:{id}");
+            let cooling = ledger
+                .get(&key)
+                .and_then(Value::as_i64)
+                .is_some_and(|last| now.saturating_sub(last) < DISPATCH_COOLDOWN_SECS);
+            if cooling {
+                continue;
+            }
+            ledger.insert(key, json!(now));
+            let Some(raw_url) = channel_url(db, channel_id).await? else {
+                tracing::warn!(channel = channel_id, "webhook has no stored url");
+                continue;
+            };
+            let url = match parse_channel_url(&raw_url) {
+                Ok(url) => url,
+                Err(error) => {
+                    tracing::warn!(
+                        channel = channel_id,
+                        code = error.code,
+                        "stored webhook url is invalid"
+                    );
+                    continue;
+                }
+            };
+            let secret = channel_secret(db, channel_id).await?;
+            let body = payload(
+                id,
+                alert["severity"].as_str().unwrap_or("warning"),
+                alert["module"].as_str().unwrap_or("system"),
+                alert["params"].clone(),
+                now,
+            );
+            match deliver(
+                &url,
+                &allowed,
+                allow_private,
+                secret.as_deref(),
+                &body,
+                state.webhook_trust_roots(),
+            )
+            .await
+            {
+                Ok(_) => delivered += 1,
+                Err(error) => tracing::warn!(
+                    channel = channel_id,
+                    alert = id,
+                    code = error.code,
+                    "alert webhook delivery failed"
+                ),
+            }
+        }
+    }
+    db.kv_set(DISPATCH_LEDGER_KEY, &Value::Object(ledger).to_string())
+        .await?;
+    Ok(delivered)
 }

@@ -106,9 +106,19 @@ pub(crate) fn ring_client() -> Option<reqwest::Client> {
 
 /// Client builder with the ring-only TLS configuration and webpki roots.
 pub(crate) fn ring_client_builder() -> Option<reqwest::ClientBuilder> {
-    let roots = rustls::RootCertStore {
+    ring_client_builder_with(&[])
+}
+
+/// Like [`ring_client_builder`], also trusting the extra DER certificates.
+pub(crate) fn ring_client_builder_with(extra: &[Vec<u8>]) -> Option<reqwest::ClientBuilder> {
+    let mut roots = rustls::RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };
+    for der in extra {
+        roots
+            .add(rustls::pki_types::CertificateDer::from(der.clone()))
+            .ok()?;
+    }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let tls = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
