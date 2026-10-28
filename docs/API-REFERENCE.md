@@ -67,6 +67,13 @@ invalid credential → `401 control_api.auth.unauthenticated`.
 
 ### Config (admin)
 
+The snapshot section `control_api_settings` holds runtime keys written through
+`PUT /api/v1/config` (validated; unknown keys → `control_api.config.invalid`):
+`update_check` (bool), `backups` (`enabled`, `retention_count`),
+`query_log.retention_days` (1..=3650) and `oidc` (`admin_group`, `groups_claim`,
+`token_skew_seconds` 5..=300). Secrets, accounts and bind settings are never in
+the snapshot. `notifications` is the webhook section described below.
+
 | Method | Path | Summary |
 |---|---|---|
 | GET | `/api/v1/config` | Current `version` + stored snapshot (secrets redacted). |
@@ -151,11 +158,57 @@ Stats query parameters: `from`, `to`, `node_id`, `profile_id` (exact filters, GM
 | GET | `/api/v1/resolver/upstreams` | viewer/admin | Passive upstream health (`up`/`degraded`/`down`/`unknown`) over a 5 min window. |
 | POST | `/api/v1/resolver/cache/flush` | admin | Flush the whole cache (`{}`) or one domain and its subtree (`{"domain": "…"}`). Audited; returns `evicted`. |
 
+### Query log live stream (viewer/admin)
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/api/v1/query-log/stream` | Server-Sent Events, live only (no replay). Same filter parameters as the list; `limit`, `offset` and `order` are ignored. `event: row` carries the stored record; `event: lagged` with `{"dropped": n}` when the subscriber fell behind a 512-event queue; `: ping` every 15 s; closes after 30 min without a row. Limits: 4 streams per principal and 32 per node, else `control_api.query_log.stream_limit` (429). Rows are node-local. |
+
+### Filtering services (viewer/admin read, admin write)
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/api/v1/filtering/services?locale=en` | Blocked-services catalog with `enabled` per filter set. `available: false` when no catalog is loaded. Icons are not returned (no sanitizer yet). |
+| PUT | `/api/v1/filtering/services/{service_id}` | Body `{ "filter_set_id", "enabled" }`; edits the set's `services` list as a versioned config write. Errors: `filtering.catalog.unavailable`, `filtering.service.unknown`, `filtering.service.invalid`, 404 for an unknown set. |
+
+### Notifications (viewer/admin read, admin write)
+
+Webhook channels only (v1). The `notifications` config section holds
+`allowed_hosts` (empty rejects every host), `allow_private_destinations`
+(default false) and `channels[]` (`id`, `type: webhook`, `enabled`, HTTPS `url`,
+`events` from the catalog). Secrets are write-only: a `secret` string sets it,
+`null` clears it, an omitted key keeps it. Responses never contain the query,
+userinfo or secret.
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/api/v1/notifications` | Channels with `has_secret`, `allowed_hosts`, `event_catalog`. |
+| PUT | `/api/v1/notifications` | Replaces the channel set (versioned config write). Hosts outside `allowed_hosts` → 422 `control_api.notifications.host_not_allowed`. |
+| POST | `/api/v1/notifications/test` | `{ "channel_id" }`: one delivery, audited without URL or secret. 422 `egress_denied` for private destinations, 502 `delivery`, 404 `unknown_channel`. |
+
+Egress: HTTPS only, every resolved address checked (loopback, private, link-local,
+multicast, CGNAT, ULA and IPv4-mapped denied), connection pinned to the checked
+address, no redirects, 5 s connect and 10 s total timeout. Automatic event
+dispatch is not wired yet; only the test send delivers.
+
+### System (viewer/admin, admin where noted)
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/api/v1/update/check` | Opt-in release check. Off (`control_api_settings.update_check`, default false) → `enabled: false` with no outbound call. On → `latest`, `update_available`, `release_url` from GitHub, cached 24 h (1 h after a failure). Unreachable → `latest: null` and `error.code` `control_api.update.unreachable`. |
+| GET | `/api/v1/backups` | Admin. Backup settings, directory, `files`, `last_run`, `next_run`. 404 when no backup directory is configured. |
+| PUT | `/api/v1/backups/settings` | Admin. `{ "enabled", "retention_count" }` (1..=365), versioned config write. Invalid → `control_api.backups.invalid`. |
+
+Backups copy the whole database with `VACUUM INTO` into the backup directory
+(created `0700`, files `0600`), keeping the newest `retention_count`. The copy
+includes credential hashes and sessions. The binary must call
+`run_backup_if_due` periodically; it runs at most once per 24 h.
+
 ### Alerts (viewer/admin)
 
 | Method | Path | Summary |
 |---|---|---|
-| GET | `/api/v1/alerts` | Active alerts: `active_count` and `items` (`id`, `severity`, `module`, `params`, `target_route`). Sources: TLS (revoked, expired, expiring, DynDNS stale), failed filter-list updates, sub-node without master. |
+| GET | `/api/v1/alerts` | Active alerts: `active_count` and `items` (`id`, `severity`, `module`, `params`, `target_route`). Sources: TLS (revoked, expired, expiring, DynDNS stale), failed filter-list updates, sub-node without master, and on the master `cluster.node.offline` for each non-revoked sub-node whose last contact (or join time) is over 5 minutes old. |
 
 ### Auth
 
@@ -184,11 +237,7 @@ These are in the spec but not in `router.rs` yet; do not call them.
 
 | Method | Path | Role |
 |---|---|---|
-| GET | `/api/v1/update/check` | viewer/admin (WP2, not built) |
-| GET / PUT | `/api/v1/backups`, `/api/v1/backups/settings` | admin (WP3, not built) |
-| GET / PUT | `/api/v1/filtering/services` | viewer/admin, admin (WP5, needs the service catalog) |
-| GET / PUT | `/api/v1/notifications`, POST `/api/v1/notifications/test` | viewer/admin, admin (WX7, owner decisions open) |
-| GET | `/api/v1/query-log/stream` | viewer/admin, SSE (WX2, not built) |
+No planned REST endpoints remain outside the MCP phase below.
 
 The MCP-phase REST endpoints (`/api/v1/filtering/explain-block`,
 `/api/v1/policy/test-query`, `/api/v1/filtering/temporary-allows`,
