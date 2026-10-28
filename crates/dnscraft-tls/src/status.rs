@@ -182,6 +182,18 @@ impl PreflightReport {
     }
 }
 
+/// Numbers for a metrics exporter (SPEC-tls.md Observability). Counters are
+/// process-lifetime totals since the engine opened.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TlsMetrics {
+    /// Whole days until the served certificate expires (negative when expired).
+    pub days_to_expiry: Option<i64>,
+    /// ACME issuances/renewals that succeeded.
+    pub renew_success_total: u64,
+    /// ACME issuances/renewals that failed.
+    pub renew_failure_total: u64,
+}
+
 /// Snapshot of certificate and DynDNS state (UI / alerts).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TlsStatus {

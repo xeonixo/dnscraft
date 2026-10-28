@@ -422,7 +422,8 @@ codes are the cross-crate contract (`tasks/plan-tls-api-gaps.md` § B–E).
 codes, DynDNS last IPv4/IPv6 and last change time. `TlsEngine` additionally
 exposes `acme_account_status()`, `order_status()`, `rate_limit_status()`,
 `record_inventory()`, `dyndns_audit()`, `preflight()` and `export_cert()`.
-Metrics: days to expiry (gauge), renew success/fail counters. Web UI alert when
+Metrics: days to expiry (gauge), renew success/fail counters, exposed in-process via
+`TlsEngine::metrics() -> TlsMetrics` (no exporter yet; Prometheus output stays under SPEC.md "Later"). Web UI alert when
 `tls.cert.expiring` / `tls.cert.revoked` / `tls.dyndns.update` / ACME failures
 are set.
 

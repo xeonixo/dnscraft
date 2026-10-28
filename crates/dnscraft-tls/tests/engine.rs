@@ -174,6 +174,9 @@ async fn open_serves_stored_cert_when_cloudflare_unreachable() {
     let status = engine.status_async().await;
     assert!(status.days_to_expiry.is_some());
     assert!(status.last_error.is_some(), "status={status:?}");
+    let m = engine.metrics().await;
+    assert_eq!((m.renew_success_total, m.renew_failure_total), (0, 1));
+    assert_eq!(m.days_to_expiry, status.days_to_expiry);
     assert!(engine.resolver().leaf_der().is_some());
 }
 
@@ -207,6 +210,9 @@ async fn renew_now_and_dyndns_now_against_mocks() {
     engine.renew_now().await.expect("issue");
     assert!(engine.resolver().has_cert());
     assert_eq!(acme.replaces_log().len(), 1);
+    let m = engine.metrics().await;
+    assert_eq!((m.renew_success_total, m.renew_failure_total), (1, 0));
+    assert!(m.days_to_expiry.is_some());
 
     echo.set_bodies([trace_body("203.0.113.40")]).await;
     let d = engine.dyndns_now().await.expect("dyndns");

@@ -1,7 +1,7 @@
 //! [`TlsEngine`]: load certs, schedule renewal and DynDNS, expose status.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
@@ -25,7 +25,7 @@ use crate::renew::{
 use crate::resolver::CertResolver;
 use crate::status::{
     AriStatus, CertSource, DynDnsAuditEntry, IssueOutcome, IssueRecord, PreflightCheck,
-    PreflightReport, RateLimitStatus, TlsStatus,
+    PreflightReport, RateLimitStatus, TlsMetrics, TlsStatus,
 };
 use crate::store::{CertMeta, CertStore, push_dyndns_audit, push_history};
 use crate::{CLOUDFLARE_API_TOKEN_ENV, Secret, read_secret};
@@ -79,6 +79,8 @@ pub struct EngineInner {
     acme_enabled: Arc<AtomicBool>,
     dyndns_enabled: Arc<AtomicBool>,
     allow_http_for_tests: bool,
+    renew_success: AtomicU64,
+    renew_failure: AtomicU64,
 }
 
 impl Drop for TlsEngine {
@@ -232,6 +234,8 @@ impl TlsEngine {
             acme_enabled: Arc::clone(&acme_enabled),
             dyndns_enabled: Arc::clone(&dyndns_enabled),
             allow_http_for_tests: deps.allow_http_for_tests,
+            renew_success: AtomicU64::new(0),
+            renew_failure: AtomicU64::new(0),
         });
 
         let stop = Arc::new(Notify::new());
@@ -271,6 +275,15 @@ impl TlsEngine {
     /// Async status read.
     pub async fn status_async(&self) -> TlsStatus {
         self.inner.status.read().await.clone()
+    }
+
+    /// Days-to-expiry gauge and renewal success/failure totals.
+    pub async fn metrics(&self) -> TlsMetrics {
+        TlsMetrics {
+            days_to_expiry: self.inner.status.read().await.days_to_expiry,
+            renew_success_total: self.inner.renew_success.load(Ordering::Relaxed),
+            renew_failure_total: self.inner.renew_failure.load(Ordering::Relaxed),
+        }
     }
 
     /// Validates `config`, swaps it in, and updates background flags.
@@ -672,6 +685,15 @@ impl EngineInner {
 
         let _ = tx.send(result.clone());
         *self.issue_flight.lock().await = None;
+
+        if cfg.acme.enabled {
+            let counter = if result.is_ok() {
+                &self.renew_success
+            } else {
+                &self.renew_failure
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
 
         *self.rate_limit.write().await = rate_limit_after(&result, self.clock.now());
 

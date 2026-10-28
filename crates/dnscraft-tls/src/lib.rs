@@ -83,7 +83,7 @@ pub use sni::{
 };
 pub use status::{
     AriStatus, CertDetail, CertSource, DynDnsAuditEntry, IssueOutcome, IssueRecord, PreflightCheck,
-    PreflightReport, RateLimitStatus, StoreHealth, TlsStatus, cert_flags,
+    PreflightReport, RateLimitStatus, StoreHealth, TlsMetrics, TlsStatus, cert_flags,
 };
 pub use store::{
     CertMeta, CertStore, DYNDNS_AUDIT_LIMIT, HISTORY_LIMIT, IssueState, LoadedCert, TLS_DIR_NAME,
