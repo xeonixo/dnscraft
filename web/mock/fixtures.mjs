@@ -209,7 +209,7 @@ export function initialConfig() {
 					id: 'default',
 					name: 'Standard',
 					lists: ['ads-main', 'trackers-main'],
-					custom_rules: [],
+					custom_rules: '',
 					services: [],
 					block_mode: 'refused',
 					mcp_rules: [
@@ -235,15 +235,66 @@ export function initialConfig() {
 					id: 'kids',
 					name: 'Kinder',
 					lists: ['ads-main'],
-					custom_rules: [],
+					custom_rules: '',
 					services: ['social-video'],
 					block_mode: 'nxdomain',
 					mcp_rules: [],
 				},
 			],
+			lists: [
+				{
+					id: 'ads-main',
+					name: 'AdGuard DNS',
+					source: { url: 'https://adguard-dns.io/dns-filter.txt' },
+					enabled: true,
+				},
+				{
+					id: 'trackers-main',
+					name: 'Tracking protection',
+					source: { url: 'https://example.com/lists/trackers.txt' },
+					enabled: true,
+				},
+			],
 		},
-		clients: { manual: [] },
+		clients: {
+			manual: [
+				{
+					name: 'Wohnzimmer-TV',
+					ip: '192.0.2.18',
+					cidr: null,
+					domain: 'tv.lan',
+					identity: '192.0.2.18',
+				},
+			],
+		},
+		resolver: {
+			forward_zones: [
+				{
+					id: 'site-a',
+					zone: 'site-a.example.com.',
+					targets: ['10.9.0.53:53'],
+					validate: false,
+				},
+			],
+		},
 		policy: {
+			records: [
+				{
+					name: 'nas.lan.',
+					type: 'A',
+					ttl: 60,
+					rdata: '192.0.2.50',
+					overrides: { guest: '192.0.2.51' },
+				},
+				{
+					name: '<script>alert(1)</script>.evil.test.',
+					type: 'A',
+					ttl: 60,
+					rdata: '192.0.2.99',
+					overrides: {},
+				},
+			],
+			client_ids: ['iphone-k7q2x9', 'guest-j4m2pz'],
 			views: [
 				{
 					id: 'lan',
@@ -251,6 +302,13 @@ export function initialConfig() {
 					subnets: ['192.0.2.0/24'],
 					nodes: [],
 					profile: 'default',
+				},
+				{
+					id: 'guest',
+					is_default: false,
+					subnets: ['198.51.100.0/24'],
+					nodes: [],
+					profile: 'kids',
 				},
 			],
 			profiles: [
@@ -284,3 +342,31 @@ export function initialConfig() {
 		tls: { mode: 'self_signed' },
 	};
 }
+
+/** Directory rows returned by `GET /api/v1/clients` (synced). */
+export const MOCK_DIRECTORY_CLIENTS = [
+	{
+		id: 'dir-iphone-k7q2x9',
+		name: 'iPhone',
+		dns_label: 'iphone',
+		local_domain: 'home.arpa',
+		source: 'unifi',
+		ips: ['192.0.2.11'],
+		macs: ['aa:bb:cc:00:00:11'],
+		vlan: 40,
+		online: true,
+		last_seen: '2026-10-27T11:58:00Z',
+	},
+	{
+		id: 'dir-macbook-r4t8vn',
+		name: 'MacBook',
+		dns_label: 'macbook',
+		local_domain: 'home.arpa',
+		source: 'unifi',
+		ips: ['192.0.2.4'],
+		macs: ['aa:bb:cc:00:00:04'],
+		vlan: null,
+		online: false,
+		last_seen: '2026-10-27T10:12:00Z',
+	},
+];

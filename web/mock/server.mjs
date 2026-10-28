@@ -11,7 +11,7 @@ import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildRecords, initialConfig, PROTOCOLS } from './fixtures.mjs';
+import { buildRecords, initialConfig, MOCK_DIRECTORY_CLIENTS, PROTOCOLS } from './fixtures.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BUILD_DIR = resolve(HERE, '..', 'build');
@@ -518,6 +518,42 @@ function diffSnapshots(previous, next) {
 
 const EMPTY_DIFF = { changed_sections: [], added: [], removed: [], changed: [] };
 
+function policyConfig(store) {
+	return currentOf(store).config.policy ?? {};
+}
+
+function filteringConfig(store) {
+	return currentOf(store).config.filtering ?? {};
+}
+
+function clientsConfig(store) {
+	return currentOf(store).config.clients ?? { manual: [] };
+}
+
+function replaceConfig(store, config) {
+	const version = appendVersion(store, config);
+	return version;
+}
+
+function upsertId(list, id, value) {
+	const index = list.findIndex((item) => item?.id === id);
+	if (index >= 0) list[index] = value;
+	else list.push(value);
+}
+
+function testQuerySteps(domain) {
+	return [
+		{
+			stage: 'select',
+			verdict: 'selected',
+			selection: { cause: 'subnet', prefix: '192.0.2.0/24' },
+		},
+		domain.includes('ads')
+			? { stage: 'filter_qname', verdict: 'blocked' }
+			: { stage: 'resolve', verdict: 'resolved', source: 'recursion' },
+	];
+}
+
 const PUBLIC_ROUTES = new Set(['POST /api/v1/auth/local/login']);
 /** Writes a viewer may send: the sign-out, and the dry-run reads that are POSTs by path. */
 const VIEWER_POSTS = new Set([
@@ -781,8 +817,206 @@ async function route(request, response, options) {
 				'Content-Disposition': 'attachment; filename="query-log.csv"',
 			});
 		}
+		case 'GET /api/v1/policy/views':
+			return sendData(response, { views: policyConfig(options.store).views ?? [] });
+		case 'GET /api/v1/policy/records':
+			return sendData(response, { records: policyConfig(options.store).records ?? [] });
+		case 'GET /api/v1/policy/client-ids':
+			return sendData(response, { client_ids: policyConfig(options.store).client_ids ?? [] });
+		case 'GET /api/v1/clients':
+			return sendData(response, {
+				clients: MOCK_DIRECTORY_CLIENTS,
+				manual: clientsConfig(options.store).manual ?? [],
+			});
+		case 'GET /api/v1/filter-sets':
+			return sendData(response, { filter_sets: filteringConfig(options.store).sets ?? [] });
+		case 'GET /api/v1/filter-lists':
+			return sendData(response, { filter_lists: filteringConfig(options.store).lists ?? [] });
+		case 'POST /api/v1/clients/sync':
+			return sendData(response, {
+				generation: 2,
+				rebuilt: true,
+				client_count: MOCK_DIRECTORY_CLIENTS.length,
+				ip_conflicts: 0,
+			});
+		case 'POST /api/v1/policy/test-query': {
+			const body = await readJsonBody(request);
+			return sendData(response, {
+				steps: testQuerySteps(String(body.domain ?? '')),
+				view_id: 'lan',
+				profile_id: 'default',
+				rcode: 'NOERROR',
+				answer: { rcode: 'NOERROR', records: [] },
+			});
+		}
 		default:
 			break;
+	}
+
+	const policyView = /^\/api\/v1\/policy\/views\/([^/]+)$/.exec(path);
+	if (policyView) {
+		const id = decodeURIComponent(policyView[1]);
+		const views = policyConfig(options.store).views ?? [];
+		if (request.method === 'GET') {
+			const view = views.find((item) => item.id === id);
+			if (!view) throw new ApiFailure(404, 'control_api.not_found');
+			return sendData(response, { view });
+		}
+		if (request.method === 'PUT' || request.method === 'POST') {
+			const body = await readJsonBody(request);
+			const config = structuredClone(currentOf(options.store).config);
+			config.policy.views = [...(config.policy.views ?? [])];
+			upsertId(config.policy.views, id, { ...body, id });
+			const version = replaceConfig(options.store, config);
+			const view = config.policy.views.find((item) => item.id === id);
+			return sendData(response, { version, view });
+		}
+		if (request.method === 'DELETE') {
+			const config = structuredClone(currentOf(options.store).config);
+			config.policy.views = (config.policy.views ?? []).filter((item) => item.id !== id);
+			const version = replaceConfig(options.store, config);
+			return sendData(response, { version, deleted: true, id });
+		}
+	}
+
+	const policyProfile = /^\/api\/v1\/policy\/profiles\/([^/]+)$/.exec(path);
+	if (policyProfile) {
+		const id = decodeURIComponent(policyProfile[1]);
+		const profiles = policyConfig(options.store).profiles ?? [];
+		if (request.method === 'GET') {
+			const profile = profiles.find((item) => item.id === id);
+			if (!profile) throw new ApiFailure(404, 'control_api.not_found');
+			return sendData(response, { profile });
+		}
+		if (request.method === 'PUT' || request.method === 'POST') {
+			const body = await readJsonBody(request);
+			const config = structuredClone(currentOf(options.store).config);
+			config.policy.profiles = [...(config.policy.profiles ?? [])];
+			upsertId(config.policy.profiles, id, { ...body, id });
+			const version = replaceConfig(options.store, config);
+			const profile = config.policy.profiles.find((item) => item.id === id);
+			return sendData(response, { version, profile });
+		}
+		if (request.method === 'DELETE') {
+			const config = structuredClone(currentOf(options.store).config);
+			config.policy.profiles = (config.policy.profiles ?? []).filter((item) => item.id !== id);
+			const version = replaceConfig(options.store, config);
+			return sendData(response, { version, deleted: true, id });
+		}
+	}
+
+	if (path === '/api/v1/policy/records' && request.method !== 'GET') {
+		const body = await readJsonBody(request);
+		const config = structuredClone(currentOf(options.store).config);
+		const records = [...(config.policy.records ?? [])];
+		if (request.method === 'DELETE') {
+			const index = records.findIndex((item) => item.name === body.name && item.type === body.type);
+			if (index < 0) throw new ApiFailure(404, 'control_api.not_found');
+			records.splice(index, 1);
+			config.policy.records = records;
+			const version = replaceConfig(options.store, config);
+			return sendData(response, {
+				version,
+				deleted: true,
+				name: body.name,
+				type: body.type,
+			});
+		}
+		const record = {
+			name: body.name,
+			type: body.type,
+			ttl: body.ttl ?? 60,
+			rdata: body.rdata,
+			overrides: body.overrides ?? {},
+		};
+		const index = records.findIndex(
+			(item) => item.name === record.name && item.type === record.type,
+		);
+		if (index >= 0) records[index] = record;
+		else records.push(record);
+		config.policy.records = records;
+		const version = replaceConfig(options.store, config);
+		return sendData(response, { version, record });
+	}
+
+	if (path === '/api/v1/policy/client-ids' && request.method === 'POST') {
+		const body = await readJsonBody(request);
+		const config = structuredClone(currentOf(options.store).config);
+		const ids = [...(config.policy.client_ids ?? [])];
+		if (ids.includes(body.id)) throw new ApiFailure(400, 'policy.config.invalid');
+		ids.push(body.id);
+		config.policy.client_ids = ids;
+		const version = replaceConfig(options.store, config);
+		return sendData(response, { version, client_id: body.id });
+	}
+
+	const clientIdDelete = /^\/api\/v1\/policy\/client-ids\/([^/]+)$/.exec(path);
+	if (clientIdDelete && request.method === 'DELETE') {
+		const id = decodeURIComponent(clientIdDelete[1]);
+		const config = structuredClone(currentOf(options.store).config);
+		config.policy.client_ids = (config.policy.client_ids ?? []).filter((item) => item !== id);
+		const version = replaceConfig(options.store, config);
+		return sendData(response, { version, deleted: true, id });
+	}
+
+	if (path === '/api/v1/clients/manual') {
+		const config = structuredClone(currentOf(options.store).config);
+		const manual = [...(config.clients.manual ?? [])];
+		if (request.method === 'GET') return sendData(response, { manual });
+		const body = await readJsonBody(request);
+		if (request.method === 'POST') {
+			manual.push(body);
+			config.clients.manual = manual;
+			const version = replaceConfig(options.store, config);
+			return sendData(response, { version, entry: body });
+		}
+		if (request.method === 'PUT') {
+			const index = manual.findIndex((item) => item.name === body.name);
+			if (index >= 0) manual[index] = body;
+			else manual.push(body);
+			config.clients.manual = manual;
+			const version = replaceConfig(options.store, config);
+			return sendData(response, { version, entry: body, created: index < 0 });
+		}
+		if (request.method === 'DELETE') {
+			config.clients.manual = manual.filter((item) => item.name !== body.name);
+			const version = replaceConfig(options.store, config);
+			return sendData(response, { version, deleted: true, name: body.name });
+		}
+	}
+
+	if (path === '/api/v1/filter-sets' && request.method !== 'GET') {
+		const body = await readJsonBody(request);
+		const config = structuredClone(currentOf(options.store).config);
+		const sets = [...(config.filtering.sets ?? [])];
+		if (request.method === 'DELETE') {
+			config.filtering.sets = sets.filter((item) => item.id !== body.id);
+			const version = replaceConfig(options.store, config);
+			return sendData(response, { version, deleted: true, id: body.id });
+		}
+		const set = { ...body, block_mode: body.block_mode ?? 'refused' };
+		const replaced = sets.some((item) => item.id === set.id);
+		upsertId(sets, set.id, set);
+		config.filtering.sets = sets;
+		const version = replaceConfig(options.store, config);
+		return sendData(response, { version, filter_set: set, created: !replaced });
+	}
+
+	if (path === '/api/v1/filter-lists' && request.method !== 'GET') {
+		const body = await readJsonBody(request);
+		const config = structuredClone(currentOf(options.store).config);
+		const lists = [...(config.filtering.lists ?? [])];
+		if (request.method === 'DELETE') {
+			config.filtering.lists = lists.filter((item) => item.id !== body.id);
+			const version = replaceConfig(options.store, config);
+			return sendData(response, { version, deleted: true, id: body.id });
+		}
+		const list = body;
+		const replaced = lists.some((item) => item.id === list.id);
+		upsertId(lists, list.id, list);
+		config.filtering.lists = lists;
+		const version = replaceConfig(options.store, config);
+		return sendData(response, { version, filter_list: list, created: !replaced });
 	}
 
 	const rollback = /^\/api\/v1\/config\/versions\/([^/]+)\/rollback$/.exec(path);

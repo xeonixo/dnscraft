@@ -85,3 +85,15 @@
 - [ ] **GA-W6d** `mcp.*` error codes (e.g. protected domain) need translations in the code catalogue.
 - [ ] **OWNER** "Dauerhaft blockieren" from the log: custom rules expire at `max_block_rule_lifetime`; decide whether a
       permanent block belongs in the UI (not built).
+
+## Found while building policy/clients/filter screens (W8, 2026-10-28)
+
+- [ ] **GA-W8a** SPEC-web-ui says viewers can read policy/clients/filter screens "via config", but
+      `roles.rs` marks `/policy/*`, `/clients/*`, `/filter-*` and `/config` reads as admin-only.
+      Align SPEC and RBAC (viewer read via GET /config, or allow viewer on those GETs).
+- [ ] **GA-W8b** No `GET /policy/profiles` list; UI loads profiles from `GET /config`. Add a list route
+      or document config-only.
+- [ ] **GA-W8c** Forward zones (`resolver.forward_zones`) lack reverse-zone and profile allow-list fields
+      shown in the prototype; confirm whether those belong in the resolver model.
+- [ ] **GA-W8d** No filter-list refresh/update endpoint; UI shows a footnote only.
+- [ ] **GA-W8e** CNAME uncloaking is not a filter-set API field; add it or drop from the UI toggles.
