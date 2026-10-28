@@ -54,9 +54,11 @@ pub const MAX_MANUAL_ENTRIES: usize = 1_000;
 
 /// How the parent domain for FQDNs is chosen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LocalDomainMode {
     /// Prefer UniFi per-VLAN DHCP domain when present; else config `local_domain`.
     #[default]
+    #[serde(alias = "UnifiThenConfig")]
     UnifiThenConfig,
     /// Always use config `local_domain` (admin override).
     Config,
@@ -110,7 +112,10 @@ impl TlsMode {
 
 /// UniFi gateway connection settings. The API key is never stored here — see
 /// [`crate::read_secret`].
+///
+/// Serialised as the flat `[clients.unifi]` keys of SPEC-clients.md (see [`UnifiWire`]).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "UnifiWire", into = "UnifiWire")]
 pub struct UnifiConfig {
     /// When false, UniFi contributes nothing; manuals only.
     pub enabled: bool,
@@ -138,6 +143,88 @@ impl Default for UnifiConfig {
             // Verify against the system CA bundle. Insecure is opt-in only.
             tls: TlsMode::Secure,
         }
+    }
+}
+
+/// Flat wire form of [`UnifiConfig`]. At most one of `tls_pin_sha256`, `ca_file`,
+/// `insecure_skip_verify` may be set; none of them means the system CA bundle.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UnifiWire {
+    enabled: bool,
+    base_url: String,
+    #[serde(default)]
+    site_id: Option<String>,
+    #[serde(with = "dnscraft_common::duration::serde")]
+    poll_interval: Duration,
+    classic_clients: bool,
+    #[serde(default)]
+    tls_pin_sha256: Option<String>,
+    #[serde(default)]
+    ca_file: Option<PathBuf>,
+    #[serde(default)]
+    insecure_skip_verify: bool,
+}
+
+impl From<UnifiConfig> for UnifiWire {
+    fn from(c: UnifiConfig) -> Self {
+        let (tls_pin_sha256, ca_file, insecure_skip_verify) = match c.tls {
+            TlsMode::Pin(pin) => (
+                Some(format!(
+                    "sha256:{}",
+                    pin.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                )),
+                None,
+                false,
+            ),
+            TlsMode::CaFile(path) => (None, Some(path), false),
+            TlsMode::Secure => (None, None, false),
+            TlsMode::Insecure => (None, None, true),
+        };
+        Self {
+            enabled: c.enabled,
+            base_url: c.base_url,
+            site_id: c.site_id,
+            poll_interval: c.poll_interval,
+            classic_clients: c.classic_clients,
+            tls_pin_sha256,
+            ca_file,
+            insecure_skip_verify,
+        }
+    }
+}
+
+impl TryFrom<UnifiWire> for UnifiConfig {
+    type Error = String;
+
+    fn try_from(w: UnifiWire) -> Result<Self, Self::Error> {
+        let modes = [
+            w.tls_pin_sha256.is_some(),
+            w.ca_file.is_some(),
+            w.insecure_skip_verify,
+        ];
+        if modes.iter().filter(|set| **set).count() > 1 {
+            return Err(
+                "set at most one of tls_pin_sha256, ca_file, insecure_skip_verify".to_owned(),
+            );
+        }
+        let tls = if let Some(pin) = &w.tls_pin_sha256 {
+            TlsMode::pin_from_str(pin).map_err(|e| e.to_string())?
+        } else if let Some(path) = w.ca_file {
+            TlsMode::CaFile(path)
+        } else if w.insecure_skip_verify {
+            TlsMode::Insecure
+        } else {
+            TlsMode::Secure
+        };
+        Ok(Self {
+            enabled: w.enabled,
+            base_url: w.base_url,
+            site_id: w.site_id,
+            poll_interval: w.poll_interval,
+            classic_clients: w.classic_clients,
+            tls,
+        })
     }
 }
 
@@ -621,5 +708,78 @@ mod tests {
             let back: TlsMode = serde_json::from_str(&json).unwrap();
             assert_eq!(back, tls);
         }
+    }
+    #[test]
+    fn unifi_uses_flat_spec_keys_and_round_trips_every_tls_mode() {
+        for tls in [
+            TlsMode::Pin([7; 32]),
+            TlsMode::CaFile(PathBuf::from("/etc/dnscraft/ca.pem")),
+            TlsMode::Secure,
+            TlsMode::Insecure,
+        ] {
+            let unifi = UnifiConfig {
+                enabled: true,
+                base_url: "https://192.0.2.1".into(),
+                tls: tls.clone(),
+                ..UnifiConfig::default()
+            };
+            let json = serde_json::to_value(&unifi).unwrap();
+            assert!(json.get("tls").is_none(), "{json}");
+            let back: UnifiConfig = serde_json::from_value(json).unwrap();
+            assert_eq!(back.tls, tls);
+        }
+    }
+
+    #[test]
+    fn unifi_tls_keys_are_flat_and_mutually_exclusive() {
+        let base = |extra: serde_json::Value| {
+            let mut v = serde_json::json!({
+                "enabled": true,
+                "base_url": "https://192.0.2.1",
+                "poll_interval": "60s",
+                "classic_clients": true,
+            });
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<UnifiConfig>(v)
+        };
+        let pin = format!("sha256:{}", "ab".repeat(32));
+        assert_eq!(base(serde_json::json!({})).unwrap().tls, TlsMode::Secure);
+        assert_eq!(
+            base(serde_json::json!({"tls_pin_sha256": pin}))
+                .unwrap()
+                .tls,
+            TlsMode::Pin([0xab; 32])
+        );
+        assert_eq!(
+            base(serde_json::json!({"ca_file": "/etc/ca.pem"}))
+                .unwrap()
+                .tls,
+            TlsMode::CaFile(PathBuf::from("/etc/ca.pem"))
+        );
+        assert_eq!(
+            base(serde_json::json!({"insecure_skip_verify": true}))
+                .unwrap()
+                .tls,
+            TlsMode::Insecure
+        );
+        assert!(
+            base(serde_json::json!({"tls_pin_sha256": pin, "insecure_skip_verify": true})).is_err()
+        );
+        assert!(base(serde_json::json!({"tls_pin_sha256": "sha256:12"})).is_err());
+        assert!(base(serde_json::json!({"tls": "Secure"})).is_err());
+    }
+
+    #[test]
+    fn local_domain_mode_uses_snake_case_with_legacy_alias() {
+        let mode: LocalDomainMode = serde_json::from_str("\"unifi_then_config\"").unwrap();
+        assert_eq!(mode, LocalDomainMode::UnifiThenConfig);
+        let legacy: LocalDomainMode = serde_json::from_str("\"UnifiThenConfig\"").unwrap();
+        assert_eq!(legacy, LocalDomainMode::UnifiThenConfig);
+        assert_eq!(
+            serde_json::to_string(&LocalDomainMode::Config).unwrap(),
+            "\"config\""
+        );
     }
 }

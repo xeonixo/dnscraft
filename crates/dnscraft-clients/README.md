@@ -55,6 +55,7 @@ Pin mismatch → `clients.tls.untrusted` (fail closed).
 | `unifi.site_id` | auto | Required when more than one site |
 | `unifi.poll_interval` | 60 s | ±10 % jitter in the engine |
 | `unifi.classic_clients` | true | Full IPv6 via `stat/sta` (+ `rest/user`) |
+| `unifi.tls_pin_sha256` / `unifi.ca_file` / `unifi.insecure_skip_verify` | system CA bundle | At most one; selects the TLS trust mode above |
 | `manual[]` | — | Exact IP **or** CIDR per entry (≤ 1000) |
 
 Integration API supplies sites / networks; classic supplies multi-address client
