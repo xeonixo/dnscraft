@@ -29,8 +29,8 @@ use super::config_routes::{
     validate_config,
 };
 use super::filter_routes::{
-    delete_filter_list, delete_filter_set, list_filter_lists, list_filter_sets, put_filter_list,
-    put_filter_set,
+    delete_filter_list, delete_filter_set, list_filter_lists, list_filter_sets, list_services,
+    put_filter_list, put_filter_set, put_service,
 };
 use super::listener_routes::{delete_listener, list_listeners, put_listener};
 use super::mcp_endpoints::{
@@ -61,6 +61,8 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/status", get(status))
         .route("/filtering/explain-block", post(explain_block))
         .route("/filtering/mcp-rules", get(list_mcp_rules))
+        .route("/filtering/services", get(list_services))
+        .route("/filtering/services/{service_id}", put(put_service))
         .route(
             "/filtering/custom-rules",
             post(add_custom_rule).delete(remove_custom_rule),

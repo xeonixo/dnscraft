@@ -75,6 +75,7 @@ pub use query_log::{
     ClientEnricher, ClientView, Order, OrderBy, QueryLog, QueryLogFilter, QueryLogPage,
     QueryLogSink,
 };
+pub use api::filter_routes::ServiceCatalogProvider;
 pub use server::{AppState, Readiness, serve};
 pub use stats::{
     CacheStats, FilterHits, ROLLUP_RETENTION_DAYS, RollupRow, RollupWindow, RuleHits,

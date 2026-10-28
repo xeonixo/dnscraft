@@ -14,6 +14,7 @@ use tower::service_fn;
 
 use crate::api::auth::{AuthState, LocalAccountStore, OidcState};
 use crate::api::clients_routes::ClientDirectory;
+use crate::api::filter_routes::ServiceCatalogProvider;
 use crate::api::rate_limit::RateLimiter;
 use crate::cluster_status::ClusterStatusProvider;
 use crate::config::{ControlApiConfig, RateLimitConfig, is_internal_bind};
@@ -62,6 +63,7 @@ pub struct AppState {
     update_api_url: String,
     update_cache: Arc<tokio::sync::Mutex<crate::system::UpdateCache>>,
     backup_dir: Option<PathBuf>,
+    service_catalog: Option<Arc<dyn ServiceCatalogProvider>>,
 }
 
 impl Default for AppState {
@@ -104,6 +106,7 @@ impl AppState {
             update_api_url: crate::system::DEFAULT_RELEASE_API.to_owned(),
             update_cache: Arc::new(tokio::sync::Mutex::new(None)),
             backup_dir: None,
+            service_catalog: None,
         }
     }
 
@@ -139,6 +142,17 @@ impl AppState {
     /// The configured policy engine, if any.
     pub(crate) fn policy_engine(&self) -> Option<&Arc<PolicyEngine>> {
         self.policy.as_ref()
+    }
+
+    /// Attaches the blocked-services catalog provider (WP5). Without one the
+    /// catalog reports `available: false`.
+    pub fn with_service_catalog(mut self, provider: Arc<dyn ServiceCatalogProvider>) -> Self {
+        self.service_catalog = Some(provider);
+        self
+    }
+
+    pub(crate) fn service_catalog(&self) -> Option<&Arc<dyn ServiceCatalogProvider>> {
+        self.service_catalog.as_ref()
     }
 
     /// Overrides the GitHub latest-release endpoint (tests and mirrors).
