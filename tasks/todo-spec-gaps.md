@@ -196,7 +196,7 @@ approval before Phase 0 code.
 - [x] **GA20** 🟡 [code] Token/version timestamps as unix ints, not RFC 3339. *(tokens.rs:356-365, config_routes.rs:216-219)*
 - [x] **GA21** 🟡 [spec] Config persisted-after-apply vs spec's persist-then-mark-failed. *(config_apply.rs:9-12, 462-473)*
 - [ ] **GA22** 🟡 [code] Dead codes: `config.apply`, `query_log.dropped`, `audit.read`, `auth.unknown_token`. *(error.rs, response.rs)*
-- [ ] **GA23** 🟡 [code] `protocol`/`status` filter values not validated as enums. *(query_log_routes.rs:59-76)*
+- [x] **GA23** 🟡 [code] `protocol`/`status` filter values not validated as enums. *(query_log_routes.rs:59-76)*
 - [ ] **GA24** 🟡 [spec] `filter.reason` stores provenance, not the documented `"adblock"`-style reason. *(query_log.rs:824-838)*
 - [ ] **GA25** 🟡 [code] Manual cert upload accepts private-key material. *(tls_routes.rs:348-377)*
 - [ ] **GA26** 🟡 [code] UniFi settings / local-domain mode have no typed route. *(clients_routes.rs)*

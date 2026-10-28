@@ -65,10 +65,10 @@ impl RawQueryLogParams {
             client_name_substr: non_empty(self.client_name_substr),
             domain: non_empty(self.domain),
             domain_substr: non_empty(self.domain_substr),
-            protocol: non_empty(self.protocol),
+            protocol: enum_value(self.protocol, "protocol", &PROTOCOLS)?,
             view_id: non_empty(self.view_id),
             profile_id: non_empty(self.profile_id),
-            status: non_empty(self.status),
+            status: enum_value(self.status, "status", &STATUSES)?,
             only_blocked: parse_bool(self.only_blocked.as_deref(), "only_blocked")?,
             only_with_clients: parse_bool(self.only_with_clients.as_deref(), "only_with_clients")?,
             order_by: parse_order_by(self.order_by.as_deref())?,
@@ -76,6 +76,28 @@ impl RawQueryLogParams {
             limit: page.limit,
             offset: page.offset,
         })
+    }
+}
+
+/// Wire values of the record `protocol` field (SPEC-control-api § Record schema).
+const PROTOCOLS: [&str; 5] = ["udp53", "tcp53", "dot", "doh", "doq"];
+/// Wire values of the record `status` field (SPEC-control-api § Record schema).
+const STATUSES: [&str; 4] = ["allowed", "blocked", "dnssec_bogus", "servfail"];
+
+/// An optional filter value that must be one of `allowed` (GA23). Empty means
+/// no filter.
+fn enum_value(
+    value: Option<String>,
+    field: &str,
+    allowed: &[&str],
+) -> Result<Option<String>, ControlApiError> {
+    match non_empty(value) {
+        Some(value) if !allowed.contains(&value.as_str()) => {
+            Err(ControlApiError::QueryLogInvalid {
+                reason: format!("`{field}` must be one of {}", allowed.join(", ")),
+            })
+        }
+        other => Ok(other),
     }
 }
 
@@ -159,4 +181,28 @@ pub(crate) async fn get_query_log(
             what: format!("query log entry {id}"),
         })?;
     Ok(success(record))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_and_status_filters_must_be_known_values() {
+        assert_eq!(
+            enum_value(Some("doh".into()), "protocol", &PROTOCOLS).unwrap(),
+            Some("doh".to_owned())
+        );
+        assert_eq!(
+            enum_value(Some(String::new()), "status", &STATUSES).unwrap(),
+            None
+        );
+        for bad in ["DoH", "udp", "blocked;DROP"] {
+            let err = enum_value(Some(bad.into()), "protocol", &PROTOCOLS).unwrap_err();
+            assert_eq!(err.code(), "control_api.query_log.invalid", "{bad}");
+        }
+        let err = enum_value(Some("nxdomain".into()), "status", &STATUSES).unwrap_err();
+        assert_eq!(err.code(), "control_api.query_log.invalid");
+    }
 }
