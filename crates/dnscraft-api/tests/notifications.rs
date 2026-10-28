@@ -127,8 +127,19 @@ async fn put_stores_the_channel_redacted_and_versioned() {
     assert!(!text.contains("s3cr3t-value"), "secret returned: {text}");
     assert!(!text.contains("query-secret"), "query returned: {text}");
     let channel = &body["data"]["channels"][0];
-    assert_eq!(channel["url"], "https://hooks.example.com:8443/in/abc");
+    assert_eq!(channel["host"], "hooks.example.com");
+    assert!(channel["url"].is_null(), "the URL is never returned");
     assert_eq!(channel["has_secret"], true);
+
+    // The config snapshot keeps only the host: the URL is a secret in kv.
+    let (_, config) = call(&state, Method::GET, "/api/v1/config", None).await;
+    let text = config.to_string();
+    assert!(!text.contains("/in/abc"), "URL path in snapshot: {text}");
+    assert!(!text.contains("query-secret"), "URL query in snapshot: {text}");
+    assert_eq!(
+        config["data"]["config"]["notifications"]["channels"][0]["host"],
+        "hooks.example.com"
+    );
 }
 
 #[tokio::test]

@@ -23,8 +23,8 @@ use crate::error::ControlApiError;
 use crate::server::AppState;
 use crate::system::unix_now;
 use crate::webhooks::{
-    EVENT_CATALOG, MAX_SECRET_BYTES, NotificationError, SECTION, channel_secret, deliver,
-    parse_channel_url, payload, redacted_url, secret_key, validate_section,
+    EVENT_CATALOG, MAX_SECRET_BYTES, NotificationError, SECTION, channel_secret, channel_url,
+    deliver, parse_channel_url, payload, secret_key, url_key, validate_section,
 };
 
 const INVALID: &str = "control_api.notifications.invalid";
@@ -54,12 +54,10 @@ fn check_hosts(section: &Value) -> Result<(), NotificationError> {
         .into_iter()
         .flatten()
     {
-        let url = channel
-            .get("url")
+        let host = channel
+            .get("host")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let parsed = parse_channel_url(url)?;
-        let host = parsed.host_str().unwrap_or_default();
         if !crate::webhooks::host_allowed(host, &allowed) {
             return Err(NotificationError::new(
                 HOST_NOT_ALLOWED,
@@ -70,7 +68,8 @@ fn check_hosts(section: &Value) -> Result<(), NotificationError> {
     Ok(())
 }
 
-/// `GET /api/v1/notifications` — channels without URL query, userinfo or secrets.
+/// `GET /api/v1/notifications` — channels with the host only; the URL and the
+/// secret are never returned.
 pub(crate) async fn get_notifications(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ControlApiError> {
@@ -95,7 +94,7 @@ pub(crate) async fn get_notifications(
             "id": id,
             "type": "webhook",
             "enabled": channel.get("enabled").and_then(Value::as_bool).unwrap_or(true),
-            "url": channel.get("url").and_then(Value::as_str).and_then(redacted_url),
+            "host": channel.get("host").and_then(Value::as_str),
             "has_secret": has_secret,
             "events": channel.get("events").cloned().unwrap_or(json!([])),
         }));
@@ -113,8 +112,10 @@ pub(crate) async fn get_notifications(
 
 /// `PUT /api/v1/notifications` — replaces the channel set atomically.
 ///
-/// Each channel may carry `secret`: a string sets it, `null` clears it, and an
-/// omitted key keeps the stored value.
+/// Each channel takes a `url` (write-only: stored in `kv`, reduced to its host
+/// in the config snapshot). It may be omitted to keep the stored URL of an
+/// existing channel. Each channel may carry `secret`: a string sets it, `null`
+/// clears it, an omitted key keeps the stored value.
 pub(crate) async fn put_notifications(
     State(state): State<AppState>,
     auth: Option<Extension<Authenticated>>,
@@ -128,7 +129,19 @@ pub(crate) async fn put_notifications(
         Some(Value::Array(list)) => list.clone(),
         Some(_) => return Err(NotificationError::new(INVALID, "channels must be a list").into()),
     };
+    let service = service(&state)?;
+    let mut snapshot = stored_snapshot(service).await?;
+    let previous: Vec<String> = snapshot
+        .get(SECTION)
+        .and_then(|section| section.get("channels"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|channel| channel.get("id").and_then(Value::as_str).map(str::to_owned))
+        .collect();
+
     let mut clean_channels = Vec::with_capacity(channels.len());
+    let mut url_ops: Vec<(String, String)> = Vec::new();
     let mut secret_ops: Vec<(String, Option<String>)> = Vec::new();
     for channel in channels {
         let mut clean = channel;
@@ -137,6 +150,32 @@ pub(crate) async fn put_notifications(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
+        let url = clean.as_object_mut().and_then(|map| map.remove("url"));
+        let host = match url {
+            Some(Value::String(raw)) => {
+                let parsed = parse_channel_url(&raw)?;
+                url_ops.push((id.clone(), raw));
+                parsed.host_str().unwrap_or_default().to_owned()
+            }
+            Some(_) => return Err(NotificationError::new(INVALID, "url must be a string").into()),
+            None => {
+                // Keep the stored URL of an existing channel; its host is kept too.
+                let existing = match state.db() {
+                    Some(db) => channel_url(db, &id).await?,
+                    None => None,
+                };
+                let stored = existing.ok_or_else(|| {
+                    NotificationError::new(INVALID, "url is required for a new channel")
+                })?;
+                parse_channel_url(&stored)?
+                    .host_str()
+                    .unwrap_or_default()
+                    .to_owned()
+            }
+        };
+        if let Some(object) = clean.as_object_mut() {
+            object.insert("host".to_owned(), json!(host));
+        }
         let secret = clean.as_object_mut().and_then(|map| map.remove("secret"));
         match secret {
             None => {}
@@ -155,26 +194,16 @@ pub(crate) async fn put_notifications(
         clean_channels.push(clean);
     }
     let section = json!({
-        "allowed_hosts": body.get("allowed_hosts").cloned().unwrap_or(json!([])),
+        "allowed_hosts": body.get("allowed_hosts").cloned().unwrap_or_else(|| json!([])),
         "allow_private_destinations": body
             .get("allow_private_destinations")
             .cloned()
-            .unwrap_or(json!(false)),
+            .unwrap_or_else(|| json!(false)),
         "channels": clean_channels,
     });
     validate_section(&section)?;
     check_hosts(&section)?;
 
-    let service = service(&state)?;
-    let mut snapshot = stored_snapshot(service).await?;
-    let previous: Vec<String> = snapshot
-        .get(SECTION)
-        .and_then(|section| section.get("channels"))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|channel| channel.get("id").and_then(Value::as_str).map(str::to_owned))
-        .collect();
     snapshot
         .as_object_mut()
         .ok_or_else(|| ControlApiError::Internal {
@@ -186,6 +215,9 @@ pub(crate) async fn put_notifications(
         .await?;
 
     if let Some(db) = state.db() {
+        for (id, url) in url_ops {
+            db.kv_set(&url_key(&id), &url).await?;
+        }
         for (id, value) in secret_ops {
             match value {
                 Some(secret) => db.kv_set(&secret_key(&id), &secret).await?,
@@ -201,6 +233,7 @@ pub(crate) async fn put_notifications(
             .collect();
         for removed in previous.iter().filter(|id| !kept.contains(id)) {
             db.kv_delete(&secret_key(removed)).await?;
+            db.kv_delete(&url_key(removed)).await?;
         }
     }
     Ok(success(json!({ "config_version": version })))
@@ -225,7 +258,7 @@ pub(crate) async fn post_notification_test(
     let service = service(&state)?;
     let snapshot = stored_snapshot(service).await?;
     let section = snapshot.get(SECTION).cloned().unwrap_or(json!({}));
-    let channel = section
+    section
         .get("channels")
         .and_then(Value::as_array)
         .into_iter()
@@ -238,16 +271,14 @@ pub(crate) async fn post_notification_test(
                 "no such channel",
             )
         })?;
-    let url = parse_channel_url(
-        channel
-            .get("url")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-    )?;
-    let secret = match state.db() {
-        Some(db) => channel_secret(db, &body.channel_id).await?,
-        None => None,
-    };
+    let db = state.db().ok_or_else(|| ControlApiError::NotFound {
+        what: "database".to_owned(),
+    })?;
+    let stored = channel_url(db, &body.channel_id)
+        .await?
+        .ok_or_else(|| NotificationError::new(INVALID, "channel has no stored url"))?;
+    let url = parse_channel_url(&stored)?;
+    let secret = channel_secret(db, &body.channel_id).await?;
     let message = payload(
         "notifications.test",
         "info",

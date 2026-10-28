@@ -54,9 +54,23 @@ impl NotificationError {
     }
 }
 
-/// `kv` key holding the webhook secret of one channel.
+/// `kv` key holding the webhook secret (sent as a bearer token) of one channel.
 pub(crate) fn secret_key(channel_id: &str) -> String {
     format!("notifications.secret.{channel_id}")
+}
+
+/// `kv` key holding the full webhook URL of one channel. The URL may embed a
+/// token, so it is a secret: write-only, never returned, never audited.
+pub(crate) fn url_key(channel_id: &str) -> String {
+    format!("notifications.url.{channel_id}")
+}
+
+/// The stored full URL of a channel, if any.
+pub(crate) async fn channel_url(
+    db: &Db,
+    channel_id: &str,
+) -> Result<Option<String>, ControlApiError> {
+    db.kv_get(&url_key(channel_id)).await
 }
 
 /// Whether `host` is an allowed hostname (`allowed_hosts` entry or a subdomain).
@@ -100,15 +114,6 @@ pub(crate) fn parse_channel_url(raw: &str) -> Result<Url, NotificationError> {
         return Err(invalid("url must not contain a fragment"));
     }
     Ok(url)
-}
-
-/// The URL as returned by the API: scheme, host, port and path only. The query
-/// and userinfo are never returned.
-pub(crate) fn redacted_url(raw: &str) -> Option<String> {
-    let url = Url::parse(raw).ok()?;
-    let host = url.host_str()?;
-    let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
-    Some(format!("{}://{host}{port}{}", url.scheme(), url.path()))
 }
 
 /// Validates the stored `notifications` section (shape only). Host allowlist
@@ -155,7 +160,7 @@ pub(crate) fn validate_section(section: &Value) -> Result<(), NotificationError>
             .as_object()
             .ok_or_else(|| invalid("each channel must be an object"))?;
         for key in object.keys() {
-            if !matches!(key.as_str(), "id" | "type" | "enabled" | "url" | "events") {
+            if !matches!(key.as_str(), "id" | "type" | "enabled" | "host" | "events") {
                 return Err(invalid(&format!("unknown channel field `{key}`")));
             }
         }
@@ -173,11 +178,13 @@ pub(crate) fn validate_section(section: &Value) -> Result<(), NotificationError>
         if object.get("enabled").is_some_and(|v| !v.is_boolean()) {
             return Err(invalid("channel enabled must be a boolean"));
         }
-        let url = object
-            .get("url")
+        let host = object
+            .get("host")
             .and_then(Value::as_str)
-            .ok_or_else(|| invalid("channel url is required"))?;
-        parse_channel_url(url)?;
+            .ok_or_else(|| invalid("channel host is required"))?;
+        if !valid_host(host) {
+            return Err(invalid("channel host must be a plain hostname"));
+        }
         let events = object
             .get("events")
             .and_then(Value::as_array)
@@ -412,14 +419,6 @@ mod tests {
         assert!(parse_channel_url("https://user:pw@example.com/h").is_err());
         assert!(parse_channel_url("https://example.com/h#frag").is_err());
         assert!(parse_channel_url("https://example.com/h?token=x").is_ok());
-    }
-
-    #[test]
-    fn returned_url_drops_query_and_userinfo() {
-        assert_eq!(
-            redacted_url("https://hooks.example.com:8443/in/abc?token=secret").as_deref(),
-            Some("https://hooks.example.com:8443/in/abc")
-        );
     }
 
     #[test]
