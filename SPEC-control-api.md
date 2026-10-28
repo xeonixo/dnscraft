@@ -39,7 +39,9 @@ values.
 - Not a DNS protocol implementation.
 - Not a general-purpose database API.
 - Not doing DNS filtering/rewrite decisions itself.
-- Not serving the web UI files; `web-ui` is embedded in the binary later.
+- Serving the web UI is optional via the `web-ui` feature (`rust-embed` of
+  `embed-web-ui/` / release `web/build`). Without the feature, behaviour is
+  unchanged (JSON 404 fallback for unknown paths).
 - Not implementing the actual multi-node replication protocol; it only provides
   versioned config and stable endpoint shapes that `cluster` can reuse.
 - Not creating localized messages; only stable `area.reason` codes and structured

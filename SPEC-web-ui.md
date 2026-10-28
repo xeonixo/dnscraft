@@ -140,7 +140,9 @@ component states, not server redirects.
 
 ### Serving the assets
 
-The routing contract (owner of this layer is an open question; see below):
+`control-api` owns the SPA fallback when built with `--features web-ui` (same
+router and TLS; resolved open question 1, option a). Without the feature, unknown
+paths keep the JSON 404 envelope.
 
 - `/api/v1/*`, `/mcp/v1`, `/healthz` and `/readyz` are handled by `control-api`
   exactly as specified. An unknown `/api/v1` path must keep returning the JSON error
@@ -159,11 +161,6 @@ The routing contract (owner of this layer is an open question; see below):
 - Compression: pre-compressed Brotli/gzip assets emitted by the frontend build, or
   on-the-fly compression if the server stack already provides it. This stays inside
   the lightweight budgets in [SPEC.md](SPEC.md).
-- `SPEC-control-api.md` § Non-goals currently states that `control-api` does **not**
-  serve the web UI files. Giving `control-api` the fallback service therefore needs
-  an explicit amendment to that spec; the alternative is that the `dnscraft` binary
-  crate owns the fallback in front of the API router. Either way the path ownership
-  above must hold. This is an open question, not an invented endpoint.
 
 ### Browser ↔ API interaction
 
@@ -871,11 +868,13 @@ Rules:
 - Length caps and control-character neutralisation are applied server-side
   ([SPEC-mcp.md](SPEC-mcp.md) § Prompt-injection), but the UI still renders values as
   data and truncates visually.
-- Content-Security-Policy: `default-src 'self'; script-src 'self'; style-src 'self';
-  img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none';
-  base-uri 'none'; form-action 'self'; frame-ancestors 'none'`. No third-party
-  scripts, fonts or analytics. If a style binding requires inline styles, use a
-  nonce or hash rather than weakening `style-src`.
+- Content-Security-Policy: `default-src 'self'; script-src 'self' '<hashes>';
+  style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self';
+  font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self';
+  frame-ancestors 'none'`. Script hashes come from build `csp-script-hashes.json`
+  (theme bootstrap + SvelteKit starter). `style-src` needs `'unsafe-inline'` for
+  Svelte scoped styles until a nonce pipeline exists. No third-party scripts, fonts
+  or analytics.
 - `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
   `Permissions-Policy` minimal. Consider Trusted Types once browser support is
   acceptable; it is not mandatory in v1.
@@ -1189,12 +1188,9 @@ Deliberately not included:
 
 ## Open questions
 
-1. **Who serves the static assets?** `SPEC-control-api.md` § Non-goals says
-   `control-api` does not serve the web UI files; this spec's routing contract
-   requires an SPA fallback beside the API. Choose: (a) amend `control-api` to own a
-   fallback service (recommended: same router, same TLS, one binary), or (b) let the
-   `dnscraft` binary crate compose the embedded asset service in front of the API
-   router. Either way, `/api/v1` 404s must stay JSON. Recommendation: (a).
+1. **Who serves the static assets?** **Resolved** (option a): `control-api` owns
+   the SPA fallback via the `web-ui` feature (`rust-embed`); `/api/v1` and `/mcp`
+   404s stay JSON. See § Serving the assets and `SPEC-control-api.md` § Non-goals.
 2. **CSRF token issuance.** Where does the SPA obtain the synchronizer token
    (response header, `GET /api/v1/auth/me` field, or non-HttpOnly cookie), and what
    are the cookie and header names? `SPEC-control-api.md` requires CSRF but does not

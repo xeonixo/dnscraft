@@ -26,8 +26,8 @@ Out of scope until owner decides: WX1–WX8, Alerts/Blocked-services backends (s
   (plus Decided ones: vitest, playwright, paraglide, codemirror). Nothing else without asking.
 - CSRF: token field in `GET /auth/me` + non-HttpOnly `dnscraft_csrf` cookie, header `X-CSRF-Token`.
 - OIDC `return_to`: same-origin path only, validated server-side.
-- Static assets served by `control-api` (same router/TLS; `/api/v1` 404 stays JSON). W10 touches Rust: STOP for owner
-  review before committing that part.
+- Static assets served by `control-api` (same router/TLS; `/api/v1` 404 stays JSON). W10 rust-embed landed:
+  STOP for owner human review of commits on main before release enablement.
 - Missing backends (alerts, update check, backups, blocked services, WX1-WX8): placeholder "not available" states only.
 
 Status: auto mode approved; W1–W10 done (web + rust-embed `web-ui` feature). Out of scope until owner decides: WX1–WX8 and missing backends (alerts/update/backups/blocked-services placeholders only).

@@ -35,6 +35,10 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
+      - name: Clippy (dnscraft-api web-ui)
+        run: cargo clippy -p dnscraft-api --all-targets --locked --features web-ui -- -D warnings
+      - name: Test (dnscraft-api web-ui embed)
+        run: cargo test -p dnscraft-api --locked --features web-ui --test web_ui_embed
 
   # Pin: https://github.com/EmbarkStudios/cargo-deny-action/releases/tag/v2.1.1
   # (README: https://github.com/EmbarkStudios/cargo-deny-action#usage)

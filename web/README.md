@@ -30,6 +30,7 @@ font-src 'self';
 object-src 'none';
 base-uri 'self';
 frame-ancestors 'none';
+form-action 'self';
 ```
 
 - **`script-src` hashes:** every inline `<script>` in `build/index.html`. The theme bootstrap in `src/app.html` is stable (`sha256-+/UWW+kFTQfRcLtOTJw4BrviiPaL5UMxrjQpU8Pu7Mk=`); do not hard-code the SvelteKit starter hash.

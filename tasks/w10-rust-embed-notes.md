@@ -10,6 +10,8 @@
 
 ## Release embed
 
+Owner human review is the next gate; release still requires copying `web/build` into `embed-web-ui/`.
+
 1. `cd web && pnpm build` (also writes `build/csp-script-hashes.json`).
 2. Replace `crates/dnscraft-api/embed-web-ui/` contents with `web/build/*` (keep the hashes file).
 3. Build control-api with `--features web-ui`.

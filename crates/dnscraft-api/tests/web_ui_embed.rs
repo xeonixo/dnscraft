@@ -43,9 +43,11 @@ fn assert_html_security_headers(res: &Response) {
         "expected text/html, got {ct:?}"
     );
     assert_eq!(header_str(res, header::CACHE_CONTROL), "no-cache");
+    let csp = header_str(res, header::CONTENT_SECURITY_POLICY);
+    assert!(!csp.is_empty(), "missing Content-Security-Policy");
     assert!(
-        !header_str(res, header::CONTENT_SECURITY_POLICY).is_empty(),
-        "missing Content-Security-Policy"
+        csp.contains("form-action 'self'"),
+        "CSP missing form-action 'self': {csp:?}"
     );
     assert_eq!(
         header_str(res, header::X_CONTENT_TYPE_OPTIONS),

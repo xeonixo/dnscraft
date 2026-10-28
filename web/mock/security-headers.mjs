@@ -35,6 +35,7 @@ export function buildCsp(hashes = scriptSrcHashes()) {
 		"object-src 'none'",
 		"base-uri 'self'",
 		"frame-ancestors 'none'",
+		"form-action 'self'",
 	].join('; ');
 }
 

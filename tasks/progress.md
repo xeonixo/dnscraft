@@ -2,6 +2,15 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — W10 rust-embed landed; SPEC Q1 / control-api Non-goals aligned
+
+- **Landed:** control-api `web-ui` feature (`rust-embed` of `embed-web-ui/`); SPA
+  fallback beside API; JSON 404 for `/api`/`/mcp` misses preserved; embed tests.
+- **SPEC:** open question 1 resolved (option a); `SPEC-control-api.md` Non-goals
+  and `SPEC-web-ui.md` CSP / Serving updated to match shipped policy for owner review.
+- **Next:** owner human review of commits on main before release enablement
+  (still copy `web/build` → `embed-web-ui/`).
+
 ## 2026-10-28 — boot/cluster: seed + sync skip GF2 catalog fetch
 
 - **Fix:** `seed_if_empty` and `apply_synced_config` store/apply offline (`refresh_lists: false`); admin `replace`/`mutate`/rollback still refresh (GF2).
