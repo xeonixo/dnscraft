@@ -42,12 +42,24 @@ async fn db(clock: Arc<ManualClock>) -> Db {
 
 /// Builds the router with a local account `admin` whose password is [`PASSWORD`].
 async fn setup(clock: Arc<ManualClock>) -> (axum::Router, LocalAccountStore, SessionStore, Db) {
-    let db = db(clock).await;
+    setup_with_trusted(clock, Vec::new()).await
+}
+
+/// Like [`setup`], with `trusted` as the reverse proxies whose forwarded
+/// headers are honoured.
+async fn setup_with_trusted(
+    clock: Arc<ManualClock>,
+    trusted: Vec<std::net::IpAddr>,
+) -> (axum::Router, LocalAccountStore, SessionStore, Db) {
+    let db = db(clock.clone()).await;
     let sessions = SessionStore::new(db.clone(), IDLE, ABSOLUTE);
     let auth = AuthState::new(sessions.clone(), TokenStore::new(db.clone(), MAX_TTL));
     let local = LocalAccountStore::new(db.clone(), MAX_ATTEMPTS, WINDOW);
     local.upsert("admin", PASSWORD, Role::Admin).await.unwrap();
+    let limiter =
+        dnscraft_api::RateLimiter::new(dnscraft_api::RateLimitConfig::default(), clock, trusted);
     let app = AppState::new()
+        .with_rate_limiter(Arc::new(limiter))
         .with_auth(auth)
         .with_local_login(local.clone());
     let router = app.router().layer(MockConnectInfo(test_addr()));
@@ -137,8 +149,23 @@ async fn session_cookie_secure_flag_follows_forwarded_proto() {
     let cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
     assert!(!cookie.contains("; Secure"), "{cookie}");
 
-    // A terminating reverse proxy reports https: the cookie must be flagged
-    // `Secure` so the browser never sends it over plaintext.
+    // An https claim from an untrusted peer is spoofable and ignored.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/local/login")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-forwarded-proto", "https")
+        .body(Body::from(
+            json!({ "username": "admin", "password": PASSWORD }).to_string(),
+        ))
+        .unwrap();
+    let (_, headers, _) = send(router.clone(), req).await;
+    let cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+    assert!(!cookie.contains("; Secure"), "{cookie}");
+
+    // A terminating reverse proxy (a trusted peer) reports https: the cookie
+    // must be flagged `Secure` so the browser never sends it over plaintext.
+    let (router, _, _, _) = setup_with_trusted(clock(), vec![test_addr().ip()]).await;
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/local/login")

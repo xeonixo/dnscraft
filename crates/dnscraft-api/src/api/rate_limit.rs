@@ -252,6 +252,12 @@ fn resolve_source(peer: IpAddr, trusted: &[IpAddr], headers: &HeaderMap) -> IpAd
     peer
 }
 
+/// The client address for a request: the trusted-proxy rule of
+/// [`resolve_source`], shared with handlers that need the caller (login lockout).
+pub(crate) fn client_source(state: &AppState, peer: IpAddr, headers: &HeaderMap) -> IpAddr {
+    resolve_source(peer, &state.rate_limiter().trusted_proxies, headers)
+}
+
 /// Classifies a request into its rate-limit bucket: auth paths use the auth
 /// bucket regardless of method, GET/HEAD are reads, everything else is a write.
 pub(crate) fn classify(method: &Method, path: &str) -> BucketClass {
@@ -274,7 +280,7 @@ pub(crate) fn classify(method: &Method, path: &str) -> BucketClass {
 pub(crate) async fn rate_limit(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Response {
     let limiter = state.rate_limiter();
@@ -283,6 +289,12 @@ pub(crate) async fn rate_limit(
         &limiter.trusted_proxies,
         req.headers(),
     );
+    // Forwarded protocol is honoured only from a trusted proxy (GA10): from any
+    // other peer it is removed before a handler can read it.
+    if !limiter.trusted_proxies.contains(&peer.ip().to_canonical()) {
+        req.headers_mut()
+            .remove(HeaderName::from_static("x-forwarded-proto"));
+    }
     let class = classify(req.method(), req.uri().path());
     let is_mcp = req.uri().path().starts_with("/mcp/v1");
     match limiter.check(&source.to_string(), class) {
@@ -520,6 +532,52 @@ mod tests {
         assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
         let second = app.oneshot(probe()).await.unwrap();
         assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn forwarded_proto_is_stripped_from_untrusted_peers_only() {
+        use axum::body::Body;
+        use axum::extract::connect_info::MockConnectInfo;
+        use axum::middleware;
+        use axum::routing::get;
+        use axum::{Router, http::Request};
+        use tower::ServiceExt as _;
+
+        async fn echo(headers: HeaderMap) -> String {
+            headers
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("none")
+                .to_owned()
+        }
+        let peer: IpAddr = "192.0.2.10".parse().unwrap();
+        let state = |trusted: Vec<IpAddr>| {
+            AppState::new().with_rate_limiter(Arc::new(RateLimiter::with_capacity(
+                cfg(10, 2),
+                clock(),
+                trusted,
+                8,
+            )))
+        };
+        let read = |trusted: Vec<IpAddr>| {
+            let app = Router::new()
+                .route("/x", get(echo))
+                .layer(middleware::from_fn_with_state(state(trusted), rate_limit))
+                .layer(MockConnectInfo(SocketAddr::new(peer, 1)));
+            async move {
+                let req = Request::builder()
+                    .uri("/x")
+                    .header("x-forwarded-proto", "https")
+                    .body(Body::empty())
+                    .unwrap();
+                let bytes = axum::body::to_bytes(app.oneshot(req).await.unwrap().into_body(), 64)
+                    .await
+                    .unwrap();
+                String::from_utf8(bytes.to_vec()).unwrap()
+            }
+        };
+        assert_eq!(read(Vec::new()).await, "none");
+        assert_eq!(read(vec![peer]).await, "https");
     }
 
     #[test]

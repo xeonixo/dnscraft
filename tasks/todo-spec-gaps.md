@@ -183,8 +183,8 @@ approval before Phase 0 code.
 - [ ] **GA7** 🟠 [code] Idempotency-Key not read or stored anywhere. *(grep Idempotency → 0)*
 - [x] **GA8** 🟠 [code] Rate limit keyed only by source IP, not per principal. *(rate_limit.rs:1-9, 242-293)*
 - [x] **GA9** 🟠 [code] `/mcp/v1` requests don't count against the auth bucket. *(rate_limit.rs:256-264)*
-- [ ] **GA10** 🟠 [code] `X-Forwarded-Proto` honoured unconditionally (spoofable); only `X-Forwarded-For` checks `trusted_proxies`. *(local.rs:346-351, oidc.rs:495-513)*
-- [ ] **GA11** 🟠 [code] Local-login lockout per account only, no per-IP counter. *(local.rs:181-276, migrations.rs:92-99)*
+- [x] **GA10** 🟠 [code] `X-Forwarded-Proto` honoured unconditionally (spoofable); only `X-Forwarded-For` checks `trusted_proxies`. *(local.rs:346-351, oidc.rs:495-513)*
+- [x] **GA11** 🟠 [code] Local-login lockout per account only, no per-IP counter. *(local.rs:181-276, migrations.rs:92-99)*
 - [ ] **GA12** 🟠 [code] OIDC `groups` claim name hardcoded (no config field). *(oidc.rs:74-81; config.rs:100-126)*
 - [ ] **GA13** 🟠 [code] OIDC login success/failure not audited; token create/revoke and logout not audited. *(oidc.rs:297-488, tokens.rs:326-367, auth/mod.rs:296-315)*
 - [ ] **GA14** 🟠 [code] `GET /status` returns only TLS fields (no node/module/version). *(router.rs:235-250)*

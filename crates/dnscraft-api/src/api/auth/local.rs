@@ -12,8 +12,10 @@
 //! attempt — appends one `auth.local.login` record to the A2 audit log. The
 //! password is never part of that record.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::watch;
@@ -23,7 +25,7 @@ use argon2::password_hash::PasswordHasher as _;
 use argon2::password_hash::PasswordVerifier as _;
 use argon2::password_hash::phc::PasswordHash;
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use rusqlite::{OptionalExtension, params};
@@ -81,7 +83,12 @@ pub struct LocalAccountStore {
     /// Set by [`AuthState`](super::AuthState) so account changes wake the
     /// master's auth-snapshot push task.
     notifier: Option<watch::Sender<u64>>,
+    /// Failed credential checks per source IP: `(failures, window_started)`.
+    sources: Arc<Mutex<HashMap<IpAddr, (u32, i64)>>>,
 }
+
+/// Source entries kept before expired ones are pruned (bounds memory).
+const MAX_TRACKED_LOGIN_SOURCES: usize = 10_000;
 
 impl LocalAccountStore {
     /// Creates a store over `db` that locks an account after `max_attempts`
@@ -93,6 +100,7 @@ impl LocalAccountStore {
             lock_window,
             epoch: Arc::new(AtomicU64::new(0)),
             notifier: None,
+            sources: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -226,6 +234,63 @@ impl LocalAccountStore {
         self.epoch.fetch_add(1, Ordering::Relaxed);
         self.notify();
         Ok(())
+    }
+
+    /// [`authenticate`](Self::authenticate) plus a per-source lockout (GA11):
+    /// after `max_attempts` credential failures from `source` within the lock
+    /// window, further attempts from it are refused as `control_api.auth.locked`
+    /// whichever account they name. The source is the resolved client address.
+    pub async fn authenticate_from(
+        &self,
+        source: IpAddr,
+        username: &str,
+        password: String,
+    ) -> Result<Role, ControlApiError> {
+        let now = self.db.now_unix();
+        let window = self.lock_window.as_secs() as i64;
+        if self.source_locked(source, now, window) {
+            self.audit(
+                username.trim(),
+                "error",
+                Some(ControlApiError::AuthLocked.code().to_owned()),
+            )
+            .await?;
+            return Err(ControlApiError::AuthLocked);
+        }
+        let result = self.authenticate(username, password).await;
+        if matches!(
+            result,
+            Err(ControlApiError::AuthLocal | ControlApiError::AuthLocked)
+        ) {
+            self.note_source_failure(source, now, window);
+        }
+        result
+    }
+
+    fn source_locked(&self, source: IpAddr, now: i64, window: i64) -> bool {
+        let max = i64::from(self.max_attempts);
+        let sources = self
+            .sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sources.get(&source).is_some_and(|(failed, start)| {
+            i64::from(*failed) >= max && now.saturating_sub(*start) < window
+        })
+    }
+
+    fn note_source_failure(&self, source: IpAddr, now: i64, window: i64) {
+        let mut sources = self
+            .sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sources.len() >= MAX_TRACKED_LOGIN_SOURCES {
+            sources.retain(|_, (_, start)| now.saturating_sub(*start) < window);
+        }
+        let entry = sources.entry(source).or_insert((0, now));
+        if now.saturating_sub(entry.1) >= window {
+            *entry = (0, now);
+        }
+        entry.0 = entry.0.saturating_add(1);
     }
 
     /// Verifies `password` for `username`, enforcing lockout on the injected
@@ -376,6 +441,7 @@ pub(crate) struct LocalLoginRequest {
 /// route is marked so by the RBAC middleware; no bearer token is required.
 pub(crate) async fn local_login(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(req): Json<LocalLoginRequest>,
 ) -> Result<Response, ControlApiError> {
@@ -394,7 +460,10 @@ pub(crate) async fn local_login(
         })?;
 
     let actor_id = req.username.trim().to_owned();
-    let role = local.authenticate(&req.username, req.password).await?;
+    let source = crate::api::rate_limit::client_source(&state, peer.ip().to_canonical(), &headers);
+    let role = local
+        .authenticate_from(source, &req.username, req.password)
+        .await?;
     let created = sessions.create(actor_id, role).await?;
 
     // `Secure` follows direct TLS or a terminating reverse proxy's
@@ -517,5 +586,35 @@ mod tests {
     async fn wrong_password_never_matches_a_malformed_hash() {
         assert!(!password_matches(b"x", "not-a-phc-string"));
         assert!(!password_matches(b"x", "$argon2id$broken"));
+    }
+
+    #[tokio::test]
+    async fn source_lockout_refuses_a_source_across_accounts_only() {
+        let (store, _db) = store().await;
+        store
+            .upsert("admin", "correct horse", Role::Admin)
+            .await
+            .unwrap();
+        let attacker: IpAddr = "192.0.2.7".parse().unwrap();
+        let other: IpAddr = "192.0.2.8".parse().unwrap();
+        for i in 0..5 {
+            let err = store
+                .authenticate_from(attacker, &format!("nobody{i}"), "x".into())
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), "control_api.auth.local");
+        }
+        // The attacker is locked even for a correct password on a real account.
+        let err = store
+            .authenticate_from(attacker, "admin", "correct horse".into())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "control_api.auth.locked");
+        // Another source is not affected.
+        let role = store
+            .authenticate_from(other, "admin", "correct horse".into())
+            .await
+            .unwrap();
+        assert_eq!(role, Role::Admin);
     }
 }
