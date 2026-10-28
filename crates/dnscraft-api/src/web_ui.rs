@@ -51,6 +51,14 @@ mod inner {
         "application/octet-stream"
     }
 
+    /// Fallback CSP with the known-valid theme bootstrap hash (ASCII-only).
+    /// Hash must match `THEME_BOOTSTRAP_HASH` (literal required by `from_static`).
+    fn default_csp_header_value() -> HeaderValue {
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self' 'sha256-+/UWW+kFTQfRcLtOTJw4BrviiPaL5UMxrjQpU8Pu7Mk='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
+        )
+    }
+
     fn csp_header_value() -> HeaderValue {
         static CSP: OnceLock<HeaderValue> = OnceLock::new();
         CSP.get_or_init(|| {
@@ -69,9 +77,9 @@ mod inner {
             }
             let script_src = parts.join(" ");
             let value = format!(
-                "default-src 'self'; script-src {script_src}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+                "default-src 'self'; script-src {script_src}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
             );
-            HeaderValue::try_from(value).expect("CSP header value is valid")
+            HeaderValue::try_from(value).unwrap_or_else(|_| default_csp_header_value())
         })
         .clone()
     }
@@ -95,9 +103,11 @@ mod inner {
     fn cache_control(path: &str) -> &'static str {
         if path.contains("/_app/immutable/") {
             "public, max-age=31536000, immutable"
-        } else if path.ends_with(".html") || path == "index.html" {
-            "no-cache"
-        } else if path == "manifest.webmanifest" || path == "sw.js" {
+        } else if path.ends_with(".html")
+            || path == "index.html"
+            || path == "manifest.webmanifest"
+            || path == "sw.js"
+        {
             "no-cache"
         } else {
             "public, max-age=3600"
