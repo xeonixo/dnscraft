@@ -47,6 +47,7 @@
 	"state_empty": "Nothing here yet.",
 	"state_error": "Something went wrong.",
 	"state_offline": "You are offline. Check your connection and try again.",
+	"state_backend_unreachable": "The backend is unreachable. Check your connection and try again.",
 	"error_code_label": "Error code",
 	"error_unknown": "An unexpected error occurred.",
 	"error_control_api_auth_oidc": "Sign-in with the identity provider failed.",

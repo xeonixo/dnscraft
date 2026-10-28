@@ -12,6 +12,11 @@ import { readFile, stat } from 'node:fs/promises';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
+	BASE_SECURITY_HEADERS,
+	cacheControlForPath,
+	htmlSecurityHeaders,
+} from './security-headers.mjs';
+import {
 	buildRecords,
 	initialConfig,
 	MOCK_AUDIT,
@@ -335,8 +340,7 @@ function readJsonBody(request) {
 
 function send(response, status, body, headers = {}) {
 	response.writeHead(status, {
-		'X-Content-Type-Options': 'nosniff',
-		'Referrer-Policy': 'no-referrer',
+		...BASE_SECURITY_HEADERS,
 		'Cache-Control': 'no-store',
 		...headers,
 	});
@@ -1276,7 +1280,15 @@ async function serveStatic(request, response, buildDir) {
 	try {
 		const body = await readFile(file);
 		const type = CONTENT_TYPES[extname(file)] ?? 'application/octet-stream';
-		return send(response, 200, body, { 'Content-Type': type });
+		const servedPath = file === join(buildDir, 'index.html') ? '/' : url.pathname;
+		const security = type.startsWith('text/html')
+			? htmlSecurityHeaders(buildDir)
+			: BASE_SECURITY_HEADERS;
+		return send(response, 200, body, {
+			'Content-Type': type,
+			'Cache-Control': cacheControlForPath(servedPath),
+			...security,
+		});
 	} catch {
 		return send(response, 503, 'The web build is missing. Run `pnpm build` first.', {
 			'Content-Type': 'text/plain; charset=utf-8',

@@ -4,3 +4,8 @@ build
 # Paraglide output and generated inlang project (scripts/gen-inlang.mjs)
 src/lib/paraglide/
 .generated/
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/

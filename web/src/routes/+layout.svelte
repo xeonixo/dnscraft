@@ -7,6 +7,7 @@
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import AppShell from '$lib/components/AppShell.svelte';
+	import Button from '$lib/components/Button.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import LiveRegion from '$lib/components/LiveRegion.svelte';
 	import { roleLabel, routeDecision } from '$lib/auth/guards';
@@ -16,7 +17,10 @@
 	import { getLocale } from '$lib/i18n/locale';
 	import { navItemForPath } from '$lib/nav';
 	import { m } from '$lib/paraglide/messages';
-	import { initTheme } from '$lib/theme';
+	import { CLIENT_NETWORK } from '$lib/api/error-codes';
+	import { registerServiceWorker } from '$lib/pwa/register-sw';
+	import { themeColorFor } from '$lib/pwa/theme-colors';
+	import { initTheme, resolveTheme, theme } from '$lib/theme';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -29,8 +33,11 @@
 	const decision = $derived(routeDecision({ status: auth.status, path, role: auth.role }));
 	const requiredRole = $derived(navItemForPath(path)?.minRole ?? 'viewer');
 	const title = $derived(navItemForPath(path)?.label() ?? m.app_name());
+	const resolvedTheme = $derived(resolveTheme($theme));
+	const themeColor = $derived(themeColorFor(resolvedTheme));
 
 	onMount(() => {
+		registerServiceWorker();
 		void loadMe();
 	});
 
@@ -49,6 +56,8 @@
 
 <svelte:head>
 	<title>{m.document_title({ page: title, app: m.app_name() })}</title>
+	<meta name="theme-color" content={themeColor} />
+	<link rel="manifest" href="/manifest.webmanifest" />
 </svelte:head>
 
 {#if publicRoute}
@@ -66,7 +75,14 @@
 	</AppShell>
 {:else if auth.status === 'unknown' && auth.loadErrorCode}
 	<main class="standalone">
-		<ErrorNotice code={auth.loadErrorCode} onretry={() => void loadMe()} />
+		{#if auth.loadErrorCode === CLIENT_NETWORK}
+			<div class="offline" role="alert">
+				<p class="offline-message">{m.state_backend_unreachable()}</p>
+				<Button variant="primary" onclick={() => void loadMe()}>{m.action_retry()}</Button>
+			</div>
+		{:else}
+			<ErrorNotice code={auth.loadErrorCode} onretry={() => void loadMe()} />
+		{/if}
 	</main>
 {:else}
 	<main class="standalone">
@@ -94,6 +110,23 @@
 		margin: 0;
 		color: var(--label-2);
 		text-align: center;
+	}
+
+	.offline {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+		padding: var(--space-4);
+		background: var(--surface);
+		border: 1px solid var(--separator);
+		border-radius: var(--r-card);
+		color: var(--label);
+	}
+
+	.offline-message {
+		margin: 0;
+		font-weight: 600;
+		overflow-wrap: anywhere;
 	}
 
 	.permission {

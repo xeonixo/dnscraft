@@ -7,7 +7,6 @@
 		"dev": "vite dev",
 		"predev": "node scripts/gen-inlang.mjs",
 		"build": "vite build",
-		"prebuild": "node scripts/gen-inlang.mjs",
 		"preview": "vite preview",
 		"mock": "node mock/server.mjs",
 		"prepare": "svelte-kit sync && node scripts/gen-inlang.mjs",
@@ -15,8 +14,11 @@
 		"check": "pnpm run i18n && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
 		"lint": "pnpm run i18n && eslint . && prettier --check .",
 		"format": "prettier --write .",
-		"test": "vitest run && node --test mock/server.test.mjs",
-		"pretest": "node scripts/gen-inlang.mjs"
+		"test": "vitest run && node --test mock/server.test.mjs mock/no-html.test.mjs",
+		"pretest": "node scripts/gen-inlang.mjs",
+		"postbuild": "node scripts/gen-sw.mjs && node scripts/gen-csp-hashes.mjs",
+		"prebuild": "node scripts/gen-inlang.mjs && node scripts/gen-pwa-icons.mjs",
+		"test:e2e": "playwright test"
 	},
 	"devDependencies": {
 		"@inlang/paraglide-js": "2.26.0",
@@ -37,6 +39,9 @@
 		"typescript": "5.9.3",
 		"typescript-eslint": "8.72.1",
 		"vite": "7.3.7",
-		"vitest": "4.1.12"
+		"vitest": "4.1.12",
+		"@axe-core/playwright": "4.10.1",
+		"@playwright/test": "1.51.0",
+		"playwright": "1.51.0"
 	}
 }

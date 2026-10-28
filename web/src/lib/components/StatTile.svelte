@@ -82,7 +82,8 @@
 
 	.tile.danger .tone,
 	.tile.danger .value {
-		color: var(--danger);
+		/* danger-fill is darker than --danger and clears 4.5:1 on surface. */
+		color: var(--danger-fill);
 	}
 
 	.num {

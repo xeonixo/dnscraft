@@ -6,6 +6,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { CSP } from './security-headers.mjs';
 import { createMockServer, MOCK_CSRF } from './server.mjs';
 
 let server;
@@ -24,6 +25,18 @@ before(async () => {
 
 after(() => {
 	server.close();
+});
+
+describe('mock static security headers', () => {
+	it('sends a strict CSP on HTML responses', async () => {
+		const response = await fetch(`${base}/`);
+		assert.equal(response.status, 200);
+		assert.match(response.headers.get('content-type'), /text\/html/);
+		assert.equal(response.headers.get('content-security-policy'), CSP);
+		assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+		assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+		assert.equal(response.headers.get('cache-control'), 'no-cache');
+	});
 });
 
 describe('mock control-api', () => {

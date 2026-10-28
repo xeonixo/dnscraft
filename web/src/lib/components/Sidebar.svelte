@@ -175,8 +175,9 @@
 	}
 
 	.nav-item[aria-current='page'] {
+		/* Label color (not accent) so text stays ≥4.5:1 on accent-fill. */
 		background: var(--accent-fill);
-		color: var(--accent);
+		color: var(--label);
 		font-weight: 500;
 	}
 

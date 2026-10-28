@@ -47,6 +47,7 @@
 	"state_empty": "Hier gibt es noch nichts.",
 	"state_error": "Etwas ist schiefgelaufen.",
 	"state_offline": "Du bist offline. Prüfe deine Verbindung und versuche es erneut.",
+	"state_backend_unreachable": "Das Backend ist nicht erreichbar. Prüfe deine Verbindung und versuche es erneut.",
 	"error_code_label": "Fehlercode",
 	"error_unknown": "Ein unerwarteter Fehler ist aufgetreten.",
 	"error_control_api_auth_oidc": "Die Anmeldung beim Identitätsanbieter ist fehlgeschlagen.",

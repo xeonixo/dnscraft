@@ -7,7 +7,35 @@ Client-side SvelteKit SPA (adapter-static, `index.html` fallback), built into `w
 - `pnpm check`: svelte-check and `tsc --noEmit`
 - `pnpm lint`: ESLint and Prettier check
 - `pnpm test`: Vitest (token contrast and no-literal-color scan, message catalog coverage, locale helpers, raw-literal scan)
-- `pnpm build`: production build to `build/`
+- `pnpm build`: production build to `build/` (generates PWA icons, then `build/sw.js` after the Vite build)
+- `pnpm test:e2e`: Playwright smoke tests against the local mock (`pnpm build` first; uses installed Google Chrome via `channel: 'chrome'`)
+
+## PWA
+
+- `static/manifest.webmanifest`, root `sw.js` (generated into `build/` on `pnpm build`), and PNG icons under `static/icons/`.
+- The service worker registers only in a secure context (`https://` or `http://localhost`). Self-signed bootstrap without a trusted root skips registration; the UI does not claim offline until registration succeeds.
+- When the control-api cannot be reached, the shell shows `state_backend_unreachable`.
+
+## Content-Security-Policy (production intent)
+
+The mock server (`pnpm mock`) sends this policy on **HTML** responses so local dev matches production. `script-src` hashes are generated into `build/csp-script-hashes.json` on every `pnpm build` (theme bootstrap + the SvelteKit inline starter; the starter hash changes per build).
+
+```
+default-src 'self';
+script-src 'self' 'sha256-…' 'sha256-…';
+style-src 'self' 'unsafe-inline';
+img-src 'self' data:;
+connect-src 'self';
+font-src 'self';
+object-src 'none';
+base-uri 'self';
+frame-ancestors 'none';
+```
+
+- **`script-src` hashes:** every inline `<script>` in `build/index.html`. The theme bootstrap in `src/app.html` is stable (`sha256-+/UWW+kFTQfRcLtOTJw4BrviiPaL5UMxrjQpU8Pu7Mk=`); do not hard-code the SvelteKit starter hash.
+- **`style-src 'unsafe-inline'`:** Svelte scoped component CSS is emitted as inline `<style>` blocks in the JS bundle; without a build-time nonce pipeline, `'unsafe-inline'` is required for those styles. Application logic still uses semantic tokens in `.css` files only.
+- Also sent on HTML/static: `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
+- Caching: `/_app/immutable/*` → `Cache-Control: public, max-age=31536000, immutable`; `index.html` and `/` → `no-cache`; `manifest.webmanifest` and `/sw.js` → `no-cache`.
 
 ## Internationalization
 

@@ -3,6 +3,12 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+		<meta name="apple-mobile-web-app-title" content="DNScraft" />
+		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+		<!-- Fallback before the SPA sets a route-specific title via svelte:head. -->
+		<title>DNScraft</title>
 		<script>
 			// Applies the stored theme before first paint (no flash). Unset or "system" leaves the attribute off.
 			try {
