@@ -115,12 +115,10 @@
 - [ ] **WX7** `GET/PUT /api/v1/notifications` and `POST /api/v1/notifications/test`,
       owner `control-api` (delivery module in `dnscraft-api`), role viewer/admin read,
       admin write.
-  - [ ] Phase 0: OPEN owner decisions. (a) v1 scope says no push or email (SPEC.md,
-        SPEC-web-ui Alerts row): accept the exception? (b) overlap with `tls.notifications`:
-        replace with migration, or run side by side? (c) ntfy in v1: yes or no?
-        (d) `notifications.allowed_hosts` default: empty (reject all) or public hosts
-        allowed. (e) `allow_private_destinations` default false, confirm. Record in
-        `SPEC-control-api.md` § Decisions.
+  - [x] Phase 0: owner decisions recorded in `SPEC-control-api.md` (WX7 paragraph), 2026-10-28:
+        (a) webhook only in v1, no ntfy/e-mail/push; (b) side by side with `tls.notifications`,
+        migrate later; (c) ntfy not in v1; (d) `allowed_hosts` empty = reject all;
+        (e) `allow_private_destinations` false.
   - [ ] Phase 1: config section, egress guard and delivery. Tests:
         `egress_rejects_private_ranges_by_default`, `egress_pins_validated_address`,
         `egress_does_not_follow_redirects`, `egress_host_not_in_allowlist_422`,
@@ -159,6 +157,6 @@
 - [ ] After WX2 phase 2: stream serves the same rows as the list for an identical filter.
 - [ ] After WX4 and WX6 phase 2: flush and validate routes covered by the RBAC matrix and
       audit tests.
-- [ ] After WX7 phase 0: all five owner decisions recorded; no egress code before that.
+- [x] After WX7 phase 0: all five owner decisions recorded; no egress code before that.
 - [ ] After WX8 phase 2: revoke-then-401 test green; error-code uniqueness test covers every
       new code from `SPEC-control-api.md` § Error codes (WX2–WX8).

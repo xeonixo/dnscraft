@@ -389,9 +389,12 @@ Decisions behind the rows:
   pinned to the validated address, which blocks DNS rebinding. Payload: event id,
   severity, module, `created_at`, stable event code, raw params; no domain or client
   names unless the channel opts in (default off). Delivery failures are logged and do not
-  change the originating action's result. **OPEN:** the allow-list default (empty means
-  every write is rejected until a host is added, or any public host is allowed); the owner
-  decides.
+  change the originating action's result. **Decided (owner, 2026-10-28):** (a) v1 channels
+  are `webhook` only; no ntfy, e-mail or push. (b) `notifications` runs side by side with
+  `tls.notifications`; migration is a later task. (c) ntfy is not in v1. (d) the
+  `allowed_hosts` default is empty, which rejects every host (fail closed). (e)
+  `allow_private_destinations` defaults to false. Webhook URL and secret are never logged,
+  never written to the audit row and never returned by `GET` (redacted).
 - **WX8 sessions.** Stored session rows keep only the truncated IP, written at login
   time with the `query_log_ip_truncate` setting (default `last_octet`), and a parsed
   browser label; the raw user agent is not stored. `id` is a public random identifier
@@ -532,7 +535,7 @@ From `policy`, `resolver`, `listeners` and `clients`:
 - filter hit counts by `list_id`, `rule_text_hash`
 - DNSSEC outcomes: `secure`, `insecure`, `bogus`
 - cache hit ratio
-- query-log drops due to full sink (`query_log.dropped`)
+- query-log drops due to full sink (`query_log.dropped`, reported as `query_log_dropped` in `GET /api/v1/stats/overview`; no error code)
 - active clients count from `ClientLookup`
 
 ### Aggregation windows
@@ -906,7 +909,6 @@ tested. Codes are forwarded from module errors where applicable.
 | `control_api.rate_limited` | request exceeds API rate limit |
 | `control_api.query_log.read` | SQLite/other query-log read error |
 | `control_api.query_log.export` | CSV export failed |
-| `control_api.query_log.dropped` | sink dropped query events (informational) |
 | `control_api.query_log.invalid` | malformed query-log filter parameter (HTTP 400) |
 | `control_api.auth.oidc` | OIDC provider/configuration error |
 | `control_api.auth.local` | local login credential failure |
