@@ -161,6 +161,19 @@ impl ServerStats {
         self.record_failure(server);
     }
 
+    /// Replaces the outcome of the sample taken at `at` for `target` with a
+    /// failure. Used when a forwarded answer that was received fine turns out
+    /// Bogus after validation (WX3). A sample already aged out is left alone.
+    pub(crate) fn amend_sample(&self, target: &Target, at: Instant, code: &'static str) {
+        let mut inner = self.lock();
+        let Some(ring) = inner.samples.get_mut(target) else {
+            return;
+        };
+        if let Some(sample) = ring.iter_mut().rev().find(|s| s.at == at) {
+            sample.outcome = Err(code);
+        }
+    }
+
     /// Records the outcome of one real exchange with `target` (WX3).
     pub(crate) fn record_sample(
         &self,

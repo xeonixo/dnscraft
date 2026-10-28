@@ -39,6 +39,7 @@
 //! response is returned to the client as it is.
 
 use std::net::SocketAddr;
+use std::sync::PoisonError;
 
 use dnscraft_proto::{Message, Name, RData, Rcode, Record, RecordType};
 
@@ -197,6 +198,21 @@ impl Shared {
         name: &Name,
         qtype: RecordType,
     ) -> Result<Message, ResolveError> {
+        self.exchange_forward_observed(targets, zone, name, qtype)
+            .await
+            .map(|(message, _)| message)
+    }
+
+    /// [`Self::exchange_forward`] that also returns the target that gave the
+    /// accepted answer and the instant of its health sample, so a later
+    /// validation failure can be charged to that target (WX3).
+    pub(crate) async fn exchange_forward_observed(
+        &self,
+        targets: &[SocketAddr],
+        zone: &Name,
+        name: &Name,
+        qtype: RecordType,
+    ) -> Result<(Message, Option<(SocketAddr, std::time::Instant)>), ResolveError> {
         let targets: Vec<SocketAddr> = targets
             .iter()
             .copied()
@@ -216,13 +232,17 @@ impl Shared {
         let accept =
             |message: &Message| matches!(message.rcode(), Rcode::NOERROR | Rcode::NXDOMAIN);
         let clock = &self.config.clock;
-        let observe = |addr: SocketAddr, outcome| {
+        let answered = std::sync::Mutex::new(None);
+        let observe = |addr: SocketAddr, outcome: Result<std::time::Duration, &'static str>| {
             let target = Target::Forward {
                 zone: zone.clone(),
                 addr,
             };
-            self.stats
-                .record_sample(target, clock.instant(), clock.now(), outcome);
+            let at = clock.instant();
+            if outcome.is_ok() {
+                *answered.lock().unwrap_or_else(PoisonError::into_inner) = Some((addr, at));
+            }
+            self.stats.record_sample(target, at, clock.now(), outcome);
         };
         match transport::query_servers_observed(
             &targets,
@@ -234,7 +254,12 @@ impl Shared {
         )
         .await
         {
-            Ok(resp) => Ok(resp.message),
+            Ok(resp) => {
+                let answered = answered
+                    .into_inner()
+                    .unwrap_or_else(PoisonError::into_inner);
+                Ok((resp.message, answered))
+            }
             Err(transport::TransportError::Encode(err)) => Err(ResolveError::Encode(err)),
             Err(err) => {
                 tracing::debug!(qname = %name, qtype = %qtype, zone = %zone, error = %err, "forward failed");
@@ -387,6 +412,16 @@ impl Shared {
         }
         Ok(status)
     }
+}
+
+/// Whether a Bogus verdict on a forwarded answer is charged to the target that
+/// gave it (WX3). A missing trust anchor is configuration, and a DNSKEY that
+/// could not be fetched is already a failed exchange of its own.
+pub(crate) fn blames_target(reason: &BogusReason) -> bool {
+    !matches!(
+        reason,
+        BogusReason::DnskeyUnavailable | BogusReason::Chain(ChainFailure::NoTrustAnchor)
+    )
 }
 
 #[cfg(test)]
@@ -565,6 +600,19 @@ mod tests {
         ForwardZone,
         Name,
     ) {
+        signed_fixture_with(None).await
+    }
+
+    /// Like [`signed_fixture`], with the RRSIG of one RRset corrupted when
+    /// `corrupt` is given.
+    async fn signed_fixture_with(
+        corrupt: Option<(&str, RecordType)>,
+    ) -> (
+        dnscraft_testkit::Hierarchy,
+        crate::Resolver,
+        ForwardZone,
+        Name,
+    ) {
         use crate::dnssec::TrustAnchors;
         use dnscraft_proto::Class;
         use dnscraft_testkit::{
@@ -584,7 +632,16 @@ mod tests {
             .unwrap()
             .with_a("www.fz.test.", std::net::Ipv4Addr::new(192, 0, 2, 7))
             .unwrap();
-        let signed = sign_zone(zone, &key, &SigningOptions::now()).unwrap();
+        let options = SigningOptions {
+            corrupt_signature_of: corrupt.map(|(owner, _)| {
+                (
+                    hickory_proto::rr::Name::from_ascii(owner).unwrap(),
+                    hickory_proto::rr::RecordType::A,
+                )
+            }),
+            ..SigningOptions::now()
+        };
+        let signed = sign_zone(zone, &key, &options).unwrap();
         let h = Hierarchy::start_with(vec![ServerSpec::new("ns1.fz.test.", signed).unwrap()])
             .await
             .unwrap();
@@ -629,6 +686,25 @@ mod tests {
             .exchange_forward(&fz.targets, origin, &name(qname), qtype)
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn bogus_forwarded_answer_counts_against_its_target() {
+        let (_h, r, _fz, _origin) =
+            signed_fixture_with(Some(("www.fz.test.", RecordType::A))).await;
+        let query = Query {
+            name: name("www.fz.test."),
+            qtype: RecordType::A,
+            qclass: dnscraft_proto::Class::IN,
+        };
+        r.resolve(&query, RequestFlags::default()).await.unwrap();
+
+        // One DNSKEY exchange succeeded; the answer exchange was bogus.
+        let row = &r.upstreams()[0];
+        assert_eq!(row.kind, "forward_target");
+        assert_eq!(row.samples, 2);
+        assert_eq!(row.success_rate, Some(0.5));
+        assert!(row.last_error.is_some_and(|c| c.starts_with("dnssec.")));
     }
 
     #[tokio::test]

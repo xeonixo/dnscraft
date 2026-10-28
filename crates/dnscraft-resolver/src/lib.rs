@@ -686,8 +686,8 @@ impl Shared {
             zone = %zone.zone,
             "forwarding"
         );
-        let message = self
-            .exchange_forward(&zone.targets, &zone.zone, &query.name, query.qtype)
+        let (message, answered) = self
+            .exchange_forward_observed(&zone.targets, &zone.zone, &query.name, query.qtype)
             .await?;
         let message = forward::scrub(
             message,
@@ -710,6 +710,20 @@ impl Shared {
                 &mut caps,
             )
             .await?;
+        // The answer arrived fine but failed validation: that exchange is a
+        // failure of the target that gave it (WX3).
+        if let (Status::Bogus(reason), Some((addr, at))) = (&status, answered)
+            && forward::blames_target(reason)
+        {
+            self.stats.amend_sample(
+                &Target::Forward {
+                    zone: zone.zone.clone(),
+                    addr,
+                },
+                at,
+                reason.code(),
+            );
+        }
         let mut message = message;
         let mut sig_cap = None;
         for section in [&mut message.answers, &mut message.authorities] {
