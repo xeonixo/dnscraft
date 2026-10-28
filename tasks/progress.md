@@ -2,6 +2,22 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — cluster wave 2: renewal, timing, durable relay answers, channel limits (CF1–CF7)
+
+- **Done (crate + api wiring):** CF1 certificate renewal (`POST /cluster/v1/renew`, key kept, superseded
+  certs accepted until expiry, sub-node renews at 2/3 lifetime); CF2 `[cluster.timing]` wired (heartbeat
+  tick, master_timeout, reconnect backoff, config_apply_timeout); CF3 writes endpoint `expires_at`/`result`;
+  CF4 durable relay answers (`relay_responses`, migration v5); CF6 `cluster.config.stale` and
+  `cluster.master_conflict` heartbeat warnings, `degraded_nodes` in status; CF7 per-node connection cap 8,
+  heartbeat 1/s burst 10, enroll 1/s listener-wide.
+- **Open:** CF5 push_cert key exposure (owner: option A or B in SPEC-cluster); CF8 sub-node log buffer
+  pruning (needs a `query_log.rs` hook); offline-queue replay still uses the built-in backoff.
+- **Gates:** `cargo test -p dnscraft-cluster` 117 green, fmt and clippy `-D warnings` clean, no aws-lc/openssl.
+  `cargo test -p dnscraft-api --test cluster_wiring --test cluster_endpoints --test cluster_status` green
+  (28 + 8 + 2). Whole-crate api clippy blocked by another agent's in-progress `dnscraft-policy` test edits.
+- **Cross-crate:** `ClusterServerConfig` gained `timing` (literals updated in api and cluster tests);
+  `ClusterStatus` gained `degraded_nodes`; `RenewRequest` exported. No other crate touched.
+
 ## 2026-10-28 — control-api wave 2: GA16, GA22, GM6 (partial)
 
 - **Done:** GA16 stats overview (`source` raw/rollup, `active_clients`, `query_log_dropped` via
