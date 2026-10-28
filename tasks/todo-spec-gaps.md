@@ -202,30 +202,47 @@ approval before Phase 0 code.
 - [ ] **GA26** 🟡 [code] UniFi settings / local-domain mode have no typed route. *(clients_routes.rs)*
 - [ ] **GA27** 🟡 [code] No control-api fuzz target. *(fuzz/fuzz_targets/)*
 - [ ] **GA28** 🟡 [code] No bootstrap-to-SQLite config seeding path. *(config.rs:192-227; config_apply.rs:845-853)*
-- [ ] **GA29** 🟡 [code] `/readyz` reports ready with no module producers. *(server.rs:289-324)*
+- [ ] **GA29** 🟡 [code] `/readyz` reports ready with no module producers. *(server.rs:289-324)* — API side done: `Readiness::expect_module` keeps `/readyz` at 503 until each registered module calls `set_ready`; **open for the assembler (`crates/dnscraft`, G0): register and report each module.**
 
 ## MCP (`SPEC-mcp.md` ↔ `crates/dnscraft-mcp` + `dnscraft-api` mcp files)
 
-- [ ] **GM1** 🔴 [owner] `[control_api.mcp]` never deserialized (`McpConfig` no serde; `#[serde(skip)]`).
+- [x] **GM1** 🔴 [owner] `[control_api.mcp]` never deserialized (`McpConfig` no serde; `#[serde(skip)]`).
       *(mcp/config.rs:59; api/config.rs:209-211)* — belongs to G0.
-- [ ] **GM2** 🔴 [owner] MCP service not mountable in production (`with_mcp_backend` dead,
+      *Done 2026-10-28:* Closed by AS0 (`McpConfig` Deserialize) — verified 2026-10-28.
+- [x] **GM2** 🔴 [owner] MCP service not mountable in production (`with_mcp_backend` dead,
       `McpBackendInner` crate-private). *(api/server.rs:150-159, api/router.rs:180-185)* — belongs to G0.
+      *Done 2026-10-28:* Closed by AS11 (`control_api.rs` attaches the backend and mounts `/mcp/v1`) — verified 2026-10-28.
 - [ ] **GM3** 🔴 [code] `list_clients` always returns empty in the real backend. *(api/mcp_backend.rs:1298-1307)*
+      *Open 2026-10-28:* needs the client directory in the backend (`ClientEngine` handle passed to `mcp_backend_inner` from `crates/dnscraft/src/control_api.rs`, i.e. AS5/GC1). Not started; cross-crate signature change, asked for owner/assembler go-ahead.
 - [ ] **GM4** 🟠 [code] `get_status` returns empty listeners/filtering/TLS; `resolver.primed`
       approximated as `cache_size > 0`. *(api/mcp_backend.rs:1309-1344)*
-- [ ] **GM5** 🟠 [code] `explain_block.block_mode` always empty. *(api/mcp_backend.rs:811-822)*
+      *Open 2026-10-28:* filtering counts and TLS `cert_expiry` now real (2026-10-28). Still open: `listeners` (no listener-status handle in the backend) and `resolver.primed` / `cache_size` (no resolver handle; `resolver_cache_size` is never written). Needs the same backend wiring as GM3.
+- [x] **GM5** 🟠 [code] `explain_block.block_mode` always empty. *(api/mcp_backend.rs:811-822)*
+      *Done 2026-10-28:* Block mode read from the set snapshot (`mcp_backend.rs` explain).
 - [ ] **GM6** 🟠 [code] `get_stats` ignores `profile_id`. *(api/mcp_backend.rs:1229-1298)*
-- [ ] **GM7** 🟠 [code] `list_mcp_rules` lists expired pauses; pauses branch ignores pagination. *(api/mcp_backend.rs:870-877; filtering/engine.rs:480-495)*
-- [ ] **GM8** 🟠 [code] Tool layer collapses domain errors to `mcp.invalid_input` (spec wants
+      *Open 2026-10-28:* needs a `profile_id` filter in `dnscraft-api/src/stats.rs` (overview, top clients, top blocked, cache, and rollups). Touches the shared stats module and `stats_routes.rs`, so not done in this MCP pass.
+- [x] **GM7** 🟠 [code] `list_mcp_rules` lists expired pauses; pauses branch ignores pagination. *(api/mcp_backend.rs:870-877; filtering/engine.rs:480-495)*
+      *Done 2026-10-28:* Pauses drop expired entries and paginate (`mcp_backend.rs` list_mcp_rules); test `list_mcp_pauses_omit_an_expired_pause`.
+- [x] **GM8** 🟠 [code] Tool layer collapses domain errors to `mcp.invalid_input` (spec wants
       `filter_build.*`/`filter_name.*`/`mcp.domain_too_broad`). *(mcp/tools/write.rs:784-803, read.rs:519-547; api/mcp_backend.rs:470-475)*
-- [ ] **GM9** 🟠 [code] Read-tool telemetry counter `mcp.tool_calls{…}` missing. *(not found)*
-- [ ] **GM10** 🟠 [code] `/mcp/v1` while disabled returns 401/403 (RBAC middleware) instead of
+      *Done 2026-10-28:* Domain failures forward `filter_build.*` / `filter_name.*` codes (`protected.rs` canonicalize, `write.rs` validate_domain, `read.rs` read_domain); tests `domain_rejections_forward_the_filtering_codes`.
+- [x] **GM9** 🟠 [code] Read-tool telemetry counter `mcp.tool_calls{…}` missing. *(not found)*
+      *Done 2026-10-28:* Implemented as a structured `tracing` event `counter="mcp.tool_calls"` (`tools/mod.rs`); no metrics exporter exists yet, so untested.
+- [x] **GM10** 🟠 [code] `/mcp/v1` while disabled returns 401/403 (RBAC middleware) instead of
       404 `control_api.not_found`. *(api/auth/roles.rs:201-203, 270-306; api/router.rs:180-187)*
-- [ ] **GM11** 🟠 [code] `allowed_origins` never populated (empty `ponytail:` block). *(api/server.rs:358-363)*
-- [ ] **GM12** 🟠 [code] `search_query_log`/`get_query` map read errors to `control_api.internal`,
+      *Done 2026-10-28:* RBAC middleware answers a disabled `/mcp/v1` with 404 before auth (`roles.rs`); test `disabled_mcp_endpoint_is_not_found_before_authentication`.
+- [x] **GM11** 🟠 [code] `allowed_origins` never populated (empty `ponytail:` block). *(api/server.rs:358-363)*
+      *Done 2026-10-28:* Closed by AS11 (`control_api.rs` fills `allowed_origins`); the dead empty block in `server.rs` serve() removed.
+- [x] **GM12** 🟠 [code] `search_query_log`/`get_query` map read errors to `control_api.internal`,
       never `control_api.query_log.read`. *(api/mcp_backend.rs:1139-1165; mcp/tools/read.rs:414-427)*
-- [ ] **GM13** 🟡 [code] `test_query.filter.list_id` always null. *(api/mcp_backend.rs:1028-1036)*
-- [ ] **GM14** 🟡 [code] `test_query` TXT/SRV/SOA answers as `<TXT>`/`<SRV>`/`<SOA>` placeholders. *(api/mcp_backend.rs:358-376)*
-- [ ] **GM15** 🟡 [code] REST `temporary-allows`/`custom-rules` discard the request `reason`. *(api/mcp_endpoints.rs:321, 496)*
-- [ ] **GM16** 🟡 [spec] MCP crate implements an independent rate limiter not in the spec's TOML. *(mcp/transport.rs:542, rate_limit.rs)*
-- [ ] **GM17** 🟡 [code] Canonicaliser rejects whitespace instead of trimming. *(mcp/protected.rs:92-110)*
+      *Done 2026-10-28:* Query-log read failures keep `control_api.query_log.read` (`query_log_error`); unit test `query_log_read_failures_keep_their_code`.
+- [x] **GM13** 🟡 [code] `test_query.filter.list_id` always null. *(api/mcp_backend.rs:1028-1036)*
+      *Done 2026-10-28:* `test_query` reports the list id of a list-sourced block (`mcp_backend.rs`); no dedicated test yet.
+- [x] **GM14** 🟡 [code] `test_query` TXT/SRV/SOA answers as `<TXT>`/`<SRV>`/`<SOA>` placeholders. *(api/mcp_backend.rs:358-376)*
+      *Done 2026-10-28:* TXT, SOA and SRV render in presentation form (`mcp_backend.rs` rdata_str); test `test_query_answers_render_txt_soa_and_srv`.
+- [x] **GM15** 🟡 [code] REST `temporary-allows`/`custom-rules` discard the request `reason`. *(api/mcp_endpoints.rs:321, 496)*
+      *Done 2026-10-28:* REST temporary-allow and custom-rule keep the sanitized reason in the audit row; test `temporary_allow_keeps_its_reason_in_the_audit`.
+- [x] **GM16** 🟡 [spec] MCP crate implements an independent rate limiter not in the spec's TOML. *(mcp/transport.rs:542, rate_limit.rs)*
+      *Done 2026-10-28:* Resolved as [spec]: SPEC-mcp.md now documents the mcp-owned per-token buckets and their config keys.
+- [x] **GM17** 🟡 [code] Canonicaliser rejects whitespace instead of trimming. *(mcp/protected.rs:92-110)*
+      *Done 2026-10-28:* `canonicalize` trims surrounding whitespace; inner whitespace still rejected; test `canonicalize_trims_and_reports_filtering_codes`.

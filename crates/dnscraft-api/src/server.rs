@@ -470,10 +470,23 @@ impl AppState {
 /// `ready`/`not_ready` plus the set of not-ready module names, nothing else.
 #[derive(Default)]
 pub struct Readiness {
+    /// Modules that reported not ready.
     not_ready: Mutex<BTreeSet<String>>,
+    /// Modules registered with [`Self::expect_module`] that have not reported
+    /// ready yet. A registered module with no producer keeps `/readyz` at 503.
+    pending: Mutex<BTreeSet<String>>,
 }
 
 impl Readiness {
+    /// Registers a module whose readiness producer must report before
+    /// `/readyz` turns ready (GA29). Idempotent.
+    pub fn expect_module(&self, module: &str) {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(module.to_owned());
+    }
+
     /// Marks a module as not ready (idempotent).
     pub fn set_not_ready(&self, module: &str) {
         self.not_ready
@@ -484,20 +497,32 @@ impl Readiness {
 
     /// Marks a module as ready (idempotent).
     pub fn set_ready(&self, module: &str) {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(module);
         self.not_ready
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(module);
     }
 
-    /// Sorted names of the modules that are not ready.
+    /// Sorted names of the modules that are not ready: reported not ready, or
+    /// registered and never reported ready.
     pub fn not_ready_modules(&self) -> Vec<String> {
-        self.not_ready
+        let mut modules: BTreeSet<String> = self
+            .not_ready
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .cloned()
-            .collect()
+            .clone();
+        modules.extend(
+            self.pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .cloned(),
+        );
+        modules.into_iter().collect()
     }
 }
 
@@ -533,14 +558,9 @@ pub async fn serve(
         Arc::new(SystemClock),
         config.trusted_proxies.clone(),
     )));
-    // Derive MCP allowed_origins from the configured TLS domain.
+    // `allowed_origins` arrives already derived from the public hostname: the
+    // production assembler fills it before the config reaches this point (GM11).
     let mcp_config = config.mcp.clone();
-    if let Some(tls_status) = state.tls_status_async().await
-        && !tls_status.fingerprint.is_empty()
-    {
-        // ponytail: derive origins from the TLS public domain (TLS module
-        // stores the public domain used for certificate requests).
-    }
     // Store the MCP config on AppState so build_router and the filtering
     // endpoints can read it, whether or not a backend is attached.
     let mut state = state;
@@ -638,6 +658,16 @@ async fn serve_tls(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    #[test]
+    fn a_registered_module_without_a_producer_keeps_readiness_false() {
+        let readiness = Readiness::default();
+        assert!(readiness.not_ready_modules().is_empty());
+        readiness.expect_module("resolver");
+        assert_eq!(readiness.not_ready_modules(), vec!["resolver".to_owned()]);
+        readiness.set_ready("resolver");
+        assert!(readiness.not_ready_modules().is_empty());
+    }
+
     use super::*;
 
     #[test]
