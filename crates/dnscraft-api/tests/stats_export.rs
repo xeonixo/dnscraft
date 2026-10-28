@@ -18,7 +18,7 @@ use dnscraft_api::{
     AppState, Db, ManualClock, QueryLog, QueryLogConfig, QueryLogFilter, RollupWindow,
 };
 use dnscraft_filtering::{BlockMode, ListId, Reason, RuleSource, SetId};
-use dnscraft_listeners::QueryEvent;
+use dnscraft_listeners::{QueryEvent, QueryEventSink};
 use dnscraft_policy::{
     AnswerOrigin, ClientId, DecisionRecord, DecisionStep, DecisionTimings, DnsProtocol, FilterHit,
     ListenerId, ProfileId, SelectionCause, ViewId,
@@ -540,4 +540,73 @@ async fn stats_export_rejects_malformed_parameters() {
         json(&body)["error"]["code"],
         "control_api.query_log.invalid"
     );
+}
+
+#[tokio::test]
+async fn stats_overview_reports_filter_hits_clients_and_sink_drops() {
+    let clock = Arc::new(ManualClock::new(base_time()));
+    let db = Db::open_in_memory(clock.clone()).await.unwrap();
+    let (sink, _rx) = QueryLog::channel(1);
+    let log =
+        Arc::new(QueryLog::new(db, QueryLogConfig::default(), "node-a").with_sink(sink.clone()));
+    // Capacity 1 and no consumer: the second and third events are dropped.
+    for i in 0..3u64 {
+        let mut spec = Spec::new(at_secs(BASE_SECS - 10 + i), "ads.example.com");
+        spec.blocked = i < 2;
+        spec.client = Some("client-a".to_owned());
+        let _ = sink.try_send(spec.event());
+    }
+    assert_eq!(sink.dropped(), 2);
+
+    let mut events = Vec::new();
+    for i in 0..4u64 {
+        let mut spec = Spec::new(at_secs(BASE_SECS - 20 + i), "host.example.com");
+        spec.blocked = i < 3;
+        spec.client = Some(format!("client-{i}"));
+        events.push(spec.event());
+    }
+    log.insert_batch(events).await.unwrap();
+
+    let (status, _, body) = request(&log, "/api/v1/stats/overview").await;
+    assert_eq!(status, StatusCode::OK);
+    let overview = &json(&body)["data"];
+    assert_eq!(overview["source"], "raw");
+    assert_eq!(overview["query_log_dropped"], 2);
+    assert_eq!(overview["active_clients"], 4);
+    assert_eq!(overview["filter_hits"]["total"], 3);
+    assert_eq!(overview["filter_hits"]["by_list"]["test-list"], 3);
+    assert_eq!(overview["filter_hits"]["by_reason"]["list"], 3);
+    assert_eq!(
+        overview["filter_hits"]["top_rules"][0]["rule"],
+        "||ads.example^"
+    );
+    assert_eq!(overview["filter_hits"]["top_rules"][0]["hits"], 3);
+}
+
+#[tokio::test]
+async fn stats_overview_long_range_is_answered_from_rollups() {
+    let (log, _clock) = harness(QueryLogConfig::default()).await;
+    let events = vec![
+        Spec::new(at_secs(BASE_SECS - 60), "a.example.com").event(),
+        {
+            let mut spec = Spec::new(at_secs(BASE_SECS - 120), "b.example.com");
+            spec.blocked = true;
+            spec.event()
+        },
+    ];
+    log.insert_batch(events).await.unwrap();
+    log.run_rollup().await.unwrap();
+
+    // Starts 45 days before the clock, outside the 30-day raw retention.
+    let (status, _, body) = request(&log, "/api/v1/stats/overview?from=2023-10-01T00:00:00Z").await;
+    assert_eq!(status, StatusCode::OK);
+    let overview = &json(&body)["data"];
+    assert_eq!(overview["source"], "rollup");
+    assert_eq!(overview["total"], 2);
+    assert_eq!(overview["blocked"], 1);
+    assert_eq!(overview["allowed"], 1);
+    assert_eq!(overview["by_protocol"]["udp53"], 2);
+    assert!(overview["active_clients"].is_null());
+    assert!(overview["filter_hits"].is_null());
+    assert_eq!(overview["by_view"].as_object().unwrap().len(), 0);
 }

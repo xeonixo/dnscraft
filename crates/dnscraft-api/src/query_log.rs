@@ -206,6 +206,7 @@ pub struct QueryLog {
     config: QueryLogConfig,
     node_id: String,
     enricher: Option<Arc<dyn ClientEnricher>>,
+    sink: Option<Arc<QueryLogSink>>,
 }
 
 impl QueryLog {
@@ -216,7 +217,20 @@ impl QueryLog {
             config,
             node_id: node_id.into(),
             enricher: None,
+            sink: None,
         }
+    }
+
+    /// Attaches the sink returned by [`Self::channel`], so the stats overview
+    /// can report `query_log.dropped` for this node.
+    pub fn with_sink(mut self, sink: Arc<QueryLogSink>) -> Self {
+        self.sink = Some(sink);
+        self
+    }
+
+    /// Events the attached sink has dropped since process start (`0` without a sink).
+    pub(crate) fn sink_dropped(&self) -> u64 {
+        self.sink.as_ref().map_or(0, |sink| sink.dropped())
     }
 
     /// Attaches the client-directory enricher used at write time.

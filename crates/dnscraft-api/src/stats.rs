@@ -49,6 +49,8 @@ pub const ROLLUP_RETENTION_DAYS: i64 = 365;
 const MICROS_PER_HOUR: i64 = 3_600_000_000;
 const SECONDS_PER_HOUR: i64 = 3_600;
 const SECONDS_PER_DAY: i64 = 86_400;
+/// Rules listed in the overview's `filter_hits.top_rules`.
+const OVERVIEW_TOP_RULES: i64 = 10;
 const DEFAULT_WINDOW_HOURS: i64 = 24;
 const EXPORT_PAGE_ROWS: u32 = 512;
 const EXPORT_CHANNEL_DEPTH: usize = 16;
@@ -111,9 +113,39 @@ pub struct RollupRow {
     pub query_count: i64,
 }
 
+/// One blocking rule and how often it fired in the window.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RuleHits {
+    /// Rule text as written in its list or custom set.
+    pub rule: String,
+    /// Queries blocked by the rule.
+    pub hits: i64,
+}
+
+/// Filter hits (blocked queries) broken down by source for one window.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct FilterHits {
+    /// Queries that hit any filter rule.
+    pub total: i64,
+    /// Hits by filter list id (custom, service and MCP rules have no list).
+    pub by_list: BTreeMap<String, i64>,
+    /// Hits by rule provenance (`list`, `custom`, `service`, …).
+    pub by_reason: BTreeMap<String, i64>,
+    /// Most-hit rules, at most [`OVERVIEW_TOP_RULES`].
+    pub top_rules: Vec<RuleHits>,
+}
+
 /// Aggregated dashboard statistics for one window.
+///
+/// `source` is `raw` when the window lies inside the raw query-log retention
+/// and `rollup` otherwise. Rollups keep only protocol, profile, answer origin
+/// and node, so in `rollup` mode `by_view`, `by_rcode` and `dnssec` are empty,
+/// `active_clients` and `filter_hits` are `null`, and `blocked` counts the
+/// `filter_block` answer origin. Windows are day-granular in rollup mode.
 #[derive(Clone, Debug, Serialize)]
 pub struct StatsOverview {
+    /// `raw` or `rollup`: which storage answered the request.
+    pub source: &'static str,
     /// Window start (RFC 3339).
     pub from: String,
     /// Window end (RFC 3339).
@@ -126,6 +158,12 @@ pub struct StatsOverview {
     pub blocked: i64,
     /// `allowed / total` (`0.0` for an empty window).
     pub allowed_ratio: f64,
+    /// Distinct attributed clients in the window (`null` in rollup mode).
+    pub active_clients: Option<i64>,
+    /// Events dropped by the query-log sink since process start (node-local).
+    pub query_log_dropped: u64,
+    /// Filter-hit breakdown (`null` in rollup mode).
+    pub filter_hits: Option<FilterHits>,
     /// Query counts by transport.
     pub by_protocol: BTreeMap<String, i64>,
     /// Query counts by policy view.
@@ -339,7 +377,9 @@ impl QueryLog {
     /// restricted to one `node_id`.
     ///
     /// Absent bounds default to the last 24 hours, measured on the injected
-    /// clock. `from > to` is `control_api.query_log.invalid`.
+    /// clock. `from > to` is `control_api.query_log.invalid`. A window that
+    /// starts before the raw retention horizon is answered from the daily
+    /// rollups (GA16), see [`StatsOverview`].
     pub async fn stats_overview(
         &self,
         from_us: Option<i64>,
@@ -349,6 +389,16 @@ impl QueryLog {
         let db = self.db();
         let (from, to) = resolve_window(db, from_us, to_us)?;
         let node_id = node_id.map(str::to_owned);
+        let dropped = self.sink_dropped();
+        let retention_secs =
+            i64::from(self.config().retention_days).saturating_mul(SECONDS_PER_DAY);
+        let raw_horizon = db
+            .now_unix()
+            .saturating_sub(retention_secs)
+            .saturating_mul(1_000_000);
+        if from < raw_horizon {
+            return rollup_overview(db, from, to, node_id, dropped).await;
+        }
         let totals_node_id = node_id.clone();
         let (total, allowed, blocked) = db
             .with_conn(move |conn| {
@@ -376,14 +426,41 @@ impl QueryLog {
         let by_profile = counts_by(db, "profile_id", from, to, node_id.clone()).await?;
         let by_answer_source = counts_by(db, "answer_source", from, to, node_id.clone()).await?;
         let by_rcode = counts_by(db, "rcode", from, to, node_id.clone()).await?;
-        let dnssec = counts_by(db, "json_extract(record, '$.dnssec')", from, to, node_id).await?;
+        let dnssec = counts_by(
+            db,
+            "json_extract(record, '$.dnssec')",
+            from,
+            to,
+            node_id.clone(),
+        )
+        .await?;
+        let active_clients = db
+            .with_conn({
+                let node_id = node_id.clone();
+                move |conn| {
+                    conn.query_row(
+                        "SELECT COUNT(DISTINCT client_id) FROM query_log
+                         WHERE time >= ?1 AND time <= ?2 AND client_id IS NOT NULL
+                           AND (?3 IS NULL OR node_id = ?3)",
+                        params![from, to, node_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(db_err)
+                }
+            })
+            .await?;
+        let filter_hits = filter_hits(db, from, to, node_id).await?;
         Ok(StatsOverview {
+            source: "raw",
             from: format_micros(from),
             to: format_micros(to),
             total,
             allowed,
             blocked,
             allowed_ratio: ratio(allowed, total),
+            active_clients: Some(active_clients),
+            query_log_dropped: dropped,
+            filter_hits: Some(filter_hits),
             by_protocol,
             by_view,
             by_profile,
@@ -604,6 +681,148 @@ fn resolve_window(
         });
     }
     Ok((from, to))
+}
+
+/// Filter-hit breakdown over the raw log for `[from, to]`.
+async fn filter_hits(
+    db: &Db,
+    from: i64,
+    to: i64,
+    node_id: Option<String>,
+) -> Result<FilterHits, ControlApiError> {
+    let by_list = counts_by(
+        db,
+        "json_extract(record, '$.filter.list_id')",
+        from,
+        to,
+        node_id.clone(),
+    )
+    .await?;
+    let by_reason = counts_by(
+        db,
+        "json_extract(record, '$.filter.reason')",
+        from,
+        to,
+        node_id.clone(),
+    )
+    .await?;
+    let top_rules = db
+        .with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT json_extract(record, '$.filter.rule_text') AS rule, COUNT(*) AS hits
+                     FROM query_log
+                     WHERE time >= ?1 AND time <= ?2
+                       AND json_extract(record, '$.filter.rule_text') IS NOT NULL
+                       AND (?3 IS NULL OR node_id = ?3)
+                     GROUP BY rule
+                     ORDER BY hits DESC, rule ASC
+                     LIMIT ?4",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map(params![from, to, node_id, OVERVIEW_TOP_RULES], |row| {
+                    Ok(RuleHits {
+                        rule: row.get(0)?,
+                        hits: row.get(1)?,
+                    })
+                })
+                .map_err(db_err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+        })
+        .await?;
+    // Unfiltered rows group under the empty key; they are not filter hits.
+    let mut by_list = by_list;
+    by_list.remove("");
+    let mut by_reason = by_reason;
+    by_reason.remove("");
+    let total = by_reason.values().sum();
+    Ok(FilterHits {
+        total,
+        by_list,
+        by_reason,
+        top_rules,
+    })
+}
+
+/// Overview answered from the daily rollups (see [`StatsOverview`]).
+async fn rollup_overview(
+    db: &Db,
+    from: i64,
+    to: i64,
+    node_id: Option<String>,
+    dropped: u64,
+) -> Result<StatsOverview, ControlApiError> {
+    let from_day = from.div_euclid(MICROS_PER_DAY);
+    let to_day = to.div_euclid(MICROS_PER_DAY);
+    let (total, blocked) = db
+        .with_conn({
+            let node_id = node_id.clone();
+            move |conn| {
+                conn.query_row(
+                    "SELECT COALESCE(SUM(query_count), 0),
+                            COALESCE(SUM(CASE WHEN answer_source = 'filter_block'
+                                              THEN query_count ELSE 0 END), 0)
+                     FROM stats_daily
+                     WHERE day >= ?1 AND day <= ?2 AND (?3 IS NULL OR node_id = ?3)",
+                    params![from_day, to_day, node_id],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .map_err(db_err)
+            }
+        })
+        .await?;
+    let by_protocol = rollup_counts_by(db, "protocol", from_day, to_day, node_id.clone()).await?;
+    let by_profile = rollup_counts_by(db, "profile_id", from_day, to_day, node_id.clone()).await?;
+    let by_answer_source = rollup_counts_by(db, "answer_source", from_day, to_day, node_id).await?;
+    Ok(StatsOverview {
+        source: "rollup",
+        from: format_micros(from),
+        to: format_micros(to),
+        total,
+        allowed: total - blocked,
+        blocked,
+        allowed_ratio: ratio(total - blocked, total),
+        active_clients: None,
+        query_log_dropped: dropped,
+        filter_hits: None,
+        by_protocol,
+        by_view: BTreeMap::new(),
+        by_profile,
+        by_answer_source,
+        by_rcode: BTreeMap::new(),
+        dnssec: BTreeMap::new(),
+    })
+}
+
+/// Sums rollup `query_count` per the fixed column `expr` over whole days.
+async fn rollup_counts_by(
+    db: &Db,
+    expr: &'static str,
+    from_day: i64,
+    to_day: i64,
+    node_id: Option<String>,
+) -> Result<BTreeMap<String, i64>, ControlApiError> {
+    db.with_conn(move |conn| {
+        // `expr` is always a constant from this module, never user input.
+        let sql = format!(
+            "SELECT {expr}, COALESCE(SUM(query_count), 0) FROM stats_daily
+             WHERE day >= ?1 AND day <= ?2 AND (?3 IS NULL OR node_id = ?3) GROUP BY 1"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![from_day, to_day, node_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(db_err)?;
+        let mut counts = BTreeMap::new();
+        for row in rows {
+            let (key, count) = row.map_err(db_err)?;
+            counts.insert(key, count);
+        }
+        Ok(counts)
+    })
+    .await
 }
 
 /// Counts rows in `[from, to]` grouped by the fixed SQL expression `expr`.
