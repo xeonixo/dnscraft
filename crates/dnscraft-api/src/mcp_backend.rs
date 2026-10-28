@@ -1225,6 +1225,7 @@ pub(crate) async fn run_test_query(
         source_ip,
         protocol: policy_protocol(&params.protocol),
         listener_id,
+        node_id: None,
         client_id: params
             .client_id
             .as_deref()
@@ -1282,7 +1283,6 @@ pub(crate) async fn run_test_query(
         selection: Selection {
             cause: sel.cause,
             prefix: sel.prefix,
-        node_id: None,
             client_id: record.client_id.as_ref().map(|id| id.to_string()),
         },
         verdict: verdict.to_owned(),
