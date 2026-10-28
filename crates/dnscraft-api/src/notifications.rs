@@ -96,6 +96,16 @@ impl TlsWebhook {
 
 /// Ring-backed, redirect-free HTTP client for the webhook.
 pub(crate) fn ring_client() -> Option<reqwest::Client> {
+    ring_client_builder()?
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .ok()
+}
+
+/// Client builder with the ring-only TLS configuration and webpki roots.
+pub(crate) fn ring_client_builder() -> Option<reqwest::ClientBuilder> {
     let roots = rustls::RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };
@@ -105,13 +115,7 @@ pub(crate) fn ring_client() -> Option<reqwest::Client> {
         .ok()?
         .with_root_certificates(roots)
         .with_no_client_auth();
-    reqwest::Client::builder()
-        .use_preconfigured_tls(tls)
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(10))
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .ok()
+    Some(reqwest::Client::builder().use_preconfigured_tls(tls))
 }
 
 #[cfg(test)]

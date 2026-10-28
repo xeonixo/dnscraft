@@ -38,6 +38,7 @@
 //! | [`ControlApiError::PayloadTooLarge`] | `control_api.payload_too_large` |
 //! | [`ControlApiError::PaginationInvalid`] | `control_api.pagination.invalid` |
 //! | [`ControlApiError::Module`] | the module's own code (for example `policy.config.invalid`) |
+//! | [`ControlApiError::Notification`] | `control_api.notifications.*` (see `webhooks`) |
 
 use serde_json::json;
 
@@ -101,6 +102,14 @@ pub enum ControlApiError {
     QueryLogExport {
         /// Detail for logs.
         message: String,
+    },
+    /// Notification channel failure with its own stable code (WX7).
+    #[error("notification failed: {reason}")]
+    Notification {
+        /// Stable `control_api.notifications.*` code.
+        code: &'static str,
+        /// Non-secret detail.
+        reason: String,
     },
     /// Too many live query-log streams for this principal or node (WX2).
     #[error("too many live query-log streams")]
@@ -228,6 +237,7 @@ impl ControlApiError {
             Self::QueryLogExport { .. } => "control_api.query_log.export",
             Self::QueryLogInvalid { .. } => "control_api.query_log.invalid",
             Self::QueryLogStreamLimit => "control_api.query_log.stream_limit",
+            Self::Notification { code, .. } => code,
             Self::AuthOidc { .. } => "control_api.auth.oidc",
             Self::AuthLocal => "control_api.auth.local",
             Self::AuthLocked => "control_api.auth.locked",
@@ -322,6 +332,10 @@ mod tests {
                 message: "x".into(),
             },
             ControlApiError::QueryLogStreamLimit,
+            ControlApiError::Notification {
+                code: "control_api.notifications.invalid",
+                reason: "x".into(),
+            },
             ControlApiError::QueryLogInvalid {
                 reason: "bad filter".into(),
             },

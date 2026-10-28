@@ -75,6 +75,13 @@ impl ControlApiError {
             ControlApiError::QueryLogExport { .. } => S::INTERNAL_SERVER_ERROR,
             ControlApiError::QueryLogInvalid { .. } => S::BAD_REQUEST,
             ControlApiError::QueryLogStreamLimit => S::TOO_MANY_REQUESTS,
+            ControlApiError::Notification { code, .. } => match *code {
+                "control_api.notifications.delivery" => S::BAD_GATEWAY,
+                "control_api.notifications.egress_denied"
+                | "control_api.notifications.host_not_allowed" => S::UNPROCESSABLE_ENTITY,
+                "control_api.notifications.unknown_channel" => S::NOT_FOUND,
+                _ => S::BAD_REQUEST,
+            },
             ControlApiError::AuthOidc { .. } => S::BAD_GATEWAY,
             ControlApiError::AuthLocal => S::UNAUTHORIZED,
             ControlApiError::AuthLocked => S::LOCKED,
@@ -115,6 +122,7 @@ impl ControlApiError {
             }
             ControlApiError::PaginationInvalid { reason } => Some(json!({ "reason": reason })),
             ControlApiError::QueryLogInvalid { reason } => Some(json!({ "reason": reason })),
+            ControlApiError::Notification { reason, .. } => Some(json!({ "reason": reason })),
             ControlApiError::Module { params, .. } => params.clone(),
             _ => None,
         }

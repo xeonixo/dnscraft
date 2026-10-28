@@ -13,6 +13,7 @@ use serde_json::json;
 
 use super::alerts_routes::list_alerts;
 use super::audit_routes::list_audit;
+use super::notifications_routes::{get_notifications, post_notification_test, put_notifications};
 use super::system_routes::{get_backups, get_update_check, put_backup_settings};
 use super::auth::local::local_login;
 use super::auth::oidc::{oidc_authorize_url, oidc_callback};
@@ -61,6 +62,8 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/status", get(status))
         .route("/filtering/explain-block", post(explain_block))
         .route("/filtering/mcp-rules", get(list_mcp_rules))
+        .route("/notifications", get(get_notifications).put(put_notifications))
+        .route("/notifications/test", post(post_notification_test))
         .route("/filtering/services", get(list_services))
         .route("/filtering/services/{service_id}", put(put_service))
         .route(

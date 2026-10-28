@@ -30,7 +30,7 @@ const APPLY_ORDER: [&str; 5] = ["filtering", "clients", "policy", "listeners", "
 
 /// Top-level sections a snapshot may contain. `resolver` is carried for
 /// cross-module validation only (forward-zone ids); it is not applied here.
-const TOP_LEVEL_KEYS: [&str; 7] = [
+const TOP_LEVEL_KEYS: [&str; 8] = [
     "filtering",
     "clients",
     "policy",
@@ -39,6 +39,8 @@ const TOP_LEVEL_KEYS: [&str; 7] = [
     "resolver",
     // Runtime settings owned by the control API (update check, backups).
     "control_api_settings",
+    // Webhook notification channels (WX7); secrets are kept outside the snapshot.
+    "notifications",
 ];
 
 /// Sections every config replace must provide.
@@ -186,6 +188,12 @@ impl ConfigService {
     }
 
     /// The current version and its stored (already redacted) snapshot.
+    /// The node this service runs on (audit node id of local actions).
+    pub(crate) fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    /// Current `(version, snapshot)`.
     pub async fn current(&self) -> Result<(Option<i64>, Option<Value>), ControlApiError> {
         let version = self.store.current().await?;
         let snapshot = match version {
@@ -1149,6 +1157,9 @@ fn merge_mcp_rules(body: Value, stored: Option<&Value>) -> Result<Value, Control
     }
     if let Some(settings) = snapshot.get(crate::system::SETTINGS_SECTION) {
         validate_control_api_settings(settings)?;
+    }
+    if let Some(section) = snapshot.get(crate::webhooks::SECTION) {
+        crate::webhooks::validate_section(section).map_err(ControlApiError::from)?;
     }
     for section in REQUIRED_SECTIONS {
         match snapshot.get(section) {

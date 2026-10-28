@@ -32,6 +32,7 @@ mod server;
 mod stats;
 mod storage;
 mod system;
+mod webhooks;
 mod tls;
 
 pub use api::auth::{
@@ -41,6 +42,7 @@ pub use api::auth::{
     auth_middleware, authorize, rbac_middleware, requirement, secure_cookie, session_set_cookie,
 };
 pub use api::clients_routes::{ClientDirectory, DirectoryClient, SyncSummary};
+pub use api::filter_routes::ServiceCatalogProvider;
 pub use api::rate_limit::{DEFAULT_MAX_TRACKED_SOURCES, RateLimiter};
 pub use audit::{Audit, ConfigChangeRecord};
 pub use cluster::{
@@ -75,7 +77,6 @@ pub use query_log::{
     ClientEnricher, ClientView, Order, OrderBy, QueryLog, QueryLogFilter, QueryLogPage,
     QueryLogSink,
 };
-pub use api::filter_routes::ServiceCatalogProvider;
 pub use server::{AppState, Readiness, serve};
 pub use stats::{
     CacheStats, FilterHits, ROLLUP_RETENTION_DAYS, RollupRow, RollupWindow, RuleHits,
