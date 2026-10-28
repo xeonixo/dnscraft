@@ -2,6 +2,19 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — assembler wave 2: G0 wiring (AS5, AS7, GA6c, GA28, GA29, GM3, GM4, GL2, GC1)
+
+- **Done:** `EngineDirectory` (dnscraft-api `ClientDirectory` over `ClientEngine`) wired with `with_clients`; `/readyz`
+  registers and reports resolver, filtering, clients, policy, listeners (and tls when configured); GA28 seeds through
+  `ConfigService::seed_if_empty` (effective filter/policy snapshot, `paused_until` stripped); the query log gets its sink
+  (`with_sink`, overview `query_log.dropped`).
+- **Done (API, hunks in mcp_backend.rs):** GM3 `list_clients` pages the directory; GM4 `get_status` reports listeners and
+  resolver primed/cache from live handles; GM6 `get_stats` scopes every block by `profile_id` (commit a2e70ff).
+- **Fixed:** `full_toml_deserializes_all_sections` uses the flat `[clients.unifi]` keys (GL2 verified: `listeners_public.enabled` is read, not derived).
+- **Tests:** `crates/dnscraft/tests/smoke.rs` (boot, `/healthz`, `/readyz`, `/api/v1/clients`, MCP `list_clients`/`get_status`/`tools/list`, `PUT /config` live apply, second boot keeps seed).
+- **Open:** `/status` reports dnscraft-api's `CARGO_PKG_VERSION` (equal to the binary today); `last_seen` is null in `/clients`; AS13 Docker (owner Q7).
+- **Gates:** `cargo test -p dnscraft` green, clippy `-D warnings` clean, `cargo deny check` ok, aws-lc-rs/openssl-sys absent, `cargo fmt` clean for touched files.
+
 ## 2026-10-28 — policy model v2 (GP1–GP3, P1–P5, L1–L2, A1–A3, AS)
 
 - **Model (GP1–GP3):** selection is source-IP only (`ClientId` branch and `SelectionCause::ClientId` removed).

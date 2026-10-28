@@ -23,12 +23,16 @@
 - [x] **AS3** Real resolver from `[resolver]` (replaces `ResolverConfig::default()` in `build_engine`).
 - [x] **AS4** Real filtering: open `ListStore` under `data_dir`, build `FilterEngine` from
       `[filtering]` lists/sets (replaces `empty_filter`).
-- [~] **AS5** Real clients: build `ClientEngine` from `[clients]`, add a `ClientDirectory` adapter,
+- [x] **AS5** Real clients: build `ClientEngine` from `[clients]`, add a `ClientDirectory` adapter,
       feed it to policy and to the query-log `ClientEnricher` (closes GC1).
+      *Done 2026-10-28:* `EngineClients` (policy + enricher) and `EngineDirectory` (control-api/MCP, GA6c).
 - [x] **AS6** Real policy from `[policy]` (views/profiles/records) wired to filter + resolver + clients
       (replaces the hardcoded default view).
-- [~] **AS7** Real TLS: build `TlsEngine` (ACME/DynDNS) from `[tls]`, hand its `CertResolver` to the
+- [x] **AS7** Real TLS: build `TlsEngine` (ACME/DynDNS) from `[tls]`, hand its `CertResolver` to the
       listener set, and its `TlsStatusProvider`/`TlsAdmin` to control-api (replaces env-PEM install).
+      *Done 2026-10-28:* verified; smoke test boots a `[tls]` engine with ACME and DynDNS off.
+      Open: `/status` reports dnscraft-api's `CARGO_PKG_VERSION` (0.1.0, equal to the binary today);
+      a true binary version needs an additive `AppState::with_version` in dnscraft-api router (not in this scope).
 
 ## Phase 2 — Apply + store
 
@@ -53,8 +57,8 @@
 
 ## Checkpoints
 
-- [ ] Phase 0: `cargo build --workspace --locked` + config round-trip tests green.
-- [ ] Phase 1: `cargo test --workspace --locked` + a smoke `dnscraft --config` boots all engines.
-- [ ] Phase 2: `PUT /config` round-trips through SQLite and applies to a live engine (e2e).
-- [ ] Phase 3: `GET /healthz`/`/readyz` + `/mcp/v1` mount + `tools/list` respond.
-- [ ] Phase 4: `cargo deny` + `cargo tree -i aws-lc-rs|openssl-sys` empty; docker build succeeds.
+- [x] Phase 0: config round-trip tests green (`cargo test -p dnscraft`; `full_toml_deserializes_all_sections` fixed to flat `[clients.unifi]` keys).
+- [x] Phase 1: smoke `build()` boots every engine (`crates/dnscraft/tests/smoke.rs::boots_every_engine_and_serves_the_control_api`); a second boot keeps the seeded config (`second_boot_keeps_the_seeded_config`).
+- [x] Phase 2: `PUT /config` round-trips through SQLite and applies to a live engine (`put_config_round_trips_and_applies_live`).
+- [x] Phase 3: `GET /healthz`/`/readyz` + `/mcp/v1` mount + `tools/list` respond (same smoke test).
+- [ ] Phase 4: `cargo deny` passes and `cargo tree -i aws-lc-rs|openssl-sys` is empty (verified 2026-10-28); docker build NOT done (AS13 gated on owner Q7).

@@ -228,11 +228,12 @@ pub async fn build(
         .await
         .map_err(|e| Error::startup("dnscraft.startup.store", format!("config store: {e}")))?;
     let store = ConfigStore::new(db.clone());
-    seed_config_store(&store, &snapshot).await?;
 
     // AS12: SQLite query-log consumer over the same database. The bounded
     // sink keeps the answer path non-blocking; the consumer batch-inserts and
     // applies retention. The client enricher comes from the live directory.
+    let (query_sink, query_rx) = QueryLog::channel(QUERY_LOG_CHANNEL_CAPACITY);
+    // The sink is attached so the overview reports `query_log.dropped`.
     let query_log = Arc::new(
         QueryLog::new(
             db.clone(),
@@ -241,9 +242,9 @@ pub async fn build(
         )
         .with_client_enricher(Arc::new(engine::EngineClients {
             engine: Arc::clone(&engines.clients),
-        })),
+        }))
+        .with_sink(Arc::clone(&query_sink)),
     );
-    let (query_sink, query_rx) = QueryLog::channel(QUERY_LOG_CHANNEL_CAPACITY);
     let query_sink: Arc<dyn QueryEventSink> = query_sink;
     let handle = tokio::runtime::Handle::try_current().map_err(|e| {
         Error::startup(
@@ -290,10 +291,10 @@ pub async fn build(
     let listener_sink = Arc::clone(&sink);
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let api_acme = certs.clone();
-    let set = Arc::new(
     let node_id = config
         .node_id()
         .map_err(|e| Error::startup("dnscraft.startup.node_id", format!("node_id: {e}")))?;
+    let set = Arc::new(
         ListenerSet::start(
             listeners,
             Arc::clone(&engines.policy),
@@ -301,8 +302,8 @@ pub async fn build(
             listener_sink,
             clock,
             config.public_domain.clone(),
-        )
             Some(node_id),
+        )
         .await
         .map_err(|e| Error::startup("dnscraft.startup.listeners", format!("listeners: {e}")))?,
     );
@@ -333,12 +334,14 @@ pub async fn build(
         modules,
         CONFIG_NODE_ID,
     ));
+    seed_config_store(&config_service, snapshot).await?;
 
     // AS10/AS11: serve the control-api (and mount `/mcp/v1` when enabled)
     // alongside the DNS listeners.
     let control_api = control_api::start(
         &mut config,
         &engines,
+        &set,
         &db,
         &data_dir,
         &query_log,
@@ -364,10 +367,23 @@ pub async fn build(
 /// the mapped [`ListenersConfig`] (listeners + limits + public + ddr), which
 /// is what `ApplyListeners` consumes.
 fn config_snapshot(config: &Config, listeners: &ListenersConfig) -> Result<Value, Error> {
+    // The effective filter/policy the engines run (default set and view added
+    // when the TOML omits them), so the stored snapshot validates and matches.
+    let (filtering, policy) =
+        engine::default_filter_and_policy(config.filtering.clone(), config.policy.clone())?;
+    let mut filtering = section("filtering", &filtering)?;
+    // A pause is runtime state, never stored config (the API rejects the key).
+    if let Some(sets) = filtering.get_mut("sets").and_then(Value::as_array_mut) {
+        for set in sets {
+            if let Some(set) = set.as_object_mut() {
+                set.remove("paused_until");
+            }
+        }
+    }
     Ok(serde_json::json!({
-        "filtering": section("filtering", &config.filtering)?,
+        "filtering": filtering,
         "clients": section("clients", &config.clients)?,
-        "policy": section("policy", &config.policy)?,
+        "policy": section("policy", &policy)?,
         "listeners": section("listeners", listeners)?,
         "tls": section("tls", &config.tls)?,
     }))
@@ -383,27 +399,28 @@ fn section<T: serde::Serialize>(name: &str, value: &T) -> Result<Value, Error> {
     })
 }
 
-/// Seeds an empty config store; a store that already has a snapshot is kept.
+/// Seeds an empty config store from the TOML snapshot (GA28, D4).
 ///
-/// D4: the TOML file is a first-run bootstrap only. It never overwrites an
-/// operator's stored (API-managed) configuration; a single warning says so.
-async fn seed_config_store(store: &ConfigStore, snapshot: &Value) -> Result<(), Error> {
-    let seed_err = |e: dnscraft_api::ControlApiError| {
-        Error::startup("dnscraft.startup.config_seed", format!("config store: {e}"))
-    };
-    match store.current().await.map_err(seed_err)? {
-        Some(version) => {
+/// The TOML file is a first-run bootstrap only: [`ConfigService::seed_if_empty`]
+/// stores it once and keeps an operator's stored (API-managed) configuration
+/// otherwise, so a single warning says so.
+async fn seed_config_store(config_service: &ConfigService, snapshot: Value) -> Result<(), Error> {
+    match config_service.seed_if_empty(snapshot).await {
+        Ok(Some(version)) => {
+            tracing::info!(version, "seeded the config store from TOML");
+            Ok(())
+        }
+        Ok(None) => {
             tracing::warn!(
-                version,
                 "config store already holds a snapshot; keeping it instead of re-seeding from TOML"
             );
+            Ok(())
         }
-        None => {
-            let version = store.store(snapshot).await.map_err(seed_err)?;
-            tracing::info!(version, "seeded the config store from TOML");
-        }
+        Err(e) => Err(Error::startup(
+            "dnscraft.startup.config_seed",
+            format!("config store: {e}"),
+        )),
     }
-    Ok(())
 }
 
 /// Loads `config_path`, builds and runs until SIGTERM/SIGINT, then shuts down.
@@ -556,26 +573,6 @@ mod tests {
                 "section `{section}` must be a JSON object"
             );
         }
-    }
-
-    /// D4: seeding runs once; a store that already has a snapshot is kept.
-    #[tokio::test]
-    async fn seed_never_overwrites_an_existing_snapshot() {
-        let db = Db::open_in_memory(Arc::new(dnscraft_api::SystemClock))
-            .await
-            .unwrap();
-        let store = ConfigStore::new(db);
-
-        let first = config_snapshot(&Config::default(), &ListenersConfig::default()).unwrap();
-        seed_config_store(&store, &first).await.unwrap();
-        assert_eq!(store.current().await.unwrap(), Some(1));
-
-        let mut second = first.clone();
-        second["filtering"] = serde_json::json!({ "changed": true });
-        seed_config_store(&store, &second).await.unwrap();
-
-        assert_eq!(store.current().await.unwrap(), Some(1), "no second seed");
-        assert_eq!(store.load(1).await.unwrap(), Some(first));
     }
 
     /// Production source must never use the frozen manual clock; the

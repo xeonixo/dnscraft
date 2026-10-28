@@ -1,12 +1,14 @@
 //! Builds the runtime engines (resolver, filtering, clients, policy, TLS) for
 //! the binary from the parsed TOML config.
 
+use std::future::Future;
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dnscraft_api::{ClientEnricher, ClientView};
+use dnscraft_api::{ClientEnricher, ClientView, ControlApiError, DirectoryClient, SyncSummary};
 use dnscraft_clients::{ClientEngine, ClientLookup, ClientSource};
 use dnscraft_filtering::{
     Clock, FilterConfig, FilterEngine, FilterSetConfig, ListStore, SetId, StoreConfig,
@@ -74,18 +76,80 @@ impl ClientDirectory for EngineClients {
 impl ClientEnricher for EngineClients {
     fn by_ip(&self, ip: IpAddr) -> Option<ClientView> {
         let client = self.engine.lookup().by_ip(ip)?;
-        let source = match client.source {
-            ClientSource::Manual => "manual",
-            ClientSource::Unifi => "unifi",
-        };
         Some(ClientView {
             id: client.id.as_str().to_owned(),
             display_name: client.display_name.clone(),
-            source: source.to_owned(),
+            source: source_name(client.source).to_owned(),
             macs: client.macs.iter().map(ToString::to_string).collect(),
             vlan_id: client.vlan.as_ref().map(|vlan| vlan.id),
             vlan_name: client.vlan.as_ref().map(|vlan| vlan.name.clone()),
             local_domain: (!client.local_domain.is_empty()).then(|| client.local_domain.clone()),
+        })
+    }
+}
+
+/// The public `source` string of a client (`"unifi"` or `"manual"`).
+fn source_name(source: ClientSource) -> &'static str {
+    match source {
+        ClientSource::Manual => "manual",
+        ClientSource::Unifi => "unifi",
+    }
+}
+
+/// [`dnscraft_api::ClientDirectory`] over the live [`ClientEngine`] (GA6, GM3).
+///
+/// Serves `GET /api/v1/clients`, `POST /api/v1/clients/sync` and the MCP
+/// `list_clients` tool from the same snapshot.
+pub(crate) struct EngineDirectory {
+    pub(crate) engine: Arc<ClientEngine>,
+}
+
+impl dnscraft_api::ClientDirectory for EngineDirectory {
+    fn clients(&self) -> Vec<DirectoryClient> {
+        self.engine
+            .lookup()
+            .clients()
+            .iter()
+            .map(|client| DirectoryClient {
+                id: client.id.as_str().to_owned(),
+                name: client.display_name.clone(),
+                dns_label: client.dns_label.clone(),
+                local_domain: client.local_domain.clone(),
+                source: source_name(client.source),
+                ips: client.addresses.to_vec(),
+                macs: client.macs.iter().map(ToString::to_string).collect(),
+                vlan: client.vlan.as_ref().map(|vlan| vlan.id),
+                online: client.online,
+                // ponytail: last_seen stays null; dnscraft-api keeps its RFC 3339
+                // helper crate-private. Add it when that helper is exported.
+                last_seen: None,
+            })
+            .collect()
+    }
+
+    // Same shape as the `async_trait` expansion of the trait method.
+    fn sync<'life0, 'async_trait>(
+        &'life0 self,
+    ) -> Pin<Box<dyn Future<Output = Result<SyncSummary, ControlApiError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let report = self
+                .engine
+                .sync_now()
+                .await
+                .map_err(|error| ControlApiError::Module {
+                    code: error.code(),
+                    params: None,
+                })?;
+            Ok(SyncSummary {
+                generation: report.generation,
+                rebuilt: report.rebuilt,
+                client_count: report.client_count,
+                ip_conflicts: report.ip_conflicts,
+            })
         })
     }
 }
@@ -202,7 +266,7 @@ pub(crate) fn engine_data_dir(config: &Config) -> PathBuf {
 /// Adds one default set/profile/view when the config omits views entirely.
 ///
 /// A configured policy is left untouched (and validated by the policy engine).
-fn default_filter_and_policy(
+pub(crate) fn default_filter_and_policy(
     mut filtering: FilterConfig,
     mut policy: PolicyConfig,
 ) -> Result<(FilterConfig, PolicyConfig), Error> {

@@ -10,13 +10,15 @@ use std::time::Duration;
 
 use dnscraft_api::{
     AppState, Audit, AuthState, ConfigService, ControlApiTls, Db, EngineStatusProvider,
-    EngineTlsAdmin, LocalAccountStore, OidcState, QueryLog, SessionStore, SystemClock,
+    EngineTlsAdmin, LocalAccountStore, OidcState, QueryLog, Readiness, SessionStore, SystemClock,
     TlsStatusProvider, TokenStore, mcp_backend_inner,
 };
+use dnscraft_listeners::ListenerSet;
+use dnscraft_policy::PolicyEngine;
 use dnscraft_tls::CertResolver;
 use tokio::task::JoinHandle;
 
-use crate::engine::Engines;
+use crate::engine::{EngineDirectory, Engines};
 use crate::{CONFIG_NODE_ID, Config, Error};
 
 /// How long [`start`] waits after spawning `serve` to catch an immediate
@@ -43,9 +45,13 @@ pub(crate) struct ControlApi {
 /// `config.control_api.mcp.allowed_origins` is filled in here (from the node
 /// hostname the TLS certificate covers) before `serve` reads the config, so the
 /// MCP transport validates browser origins against the real public host.
+/// `set` is the running listener set: its status feeds `/readyz` (GA29) and
+/// `get_status` (GM4), and is held weakly so shutdown can still consume it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn start(
     config: &mut Config,
     engines: &Engines,
+    set: &Arc<ListenerSet<PolicyEngine>>,
     db: &Db,
     data_dir: &Path,
     query_log: &Arc<QueryLog>,
@@ -157,10 +163,19 @@ pub(crate) async fn start(
     if let Some(engine) = engines.tls.as_ref() {
         state = state.with_tls_admin(Arc::new(EngineTlsAdmin::new(Arc::clone(engine))));
     }
+    // GA6c: the client directory behind `/clients` and `/clients/sync`.
+    let directory = Arc::new(EngineDirectory {
+        engine: Arc::clone(&engines.clients),
+    });
+    state = state.with_clients(directory.clone());
+    report_readiness(state.readiness(), engines, set);
 
     // AS11: mount `/mcp/v1` when enabled, wiring the AS12 query log so the
     // log and stats tools read the live SQLite pipeline.
     if mcp_config.enabled {
+        // Weak: the listener set is consumed on shutdown, so the status
+        // closure must not keep it alive.
+        let listeners = Arc::downgrade(set);
         state = state.with_mcp_backend(mcp_backend_inner(
             Arc::clone(&engines.filtering),
             Arc::clone(&engines.policy),
@@ -170,6 +185,14 @@ pub(crate) async fn start(
             mcp_tokens,
             Arc::new(SystemClock),
             tls_status,
+            directory,
+            Arc::clone(&engines.resolver),
+            Arc::new(move || {
+                listeners
+                    .upgrade()
+                    .map(|set| set.status())
+                    .unwrap_or_default()
+            }),
             CONFIG_NODE_ID,
             env!("CARGO_PKG_VERSION"),
             mcp_config,
@@ -213,6 +236,37 @@ pub(crate) async fn start(
         return Ok(ControlApi { task: None });
     }
     Ok(ControlApi { task: Some(task) })
+}
+
+/// GA29: registers each module producer and reports it from the live engine.
+///
+/// `/readyz` stays 503 until every registered module reports ready. The
+/// listeners report not ready while any configured listener failed to bind
+/// (possible with `allow_partial_bind`).
+fn report_readiness(readiness: &Readiness, engines: &Engines, set: &ListenerSet<PolicyEngine>) {
+    let listeners_bound = set
+        .status()
+        .listeners
+        .iter()
+        .all(|listener| listener.error.is_none());
+    let mut modules = vec![
+        ("resolver", true),
+        ("filtering", true),
+        ("clients", true),
+        ("policy", true),
+        ("listeners", listeners_bound),
+    ];
+    if engines.tls.is_some() {
+        modules.push(("tls", true));
+    }
+    for (module, ready) in modules {
+        readiness.expect_module(module);
+        if ready {
+            readiness.set_ready(module);
+        } else {
+            readiness.set_not_ready(module);
+        }
+    }
 }
 
 /// The hostname the API is addressed by.
