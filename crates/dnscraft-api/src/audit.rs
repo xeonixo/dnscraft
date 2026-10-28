@@ -289,6 +289,44 @@ pub(crate) fn config_change_record(
     })
 }
 
+/// Appends one audit row for an auth or token event (login, logout, token
+/// create or revoke). There are no config snapshots; a failed insert is logged
+/// and never changes the outcome of the action itself (GA13).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn record_auth_event(
+    db: Option<&Db>,
+    actor_id: &str,
+    actor_type: &str,
+    action: &str,
+    object_id: &str,
+    result: &str,
+    error_code: Option<&str>,
+) {
+    let Some(db) = db else {
+        return;
+    };
+    let record = AuditRecord {
+        id: 0,
+        time: db.now_unix(),
+        node_id: "local".to_owned(),
+        actor_id: actor_id.to_owned(),
+        actor_type: actor_type.to_owned(),
+        action: action.to_owned(),
+        object_type: "auth".to_owned(),
+        object_id: object_id.to_owned(),
+        config_version: None,
+        before_digest: None,
+        after_digest: None,
+        before: None,
+        after: None,
+        result: result.to_owned(),
+        error_code: error_code.map(str::to_owned),
+    };
+    if let Err(err) = db.audit_insert(record).await {
+        tracing::error!(error = %err, "failed to write auth audit record");
+    }
+}
+
 /// Appends redacted, digested audit records for mutating actions.
 pub struct Audit {
     db: Db,

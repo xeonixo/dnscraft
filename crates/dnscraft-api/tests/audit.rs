@@ -146,3 +146,49 @@ async fn admin_lists_audit_newest_first_without_secrets() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"]["code"], "control_api.auth.insufficient_scope");
 }
+
+#[tokio::test]
+async fn token_create_and_revoke_are_audited() {
+    let db = Db::open_in_memory(clock()).await.unwrap();
+    let admin = tokens(&db, "admin", Scope::Admin).await;
+    let router = AppState::new()
+        .with_auth(auth_state(&db))
+        .with_db(db.clone())
+        .router()
+        .layer(MockConnectInfo(test_addr()));
+
+    let create = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/tokens")
+        .header(header::AUTHORIZATION, bearer(admin.as_str()))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "name": "ci", "scope": "viewer" }).to_string(),
+        ))
+        .unwrap();
+    let (status, body) = send(router.clone(), create).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["data"]["id"].as_str().unwrap().to_owned();
+
+    let revoke = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v1/auth/tokens/{id}"))
+        .header(header::AUTHORIZATION, bearer(admin.as_str()))
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(router.clone(), revoke).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = get_req(&router, "/api/v1/audit", Some(&bearer(admin.as_str()))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rows = body["data"]["audit"].as_array().unwrap();
+    let actions: Vec<&str> = rows.iter().filter_map(|r| r["action"].as_str()).collect();
+    assert!(actions.contains(&"auth.token.create"), "{actions:?}");
+    assert!(actions.contains(&"auth.token.revoke"), "{actions:?}");
+    let revoked = rows
+        .iter()
+        .find(|r| r["action"] == "auth.token.revoke")
+        .unwrap();
+    assert_eq!(revoked["object_id"], json!(id));
+    assert_eq!(revoked["result"], "ok");
+}

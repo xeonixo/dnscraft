@@ -390,6 +390,16 @@ pub(crate) async fn create_token(
     let created = tokens
         .create(principal.actor_id().to_owned(), req.name, scope, ttl)
         .await?;
+    crate::audit::record_auth_event(
+        state.db(),
+        principal.actor_id(),
+        "user",
+        "auth.token.create",
+        created.id(),
+        "ok",
+        None,
+    )
+    .await;
 
     let mut warnings: Vec<&str> = Vec::new();
     if state
@@ -444,9 +454,24 @@ pub(crate) async fn list_tokens(
 /// on the next request.
 pub(crate) async fn delete_token(
     State(state): State<AppState>,
+    auth: Option<Extension<Authenticated>>,
     Path(id): Path<String>,
 ) -> Result<Response, ControlApiError> {
-    token_store(&state)?.revoke(&id).await?;
+    let result = token_store(&state)?.revoke(&id).await;
+    let (actor_id, actor_type) = auth
+        .map(|Extension(a)| (a.actor_id().to_owned(), a.actor_type().as_str().to_owned()))
+        .unwrap_or_else(|| ("local".to_owned(), "user".to_owned()));
+    crate::audit::record_auth_event(
+        state.db(),
+        &actor_id,
+        &actor_type,
+        "auth.token.revoke",
+        &id,
+        if result.is_ok() { "ok" } else { "error" },
+        result.as_ref().err().map(ControlApiError::code),
+    )
+    .await;
+    result?;
     Ok(crate::api::response::success(json!({ "deleted": true })).into_response())
 }
 

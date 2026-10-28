@@ -360,6 +360,7 @@ pub(crate) fn ensure_same_origin(headers: &HeaderMap) -> Result<(), ControlApiEr
 /// so logout stays idempotent even after the session has expired.
 pub(crate) async fn logout(
     State(state): State<AppState>,
+    authenticated: Option<Extension<Authenticated>>,
     headers: HeaderMap,
 ) -> Result<Response, ControlApiError> {
     if let Some(auth) = state.auth_state()
@@ -368,6 +369,18 @@ pub(crate) async fn logout(
         auth.sessions().logout(&cookie).await?;
         // A logout invalidates auth state, so sub-nodes see a new epoch.
         auth.invalidate_sessions();
+        if let Some(Extension(who)) = &authenticated {
+            crate::audit::record_auth_event(
+                state.db(),
+                who.actor_id(),
+                who.actor_type().as_str(),
+                "auth.logout",
+                who.actor_id(),
+                "ok",
+                None,
+            )
+            .await;
+        }
     }
 
     let mut response = crate::api::response::success(json!({})).into_response();

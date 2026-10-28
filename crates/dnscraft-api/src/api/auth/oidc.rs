@@ -455,7 +455,22 @@ pub(crate) async fn oidc_callback(
     let csrf_state = query
         .state
         .ok_or_else(|| oidc_error("OIDC callback is missing the state parameter"))?;
-    let (actor_id, role) = oidc.complete_login(code, &csrf_state).await?;
+    let (actor_id, role) = match oidc.complete_login(code, &csrf_state).await {
+        Ok(login) => login,
+        Err(err) => {
+            crate::audit::record_auth_event(
+                state.db(),
+                "oidc",
+                "user",
+                "auth.oidc.login",
+                "unknown",
+                "error",
+                Some(err.code()),
+            )
+            .await;
+            return Err(err);
+        }
+    };
 
     let sessions = state
         .auth_state()
@@ -463,7 +478,17 @@ pub(crate) async fn oidc_callback(
         .ok_or_else(|| ControlApiError::Internal {
             message: "session authentication is not configured".to_owned(),
         })?;
-    let created = sessions.create(actor_id, role).await?;
+    let created = sessions.create(actor_id.clone(), role).await?;
+    crate::audit::record_auth_event(
+        state.db(),
+        &actor_id,
+        "user",
+        "auth.oidc.login",
+        &actor_id,
+        "ok",
+        None,
+    )
+    .await;
     let cookie = session_set_cookie(
         created.cookie().expose(),
         secure_cookie(
