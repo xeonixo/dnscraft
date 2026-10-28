@@ -1385,6 +1385,7 @@ impl ClusterRuntime {
         let (version, snapshot) = service.current().await?;
         self.status.set(ClusterStatus {
             role: "master".to_owned(),
+            node_id: config.node_id.clone(),
             master_reachable: true,
             applied_version: version,
             lag: 0,
@@ -1545,6 +1546,7 @@ impl ClusterRuntime {
         };
         self.status.set(ClusterStatus {
             role: "sub_node".to_owned(),
+            node_id: config.node_id.clone(),
             master_reachable: false,
             applied_version: version,
             lag: 0,
@@ -1700,7 +1702,9 @@ async fn enroll_identity(
     };
     let pending = PendingNodeIdentity::generate(&config.node_id)?;
     let response = ClusterClient::enroll(master_url, &master_cert, pending.request(token)).await?;
-    Ok(pending.persist(&response, &config.tls)?)
+    let identity = pending.persist(&response, &config.tls)?;
+    tracing::info!(node_id = %config.node_id, master = %master_url, "enrolled with the cluster master");
+    Ok(identity)
 }
 
 /// One sub-node maintenance pass: renews the certificate when two thirds of
@@ -1759,6 +1763,9 @@ async fn run_sub_node_loop(
     notify: Arc<Notify>,
     shutdown: &mut watch::Receiver<bool>,
 ) {
+    // Set once a connection is lost, so the next successful connect logs as
+    // a reconnect rather than the first connect.
+    let mut lost_connection = false;
     loop {
         if *shutdown.borrow() {
             return;
@@ -1792,6 +1799,11 @@ async fn run_sub_node_loop(
             _ = shutdown.changed() => return,
         };
         status.update(|status| status.master_reachable = true);
+        if std::mem::take(&mut lost_connection) {
+            tracing::info!("reconnected to the cluster master");
+        } else {
+            tracing::info!("connected to the cluster master");
+        }
 
         // Resume the query-log outbox from the master's cursor. A master
         // sequence ahead of the local buffer means rows were dropped; the
@@ -1922,12 +1934,15 @@ async fn run_sub_node_loop(
                     }
                     Ok(StreamRecord::Error { error }) => {
                         tracing::warn!(code = %error.code, "cluster stream error");
+                        tracing::warn!("connection to the cluster master lost; reconnecting");
+                        lost_connection = true;
                         status.update(|status| status.master_reachable = false);
                         break;
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        tracing::debug!(error = %error, "cluster stream disconnected");
+                        tracing::warn!(error = %error, "connection to the cluster master lost; reconnecting");
+                        lost_connection = true;
                         status.update(|status| status.master_reachable = false);
                         break;
                     }

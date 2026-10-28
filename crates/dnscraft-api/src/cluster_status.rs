@@ -14,6 +14,8 @@ use serde_json::{Value, json};
 pub struct ClusterStatus {
     /// `master` or `sub_node`.
     pub role: String,
+    /// This node's cluster id (lets the UI name the node it is talking to).
+    pub node_id: String,
     /// Whether this node currently has a usable master connection. Always
     /// `true` on the master itself.
     pub master_reachable: bool,
@@ -31,10 +33,11 @@ pub struct ClusterStatus {
 }
 
 impl ClusterStatus {
-    /// Serializes the six fields in the contract's shape.
+    /// Serializes the status fields in the contract's shape.
     pub fn to_json(&self) -> Value {
         json!({
             "role": self.role,
+            "node_id": self.node_id,
             "master_reachable": self.master_reachable,
             "applied_version": self.applied_version,
             "lag": self.lag,

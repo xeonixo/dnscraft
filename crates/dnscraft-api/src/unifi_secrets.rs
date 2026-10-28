@@ -37,12 +37,8 @@ pub(crate) async fn set_api_key(
     }
 }
 
-/// Loads the stored API key, if any (used by cluster `SecretPush` to sync_owner).
-#[allow(dead_code)]
-pub(crate) async fn get_api_key(
-    db: &Db,
-    profile_id: &str,
-) -> Result<Option<String>, ControlApiError> {
+/// Loads the stored API key, if any (cluster `SecretPush` and the clients applier).
+pub async fn get_api_key(db: &Db, profile_id: &str) -> Result<Option<String>, ControlApiError> {
     let value = db.kv_get(&api_key_kv(profile_id)).await?;
     Ok(value.filter(|v| !v.is_empty()))
 }

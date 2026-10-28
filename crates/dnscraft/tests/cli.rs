@@ -43,32 +43,66 @@ fn wait_for_stderr_line(child: &mut Child, needle: &str, timeout: Duration) -> b
     let needle = needle.to_owned();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
+        // Keep draining after the match: a closed pipe would make the
+        // binary's later log writes fail.
         let reader = BufReader::new(stderr);
+        let mut sent = false;
         for line in reader.lines().map_while(Result::ok) {
-            if line.contains(&needle) {
+            if !sent && line.contains(&needle) {
                 let _ = tx.send(());
-                return;
+                sent = true;
             }
         }
     });
     rx.recv_timeout(timeout).is_ok()
 }
 
-/// Reads stderr until the `dnscraft: listening on …` line appears and returns it.
+/// Reads stderr until the `listening on …` info line appears and returns it.
 fn wait_for_listening_line(child: &mut Child, timeout: Duration) -> String {
     let stderr = child.stderr.take().expect("stderr must be piped");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
+        // Keep draining after the match (see `wait_for_stderr_line`).
         let reader = BufReader::new(stderr);
+        let mut sent = false;
         for line in reader.lines().map_while(Result::ok) {
-            if line.contains("listening on") {
+            if !sent && line.contains("listening on") {
                 let _ = tx.send(line);
-                return;
+                sent = true;
             }
         }
     });
     rx.recv_timeout(timeout)
         .expect("binary must report the bound address")
+}
+
+#[test]
+fn startup_lines_carry_level_and_target() {
+    let cfg = temp_config(
+        "levels",
+        r#"public_domain = "example.com"
+
+[[listeners]]
+id = "udp"
+protocol = "udp53"
+address = "127.0.0.1:0"
+"#,
+    );
+    let mut child = spawn(&cfg);
+    let line = wait_for_listening_line(&mut child, Duration::from_secs(20));
+    assert!(
+        line.contains("INFO") && line.contains("dnscraft: listening on 127.0.0.1:"),
+        "listening line must be an INFO tracing event: {line}"
+    );
+    assert!(line.contains("listener=\"udp\""), "{line}");
+
+    let kill = Command::new("kill")
+        .arg("-TERM")
+        .arg(child.id().to_string())
+        .status()
+        .unwrap();
+    assert!(kill.success(), "kill -TERM must succeed");
+    let _ = std::fs::remove_file(&cfg);
 }
 
 #[test]
@@ -291,7 +325,7 @@ address = "127.0.0.1:0"
     let mut child = spawn(&cfg);
     let line = wait_for_listening_line(&mut child, Duration::from_secs(20));
     assert!(
-        line.contains("dnscraft: listening on 127.0.0.1:"),
+        line.contains("listening on 127.0.0.1:"),
         "stderr must print the real bound address: {line}"
     );
 

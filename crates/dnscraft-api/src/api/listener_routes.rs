@@ -108,13 +108,43 @@ impl ListenerBody {
     }
 }
 
+/// Maps legacy serde enum names (`Udp53`, `Local`) to the wire form the UI expects.
+fn normalize_listener_wire(listener: &mut Value) {
+    let Some(obj) = listener.as_object_mut() else {
+        return;
+    };
+    if let Some(protocol) = obj.get("protocol").and_then(Value::as_str) {
+        let canonical = match protocol {
+            "Udp53" | "udp53" => "udp53",
+            "Tcp53" | "tcp53" => "tcp53",
+            "Dot" | "dot" => "dot",
+            "Doh" | "doh" => "doh",
+            "Doq" | "doq" => "doq",
+            other => other,
+        };
+        obj.insert("protocol".to_owned(), json!(canonical));
+    }
+    if let Some(exposure) = obj.get("exposure").and_then(Value::as_str) {
+        let canonical = match exposure {
+            "Local" | "local" => "local",
+            "Public" | "public" => "public",
+            other => other,
+        };
+        obj.insert("exposure".to_owned(), json!(canonical));
+    }
+}
+
 /// `GET /api/v1/listeners`.
 pub(crate) async fn list_listeners(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     let snapshot = stored_snapshot(service(&state)?).await?;
+    let mut listeners = array(&snapshot, "listeners", "listeners");
+    for row in &mut listeners {
+        normalize_listener_wire(row);
+    }
     Ok(success(json!({
-        "listeners": array(&snapshot, "listeners", "listeners"),
+        "listeners": listeners,
     })))
 }
 

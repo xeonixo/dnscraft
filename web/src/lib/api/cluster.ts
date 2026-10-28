@@ -4,11 +4,19 @@ import { del, get, post } from './client';
 export interface ClusterNode {
 	node_id: string;
 	role: string;
-	fingerprint: string;
-	joined_at: string;
+	fingerprint: string | null;
+	joined_at: string | null;
 	last_seen: string | null;
 	applied_config_version: number | null;
 	revoked: boolean;
+	/** This process; peers are `false`. */
+	local?: boolean;
+	/** Open downstream stream to the master (peers); local is always connected. */
+	connected?: boolean;
+	/** Last observed peer socket address (`ip:port`), when known. */
+	remote_addr?: string | null;
+	/** Cluster link: `"mtls"` for peers; `null` for the local row. */
+	transport?: string | null;
 }
 
 export interface JoinTokenResult {

@@ -54,6 +54,7 @@ public_domain = "example.com"
 [log]
 queries = true                # optional stdout JSON-lines debug stream
 # ip_truncate = "none"        # none | last_octet | last_group
+# level = "info"              # error | warn | info | debug | trace (system messages)
 
 [[listeners]]
 id = "lan-udp"
@@ -93,11 +94,25 @@ Incomplete pairs exit with code 2 (`dnscraft.config.tls_env_incomplete` /
 conflict variants). Without TLS secrets, encrypted listeners bind but fail
 handshakes with `listeners.tls.no_cert` until ACME or an upload installs a cert.
 
+## Logging
+
+System messages (startup, listeners, config versions, filter-list refreshes,
+cluster enrollment and connection state, certificate issue and renewal,
+shutdown) are tracing events written to **stderr**. The level is `[log] level`,
+default `info`; `warn` applies to third-party crates, `level` to every dnscraft
+crate. Set `RUST_LOG` to override it (for example `RUST_LOG=debug`); an invalid
+`RUST_LOG` is ignored and the configured level is used. Config and usage errors
+found before the config is read print a single `dnscraft: <code>: <message>`
+line to stderr.
+
+The level is read from the config file, so changing it needs a restart.
+
 ## Query log
 
 Persisted query log and stats live in the control-api SQLite store (API + MCP).
 When `[log] queries = true`, each answered query is also written to **stdout**
-as one JSON object (startup notices go to stderr):
+as one JSON object. Stdout carries only these query events; all system messages
+stay on stderr:
 
 ```json
 {"answer_size":42,"client_id":null,"duration_ms":7,"listener_id":"lan-udp","profile_id":"default","protocol":"udp53","qclass":"IN","qname":"example.com.","qtype":"A","rcode":"NoError","source":"192.0.2.10","time":1700000000.0,"view_id":"default"}

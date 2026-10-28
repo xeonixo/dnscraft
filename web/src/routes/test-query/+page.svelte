@@ -4,8 +4,13 @@
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
 	import DecisionSteps from '$lib/querylog/DecisionSteps.svelte';
-	import { runTestQuery, type TestQueryResult } from '$lib/api/policy';
+	import {
+		parseTestQueryRecords,
+		runTestQuery,
+		type TestQueryResult,
+	} from '$lib/api/policy';
 	import { failureOf } from '$lib/api/result';
+	import { answerLabel } from '$lib/querylog/view';
 	import { m } from '$lib/paraglide/messages';
 
 	let sourceIp = $state('192.0.2.10');
@@ -29,6 +34,32 @@
 		{ value: 'dot', label: m.test_query_protocol_dot() },
 		{ value: 'doq', label: m.test_query_protocol_doq() },
 	]);
+
+	const answerRcode = $derived(
+		result?.answer?.rcode ?? (typeof result?.rcode === 'string' ? result.rcode : null),
+	);
+	const records = $derived(parseTestQueryRecords(result?.answer?.records));
+	const filterHit = $derived.by(() => {
+		const raw = result?.filter;
+		if (!raw || typeof raw !== 'object') return null;
+		const row = raw as Record<string, unknown>;
+		return {
+			rule: typeof row.rule === 'string' ? row.rule : typeof row.rule_text === 'string' ? row.rule_text : null,
+			list: typeof row.list_id === 'string' ? row.list_id : null,
+			mode: typeof row.block_mode === 'string' ? row.block_mode : null,
+		};
+	});
+
+	function dash(value: unknown): string {
+		if (value == null || value === '') return '—';
+		return String(value);
+	}
+
+	function usLabel(value: number | undefined): string {
+		if (value == null || !Number.isFinite(value)) return '—';
+		if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)} ms`;
+		return `${value} µs`;
+	}
 
 	async function submit(): Promise<void> {
 		busy = true;
@@ -79,13 +110,75 @@
 {/if}
 
 {#if result}
+	<div class="section-head">{m.test_query_summary()}</div>
+	<GroupedList>
+		<GroupedRow label={m.querylog_row_view()} detail={dash(result.view_id)} detailMono />
+		<GroupedRow label={m.querylog_row_profile()} detail={dash(result.profile_id)} detailMono />
+		{#if result.filter_set_id}
+			<GroupedRow label={m.querylog_row_filter_set()} detail={dash(result.filter_set_id)} detailMono />
+		{/if}
+		{#if result.answer_source}
+			<GroupedRow
+				label={m.querylog_row_answer_source()}
+				detail={answerLabel(String(result.answer_source))}
+			/>
+		{/if}
+		{#if result.forward_zone}
+			<GroupedRow label={m.querylog_row_forward_zone()} detail={dash(result.forward_zone)} detailMono />
+		{/if}
+		{#if result.client_id}
+			<GroupedRow label={m.querylog_row_client_id()} detail={dash(result.client_id)} detailMono />
+		{/if}
+		{#if result.dnssec}
+			<GroupedRow label={m.querylog_row_dnssec()} detail={dash(result.dnssec)} />
+		{/if}
+		{#if answerRcode}
+			<GroupedRow label={m.querylog_row_rcode()} detail={answerRcode} detailMono />
+		{/if}
+	</GroupedList>
+
+	{#if filterHit && (filterHit.rule || filterHit.list || filterHit.mode)}
+		<div class="section-head">{m.querylog_row_rule()}</div>
+		<GroupedList>
+			{#if filterHit.rule}
+				<GroupedRow label={m.querylog_row_rule()} detail={filterHit.rule} detailMono />
+			{/if}
+			{#if filterHit.list}
+				<GroupedRow label={m.querylog_row_list()} detail={filterHit.list} detailMono />
+			{/if}
+			{#if filterHit.mode}
+				<GroupedRow label={m.querylog_row_block_mode()} detail={filterHit.mode} />
+			{/if}
+		</GroupedList>
+	{/if}
+
+	<div class="section-head">{m.test_query_records()}</div>
+	{#if records.length > 0}
+		<GroupedList>
+			{#each records as rec, index (`${rec.type}:${rec.name}:${rec.data}:${index}`)}
+				<GroupedRow
+					label={`${rec.type}${rec.name ? ` · ${rec.name}` : ''}`}
+					detail={m.test_query_record_detail({ data: rec.data || '—', ttl: String(rec.ttl) })}
+					detailMono
+				/>
+			{/each}
+		</GroupedList>
+	{:else}
+		<p class="empty">{m.test_query_no_records()}</p>
+	{/if}
+
 	<div class="section-head">{m.test_query_steps()}</div>
 	<div class="steps-panel">
 		<DecisionSteps steps={result.steps ?? []} />
 	</div>
-	{#if result.answer}
+
+	{#if result.timings}
+		<div class="section-head">{m.querylog_section_timing()}</div>
 		<GroupedList>
-			<GroupedRow label={m.test_query_answer()} detail={result.answer.rcode} />
+			<GroupedRow label={m.querylog_timing_select()} detail={usLabel(result.timings.select_us)} detailMono />
+			<GroupedRow label={m.querylog_timing_filter()} detail={usLabel(result.timings.filter_us)} detailMono />
+			<GroupedRow label={m.querylog_timing_resolve()} detail={usLabel(result.timings.resolve_us)} detailMono />
+			<GroupedRow label={m.querylog_timing_total()} detail={usLabel(result.timings.total_us)} detailMono />
 		</GroupedList>
 	{/if}
 {/if}
@@ -125,6 +218,11 @@
 		font-weight: 600;
 		color: var(--label-3);
 		text-transform: uppercase;
+	}
+	.empty {
+		margin: 0 0 0.5rem;
+		font-size: 0.875rem;
+		color: var(--label-2);
 	}
 	.footnote {
 		margin-top: 0.75rem;

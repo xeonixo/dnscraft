@@ -24,6 +24,8 @@ const PERIOD_MS: Record<Period, number> = {
 
 export interface StatusCluster {
 	role: string;
+	/** This node's cluster id; absent on older servers. */
+	node_id?: string;
 	master_reachable: boolean;
 	applied_version: number | null;
 	lag: number;

@@ -12,6 +12,7 @@
 	import Sheet from '$lib/components/Sheet.svelte';
 	import Switch from '$lib/components/Switch.svelte';
 	import { exportHref, listQueryLog, type QueryPage } from '$lib/api/query-log';
+	import { openQueryLogStream } from '$lib/api/query-log-stream';
 	import { settle, type Result } from '$lib/api/result';
 	import { getOverview, type StatsOverview } from '$lib/api/stats';
 	import ActiveTags from '$lib/querylog/ActiveTags.svelte';
@@ -33,6 +34,7 @@
 		type FieldErrors,
 		type FilterKey,
 	} from '$lib/querylog/filters';
+	import { isLiveHead, mergeLivePage, streamHref } from '$lib/querylog/live';
 	import { mediaMatches, WIDE_QUERY } from '$lib/querylog/media';
 	import {
 		readDensity,
@@ -86,6 +88,8 @@
 	let runs = 0;
 	/** Bumped by Retry: the same URL must still fetch again. */
 	let attempt = $state(0);
+	/** Extra drops reported by the live SSE `lagged` event (WX2). */
+	let streamDropped = $state(0);
 	const loaded = $derived(result.kind === 'ok' ? result.data : null);
 
 	/** A server-rejected filter or page value, mapped back to the field that caused it. */
@@ -100,7 +104,9 @@
 	const unmappedError = $derived(
 		result.kind === 'error' && Object.keys(serverErrors).length === 0 ? result : null,
 	);
-	const dropped = $derived(overview.kind === 'ok' ? overview.data.query_log_dropped : 0);
+	const dropped = $derived(
+		(overview.kind === 'ok' ? overview.data.query_log_dropped : 0) + streamDropped,
+	);
 
 	// Loads the list for the current URL. A newer run makes an older response obsolete.
 	$effect(() => {
@@ -111,6 +117,25 @@
 		void settle(listQueryLog(params)).then((next) => {
 			if (run === runs) result = next;
 		});
+	});
+
+	// Always-on live tail (WX2): no toggle. Prepends onto the first page when sorted newest-first.
+	$effect(() => {
+		if (invalid) return;
+		const href = streamHref(query);
+		const merge = isLiveHead(draft);
+		streamDropped = 0;
+		const stream = openQueryLogStream(href, {
+			onRow(row) {
+				if (!merge) return;
+				if (result.kind !== 'ok') return;
+				result = { kind: 'ok', data: mergeLivePage(result.data, [row]) };
+			},
+			onLagged(count) {
+				streamDropped += count;
+			},
+		});
+		return () => stream.stop();
 	});
 
 	// Keeps the search box in step with the URL, but not while the user is typing.

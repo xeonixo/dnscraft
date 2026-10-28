@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import Banner from '$lib/components/Banner.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
@@ -51,7 +50,6 @@
 			.replace(/^-+|-+$/g, '')
 			.slice(0, 64);
 	}
-	let formId = $state('');
 	let formName = $state('');
 	let formUrl = $state('');
 	let formEnabled = $state(true);
@@ -143,7 +141,6 @@
 
 	function openCreate(): void {
 		editing = null;
-		formId = '';
 		formName = '';
 		formUrl = '';
 		formEnabled = true;
@@ -154,7 +151,6 @@
 
 	function openEdit(list: FilterList): void {
 		editing = list;
-		formId = list.id;
 		formName = list.name;
 		formUrl = list.source.url ?? list.source.file ?? '';
 		formEnabled = list.enabled;
@@ -170,8 +166,9 @@
 
 	async function submit(): Promise<void> {
 		busy = true;
-		const id = editing?.id ?? slugify(formId.trim() || formName);
-		const source = formUrl.startsWith('http') ? { url: formUrl.trim() } : { file: formUrl.trim() };
+		const id = editing?.id ?? slugify(formName);
+		const trimmed = formUrl.trim();
+		const source = /^https?:\/\//i.test(trimmed) ? { url: trimmed } : { file: trimmed };
 		try {
 			await saveFilterList({ id, name: formName, source, enabled: formEnabled });
 			closeSheet();
@@ -234,8 +231,6 @@
 	{:else if result.kind === 'error'}
 		<ResultNotice {result} onretry={() => void load()} />
 	{:else}
-		<Banner title={m.filter_lists_refresh_unavailable()} />
-
 		{#if totalLine}
 			<p class="total">
 				<span>{totalLine}</span>{#if failedCount > 0}<span class="muted">
@@ -339,10 +334,6 @@
 			onclose={closeSheet}
 			centeredOnWide
 		>
-			{#if !editing}
-				<label class="field-label" for="fl-id">{m.filter_lists_id_label()}</label>
-				<input id="fl-id" class="field mono" bind:value={formId} />
-			{/if}
 			<label class="field-label" for="fl-name">{m.filter_lists_name_label()}</label>
 			<input id="fl-name" class="field" bind:value={formName} />
 			<label class="field-label" for="fl-source">{m.filter_lists_source_label()}</label>

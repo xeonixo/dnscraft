@@ -112,6 +112,8 @@
 	let keyPem = $state('');
 
 	const data = $derived(status.kind === 'ok' ? status.data : null);
+	/** Config can load even when the TLS engine is not running (empty public_domain). */
+	const hasTlsConfig = $derived(Object.keys(tlsConfig).length > 0);
 	const hasClusterProfiles = $derived(formNodeProfiles.length > 0);
 	const detectedV4 = $derived(dyndnsDiscoveredIpv4(data));
 	const detectedV6 = $derived(dyndnsDiscoveredIpv6(data));
@@ -222,6 +224,13 @@
 	function objectField(source: Record<string, unknown>, key: string): Record<string, unknown> {
 		const value = source[key];
 		return value && typeof value === 'object' ? { ...(value as Record<string, unknown>) } : {};
+	}
+
+	/** Map stored PascalCase / short aliases onto the wire form the API validates. */
+	function normalizeKeyType(value: unknown): string {
+		const raw = String(value ?? 'ecdsa_p256');
+		if (raw === 'EcdsaP384' || raw === 'p384' || raw === 'ecdsa_p384') return 'ecdsa_p384';
+		return 'ecdsa_p256';
 	}
 
 	function defaultHostnameFor(nodeId: string, publicDomain: string): string {
@@ -438,6 +447,7 @@
 			...tlsConfig,
 			mode: formSource,
 			public_domain: formDomain.trim(),
+			key_type: normalizeKeyType(tlsConfig.key_type),
 			dns_provider: {
 				...objectField(tlsConfig, 'dns_provider'),
 				kind: formDnsProvider,
@@ -482,6 +492,8 @@
 			confirmOpen = false;
 			await load();
 		} catch (cause) {
+			// Close the sheet so the error banner is visible instead of trapping the user.
+			confirmOpen = false;
 			failure = failureOf(cause);
 		} finally {
 			busy = false;
@@ -568,70 +580,82 @@
 
 	{#if status.kind === 'loading'}
 		<p class="state">{m.state_loading()}</p>
-	{:else if status.kind === 'unavailable'}
+	{:else if status.kind === 'unavailable' && !hasTlsConfig}
 		<UnavailableNotice />
 	{:else if status.kind === 'error'}
 		<ErrorNotice code={status.code} params={status.params} />
-	{:else if data}
+	{:else if data || hasTlsConfig}
 		<div class="tabs">
 			<Segmented options={tabOptions} bind:value={tab} label={m.tls_tabs_label()} />
 		</div>
 
 		{#if tab === 'overview'}
 			<section class="panel">
-				<GroupedList header={m.tls_status_group()}>
-					<GroupedRow label={m.dashboard_tls_label()} detail={modeLabel} />
-					{#if data.issuer}
-						<GroupedRow label={m.tls_issuer_label()} detail={asText(data.issuer)} />
-					{/if}
-					{#if data.subject}
-						<GroupedRow label={m.tls_subject_label()} detail={asText(data.subject)} detailMono />
-					{/if}
-					{#if data.not_before}
+				{#if !data}
+					<div class="banner-wrap">
+						<Banner title={m.tls_engine_unavailable_title()}>
+							<p>{m.tls_engine_unavailable_body()}</p>
+						</Banner>
+					</div>
+				{:else}
+					<GroupedList header={m.tls_status_group()}>
+						<GroupedRow label={m.dashboard_tls_label()} detail={modeLabel} />
+						{#if data.issuer}
+							<GroupedRow label={m.tls_issuer_label()} detail={asText(data.issuer)} />
+						{/if}
+						{#if data.subject}
+							<GroupedRow label={m.tls_subject_label()} detail={asText(data.subject)} detailMono />
+						{/if}
+						{#if data.not_before}
+							<GroupedRow
+								label={m.tls_valid_from_label()}
+								detail={formatInstant(data.not_before)}
+								detailMono
+							/>
+						{/if}
+						{#if data.not_after}
+							<GroupedRow
+								label={m.tls_expires_label()}
+								detail={formatInstant(data.not_after)}
+								detailMono
+							/>
+						{/if}
+						{#if daysLeft !== null}
+							<GroupedRow
+								label={m.tls_days_left_label()}
+								detail={m.tls_days_left_value({ count: daysLeft })}
+							/>
+						{/if}
+						{#if data.identifiers && data.identifiers.length > 0}
+							<GroupedRow
+								label={m.tls_sans_label()}
+								detail={data.identifiers.join(' · ')}
+								detailMono
+							/>
+						{/if}
+						{#if data.key_type}
+							<GroupedRow label={m.tls_key_type_label()} detail={asText(data.key_type)} />
+						{/if}
+						{#if data.fingerprint_sha256}
+							<GroupedRow
+								label={m.tls_fingerprint_label()}
+								detail={formatFingerprint(data.fingerprint_sha256)}
+								detailMono
+							/>
+						{/if}
 						<GroupedRow
-							label={m.tls_valid_from_label()}
-							detail={formatInstant(data.not_before)}
+							label={m.tls_last_issue_label()}
+							detail={formatInstant(data.last_issue)}
 							detailMono
 						/>
-					{/if}
-					{#if data.not_after}
 						<GroupedRow
-							label={m.tls_expires_label()}
-							detail={formatInstant(data.not_after)}
+							label={m.tls_last_renew_label()}
+							detail={formatInstant(data.last_renew_attempt)}
 							detailMono
 						/>
-					{/if}
-					{#if daysLeft !== null}
-						<GroupedRow
-							label={m.tls_days_left_label()}
-							detail={m.tls_days_left_value({ count: daysLeft })}
-						/>
-					{/if}
-					{#if data.identifiers && data.identifiers.length > 0}
-						<GroupedRow
-							label={m.tls_sans_label()}
-							detail={data.identifiers.join(' · ')}
-							detailMono
-						/>
-					{/if}
-					{#if data.key_type}
-						<GroupedRow label={m.tls_key_type_label()} detail={asText(data.key_type)} />
-					{/if}
-					{#if data.fingerprint_sha256}
-						<GroupedRow
-							label={m.tls_fingerprint_label()}
-							detail={formatFingerprint(data.fingerprint_sha256)}
-							detailMono
-						/>
-					{/if}
-					<GroupedRow label={m.tls_last_issue_label()} detail={formatInstant(data.last_issue)} detailMono />
-					<GroupedRow
-						label={m.tls_last_renew_label()}
-						detail={formatInstant(data.last_renew_attempt)}
-						detailMono
-					/>
-					<GroupedRow label={m.tls_last_error_label()} detail={asText(data.last_error)} />
-				</GroupedList>
+						<GroupedRow label={m.tls_last_error_label()} detail={asText(data.last_error)} />
+					</GroupedList>
+				{/if}
 
 				<GroupedList header={m.tls_acme_group()}>
 					<GroupedRow
@@ -644,58 +668,60 @@
 
 				{@render dnsProviderStatus()}
 
-				<GroupedList header={m.tls_dyndns_status_group()}>
-					<GroupedRow
-						label={m.tls_dyndns_last_v4()}
-						detail={asText(dyndnsDiscoveredIpv4(data))}
-						detailMono
-					/>
-					<GroupedRow
-						label={m.tls_dyndns_last_v6()}
-						detail={asText(dyndnsDiscoveredIpv6(data))}
-						detailMono
-					/>
-					<GroupedRow
-						label={m.tls_dyndns_last_change()}
-						detail={formatRelative(data.last_dyndns_success)}
-					/>
-					<GroupedRow label={m.tls_last_error_label()} detail={dash()} />
-				</GroupedList>
-
-				{#if isAdmin}
-					<GroupedList header={m.tls_actions_group()}>
-						<GroupedRow label={m.tls_action_renew()} detail={m.tls_action_renew_detail()}>
-							{#snippet trailing()}
-								<Button disabled={busy} onclick={() => void runAction(renewTls)}>{m.tls_run()}</Button>
-							{/snippet}
-						</GroupedRow>
-						<GroupedRow label={m.tls_action_dyndns()} detail={m.tls_action_dyndns_detail()}>
-							{#snippet trailing()}
-								<Button disabled={busy} onclick={() => void runAction(triggerDyndns)}
-									>{m.tls_run()}</Button
-								>
-							{/snippet}
-						</GroupedRow>
-						<GroupedRow label={m.tls_action_rotate()} detail={m.tls_action_rotate_detail()}>
-							{#snippet trailing()}
-								<Button disabled={busy} onclick={() => void runAction(rotateTls)}>{m.tls_run()}</Button>
-							{/snippet}
-						</GroupedRow>
-						<GroupedRow label={m.tls_action_preflight()} detail={m.tls_action_preflight_detail()}>
-							{#snippet trailing()}
-								<Button disabled={busy} onclick={() => void runAction(preflightTls)}
-									>{m.tls_run()}</Button
-								>
-							{/snippet}
-						</GroupedRow>
-						<GroupedRow label={m.tls_action_revoke()} detail={m.tls_action_revoke_detail()}>
-							{#snippet trailing()}
-								<Button variant="danger" disabled={busy} onclick={() => (revokeOpen = true)}>
-									{m.tls_open()}
-								</Button>
-							{/snippet}
-						</GroupedRow>
+				{#if data}
+					<GroupedList header={m.tls_dyndns_status_group()}>
+						<GroupedRow
+							label={m.tls_dyndns_last_v4()}
+							detail={asText(dyndnsDiscoveredIpv4(data))}
+							detailMono
+						/>
+						<GroupedRow
+							label={m.tls_dyndns_last_v6()}
+							detail={asText(dyndnsDiscoveredIpv6(data))}
+							detailMono
+						/>
+						<GroupedRow
+							label={m.tls_dyndns_last_change()}
+							detail={formatRelative(data.last_dyndns_success)}
+						/>
+						<GroupedRow label={m.tls_last_error_label()} detail={dash()} />
 					</GroupedList>
+
+					{#if isAdmin}
+						<GroupedList header={m.tls_actions_group()}>
+							<GroupedRow label={m.tls_action_renew()} detail={m.tls_action_renew_detail()}>
+								{#snippet trailing()}
+									<Button disabled={busy} onclick={() => void runAction(renewTls)}>{m.tls_run()}</Button>
+								{/snippet}
+							</GroupedRow>
+							<GroupedRow label={m.tls_action_dyndns()} detail={m.tls_action_dyndns_detail()}>
+								{#snippet trailing()}
+									<Button disabled={busy} onclick={() => void runAction(triggerDyndns)}
+										>{m.tls_run()}</Button
+									>
+								{/snippet}
+							</GroupedRow>
+							<GroupedRow label={m.tls_action_rotate()} detail={m.tls_action_rotate_detail()}>
+								{#snippet trailing()}
+									<Button disabled={busy} onclick={() => void runAction(rotateTls)}>{m.tls_run()}</Button>
+								{/snippet}
+							</GroupedRow>
+							<GroupedRow label={m.tls_action_preflight()} detail={m.tls_action_preflight_detail()}>
+								{#snippet trailing()}
+									<Button disabled={busy} onclick={() => void runAction(preflightTls)}
+										>{m.tls_run()}</Button
+									>
+								{/snippet}
+							</GroupedRow>
+							<GroupedRow label={m.tls_action_revoke()} detail={m.tls_action_revoke_detail()}>
+								{#snippet trailing()}
+									<Button variant="danger" disabled={busy} onclick={() => (revokeOpen = true)}>
+										{m.tls_open()}
+									</Button>
+								{/snippet}
+							</GroupedRow>
+						</GroupedList>
+					{/if}
 				{/if}
 			</section>
 		{:else if tab === 'cert'}

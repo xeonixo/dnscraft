@@ -38,17 +38,22 @@ pub const DEFAULT_MAX_TRACKED_SOURCES: u32 = 100_000;
 
 /// Transport protocol of one listener.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-
+#[serde(rename_all = "lowercase")]
 pub enum Protocol {
     /// Plain DNS over UDP (port 53 by convention).
+    #[serde(alias = "Udp53")]
     Udp53,
     /// Plain DNS over TCP (port 53 by convention).
+    #[serde(alias = "Tcp53")]
     Tcp53,
     /// DNS over TLS.
+    #[serde(alias = "Dot")]
     Dot,
     /// DNS over HTTPS (HTTP/2 + HTTP/1.1; HTTP/3 when [`ListenerConfig::h3`]).
+    #[serde(alias = "Doh")]
     Doh,
     /// DNS over QUIC.
+    #[serde(alias = "Doq")]
     Doq,
 }
 
@@ -72,12 +77,14 @@ impl Protocol {
 
 /// Who may use the listener.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-
+#[serde(rename_all = "lowercase")]
 pub enum Exposure {
     /// Private / local sources only (default).
     #[default]
+    #[serde(alias = "Local")]
     Local,
     /// Also reachable from public sources (encrypted protocols only).
+    #[serde(alias = "Public")]
     Public,
 }
 

@@ -294,6 +294,7 @@ impl ConfigService {
             });
         };
         self.validate_and_apply(&snapshot, None).await?;
+        self.spawn_list_refresh();
         Ok(Some(version))
     }
 
@@ -370,15 +371,32 @@ impl ConfigService {
             Some(previous) => self.store.load(previous).await?,
             None => None,
         };
-        self.commit(
-            &ConfigActor::local(),
-            "cluster.config.apply",
-            previous_version,
-            previous.as_ref(),
-            &snapshot,
-            ApplyStoreMode::Adopt(version),
-        )
-        .await
+        let applied = self
+            .commit(
+                &ConfigActor::local(),
+                "cluster.config.apply",
+                previous_version,
+                previous.as_ref(),
+                &snapshot,
+                ApplyStoreMode::Adopt(version),
+            )
+            .await?;
+        self.spawn_list_refresh();
+        Ok(applied)
+    }
+
+    /// Fetches remote filter lists in the background without delaying the apply
+    /// or serving. Offline-first apply paths (cluster sync, boot) need this: the
+    /// scheduler's first run is one `update_interval` away, so a fresh sub-node
+    /// would otherwise block nothing for a day.
+    fn spawn_list_refresh(&self) {
+        if let Some(engine) = self.modules.filtering_engine.clone() {
+            tokio::spawn(async move {
+                engine
+                    .update_lists(dnscraft_filtering::ListSelection::All)
+                    .await;
+            });
+        }
     }
 
     /// Applies an in-place mutation of the current snapshot under the config
@@ -572,6 +590,12 @@ impl ConfigService {
                     None,
                 )
                 .await;
+                tracing::info!(
+                    version,
+                    action,
+                    actor_type = %actor.actor_type,
+                    "config version applied"
+                );
                 Ok(version)
             }
             Err(err) => {
@@ -765,6 +789,12 @@ impl ConfigService {
             None,
         )
         .await;
+        tracing::info!(
+            version,
+            restored_from = target_version,
+            actor_type = %actor.actor_type,
+            "config version applied (rollback)"
+        );
         Ok(RollbackOutcome {
             version,
             restored_from: target_version,

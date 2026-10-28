@@ -41,6 +41,9 @@ export function errorMessageKey(code: string): string {
 /** Placeholders a message needs even when the API omits the param (only the required role has one). */
 const PARAM_DEFAULTS: Record<string, Record<string, string>> = {
 	error_control_api_auth_insufficient_scope: { required: 'admin' },
+	// API usually sends `reason`; this is only the empty-param fallback.
+	error_policy_config_invalid: { reason: 'invalid' },
+	error_listeners_config_invalid: { reason: 'invalid' },
 };
 
 /** Params are API data: only scalars are passed on, and they reach the message as plain text. */

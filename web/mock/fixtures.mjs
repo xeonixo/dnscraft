@@ -1625,6 +1625,10 @@ export const MOCK_CLUSTER_NODES = [
 		last_seen: rfc3339(NOW_MS - 2_000),
 		applied_config_version: 12,
 		revoked: false,
+		local: true,
+		connected: true,
+		remote_addr: null,
+		transport: null,
 	},
 	{
 		node_id: 'node2',
@@ -1634,6 +1638,10 @@ export const MOCK_CLUSTER_NODES = [
 		last_seen: rfc3339(NOW_MS - 40_000),
 		applied_config_version: 12,
 		revoked: false,
+		local: false,
+		connected: true,
+		remote_addr: '192.0.2.91:8443',
+		transport: 'mtls',
 	},
 	{
 		node_id: 'node3',
@@ -1643,9 +1651,12 @@ export const MOCK_CLUSTER_NODES = [
 		last_seen: rfc3339(NOW_MS - 2 * HOUR_MS),
 		applied_config_version: 10,
 		revoked: false,
+		local: false,
+		connected: false,
+		remote_addr: '192.0.2.92:8443',
+		transport: 'mtls',
 	},
 ];
-
 /** Config versions, as `minutes ago` (newest first in the API). */
 const auditEvent = (ago, actor, actorType, action, objectType, objectId, rest = {}) => ({
 	ago,

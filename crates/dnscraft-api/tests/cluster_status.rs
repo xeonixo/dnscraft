@@ -46,6 +46,7 @@ async fn status_includes_the_six_cluster_fields_when_clustered() {
     let status = Arc::new(ClusterStatusHandle::new());
     status.set(ClusterStatus {
         role: "sub_node".to_owned(),
+        node_id: "node-b".to_owned(),
         master_reachable: false,
         applied_version: Some(4),
         lag: 2,

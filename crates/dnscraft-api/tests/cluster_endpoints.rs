@@ -197,6 +197,10 @@ async fn list_nodes_returns_joined_nodes_with_role() {
             "last_seen": rfc3339(NOW),
             "applied_config_version": Value::Null,
             "revoked": false,
+            "local": false,
+            "connected": false,
+            "remote_addr": Value::Null,
+            "transport": "mtls",
         })
     );
     assert_eq!(nodes[1]["node_id"], "node-b");

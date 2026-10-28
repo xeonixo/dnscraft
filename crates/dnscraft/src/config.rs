@@ -296,6 +296,11 @@ pub struct LogConfig {
     /// Default `none`.
     #[serde(default = "default_ip_truncate")]
     pub ip_truncate: String,
+    /// System-message level on stderr: `error`, `warn`, `info`, `debug` or
+    /// `trace`. Default `info`. The `RUST_LOG` environment variable overrides
+    /// it when set and parseable.
+    #[serde(default = "default_level")]
+    pub level: String,
 }
 
 impl Default for LogConfig {
@@ -303,12 +308,17 @@ impl Default for LogConfig {
         Self {
             queries: false,
             ip_truncate: default_ip_truncate(),
+            level: default_level(),
         }
     }
 }
 
 fn default_ip_truncate() -> String {
     "none".to_owned()
+}
+
+fn default_level() -> String {
+    "info".to_owned()
 }
 
 /// Resolved query-log settings (validated values).
@@ -318,6 +328,8 @@ pub struct LogSettings {
     pub queries: bool,
     /// Source-IP truncation for the stdout lines.
     pub ip_truncate: IpTruncate,
+    /// Level of the stderr system messages (before `RUST_LOG` overrides).
+    pub level: tracing::Level,
 }
 
 /// One listener entry in the TOML file.
@@ -472,9 +484,25 @@ impl Config {
                 ));
             }
         };
+        let level = match self.log.level.as_str() {
+            "error" => tracing::Level::ERROR,
+            "warn" => tracing::Level::WARN,
+            "info" => tracing::Level::INFO,
+            "debug" => tracing::Level::DEBUG,
+            "trace" => tracing::Level::TRACE,
+            other => {
+                return Err(Error::config(
+                    "dnscraft.config.invalid_log",
+                    format!(
+                        "level must be `error`, `warn`, `info`, `debug` or `trace`, got `{other}`"
+                    ),
+                ));
+            }
+        };
         Ok(LogSettings {
             queries: self.log.queries,
             ip_truncate,
+            level,
         })
     }
 }
@@ -598,11 +626,54 @@ mod tests {
             log: LogConfig {
                 queries: true,
                 ip_truncate: "everything".into(),
+                ..LogConfig::default()
             },
             ..Config::default()
         };
         let err = cfg.log_settings().unwrap_err();
         assert_eq!(err.code(), "dnscraft.config.invalid_log");
+    }
+
+    #[test]
+    fn log_level_defaults_to_info_and_parses_all_levels() {
+        assert_eq!(LogConfig::default().level, "info");
+        let log: LogConfig = toml::from_str("").unwrap();
+        assert_eq!(log.level, "info");
+        assert_eq!(
+            Config::default().log_settings().unwrap().level,
+            tracing::Level::INFO
+        );
+        for (name, level) in [
+            ("error", tracing::Level::ERROR),
+            ("warn", tracing::Level::WARN),
+            ("info", tracing::Level::INFO),
+            ("debug", tracing::Level::DEBUG),
+            ("trace", tracing::Level::TRACE),
+        ] {
+            let cfg = Config {
+                log: LogConfig {
+                    level: name.into(),
+                    ..LogConfig::default()
+                },
+                ..Config::default()
+            };
+            assert_eq!(cfg.log_settings().unwrap().level, level, "{name}");
+        }
+    }
+
+    #[test]
+    fn log_level_rejects_unknown_values() {
+        for bad in ["INFO", "warning", "verbose", ""] {
+            let cfg = Config {
+                log: LogConfig {
+                    level: bad.into(),
+                    ..LogConfig::default()
+                },
+                ..Config::default()
+            };
+            let err = cfg.log_settings().unwrap_err();
+            assert_eq!(err.code(), "dnscraft.config.invalid_log", "{bad}");
+        }
     }
 
     #[test]
@@ -697,7 +768,7 @@ insecure_skip_verify = false
 [tls]
 public_domain = "example.com"
 extra_sans = []
-key_type = "EcdsaP256"
+key_type = "ecdsa_p256"
 renew_before = "30d"
 expiry_warn = "14d"
 

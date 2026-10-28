@@ -92,6 +92,7 @@ pub use stats::{
 };
 pub use storage::{AuditRecord, ConfigStore, Db};
 pub use system::run_backup_if_due;
+pub use unifi_secrets::get_api_key;
 
 /// Loads a UI-stored Cloudflare API token from the config database, if any.
 pub async fn cloudflare_token_from_db(db: &Db) -> Result<Option<String>, ControlApiError> {

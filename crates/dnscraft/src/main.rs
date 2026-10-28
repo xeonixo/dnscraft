@@ -4,11 +4,12 @@
 
 #[tokio::main]
 async fn main() {
-    dnscraft::init_tracing();
     let mut args = std::env::args();
     let _program = args.next();
     let config_path = args.next();
 
+    // The tracing subscriber is installed by `run` once the config is read
+    // (`[log] level`). Failures before that point print directly.
     let code = match dnscraft::run(config_path.as_deref()).await {
         Ok(()) => 0,
         Err(error) => {

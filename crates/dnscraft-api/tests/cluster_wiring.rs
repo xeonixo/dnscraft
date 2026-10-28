@@ -290,6 +290,7 @@ async fn synced_config_applier_publishes_applied_version_before_config_ack() {
     let status = Arc::new(ClusterStatusHandle::new());
     status.set(dnscraft_api::ClusterStatus {
         role: "sub_node".to_owned(),
+        node_id: "node-b".to_owned(),
         master_reachable: true,
         applied_version: Some(1),
         lag: 0,

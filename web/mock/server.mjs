@@ -953,6 +953,39 @@ async function route(request, response, options) {
 				'Content-Disposition': 'attachment; filename="query-log.csv"',
 			});
 		}
+		case 'GET /api/v1/query-log/stream': {
+			// WX2 live tail for local UI work: periodic synthetic rows, same filters as the list.
+			response.writeHead(200, {
+				...BASE_SECURITY_HEADERS,
+				'Content-Type': 'text/event-stream',
+				'Cache-Control': 'no-store',
+				'X-Accel-Buffering': 'no',
+			});
+			response.write(': open\n\n');
+			const filter = parseQuery(url.searchParams);
+			const tick = setInterval(() => {
+				const base = selectRecords(filter)[0] ?? RECORDS[0];
+				if (!base || response.writableEnded) return;
+				const now = Date.now();
+				const record = {
+					...base,
+					id: `live-${now}`,
+					time: new Date(now).toISOString(),
+					query: { ...base.query, name: `live-${now}.example` },
+				};
+				response.write(`event: row\ndata: ${JSON.stringify(record)}\n\n`);
+			}, 2_000);
+			const ping = setInterval(() => {
+				if (!response.writableEnded) response.write(': ping\n\n');
+			}, 15_000);
+			const stop = () => {
+				clearInterval(tick);
+				clearInterval(ping);
+			};
+			request.on('close', stop);
+			response.on('close', stop);
+			return;
+		}
 		case 'GET /api/v1/policy/views':
 			return sendData(response, { views: policyConfig(options.store).views ?? [] });
 		case 'GET /api/v1/policy/records':

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, within } from '@testing-library/svelte';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import GeneralPage from './settings/+page.svelte';
@@ -331,6 +331,8 @@ describe('listeners node scope', () => {
 		const user = userEvent.setup();
 		render(ListenersPage);
 		await user.click(await screen.findByRole('button', { name: m.listeners_add() }));
+		expect(screen.queryByLabelText(m.listeners_id_label())).toBeNull();
+		expect(screen.getByText(/local-doh/)).toBeInTheDocument();
 		expect(screen.getByRole('switch', { name: m.listeners_exposure_public() })).toBeInTheDocument();
 		expect(screen.getByDisplayValue('127.0.0.1:443')).toBeInTheDocument();
 		await user.selectOptions(screen.getByLabelText(m.listeners_protocol_label()), 'udp53');
@@ -342,11 +344,58 @@ describe('listeners node scope', () => {
 		expect(screen.getByRole('switch', { name: m.listeners_exposure_public() })).toBeInTheDocument();
 		await user.click(screen.getByRole('radio', { name: m.listeners_family_ipv6() }));
 		expect(screen.getByDisplayValue('[::1]:853')).toBeInTheDocument();
+		expect(screen.getByText(/local-dot-v6/)).toBeInTheDocument();
+	});
+
+	it('saves a public DoH listener with an auto id', async () => {
+		const put = vi.fn(() =>
+			ok({
+				version: 2,
+				listener: {
+					id: 'public-doh',
+					protocol: 'doh',
+					address: '0.0.0.0:443',
+					exposure: 'public',
+					h3: true,
+					nodes: [],
+				},
+			}),
+		);
+		serve({
+			'GET /api/v1/listeners': () => ok({ listeners: [] }),
+			'GET /api/v1/cluster/nodes': () => ok([]),
+			'GET /api/v1/config': () => ok({ version: 1, config: {} }),
+			'PUT /api/v1/listeners': put,
+		});
+		const user = userEvent.setup();
+		render(ListenersPage);
+		await user.click(await screen.findByRole('button', { name: m.listeners_add() }));
+		for (const name of [m.listeners_exposure_public(), m.listeners_h3_label()]) {
+			const toggle = screen.getByRole('switch', { name });
+			toggle.focus();
+			await user.keyboard(' ');
+		}
+		expect(screen.getByText(/public-doh/)).toBeInTheDocument();
+		await user.click(screen.getByRole('button', { name: m.action_save() }));
+		await waitFor(() => expect(put).toHaveBeenCalled());
+		const init = put.mock.calls[0]?.[0] as RequestInit | undefined;
+		const body = JSON.parse(String(init?.body ?? '{}')) as {
+			id: string;
+			exposure: string;
+			h3: boolean;
+			address: string;
+		};
+		expect(body).toMatchObject({
+			id: 'public-doh',
+			exposure: 'public',
+			h3: true,
+			address: '0.0.0.0:443',
+		});
 	});
 });
 
 describe('cluster node detail', () => {
-	it('shows applied config version in the detail sheet', async () => {
+	it('shows identity, connection and applied config version in the detail sheet', async () => {
 		serve({
 			'GET /api/v1/cluster/nodes': () =>
 				ok([
@@ -358,6 +407,10 @@ describe('cluster node detail', () => {
 						last_seen: '2026-10-28T12:00:00Z',
 						applied_config_version: 7,
 						revoked: false,
+						local: false,
+						connected: true,
+						remote_addr: '192.0.2.91:8443',
+						transport: 'mtls',
 					},
 				]),
 		});
@@ -365,6 +418,12 @@ describe('cluster node detail', () => {
 		render(ClusterPage);
 		await user.click(await screen.findByRole('button', { name: m.cluster_detail() }));
 		const dialog = await screen.findByRole('dialog');
+		expect(within(dialog).getByText(m.cluster_field_node_id())).toBeInTheDocument();
+		expect(within(dialog).getByText('node2')).toBeInTheDocument();
+		expect(within(dialog).getByText(m.cluster_field_remote_addr())).toBeInTheDocument();
+		expect(within(dialog).getByText('192.0.2.91:8443')).toBeInTheDocument();
+		expect(within(dialog).getByText(m.cluster_transport_mtls())).toBeInTheDocument();
+		expect(within(dialog).getByText(m.cluster_connection_connected())).toBeInTheDocument();
 		expect(within(dialog).getByText(m.cluster_field_applied_version())).toBeInTheDocument();
 		expect(within(dialog).getByText('7')).toBeInTheDocument();
 	});

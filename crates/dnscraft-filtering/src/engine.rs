@@ -299,16 +299,21 @@ impl FilterEngine {
         // (`max_list_size_mb`), not the cap the store was opened with.
         let mut store = inner.store.clone();
         store.set_max_body_bytes(config.max_list_size_bytes());
+        let ids: Vec<ListId> = targets.iter().map(|(id, _)| id.clone()).collect();
         for (id, source) in targets {
             let outcome = inner.fetcher.fetch_and_store(&store, &id, &source).await;
             update_meta_status(inner, &id, &outcome);
             // Persist parse counts after rebuild; fetch meta already written.
             let _ = outcome;
         }
-        match self.enqueue_rebuild(None, Some(which)).await {
+        let lists = match self.enqueue_rebuild(None, Some(which)).await {
             Ok(report) => report.lists,
             Err(_) => self.list_status(),
+        };
+        for status in lists.iter().filter(|s| ids.contains(&s.id)) {
+            log_list_refresh(status);
         }
+        lists
     }
 
     /// Downloads/caches the blocked-services catalog and rebuilds if it changed.
@@ -1011,6 +1016,26 @@ fn update_meta_status(inner: &EngineInner, id: &ListId, outcome: &FetchOutcome) 
     entry.http_status = meta.http_status;
     // Keep parse/unique numbers until rebuild refreshes them.
     let _ = meta;
+}
+
+/// One info event per refreshed list, or a warn event when its fetch failed
+/// (the last good rules stay in use).
+fn log_list_refresh(status: &ListStatus) {
+    match &status.error_code {
+        Some(code) => tracing::warn!(
+            list = %status.id,
+            error_code = code.as_str(),
+            http_status = ?status.http_status,
+            "filter list refresh failed; keeping the stored rules"
+        ),
+        None => tracing::info!(
+            list = %status.id,
+            http_status = ?status.http_status,
+            rules_parsed = status.rules_parsed,
+            rules_skipped = status.rules_skipped,
+            "filter list refreshed"
+        ),
+    }
 }
 
 #[cfg(test)]

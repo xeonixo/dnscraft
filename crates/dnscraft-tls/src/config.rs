@@ -29,12 +29,18 @@ pub const DEFAULT_DYNDNS_INTERVAL: Duration = Duration::from_secs(5 * 60);
 pub const DEFAULT_ECHO_URL: &str = "https://cloudflare.com/cdn-cgi/trace";
 
 /// ECDSA key type for issued certificates. RSA is not supported.
+///
+/// Wire / TOML form is snake_case (`ecdsa_p256`). PascalCase (`EcdsaP256`) and
+/// short (`p256`) aliases are accepted so older snapshots keep loading.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum KeyType {
     /// NIST P-256 (default).
     #[default]
+    #[serde(alias = "EcdsaP256", alias = "p256")]
     EcdsaP256,
     /// NIST P-384.
+    #[serde(alias = "EcdsaP384", alias = "p384")]
     EcdsaP384,
 }
 
@@ -1242,9 +1248,30 @@ mod tests {
     }
 
     #[test]
+    fn key_type_serializes_snake_case_and_accepts_legacy_aliases() {
+        assert_eq!(
+            serde_json::to_value(KeyType::EcdsaP256).unwrap(),
+            serde_json::json!("ecdsa_p256")
+        );
+        assert_eq!(
+            serde_json::to_value(KeyType::EcdsaP384).unwrap(),
+            serde_json::json!("ecdsa_p384")
+        );
+        for wire in ["ecdsa_p256", "EcdsaP256", "p256"] {
+            let parsed: KeyType = serde_json::from_value(serde_json::json!(wire)).unwrap();
+            assert_eq!(parsed, KeyType::EcdsaP256, "{wire}");
+        }
+        for wire in ["ecdsa_p384", "EcdsaP384", "p384"] {
+            let parsed: KeyType = serde_json::from_value(serde_json::json!(wire)).unwrap();
+            assert_eq!(parsed, KeyType::EcdsaP384, "{wire}");
+        }
+    }
+
+    #[test]
     fn config_serde_round_trip_preserves_non_secret_fields() {
         let cfg = serde_config();
         let json = serde_json::to_string(&cfg).expect("serialize");
+        assert!(json.contains("\"ecdsa_p256\""), "{json}");
         let back: TlsConfig = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(back.public_domain, cfg.public_domain);

@@ -38,10 +38,10 @@ COPY deploy/dnscraft.docker.toml /etc/dnscraft/config.toml
 
 USER dnscraft
 
-EXPOSE 5300/udp 5300/tcp 8080/tcp
+EXPOSE 5300/udp 5300/tcp 80/tcp 443/tcp
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=45s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
+    CMD curl -fsS http://127.0.0.1:80/healthz || exit 1
 
 ENTRYPOINT ["/usr/local/bin/dnscraft"]
 CMD ["/etc/dnscraft/config.toml"]

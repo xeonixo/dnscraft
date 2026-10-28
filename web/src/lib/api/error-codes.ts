@@ -49,11 +49,18 @@ export const FILTER_LIST_ERROR_CODES = [
 /** Raised by the policy module and forwarded unchanged by the control-api (e.g. a bad Client-ID label). */
 export const POLICY_ERROR_CODES = ['policy.config.invalid'] as const;
 
+/** Listener module codes forwarded by the control-api. */
+export const LISTENERS_ERROR_CODES = [
+	'listeners.config.invalid',
+	'listeners.config.public_plaintext',
+] as const;
+
 export const ERROR_CODES: readonly string[] = [
 	...CONTROL_API_ERROR_CODES,
 	...CLIENT_ERROR_CODES,
 	...FILTER_LIST_ERROR_CODES,
 	...POLICY_ERROR_CODES,
+	...LISTENERS_ERROR_CODES,
 ];
 
 /** The CSRF mismatch code; the client refreshes the token once on it. */

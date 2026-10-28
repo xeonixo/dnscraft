@@ -33,21 +33,28 @@ fn temp_config(tag: &str, toml: &str) -> PathBuf {
     path
 }
 
-/// Reads stderr until the `dnscraft: listening on 127.0.0.1:<port>` line and
+/// Reads stderr until the `listening on 127.0.0.1:<port>` info line and
 /// returns the port.
 fn wait_for_port(child: &mut Child, timeout: Duration) -> u16 {
     let stderr = child.stderr.take().expect("stderr must be piped");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
+        // Keep draining after the match: a closed pipe would make the
+        // binary's later log writes fail.
         let reader = BufReader::new(stderr);
+        let mut sent = false;
         for line in reader.lines().map_while(Result::ok) {
+            if sent {
+                continue;
+            }
             if let Some(port) = line
-                .strip_prefix("dnscraft: listening on 127.0.0.1:")
+                .split_once("listening on 127.0.0.1:")
+                .map(|(_, rest)| rest)
                 .and_then(|rest| rest.split_whitespace().next())
                 .and_then(|port| port.parse::<u16>().ok())
             {
                 let _ = tx.send(port);
-                return;
+                sent = true;
             }
         }
     });

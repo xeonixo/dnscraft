@@ -86,12 +86,14 @@
 			const nodes = await listClusterNodes().catch(() => []);
 			const ids = nodes.map((n) => n.node_id);
 			if (cluster.role === 'master') {
-				const master = nodes.find((n) => n.role === 'master')?.node_id ?? ids[0] ?? '';
-				const nodeList = ids.length > 0 ? ids : master ? [master] : [];
+				// The registry lists sub-nodes only; this node comes from the status.
+				const master = cluster.node_id ?? nodes.find((n) => n.role === 'master')?.node_id ?? '';
+				const nodeList = [...new Set([master, ...ids].filter((id) => id !== ''))];
 				return { self: master, nodes: nodeList, clusterActive: true };
 			}
 			// Sub-node: registry list is master-only; empty ids are normal.
-			const self = nodes.find((n) => n.role === 'sub_node')?.node_id ?? ids[0] ?? '';
+			const self =
+				cluster.node_id ?? nodes.find((n) => n.role === 'sub_node')?.node_id ?? ids[0] ?? '';
 			return { self, nodes: ids, clusterActive: true };
 		} catch {
 			return { self: 'local', nodes: ['local'], clusterActive: false };
@@ -239,10 +241,17 @@
 		</Banner>
 	{/if}
 
-	<GroupedList header={m.settings_group_unifi()} footer={loaded ? m.settings_unifi_footnote() : undefined}>
+	<GroupedList
+		header={m.settings_group_unifi()}
+		footer={loaded ? m.settings_unifi_footnote() : undefined}
+	>
 		{#if loadFailure}
 			<div class="notice">
-				<ErrorNotice code={loadFailure.code} params={loadFailure.params} onretry={() => void load()} />
+				<ErrorNotice
+					code={loadFailure.code}
+					params={loadFailure.params}
+					onretry={() => void load()}
+				/>
 			</div>
 		{:else if !loaded}
 			<GroupedRow label={m.state_loading()} />

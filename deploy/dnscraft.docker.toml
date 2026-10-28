@@ -10,6 +10,7 @@ data_dir = "/var/lib/dnscraft"
 
 [log]
 queries = false
+# level = "info"   # system messages on stderr: error | warn | info | debug | trace
 
 [[listeners]]
 id = "lan-udp"
@@ -23,7 +24,8 @@ address = "0.0.0.0:5300"
 
 [control_api]
 bind = "0.0.0.0"
-port = 8080
+# Plain HTTP sample: port 80. With `tls = true` prefer 443 (crate default).
+port = 80
 tls = false
 
 [control_api.mcp]

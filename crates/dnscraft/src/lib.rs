@@ -101,24 +101,52 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Initialises a stderr tracing subscriber: level from `RUST_LOG`, default `warn`.
-///
-/// Called by the binary shim before [`run`] so listener / TLS warnings become
-/// visible. Idempotent — a second call is a no-op.
-pub fn init_tracing() {
-    let filter = env_filter_from(std::env::var("RUST_LOG").ok().as_deref());
+/// Crate targets that take the configured `[log] level`; everything else is
+/// held at `warn`.
+const DNSCRAFT_TARGETS: [&str; 12] = [
+    "dnscraft",
+    "dnscraft_api",
+    "dnscraft_clients",
+    "dnscraft_cluster",
+    "dnscraft_common",
+    "dnscraft_filtering",
+    "dnscraft_listeners",
+    "dnscraft_mcp",
+    "dnscraft_policy",
+    "dnscraft_proto",
+    "dnscraft_resolver",
+    "dnscraft_tls",
+];
+
+/// Installs the stderr tracing subscriber. Called by [`run`] once the config
+/// is read, so `[log] level` applies. Idempotent — a second call is a no-op.
+pub fn init_tracing(level: tracing::Level) {
+    let filter = env_filter_from(std::env::var("RUST_LOG").ok().as_deref(), level);
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .try_init();
 }
 
-/// Builds the log filter: `RUST_LOG` when set and parseable, `warn` otherwise.
-fn env_filter_from(spec: Option<&str>) -> EnvFilter {
-    match spec {
-        Some(spec) => EnvFilter::try_new(spec).unwrap_or_else(|_| EnvFilter::new("warn")),
-        None => EnvFilter::new("warn"),
-    }
+/// Builds the log filter: `RUST_LOG` when set, non-blank and parseable;
+/// otherwise `level` for the dnscraft crates and `warn` for everything else.
+fn env_filter_from(env: Option<&str>, level: tracing::Level) -> EnvFilter {
+    env.filter(|spec| !spec.trim().is_empty())
+        .and_then(|spec| EnvFilter::try_new(spec).ok())
+        .unwrap_or_else(|| EnvFilter::new(configured_directives(level)))
+}
+
+/// `warn,dnscraft=<level>,dnscraft_api=<level>,…` for the configured level.
+fn configured_directives(level: tracing::Level) -> String {
+    let level = level.to_string().to_ascii_lowercase();
+    std::iter::once("warn".to_owned())
+        .chain(
+            DNSCRAFT_TARGETS
+                .iter()
+                .map(|target| format!("{target}={level}")),
+        )
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Parses a TOML config, mapping parse failures onto stable error codes.
@@ -218,7 +246,7 @@ impl App {
             let _ = api.await;
         }
         if dropped > 0 {
-            eprintln!("dnscraft: {dropped} query events dropped");
+            tracing::warn!(dropped, "query events dropped");
         }
     }
 }
@@ -334,7 +362,7 @@ pub async fn build_with_enrollment(
             listener_sink,
             clock,
             config.public_domain.clone(),
-            Some(node_id),
+            Some(node_id.clone()),
         )
         .await
         .map_err(|e| Error::startup("dnscraft.startup.listeners", format!("listeners: {e}")))?,
@@ -359,7 +387,7 @@ pub async fn build_with_enrollment(
         }
     }
 
-    let modules = apply::appliers(&engines, &set, &query_log);
+    let modules = apply::appliers(&engines, &set, &query_log, &db, node_id.as_str());
     let config_service = Arc::new(ConfigService::new(
         store,
         Audit::new(db.clone()),
@@ -479,10 +507,7 @@ fn section<T: serde::Serialize>(name: &str, value: &T) -> Result<Value, Error> {
 /// `control_api_settings` live in SQLite once seeded.
 async fn seed_config_store(config_service: &ConfigService, snapshot: Value) -> Result<(), Error> {
     match config_service.seed_if_empty(snapshot).await {
-        Ok(Some(version)) => {
-            tracing::info!(version, "seeded the config store from TOML");
-            Ok(())
-        }
+        Ok(Some(_)) => Ok(()),
         Ok(None) => {
             tracing::warn!(
                 "config store already holds a snapshot; keeping it instead of re-seeding from TOML"
@@ -521,32 +546,31 @@ pub async fn run(config_path: Option<&str>) -> Result<(), Error> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| Error::config("dnscraft.config.read", format!("read `{path}`: {e}")))?;
     let config = parse_config(&text, path)?;
+    let log = config.log_settings()?;
+    init_tracing(log.level);
 
     let clock: Arc<dyn dnscraft_filtering::Clock> = Arc::new(dnscraft_filtering::SystemClock);
     let app = build(config, clock).await?;
-    for line in listening_lines(&app.listener_status()) {
-        eprintln!("{line}");
-    }
+    log_listeners(&app.listener_status());
+    tracing::info!("dnscraft started");
     wait_for_shutdown_signal().await;
+    tracing::info!("shutdown signal received, stopping");
     app.shutdown(Duration::from_secs(5)).await;
+    tracing::info!("dnscraft stopped");
     Ok(())
 }
 
-/// One `dnscraft: listening on <addr> (<protocol>, <id>)` line per bound listener.
-fn listening_lines(status: &ListenersStatus) -> Vec<String> {
-    status
-        .listeners
-        .iter()
-        .filter_map(|l| {
-            l.bound.map(|addr| {
-                format!(
-                    "dnscraft: listening on {addr} ({}, {})",
-                    l.protocol.as_str(),
-                    l.id.as_str()
-                )
-            })
-        })
-        .collect()
+/// One `listening on <addr>` info event per bound listener.
+fn log_listeners(status: &ListenersStatus) {
+    for listener in &status.listeners {
+        if let Some(addr) = listener.bound {
+            tracing::info!(
+                protocol = listener.protocol.as_str(),
+                listener = listener.id.as_str(),
+                "listening on {addr}"
+            );
+        }
+    }
 }
 
 /// Resolves to the first of SIGTERM or SIGINT.
@@ -715,10 +739,33 @@ mod tests {
     }
 
     #[test]
-    fn env_filter_defaults_to_warn() {
-        assert_eq!(env_filter_from(None).to_string(), "warn");
-        assert_eq!(env_filter_from(Some("hello[")).to_string(), "warn");
-        assert!(env_filter_from(Some("debug")).to_string().contains("debug"));
+    fn configured_level_applies_to_dnscraft_crates_and_warn_elsewhere() {
+        let configured = env_filter_from(None, tracing::Level::INFO).to_string();
+        for target in DNSCRAFT_TARGETS {
+            assert!(
+                configured.contains(&format!("{target}=info")),
+                "{configured}"
+            );
+        }
+        // EnvFilter orders directives by specificity; the bare `warn` default is last.
+        assert!(configured.ends_with(",warn"), "{configured}");
+        assert_eq!(
+            env_filter_from(Some("  "), tracing::Level::DEBUG).to_string(),
+            env_filter_from(None, tracing::Level::DEBUG).to_string()
+        );
+    }
+
+    #[test]
+    fn rust_log_overrides_configured_level_when_parseable() {
+        let from_env = env_filter_from(Some("trace"), tracing::Level::ERROR).to_string();
+        assert_eq!(from_env, "trace");
+        let invalid = env_filter_from(Some("hello["), tracing::Level::DEBUG).to_string();
+        assert_eq!(
+            invalid,
+            env_filter_from(None, tracing::Level::DEBUG).to_string(),
+            "an invalid RUST_LOG falls back to the configured level"
+        );
+        assert!(invalid.contains("dnscraft_cluster=debug"), "{invalid}");
     }
 
     /// A warn line emitted through the subscriber is captured (so the

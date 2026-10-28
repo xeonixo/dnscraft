@@ -258,9 +258,18 @@ pub(crate) async fn build_engines(
         .map_err(|e| Error::startup("dnscraft.startup.filtering", format!("filtering: {e}")))?;
 
     // AS5: real client directory, adapted to the policy trait.
-    let clients_engine =
-        ClientEngine::new(config.clients.clone(), data_dir.clone(), Arc::clone(&clock))
-            .map_err(|e| Error::startup("dnscraft.startup.clients", format!("clients: {e}")))?;
+    // The node id decides which UniFi profile this node syncs as sync owner.
+    let node_id = config
+        .node_id()
+        .map_err(|e| Error::startup("dnscraft.startup.node_id", format!("node_id: {e}")))?;
+    let clients_engine = ClientEngine::new_with_secret_and_node(
+        config.clients.clone(),
+        data_dir.clone(),
+        Arc::clone(&clock),
+        None,
+        node_id.as_str(),
+    )
+    .map_err(|e| Error::startup("dnscraft.startup.clients", format!("clients: {e}")))?;
     let clients: Arc<dyn ClientDirectory> = Arc::new(EngineClients {
         engine: Arc::clone(&clients_engine),
     });

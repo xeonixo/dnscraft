@@ -12,10 +12,10 @@
 use std::sync::{Arc, Weak};
 
 use dnscraft_api::{
-    ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyTls, ControlApiError,
+    ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyTls, ControlApiError, Db,
     ModuleAppliers, ModuleFuture, QueryLog, apply_filter_config_offline,
 };
-use dnscraft_clients::{ClientEngine, ClientsConfig};
+use dnscraft_clients::{ClientEngine, ClientsConfig, Secret, read_secret};
 use dnscraft_filtering::{FilterConfig, FilterEngine};
 use dnscraft_listeners::{ListenerSet, ListenersConfig};
 use dnscraft_policy::{PolicyConfig, PolicyEngine};
@@ -70,6 +70,31 @@ impl ApplyFiltering for FilteringApplier {
 /// Applies the `clients` section by swapping the client lookup snapshot.
 struct ClientsApplier {
     engine: Arc<ClientEngine>,
+    db: Db,
+    node_id: String,
+}
+
+impl ClientsApplier {
+    /// The UniFi API key this node needs for `config`.
+    ///
+    /// A node only talks to the gateway for the enabled profile it is sync owner
+    /// of. Its key is written through the control API into the kv store; the
+    /// environment variable stays the bootstrap fallback. Nodes that own no
+    /// profile never use the key, so a placeholder satisfies the engine.
+    async fn api_key(&self, config: &ClientsConfig) -> Option<Secret> {
+        let Some(profile) = config
+            .unifi_profiles
+            .iter()
+            .find(|p| p.connection.enabled && p.sync_owner.trim() == self.node_id)
+        else {
+            return Some(Secret::new("unused"));
+        };
+        let stored = dnscraft_api::get_api_key(&self.db, profile.id.trim())
+            .await
+            .ok()
+            .flatten()?;
+        Some(Secret::new(stored))
+    }
 }
 
 impl ApplyClients for ClientsApplier {
@@ -80,8 +105,12 @@ impl ApplyClients for ClientsApplier {
     fn apply<'a>(&'a self, config: &'a Value) -> ModuleFuture<'a> {
         Box::pin(async move {
             let parsed = parse::<ClientsConfig>(config, CLIENTS_INVALID)?;
+            let key = self.api_key(&parsed).await;
             self.engine
-                .apply_config(parsed)
+                .apply_config_with_secret(parsed, move |name| match key.clone() {
+                    Some(key) => Ok(key),
+                    None => read_secret(name),
+                })
                 .await
                 .map_err(|error| module_error(error.code(), error.to_string()))
         })
@@ -171,6 +200,8 @@ pub(crate) fn appliers(
     engines: &Engines,
     listeners: &Arc<ListenerSet<PolicyEngine>>,
     query_log: &Arc<QueryLog>,
+    db: &Db,
+    node_id: &str,
 ) -> ModuleAppliers {
     ModuleAppliers {
         filtering: Some(Arc::new(FilteringApplier {
@@ -178,6 +209,8 @@ pub(crate) fn appliers(
         })),
         clients: Some(Arc::new(ClientsApplier {
             engine: Arc::clone(&engines.clients),
+            db: db.clone(),
+            node_id: node_id.to_owned(),
         })),
         policy: Some(Arc::new(PolicyApplier {
             engine: Arc::clone(&engines.policy),
@@ -218,5 +251,56 @@ mod tests {
 
         let error = parse::<FilterConfig>(&json!({ "sets": "no" }), FILTERING_INVALID).unwrap_err();
         assert_eq!(error.code(), FILTERING_INVALID);
+    }
+
+    /// The UniFi key comes from the control-api kv for the profile this node
+    /// owns; nodes that own no enabled profile get a placeholder and never
+    /// read the environment.
+    #[test]
+    fn clients_applier_picks_the_kv_key_of_the_owned_profile() {
+        use dnscraft_clients::UnifiConfig;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let dir = std::env::temp_dir().join(format!("dnscraft-apply-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let db = Db::open(&dir.join("t.db"), Arc::new(dnscraft_api::SystemClock))
+                .await
+                .unwrap();
+            db.kv_set("unifi.api_key.home", "kv-secret").await.unwrap();
+            let engine = ClientEngine::new_with_secret(
+                ClientsConfig::default(),
+                dir.join("clients"),
+                Arc::new(dnscraft_api::SystemClock),
+                None,
+            )
+            .unwrap();
+            let mut config = ClientsConfig {
+                unifi_profiles: vec![dnscraft_clients::UnifiProfile {
+                    id: "home".into(),
+                    sync_owner: "dns1".into(),
+                    connection: UnifiConfig {
+                        enabled: true,
+                        ..UnifiConfig::default()
+                    },
+                }],
+                ..ClientsConfig::default()
+            };
+            let owner = ClientsApplier {
+                engine: Arc::clone(&engine),
+                db: db.clone(),
+                node_id: "dns1".into(),
+            };
+            let other = ClientsApplier {
+                engine,
+                db,
+                node_id: "dns2".into(),
+            };
+            assert_eq!(owner.api_key(&config).await.unwrap().expose(), "kv-secret");
+            assert_eq!(other.api_key(&config).await.unwrap().expose(), "unused");
+            config.unifi_profiles[0].id = "missing".into();
+            assert!(owner.api_key(&config).await.is_none());
+        });
     }
 }

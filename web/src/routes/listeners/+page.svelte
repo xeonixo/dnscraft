@@ -22,12 +22,12 @@
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
 	import { formatNodesDetail, nodeChoicesFor, toggleNodeId } from '$lib/cluster/nodes';
+	import { allowsPublic, suggestListenerId, type AddrFamily } from '$lib/listeners/id';
 	import { displayText } from '$lib/safe-text';
 	import { m } from '$lib/paraglide/messages';
 
 	const isAdmin = $derived(auth.role === 'admin');
 	const protocols: ListenerBody['protocol'][] = ['udp53', 'tcp53', 'dot', 'doh', 'doq'];
-	type AddrFamily = 'ipv4' | 'ipv6';
 
 	let result = $state<Result<Listener[]>>({ kind: 'loading' });
 	let configVersion = $state<number | null>(null);
@@ -37,7 +37,6 @@
 	let busy = $state(false);
 	let failure = $state<{ code: string; params: Record<string, unknown> } | null>(null);
 
-	let formId = $state('');
 	let formProtocol = $state<ListenerBody['protocol']>('doh');
 	let formFamily = $state<AddrFamily>('ipv4');
 	let formAddress = $state('127.0.0.1:443');
@@ -50,6 +49,11 @@
 		result.kind === 'ok' && result.data.some((l) => l.exposure === 'public'),
 	);
 	const canBePublic = $derived(allowsPublic(formProtocol));
+	const existingIds = $derived(result.kind === 'ok' ? result.data.map((row) => row.id) : []);
+	const previewId = $derived(
+		editing?.id ??
+			suggestListenerId(formProtocol, formFamily, formPublic && canBePublic, existingIds),
+	);
 
 	const nodeChoices = $derived(nodeChoicesFor(clusterNodeIds, formNodes));
 
@@ -57,11 +61,6 @@
 		{ value: 'ipv4', label: m.listeners_family_ipv4() },
 		{ value: 'ipv6', label: m.listeners_family_ipv6() },
 	];
-
-	/** Encrypted listeners only — matches `Protocol::allows_public` in dnscraft-listeners. */
-	function allowsPublic(protocol: ListenerBody['protocol']): boolean {
-		return protocol === 'dot' || protocol === 'doh' || protocol === 'doq';
-	}
 
 	function defaultPort(protocol: ListenerBody['protocol']): string {
 		switch (protocol) {
@@ -186,13 +185,18 @@
 		formNodes = toggleNodeId(formNodes, id, checked);
 	}
 
-	function rowDetail(listener: Listener): string {
+	function rowLabel(listener: Listener): string {
 		const exposure =
 			listener.exposure === 'public'
 				? m.listeners_exposure_public()
 				: m.listeners_exposure_local();
-		const parts = [listener.address, exposure, formatNodesDetail(listener.nodes)];
+		return `${protocolLabel(listener.protocol)} · ${exposure}`;
+	}
+
+	function rowDetail(listener: Listener): string {
+		const parts = [listener.address, formatNodesDetail(listener.nodes)];
 		if (listener.h3) parts.push('h3');
+		parts.push(displayText(listener.id).text);
 		return parts.join(' · ');
 	}
 
@@ -209,7 +213,6 @@
 
 	function openCreate(): void {
 		editing = null;
-		formId = '';
 		formProtocol = 'doh';
 		formFamily = 'ipv4';
 		formPublic = false;
@@ -222,7 +225,6 @@
 
 	function openEdit(listener: Listener): void {
 		editing = listener;
-		formId = listener.id;
 		formProtocol = listener.protocol;
 		formFamily = detectFamily(listener.address);
 		formAddress = listener.address;
@@ -237,11 +239,14 @@
 		if (!isAdmin) return;
 		busy = true;
 		failure = null;
+		const isPublic = formPublic && allowsPublic(formProtocol);
 		const body: ListenerBody = {
-			id: formId.trim(),
+			id:
+				editing?.id ??
+				suggestListenerId(formProtocol, formFamily, isPublic, existingIds),
 			protocol: formProtocol,
 			address: formAddress.trim(),
-			exposure: formPublic && allowsPublic(formProtocol) ? 'public' : 'local',
+			exposure: isPublic ? 'public' : 'local',
 			h3: formProtocol === 'doh' && formH3,
 			nodes: formNodes,
 		};
@@ -309,7 +314,7 @@
 			<GroupedList header={protocolLabel(group.protocol)}>
 				{#each group.rows as listener (listener.id)}
 					<GroupedRow
-						label={displayText(listener.id).text}
+						label={rowLabel(listener)}
 						detail={rowDetail(listener)}
 						detailMono
 					>
@@ -344,9 +349,6 @@
 		title={editing ? m.listeners_edit_title() : m.listeners_add_title()}
 		onclose={() => (sheetOpen = false)}
 	>
-		<label class="field-label" for="listener-id">{m.listeners_id_label()}</label>
-		<input id="listener-id" class="field" bind:value={formId} disabled={editing !== null} />
-
 		<label class="field-label" for="listener-protocol">{m.listeners_protocol_label()}</label>
 		<select
 			id="listener-protocol"
@@ -405,6 +407,13 @@
 			</label>
 		{/if}
 
+		<p class="hint tight mono" title={m.listeners_id_label()}>
+			{m.listeners_id_label()}: {previewId}
+		</p>
+		{#if editing === null}
+			<p class="hint tight">{m.listeners_id_auto()}</p>
+		{/if}
+
 		{#if failure}
 			<div class="notice">
 				<ErrorNotice code={failure.code} params={failure.params} />
@@ -413,7 +422,11 @@
 
 		<div class="actions">
 			<Button onclick={() => (sheetOpen = false)}>{m.action_cancel()}</Button>
-			<Button variant="primary" disabled={busy || formId.trim() === ''} onclick={submit}>
+			<Button
+				variant="primary"
+				disabled={busy || formAddress.trim() === ''}
+				onclick={submit}
+			>
 				{m.action_save()}
 			</Button>
 		</div>
@@ -460,6 +473,10 @@
 
 	.hint.tight {
 		margin: -0.5rem 0 1rem;
+	}
+
+	.hint.mono {
+		font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 	}
 
 	.notice {

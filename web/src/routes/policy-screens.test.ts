@@ -425,6 +425,31 @@ describe('policy screens', () => {
 		expect(await screen.findByText(m.querylog_stage_select())).toBeInTheDocument();
 	});
 
+	it('shows answer records including the IP from a test query', async () => {
+		handlers['POST /api/v1/policy/test-query'] = () =>
+			ok({
+				view_id: 'zuhauseserver',
+				profile_id: 'default',
+				filter_set_id: 'default',
+				answer_source: 'local_view',
+				steps: [
+					{ stage: 'select', verdict: 'selected' },
+					{ stage: 'local_view', verdict: 'answered' },
+				],
+				answer: {
+					rcode: 'NOERROR',
+					records: [{ name: 'elmo.barner.cloud.', qtype: 'A', ttl: 60, data: '172.20.10.10' }],
+				},
+				timings: { select_us: 12, filter_us: 3, resolve_us: 40, total_us: 55 },
+			});
+		const user = userEvent.setup();
+		render(TestQueryPage);
+		await user.click(screen.getByRole('button', { name: m.test_query_run() }));
+		expect(await screen.findByText('172.20.10.10 · TTL 60')).toBeInTheDocument();
+		expect(screen.getByText('NOERROR')).toBeInTheDocument();
+		expect(screen.getByText('zuhauseserver')).toBeInTheDocument();
+	});
+
 	it('builds guided filter rules without typed special characters', () => {
 		expect(
 			buildRuleText({ action: 'block', domain: 'ads.example.com', include_subdomains: true }),

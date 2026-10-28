@@ -8,7 +8,12 @@
 	import Sheet from '$lib/components/Sheet.svelte';
 	import Switch from '$lib/components/Switch.svelte';
 	import UnavailableNotice from '$lib/components/UnavailableNotice.svelte';
-	import { loadForwardZones, saveForwardZones, type ForwardZoneEntry } from '$lib/api/policy';
+	import {
+		forwardZoneIdFromApex,
+		loadForwardZones,
+		saveForwardZones,
+		type ForwardZoneEntry,
+	} from '$lib/api/policy';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
 	import { domainLabel } from '$lib/policy/display';
@@ -22,7 +27,6 @@
 	let busy = $state(false);
 	let failure = $state<{ code: string; params: Record<string, unknown> } | null>(null);
 	let editing = $state<ForwardZoneEntry | null>(null);
-	let formId = $state('');
 	let formZone = $state('');
 	let formTargets = $state('');
 	let formValidate = $state(false);
@@ -36,7 +40,6 @@
 
 	function openCreate(): void {
 		editing = null;
-		formId = '';
 		formZone = '';
 		formTargets = '';
 		formValidate = false;
@@ -46,7 +49,6 @@
 
 	function openEdit(zone: ForwardZoneEntry): void {
 		editing = zone;
-		formId = zone.id;
 		formZone = zone.zone;
 		formTargets = zone.targets.join('\n');
 		formValidate = zone.validate;
@@ -56,9 +58,11 @@
 	async function submit(): Promise<void> {
 		if (result.kind !== 'ok') return;
 		busy = true;
+		const zone = formZone.trim();
 		const next: ForwardZoneEntry = {
-			id: editing?.id ?? formId.trim(),
-			zone: formZone.trim(),
+			// Id is internal only — derived from the apex, never asked of the user.
+			id: editing?.id || forwardZoneIdFromApex(zone),
+			zone,
 			targets: formTargets
 				.split(/\n|,/)
 				.map((t) => t.trim())
@@ -139,12 +143,8 @@
 		title={editing ? m.forward_edit_title() : m.forward_add_title()}
 		onclose={() => (sheetOpen = false)}
 	>
-		{#if !editing}
-			<label class="field-label" for="fz-id">{m.forward_id_label()}</label>
-			<input id="fz-id" class="field mono" bind:value={formId} />
-		{/if}
 		<label class="field-label" for="fz-zone">{m.forward_domain_label()}</label>
-		<input id="fz-zone" class="field mono" bind:value={formZone} />
+		<input id="fz-zone" class="field mono" bind:value={formZone} autocomplete="off" />
 		<label class="field-label" for="fz-targets">{m.forward_targets_label()}</label>
 		<textarea id="fz-targets" class="field area mono" bind:value={formTargets} rows="3"></textarea>
 		<div class="switch-row">

@@ -38,24 +38,34 @@ export function nodesFromWire(value: unknown): string[] {
 	return out;
 }
 
+/** Wire protocols may arrive as `udp53` or legacy `Udp53` from serde enum names. */
+function parseProtocol(value: unknown): Listener['protocol'] | null {
+	if (typeof value !== 'string') return null;
+	const protocol = value.trim().toLowerCase();
+	if (
+		protocol === 'udp53' ||
+		protocol === 'tcp53' ||
+		protocol === 'dot' ||
+		protocol === 'doh' ||
+		protocol === 'doq'
+	) {
+		return protocol;
+	}
+	return null;
+}
+
 function parseListener(value: unknown): Listener | null {
 	if (typeof value !== 'object' || value === null) return null;
 	const row = value as Record<string, unknown>;
 	if (typeof row.id !== 'string' || typeof row.address !== 'string') return null;
-	if (
-		row.protocol !== 'udp53' &&
-		row.protocol !== 'tcp53' &&
-		row.protocol !== 'dot' &&
-		row.protocol !== 'doh' &&
-		row.protocol !== 'doq'
-	) {
-		return null;
-	}
+	const protocol = parseProtocol(row.protocol);
+	if (!protocol) return null;
+	const exposureRaw = typeof row.exposure === 'string' ? row.exposure.trim().toLowerCase() : '';
 	return {
 		id: row.id,
-		protocol: row.protocol,
+		protocol,
 		address: row.address,
-		exposure: row.exposure === 'public' ? 'public' : 'local',
+		exposure: exposureRaw === 'public' ? 'public' : 'local',
 		h3: row.h3 === true,
 		nodes: nodesFromWire(row.nodes),
 	};

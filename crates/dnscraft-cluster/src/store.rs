@@ -75,6 +75,8 @@ const MIGRATIONS: &[&str] = &[
         body        TEXT NOT NULL,
         stored_at   INTEGER NOT NULL
     );",
+    // v6: last observed peer address of an authenticated cluster connection.
+    "ALTER TABLE cluster_nodes ADD COLUMN remote_addr TEXT;",
 ];
 
 /// One registered cluster node.
@@ -92,6 +94,8 @@ pub struct ClusterNode {
     pub applied_config_version: Option<i64>,
     /// Revoked nodes are rejected on their next connection.
     pub revoked: bool,
+    /// Peer socket address of the last authenticated connection (`ip:port`).
+    pub remote_addr: Option<String>,
 }
 
 /// A freshly minted join token. The plaintext is shown once and never stored;
@@ -276,6 +280,7 @@ impl ClusterStore {
             last_seen: Some(now),
             applied_config_version: None,
             revoked: false,
+            remote_addr: None,
         };
         let insert = node.clone();
 
@@ -341,6 +346,7 @@ impl ClusterStore {
             last_seen: Some(joined_at),
             applied_config_version: None,
             revoked: false,
+            remote_addr: None,
         };
         let insert = node.clone();
         self.with_conn(move |conn| {
@@ -382,7 +388,7 @@ impl ClusterStore {
         self.with_conn(move |conn| {
             conn.query_row(
                 "SELECT node_id, fingerprint, joined_at, last_seen,
-                        applied_config_version, revoked
+                        applied_config_version, revoked, remote_addr
                  FROM cluster_nodes WHERE node_id = ?1",
                 params![node_id],
                 node_from_row,
@@ -399,7 +405,7 @@ impl ClusterStore {
             let mut statement = conn
                 .prepare(
                     "SELECT node_id, fingerprint, joined_at, last_seen,
-                            applied_config_version, revoked
+                            applied_config_version, revoked, remote_addr
                      FROM cluster_nodes ORDER BY node_id",
                 )
                 .map_err(db_err)?;
@@ -410,14 +416,24 @@ impl ClusterStore {
     }
 
     /// Records an authenticated connection from `node_id`.
-    pub async fn mark_seen(&self, node_id: &str) -> Result<(), ClusterError> {
+    ///
+    /// When `remote_addr` is `Some`, it becomes the last observed peer address;
+    /// `None` leaves a previously stored address unchanged.
+    pub async fn mark_seen(
+        &self,
+        node_id: &str,
+        remote_addr: Option<&str>,
+    ) -> Result<(), ClusterError> {
         let now = self.now_unix();
         let node_id = node_id.to_owned();
+        let remote_addr = remote_addr.map(str::to_owned);
         self.with_conn(move |conn| {
             let changed = conn
                 .execute(
-                    "UPDATE cluster_nodes SET last_seen = ?1 WHERE node_id = ?2",
-                    params![now, node_id],
+                    "UPDATE cluster_nodes
+                     SET last_seen = ?1, remote_addr = COALESCE(?2, remote_addr)
+                     WHERE node_id = ?3",
+                    params![now, remote_addr, node_id],
                 )
                 .map_err(db_err)?;
             if changed == 0 {
@@ -633,6 +649,7 @@ fn node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClusterNode> {
         last_seen: row.get(3)?,
         applied_config_version: row.get(4)?,
         revoked: row.get::<_, i64>(5)? != 0,
+        remote_addr: row.get(6)?,
     })
 }
 
@@ -899,7 +916,10 @@ mod tests {
         assert!(!node.revoked);
 
         clock.advance(Duration::from_secs(30));
-        store.mark_seen("node-a").await.unwrap();
+        store
+            .mark_seen("node-a", Some("192.0.2.10:4433"))
+            .await
+            .unwrap();
         store
             .set_applied_config_version("node-a", 42)
             .await
@@ -907,6 +927,11 @@ mod tests {
         let node = store.get_node("node-a").await.unwrap().unwrap();
         assert_eq!(node.last_seen, Some(1_700_000_030));
         assert_eq!(node.applied_config_version, Some(42));
+        assert_eq!(node.remote_addr.as_deref(), Some("192.0.2.10:4433"));
+
+        store.mark_seen("node-a", None).await.unwrap();
+        let node = store.get_node("node-a").await.unwrap().unwrap();
+        assert_eq!(node.remote_addr.as_deref(), Some("192.0.2.10:4433"));
 
         store.revoke("node-a").await.unwrap();
         let node = store.get_node("node-a").await.unwrap().unwrap();
@@ -915,7 +940,7 @@ mod tests {
 
         let error = store.revoke("node-missing").await.unwrap_err();
         assert_eq!(error.code(), "cluster.node.unknown");
-        let error = store.mark_seen("node-missing").await.unwrap_err();
+        let error = store.mark_seen("node-missing", None).await.unwrap_err();
         assert_eq!(error.code(), "cluster.node.unknown");
     }
 

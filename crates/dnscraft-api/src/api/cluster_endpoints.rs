@@ -57,27 +57,60 @@ pub(crate) async fn mint_join_token(
     })))
 }
 
-/// `GET /api/v1/cluster/nodes` — every registered sub-node.
+/// `GET /api/v1/cluster/nodes` — local node (master or this sub-node) plus every
+/// registered peer. Pickers need the local id; revoke still only applies to peers.
 pub(crate) async fn list_nodes(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ControlApiError> {
-    let nodes: Vec<Value> = store(&state)?
-        .list_nodes()
-        .await?
-        .into_iter()
-        .map(|node| {
-            json!({
-                "node_id": node.node_id,
-                // Every registry entry is a sub-node; the master is this process.
-                "role": "sub_node",
-                "fingerprint": node.fingerprint,
-                "joined_at": rfc3339(node.joined_at),
-                "last_seen": node.last_seen.map(rfc3339),
-                "applied_config_version": node.applied_config_version,
-                "revoked": node.revoked,
-            })
-        })
-        .collect();
+    let connected: std::collections::HashSet<String> = state
+        .cluster_broadcast()
+        .map(|broadcast| broadcast.connected_node_ids().into_iter().collect())
+        .unwrap_or_default();
+    let mut nodes: Vec<Value> = Vec::new();
+    if let Some(status) = state
+        .cluster_status()
+        .and_then(|handle| handle.cluster_status())
+    {
+        nodes.push(json!({
+            "node_id": status.node_id,
+            "role": status.role,
+            "fingerprint": Value::Null,
+            "joined_at": Value::Null,
+            "last_seen": Value::Null,
+            "applied_config_version": status.applied_version,
+            "revoked": false,
+            "local": true,
+            "connected": true,
+            "remote_addr": Value::Null,
+            "transport": Value::Null,
+        }));
+    }
+    let local_id = nodes
+        .first()
+        .and_then(|row| row.get("node_id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    for node in store(&state)?.list_nodes().await? {
+        if local_id.as_deref() == Some(node.node_id.as_str()) {
+            continue;
+        }
+        let is_connected = connected.contains(&node.node_id);
+        nodes.push(json!({
+            "node_id": node.node_id,
+            // Registry entries are peers that joined; the local row above is this process.
+            "role": "sub_node",
+            "fingerprint": node.fingerprint,
+            "joined_at": rfc3339(node.joined_at),
+            "last_seen": node.last_seen.map(rfc3339),
+            "applied_config_version": node.applied_config_version,
+            "revoked": node.revoked,
+            "local": false,
+            "connected": is_connected,
+            "remote_addr": node.remote_addr,
+            // Cluster peer links are always mTLS over HTTP/2.
+            "transport": "mtls",
+        }));
+    }
     Ok(success(nodes))
 }
 

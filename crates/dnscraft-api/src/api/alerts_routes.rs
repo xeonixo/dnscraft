@@ -154,6 +154,7 @@ mod tests {
             last_seen,
             applied_config_version: None,
             revoked,
+            remote_addr: None,
         }
     }
 

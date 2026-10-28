@@ -14,6 +14,35 @@ const pageState = vi.hoisted(() => ({ url: new URL('http://localhost/query-log')
 vi.mock('$app/navigation', () => nav);
 vi.mock('$app/state', () => ({ page: pageState }));
 
+/** Minimal EventSource so the always-on live effect does not throw in jsdom. */
+class FakeEventSource {
+	static instances: FakeEventSource[] = [];
+	readonly url: string;
+	onerror: ((ev: Event) => void) | null = null;
+	onopen: ((ev: Event) => void) | null = null;
+	private readonly listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>();
+
+	constructor(url: string) {
+		this.url = url;
+		FakeEventSource.instances.push(this);
+	}
+
+	addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+		const set = this.listeners.get(type) ?? new Set();
+		set.add(listener as (event: MessageEvent<string>) => void);
+		this.listeners.set(type, set);
+	}
+
+	close(): void {
+		/* noop */
+	}
+
+	emit(type: string, data: string): void {
+		const event = { data } as MessageEvent<string>;
+		for (const listener of this.listeners.get(type) ?? []) listener(event);
+	}
+}
+
 const json = (status: number, body: unknown): Response =>
 	new Response(JSON.stringify(body), {
 		status,
@@ -119,6 +148,8 @@ function pageOf(queries: QueryRecord[], extra: Record<string, unknown> = {}): Re
 beforeEach(() => {
 	fetchMock = vi.fn<typeof fetch>();
 	vi.stubGlobal('fetch', fetchMock);
+	FakeEventSource.instances = [];
+	vi.stubGlobal('EventSource', FakeEventSource);
 	nav.goto.mockReset();
 	endSession();
 	setPrincipal({ role: 'admin', actorId: 'alice', actorType: 'user', csrfToken: 'tok' });
@@ -510,6 +541,38 @@ describe('dropped events', () => {
 
 		await waitFor(() => expect(requested('/api/v1/query-log').length).toBeGreaterThan(0));
 		expect(screen.queryByText(m.querylog_dropped_title())).not.toBeInTheDocument();
+	});
+});
+
+describe('always-on live stream', () => {
+	it('opens SSE with the current filters and prepends new rows', async () => {
+		setUrl('domain_substr=ads&protocol=doh');
+		serve({ '/api/v1/query-log': () => pageOf([record('seed')]) });
+		render(Page);
+
+		expect(await screen.findByText('ads.example.com')).toBeInTheDocument();
+		await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+		const es = FakeEventSource.instances[0]!;
+		expect(es.url.startsWith('/api/v1/query-log/stream?')).toBe(true);
+		expect(es.url).toContain('domain_substr=ads');
+		expect(es.url).toContain('protocol=doh');
+		expect(es.url).not.toContain('limit=');
+		expect(es.url).not.toContain('offset=');
+
+		es.emit(
+			'row',
+			JSON.stringify(record('live-1', { query: { name: 'live.ads.example', type: 'A', class: 'IN' } })),
+		);
+		expect(await screen.findByText('live.ads.example')).toBeInTheDocument();
+	});
+
+	it('folds lagged events into the incomplete banner', async () => {
+		serve();
+		render(Page);
+		await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+		FakeEventSource.instances[0]!.emit('lagged', '{"dropped":2}');
+		expect(await screen.findByText(m.querylog_dropped_title())).toBeInTheDocument();
+		expect(screen.getByText(m.querylog_dropped_body({ count: '2' }))).toBeInTheDocument();
 	});
 });
 

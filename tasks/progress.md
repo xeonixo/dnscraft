@@ -2,6 +2,28 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — system log levels and lifecycle events
+
+- **Config:** `[log] level` (`error|warn|info|debug|trace`, default `info`) in
+  `LogConfig`/`LogSettings`; invalid values give `dnscraft.config.invalid_log`.
+- **Subscriber:** installed by `run()` after the config is read. `RUST_LOG` wins when
+  set and parseable (blank or invalid falls back to the configured level); the
+  configured level applies to all `dnscraft*` crates, `warn` to the rest. Stderr only;
+  query JSON stays on stdout.
+- **Output:** `eprintln!` lifecycle notices became tracing events: `listening on`
+  (info, per listener), `dnscraft started` / `shutdown signal received` / `dnscraft stopped`
+  (info), `query events dropped` (warn). The final fatal `dnscraft: <code>: …` line
+  stays a direct `eprintln!` in `main` because it can precede the subscriber.
+- **New info events:** `config version applied` (version, action, actor_type; covers
+  PUT, cluster sync, seed; rollback has its own with `restored_from`); `filter list
+  refreshed` / warn `filter list refresh failed` per list (http_status, rule counts or
+  error_code); `enrolled with the cluster master`; `connected to` / `reconnected to the
+  cluster master`; warn `connection to the cluster master lost`. TLS already logs issue
+  and renewal at info (`issued and installed TLS certificate`).
+- **Tests:** level parsing/validation, `RUST_LOG` precedence and fallback
+  (`lib.rs`), integration greps updated to the tracing line format (`tests/e2e.rs`,
+  `tests/cli.rs`).
+
 ## 2026-10-28 — query-log IP truncation: runtime setting, default `none` (GA-W9d)
 
 - **Live:** `control_api_settings.query_log.ip_truncate` and `.retention_days` are

@@ -46,19 +46,66 @@ export interface TestQueryBody {
 	client_id?: string;
 }
 
+export interface TestQueryAnswerRecord {
+	name: string;
+	/** Wire type (`A`, `AAAA`, …). API may send `type` or `qtype`. */
+	type: string;
+	ttl: number;
+	/** Presentation form (IPv4/IPv6, target name, …). API may send `data` or `rdata`. */
+	data: string;
+}
+
 export interface TestQueryAnswer {
 	rcode: string;
-	records: unknown[];
+	records: TestQueryAnswerRecord[];
 }
 
 export interface TestQueryResult {
 	steps: DecisionStep[];
 	view_id?: string;
 	profile_id?: string;
+	filter_set_id?: string;
+	answer_source?: string;
+	forward_zone?: string | null;
+	dnssec?: string | null;
+	client_id?: string | null;
 	filter?: unknown;
 	rcode?: string;
 	answer?: TestQueryAnswer;
+	timings?: {
+		select_us?: number;
+		filter_us?: number;
+		resolve_us?: number;
+		total_us?: number;
+	};
 	[key: string]: unknown;
+}
+
+/** Normalize answer records from either control-api or MCP wire shapes. */
+export function parseTestQueryRecords(raw: unknown): TestQueryAnswerRecord[] {
+	if (!Array.isArray(raw)) return [];
+	const out: TestQueryAnswerRecord[] = [];
+	for (const row of raw) {
+		if (!row || typeof row !== 'object') continue;
+		const rec = row as Record<string, unknown>;
+		const name = typeof rec.name === 'string' ? rec.name : '';
+		const type =
+			typeof rec.type === 'string'
+				? rec.type
+				: typeof rec.qtype === 'string'
+					? rec.qtype
+					: '';
+		const data =
+			typeof rec.data === 'string'
+				? rec.data
+				: typeof rec.rdata === 'string'
+					? rec.rdata
+					: '';
+		const ttl = typeof rec.ttl === 'number' && Number.isFinite(rec.ttl) ? rec.ttl : 0;
+		if (!type && !data) continue;
+		out.push({ name, type: type || '?', ttl, data });
+	}
+	return out;
 }
 
 function asObject(value: unknown): Record<string, unknown> | null {
@@ -107,6 +154,17 @@ function parseProfile(value: unknown): PolicyProfile | null {
 	return row;
 }
 
+/** Stable id from a zone apex when the stored `id` was left empty. */
+export function forwardZoneIdFromApex(zone: string): string {
+	const slug = zone
+		.trim()
+		.replace(/\.+$/, '')
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '');
+	return slug || 'forward-zone';
+}
+
 export function parseForwardZones(config: Record<string, unknown> | null): ForwardZoneEntry[] {
 	const resolver = asObject(config?.resolver);
 	const raw = resolver?.forward_zones;
@@ -115,9 +173,10 @@ export function parseForwardZones(config: Record<string, unknown> | null): Forwa
 	for (const item of raw) {
 		if (typeof item !== 'object' || item === null) continue;
 		const row = item as Record<string, unknown>;
-		const id = typeof row.id === 'string' ? row.id : null;
-		const zone = typeof row.zone === 'string' ? row.zone : null;
-		if (!id || !zone) continue;
+		const zone = typeof row.zone === 'string' ? row.zone.trim() : '';
+		if (!zone) continue;
+		const rawId = typeof row.id === 'string' ? row.id.trim() : '';
+		const id = rawId || forwardZoneIdFromApex(zone);
 		const targets = Array.isArray(row.targets) ? row.targets.map(String) : [];
 		zones.push({
 			id,

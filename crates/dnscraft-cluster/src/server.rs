@@ -249,6 +249,15 @@ impl ClusterBroadcast {
         self.config_sync.remove(node_id);
     }
 
+    /// `node_id`s with an open downstream stream, sorted for stable responses.
+    pub fn connected_node_ids(&self) -> Vec<String> {
+        self.config_sync
+            .lag()
+            .into_iter()
+            .map(|lag| lag.node_id)
+            .collect()
+    }
+
     /// Pushes a UniFi API key to the profile's `sync_owner` only.
     pub fn push_unifi_secret(&self, node_id: &str, profile_id: &str, api_key: Option<&str>) {
         self.config_sync.send_to(
@@ -394,7 +403,7 @@ impl ClusterServer {
                     }
                     accepted = listener.accept() => accepted,
                 };
-                let Ok((stream, _peer)) = accepted else {
+                let Ok((stream, peer_addr)) = accepted else {
                     continue;
                 };
                 let acceptor = acceptor.clone();
@@ -429,7 +438,11 @@ impl ClusterServer {
                         None => None,
                     };
                     let io = TokioIo::new(tls);
-                    let service = TowerToHyperService::new(router.layer(Extension(peer)));
+                    let service = TowerToHyperService::new(
+                        router
+                            .layer(Extension(peer))
+                            .layer(Extension(PeerSocketAddr(peer_addr))),
+                    );
                     let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
                         .serve_connection(io, service)
                         .await;
@@ -615,6 +628,10 @@ impl Drop for NodeSlot {
 #[derive(Clone, Debug)]
 struct AuthenticatedNode(String);
 
+/// TCP peer address of the current cluster connection (from `TcpListener::accept`).
+#[derive(Clone, Copy, Debug)]
+struct PeerSocketAddr(SocketAddr);
+
 fn router(state: Arc<ServerState>) -> Router {
     let protected = Router::new()
         .route("/cluster/v1/stream", get(stream))
@@ -713,6 +730,7 @@ async fn enroll(
 async fn heartbeat(
     State(state): State<Arc<ServerState>>,
     Extension(auth): Extension<AuthenticatedNode>,
+    peer_addr: Option<Extension<PeerSocketAddr>>,
     Json(request): Json<HeartbeatRequest>,
 ) -> Response {
     if request.protocol != PROTOCOL_VERSION {
@@ -721,7 +739,12 @@ async fn heartbeat(
     if !state.quotas.allow_heartbeat(&auth.0, state.clock.now()) {
         return error_response(&quota_exceeded(&auth.0, "heartbeat"));
     }
-    if let Err(error) = state.store.mark_seen(&auth.0).await {
+    let remote = peer_addr.map(|Extension(PeerSocketAddr(addr))| addr.to_string());
+    if let Err(error) = state
+        .store
+        .mark_seen(&auth.0, remote.as_deref())
+        .await
+    {
         return error_response(&error);
     }
     if let Some(version) = request.applied_version
@@ -809,6 +832,7 @@ fn clock_skew_warning(
 async fn stream(
     State(state): State<Arc<ServerState>>,
     Extension(auth): Extension<AuthenticatedNode>,
+    peer_addr: Option<Extension<PeerSocketAddr>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -830,8 +854,16 @@ async fn stream(
         return error_record(&ClusterError::ProtocolVersion);
     }
 
-    let last_applied_version = hello.as_ref().and_then(|hello| hello.last_applied_version);
-    let (records, mut record_rx) = mpsc::channel::<StreamRecord>(8);
+    let remote = peer_addr.map(|Extension(PeerSocketAddr(addr))| addr.to_string());
+    if let Err(error) = state
+        .store
+        .mark_seen(&auth.0, remote.as_deref())
+        .await
+    {
+        return error_response(&error);
+    }
+
+    let last_applied_version = hello.as_ref().and_then(|hello| hello.last_applied_version);    let (records, mut record_rx) = mpsc::channel::<StreamRecord>(8);
     // Backfill cursor: the sub-node resumes logging from this + 1.
     let master_highest_log_seq = state
         .log_ingest

@@ -189,17 +189,45 @@
 {/if}
 
 {#if detail}
+	{@const detailLag = nodeRows.find((row) => row.node.node_id === detail.node_id)?.lag ?? 0}
+	{@const connectionLabel = detail.local
+		? m.cluster_connection_local()
+		: detail.connected
+			? m.cluster_connection_connected()
+			: m.cluster_connection_offline()}
+	{@const transportLabel =
+		detail.transport === 'mtls' ? m.cluster_transport_mtls() : m.cluster_value_unknown()}
 	<Sheet open={true} title={m.cluster_detail_title()} onclose={() => (detail = null)}>
 		<GroupedList>
-			<GroupedRow label={m.cluster_field_role()} detail={detail.role} />
+			<GroupedRow
+				label={m.cluster_field_node_id()}
+				detail={displayText(detail.node_id).text}
+				detailMono
+			/>
+			<GroupedRow label={m.cluster_field_role()} detail={nodeRoleLabel(detail.role)} />
+			<GroupedRow
+				label={m.cluster_field_status()}
+				detail={nodeStatusLabel(detail, detailLag, locale)}
+			/>
+			<GroupedRow label={m.cluster_field_connection()} detail={connectionLabel} />
+			<GroupedRow
+				label={m.cluster_field_remote_addr()}
+				detail={detail.remote_addr || m.cluster_value_unknown()}
+				detailMono
+			/>
+			<GroupedRow label={m.cluster_field_transport()} detail={transportLabel} />
 			<GroupedRow
 				label={m.cluster_field_fingerprint()}
-				detail={formatFingerprint(detail.fingerprint)}
+				detail={detail.fingerprint
+					? formatFingerprint(detail.fingerprint)
+					: m.cluster_value_unknown()}
 				detailMono
 			/>
 			<GroupedRow
 				label={m.cluster_field_joined()}
-				detail={formatDateTime(new Date(detail.joined_at), locale)}
+				detail={detail.joined_at
+					? formatDateTime(new Date(detail.joined_at), locale)
+					: m.cluster_value_unknown()}
 				detailMono
 			/>
 			<GroupedRow

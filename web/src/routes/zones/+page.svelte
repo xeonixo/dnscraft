@@ -54,6 +54,15 @@
 	let formNodes = $state<string[]>([]);
 	let formProfile = $state('default');
 
+	/** View ids must match `[a-z0-9-]{1,64}` — same charset as filter-list ids. */
+	function slugify(text: string): string {
+		return text
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, '-')
+			.replace(/^-+|-+$/g, '')
+			.slice(0, 64);
+	}
+
 	const rows = $derived.by(() => {
 		if (result.kind !== 'ok') return [] as PolicyView[];
 		return [...result.data].sort((a, b) => Number(b.is_default) - Number(a.is_default));
@@ -62,7 +71,9 @@
 	/** The server refuses to delete a range that a Client ID is pinned to; its error carries the ids. */
 	const refusedPinned = $derived(failure?.params.reason === 'view_in_use');
 	const canSave = $derived(
-		!busy && invalidRange === null && (editing !== null || formId.trim() !== ''),
+		!busy &&
+			invalidRange === null &&
+			(editing !== null || slugify(formId) !== ''),
 	);
 	const nodeChoices = $derived(nodeChoicesFor(clusterNodeIds, formNodes));
 
@@ -204,7 +215,15 @@
 	async function submit(): Promise<void> {
 		busy = true;
 		failure = null;
-		const id = editing?.id ?? formId.trim();
+		const id = editing?.id ?? slugify(formId);
+		if (!id) {
+			failure = {
+				code: 'policy.config.invalid',
+				params: { reason: 'view id must match [a-z0-9-]{1,64}' },
+			};
+			busy = false;
+			return;
+		}
 		try {
 			await saveView(id, {
 				is_default: formDefault,
@@ -327,6 +346,10 @@
 				{#if !editing}
 					<label class="field-label" for="zone-id">{m.zones_id_label()}</label>
 					<input id="zone-id" class="field" bind:value={formId} autocomplete="off" />
+					{#if formId.trim() && slugify(formId)}
+						<p class="hint mono">{slugify(formId)}</p>
+					{/if}
+					<p class="hint">{m.zones_id_hint()}</p>
 				{:else}
 					<span class="field-label">{m.zones_id_label()}</span>
 					<span class="static-value">{displayText(editing.id).text}</span>

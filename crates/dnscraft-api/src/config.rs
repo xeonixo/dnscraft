@@ -13,7 +13,8 @@ use crate::error::ControlApiError;
 /// Default bind address (loopback; the API is always internal-only).
 pub const DEFAULT_BIND: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 /// Default TCP listen port.
-pub const DEFAULT_PORT: u16 = 8080;
+/// Default control-api port. Matches [`ControlApiConfig::default`] (`tls = true`).
+pub const DEFAULT_PORT: u16 = 443;
 
 /// Default query-log retention window in days.
 pub const DEFAULT_RETENTION_DAYS: u32 = 30;
