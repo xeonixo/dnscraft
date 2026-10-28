@@ -8,11 +8,12 @@ use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use serde_json::json;
 
 use super::alerts_routes::list_alerts;
 use super::audit_routes::list_audit;
+use super::system_routes::{get_backups, get_update_check, put_backup_settings};
 use super::auth::local::local_login;
 use super::auth::oidc::{oidc_authorize_url, oidc_callback};
 use super::auth::session_routes::{list_sessions, revoke_session};
@@ -155,7 +156,13 @@ pub(crate) fn build_router(state: AppState) -> Router {
         // Admin-only reads: the audit log exposes every actor's actions and
         // redacted config snapshots (RBAC maps the path to ApiAdmin).
         api = api.route("/audit", get(list_audit));
+        // Backups expose a filesystem path: admin-only (RBAC maps the path).
+        api = api
+            .route("/backups", get(get_backups))
+            .route("/backups/settings", put(put_backup_settings));
     }
+    // Viewer-readable; answers `enabled: false` without any outbound call.
+    api = api.route("/update/check", get(get_update_check));
     if state.query_log().is_some() {
         // Viewer-accessible reads: the RBAC middleware maps non-config GETs
         // under `/api/v1` to `Requirement::Api`.

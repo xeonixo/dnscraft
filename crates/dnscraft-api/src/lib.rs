@@ -31,6 +31,7 @@ mod query_log;
 mod server;
 mod stats;
 mod storage;
+mod system;
 mod tls;
 
 pub use api::auth::{
@@ -81,6 +82,7 @@ pub use stats::{
     TopDomain, TopDomains,
 };
 pub use storage::{AuditRecord, ConfigStore, Db};
+pub use system::run_backup_if_due;
 pub use tls::{
     AriStatus, CertSource, ControlApiTls, EngineStatusProvider, EngineTlsAdmin, IssueOutcome,
     IssueRecord, StoreHealth, TlsActionFuture, TlsAdmin, TlsMode, TlsStatus, TlsStatusFuture,

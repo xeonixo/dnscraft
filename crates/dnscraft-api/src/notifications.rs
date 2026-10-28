@@ -95,7 +95,7 @@ impl TlsWebhook {
 }
 
 /// Ring-backed, redirect-free HTTP client for the webhook.
-fn ring_client() -> Option<reqwest::Client> {
+pub(crate) fn ring_client() -> Option<reqwest::Client> {
     let roots = rustls::RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };

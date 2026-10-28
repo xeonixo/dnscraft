@@ -30,13 +30,15 @@ const APPLY_ORDER: [&str; 5] = ["filtering", "clients", "policy", "listeners", "
 
 /// Top-level sections a snapshot may contain. `resolver` is carried for
 /// cross-module validation only (forward-zone ids); it is not applied here.
-const TOP_LEVEL_KEYS: [&str; 6] = [
+const TOP_LEVEL_KEYS: [&str; 7] = [
     "filtering",
     "clients",
     "policy",
     "listeners",
     "tls",
     "resolver",
+    // Runtime settings owned by the control API (update check, backups).
+    "control_api_settings",
 ];
 
 /// Sections every config replace must provide.

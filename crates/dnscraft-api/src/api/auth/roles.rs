@@ -205,6 +205,10 @@ pub fn requirement(method: &Method, path: &str) -> Requirement {
     if path == "/api/v1/audit" || path.starts_with("/api/v1/audit/") {
         return Requirement::ApiAdmin;
     }
+    // Backup status exposes the backup directory path: admin-only, even for reads.
+    if path == "/api/v1/backups" || path.starts_with("/api/v1/backups/") {
+        return Requirement::ApiAdmin;
+    }
     if is_config_path(path) {
         return Requirement::ApiAdmin;
     }

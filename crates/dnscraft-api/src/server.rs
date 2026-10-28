@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use axum::extract::ConnectInfo;
@@ -58,6 +59,9 @@ pub struct AppState {
     filter: Option<Arc<FilterEngine>>,
     policy: Option<Arc<PolicyEngine>>,
     resolver: Option<Arc<Resolver>>,
+    update_api_url: String,
+    update_cache: Arc<tokio::sync::Mutex<crate::system::UpdateCache>>,
+    backup_dir: Option<PathBuf>,
 }
 
 impl Default for AppState {
@@ -97,6 +101,9 @@ impl AppState {
             filter: None,
             policy: None,
             resolver: None,
+            update_api_url: crate::system::DEFAULT_RELEASE_API.to_owned(),
+            update_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            backup_dir: None,
         }
     }
 
@@ -132,6 +139,30 @@ impl AppState {
     /// The configured policy engine, if any.
     pub(crate) fn policy_engine(&self) -> Option<&Arc<PolicyEngine>> {
         self.policy.as_ref()
+    }
+
+    /// Overrides the GitHub latest-release endpoint (tests and mirrors).
+    pub fn with_update_api_url(mut self, url: impl Into<String>) -> Self {
+        self.update_api_url = url.into();
+        self
+    }
+
+    pub(crate) fn update_api_url(&self) -> &str {
+        &self.update_api_url
+    }
+
+    pub(crate) fn update_cache(&self) -> &Arc<tokio::sync::Mutex<crate::system::UpdateCache>> {
+        &self.update_cache
+    }
+
+    /// Sets the backup directory (the binary passes `<data_dir>/backups`).
+    pub fn with_backup_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.backup_dir = Some(dir.into());
+        self
+    }
+
+    pub(crate) fn backup_dir(&self) -> Option<&std::path::Path> {
+        self.backup_dir.as_deref()
     }
 
     /// Attaches the resolver read by `/api/v1/resolver/*` (upstream health and

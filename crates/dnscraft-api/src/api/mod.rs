@@ -19,4 +19,5 @@ pub(crate) mod resolver_routes;
 pub(crate) mod response;
 pub(crate) mod router;
 pub(crate) mod stats_routes;
+pub(crate) mod system_routes;
 pub(crate) mod tls_routes;
