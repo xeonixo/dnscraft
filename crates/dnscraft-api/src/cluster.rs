@@ -76,6 +76,8 @@ const AUTH_REPLAY_GRACE: Duration = Duration::from_secs(5);
 pub struct SyncedConfigApplier {
     service: Arc<ConfigService>,
     node_id: String,
+    status: Option<Arc<ClusterStatusHandle>>,
+    clock: Option<Arc<dyn Clock>>,
 }
 
 impl SyncedConfigApplier {
@@ -84,7 +86,25 @@ impl SyncedConfigApplier {
         Self {
             service,
             node_id: node_id.into(),
+            status: None,
+            clock: None,
         }
+    }
+
+    /// Publishes `cluster.applied_version` as soon as the snapshot is stored.
+    ///
+    /// [`ClusterClient::apply_push`] posts the config ack over HTTP after apply;
+    /// without an early status update, `GET /api/v1/status` can briefly (or, on
+    /// a slow master, for a long time) report a stale `applied_version` while
+    /// module state already reflects the new snapshot.
+    pub fn with_cluster_status(
+        mut self,
+        status: Arc<ClusterStatusHandle>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        self.status = Some(status);
+        self.clock = Some(clock);
+        self
     }
 }
 
@@ -92,12 +112,21 @@ impl SyncedConfigApplier {
 impl ConfigApplier for SyncedConfigApplier {
     async fn apply(&self, version: i64, snapshot: &Value) -> Result<i64, ClusterError> {
         let snapshot = node_scoped_views(snapshot, &self.node_id)?;
-        self.service
+        let applied = self
+            .service
             .apply_synced_config(snapshot, version)
             .await
             .map_err(|error| ClusterError::ConfigApply {
                 message: format!("{}: {error}", error.code()),
-            })
+            })?;
+        if let (Some(status), Some(clock)) = (&self.status, &self.clock) {
+            status.update(|cluster| {
+                cluster.applied_version = Some(applied);
+                cluster.lag = (version - applied).max(0);
+                cluster.last_sync = Some(clock.now());
+            });
+        }
+        Ok(applied)
     }
 }
 
@@ -1457,10 +1486,10 @@ impl ClusterRuntime {
             config.timing.clone(),
         )?);
 
-        let applier = Arc::new(SyncedConfigApplier::new(
-            Arc::clone(&service),
-            config.node_id.clone(),
-        ));
+        let applier = Arc::new(
+            SyncedConfigApplier::new(Arc::clone(&service), config.node_id.clone())
+                .with_cluster_status(Arc::clone(&self.status), Arc::clone(&clock)),
+        );
         let auth_state = state.auth_state_arc();
         let auth_applier: Option<Arc<dyn AuthSnapshotApplier>> = auth_state
             .clone()

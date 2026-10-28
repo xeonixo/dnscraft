@@ -298,6 +298,11 @@ async fn sub_node_enrolls_and_receives_master_config() {
         &snapshot.to_string(),
     );
     assert_eq!(status, 200, "put config: {body}");
+    let put: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        put["data"]["version"], 2,
+        "master should store version 2: {body}"
+    );
 
     wait_until("the master write on the sub-node", || {
         let (status, body) = get(sub_api, "/api/v1/clients", &admin);

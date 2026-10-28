@@ -285,6 +285,31 @@ async fn config_applier_applies_the_pushed_version() {
 }
 
 #[tokio::test]
+async fn synced_config_applier_publishes_applied_version_before_config_ack() {
+    let (service, _) = service("node-b", ModuleAppliers::default()).await;
+    let status = Arc::new(ClusterStatusHandle::new());
+    status.set(dnscraft_api::ClusterStatus {
+        role: "sub_node".to_owned(),
+        master_reachable: true,
+        applied_version: Some(1),
+        lag: 0,
+        queue_depth: 0,
+        last_sync: None,
+        degraded_nodes: 0,
+    });
+    let clock: Arc<dyn dnscraft_common::clock::Clock> = Arc::new(ClusterClock::new(at(NOW)));
+    let applier = SyncedConfigApplier::new(Arc::clone(&service), "node-b")
+        .with_cluster_status(status.clone(), clock);
+
+    applier.apply(2, &snapshot("v2")).await.unwrap();
+
+    let cluster = status.status().unwrap();
+    assert_eq!(cluster.applied_version, Some(2));
+    assert_eq!(cluster.lag, 0);
+    assert_eq!(cluster.last_sync, Some(at(NOW)));
+}
+
+#[tokio::test]
 async fn config_applier_failure_rolls_back_and_reports_cluster_config_apply() {
     let (service, _) = service(
         "node-b",
