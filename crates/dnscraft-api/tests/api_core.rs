@@ -129,3 +129,19 @@ async fn response_content_type_is_json() {
         .unwrap_or("");
     assert!(ct.starts_with("application/json"), "content-type {ct}");
 }
+
+#[tokio::test]
+async fn status_reports_version_and_module_readiness() {
+    // GA14: public status carries the build version and the modules that are
+    // not ready (names only).
+    let state = AppState::new();
+    let (status, body) = get(state.clone(), "/api/v1/status").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(body["data"]["ready"], true);
+
+    state.readiness().expect_module("resolver");
+    let (_, body) = get(state, "/api/v1/status").await;
+    assert_eq!(body["data"]["ready"], false);
+    assert_eq!(body["data"]["modules_not_ready"][0], "resolver");
+}

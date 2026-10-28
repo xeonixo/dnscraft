@@ -260,14 +260,19 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     )
 }
 
-/// Status: TLS mode, leaf fingerprint, the full typed TLS DTO, and any active
-/// warnings (self-signed bootstrap certificate). Expanded further by A11
-/// (version, features).
+/// Status: build version, module readiness, TLS mode, leaf fingerprint, the
+/// full typed TLS DTO, the cluster block when a role is active, and any active
+/// warnings (self-signed bootstrap certificate).
 ///
 /// When this process does not terminate TLS (reverse-proxy mode), the TLS
 /// fields are omitted entirely.
 async fn status(State(state): State<AppState>) -> impl IntoResponse {
     let mut body = serde_json::Map::new();
+    // Build version and module readiness (GA14). Only non-secret state.
+    body.insert("version".to_owned(), json!(env!("CARGO_PKG_VERSION")));
+    let not_ready = state.readiness().not_ready_modules();
+    body.insert("ready".to_owned(), json!(not_ready.is_empty()));
+    body.insert("modules_not_ready".to_owned(), json!(not_ready));
     if let Some(tls) = state.tls_status_async().await {
         body.insert("tls_mode".to_owned(), json!(tls.mode.as_str()));
         body.insert("tls_fingerprint".to_owned(), json!(tls.fingerprint.clone()));

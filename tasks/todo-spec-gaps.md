@@ -187,7 +187,7 @@ approval before Phase 0 code.
 - [x] **GA11** 🟠 [code] Local-login lockout per account only, no per-IP counter. *(local.rs:181-276, migrations.rs:92-99)*
 - [x] **GA12** 🟠 [code] OIDC `groups` claim name hardcoded (no config field). *(oidc.rs:74-81; config.rs:100-126)*
 - [x] **GA13** 🟠 [code] OIDC login success/failure not audited; token create/revoke and logout not audited. *(oidc.rs:297-488, tokens.rs:326-367, auth/mod.rs:296-315)*
-- [ ] **GA14** 🟠 [code] `GET /status` returns only TLS fields (no node/module/version). *(router.rs:235-250)*
+- [x] **GA14** 🟠 [code] `GET /status` returns only TLS fields (no node/module/version). *(router.rs:235-250)*
 - [ ] **GA15** 🟠 [code] Runtime-editable keys (OIDC/accounts/retention/rollups) not exposed via `/config`. *(config_apply.rs:33-44)*
 - [ ] **GA16** 🟠 [code] `stats/overview` omits filter-hit by list/rule, `query_log.dropped`, active clients; stats read only raw log, not rollups (1-year dashboards → 30 days). *(stats.rs:113-140, stats_routes.rs:85-126)*
 - [x] **GA17** 🟠 [code] SQLite query-log read errors map to `control_api.internal`, not `query_log.read`. *(query_log.rs:419-423, 467-494)*
