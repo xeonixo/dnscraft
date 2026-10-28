@@ -346,6 +346,8 @@ struct NodeSync {
     pushed_version: i64,
     acked_version: i64,
     pending: Option<Arc<ConfigPush>>,
+    /// When the oldest unacknowledged push was sent; cleared by a full ack.
+    pending_since: Option<SystemTime>,
     next_attempt: Option<SystemTime>,
     backoff: Duration,
 }
@@ -381,6 +383,7 @@ impl ConfigSync {
             }
             node.pushed_version = config_version;
             node.pending = Some(Arc::clone(&push));
+            node.pending_since.get_or_insert(now);
             node.backoff = DEFAULT_RECONNECT_BACKOFF;
             node.next_attempt = Some(add_duration(now, node.backoff));
             let _ = node.tx.try_send(StreamRecord::ConfigPush((*push).clone()));
@@ -403,6 +406,7 @@ impl ConfigSync {
                 .is_some_and(|push| applied_version >= push.config_version)
             {
                 node.pending = None;
+                node.pending_since = None;
                 node.next_attempt = None;
             }
         }
@@ -430,6 +434,24 @@ impl ConfigSync {
             .collect::<Vec<_>>();
         lag.sort_unstable_by(|left, right| left.node_id.cmp(&right.node_id));
         lag
+    }
+
+    /// Connected nodes whose oldest unacknowledged push is at least `timeout`
+    /// old (`config_apply_timeout`), sorted by `node_id`.
+    pub fn degraded_nodes(&self, timeout: Duration) -> Vec<String> {
+        let now = self.clock.now();
+        let state = self.lock();
+        let mut nodes = state
+            .nodes
+            .iter()
+            .filter(|(_, node)| {
+                node.pending_since
+                    .is_some_and(|since| add_duration(since, timeout) <= now)
+            })
+            .map(|(node_id, _)| node_id.clone())
+            .collect::<Vec<_>>();
+        nodes.sort_unstable();
+        nodes
     }
 
     /// Lag for one node, if it is connected.
@@ -463,6 +485,7 @@ impl ConfigSync {
             pushed_version: applied,
             acked_version: applied,
             pending: None,
+            pending_since: None,
             next_attempt: None,
             backoff: DEFAULT_RECONNECT_BACKOFF,
         };
@@ -471,6 +494,7 @@ impl ConfigSync {
         {
             node.pushed_version = push.config_version;
             node.pending = Some(Arc::clone(&push));
+            node.pending_since = Some(now);
             node.next_attempt = Some(add_duration(now, node.backoff));
             let _ = node.tx.try_send(StreamRecord::ConfigPush((*push).clone()));
         }
@@ -731,5 +755,32 @@ mod tests {
             matches!(new_rx.try_recv(), Ok(StreamRecord::ConfigPush(_))),
             "the live stream must keep receiving pushes"
         );
+    }
+    #[tokio::test]
+    async fn a_node_without_an_ack_is_degraded_after_the_apply_timeout() {
+        let clock = Arc::new(dnscraft_common::clock::ManualClock::new(
+            std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        ));
+        let sync = ConfigSync {
+            clock: clock.clone(),
+            state: Mutex::new(SyncState::default()),
+            wake: Notify::new(),
+        };
+        let (tx, _rx) = mpsc::channel(8);
+        sync.register("node-a", Some(0), tx);
+        sync.publish(1, &json!({ "a": 1 })).unwrap();
+        let timeout = Duration::from_secs(30);
+
+        clock.advance(Duration::from_secs(29));
+        assert!(sync.degraded_nodes(timeout).is_empty());
+
+        // A later push does not restart the clock: the oldest unacked push counts.
+        sync.publish(2, &json!({ "a": 2 })).unwrap();
+        clock.advance(Duration::from_secs(1));
+        assert_eq!(sync.degraded_nodes(timeout), vec!["node-a".to_owned()]);
+
+        // A full ack clears the degradation.
+        sync.ack("node-a", 2);
+        assert!(sync.degraded_nodes(timeout).is_empty());
     }
 }

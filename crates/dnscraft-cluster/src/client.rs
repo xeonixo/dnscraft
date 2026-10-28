@@ -8,8 +8,8 @@
 //! Reconnects use exponential backoff driven by the injectable
 //! [`Clock`] ([`ClusterClient::connect`]); there are no wall-clock sleeps.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, PoisonError, RwLock};
+use std::time::{Duration, SystemTime};
 
 use dnscraft_common::clock::{Clock, add_duration, wait_until};
 use reqwest::Client;
@@ -22,10 +22,8 @@ use rustls::{DigitallySignedStruct, Error as RustlsError};
 use serde::Deserialize;
 
 use crate::ca::cert_fingerprint;
-use crate::config::{
-    DEFAULT_MASTER_TIMEOUT, DEFAULT_RECONNECT_BACKOFF, DEFAULT_RECONNECT_BACKOFF_MAX,
-};
-use crate::enroll::{EnrollRequest, EnrollResponse, PROTOCOL_VERSION};
+use crate::config::{DEFAULT_MASTER_TIMEOUT, TimingConfig, TlsPaths};
+use crate::enroll::{EnrollRequest, EnrollResponse, PROTOCOL_VERSION, RenewRequest};
 use crate::error::ClusterError;
 use crate::identity::NodeIdentity;
 use crate::log::{LogAck, LogBatch};
@@ -42,14 +40,17 @@ const HEARTBEAT_PATH: &str = "/cluster/v1/heartbeat";
 const ACK_PATH: &str = "/cluster/v1/ack";
 const LOGS_PATH: &str = "/cluster/v1/logs";
 const RELAY_PATH: &str = "/cluster/v1/writes";
+const RENEW_PATH: &str = "/cluster/v1/renew";
 const NDJSON: &str = "application/x-ndjson";
 
 /// A sub-node's HTTP/2 mTLS client for the master's cluster listener.
 pub struct ClusterClient {
-    http: Client,
+    /// Swapped after a renewal so new connections present the new certificate.
+    http: RwLock<Client>,
     base_url: String,
     node_id: String,
     clock: Arc<dyn Clock>,
+    timing: TimingConfig,
 }
 
 impl ClusterClient {
@@ -63,13 +64,26 @@ impl ClusterClient {
         identity: &NodeIdentity,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, ClusterError> {
+        Self::new_with_timing(master_url, identity, clock, TimingConfig::default())
+    }
+
+    /// [`new`](Self::new) with the node's `[cluster.timing]`: `master_timeout`
+    /// bounds the connect and the relay retry window, and `reconnect_backoff`
+    /// and `reconnect_backoff_max` shape every retry loop.
+    pub fn new_with_timing(
+        master_url: &str,
+        identity: &NodeIdentity,
+        clock: Arc<dyn Clock>,
+        timing: TimingConfig,
+    ) -> Result<Self, ClusterError> {
         let base_url = normalize_master_url(master_url)?;
         let node_id = node_id_from_pem(identity.node_cert_pem())?;
         Ok(Self {
-            http: mtls_client(identity)?,
+            http: RwLock::new(mtls_client(identity, timing.master_timeout)?),
             base_url,
             node_id,
             clock,
+            timing,
         })
     }
 
@@ -103,6 +117,63 @@ impl ClusterClient {
         json_body(ensure_success(response).await?).await
     }
 
+    /// The current HTTP client (cheap: `reqwest::Client` is reference counted).
+    fn http(&self) -> Client {
+        self.http
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Renews the node certificate if two thirds of its lifetime have passed
+    /// at `now`. Returns `true` when a renewal happened.
+    ///
+    /// The identity is read from `paths`, so the check always uses what is on
+    /// disk. The new certificate is persisted there before the client switches
+    /// to it; the previous certificate stays accepted by the master until it
+    /// expires.
+    pub async fn renew_if_due(
+        &self,
+        paths: &TlsPaths,
+        now: SystemTime,
+    ) -> Result<bool, ClusterError> {
+        let identity = NodeIdentity::load(paths)?;
+        if !identity.renewal_due(now)? {
+            return Ok(false);
+        }
+        self.renew_identity(&identity, paths).await?;
+        Ok(true)
+    }
+
+    /// Sends a renewal CSR over the mTLS channel, persists the signed
+    /// certificate and rebuilds the HTTP client from it.
+    async fn renew_identity(
+        &self,
+        identity: &NodeIdentity,
+        paths: &TlsPaths,
+    ) -> Result<(), ClusterError> {
+        let csr_pem = identity.renewal_csr_pem()?;
+        let body = serde_json::to_vec(&RenewRequest::new(csr_pem)).map_err(|error| {
+            ClusterError::Internal {
+                message: format!("encode renew request: {error}"),
+            }
+        })?;
+        let response = self
+            .http()
+            .post(format!("{}{RENEW_PATH}", self.base_url))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(master_unavailable)?;
+        let renewed: EnrollResponse = json_body(ensure_success(response).await?).await?;
+        identity.persist_renewed(&renewed.node_cert_pem, paths)?;
+        let fresh = NodeIdentity::load(paths)?;
+        let http = mtls_client(&fresh, self.timing.master_timeout)?;
+        *self.http.write().unwrap_or_else(PoisonError::into_inner) = http;
+        Ok(())
+    }
+
     /// Opens the long-lived downstream stream and consumes the `hello`.
     pub async fn open_stream(&self) -> Result<ClusterStream, ClusterError> {
         self.open_stream_with(None, None).await
@@ -129,7 +200,7 @@ impl ClusterClient {
             message: format!("encode stream hello: {error}"),
         })?;
         let response = self
-            .http
+            .http()
             .get(format!("{}{STREAM_PATH}", self.base_url))
             .header(PROTOCOL_HEADER, PROTOCOL_VERSION.to_string())
             .header(reqwest::header::CONTENT_TYPE, NDJSON)
@@ -332,7 +403,7 @@ impl ClusterClient {
             },
         )?;
         let response = self
-            .http
+            .http()
             .post(format!("{}{ACK_PATH}", self.base_url))
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body)
@@ -353,7 +424,7 @@ impl ClusterClient {
             message: format!("encode log batch: {error}"),
         })?;
         let response = self
-            .http
+            .http()
             .post(format!("{}{LOGS_PATH}", self.base_url))
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body)
@@ -384,7 +455,7 @@ impl ClusterClient {
             message: format!("encode heartbeat: {error}"),
         })?;
         let response = self
-            .http
+            .http()
             .post(format!("{}{HEARTBEAT_PATH}", self.base_url))
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body)
@@ -406,9 +477,9 @@ impl ClusterClient {
         let body = serde_json::to_vec(&relay).map_err(|error| ClusterError::Internal {
             message: format!("encode write relay: {error}"),
         })?;
-        let deadline = add_duration(self.clock.now(), DEFAULT_MASTER_TIMEOUT);
+        let deadline = add_duration(self.clock.now(), self.timing.master_timeout);
         let wake = tokio::sync::Notify::new();
-        let mut backoff = Backoff::new(DEFAULT_RECONNECT_BACKOFF, DEFAULT_RECONNECT_BACKOFF_MAX);
+        let mut backoff = self.backoff();
         loop {
             match self.post_relay(&body).await {
                 Ok(response) => return Ok(response),
@@ -431,7 +502,7 @@ impl ClusterClient {
 
     async fn post_relay(&self, body: &[u8]) -> Result<RelayResponse, ClusterError> {
         let response = self
-            .http
+            .http()
             .post(format!("{}{RELAY_PATH}", self.base_url))
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.to_vec())
@@ -442,6 +513,14 @@ impl ClusterClient {
         let bytes = response.bytes().await.map_err(master_unavailable)?;
         let body = serde_json::from_slice(&bytes).map_err(|_| ClusterError::WriteRelayFailed)?;
         Ok(RelayResponse { status, body })
+    }
+
+    /// The configured reconnect backoff for one retry loop.
+    fn backoff(&self) -> Backoff {
+        Backoff::new(
+            self.timing.reconnect_backoff,
+            self.timing.reconnect_backoff_max,
+        )
     }
 
     /// Opens the stream, retrying transient failures with exponential backoff.
@@ -464,7 +543,7 @@ impl ClusterClient {
         last_acked_log_seq: Option<u64>,
         shutdown: &tokio::sync::Notify,
     ) -> Result<ClusterStream, ClusterError> {
-        let mut backoff = Backoff::new(DEFAULT_RECONNECT_BACKOFF, DEFAULT_RECONNECT_BACKOFF_MAX);
+        let mut backoff = self.backoff();
         loop {
             match self
                 .open_stream_with(last_applied_version, last_acked_log_seq)
@@ -634,7 +713,7 @@ fn node_id_from_pem(cert_pem: &str) -> Result<String, ClusterError> {
 }
 
 /// mTLS client: cluster CA roots, node certificate/key, TLS 1.3, ALPN h2.
-fn mtls_client(identity: &NodeIdentity) -> Result<Client, ClusterError> {
+fn mtls_client(identity: &NodeIdentity, timeout: Duration) -> Result<Client, ClusterError> {
     let mut roots = RootCertStore::empty();
     let ca =
         CertificateDer::from_pem_slice(identity.ca_cert_pem().as_bytes()).map_err(|error| {
@@ -665,7 +744,7 @@ fn mtls_client(identity: &NodeIdentity) -> Result<Client, ClusterError> {
             message: format!("node certificate/key: {error}"),
         })?;
     tls.alpn_protocols = vec![b"h2".to_vec()];
-    http_client(tls)
+    http_client(tls, timeout)
 }
 
 /// Bootstrap client: trusts exactly the pinned master certificate.
@@ -689,21 +768,24 @@ fn pinned_client(master_cert_pem: &str) -> Result<Client, ClusterError> {
         .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
     tls.alpn_protocols = vec![b"h2".to_vec()];
-    http_client(tls)
+    http_client(tls, DEFAULT_MASTER_TIMEOUT)
 }
 
 /// Shared client construction for the mTLS and pinned clients.
 ///
 /// Redirects are never followed: the node certificate must only ever be
 /// presented to the configured master, not to a host named by a redirect.
-fn base_client() -> reqwest::ClientBuilder {
+fn base_client(connect_timeout: Duration) -> reqwest::ClientBuilder {
     Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(DEFAULT_MASTER_TIMEOUT)
+        .connect_timeout(connect_timeout)
 }
 
-fn http_client(tls: rustls::ClientConfig) -> Result<Client, ClusterError> {
-    base_client()
+fn http_client(
+    tls: rustls::ClientConfig,
+    connect_timeout: Duration,
+) -> Result<Client, ClusterError> {
+    base_client(connect_timeout)
         .use_preconfigured_tls(tls)
         .build()
         .map_err(|error| ClusterError::TransportTls {
@@ -884,7 +966,10 @@ mod tests {
             .unwrap()
             .with_root_certificates(RootCertStore::empty())
             .with_no_client_auth();
-        let client = base_client().use_preconfigured_tls(tls).build().unwrap();
+        let client = base_client(DEFAULT_MASTER_TIMEOUT)
+            .use_preconfigured_tls(tls)
+            .build()
+            .unwrap();
         let response = client
             .get(format!("http://{redirect_addr}/"))
             .send()

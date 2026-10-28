@@ -127,6 +127,37 @@ pub struct EnrollResponse {
     pub node_cert_pem: String,
 }
 
+/// `POST /cluster/v1/renew` body: a fresh CSR for the node's current key.
+///
+/// Renewal is authenticated by the presented certificate (mTLS), not by a
+/// join token, so the body carries only the protocol version and the CSR.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenewRequest {
+    /// Protocol version; must equal [`PROTOCOL_VERSION`].
+    pub protocol: u32,
+    /// PEM-encoded PKCS #10 request naming the authenticated `node_id`.
+    pub csr_pem: String,
+}
+
+impl RenewRequest {
+    /// Builds a request at the current [`PROTOCOL_VERSION`].
+    pub fn new(csr_pem: impl Into<String>) -> Self {
+        Self {
+            protocol: PROTOCOL_VERSION,
+            csr_pem: csr_pem.into(),
+        }
+    }
+
+    /// Rejects a request from an incompatible cluster protocol version.
+    pub fn check_protocol(&self) -> Result<(), ClusterError> {
+        if self.protocol == PROTOCOL_VERSION {
+            Ok(())
+        } else {
+            Err(ClusterError::ProtocolVersion)
+        }
+    }
+}
+
 /// Master-side enrollment.
 ///
 /// Verifies the protocol version, the CSR's `node_id` binding, and the one-time
@@ -143,12 +174,86 @@ pub async fn enroll(
     request.check_protocol()?;
     validate_node_id(&request.node_id)?;
 
-    let csr = CertificateSigningRequestParams::from_pem(&request.csr_pem).map_err(|error| {
+    let (node_cert_pem, fingerprint) =
+        issue_node_certificate(ca, clock, node_cert_ttl, &request.node_id, &request.csr_pem)
+            .map_err(|error| match error {
+                // The CSR is not for the node the token was minted for.
+                CsrError::Binding => ClusterError::JoinTokenInvalid,
+                CsrError::Other(error) => error,
+            })?;
+
+    store
+        .redeem_join_token_and_register(request.join_token.expose(), &request.node_id, &fingerprint)
+        .await?;
+
+    Ok(EnrollResponse {
+        ca_cert_pem: ca.cert_pem().to_owned(),
+        node_cert_pem,
+    })
+}
+
+/// Master-side renewal of `node_id`'s certificate.
+///
+/// The caller is already authenticated by its presented certificate, so the
+/// token is not involved. The CSR must name `node_id`; the new certificate
+/// becomes the node's current one and the previous one stays accepted until it
+/// expires (see [`ClusterStore::replace_certificate`]).
+pub(crate) async fn renew(
+    ca: &ClusterCa,
+    store: &ClusterStore,
+    clock: &dyn Clock,
+    node_cert_ttl: Duration,
+    node_id: &str,
+    request: RenewRequest,
+) -> Result<EnrollResponse, ClusterError> {
+    request.check_protocol()?;
+    let (node_cert_pem, fingerprint) =
+        issue_node_certificate(ca, clock, node_cert_ttl, node_id, &request.csr_pem).map_err(
+            |error| match error {
+                CsrError::Binding => ClusterError::TransportTls {
+                    message: "renewal CSR does not name the authenticated node".to_owned(),
+                },
+                CsrError::Other(error) => error,
+            },
+        )?;
+    store.replace_certificate(node_id, &fingerprint).await?;
+    Ok(EnrollResponse {
+        ca_cert_pem: ca.cert_pem().to_owned(),
+        node_cert_pem,
+    })
+}
+
+/// Why a CSR could not be turned into a node certificate.
+enum CsrError {
+    /// The CSR does not name exactly the expected `node_id`.
+    Binding,
+    /// Any other failure (malformed CSR, signing, lifetime).
+    Other(ClusterError),
+}
+
+impl From<ClusterError> for CsrError {
+    fn from(error: ClusterError) -> Self {
+        Self::Other(error)
+    }
+}
+
+/// Signs the node certificate for `node_id` from `csr_pem` with the master's
+/// profile and returns its PEM and SHA-256 fingerprint.
+fn issue_node_certificate(
+    ca: &ClusterCa,
+    clock: &dyn Clock,
+    node_cert_ttl: Duration,
+    node_id: &str,
+    csr_pem: &str,
+) -> Result<(String, String), CsrError> {
+    let csr = CertificateSigningRequestParams::from_pem(csr_pem).map_err(|error| {
         ClusterError::Internal {
             message: format!("invalid node CSR: {error}"),
         }
     })?;
-    verify_node_binding(&csr.params, &request.node_id)?;
+    if !csr_names_node(&csr.params, node_id) {
+        return Err(CsrError::Binding);
+    }
 
     // The master, not the CSR, decides what the certificate may authorize.
     let CertificateSigningRequestParams {
@@ -176,20 +281,12 @@ pub async fn enroll(
 
     let node_cert = ca.sign(&params, &public_key)?;
     let fingerprint = cert_fingerprint(node_cert.der());
-
-    store
-        .redeem_join_token_and_register(request.join_token.expose(), &request.node_id, &fingerprint)
-        .await?;
-
-    Ok(EnrollResponse {
-        ca_cert_pem: ca.cert_pem().to_owned(),
-        node_cert_pem: node_cert.pem(),
-    })
+    Ok((node_cert.pem(), fingerprint))
 }
 
-/// Requires the CSR to name exactly the requesting `node_id`: one DNS SAN equal
-/// to it, and a Common Name (when present) equal to it too.
-fn verify_node_binding(params: &CertificateParams, node_id: &str) -> Result<(), ClusterError> {
+/// Whether the CSR names exactly `node_id`: one DNS SAN equal to it, and a
+/// Common Name (when present) equal to it too.
+fn csr_names_node(params: &CertificateParams, node_id: &str) -> bool {
     let san_matches = params.subject_alt_names.len() == 1
         && matches!(
             params.subject_alt_names.first(),
@@ -199,13 +296,7 @@ fn verify_node_binding(params: &CertificateParams, node_id: &str) -> Result<(), 
         .distinguished_name
         .get(&DnType::CommonName)
         .is_none_or(|value| dn_value_str(value) == Some(node_id));
-
-    if san_matches && cn_matches {
-        Ok(())
-    } else {
-        // The CSR is not for the node the token was minted for.
-        Err(ClusterError::JoinTokenInvalid)
-    }
+    san_matches && cn_matches
 }
 
 fn dn_value_str(value: &DnValue) -> Option<&str> {

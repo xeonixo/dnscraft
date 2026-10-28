@@ -58,7 +58,7 @@ pub use config::{
     ClusterConfig, JoinConfig, ListenConfig, LogConfig, OfflineWritesConfig, QuotaConfig, Role,
     TimingConfig, TlsPaths,
 };
-pub use enroll::{EnrollRequest, EnrollResponse, PROTOCOL_VERSION, enroll};
+pub use enroll::{EnrollRequest, EnrollResponse, PROTOCOL_VERSION, RenewRequest, enroll};
 pub use error::ClusterError;
 pub use identity::{NodeIdentity, PendingNodeIdentity};
 pub use log::{

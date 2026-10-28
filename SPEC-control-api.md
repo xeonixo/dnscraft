@@ -810,7 +810,8 @@ the payload.
 
 - `GET /api/v1/status` adds `cluster.role`, `cluster.master_reachable`,
   `cluster.applied_version`, `cluster.lag`, `cluster.queue_depth`,
-  `cluster.last_sync`.
+  `cluster.last_sync`, `cluster.degraded_nodes` (master: connected nodes past
+  `config_apply_timeout` without an ack; SPEC-cluster § Apply timeout).
 - Statistics rollups gain a `node_id` dimension; `/api/v1/query-log` and
   `/api/v1/stats/*` accept a `node_id` filter.
 

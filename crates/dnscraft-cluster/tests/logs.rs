@@ -267,6 +267,7 @@ async fn start_master(name: &str, ingest: Arc<dyn LogIngest>) -> Master {
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: NODE_CERT_TTL,
             quota: QuotaConfig::default(),
+            timing: dnscraft_cluster::TimingConfig::default(),
         },
         ca,
         store.clone(),

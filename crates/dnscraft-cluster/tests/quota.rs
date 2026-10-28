@@ -134,6 +134,7 @@ async fn start_master(name: &str, quota: QuotaConfig) -> Master {
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: NODE_CERT_TTL,
             quota,
+            timing: dnscraft_cluster::TimingConfig::default(),
         },
         ca,
         store.clone(),
@@ -364,6 +365,134 @@ async fn queue_depth_over_the_cap_is_reported_in_status() {
     let over = heartbeat(&master, &identity, 6, None).await;
     assert!(over.ok);
     assert!(has_warning(&over, "cluster.offline_write_queue_full"));
+
+    master.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn unacked_push_past_the_apply_timeout_is_stale_in_heartbeat() {
+    let master = start_master("stale", QuotaConfig::default()).await;
+    let identity = enroll_node(&master, "node-a").await;
+
+    // A connected node that never acknowledges the push it is sent.
+    let stream = client(&master, &identity).open_stream().await.unwrap();
+    master
+        .server
+        .config_sync()
+        .publish(1, &serde_json::json!({ "a": 1 }))
+        .unwrap();
+    assert!(master.server.degraded_nodes().is_empty());
+
+    // The default `config_apply_timeout` is 30 seconds.
+    master.clock.advance(Duration::from_secs(30));
+    assert_eq!(master.server.degraded_nodes(), vec!["node-a".to_owned()]);
+    let stale = heartbeat(&master, &identity, 0, None).await;
+    assert!(has_warning(&stale, "cluster.config.stale"));
+
+    drop(stream);
+    master.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn heartbeat_flood_is_rejected_per_node() {
+    let master = start_master("heartbeat-flood", QuotaConfig::default()).await;
+    let identity = enroll_node(&master, "node-a").await;
+    let request = HeartbeatRequest {
+        protocol: PROTOCOL_VERSION,
+        applied_version: None,
+        queue_depth: 0,
+        time: None,
+    };
+    let raw = http_client(master.server.ca_cert_pem(), &identity);
+    let mut last_status = 0;
+    // The burst is 10 heartbeats; the eleventh at the same clock instant is refused.
+    for _ in 0..11 {
+        let response = raw
+            .post(format!("{}/cluster/v1/heartbeat", master.url))
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(&request).unwrap())
+            .send()
+            .await
+            .unwrap();
+        last_status = response.status().as_u16();
+    }
+    assert_eq!(last_status, 429);
+
+    master.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn enroll_attempts_are_rate_limited_listener_wide() {
+    let master = start_master("enroll-flood", QuotaConfig::default()).await;
+    let pending = PendingNodeIdentity::generate("node-a").unwrap();
+    let mut last_code = String::new();
+    for _ in 0..11 {
+        let error = ClusterClient::enroll(
+            &master.url,
+            master.server.server_cert_pem(),
+            pending.request(Secret::new("not-a-real-token")),
+        )
+        .await
+        .unwrap_err();
+        last_code = error.code().to_owned();
+    }
+    assert_eq!(last_code, "cluster.quota.exceeded");
+
+    master.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn one_node_cannot_hold_more_than_its_connection_cap() {
+    let master = start_master("connection-cap", QuotaConfig::default()).await;
+    let identity = enroll_node(&master, "node-a").await;
+
+    // Each client has its own HTTP/2 connection pool, so each stream is its own
+    // TCP connection. The cap is eight per node.
+    let mut streams = Vec::new();
+    for _ in 0..8 {
+        let node = client(&master, &identity);
+        streams.push(node.open_stream().await.unwrap());
+    }
+    let extra = client(&master, &identity);
+    let Err(error) = extra.open_stream().await else {
+        panic!("a ninth connection must be refused");
+    };
+    assert_eq!(error.code(), "cluster.master_unavailable");
+
+    // A slot frees when a connection ends.
+    streams.pop();
+    let reopened = client(&master, &identity).open_stream().await;
+    assert!(reopened.is_ok());
+
+    master.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn node_ahead_of_the_master_is_a_master_conflict_warning() {
+    let master = start_master("conflict", QuotaConfig::default()).await;
+    let identity = enroll_node(&master, "node-a").await;
+    master
+        .server
+        .config_sync()
+        .publish(3, &serde_json::json!({ "a": 3 }))
+        .unwrap();
+
+    let request = HeartbeatRequest {
+        protocol: PROTOCOL_VERSION,
+        applied_version: Some(4),
+        queue_depth: 0,
+        time: None,
+    };
+    let response = http_client(master.server.ca_cert_pem(), &identity)
+        .post(format!("{}/cluster/v1/heartbeat", master.url))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&request).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body: HeartbeatResponse = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert!(has_warning(&body, "cluster.master_conflict"));
 
     master.server.shutdown().await;
 }

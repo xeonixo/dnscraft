@@ -57,7 +57,7 @@ Client (sub-node side):
 
 | Item | Purpose |
 |---|---|
-| `ClusterClient`, `ClusterStream` | outbound mTLS client; stream open/poll, log post, heartbeat, write relay |
+| `ClusterClient`, `ClusterStream` | outbound mTLS client; stream open/poll, log post, heartbeat, write relay, certificate renewal (`renew_if_due`) |
 | `PendingNodeIdentity`, `NodeIdentity` | generate key + CSR, persist/load the issued cert and key |
 | `OfflineWriteQueue` | enqueue/replay/status of buffered keyed writes |
 | `LogStreamer`, `Backfill` | batch contiguous outbox rows, resume after an outage |
@@ -184,7 +184,7 @@ unchanged (for example `control_api.config.version`,
 | Code | When / HTTP |
 |---|---|
 | `cluster.internal` | Backend failure (filesystem, rcgen, SQLite) with no more specific code |
-| `cluster.quota.exceeded` | A node exceeded one of its `[cluster.quota]` rate limits; `429` |
+| `cluster.quota.exceeded` | A node exceeded one of its rate limits (`[cluster.quota]`, heartbeat, connection cap) or enroll attempts were rate-limited; `429` |
 | `cluster.role.invalid` | Role/config mismatch (for example a sub-node without `master_url`) at startup; `500`/startup error |
 | `cluster.master_unavailable` | A sub-node cannot reach the master for an operation that cannot be buffered; `503` |
 | `cluster.master_conflict` | A second master or a node ahead of the master is detected; connection refused |
@@ -215,11 +215,11 @@ With `role = "standalone"` the cluster routes do not exist and return
 ## Tests and fuzzing
 
 - Unit tests per module, plus loopback integration suites under
-  `tests/`: `join.rs` (enroll, mTLS rejections, stream hello, heartbeat),
+  `tests/`: `join.rs` (enroll, mTLS rejections, stream hello, heartbeat, certificate renewal),
   `sync.rs` (push/apply/ack, digest mismatch, reconnect, cert/auth push),
   `relay.rs` (verbatim relay, retries, runtime broadcast), `logs.rs` (ordered
-  ack, dedupe, backfill, gap) and `quota.rs` (relay/log floods, clock skew,
-  queue depth).
+  ack, dedupe, backfill, gap) and `quota.rs` (relay/log/heartbeat/enroll floods,
+  connection cap, clock skew, queue depth, stale config, master conflict).
 - All network tests use `127.0.0.1:0` and a generated test CA; all time-based
   tests use `ManualClock` with no wall-clock waits and no internet.
 - Fuzz targets live in [`fuzz/`](../../fuzz): `cluster_join_token`,

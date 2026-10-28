@@ -51,6 +51,7 @@ async fn status_includes_the_six_cluster_fields_when_clustered() {
         lag: 2,
         queue_depth: 3,
         last_sync: Some(at(NOW)),
+        degraded_nodes: 1,
     });
     let state = AppState::new().with_cluster_status(status);
     let body = status_body(state).await;
@@ -61,6 +62,7 @@ async fn status_includes_the_six_cluster_fields_when_clustered() {
     assert_eq!(cluster["lag"], 2);
     assert_eq!(cluster["queue_depth"], 3);
     assert_eq!(cluster["last_sync"], "2023-11-14T22:13:20Z");
+    assert_eq!(cluster["degraded_nodes"], 1);
 }
 
 #[tokio::test]

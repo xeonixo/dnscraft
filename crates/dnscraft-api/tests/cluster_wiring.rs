@@ -402,6 +402,7 @@ async fn sub_node_applies_a_master_push_and_acks_zero_lag() {
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: NODE_CERT_TTL,
             quota: QuotaConfig::default(),
+            timing: dnscraft_cluster::TimingConfig::default(),
         },
         ca,
         store.clone(),
@@ -474,6 +475,7 @@ async fn sub_node_backfill_reports_a_gap_after_reconnect() {
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: NODE_CERT_TTL,
             quota: QuotaConfig::default(),
+            timing: dnscraft_cluster::TimingConfig::default(),
         },
         ca,
         store.clone(),
@@ -947,6 +949,69 @@ async fn relayed_retry_with_the_same_request_id_applies_once() {
     assert_eq!(retry.body, first.body);
     assert_eq!(service.current().await.unwrap().0, Some(1));
     assert_eq!(db.audit_list(10, 0).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn relayed_answer_survives_a_master_restart() {
+    let (service, db) = service("master", ModuleAppliers::default()).await;
+    let dir =
+        std::env::temp_dir().join(format!("dnscraft-api-relay-{}-{}", std::process::id(), NOW));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cluster.db");
+    let clock = Arc::new(ClusterClock::new(at(NOW)));
+    let admin = RelayedActor {
+        actor_id: "admin-a".to_owned(),
+        actor_type: "user".to_owned(),
+        scope: "admin".to_owned(),
+    };
+
+    let store = ClusterStore::open(&path, clock.clone(), TOKEN_TTL)
+        .await
+        .unwrap();
+    let executor = ConfigWriteExecutor::with_store(Arc::clone(&service), clock.clone(), store);
+    let first = executor
+        .execute(
+            "node-a",
+            "req-restart",
+            admin.clone(),
+            "PUT".to_owned(),
+            "/api/v1/config".to_owned(),
+            snapshot("applied"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status, 200);
+    drop(executor);
+
+    // A new master process on the same database answers the retry from the
+    // stored response; the write is not applied a second time.
+    let store = ClusterStore::open(&path, clock.clone(), TOKEN_TTL)
+        .await
+        .unwrap();
+    let restarted = ConfigWriteExecutor::with_store(Arc::clone(&service), clock, store);
+    let retry = restarted
+        .execute(
+            "node-a",
+            "req-restart",
+            admin,
+            "PUT".to_owned(),
+            "/api/v1/config".to_owned(),
+            snapshot("applied"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(retry.status, 200);
+    assert_eq!(retry.body, first.body);
+    assert_eq!(service.current().await.unwrap().0, Some(1));
+    assert_eq!(db.audit_list(10, 0).await.unwrap().len(), 1);
+
+    drop(restarted);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]

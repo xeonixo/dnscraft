@@ -25,6 +25,9 @@ pub struct ClusterStatus {
     pub queue_depth: u32,
     /// Last successful config apply/publish, if any.
     pub last_sync: Option<SystemTime>,
+    /// Master only: connected nodes that have not acknowledged a config push
+    /// within `config_apply_timeout` (zero on a sub-node).
+    pub degraded_nodes: u32,
 }
 
 impl ClusterStatus {
@@ -37,6 +40,7 @@ impl ClusterStatus {
             "lag": self.lag,
             "queue_depth": self.queue_depth,
             "last_sync": self.last_sync.map(rfc3339),
+            "degraded_nodes": self.degraded_nodes,
         })
     }
 }

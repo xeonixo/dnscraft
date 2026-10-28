@@ -17,9 +17,10 @@
 //! stream; a mismatch yields one `error` record carrying
 //! `cluster.protocol.version` and closes the stream.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use axum::body::{Body, Bytes};
@@ -51,8 +52,8 @@ use tokio_rustls::TlsAcceptor;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::ca::{ClusterCa, cert_fingerprint, node_id_from_der};
-use crate::config::{ListenConfig, QuotaConfig};
-use crate::enroll::{PROTOCOL_VERSION, enroll as run_enroll};
+use crate::config::{ListenConfig, QuotaConfig, TimingConfig};
+use crate::enroll::{PROTOCOL_VERSION, RenewRequest, enroll as run_enroll, renew as run_renew};
 use crate::error::ClusterError;
 use crate::log::{LogAck, LogBatch, LogIngest};
 use crate::quota::QuotaLimiter;
@@ -69,9 +70,13 @@ const NDJSON: &str = "application/x-ndjson";
 
 /// Concurrent cluster connections (handshaking, idle or streaming) the master
 /// accepts. One sub-node holds about one stream plus short uploads, so this is
-/// far above a fleet's size. ponytail: one global cap; add a per-node cap and
-/// heartbeat/enroll rate limits when the binary wires `ClusterRuntime`.
+/// far above a fleet's size. Per-node caps are in [`MAX_CONNECTIONS_PER_NODE`].
 const MAX_CONNECTIONS: usize = 128;
+
+/// Concurrent connections one authenticated node may hold: its downstream
+/// stream plus a few short uploads (heartbeat, ack, logs, relay). Connections
+/// beyond it are dropped after the handshake.
+const MAX_CONNECTIONS_PER_NODE: usize = 8;
 
 /// Time allowed for the mTLS handshake, so a silent peer cannot hold a slot.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -100,6 +105,9 @@ pub struct ClusterServerConfig {
     pub node_cert_ttl: Duration,
     /// Per-node quotas enforced by the master (`[cluster.quota]`).
     pub quota: QuotaConfig,
+    /// Timing (`[cluster.timing]`); `config_apply_timeout` decides when a node
+    /// without an acknowledgement is reported degraded.
+    pub timing: TimingConfig,
 }
 
 /// `POST /cluster/v1/heartbeat` request body.
@@ -211,6 +219,7 @@ pub struct ClusterServer {
     server_cert_pem: String,
     config_sync: Arc<ConfigSync>,
     clock: Arc<dyn Clock>,
+    config_apply_timeout: Duration,
     shutdown: watch::Sender<bool>,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -266,12 +275,14 @@ impl ClusterServer {
 
         let (shutdown, mut shutdown_rx) = watch::channel(false);
         let config_sync = ConfigSync::start(clock.clone(), shutdown_rx.clone());
+        let config_apply_timeout = config.timing.config_apply_timeout;
 
         let state = Arc::new(ServerState {
             ca,
             store,
             clock: Arc::clone(&clock),
             node_cert_ttl: config.node_cert_ttl,
+            config_apply_timeout,
             config_sync: Arc::clone(&config_sync),
             quotas: QuotaLimiter::new(config.quota),
             write_executor,
@@ -281,6 +292,7 @@ impl ClusterServer {
         let router = router(Arc::clone(&state));
 
         let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+        let node_slots: NodeSlots = Arc::new(Mutex::new(HashMap::new()));
         let handle = tokio::spawn(async move {
             loop {
                 // Take a slot before accepting: connections beyond the cap wait
@@ -311,6 +323,7 @@ impl ClusterServer {
                 };
                 let acceptor = acceptor.clone();
                 let router = router.clone();
+                let node_slots = Arc::clone(&node_slots);
                 tokio::spawn(async move {
                     // Held for the whole connection; dropping it frees the slot.
                     let _permit = permit;
@@ -329,6 +342,16 @@ impl ClusterServer {
                         .peer_certificates()
                         .and_then(|certs| certs.first())
                         .map(|der| PeerIdentity::from_der(der.as_ref()));
+                    // A node over its connection cap is dropped without an HTTP
+                    // answer. Connections without a node certificate (enroll)
+                    // are bounded by the global cap and the enroll bucket.
+                    let _node_slot = match peer.as_ref().and_then(|peer| peer.node_id.clone()) {
+                        Some(node_id) => match NodeSlot::acquire(&node_slots, node_id) {
+                            Some(slot) => Some(slot),
+                            None => return,
+                        },
+                        None => None,
+                    };
                     let io = TokioIo::new(tls);
                     let service = TowerToHyperService::new(router.layer(Extension(peer)));
                     let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
@@ -344,6 +367,7 @@ impl ClusterServer {
             server_cert_pem,
             config_sync,
             clock,
+            config_apply_timeout,
             shutdown,
             handle: Some(handle),
         })
@@ -378,6 +402,12 @@ impl ClusterServer {
     /// a spawned task without borrowing the server.
     pub fn config_sync_handle(&self) -> Arc<ConfigSync> {
         Arc::clone(&self.config_sync)
+    }
+
+    /// Connected nodes that have not acknowledged a push within
+    /// `config_apply_timeout` (`cluster.config.apply` / `cluster.config.stale`).
+    pub fn degraded_nodes(&self) -> Vec<String> {
+        self.config_sync.degraded_nodes(self.config_apply_timeout)
     }
 
     /// A cloneable broadcast handle for the master's volatile pushes.
@@ -438,6 +468,7 @@ struct ServerState {
     store: ClusterStore,
     clock: Arc<dyn Clock>,
     node_cert_ttl: Duration,
+    config_apply_timeout: Duration,
     config_sync: Arc<ConfigSync>,
     quotas: QuotaLimiter,
     write_executor: Arc<dyn WriteExecutor>,
@@ -461,6 +492,43 @@ impl PeerIdentity {
     }
 }
 
+/// Connections currently open per authenticated `node_id`.
+type NodeSlots = Arc<Mutex<HashMap<String, usize>>>;
+
+/// One of a node's connection slots, released when the connection ends.
+struct NodeSlot {
+    slots: NodeSlots,
+    node_id: String,
+}
+
+impl NodeSlot {
+    /// Takes a slot for `node_id`, or `None` when it is at its cap.
+    fn acquire(slots: &NodeSlots, node_id: String) -> Option<Self> {
+        let mut map = slots.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = map.entry(node_id.clone()).or_insert(0);
+        if *count >= MAX_CONNECTIONS_PER_NODE {
+            return None;
+        }
+        *count += 1;
+        Some(Self {
+            slots: Arc::clone(slots),
+            node_id,
+        })
+    }
+}
+
+impl Drop for NodeSlot {
+    fn drop(&mut self) {
+        let mut map = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = map.get_mut(&self.node_id) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                map.remove(&self.node_id);
+            }
+        }
+    }
+}
+
 /// `node_id` proven by the authenticated client certificate for one request.
 #[derive(Clone, Debug)]
 struct AuthenticatedNode(String);
@@ -472,6 +540,7 @@ fn router(state: Arc<ServerState>) -> Router {
         .route("/cluster/v1/heartbeat", post(heartbeat))
         .route("/cluster/v1/logs", post(log_batch))
         .route("/cluster/v1/writes", post(write_relay))
+        .route("/cluster/v1/renew", post(renew))
         .route_layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             authenticate,
@@ -510,24 +579,39 @@ async fn authenticate(
         });
     };
 
-    match state.store.get_node(&node_id).await {
-        Ok(Some(node)) if node.revoked => error_response(&ClusterError::NodeRevoked { node_id }),
-        Ok(Some(node)) if node.fingerprint != peer.fingerprint => {
-            error_response(&ClusterError::NodeUnknown { node_id })
-        }
-        Ok(Some(_)) => {
-            request.extensions_mut().insert(AuthenticatedNode(node_id));
-            next.run(request).await
-        }
-        Ok(None) => error_response(&ClusterError::NodeUnknown { node_id }),
-        Err(error) => error_response(&error),
+    let node = match state.store.get_node(&node_id).await {
+        Ok(Some(node)) => node,
+        Ok(None) => return error_response(&ClusterError::NodeUnknown { node_id }),
+        Err(error) => return error_response(&error),
+    };
+    if node.revoked {
+        return error_response(&ClusterError::NodeRevoked { node_id });
     }
+    if node.fingerprint != peer.fingerprint {
+        // A certificate the node held before its last renewal stays valid
+        // until it expires; anything else is not this node's certificate.
+        match state
+            .store
+            .is_superseded_certificate(&node_id, &peer.fingerprint)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => return error_response(&ClusterError::NodeUnknown { node_id }),
+            Err(error) => return error_response(&error),
+        }
+    }
+    request.extensions_mut().insert(AuthenticatedNode(node_id));
+    next.run(request).await
 }
 
 async fn enroll(
     State(state): State<Arc<ServerState>>,
     Json(request): Json<crate::enroll::EnrollRequest>,
 ) -> Response {
+    // Unauthenticated: limited by one listener-wide bucket, not per node.
+    if !state.quotas.allow_enroll(state.clock.now()) {
+        return error_response(&quota_exceeded("", "enroll"));
+    }
     match run_enroll(
         &state.ca,
         &state.store,
@@ -550,6 +634,9 @@ async fn heartbeat(
     if request.protocol != PROTOCOL_VERSION {
         return error_response(&ClusterError::ProtocolVersion);
     }
+    if !state.quotas.allow_heartbeat(&auth.0, state.clock.now()) {
+        return error_response(&quota_exceeded(&auth.0, "heartbeat"));
+    }
     if let Err(error) = state.store.mark_seen(&auth.0).await {
         return error_response(&error);
     }
@@ -569,6 +656,28 @@ async fn heartbeat(
         state.quotas.limits().clock_skew_warning,
     ) {
         warnings.push(warning);
+    }
+    // A node that reports a version the master never published has diverged.
+    // Master-wins still applies on its next Hello; this is only a warning.
+    if let Some(applied) = request.applied_version
+        && applied > state.config_sync.current_version().unwrap_or(0)
+    {
+        warnings.push(StatusWarning {
+            code: ClusterError::MasterConflict.code().to_owned(),
+            params: Some(json!({ "applied_version": applied })),
+        });
+    }
+    if state
+        .config_sync
+        .degraded_nodes(state.config_apply_timeout)
+        .contains(&auth.0)
+    {
+        warnings.push(StatusWarning {
+            code: ClusterError::ConfigStale.code().to_owned(),
+            params: Some(
+                json!({ "config_apply_timeout_seconds": state.config_apply_timeout.as_secs() }),
+            ),
+        });
     }
     let queue_cap = state.quotas.limits().max_queued_offline_writes;
     if request.queue_depth > queue_cap {
@@ -813,6 +922,29 @@ async fn write_relay(
                 StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             (status, Json(response.body)).into_response()
         }
+        Err(error) => error_response(&error),
+    }
+}
+
+/// `POST /cluster/v1/renew` — signs a fresh certificate for the authenticated
+/// node and makes it current. The previous certificate stays accepted until it
+/// expires.
+async fn renew(
+    State(state): State<Arc<ServerState>>,
+    Extension(auth): Extension<AuthenticatedNode>,
+    Json(request): Json<RenewRequest>,
+) -> Response {
+    match run_renew(
+        &state.ca,
+        &state.store,
+        state.clock.as_ref(),
+        state.node_cert_ttl,
+        &auth.0,
+        request,
+    )
+    .await
+    {
+        Ok(response) => Json(response).into_response(),
         Err(error) => error_response(&error),
     }
 }

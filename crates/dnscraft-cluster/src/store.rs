@@ -58,6 +58,23 @@ const MIGRATIONS: &[&str] = &[
     // the master's replay answer. Both are NULL for rows queued before v3.
     "ALTER TABLE offline_writes ADD COLUMN expires_at INTEGER;
      ALTER TABLE offline_writes ADD COLUMN result_status INTEGER;",
+    // v4: certificates a node held before its last renewal. They stay accepted
+    // until they expire (rustls enforces validity), so a renewal whose response
+    // was lost cannot lock the node out.
+    "CREATE TABLE IF NOT EXISTS cluster_superseded_certs (
+        fingerprint  TEXT PRIMARY KEY,
+        node_id      TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS cluster_superseded_certs_node_idx
+        ON cluster_superseded_certs(node_id);",
+    // v5: the master's answers to relayed writes, keyed by the dedupe key, so a
+    // retry that spans a master restart returns the stored answer.
+    "CREATE TABLE IF NOT EXISTS relay_responses (
+        dedupe_key  TEXT PRIMARY KEY,
+        status      INTEGER NOT NULL,
+        body        TEXT NOT NULL,
+        stored_at   INTEGER NOT NULL
+    );",
 ];
 
 /// One registered cluster node.
@@ -448,6 +465,135 @@ impl ClusterStore {
                 return Err(ClusterError::NodeUnknown { node_id });
             }
             Ok(())
+        })
+        .await
+    }
+
+    /// Makes `new_fingerprint` the node's current certificate. The previous
+    /// one is kept as superseded and stays accepted until it expires.
+    ///
+    /// A revoked node is rejected, checked inside the same transaction.
+    // ponytail: superseded rows are never pruned (about six per node per year at the default TTL); add expiry pruning if the table grows.
+    pub(crate) async fn replace_certificate(
+        &self,
+        node_id: &str,
+        new_fingerprint: &str,
+    ) -> Result<(), ClusterError> {
+        let node_id = node_id.to_owned();
+        let new_fingerprint = new_fingerprint.to_owned();
+        self.with_conn(move |conn| {
+            let tx = conn.transaction().map_err(db_err)?;
+            let current: Option<(String, i64)> = tx
+                .query_row(
+                    "SELECT fingerprint, revoked FROM cluster_nodes WHERE node_id = ?1",
+                    params![node_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(db_err)?;
+            let Some((old_fingerprint, revoked)) = current else {
+                return Err(ClusterError::NodeUnknown { node_id });
+            };
+            if revoked != 0 {
+                return Err(ClusterError::NodeRevoked { node_id });
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO cluster_superseded_certs (fingerprint, node_id)
+                 VALUES (?1, ?2)",
+                params![old_fingerprint, node_id],
+            )
+            .map_err(db_err)?;
+            tx.execute(
+                "UPDATE cluster_nodes SET fingerprint = ?1 WHERE node_id = ?2",
+                params![new_fingerprint, node_id],
+            )
+            .map_err(db_err)?;
+            tx.commit().map_err(db_err)
+        })
+        .await
+    }
+
+    /// The stored answer for a relayed write's `dedupe_key`, if it is younger
+    /// than `max_age`.
+    pub async fn recall_relay_response(
+        &self,
+        dedupe_key: &str,
+        max_age: Duration,
+    ) -> Result<Option<(u16, serde_json::Value)>, ClusterError> {
+        let dedupe_key = dedupe_key.to_owned();
+        let oldest = self.now_unix() - duration_seconds(max_age);
+        self.with_conn(move |conn| {
+            let row: Option<(i64, String)> = conn
+                .query_row(
+                    "SELECT status, body FROM relay_responses
+                     WHERE dedupe_key = ?1 AND stored_at > ?2",
+                    params![dedupe_key, oldest],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(db_err)?;
+            let Some((status, body)) = row else {
+                return Ok(None);
+            };
+            let body = serde_json::from_str(&body).map_err(|error| ClusterError::Internal {
+                message: format!("stored relay response: {error}"),
+            })?;
+            Ok(Some((u16::try_from(status).unwrap_or(500), body)))
+        })
+        .await
+    }
+
+    /// Stores the answer for a relayed write and drops answers older than
+    /// `max_age`.
+    pub async fn remember_relay_response(
+        &self,
+        dedupe_key: &str,
+        status: u16,
+        body: &serde_json::Value,
+        max_age: Duration,
+    ) -> Result<(), ClusterError> {
+        let dedupe_key = dedupe_key.to_owned();
+        let body = serde_json::to_string(body).map_err(|error| ClusterError::Internal {
+            message: format!("encode relay response: {error}"),
+        })?;
+        let now = self.now_unix();
+        let oldest = now - duration_seconds(max_age);
+        self.with_conn(move |conn| {
+            conn.execute(
+                "DELETE FROM relay_responses WHERE stored_at <= ?1",
+                params![oldest],
+            )
+            .map_err(db_err)?;
+            conn.execute(
+                "INSERT OR REPLACE INTO relay_responses (dedupe_key, status, body, stored_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![dedupe_key, i64::from(status), body, now],
+            )
+            .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Whether `fingerprint` is a certificate `node_id` held before a renewal.
+    pub(crate) async fn is_superseded_certificate(
+        &self,
+        node_id: &str,
+        fingerprint: &str,
+    ) -> Result<bool, ClusterError> {
+        let node_id = node_id.to_owned();
+        let fingerprint = fingerprint.to_owned();
+        self.with_conn(move |conn| {
+            let found: Option<i64> = conn
+                .query_row(
+                    "SELECT 1 FROM cluster_superseded_certs
+                     WHERE fingerprint = ?1 AND node_id = ?2",
+                    params![fingerprint, node_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(db_err)?;
+            Ok(found.is_some())
         })
         .await
     }

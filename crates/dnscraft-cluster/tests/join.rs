@@ -1,7 +1,7 @@
 //! Loopback end-to-end proof of the cluster join slice:
 //! enroll → mTLS connect → `hello` → heartbeat, plus the rejection matrix
 //! (wrong CA, missing client certificate, unregistered fingerprint, revoked
-//! node). Real sockets on `127.0.0.1:0`, generated CA/certs via `rcgen`, an
+//! node) and certificate renewal over the established channel. Real sockets on `127.0.0.1:0`, generated CA/certs via `rcgen`, an
 //! injectable [`ManualClock`], and no wall-clock waits.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -136,6 +136,7 @@ async fn start_master(name: &str) -> Master {
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: NODE_CERT_TTL,
             quota: QuotaConfig::default(),
+            timing: dnscraft_cluster::TimingConfig::default(),
         },
         ca,
         store.clone(),
@@ -156,6 +157,15 @@ async fn start_master(name: &str) -> Master {
     }
 }
 
+/// On-disk identity locations for `node_id` under the master's test directory.
+fn node_paths(master: &Master, node_id: &str) -> TlsPaths {
+    TlsPaths {
+        ca_cert: master.dir.path().join(format!("{node_id}-ca.pem")),
+        node_cert: master.dir.path().join(format!("{node_id}.pem")),
+        node_key: master.dir.path().join(format!("{node_id}.key")),
+    }
+}
+
 /// Mints a token, enrolls `node_id` over the pinned bootstrap channel and
 /// persists the returned identity.
 async fn enroll_node(master: &Master, node_id: &str) -> NodeIdentity {
@@ -168,12 +178,9 @@ async fn enroll_node(master: &Master, node_id: &str) -> NodeIdentity {
     )
     .await
     .unwrap();
-    let paths = TlsPaths {
-        ca_cert: master.dir.path().join(format!("{node_id}-ca.pem")),
-        node_cert: master.dir.path().join(format!("{node_id}.pem")),
-        node_key: master.dir.path().join(format!("{node_id}.key")),
-    };
-    pending.persist(&response, &paths).unwrap()
+    pending
+        .persist(&response, &node_paths(master, node_id))
+        .unwrap()
 }
 
 /// reqwest HTTP/2 client trusting `ca_pem`, optionally presenting a client
@@ -371,4 +378,144 @@ async fn missing_unregistered_revoked_and_wrong_ca_are_rejected() {
     assert!(result.is_err(), "wrong-CA client certificate was accepted");
 
     master.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn renewal_is_due_after_two_thirds_of_the_lifetime() {
+    let master = start_master("renew-due").await;
+    let identity = enroll_node(&master, "node-a").await;
+    let issued = master.clock.now();
+    let day = Duration::from_secs(24 * 3600);
+
+    assert!(!identity.renewal_due(issued + 59 * day).unwrap());
+    assert!(identity.renewal_due(issued + 61 * day).unwrap());
+}
+
+#[tokio::test]
+async fn renewal_replaces_the_certificate_and_keeps_the_previous_one_until_revoked() {
+    let master = start_master("renew").await;
+    let identity = enroll_node(&master, "node-a").await;
+    let paths = node_paths(&master, "node-a");
+    let before = master
+        .store
+        .get_node("node-a")
+        .await
+        .unwrap()
+        .unwrap()
+        .fingerprint;
+
+    let client = ClusterClient::new(&master.url, &identity, master.clock.clone()).unwrap();
+    // A fresh certificate is not renewed.
+    assert!(
+        !client
+            .renew_if_due(&paths, master.clock.now())
+            .await
+            .unwrap()
+    );
+
+    // Two thirds of the lifetime later the renewal runs over the channel.
+    let later = master.clock.now() + NODE_CERT_TTL * 2 / 3;
+    assert!(client.renew_if_due(&paths, later).await.unwrap());
+
+    let after = master
+        .store
+        .get_node("node-a")
+        .await
+        .unwrap()
+        .unwrap()
+        .fingerprint;
+    assert_ne!(
+        before, after,
+        "the registry must hold the renewed certificate"
+    );
+
+    // The key is kept, and the client swapped to the renewed certificate.
+    let renewed = NodeIdentity::load(&paths).unwrap();
+    assert_eq!(
+        renewed.key().public_key_raw(),
+        identity.key().public_key_raw()
+    );
+    assert_eq!(client.node_id(), "node-a");
+    assert!(client.heartbeat(Some(1), 0).await.unwrap().ok);
+
+    // The previous certificate still connects: a renewal whose response was
+    // lost cannot lock the node out, and renewing again from it works.
+    let previous = ClusterClient::new(&master.url, &identity, master.clock.clone()).unwrap();
+    assert!(previous.heartbeat(None, 0).await.unwrap().ok);
+    let retry_later = later + NODE_CERT_TTL / 4;
+    assert!(previous.renew_if_due(&paths, retry_later).await.unwrap());
+    let retried = master
+        .store
+        .get_node("node-a")
+        .await
+        .unwrap()
+        .unwrap()
+        .fingerprint;
+    assert_ne!(after, retried);
+
+    // Revocation rejects every certificate the node has held.
+    master.store.revoke("node-a").await.unwrap();
+    let error = previous.heartbeat(None, 0).await.unwrap_err();
+    assert_eq!(error.code(), "cluster.node.revoked");
+    let error = client.heartbeat(None, 0).await.unwrap_err();
+    assert_eq!(error.code(), "cluster.node.revoked");
+}
+
+#[tokio::test]
+async fn renewal_csr_for_another_node_is_rejected_and_nothing_changes() {
+    let master = start_master("renew-csr").await;
+    let identity = enroll_node(&master, "node-a").await;
+    let before = master
+        .store
+        .get_node("node-a")
+        .await
+        .unwrap()
+        .unwrap()
+        .fingerprint;
+
+    // Authenticated as node-a, but the CSR names node-b.
+    let other = PendingNodeIdentity::generate("node-b").unwrap();
+    let body = serde_json::json!({ "protocol": PROTOCOL_VERSION, "csr_pem": other.csr_pem() });
+    let der = identity.key().serialize_der();
+    let raw = http_client(
+        master.server.ca_cert_pem(),
+        Some((identity.node_cert_pem(), &der)),
+    );
+    let response = raw
+        .post(format!("{}/cluster/v1/renew", master.url))
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    let (status, code) = error_code(response).await;
+    assert_eq!(status, 403);
+    assert_eq!(code, "cluster.transport.tls");
+
+    let after = master
+        .store
+        .get_node("node-a")
+        .await
+        .unwrap()
+        .unwrap()
+        .fingerprint;
+    assert_eq!(before, after);
+}
+
+#[tokio::test]
+async fn persisting_a_certificate_for_another_key_is_refused() {
+    let master = start_master("renew-key").await;
+    let identity = enroll_node(&master, "node-a").await;
+    let other = enroll_node(&master, "node-b").await;
+
+    let paths = node_paths(&master, "node-a");
+    let error = identity
+        .persist_renewed(other.node_cert_pem(), &paths)
+        .unwrap_err();
+    assert_eq!(error.code(), "cluster.transport.tls");
+    // The on-disk certificate is untouched.
+    assert_eq!(
+        NodeIdentity::load(&paths).unwrap().node_cert_pem(),
+        identity.node_cert_pem()
+    );
 }

@@ -304,6 +304,7 @@ async fn start_server(
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: NODE_CERT_TTL,
             quota,
+            timing: dnscraft_cluster::TimingConfig::default(),
         },
         ca,
         store.clone(),

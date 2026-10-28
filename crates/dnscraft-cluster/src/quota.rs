@@ -50,6 +50,7 @@ impl NodeBuckets {
         Self {
             relay: TokenBucket::full(now, relay_rate(limits)),
             log: TokenBucket::full(now, log_rate(limits)),
+            heartbeat: TokenBucket::full(now, HEARTBEAT_BURST),
         }
     }
 }
@@ -58,7 +59,20 @@ impl NodeBuckets {
 struct NodeBuckets {
     relay: TokenBucket,
     log: TokenBucket,
+    heartbeat: TokenBucket,
 }
+
+/// Heartbeats per second per node. Nodes send one per `heartbeat_interval`
+/// (5 s to 60 s), so this only stops a flood.
+// ponytail: fixed rate, not a `[cluster.quota]` key; add one if an operator needs it.
+const HEARTBEAT_RATE: f64 = 1.0;
+/// Heartbeats a node may send at once after a quiet period.
+const HEARTBEAT_BURST: f64 = 10.0;
+/// Unauthenticated enroll attempts per second, master-wide. Enrollment is
+/// rare (one per node) and each attempt needs a 256-bit one-time token.
+const ENROLL_RATE: f64 = 1.0;
+/// Enroll attempts allowed at once.
+const ENROLL_BURST: f64 = 10.0;
 
 fn relay_rate(limits: &QuotaConfig) -> f64 {
     f64::from(limits.max_relay_requests_per_second.max(1))
@@ -76,6 +90,7 @@ fn log_rate(limits: &QuotaConfig) -> f64 {
 pub(crate) struct QuotaLimiter {
     limits: QuotaConfig,
     nodes: Mutex<HashMap<String, NodeBuckets>>,
+    enroll: Mutex<TokenBucket>,
 }
 
 impl QuotaLimiter {
@@ -83,7 +98,31 @@ impl QuotaLimiter {
         Self {
             limits,
             nodes: Mutex::new(HashMap::new()),
+            enroll: Mutex::new(TokenBucket::full(SystemTime::UNIX_EPOCH, ENROLL_BURST)),
         }
+    }
+
+    /// Charges one heartbeat to `node_id`.
+    pub(crate) fn allow_heartbeat(&self, node_id: &str, now: SystemTime) -> bool {
+        let mut nodes = self
+            .nodes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let buckets = nodes
+            .entry(node_id.to_owned())
+            .or_insert_with(|| NodeBuckets::new(now, &self.limits));
+        buckets
+            .heartbeat
+            .try_consume(now, HEARTBEAT_RATE, HEARTBEAT_BURST, 1.0)
+    }
+
+    /// Charges one enroll attempt. Enrollment is unauthenticated, so the
+    /// bucket is shared by the whole listener rather than kept per node.
+    pub(crate) fn allow_enroll(&self, now: SystemTime) -> bool {
+        self.enroll
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .try_consume(now, ENROLL_RATE, ENROLL_BURST, 1.0)
     }
 
     /// The configured limits (queue cap, clock-skew threshold).

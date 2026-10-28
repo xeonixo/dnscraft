@@ -124,6 +124,30 @@ Join procedure:
    cluster CA, then switches to the cluster CA after enrollment; the self-signed
    bootstrap certificate of control-api must not be accepted silently.
 
+**Renewal (implemented).** A sub-node renews its node certificate over the
+established mTLS channel once two thirds of its lifetime have passed (the
+check runs on every heartbeat interval; the window is derived from the
+certificate's own validity, so no extra key is needed):
+
+1. The sub-node builds a CSR for its **current** key and `node_id` and posts
+   `RenewRequest { protocol, csr_pem }` to `POST /cluster/v1/renew`. The request
+   is authenticated by the presented certificate, not by a join token.
+2. The master re-checks the registration (revoked nodes are refused), requires
+   the CSR to name the authenticated `node_id`, signs a certificate with the
+   same profile as enrollment, and makes its fingerprint the node's current
+   one. The previous certificate stays accepted until it expires, so a renewal
+   whose response was lost cannot lock the node out; rustls still enforces the
+   expiry of every certificate.
+3. The sub-node writes the new certificate to its certificate path atomically
+   (temporary file and rename), checks that it carries its own key and
+   `node_id`, and rebuilds its mTLS client. Live streams keep running until
+   they reconnect.
+
+Decision: renewal **keeps the node key**. A new key would need a two-file
+swap that cannot be atomic on disk (a crash between the two renames leaves a
+mismatched pair). A compromised key is handled by revocation, as before.
+Owner may later ask for key rotation; the open option is a single-file bundle.
+
 `node_id` is a lowercase DNS label, 1–63 characters
 (`[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?`), unique in the cluster and distinct from
 reserved DNS labels and Client IDs (SPEC-tls.md § Multi-node). It is a node
@@ -136,7 +160,7 @@ identity, never an authorization subject.
 - HTTP/2 over the TLS connection. Downstream pushes are the response body of a
   long-lived `GET /cluster/v1/stream` (NDJSON records, one JSON object per line);
   upstream messages are ordinary `POST`s on the same connection (`/cluster/v1/logs`,
-  `/cluster/v1/writes`, `/cluster/v1/heartbeat`). No custom framing or webhook
+  `/cluster/v1/writes`, `/cluster/v1/heartbeat`, `/cluster/v1/renew`). No custom framing or webhook
   callbacks.
 - Cluster protocol version is negotiated in the first stream message; a version
   mismatch fails the session with `cluster.protocol.version` and the sub-node
@@ -213,8 +237,47 @@ still replicated so any node can adopt a view without a per-node diff.
 - A sub-node never accepts a direct config write locally, so a sub-node cannot
   fork configuration.
 
+### Apply timeout and degraded nodes
+
+- `[cluster.timing]` drives the transport: `heartbeat_interval` is the sub-node
+  maintenance tick (heartbeat, then certificate renewal when due);
+  `master_timeout` bounds each connect and the relay retry window;
+  `reconnect_backoff`/`reconnect_backoff_max` shape the reconnect and relay
+  retry loops. Offline-queue replay keeps its built-in backoff.
+- The master tracks, per node, when its oldest unacknowledged push was sent. A
+  node still unacknowledged after `config_apply_timeout` is **degraded**: its
+  heartbeat response carries `cluster.config.stale`, and the master status
+  reports the count as `cluster.degraded_nodes`. Pushes keep being retried; the
+  node is never sent a partial snapshot.
+
+### Durable relayed answers
+
+The master keeps the answer to each relayed write in `cluster.db`
+(`relay_responses`, keyed by the dedupe key) for 24 h, so a retry that spans a
+master restart returns the stored answer and is not applied twice. If storing
+the answer fails after the write was applied, the failure is logged and the
+answer is still returned; the retry window is then best-effort for that one
+write.
+
 ### TLS certificate distribution
 
+- **Open question (owner decision): per-node key exposure.** `CertPush` carries
+  the private key of the shared wildcard certificate to every connected node,
+  and a revoked node keeps the key it already holds. The cluster mTLS identity
+  is separate (node certificate and key on each node), so a `CertPush` never
+  affects a node's cluster membership. Options:
+  - **A. Keep the shared key, rotate on revoke.** On revoking a node the master
+    re-orders the wildcard certificate (new key) and pushes it to the remaining
+    nodes. No protocol change; costs one ACME order per revocation and leaves a
+    window until the rotation completes.
+  - **B. Per-node CSR relay (recommended).** Each sub-node generates its own
+    key and sends a CSR over mTLS; the master submits the CSR to the ACME order
+    and returns the chain. The key never leaves the node, and revocation removes
+    the node's own TLS credential. Costs one order per node and needs SPEC-tls
+    to accept an external CSR and a per-node certificate.
+  - **C. Sub-node orders its own certificate.** Rejected: it gives every node
+    DNS credentials and breaks "sub-nodes never order ACME certificates".
+  Until the owner decides, `push_cert` stays latent (no production caller).
 - Only the master obtains/renews ACME certificates (SPEC-tls.md). After a
   successful renewal the master pushes `CertPush { chain, private_key }` over
   the mTLS stream; the sub-node installs it through the `tls` module's hot-reload
@@ -423,9 +486,13 @@ logs are aggregated on the master only; sub-nodes keep a short local buffer
 
 ### Channel
 
-- Connection cap: the master accepts at most 128 concurrent cluster connections
+- Connection caps: the master accepts at most 128 concurrent cluster connections
   and allows 10 s for each mTLS handshake; excess connections wait in the kernel
-  backlog. There is no per-node connection cap and no heartbeat/enroll rate limit yet.
+  backlog. An authenticated node may hold at most 8 connections (its stream plus
+  short uploads); a ninth is dropped after the handshake. Heartbeats are limited
+  per node to 1 per second with a burst of 10. Enroll attempts are limited
+  listener-wide to 1 per second with a burst of 10 (enrollment is unauthenticated,
+  so it cannot be keyed by node). Refusals use `cluster.quota.exceeded` (429).
 - mTLS with a dedicated cluster CA; TLS 1.3, ring-only. The CA private key exists
   only on the master, mode `0600`, and is never in the config export, audit log,
   backups, or error messages.
@@ -543,7 +610,7 @@ control-api. Codes owned by other modules are forwarded unchanged (for example
 | `cluster.quota.exceeded` | A node exceeded one of its `[cluster.quota]` rate limits; `429` |
 | `cluster.role.invalid` | Role/config mismatch (e.g. sub-node without `master_url`) at startup; `500`/startup error |
 | `cluster.master_unavailable` | Sub-node cannot reach the master for an operation that cannot be buffered (runtime/token/admin write); `503` |
-| `cluster.master_conflict` | A second master or a node version ahead of the master is detected; connection refused |
+| `cluster.master_conflict` | A node reports an applied version the master never published (heartbeat warning). Master-wins still applies on its next `Hello`; the connection is not refused. A second master is not detectable in v1 (no master-to-master protocol) |
 | `cluster.node.unknown` | `node_id`/certificate fingerprint not registered on the master |
 | `cluster.node.revoked` | Revoked node identity; connection refused (`403` for API calls) |
 | `cluster.node.already_joined` | `node_id` is already registered |
@@ -552,7 +619,7 @@ control-api. Codes owned by other modules are forwarded unchanged (for example
 | `cluster.transport.tls` | mTLS handshake or certificate validation failure |
 | `cluster.protocol.version` | Unsupported cluster protocol version |
 | `cluster.config.apply` | Sub-node failed to apply a pushed snapshot; stays on the previous version |
-| `cluster.config.stale` | Sub-node's applied version is behind the master beyond the threshold (status warning) |
+| `cluster.config.stale` | A connected node has not acknowledged a pushed snapshot within `config_apply_timeout` (heartbeat warning; the master also counts it in `cluster.degraded_nodes`) |
 | `cluster.write_relay_failed` | Forwarded write transport failed before a master response (`params.outcome = "unknown"`); `503` |
 | `cluster.offline_write_requires_idempotency` | Offline buffering requested without `Idempotency-Key` or `If-Match`; `400` |
 | `cluster.offline_write_queue_full` | Offline queue cap reached; `503` |

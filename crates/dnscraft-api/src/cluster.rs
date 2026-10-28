@@ -40,7 +40,7 @@ use dnscraft_cluster::{
     ClusterBroadcast, ClusterCa, ClusterClient, ClusterConfig, ClusterError, ClusterServer,
     ClusterServerConfig, ClusterStore, ConfigApplier, ConfigSync, LogIngest, LogOutbox, LogRecord,
     LogStreamer, NodeIdentity, OfflineWriteQueue, PendingNodeIdentity, RelayResponse, RelayedActor,
-    Role, RuntimeCommandApplier, StreamRecord, WriteExecutor, WriteRelay,
+    Role, RuntimeCommandApplier, StreamRecord, TlsPaths, WriteExecutor, WriteRelay,
 };
 use dnscraft_common::clock::{Clock, add_duration, wait_until};
 use dnscraft_common::secret::Secret;
@@ -276,23 +276,44 @@ impl AuthSnapshotSource for StateAuthSnapshotSource {
 pub struct ConfigWriteExecutor {
     service: Arc<ConfigService>,
     clock: Arc<dyn Clock>,
-    // Keyed by `request_id` (and the optional `Idempotency-Key`). In-memory
-    // only: a master restart drops the cache, so a retry that spans the restart
-    // can apply twice. Persisting it is a separate follow-up.
+    /// Durable answers (`relay_responses`), so a retry that spans a master
+    /// restart returns the stored answer instead of applying again.
+    store: Option<ClusterStore>,
+    // In-memory fallback when no store is given (tests and standalone helpers).
     idempotency: Mutex<HashMap<String, (RelayResponse, SystemTime)>>,
 }
 
 impl ConfigWriteExecutor {
-    /// Wraps the master's config service.
+    /// Wraps the master's config service with an in-memory answer cache.
     pub fn new(service: Arc<ConfigService>, clock: Arc<dyn Clock>) -> Self {
         Self {
             service,
             clock,
+            store: None,
             idempotency: Mutex::new(HashMap::new()),
         }
     }
 
-    fn cached(&self, key: &str) -> Option<RelayResponse> {
+    /// Wraps the master's config service and keeps answers in `store`, so
+    /// they survive a master restart for [`IDEMPOTENCY_TTL`].
+    pub fn with_store(
+        service: Arc<ConfigService>,
+        clock: Arc<dyn Clock>,
+        store: ClusterStore,
+    ) -> Self {
+        Self {
+            store: Some(store),
+            ..Self::new(service, clock)
+        }
+    }
+
+    async fn cached(&self, key: &str) -> Result<Option<RelayResponse>, ClusterError> {
+        if let Some(store) = &self.store {
+            return Ok(store
+                .recall_relay_response(key, IDEMPOTENCY_TTL)
+                .await?
+                .map(|(status, body)| RelayResponse { status, body }));
+        }
         let now = self.clock.now();
         let mut cache = self
             .idempotency
@@ -302,10 +323,21 @@ impl ConfigWriteExecutor {
             now.duration_since(*at)
                 .map_or(true, |age| age < IDEMPOTENCY_TTL)
         });
-        cache.get(key).map(|(response, _)| response.clone())
+        Ok(cache.get(key).map(|(response, _)| response.clone()))
     }
 
-    fn remember(&self, key: &str, response: &RelayResponse) {
+    async fn remember(&self, key: &str, response: &RelayResponse) {
+        if let Some(store) = &self.store {
+            // The write has already been applied, so a storage failure here
+            // cannot change the answer; it is logged, not returned.
+            if let Err(error) = store
+                .remember_relay_response(key, response.status, &response.body, IDEMPOTENCY_TTL)
+                .await
+            {
+                tracing::warn!(error = %error, "relay answer not stored for idempotent retry");
+            }
+            return;
+        }
         self.idempotency
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -742,20 +774,20 @@ impl WriteExecutor for ConfigWriteExecutor {
         // `request_id` is always present and stable across retries (including
         // keyless ones), so it is the primary dedupe key; the optional
         // `Idempotency-Key` is kept for callers that reuse it across requests.
-        if let Some(response) = self.cached(request_id) {
+        if let Some(response) = self.cached(request_id).await? {
             return Ok(response);
         }
         if let Some(key) = idempotency_key.as_deref()
-            && let Some(response) = self.cached(key)
+            && let Some(response) = self.cached(key).await?
         {
             return Ok(response);
         }
         let response = self
             .run(node_id, actor, &method, &path, body, if_match.as_deref())
             .await;
-        self.remember(request_id, &response);
+        self.remember(request_id, &response).await;
         if let Some(key) = idempotency_key {
-            self.remember(&key, &response);
+            self.remember(&key, &response).await;
         }
         Ok(response)
     }
@@ -1148,9 +1180,10 @@ impl ClusterRuntime {
         )
         .await?;
 
-        let write_executor: Arc<dyn WriteExecutor> = Arc::new(ConfigWriteExecutor::new(
+        let write_executor: Arc<dyn WriteExecutor> = Arc::new(ConfigWriteExecutor::with_store(
             Arc::clone(&service),
             clock.clone(),
+            store.clone(),
         ));
         let log_ingest: Arc<dyn LogIngest> = match state.query_log_arc() {
             Some(log) => Arc::new(QueryLogIngest::new(log)),
@@ -1174,6 +1207,7 @@ impl ClusterRuntime {
                 }),
                 node_cert_ttl: config.join.node_cert_ttl,
                 quota: config.quota.clone(),
+                timing: config.timing.clone(),
             },
             ca,
             store.clone(),
@@ -1195,6 +1229,7 @@ impl ClusterRuntime {
             lag: 0,
             queue_depth: 0,
             last_sync: None,
+            degraded_nodes: 0,
         });
         if let (Some(version), Some(snapshot)) = (version, snapshot) {
             server.config_sync().publish(version, &snapshot)?;
@@ -1232,6 +1267,28 @@ impl ClusterRuntime {
                         }
                     }
                     _ = shutdown.changed() => return,
+                }
+            }
+        }));
+
+        // Report nodes that have not acknowledged a push within
+        // `config_apply_timeout` as degraded, refreshed every heartbeat interval.
+        let degraded_sync = server.config_sync_handle();
+        let degraded_status = Arc::clone(&self.status);
+        let degraded_clock = clock.clone();
+        let apply_timeout = config.timing.config_apply_timeout;
+        let interval = config.timing.heartbeat_interval;
+        let mut degraded_shutdown = self.shutdown.subscribe();
+        self.tasks.push(tokio::spawn(async move {
+            let wake = Notify::new();
+            loop {
+                let degraded = degraded_sync.degraded_nodes(apply_timeout).len();
+                let degraded = u32::try_from(degraded).unwrap_or(u32::MAX);
+                degraded_status.update(|status| status.degraded_nodes = degraded);
+                let deadline = add_duration(degraded_clock.now(), interval);
+                tokio::select! {
+                    () = wait_until(degraded_clock.as_ref(), deadline, &wake) => {}
+                    _ = degraded_shutdown.changed() => return,
                 }
             }
         }));
@@ -1291,7 +1348,12 @@ impl ClusterRuntime {
             Ok(identity) => identity,
             Err(_) => enroll_identity(config, options).await?,
         };
-        let client = Arc::new(ClusterClient::new(&master_url, &identity, clock.clone())?);
+        let client = Arc::new(ClusterClient::new_with_timing(
+            &master_url,
+            &identity,
+            clock.clone(),
+            config.timing.clone(),
+        )?);
 
         let applier = Arc::new(SyncedConfigApplier::new(
             Arc::clone(&service),
@@ -1326,6 +1388,7 @@ impl ClusterRuntime {
             lag: 0,
             queue_depth,
             last_sync: None,
+            degraded_nodes: 0,
         });
 
         let status = Arc::clone(&self.status);
@@ -1353,6 +1416,34 @@ impl ClusterRuntime {
                 clock.clone(),
             ))
         });
+        // Maintenance: heartbeats and certificate renewal, one pass per
+        // heartbeat interval. The renewal check reads the identity from disk.
+        let maintenance_client = Arc::clone(&client);
+        let maintenance_paths = config.tls.clone();
+        let maintenance_clock = clock.clone();
+        let maintenance_service = Arc::clone(&service);
+        let maintenance_queue = queue.clone();
+        let interval = config.timing.heartbeat_interval;
+        let mut maintenance_shutdown = self.shutdown.subscribe();
+        self.tasks.push(tokio::spawn(async move {
+            let wake = Notify::new();
+            loop {
+                maintenance_pass(
+                    &maintenance_client,
+                    &maintenance_paths,
+                    maintenance_clock.as_ref(),
+                    &maintenance_service,
+                    maintenance_queue.as_deref(),
+                )
+                .await;
+                let deadline = add_duration(maintenance_clock.now(), interval);
+                tokio::select! {
+                    () = wait_until(maintenance_clock.as_ref(), deadline, &wake) => {}
+                    _ = maintenance_shutdown.changed() => return,
+                }
+            }
+        }));
+
         let connection_streamer = log_streamer.clone();
         let connection_client = Arc::clone(&client);
         self.tasks.push(tokio::spawn(async move {
@@ -1431,6 +1522,44 @@ async fn enroll_identity(
     let pending = PendingNodeIdentity::generate(&config.node_id)?;
     let response = ClusterClient::enroll(master_url, &master_cert, pending.request(token)).await?;
     Ok(pending.persist(&response, &config.tls)?)
+}
+
+/// One sub-node maintenance pass: renews the certificate when two thirds of
+/// its lifetime have passed, then sends a heartbeat. Failures are logged and
+/// retried on the next pass; neither blocks DNS answering.
+async fn maintenance_pass(
+    client: &ClusterClient,
+    paths: &TlsPaths,
+    clock: &dyn Clock,
+    service: &ConfigService,
+    queue: Option<&OfflineWriteQueue>,
+) {
+    if let Err(error) = client.renew_if_due(paths, clock.now()).await {
+        tracing::warn!(error = %error, "cluster certificate renewal failed");
+    }
+    let applied_version = match service.current().await {
+        Ok((version, _)) => version,
+        Err(error) => {
+            tracing::debug!(error = %error, "cluster heartbeat skipped: no config state");
+            return;
+        }
+    };
+    let queue_depth = match queue {
+        Some(queue) => queue
+            .status()
+            .await
+            .map(|status| status.pending)
+            .unwrap_or(0),
+        None => 0,
+    };
+    match client.heartbeat(applied_version, queue_depth).await {
+        Ok(response) => {
+            for warning in response.warnings {
+                tracing::warn!(code = %warning.code, "cluster heartbeat warning");
+            }
+        }
+        Err(error) => tracing::debug!(error = %error, "cluster heartbeat failed"),
+    }
 }
 
 /// The sub-node reconnect/apply loop.

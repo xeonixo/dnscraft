@@ -7,11 +7,17 @@
 
 use std::fmt;
 use std::fs;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dnscraft_common::secret::Secret;
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_ECDSA_P256_SHA256};
+use rustls_pki_types::CertificateDer;
+use rustls_pki_types::pem::PemObject;
+use x509_parser::prelude::{FromDer, X509Certificate};
 
-use crate::ca::{io_error, prepare_parent, tighten_key_permissions, write_key_0600};
+use crate::ca::{
+    io_error, node_id_from_der, prepare_parent, tighten_key_permissions, write_key_0600,
+};
 use crate::config::{TlsPaths, validate_node_id};
 use crate::enroll::{EnrollRequest, EnrollResponse};
 use crate::error::ClusterError;
@@ -34,23 +40,7 @@ impl PendingNodeIdentity {
                 message: format!("node key generation: {error}"),
             }
         })?;
-        let mut params = CertificateParams::new(vec![node_id.to_owned()]).map_err(|error| {
-            ClusterError::Internal {
-                message: format!("node CSR params: {error}"),
-            }
-        })?;
-        // `CertificateParams::new` keeps rcgen's placeholder CN; replace it.
-        params.distinguished_name = DistinguishedName::new();
-        params.distinguished_name.push(DnType::CommonName, node_id);
-
-        let csr = params
-            .serialize_request(&key)
-            .map_err(|error| ClusterError::Internal {
-                message: format!("node CSR generation: {error}"),
-            })?;
-        let csr_pem = csr.pem().map_err(|error| ClusterError::Internal {
-            message: format!("node CSR encoding: {error}"),
-        })?;
+        let csr_pem = csr_pem_for(node_id, &key)?;
 
         Ok(Self {
             node_id: node_id.to_owned(),
@@ -95,6 +85,55 @@ impl PendingNodeIdentity {
             node_cert_pem: response.node_cert_pem.clone(),
             key: self.key,
         })
+    }
+}
+
+/// PEM CSR for `node_id` signed with `key`; `node_id` is both the Common Name
+/// and the single DNS SAN.
+fn csr_pem_for(node_id: &str, key: &KeyPair) -> Result<String, ClusterError> {
+    let mut params = CertificateParams::new(vec![node_id.to_owned()]).map_err(|error| {
+        ClusterError::Internal {
+            message: format!("node CSR params: {error}"),
+        }
+    })?;
+    // `CertificateParams::new` keeps rcgen's placeholder CN; replace it.
+    params.distinguished_name = DistinguishedName::new();
+    params.distinguished_name.push(DnType::CommonName, node_id);
+
+    let csr = params
+        .serialize_request(key)
+        .map_err(|error| ClusterError::Internal {
+            message: format!("node CSR generation: {error}"),
+        })?;
+    csr.pem().map_err(|error| ClusterError::Internal {
+        message: format!("node CSR encoding: {error}"),
+    })
+}
+
+/// Parses the validity window of a PEM certificate and its node identity.
+fn certificate_facts(cert_pem: &str) -> Result<(SystemTime, SystemTime, String), ClusterError> {
+    let der = CertificateDer::from_pem_slice(cert_pem.as_bytes()).map_err(|error| {
+        ClusterError::TransportTls {
+            message: format!("node certificate PEM: {error}"),
+        }
+    })?;
+    let (_, cert) =
+        X509Certificate::from_der(der.as_ref()).map_err(|error| ClusterError::TransportTls {
+            message: format!("node certificate DER: {error}"),
+        })?;
+    let validity = cert.validity();
+    let not_before = unix_to_system_time(validity.not_before.timestamp());
+    let not_after = unix_to_system_time(validity.not_after.timestamp());
+    let node_id = node_id_from_der(der.as_ref()).ok_or(ClusterError::TransportTls {
+        message: "node certificate has no node_id DNS SAN".to_owned(),
+    })?;
+    Ok((not_before, not_after, node_id))
+}
+
+fn unix_to_system_time(seconds: i64) -> SystemTime {
+    match u64::try_from(seconds) {
+        Ok(seconds) => UNIX_EPOCH + Duration::from_secs(seconds),
+        Err(_) => UNIX_EPOCH,
     }
 }
 
@@ -151,6 +190,67 @@ impl NodeIdentity {
     /// anywhere except the `0600` key file.
     pub fn key(&self) -> &KeyPair {
         &self.key
+    }
+}
+
+impl NodeIdentity {
+    /// Whether the node certificate has used two thirds of its lifetime at
+    /// `now`, so a renewal should start.
+    pub fn renewal_due(&self, now: SystemTime) -> Result<bool, ClusterError> {
+        let (not_before, not_after, _) = certificate_facts(&self.node_cert_pem)?;
+        let lifetime = not_after
+            .duration_since(not_before)
+            .unwrap_or(Duration::ZERO);
+        Ok(now >= not_before + lifetime * 2 / 3)
+    }
+
+    /// A CSR for the node's current key and identity. Renewal keeps the key:
+    /// only the certificate changes, so one file swap is atomic on disk.
+    pub fn renewal_csr_pem(&self) -> Result<String, ClusterError> {
+        let (_, _, node_id) = certificate_facts(&self.node_cert_pem)?;
+        csr_pem_for(&node_id, &self.key)
+    }
+
+    /// Replaces the node certificate with `node_cert_pem` on disk.
+    ///
+    /// The new certificate must carry this node's key and identity. The file is
+    /// written to a temporary sibling and renamed over the old one, so a crash
+    /// leaves either the old or the new certificate, never a partial file.
+    pub fn persist_renewed(
+        &self,
+        node_cert_pem: &str,
+        paths: &TlsPaths,
+    ) -> Result<(), ClusterError> {
+        let (_, _, node_id) = certificate_facts(node_cert_pem)?;
+        let der = CertificateDer::from_pem_slice(node_cert_pem.as_bytes()).map_err(|error| {
+            ClusterError::TransportTls {
+                message: format!("node certificate PEM: {error}"),
+            }
+        })?;
+        let (_, cert) = X509Certificate::from_der(der.as_ref()).map_err(|error| {
+            ClusterError::TransportTls {
+                message: format!("node certificate DER: {error}"),
+            }
+        })?;
+        if cert.public_key().subject_public_key.data.as_ref() != self.key.public_key_raw() {
+            return Err(ClusterError::TransportTls {
+                message: "renewed certificate does not match the node key".to_owned(),
+            });
+        }
+        if node_id != self.certified_node_id()? {
+            return Err(ClusterError::TransportTls {
+                message: "renewed certificate names another node".to_owned(),
+            });
+        }
+        let tmp = paths.node_cert.with_extension("pem.tmp");
+        fs::write(&tmp, node_cert_pem.as_bytes()).map_err(io_error)?;
+        fs::rename(&tmp, &paths.node_cert).map_err(io_error)
+    }
+
+    /// The `node_id` carried by this identity's certificate.
+    fn certified_node_id(&self) -> Result<String, ClusterError> {
+        let (_, _, node_id) = certificate_facts(&self.node_cert_pem)?;
+        Ok(node_id)
     }
 }
 
