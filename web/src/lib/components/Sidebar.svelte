@@ -3,6 +3,7 @@
 	import Icon from './Icon.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import {
+		isActivePath,
 		isVisible,
 		navFeedback,
 		navSections,
@@ -13,7 +14,7 @@
 	} from '$lib/nav';
 
 	interface Props {
-		/** Route path of the current screen; only that item gets aria-current. */
+		/** Route path of the current screen; only the item for that screen (or its sub-path) gets aria-current. */
 		currentPath: string;
 		role?: Role;
 		sections?: NavSection[];
@@ -37,7 +38,7 @@
 	<a
 		class="nav-item"
 		href={resolve(entry.path)}
-		aria-current={entry.path === currentPath ? 'page' : undefined}
+		aria-current={isActivePath(entry.path, currentPath) ? 'page' : undefined}
 		onclick={() => onnavigate?.()}
 	>
 		<span class="nav-icon"><Icon name={entry.icon} /></span>

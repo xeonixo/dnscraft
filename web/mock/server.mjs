@@ -11,7 +11,7 @@ import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildRecords, PROTOCOLS } from './fixtures.mjs';
+import { buildRecords, initialConfig, PROTOCOLS } from './fixtures.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BUILD_DIR = resolve(HERE, '..', 'build');
@@ -40,6 +40,27 @@ const CSV_COLUMNS = [
 	'dnssec',
 	'rcode',
 	'answer_size',
+];
+/** Top-level sections a config snapshot may hold (config_apply.rs TOP_LEVEL_KEYS). */
+const TOP_LEVEL_KEYS = [
+	'filtering',
+	'clients',
+	'policy',
+	'listeners',
+	'tls',
+	'resolver',
+	'control_api_settings',
+	'notifications',
+];
+/** Sections every replace must provide (config_apply.rs REQUIRED_SECTIONS). */
+const REQUIRED_SECTIONS = ['filtering', 'clients', 'policy', 'listeners', 'tls'];
+const MCP_RULE_KEYS = [
+	'id',
+	'domain',
+	'include_subdomains',
+	'created_at',
+	'expires_at',
+	'token_id',
 ];
 const CONTENT_TYPES = {
 	'.html': 'text/html; charset=utf-8',
@@ -327,6 +348,176 @@ function sendError(response, failure) {
 	});
 }
 
+/**
+ * The versioned configuration of one mock server. Versions are kept in order; the last one is current.
+ * Each server starts from the same snapshot, so tests never see state from another server.
+ */
+function createConfigStore() {
+	const start = Date.parse('2026-10-20T08:00:00Z') / 1000;
+	const versions = [];
+	for (let version = 1; version <= 12; version++) {
+		versions.push({ version, created_at: start + version * 6 * 3600, config: initialConfig() });
+	}
+	return { versions };
+}
+
+const currentOf = (store) => store.versions[store.versions.length - 1];
+
+function appendVersion(store, config) {
+	const version = currentOf(store).version + 1;
+	store.versions.push({ version, created_at: Math.floor(Date.now() / 1000), config });
+	return version;
+}
+
+const rfc3339 = (seconds) => new Date(seconds * 1000).toISOString().replace('.000Z', 'Z');
+const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+function configInvalid(reason) {
+	return new ApiFailure(400, 'control_api.config.invalid', { reason });
+}
+
+/** Parses a config body; malformed JSON is the config-invalid code, as in config_routes.rs. */
+async function readConfigBody(request) {
+	const text = await readText(request);
+	try {
+		return JSON.parse(text);
+	} catch {
+		throw configInvalid('malformed JSON body');
+	}
+}
+
+function readText(request) {
+	return new Promise((resolveText, reject) => {
+		const chunks = [];
+		request.on('data', (chunk) => chunks.push(chunk));
+		request.on('error', reject);
+		request.on('end', () => resolveText(Buffer.concat(chunks).toString('utf8')));
+	});
+}
+
+/**
+ * Compares If-Match with the current version (config_apply.rs check_if_match). Returns null when the
+ * precondition holds or is absent, otherwise a reason string.
+ */
+function ifMatchProblem(raw, current) {
+	if (raw === undefined) return null;
+	const value = raw.trim();
+	if (value === '*') return null;
+	const digits = value.replace(/^W\//, '').trim().replace(/^"|"$/g, '');
+	if (!/^\d+$/.test(digits)) return `invalid If-Match value \`${raw}\``;
+	return Number(digits) === current
+		? null
+		: `If-Match version ${digits} is not the current version`;
+}
+
+/**
+ * Applies the mcp_rules rule to a candidate: an omitted field carries the stored rules of the same
+ * filter set over, an explicit array replaces them, unknown fields are rejected (config_apply.rs).
+ */
+function mergeCandidate(body, stored) {
+	if (!isObject(body)) throw configInvalid('config body must be a JSON object');
+	for (const key of Object.keys(body)) {
+		if (!TOP_LEVEL_KEYS.includes(key)) throw configInvalid(`unknown field \`${key}\``);
+	}
+	const snapshot = structuredClone(body);
+	const storedSets = Array.isArray(stored?.filtering?.sets) ? stored.filtering.sets : [];
+	const sets = snapshot.filtering?.sets;
+	if (Array.isArray(sets)) {
+		for (const set of sets) {
+			if (!isObject(set)) continue;
+			if (!('mcp_rules' in set)) {
+				const prior = storedSets.find((candidate) => candidate.id === set.id);
+				set.mcp_rules = structuredClone(prior?.mcp_rules ?? []);
+			} else if (Array.isArray(set.mcp_rules)) {
+				for (const rule of set.mcp_rules) {
+					if (!isObject(rule)) throw configInvalid('each `mcp_rules` entry must be an object');
+					for (const key of Object.keys(rule)) {
+						if (!MCP_RULE_KEYS.includes(key)) {
+							throw configInvalid(`unknown field \`${key}\` in \`mcp_rules\``);
+						}
+					}
+				}
+			} else {
+				throw configInvalid('`mcp_rules` must be an array');
+			}
+		}
+	}
+	return snapshot;
+}
+
+/**
+ * Cross-module checks. Returns the first blocking error (as PUT reports it) and the warnings, which
+ * are only ever produced by the dry run.
+ */
+function checkCandidate(snapshot) {
+	for (const section of REQUIRED_SECTIONS) {
+		if (!(section in snapshot)) {
+			return {
+				error: {
+					code: 'control_api.config.invalid',
+					path: null,
+					params: { reason: `missing section \`${section}\`` },
+				},
+				warnings: [],
+			};
+		}
+	}
+	const sets = Array.isArray(snapshot.filtering.sets) ? snapshot.filtering.sets : [];
+	const setIds = new Set(sets.map((set) => set.id));
+	const profiles = Array.isArray(snapshot.policy.profiles) ? snapshot.policy.profiles : [];
+	let error = null;
+	profiles.forEach((profile, index) => {
+		if (error || setIds.has(profile.filter_set)) return;
+		const path = `policy.profiles[${index}].filter_set`;
+		error = {
+			code: 'policy.config.unknown_filter_set',
+			path,
+			params: { path, filter_set: profile.filter_set },
+		};
+	});
+	const warnings = [];
+	sets.forEach((set, index) => {
+		if (Array.isArray(set.lists) && set.lists.length === 0) {
+			const path = `filtering.sets[${index}].lists`;
+			warnings.push({ code: 'filtering.config.no_lists', path, params: { path } });
+		}
+	});
+	return { error, warnings };
+}
+
+/** Section and sub-key diff, the same shape and naming rules as config_apply.rs diff_snapshots. */
+function diffSnapshots(previous, next) {
+	const before = previous ?? {};
+	const after = next ?? {};
+	const changedSections = [];
+	const added = [];
+	const removed = [];
+	const changed = [];
+	for (const name of [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()) {
+		const a = before[name];
+		const b = after[name];
+		if (JSON.stringify(a) === JSON.stringify(b)) continue;
+		changedSections.push(name);
+		if (a === undefined) {
+			added.push(name);
+		} else if (b === undefined) {
+			removed.push(name);
+		} else if (isObject(a) && isObject(b)) {
+			for (const key of [...new Set([...Object.keys(a), ...Object.keys(b)])].sort()) {
+				const path = `${name}.${key}`;
+				if (a[key] === undefined && b[key] !== undefined) added.push(path);
+				else if (a[key] !== undefined && b[key] === undefined) removed.push(path);
+				else if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) changed.push(path);
+			}
+		} else {
+			changed.push(name);
+		}
+	}
+	return { changed_sections: changedSections, added, removed, changed };
+}
+
+const EMPTY_DIFF = { changed_sections: [], added: [], removed: [], changed: [] };
+
 const PUBLIC_ROUTES = new Set(['POST /api/v1/auth/local/login']);
 /** Writes a viewer may send: the sign-out, and the dry-run reads that are POSTs by path. */
 const VIEWER_POSTS = new Set([
@@ -351,6 +542,14 @@ async function route(request, response, options) {
 		if (options.role !== 'admin' && !VIEWER_POSTS.has(key)) {
 			throw new ApiFailure(403, 'control_api.auth.insufficient_scope', { required: 'admin' });
 		}
+	}
+
+	// Configuration family: admin only for reads and writes (roles.rs is_config_path).
+	if (
+		(path === '/api/v1/config' || path.startsWith('/api/v1/config/')) &&
+		options.role !== 'admin'
+	) {
+		throw new ApiFailure(403, 'control_api.auth.insufficient_scope', { required: 'admin' });
 	}
 
 	const principal = { role: options.role, actor_id: 'mock-admin', actor_type: 'user' };
@@ -504,6 +703,66 @@ async function route(request, response, options) {
 				filter_set_id: body.filter_set_id ?? 'default',
 			});
 		}
+		case 'GET /api/v1/config': {
+			const current = currentOf(options.store);
+			return sendData(response, { version: current.version, config: current.config });
+		}
+		case 'PUT /api/v1/config': {
+			const body = await readConfigBody(request);
+			const current = currentOf(options.store);
+			if (ifMatchProblem(request.headers['if-match'], current.version)) {
+				throw new ApiFailure(409, 'control_api.config.version');
+			}
+			const snapshot = mergeCandidate(body, current.config);
+			const { error } = checkCandidate(snapshot);
+			if (error) throw new ApiFailure(400, error.code, error.params ?? {});
+			return sendData(response, { version: appendVersion(options.store, snapshot) });
+		}
+		case 'POST /api/v1/config/validate': {
+			// A dry run: nothing is stored, applied or audited, and the version does not move.
+			const body = await readConfigBody(request);
+			const current = currentOf(options.store);
+			const errors = [];
+			if (ifMatchProblem(request.headers['if-match'], current.version)) {
+				errors.push({ code: 'control_api.config.version', path: null, params: null });
+			}
+			let diff = EMPTY_DIFF;
+			let warnings = [];
+			try {
+				const snapshot = mergeCandidate(body, current.config);
+				const checked = checkCandidate(snapshot);
+				if (checked.error) errors.push(checked.error);
+				warnings = checked.warnings;
+				diff = diffSnapshots(current.config, snapshot);
+			} catch (failure) {
+				if (!(failure instanceof ApiFailure)) throw failure;
+				errors.push({ code: failure.code, path: null, params: failure.params });
+			}
+			return sendData(response, {
+				valid: errors.length === 0,
+				config_version: current.version,
+				errors: errors.map((entry) => ({
+					...entry,
+					path: entry.path ?? entry.params?.path ?? null,
+				})),
+				warnings,
+				diff,
+			});
+		}
+		case 'GET /api/v1/config/versions': {
+			const limit = parseCount('limit', url.searchParams.get('limit') ?? '50', 1);
+			const offset = parseCount('offset', url.searchParams.get('offset') ?? '0', 0);
+			const rows = [...options.store.versions].reverse();
+			const hasMore = rows.length > offset + limit;
+			return sendData(response, {
+				current_version: currentOf(options.store).version,
+				versions: rows
+					.slice(offset, offset + limit)
+					.map(({ version, created_at }) => ({ version, created_at: rfc3339(created_at) })),
+				has_more: hasMore,
+				next_offset: hasMore ? offset + limit : null,
+			});
+		}
 		case 'GET /api/v1/query-log':
 			return sendData(response, listPage(url.searchParams));
 		case 'GET /api/v1/query-log/export.ndjson': {
@@ -524,6 +783,19 @@ async function route(request, response, options) {
 		}
 		default:
 			break;
+	}
+
+	const rollback = /^\/api\/v1\/config\/versions\/([^/]+)\/rollback$/.exec(path);
+	if (request.method === 'POST' && rollback) {
+		const current = currentOf(options.store);
+		if (ifMatchProblem(request.headers['if-match'], current.version)) {
+			throw new ApiFailure(409, 'control_api.config.version');
+		}
+		const target = /^\d+$/.test(rollback[1]) ? Number(rollback[1]) : 0;
+		const found = options.store.versions.find((entry) => entry.version === target);
+		if (!found) throw new ApiFailure(404, 'control_api.config.unknown_version');
+		const version = appendVersion(options.store, structuredClone(found.config));
+		return sendData(response, { version, restored_from: target });
 	}
 
 	const detail = /^\/api\/v1\/query-log\/([^/]+)$/.exec(path);
@@ -563,10 +835,11 @@ async function serveStatic(request, response, buildDir) {
 /** Creates the mock HTTP server. Nothing listens until `listen` is called. */
 export function createMockServer({ buildDir = DEFAULT_BUILD_DIR, role = 'admin' } = {}) {
 	const root = resolve(buildDir);
+	const store = createConfigStore();
 	return createServer(async (request, response) => {
 		try {
 			if (request.url.startsWith('/api/') || request.url.startsWith('/readyz')) {
-				await route(request, response, { role });
+				await route(request, response, { role, store });
 			} else {
 				await serveStatic(request, response, root);
 			}

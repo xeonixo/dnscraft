@@ -15,3 +15,6 @@ deploy/*.local.toml
 /.claude/worktrees/
 .aider*
 .DS_Store
+
+# Local pnpm store leftover from agent installs
+.pnpm-store/

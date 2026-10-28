@@ -80,6 +80,14 @@ export const navSections: NavSection[] = [
 /** Einstellungen is one item set apart below the sections (tabs live on the screen). */
 export const navSettings = item('/settings', () => m.nav_settings(), 'settings');
 
+/** Tabs of the Einstellungen screen group, in tab-bar order. Each tab is its own route. */
+export const settingsTabs: { path: StaticRouteId; label: () => string }[] = [
+	{ path: '/settings', label: () => m.settings_tab_general() },
+	{ path: '/settings/config', label: () => m.settings_tab_configuration() },
+	{ path: '/settings/mcp', label: () => m.settings_tab_mcp() },
+	{ path: '/settings/api', label: () => m.settings_tab_api_explorer() },
+];
+
 /** Hilfe & Feedback is a link in the sidebar foot, not a section item. */
 export const navFeedback = item('/feedback', () => m.nav_help_feedback(), 'message-square');
 
@@ -96,6 +104,14 @@ export function navItemForPath(pathname: string): NavItem | undefined {
 		// Detail routes (for example /query-log/:id) belong to the section they open from.
 		routed.find((entry) => pathname.startsWith(`${entry.path}/`))
 	);
+}
+
+/**
+ * Whether a nav entry is the current screen: its own path, or a sub-path of it. Einstellungen
+ * tabs (/settings/config) and detail routes (/query-log/:id) keep their nav item active.
+ */
+export function isActivePath(entryPath: string, currentPath: string): boolean {
+	return entryPath === currentPath || currentPath.startsWith(`${entryPath}/`);
 }
 
 export function isVisible(entry: NavItem, role: Role): boolean {

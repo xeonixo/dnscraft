@@ -25,6 +25,12 @@ describe('Sidebar', () => {
 		expect(current[0]).toHaveAttribute('href', '/dashboard');
 	});
 
+	it('keeps the Einstellungen item active on every tab of the screen group', () => {
+		const { container } = render(Sidebar, { props: { currentPath: '/settings/config' } });
+		expect(container.querySelector('.nav-settings a')).toHaveAttribute('aria-current', 'page');
+		expect(container.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+	});
+
 	it('renders the Einstellungen item and the Hilfe link outside the sections', () => {
 		const { container } = render(Sidebar, { props: { currentPath: '/settings' } });
 		expect(container.querySelector('.nav-settings a')).toHaveAttribute('href', '/settings');

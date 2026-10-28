@@ -195,3 +195,92 @@ export function buildRecords() {
 	}
 	return records;
 }
+
+/**
+ * A complete configuration snapshot as `GET /api/v1/config` returns it (secrets are never part of it).
+ * The shape is the one config_apply.rs stores; the mock does not validate every module field.
+ * The MCP rule domain is hostile on purpose: the UI must show it as inert text.
+ */
+export function initialConfig() {
+	return {
+		filtering: {
+			sets: [
+				{
+					id: 'default',
+					name: 'Standard',
+					lists: ['ads-main', 'trackers-main'],
+					custom_rules: [],
+					services: [],
+					block_mode: 'refused',
+					mcp_rules: [
+						{
+							id: 'mcp-rule-0001',
+							domain: 'example.com',
+							include_subdomains: true,
+							created_at: '2026-10-26T08:00:00Z',
+							expires_at: null,
+							token_id: null,
+						},
+						{
+							id: 'mcp-rule-0002',
+							domain: '<img src=x onerror=alert(1)>.example.test',
+							include_subdomains: false,
+							created_at: '2026-10-26T09:30:00Z',
+							expires_at: '2026-11-26T09:30:00Z',
+							token_id: 'tok-0001',
+						},
+					],
+				},
+				{
+					id: 'kids',
+					name: 'Kinder',
+					lists: ['ads-main'],
+					custom_rules: [],
+					services: ['social-video'],
+					block_mode: 'nxdomain',
+					mcp_rules: [],
+				},
+			],
+		},
+		clients: { manual: [] },
+		policy: {
+			views: [
+				{
+					id: 'lan',
+					is_default: true,
+					subnets: ['192.0.2.0/24'],
+					nodes: [],
+					profile: 'default',
+				},
+			],
+			profiles: [
+				{
+					id: 'default',
+					filter_set: 'default',
+					suppress_aaaa: false,
+					firefox_canary: false,
+					icloud_private_relay: false,
+					rebind: null,
+					rebind_exceptions: [],
+					forward_zones: null,
+					safesearch: null,
+					schedules: [],
+				},
+				{
+					id: 'kids',
+					filter_set: 'kids',
+					suppress_aaaa: true,
+					firefox_canary: false,
+					icloud_private_relay: false,
+					rebind: null,
+					rebind_exceptions: [],
+					forward_zones: null,
+					safesearch: 'strict',
+					schedules: [],
+				},
+			],
+		},
+		listeners: { items: [] },
+		tls: { mode: 'self_signed' },
+	};
+}
