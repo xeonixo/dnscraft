@@ -306,7 +306,16 @@ async fn wrong_endpoint_family_is_rejected_with_invalid_scope() {
     let store = tokens(&db);
     let auth = auth_state(&db);
     let sessions = auth.sessions().clone();
-    let router = rbac_router(AppState::new().with_auth(auth), sessions);
+    // The family check only runs when the MCP endpoint is enabled; a disabled
+    // endpoint is a 404 (GM10).
+    let mcp = dnscraft_mcp::McpConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    let router = rbac_router(
+        AppState::new().with_auth(auth).with_mcp_config(mcp),
+        sessions,
+    );
 
     let viewer = store
         .create("v".into(), "viewer".into(), Scope::Viewer, None)

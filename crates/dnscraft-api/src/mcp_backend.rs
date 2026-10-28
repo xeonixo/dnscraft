@@ -397,6 +397,20 @@ fn parse_time(raw: Option<&str>, field: &str) -> Result<Option<i64>, BackendErro
         })
 }
 
+/// Maps a query-log read failure: a read failure keeps its stable
+/// `control_api.query_log.read` code, anything else is internal.
+fn query_log_error(err: ControlApiError) -> BackendError {
+    match err {
+        ControlApiError::QueryLogRead { .. } => BackendError::Coded {
+            code: err.code().to_owned(),
+            params: None,
+        },
+        other => BackendError::Internal {
+            message: other.code().to_owned(),
+        },
+    }
+}
+
 fn query_order_by(raw: &str) -> OrderBy {
     match raw {
         "client" => OrderBy::Client,
@@ -478,11 +492,45 @@ fn rdata_str(rdata: &dnscraft_proto::RData) -> String {
         } => {
             format!("{preference} {exchange}")
         }
-        dnscraft_proto::RData::TXT(_) => "<TXT>".to_owned(),
-        dnscraft_proto::RData::SOA { .. } => "<SOA>".to_owned(),
-        dnscraft_proto::RData::SRV { .. } => "<SRV>".to_owned(),
+        dnscraft_proto::RData::TXT(strings) => strings
+            .iter()
+            .map(|string| format!("\"{}\"", txt_escape(string)))
+            .collect::<Vec<_>>()
+            .join(" "),
+        dnscraft_proto::RData::SOA {
+            mname,
+            rname,
+            serial,
+            refresh,
+            retry,
+            expire,
+            minimum,
+        } => format!("{mname} {rname} {serial} {refresh} {retry} {expire} {minimum}"),
+        dnscraft_proto::RData::SRV {
+            priority,
+            weight,
+            port,
+            target,
+        } => format!("{priority} {weight} {port} {target}"),
         _ => "<rdata>".to_owned(),
     }
+}
+
+/// Escapes one TXT character-string in zone-file presentation form: quote and
+/// backslash are backslash-escaped, non-printable bytes become `\DDD`.
+fn txt_escape(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &byte in bytes {
+        match byte {
+            b'"' | b'\\' => {
+                out.push('\\');
+                out.push(char::from(byte));
+            }
+            0x20..=0x7e => out.push(char::from(byte)),
+            other => out.push_str(&format!("\\{other:03}")),
+        }
+    }
+    out
 }
 
 fn selection_cause_json(cause: &dnscraft_policy::SelectionCause) -> Selection {
@@ -688,8 +736,8 @@ pub(crate) fn canonical_block_rule(
         .map_err(|_| mcp_error("filter_name.invalid_char", json!({ "domain": spec.domain })))?;
     if domain.label_count() < 2 {
         return Err(mcp_error(
-            "mcp.invalid_input",
-            json!({ "reason": "a block rule needs a domain with at least two labels" }),
+            "mcp.domain_too_broad",
+            json!({ "domain": domain.as_str() }),
         ));
     }
     let rule_text = build_rule(&spec).map_err(build_error)?;
@@ -926,7 +974,11 @@ pub(crate) fn explain(
                 rule_text: reason.rule.to_string(),
                 source: reason_source_str(&reason.source),
                 important: reason.important,
-                block_mode: String::new(),
+                block_mode: filter
+                    .snapshot()
+                    .block_mode(&set)
+                    .map(|mode| block_mode_str(&mode))
+                    .unwrap_or_default(),
             }),
         ),
         Verdict::Rewrite(_, _) => ("allowed".to_owned(), None),
@@ -978,12 +1030,19 @@ pub(crate) fn list_mcp_rules(
             result.next_offset = next_offset;
         }
         "pauses" => {
-            if let Some(until) = filter.paused_until(&set) {
-                result.pauses = vec![PauseInfo {
+            let all: Vec<_> = filter
+                .paused_until(&set)
+                .filter(|until| *until > now)
+                .map(|until| PauseInfo {
                     filter_set_id: set_str.clone(),
                     paused_until: rfc3339(until),
-                }];
-            }
+                })
+                .into_iter()
+                .collect();
+            let (page, has_more, next_offset) = paginate(all, params.limit, params.offset);
+            result.pauses = page;
+            result.has_more = has_more;
+            result.next_offset = next_offset;
         }
         "rules" => {
             let stored = snapshot.and_then(|snapshot| {
@@ -1137,7 +1196,10 @@ pub(crate) async fn run_test_query(
     let verdict = record.filter.as_ref().map_or("allowed", |_| "blocked");
     let filter_dto = record.filter.as_ref().map(|f| TestQueryFilter {
         rule_text: f.reason.rule.to_string(),
-        list_id: None,
+        list_id: match &f.reason.source {
+            dnscraft_filtering::RuleSource::List { list, .. } => Some(list.to_string()),
+            _ => None,
+        },
         block_mode: f
             .block_mode
             .as_ref()
@@ -1247,12 +1309,7 @@ impl McpBackend for ControlMcpBackend {
             limit: params.limit,
             offset: u64::from(params.offset),
         };
-        let page = log
-            .list(&filter)
-            .await
-            .map_err(|e| BackendError::Internal {
-                message: format!("query-log list: {}", e.code()),
-            })?;
+        let page = log.list(&filter).await.map_err(query_log_error)?;
         Ok(QueryLogResult {
             queries: page.records.iter().map(query_entry).collect(),
             has_more: page.has_more,
@@ -1268,9 +1325,7 @@ impl McpBackend for ControlMcpBackend {
             .ok_or(BackendError::Internal {
                 message: "query log not configured".into(),
             })?;
-        let row = log.get(id).await.map_err(|e| BackendError::Internal {
-            message: format!("query-log get: {}", e.code()),
-        })?;
+        let row = log.get(id).await.map_err(query_log_error)?;
         let row = row.ok_or(BackendError::NotFound {
             what: format!("query {id}"),
         })?;
@@ -1431,11 +1486,35 @@ impl McpBackend for ControlMcpBackend {
                 let status = p.status();
                 TlsStatus {
                     mode: status.mode.as_str().to_owned(),
-                    cert_expiry: String::new(),
+                    cert_expiry: status.not_after.map(rfc3339).unwrap_or_default(),
                     fingerprint: status.fingerprint,
                 }
             })
             .unwrap_or_default();
+        // Filter-list counters come from the engine's per-list status. The
+        // rule count is the parsed list rules only (custom and MCP-created
+        // rules are not included).
+        let filtering = match self.inner.filter.as_ref() {
+            Some(filter) => {
+                let lists = filter.list_status();
+                let loaded: Vec<_> = lists.iter().filter(|l| l.last_success.is_some()).collect();
+                FilteringStatus {
+                    lists_loaded: loaded.len() as u64,
+                    rules_active: loaded.iter().map(|l| l.rules_parsed).sum(),
+                    last_update: loaded
+                        .iter()
+                        .filter_map(|l| l.last_success)
+                        .max()
+                        .map(rfc3339)
+                        .unwrap_or_default(),
+                }
+            }
+            None => FilteringStatus {
+                lists_loaded: 0,
+                rules_active: 0,
+                last_update: String::new(),
+            },
+        };
         Ok(NodeStatus {
             node_id: self.inner.node_id.clone(),
             version: self.inner.version.clone(),
@@ -1446,11 +1525,7 @@ impl McpBackend for ControlMcpBackend {
             },
             listeners: vec![],
             tls,
-            filtering: FilteringStatus {
-                lists_loaded: 0,
-                rules_active: 0,
-                last_update: String::new(),
-            },
+            filtering,
         })
     }
 
@@ -2045,4 +2120,53 @@ fn json_opt_filter(opt: Option<&Value>) -> Option<dnscraft_mcp::dto::DecisionFil
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// GM14: TXT strings are quoted and escaped; SOA and SRV show every field.
+    #[test]
+    fn test_query_answers_render_txt_soa_and_srv() {
+        let txt = dnscraft_proto::RData::TXT(vec![
+            b"v=spf1 \"x\"".to_vec().into_boxed_slice(),
+            b"a\\b\x01".to_vec().into_boxed_slice(),
+        ]);
+        assert_eq!(rdata_str(&txt), r#""v=spf1 \"x\"" "a\\b\001""#);
+        let srv = dnscraft_proto::RData::SRV {
+            priority: 10,
+            weight: 5,
+            port: 443,
+            target: dnscraft_proto::Name::from_ascii("svc.example.com").unwrap(),
+        };
+        assert_eq!(rdata_str(&srv), "10 5 443 svc.example.com.");
+        let soa = dnscraft_proto::RData::SOA {
+            mname: dnscraft_proto::Name::from_ascii("ns.example.com").unwrap(),
+            rname: dnscraft_proto::Name::from_ascii("admin.example.com").unwrap(),
+            serial: 7,
+            refresh: 1,
+            retry: 2,
+            expire: 3,
+            minimum: 4,
+        };
+        assert_eq!(
+            rdata_str(&soa),
+            "ns.example.com. admin.example.com. 7 1 2 3 4"
+        );
+    }
+
+    /// GM12: a query-log read failure keeps its stable code.
+    #[test]
+    fn query_log_read_failures_keep_their_code() {
+        let err = query_log_error(ControlApiError::QueryLogRead {
+            message: "disk".into(),
+        });
+        assert_eq!(err.code(), "control_api.query_log.read");
+        let other = query_log_error(ControlApiError::Internal {
+            message: "x".into(),
+        });
+        assert_eq!(other.code(), "control_api.internal");
+    }
 }

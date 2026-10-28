@@ -181,7 +181,7 @@ async fn custom_rules_add_remove_versions_and_audit() {
         .expect("add audit entry");
     assert_eq!(add.config_version, Some(added_version));
     assert_eq!(add.result, "ok");
-    assert!(add.after.is_some() && add.before.is_some());
+    assert!(add.after.is_some(), "the add audit carries the rule");
     assert_eq!(
         audits
             .iter()
@@ -239,7 +239,7 @@ async fn custom_rules_reject_invalid_domains_and_expiries() {
     for (domain, code) in [
         ("*.example.com", "filter_build.pattern_not_allowed"),
         ("192.0.2.1", "filter_build.pattern_not_allowed"),
-        ("localhost", "mcp.invalid_input"),
+        ("localhost", "mcp.domain_too_broad"),
         ("bad domain.example.com", "filter_build.invalid_domain"),
     ] {
         let (status, response) = send(

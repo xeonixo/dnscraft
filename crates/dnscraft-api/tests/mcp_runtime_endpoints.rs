@@ -117,6 +117,7 @@ struct Harness {
     db: Db,
     admin: String,
     filter: Arc<FilterEngine>,
+    clock: Arc<ManualClock>,
     _temp: TempDir,
 }
 
@@ -160,6 +161,7 @@ async fn harness_with(mcp: McpConfig, snapshot: Value, issuer: Option<&str>) -> 
         db,
         admin: admin.plaintext().expose().to_owned(),
         filter,
+        clock,
         _temp: temp,
     }
 }
@@ -720,4 +722,97 @@ async fn cluster_runtime_commands_reach_the_filter_engine() {
     // Volatile: no config version and no audit entry.
     assert_eq!(h.service.current().await.unwrap().0, version_before);
     assert_eq!(h.db.audit_list(20, 0).await.unwrap().len(), audits_before);
+}
+
+/// GM7: `kind=pauses` lists only an active pause.
+#[tokio::test]
+async fn list_mcp_pauses_omit_an_expired_pause() {
+    let h = harness().await;
+    h.filter
+        .set_paused_until(&default_set(), Some(at(NOW + 300)))
+        .unwrap();
+    let uri = "/api/v1/filtering/mcp-rules?kind=pauses";
+    let (status, response) = send(&h.state, &h.admin, "GET", uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["data"]["pauses"].as_array().map(Vec::len), Some(1));
+
+    h.clock.advance(Duration::from_secs(301));
+    let (status, response) = send(&h.state, &h.admin, "GET", uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["data"]["pauses"].as_array().map(Vec::len), Some(0));
+}
+
+/// GM5: a blocked explanation names the block mode of the set.
+#[tokio::test]
+async fn explain_block_reports_the_block_mode() {
+    let h = harness().await;
+    let (status, response) = send(
+        &h.state,
+        &h.admin,
+        "POST",
+        "/api/v1/filtering/explain-block",
+        Some(json!({ "domain": "ads.example.com", "qtype": "A" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["data"]["verdict"], "blocked", "{response}");
+    let mode = response["data"]["reason"]["block_mode"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        ["refused", "nxdomain", "null_ip", "custom_ip"].contains(&mode),
+        "block_mode must name the set's mode: {response}"
+    );
+}
+
+/// GM15: the temporary-allow reason reaches the audit row, sanitized.
+#[tokio::test]
+async fn temporary_allow_keeps_its_reason_in_the_audit() {
+    let h = harness().await;
+    let (status, response) = send(
+        &h.state,
+        &h.admin,
+        "POST",
+        "/api/v1/filtering/temporary-allows",
+        Some(json!({
+            "domain": "example.org",
+            "include_subdomains": true,
+            "duration": "PT5M",
+            "reason": "ticket\n42"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let audits = h.db.audit_list(20, 0).await.unwrap();
+    let allow = audits
+        .iter()
+        .find(|record| record.action == "mcp.allow_temporarily")
+        .expect("allow audit entry");
+    let after: Value = serde_json::from_str(allow.after.as_deref().unwrap()).unwrap();
+    let reason = after["reason"].as_str().unwrap();
+    assert_eq!(reason, "ticket\u{FFFD}42");
+}
+
+/// GM10: with MCP disabled, `/mcp/v1` is a plain 404 even without credentials.
+#[tokio::test]
+async fn disabled_mcp_endpoint_is_not_found_before_authentication() {
+    let h = harness().await;
+    let request = Request::builder()
+        .method("POST")
+        .uri("/mcp/v1")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let router = h
+        .state
+        .clone()
+        .router()
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
+    let res = router.oneshot(request).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"]["code"], "control_api.not_found", "{body}");
 }

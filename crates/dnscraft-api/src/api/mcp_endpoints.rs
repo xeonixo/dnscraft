@@ -24,6 +24,7 @@ use crate::api::auth::Authenticated;
 use crate::api::config_routes::{actor, json_body, service, stored_snapshot};
 use crate::api::pagination::Pagination;
 use crate::api::response::success;
+use crate::config_apply::MutationAudit;
 use crate::error::ControlApiError;
 use crate::mcp_backend::{
     self, add_rule_to_snapshot, canonical_allow_domain, canonical_block_rule, duration_error,
@@ -35,8 +36,8 @@ use crate::server::AppState;
 use dnscraft_common::clock::unix_seconds;
 
 use dnscraft_filtering::{DomainName, TempAllow};
-use dnscraft_mcp::ProtectedDomains;
 use dnscraft_mcp::dto::{ListRulesParams, PauseDuration, QType, TestQueryParams};
+use dnscraft_mcp::{CAP_REASON, ProtectedDomains, sanitize};
 
 /// `POST /api/v1/filtering/explain-block`.
 #[derive(Deserialize)]
@@ -294,10 +295,12 @@ pub(crate) async fn allow_temporarily(
         until,
         created_at: now,
     };
+    let reason = sanitize(body.reason.as_deref().unwrap_or(""), CAP_REASON);
     let after = json!({
         "domain": domain.as_str(),
         "include_subdomains": body.include_subdomains,
         "duration": body.duration.as_str(),
+        "reason": reason,
         "created_at": rfc3339(now),
         "expires_at": rfc3339(until),
         "filter_set_id": set.as_str(),
@@ -327,7 +330,6 @@ pub(crate) async fn allow_temporarily(
             "expires_at": rfc3339(until),
         }),
     );
-    let _ = body.reason;
 
     Ok(success(json!({
         "domain": domain.as_str(),
@@ -489,28 +491,44 @@ pub(crate) async fn add_custom_rule(
     let cap = state.mcp_config().max_custom_rules_per_set as usize;
     let actor_id = actor.actor_id.clone();
     let include = body.include_subdomains;
+    let reason = sanitize(body.reason.as_deref().unwrap_or(""), CAP_REASON);
+    let audit_after = json!({
+        "domain": domain.as_str(),
+        "include_subdomains": include,
+        "filter_set_id": set_str,
+        "reason": reason,
+        "rule_text": rule_text,
+        "rule_id": rule_id,
+        "created_at": rfc3339(now),
+        "expires_at": rfc3339(expires_at),
+        "config_version": Value::Null,
+    });
+    let set_for_mutation = set.clone();
+    let domain_for_mutation = domain.clone();
+    let rule_id_for_mutation = rule_id.clone();
     let version = service
-        .mutate(&actor, "mcp.add_rule", |snapshot| {
+        .mutate_audited(&actor, "mcp.add_rule", None, move |snapshot| {
             add_rule_to_snapshot(
                 snapshot,
-                &set,
-                &domain,
+                &set_for_mutation,
+                &domain_for_mutation,
                 include,
-                &rule_id,
+                &rule_id_for_mutation,
                 created_secs,
                 expires_secs,
                 &actor_id,
                 cap,
                 now,
             )?;
-            Ok(true)
+            Ok(Some(MutationAudit {
+                before: None,
+                after: audit_after,
+            }))
         })
         .await?
         .ok_or_else(|| ControlApiError::Internal {
             message: "custom-rule mutation made no change".to_owned(),
         })?;
-
-    let _ = body.reason;
     Ok(success(json!({
         "rule_text": rule_text,
         "domain": domain.as_str(),

@@ -168,7 +168,6 @@ pub fn snapshot(public_domain: Option<&str>, custom_rules: &str) -> Value {
                 "custom_rules": custom_rules,
                 "services": [],
                 "block_mode": "refused",
-                "paused_until": null,
                 "mcp_rules": []
             }]
         },

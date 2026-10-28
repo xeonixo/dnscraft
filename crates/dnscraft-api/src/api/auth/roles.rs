@@ -281,6 +281,14 @@ pub async fn rbac_middleware(
     if requirement == Requirement::Public {
         return next.run(req).await;
     }
+    // A disabled MCP endpoint does not exist: answer exactly like the router
+    // fallback (404 `control_api.not_found`) before any credential check.
+    if requirement == Requirement::Mcp && !state.mcp_config().enabled {
+        return ControlApiError::NotFound {
+            what: req.uri().path().to_owned(),
+        }
+        .into_response();
+    }
     let Some(auth) = state.auth_state() else {
         return next.run(req).await;
     };
