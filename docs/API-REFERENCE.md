@@ -80,7 +80,13 @@ invalid credential → `401 control_api.auth.unauthenticated`.
 | Method | Path | Summary |
 |---|---|---|
 | GET | `/api/v1/policy/views` | List views. |
-| GET / PUT / POST / DELETE | `/api/v1/policy/views/{id}` | Read / create-or-replace / delete one view. |
+| GET / PUT / POST / DELETE | `/api/v1/policy/views/{id}` | Read / create-or-replace / delete one view. A view carries `subnets`, `nodes` (empty = every node; the default view must be empty) and `profile`. |
+| GET | `/api/v1/policy/records` | Local records: one global name space. Each entry has `name`, `type` (A, AAAA, CNAME, TXT, SRV, MX, PTR), `ttl`, `rdata` and per-view `overrides` (presentation text, e.g. `192.0.2.10`, `10 mx.example.com.`). |
+| PUT / POST | `/api/v1/policy/records` | Create or replace the record `{ "name", "type", "ttl"?, "rdata", "overrides"? }`. One entry per name and type through this API; `policy.config.invalid` on bad type or value. |
+| DELETE | `/api/v1/policy/records` | Remove the record with body `{ "name", "type" }`. `control_api.not_found` if absent. |
+| GET | `/api/v1/policy/client-ids` | DoH/DoT Client-ID registry (`client_ids`). Admission only; never a selection key. |
+| POST | `/api/v1/policy/client-ids` | Register `{ "id" }` (`[a-z0-9-]{1,63}`). Duplicates are `policy.config.invalid`. |
+| DELETE | `/api/v1/policy/client-ids/{id}` | Revoke a Client ID. `control_api.not_found` if absent. |
 | GET / PUT / POST / DELETE | `/api/v1/policy/profiles/{id}` | Profile CRUD. `policy.config.unknown_filter_set` on bad references. |
 | GET / PUT / POST / DELETE | `/api/v1/policy/pause` | Global/per-profile pause state (singleton). |
 

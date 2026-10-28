@@ -308,10 +308,9 @@ pub(crate) struct ViewBody {
     is_default: bool,
     #[serde(default)]
     subnets: Vec<String>,
+    /// Nodes the view exists on; empty means every node.
     #[serde(default)]
-    client_ids: Vec<String>,
-    #[serde(default)]
-    records: Vec<Value>,
+    nodes: Vec<String>,
     profile: String,
 }
 
@@ -343,12 +342,23 @@ impl ViewBody {
                 &format!("invalid view subnet `{subnet}`"),
             ));
         }
+        if let Some(node) = self.nodes.iter().find(|n| !valid_id(n)) {
+            return Err(module_error(
+                "policy.config.invalid",
+                &format!("invalid view node `{node}`"),
+            ));
+        }
+        if self.is_default && !self.nodes.is_empty() {
+            return Err(module_error(
+                "policy.config.invalid",
+                "the default view must not restrict nodes",
+            ));
+        }
         Ok(json!({
             "id": path_id,
             "is_default": self.is_default,
             "subnets": self.subnets,
-            "client_ids": self.client_ids,
-            "records": self.records,
+            "nodes": self.nodes,
             "profile": self.profile,
         }))
     }

@@ -1261,10 +1261,10 @@ snapshots; session defaults are 12 h absolute / 60 min idle.
 
 ## Open questions (non-TLS)
 
-1. **DoH/DoT Client-ID CRUD.** `SPEC-web-ui.md` reads client identity from
-   `policy/views`, but `SPEC-policy.md` removed `views[].client_ids`. No endpoint
-   stores, rotates or revokes Client IDs. Define a Client-ID resource
-   (list/create/rename/revoke) or revert the policy change.
+1. **DoH/DoT Client-ID CRUD (resolved 2026-10-28).** The Client-ID registry is a
+   top-level `policy.client_ids` list served by `GET|POST /api/v1/policy/client-ids`
+   and `DELETE /api/v1/policy/client-ids/{id}` (see docs/API-REFERENCE.md). Rename is
+   delete plus create; a random suffix is supplied by the caller.
 2. **Cluster administration endpoints.** Defined in § Cluster contract:
    `/api/v1/cluster/join-tokens`, `/api/v1/cluster/nodes`,
    `/api/v1/cluster/nodes/{id}` and `/api/v1/cluster/writes/{request_id}`, with

@@ -37,6 +37,9 @@ use super::mcp_endpoints::{
     add_custom_rule, allow_temporarily, explain_block, list_mcp_rules, pause_filter_set,
     remove_custom_rule, resume_filter_set, test_query,
 };
+use super::policy_routes::{
+    create_client_id, delete_client_id, delete_record, list_client_ids, list_records, put_record,
+};
 use super::query_log_routes::{get_query_log, list_query_log};
 use super::rate_limit::rate_limit;
 use super::resolver_routes::{flush_cache, list_upstreams};
@@ -84,6 +87,18 @@ pub(crate) fn build_router(state: AppState) -> Router {
             .route("/config/versions", get(list_versions))
             .route("/config/versions/{version}/rollback", post(rollback))
             .route("/policy/views", get(list_views))
+            .route(
+                "/policy/records",
+                get(list_records)
+                    .put(put_record)
+                    .post(put_record)
+                    .delete(delete_record),
+            )
+            .route(
+                "/policy/client-ids",
+                get(list_client_ids).post(create_client_id),
+            )
+            .route("/policy/client-ids/{id}", delete(delete_client_id))
             .route(
                 "/policy/views/{id}",
                 get(get_view)
