@@ -134,6 +134,7 @@ pub fn encode_a_query_edns(id: u16, name: &str, udp_payload: u16) -> Vec<u8> {
 
 pub fn listener(protocol: Protocol, address: SocketAddr) -> ListenerConfig {
     ListenerConfig {
+        node_id: None,
         id: ListenerId::new("test-udp").unwrap(),
         protocol,
         address,
@@ -285,15 +286,17 @@ pub async fn local_policy_engine() -> Arc<PolicyEngine> {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
+        nodes: Vec::new(),
+        profile: ProfileId::new("default").unwrap(),
+    };
+    let cfg = PolicyConfig {
         client_ids: Vec::new(),
         records: vec![ViewRecordConfig {
             name: Name::from_ascii("local.test.").unwrap(),
             ttl: 60,
             rdata: RData::A(Ipv4Addr::new(192, 0, 2, 77)),
+            overrides: Default::default(),
         }],
-        profile: ProfileId::new("default").unwrap(),
-    };
-    let cfg = PolicyConfig {
         views: vec![view],
         profiles: vec![profile],
         ..PolicyConfig::default()
@@ -331,11 +334,12 @@ pub async fn policy_engine_with_client_ids(ids: &[&str]) -> Arc<PolicyEngine> {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
-        client_ids: ids.iter().map(|id| ClientId::new(id).unwrap()).collect(),
-        records: Vec::new(),
+        nodes: Vec::new(),
         profile: ProfileId::new("default").unwrap(),
     };
     let cfg = PolicyConfig {
+        client_ids: ids.iter().map(|id| ClientId::new(id).unwrap()).collect(),
+        records: Vec::new(),
         views: vec![view],
         profiles: vec![profile],
         ..PolicyConfig::default()

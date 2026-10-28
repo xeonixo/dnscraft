@@ -62,6 +62,7 @@ fn svcb_query() -> Message {
 
 fn meta_udp(ddr: Option<Arc<RwLock<DdrEndpoints>>>, arrival: IpAddr) -> QueryMeta {
     QueryMeta {
+        node_id: None,
         protocol: DnsProtocol::Udp53,
         listener_id: ListenerId::new("lan-udp").unwrap(),
         exposure: Exposure::Local,
@@ -333,6 +334,7 @@ async fn ddr_udp_serve_end_to_end() {
     let (sd_tx, sd_rx) = watch::channel(false);
     let join = tokio::spawn(serve_udp(UdpServeParams {
         listener: ListenerConfig {
+            node_id: None,
             id: ListenerId::new("ddr-udp").unwrap(),
             protocol: Protocol::Udp53,
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),

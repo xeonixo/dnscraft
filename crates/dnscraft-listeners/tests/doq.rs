@@ -40,6 +40,7 @@ fn install_ring() {
 
 fn listener_doq(addr: SocketAddr, exposure: Exposure) -> ListenerConfig {
     ListenerConfig {
+        node_id: None,
         id: ListenerId::new("test-doq").unwrap(),
         protocol: Protocol::Doq,
         address: addr,
@@ -51,6 +52,7 @@ fn listener_doq(addr: SocketAddr, exposure: Exposure) -> ListenerConfig {
 
 fn listener_tcp(addr: SocketAddr) -> ListenerConfig {
     ListenerConfig {
+        node_id: None,
         id: ListenerId::new("test-tcp").unwrap(),
         protocol: Protocol::Tcp53,
         address: addr,

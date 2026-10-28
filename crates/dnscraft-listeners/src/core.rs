@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 use dnscraft_filtering::SetId;
 use dnscraft_policy::{
     AnswerOrigin, ClientFlags, ClientId, DecisionRecord, DecisionTimings, DnsProtocol, ListenerId,
-    ProfileId, RequestContext, SelectionCause, ViewId,
+    NodeId, ProfileId, RequestContext, SelectionCause, ViewId,
 };
 use dnscraft_proto::{Class, Header, Message, Opcode, Question, Rcode};
 use dnscraft_resolver::Query;
@@ -43,6 +43,8 @@ pub struct QueryMeta {
     pub arrival: IpAddr,
     /// Client ID from SNI / DoH path, if any.
     pub client_id: Option<ClientId>,
+    /// Cluster node that accepted the query, if configured.
+    pub node_id: Option<NodeId>,
     /// Maximum encoded answer size (UDP EDNS/512, TCP 65 535, …).
     pub size_limit: usize,
     /// Pad the response to a multiple of 468 when the client sent OPT.
@@ -235,6 +237,7 @@ pub async fn handle_wire(
         source_ip: source,
         protocol: meta.protocol,
         listener_id: meta.listener_id.clone(),
+        node_id: meta.node_id.clone(),
         client_id: meta.client_id.clone(),
         query: Query {
             name: question.name.clone(),

@@ -76,8 +76,7 @@ fn default_view(profile_id: &str) -> ViewConfig {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
-        client_ids: Vec::new(),
-        records: Vec::new(),
+        nodes: Vec::new(),
         profile: ProfileId::new(profile_id).unwrap(),
     }
 }
@@ -103,6 +102,7 @@ fn ctx(name: &str, qtype: RecordType) -> RequestContext {
         source_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
         protocol: DnsProtocol::Udp53,
         listener_id: ListenerId::new("udp-53").unwrap(),
+        node_id: None,
         client_id: None,
         query: Query {
             name: Name::from_ascii(name).unwrap(),
@@ -232,6 +232,8 @@ async fn directory_known_a_only_aaaa_nodata_unknown_reaches_resolver() {
     );
     let engine = engine_with(
         PolicyConfig {
+            client_ids: Vec::new(),
+            records: Vec::new(),
             default_rebind: true,
             ptr_prefixes: Vec::new(),
             local_nxdomain_suffixes: Vec::new(),
@@ -304,6 +306,8 @@ async fn directory_ptr_private_and_ptr_prefixes_public_goes_to_resolver() {
     );
     let engine = engine_with(
         PolicyConfig {
+            client_ids: Vec::new(),
+            records: Vec::new(),
             default_rebind: true,
             ptr_prefixes: vec!["192.0.2.0/24".parse::<IpNet>().unwrap()],
             local_nxdomain_suffixes: Vec::new(),
@@ -377,6 +381,8 @@ async fn special_use_nxdomain_unless_forward_zone_allowed() {
     // zone usable → NXDOMAIN, zero resolver / forward traffic.
     let engine_deny = engine_with(
         PolicyConfig {
+            client_ids: Vec::new(),
+            records: Vec::new(),
             default_rebind: true,
             ptr_prefixes: Vec::new(),
             local_nxdomain_suffixes: vec![Arc::from("lan")],
@@ -406,6 +412,8 @@ async fn special_use_nxdomain_unless_forward_zone_allowed() {
     // Zone allowed → fall through and forward.
     let engine_allow = engine_with(
         PolicyConfig {
+            client_ids: Vec::new(),
+            records: Vec::new(),
             default_rebind: true,
             ptr_prefixes: Vec::new(),
             local_nxdomain_suffixes: vec![Arc::from("lan")],

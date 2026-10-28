@@ -278,6 +278,7 @@ fn spawn_query<H>(
         let meta = QueryMeta {
             protocol: DnsProtocol::Udp53,
             listener_id: shared.listener.id.clone(),
+            node_id: shared.listener.node_id.clone(),
             exposure: shared.listener.exposure,
             source: peer.ip(),
             arrival,

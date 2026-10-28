@@ -587,6 +587,7 @@ where
     let meta = QueryMeta {
         protocol: DnsProtocol::DoQ,
         listener_id: shared.listener.id.clone(),
+        node_id: shared.listener.node_id.clone(),
         exposure: shared.listener.exposure,
         source: peer.ip().to_canonical(),
         arrival: peer.ip().to_canonical(),

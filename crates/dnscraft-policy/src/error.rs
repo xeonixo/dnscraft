@@ -73,10 +73,19 @@ pub enum ConfigReason {
     /// More than one view is marked as default.
     #[error("more than one default view")]
     MultipleDefaultViews,
-    /// Two views list the same Client ID.
-    #[error("client id {id} is listed on more than one view")]
+    /// The Client-ID registry lists the same Client ID twice.
+    #[error("client id {id} is listed more than once")]
     DuplicateClientId {
         /// The duplicated Client ID.
+        id: Arc<str>,
+    },
+    /// The default view is restricted to some nodes; it must exist on every node.
+    #[error("the default view must not restrict nodes")]
+    DefaultViewNodes,
+    /// A record override names a view that is not defined.
+    #[error("record override references unknown view {id}")]
+    UnknownOverrideView {
+        /// The missing view id.
         id: Arc<str>,
     },
     /// Two views share an id.

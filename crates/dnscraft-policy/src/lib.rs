@@ -41,7 +41,7 @@ pub use decision::{
 pub use directory::{ClientDirectory, NoClients};
 pub use engine::{PolicyAnswer, PolicyEngine};
 pub use error::{ConfigReason, IdError, PolicyError};
-pub use ids::{ClientId, ListenerId, ProfileId, ViewId};
+pub use ids::{ClientId, ListenerId, NodeId, ProfileId, ViewId};
 pub use pause::{PauseScope, PauseUntil};
 pub use pipeline::{Draft, Flow, StepCtx, Synth, clear_ad};
 pub use schedule::{active_schedule, offset_in_week};

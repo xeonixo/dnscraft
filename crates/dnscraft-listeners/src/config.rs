@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use dnscraft_policy::ListenerId;
+use dnscraft_policy::{ListenerId, NodeId};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ListenersError;
@@ -126,6 +126,10 @@ pub struct ListenerConfig {
     pub h3: bool,
     /// Optional TLS policy; absent = defaults. Rejected on plaintext protocols.
     pub tls_policy: Option<TlsPolicy>,
+    /// Cluster node that serves this listener, stamped onto every query.
+    /// Set by [`crate::ListenerSet`] from its node identity; not read from config.
+    #[serde(skip)]
+    pub node_id: Option<NodeId>,
 }
 
 /// Token-bucket rate: `N` tokens per second, burst capacity `2N` when parsed from `N/s`.
@@ -522,6 +526,7 @@ mod tests {
         let cfg = ListenersConfig {
             listeners: vec![
                 ListenerConfig {
+                    node_id: None,
                     id: ListenerId::new("lan-udp").unwrap(),
                     protocol: Protocol::Udp53,
                     address: SocketAddr::from((Ipv4Addr::UNSPECIFIED, 53)),
@@ -530,6 +535,7 @@ mod tests {
                     tls_policy: None,
                 },
                 ListenerConfig {
+                    node_id: None,
                     id: ListenerId::new("public-doh").unwrap(),
                     protocol: Protocol::Doh,
                     address: SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 443),

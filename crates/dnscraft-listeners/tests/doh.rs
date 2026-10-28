@@ -47,6 +47,7 @@ fn install_ring() {
 
 fn listener_doh(addr: SocketAddr, exposure: Exposure) -> ListenerConfig {
     ListenerConfig {
+        node_id: None,
         id: ListenerId::new("test-doh").unwrap(),
         protocol: Protocol::Doh,
         address: addr,
@@ -350,6 +351,7 @@ async fn get_post_match_do53_h2_and_h1() {
     let (tcp_sd_tx, tcp_sd_rx) = watch::channel(false);
     let tcp_join = tokio::spawn(serve_tcp(TcpServeParams {
         listener: ListenerConfig {
+            node_id: None,
             id: ListenerId::new("tcp-base").unwrap(),
             protocol: Protocol::Tcp53,
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),

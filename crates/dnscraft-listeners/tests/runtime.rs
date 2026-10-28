@@ -24,6 +24,7 @@ use tokio::sync::Notify;
 
 fn udp_cfg(id: &str, addr: SocketAddr) -> ListenerConfig {
     ListenerConfig {
+        node_id: None,
         id: ListenerId::new(id).unwrap(),
         protocol: Protocol::Udp53,
         address: addr,
@@ -35,6 +36,7 @@ fn udp_cfg(id: &str, addr: SocketAddr) -> ListenerConfig {
 
 fn tcp_cfg(id: &str, addr: SocketAddr) -> ListenerConfig {
     ListenerConfig {
+        node_id: None,
         id: ListenerId::new(id).unwrap(),
         protocol: Protocol::Tcp53,
         address: addr,
@@ -46,6 +48,7 @@ fn tcp_cfg(id: &str, addr: SocketAddr) -> ListenerConfig {
 
 fn doh_cfg(id: &str, addr: SocketAddr, h3: bool) -> ListenerConfig {
     ListenerConfig {
+        node_id: None,
         id: ListenerId::new(id).unwrap(),
         protocol: Protocol::Doh,
         address: addr,
@@ -69,6 +72,7 @@ async fn start_set(
     sink: Arc<dyn dnscraft_listeners::QueryEventSink>,
 ) -> ListenerSet<FakeHandler> {
     ListenerSet::start_with(ListenerSetParams {
+        node_id: None,
         config: cfg,
         handler,
         certs: None,
@@ -225,6 +229,7 @@ async fn runtime_doh_h3_udp_bind_failure_reported_without_hang() {
         192, 0, 2, 31,
     ))));
     let params = ListenerSetParams {
+        node_id: None,
         config: cfg,
         handler,
         certs: None,
@@ -267,6 +272,7 @@ async fn runtime_doh_h3_tcp_bind_failure_reported_without_hang() {
         192, 0, 2, 32,
     ))));
     let params = ListenerSetParams {
+        node_id: None,
         config: cfg,
         handler,
         certs: None,
@@ -587,6 +593,7 @@ async fn runtime_reload_keeps_bans_across_rate_and_public_changes() {
 
     let cfg = ListenersConfig {
         listeners: vec![ListenerConfig {
+            node_id: None,
             id: ListenerId::new("pub-dot").unwrap(),
             protocol: Protocol::Dot,
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -608,6 +615,7 @@ async fn runtime_reload_keeps_bans_across_rate_and_public_changes() {
     let (sink, _rx) = ChannelSink::new(64);
     let handler = Arc::new(FakeHandler::new(fake_a_answer(Ipv4Addr::new(192, 0, 2, 8))));
     let set = ListenerSet::start_with(ListenerSetParams {
+        node_id: None,
         config: cfg.clone(),
         handler,
         certs: Some(certs),
@@ -755,6 +763,7 @@ async fn runtime_shutdown_drains_inflight_within_grace() {
     )]);
     let (sink, _rx) = ChannelSink::new(16);
     let set = ListenerSet::start_with(ListenerSetParams {
+        node_id: None,
         config: cfg,
         handler,
         certs: None,
@@ -815,6 +824,7 @@ async fn runtime_shutdown_drains_tcp_inflight_within_grace() {
     )]);
     let (sink, _rx) = ChannelSink::new(16);
     let set = ListenerSet::start_with(ListenerSetParams {
+        node_id: None,
         config: cfg,
         handler,
         certs: None,
@@ -940,6 +950,7 @@ async fn runtime_h3_toggle_restarts_doh_listener() {
     let certs = Arc::new(CertResolver::new());
     certs.install(&pem, &key).unwrap();
     let set = ListenerSet::start_with(ListenerSetParams {
+        node_id: None,
         config: cfg.clone(),
         handler,
         certs: Some(certs),

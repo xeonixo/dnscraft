@@ -1,5 +1,6 @@
 //! Policy configuration values and the per-query request context.
 
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +11,7 @@ use dnscraft_resolver::{ForwardZoneId, Query};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ClientId, ListenerId, ProfileId, ViewId};
+use crate::ids::{ClientId, ListenerId, NodeId, ProfileId, ViewId};
 
 /// Default TTL for view local records when the config omits one.
 pub const DEFAULT_RECORD_TTL: u32 = 60;
@@ -77,6 +78,9 @@ pub struct RequestContext {
     pub protocol: DnsProtocol,
     /// Listener that accepted the query.
     pub listener_id: ListenerId,
+    /// Cluster node that accepted the query (`None` on a standalone node
+    /// without a configured id). Views with `nodes` set must list it.
+    pub node_id: Option<NodeId>,
     /// DoH/DoT Client ID when present (after TLS/listener admission).
     pub client_id: Option<ClientId>,
     /// The DNS question.
@@ -87,7 +91,7 @@ pub struct RequestContext {
     pub test_query: bool,
 }
 
-/// One resource record authored under a view.
+/// One local resource record in the global name space.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewRecordConfig {
     /// Owner name (exact; wildcards are rejected at build time).
@@ -95,11 +99,22 @@ pub struct ViewRecordConfig {
     pub name: Name,
     /// TTL in seconds. [`DEFAULT_RECORD_TTL`] when unset by the UI.
     pub ttl: u32,
-    /// Record data; the wire type is derived from the variant.
+    /// Default record data for every view; the wire type is derived from the variant.
     ///
     /// Only A, AAAA, CNAME, TXT, SRV, MX and PTR are accepted.
     #[serde(with = "rdata_serde")]
     pub rdata: RData,
+    /// Per-view replacement data, keyed by view id. A view without an entry
+    /// uses [`Self::rdata`].
+    #[serde(default, with = "override_map")]
+    pub overrides: BTreeMap<ViewId, RData>,
+}
+
+impl ViewRecordConfig {
+    /// Record data this record has in `view` (the override, else the default).
+    pub fn rdata_for(&self, view: &ViewId) -> &RData {
+        self.overrides.get(view).unwrap_or(&self.rdata)
+    }
 }
 
 impl ViewRecordConfig {
@@ -179,7 +194,7 @@ pub struct ScheduleConfig {
     pub end: Duration,
 }
 
-/// A split-horizon view: selection keys, local records, and a profile pointer.
+/// A split-horizon view ("zone"): selection keys, node validity, and a profile pointer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewConfig {
     /// Stable view id.
@@ -189,10 +204,10 @@ pub struct ViewConfig {
     pub is_default: bool,
     /// Client source subnets that select this view (longest prefix wins).
     pub subnets: Vec<IpNet>,
-    /// DoH/DoT Client IDs that select this view (beats any subnet).
-    pub client_ids: Vec<ClientId>,
-    /// Exact-name local records for this view.
-    pub records: Vec<ViewRecordConfig>,
+    /// Nodes on which this view exists; empty means every node. The default
+    /// view must be empty.
+    #[serde(default)]
+    pub nodes: Vec<NodeId>,
     /// Profile applied after selection.
     pub profile: ProfileId,
 }
@@ -249,6 +264,13 @@ pub struct PolicyConfig {
     pub views: Vec<ViewConfig>,
     /// Profiles referenced by views.
     pub profiles: Vec<ProfileConfig>,
+    /// Client-ID registry: IDs that public listeners admit. A registry, not a
+    /// selection key; selection is source-IP only.
+    #[serde(default)]
+    pub client_ids: Vec<ClientId>,
+    /// Local records: one global name space, with per-view overrides.
+    #[serde(default)]
+    pub records: Vec<ViewRecordConfig>,
 }
 
 impl Default for PolicyConfig {
@@ -263,7 +285,43 @@ impl Default for PolicyConfig {
             rebind_check_forward_zones: Vec::new(),
             views: Vec::new(),
             profiles: Vec::new(),
+            client_ids: Vec::new(),
+            records: Vec::new(),
         }
+    }
+}
+
+/// Serde adapter for [`ViewRecordConfig::overrides`]: a map of view id to
+/// record data, each value in the same wire form as [`ViewRecordConfig::rdata`].
+mod override_map {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::{RData, ViewId, rdata_serde};
+
+    #[derive(Serialize, Deserialize)]
+    struct Wire(#[serde(with = "rdata_serde")] RData);
+
+    pub fn serialize<S: Serializer>(
+        value: &BTreeMap<ViewId, RData>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(
+            value
+                .iter()
+                .map(|(view, rdata)| (view, Wire(rdata.clone()))),
+        )
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<ViewId, RData>, D::Error> {
+        let wire = BTreeMap::<ViewId, Wire>::deserialize(deserializer)?;
+        Ok(wire
+            .into_iter()
+            .map(|(view, Wire(rdata))| (view, rdata))
+            .collect())
     }
 }
 
@@ -435,6 +493,7 @@ mod tests {
             name: Name::from_ascii("nas.lan.example.com").unwrap(),
             ttl: 60,
             rdata: RData::A(Ipv4Addr::new(192, 0, 2, 10)),
+            overrides: BTreeMap::new(),
         };
         assert_eq!(rec.rtype(), RecordType::A);
     }
@@ -453,26 +512,33 @@ mod tests {
                 id: ViewId::new("lan").unwrap(),
                 is_default: true,
                 subnets: vec!["192.0.2.0/24".parse().unwrap()],
-                client_ids: vec![ClientId::new("iphone-k7q2x9").unwrap()],
-                records: vec![
-                    ViewRecordConfig {
-                        name: Name::from_ascii("nas.lan.example.com").unwrap(),
-                        ttl: DEFAULT_RECORD_TTL,
-                        rdata: RData::A(Ipv4Addr::new(192, 0, 2, 10)),
-                    },
-                    ViewRecordConfig {
-                        name: Name::from_ascii("alias.lan.example.com").unwrap(),
-                        ttl: 300,
-                        rdata: RData::CNAME(Name::from_ascii("nas.lan.example.com").unwrap()),
-                    },
-                    ViewRecordConfig {
-                        name: Name::from_ascii("txt.lan.example.com").unwrap(),
-                        ttl: 60,
-                        rdata: RData::TXT(vec![b"hello world".to_vec().into_boxed_slice()]),
-                    },
-                ],
+                nodes: vec![NodeId::new("node-1").unwrap()],
                 profile: ProfileId::new("default").unwrap(),
             }],
+            client_ids: vec![ClientId::new("iphone-k7q2x9").unwrap()],
+            records: vec![
+                ViewRecordConfig {
+                    name: Name::from_ascii("nas.lan.example.com").unwrap(),
+                    ttl: DEFAULT_RECORD_TTL,
+                    rdata: RData::A(Ipv4Addr::new(192, 0, 2, 10)),
+                    overrides: BTreeMap::from([(
+                        ViewId::new("lan").unwrap(),
+                        RData::A(Ipv4Addr::new(192, 0, 2, 50)),
+                    )]),
+                },
+                ViewRecordConfig {
+                    name: Name::from_ascii("alias.lan.example.com").unwrap(),
+                    ttl: 300,
+                    rdata: RData::CNAME(Name::from_ascii("nas.lan.example.com").unwrap()),
+                    overrides: BTreeMap::new(),
+                },
+                ViewRecordConfig {
+                    name: Name::from_ascii("txt.lan.example.com").unwrap(),
+                    ttl: 60,
+                    rdata: RData::TXT(vec![b"hello world".to_vec().into_boxed_slice()]),
+                    overrides: BTreeMap::new(),
+                },
+            ],
             profiles: vec![ProfileConfig {
                 id: ProfileId::new("default").unwrap(),
                 filter_set: SetId::new("family").unwrap(),

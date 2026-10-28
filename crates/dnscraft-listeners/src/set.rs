@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use dnscraft_policy::{ListenerId, PolicyEngine};
+use dnscraft_policy::{ListenerId, NodeId, PolicyEngine};
 use dnscraft_tls::{CertResolver, ClientIdRegistry, ReservedLabels};
 use tokio::sync::{Mutex as AsyncMutex, oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
@@ -38,6 +38,7 @@ pub struct ListenerSet<H: QueryHandler + ?Sized = PolicyEngine> {
     admission: Arc<Mutex<Admission>>,
     ddr: Arc<RwLock<DdrEndpoints>>,
     public_domain: String,
+    node_id: Option<NodeId>,
     inner: Mutex<Inner>,
     apply_lock: AsyncMutex<()>,
 }
@@ -93,6 +94,8 @@ pub struct ListenerSetParams<H: QueryHandler + ?Sized = PolicyEngine> {
     pub public_domain: String,
     /// Client-ID registry for public SNI / DoH paths.
     pub client_ids: Arc<dyn ClientIdRegistry>,
+    /// Cluster node id stamped on every query (`None` leaves it unset).
+    pub node_id: Option<NodeId>,
     /// Source classifier. Production constructors ([`ListenerSet::start`]) pass
     /// [`default_classifier`]; the field exists as a test seam so tests can
     /// classify loopback as public and exercise public admission and bans from
@@ -111,9 +114,11 @@ impl ListenerSet<PolicyEngine> {
         sink: Arc<dyn QueryEventSink>,
         clock: Arc<dyn Clock>,
         public_domain: impl Into<String>,
+        node_id: Option<NodeId>,
     ) -> Result<Self, ListenersError> {
         let public_domain = public_domain.into();
         Self::start_with(ListenerSetParams {
+            node_id,
             client_ids: Arc::new(PolicyClientIds(Arc::clone(&policy))),
             config: cfg,
             handler: policy,
@@ -140,6 +145,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             public_domain,
             client_ids,
             classify,
+            node_id,
         } = params;
 
         let certs = certs.unwrap_or_else(|| Arc::new(CertResolver::new()));
@@ -167,6 +173,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             admission,
             ddr,
             public_domain,
+            node_id,
             inner: Mutex::new(Inner {
                 config: config.clone(),
                 running: HashMap::new(),
@@ -346,12 +353,17 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
         let (bound_tx, bound_rx) = oneshot::channel();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let id = listener.id.clone();
+        // The running entry keeps the configured value; only the serving copy is stamped.
+        let served = ListenerConfig {
+            node_id: self.node_id.clone(),
+            ..listener.clone()
+        };
 
         let (kind, join) = match listener.protocol {
             Protocol::Udp53 => {
                 let stats = Arc::new(UdpStats::default());
                 let join = tokio::spawn(serve_udp(UdpServeParams {
-                    listener: listener.clone(),
+                    listener: served.clone(),
                     limits: limits.clone(),
                     admission: Arc::clone(&self.admission),
                     handler: Arc::clone(&self.handler),
@@ -367,7 +379,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             Protocol::Tcp53 => {
                 let stats = Arc::new(TcpStats::default());
                 let join = tokio::spawn(serve_tcp(TcpServeParams {
-                    listener: listener.clone(),
+                    listener: served.clone(),
                     limits: limits.clone(),
                     admission: Arc::clone(&self.admission),
                     handler: Arc::clone(&self.handler),
@@ -384,7 +396,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                 let stats = Arc::new(DotStats::default());
                 let tls = Arc::new(TlsStats::default());
                 let join = tokio::spawn(serve_dot(DotServeParams {
-                    listener: listener.clone(),
+                    listener: served.clone(),
                     limits: limits.clone(),
                     admission: Arc::clone(&self.admission),
                     handler: Arc::clone(&self.handler),
@@ -410,7 +422,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                     // dropped (reload timeout), so neither socket leaks.
                     let mut joins = JoinSet::new();
                     joins.spawn(serve_doh_h3(DohH3ServeParams {
-                        listener: listener.clone(),
+                        listener: served.clone(),
                         limits: limits.clone(),
                         admission: Arc::clone(&self.admission),
                         handler: Arc::clone(&self.handler),
@@ -425,7 +437,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                         shutdown: shutdown_rx.clone(),
                     }));
                     joins.spawn(serve_doh(DohServeParams {
-                        listener: listener.clone(),
+                        listener: served.clone(),
                         limits: limits.clone(),
                         admission: Arc::clone(&self.admission),
                         handler: Arc::clone(&self.handler),
@@ -479,7 +491,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                     })
                 } else {
                     tokio::spawn(serve_doh(DohServeParams {
-                        listener: listener.clone(),
+                        listener: served.clone(),
                         limits: limits.clone(),
                         admission: Arc::clone(&self.admission),
                         handler: Arc::clone(&self.handler),
@@ -500,7 +512,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                 let stats = Arc::new(DoqStats::default());
                 let tls = Arc::new(TlsStats::default());
                 let join = tokio::spawn(serve_doq(DoqServeParams {
-                    listener: listener.clone(),
+                    listener: served.clone(),
                     limits: limits.clone(),
                     admission: Arc::clone(&self.admission),
                     handler: Arc::clone(&self.handler),
@@ -732,6 +744,7 @@ mod tests {
     async fn ddr_endpoints_use_bound_addresses() {
         let cfg = ListenersConfig {
             listeners: vec![ListenerConfig {
+                node_id: None,
                 id: ListenerId::new("lan-dot").unwrap(),
                 protocol: Protocol::Dot,
                 address: SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),
@@ -743,6 +756,7 @@ mod tests {
         };
         let (sink, _rx) = ChannelSink::new(4);
         let set = ListenerSet::start_with(ListenerSetParams {
+            node_id: None,
             config: cfg,
             handler: Arc::new(FakeHandler::new(dummy_answer())),
             certs: None,
@@ -778,6 +792,7 @@ mod tests {
         };
         let (sink, _rx) = ChannelSink::new(4);
         let set = ListenerSet::start_with(ListenerSetParams {
+            node_id: None,
             config: cfg.clone(),
             handler: Arc::new(FakeHandler::new(dummy_answer())),
             certs: None,

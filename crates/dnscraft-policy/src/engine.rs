@@ -90,22 +90,13 @@ impl PolicyEngine {
         )
     }
 
-    /// Whether `id` is a registered Client ID in the current snapshot.
+    /// The Client-ID registry of the current snapshot.
     ///
-    /// Used by public listeners before the TLS handshake completes / before
-    /// routing a DoH path. Invalid charset or length → `false` (never panics).
-    /// Case-sensitive on the already lower-cased id. Cheap: short read lock +
-    /// map lookup, no allocation. Always reflects the latest
-    /// [`Self::apply_config`] snapshot.
-    pub fn is_client_id_registered(&self, id: &str) -> bool {
-        if !crate::ids::ClientId::is_valid_str(id) {
-            return false;
-        }
-        self.snapshot
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .client_ids
-            .contains_key(id)
+    /// Public listeners admit DoH/DoT Client IDs against this list; it is not a
+    /// selection key. Cheap: one `Arc` clone under a short read lock. Always
+    /// reflects the latest [`Self::apply_config`] snapshot.
+    pub fn registered_client_ids(&self) -> Arc<[crate::ids::ClientId]> {
+        Arc::clone(&self.snapshot().client_ids)
     }
 
     /// Per-view / per-profile counters.

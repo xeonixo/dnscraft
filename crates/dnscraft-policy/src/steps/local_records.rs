@@ -145,6 +145,7 @@ mod unit {
             id: ViewId::new("v").unwrap(),
             is_default: false,
             profile_idx: 0,
+            nodes: Arc::from(Vec::new()),
             records: map,
         }
     }

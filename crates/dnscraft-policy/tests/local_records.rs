@@ -74,6 +74,7 @@ fn rec(name: &str, rdata: RData) -> ViewRecordConfig {
         name: Name::from_ascii(name).unwrap(),
         ttl: 60,
         rdata,
+        overrides: Default::default(),
     }
 }
 
@@ -98,6 +99,7 @@ fn ctx(source: IpAddr, name: &str, qtype: RecordType) -> RequestContext {
         source_ip: source,
         protocol: DnsProtocol::Udp53,
         listener_id: ListenerId::new("udp-53").unwrap(),
+        node_id: None,
         client_id: None,
         query: Query {
             name: Name::from_ascii(name).unwrap(),
@@ -113,10 +115,15 @@ fn root_query_count(h: &Hierarchy) -> usize {
     h.server(".").unwrap().queries().len()
 }
 
-async fn engine_with(views: Vec<ViewConfig>) -> (Hierarchy, PolicyEngine) {
+async fn engine_with(
+    views: Vec<ViewConfig>,
+    records: Vec<ViewRecordConfig>,
+) -> (Hierarchy, PolicyEngine) {
     let h = Hierarchy::start().await.unwrap();
     let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
     let cfg = PolicyConfig {
+        client_ids: Vec::new(),
+        records,
         default_rebind: true,
         ptr_prefixes: Vec::new(),
         local_nxdomain_suffixes: Vec::new(),
@@ -132,55 +139,54 @@ async fn engine_with(views: Vec<ViewConfig>) -> (Hierarchy, PolicyEngine) {
 #[tokio::test]
 async fn local_records_all_types_without_resolver_traffic() {
     let lan = IpNet::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 0)), 24).unwrap();
+    let records = vec![
+        rec("a.lan.example.com", RData::A(Ipv4Addr::new(192, 0, 2, 10))),
+        rec(
+            "aaaa.lan.example.com",
+            RData::AAAA(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+        ),
+        rec(
+            "txt.lan.example.com",
+            RData::TXT(vec![Box::from(b"hello".as_slice())]),
+        ),
+        rec(
+            "srv.lan.example.com",
+            RData::SRV {
+                priority: 10,
+                weight: 5,
+                port: 5060,
+                target: Name::from_ascii("sip.lan.example.com").unwrap(),
+            },
+        ),
+        rec(
+            "mx.lan.example.com",
+            RData::MX {
+                preference: 10,
+                exchange: Name::from_ascii("mail.lan.example.com").unwrap(),
+            },
+        ),
+        rec(
+            "10.2.0.192.in-addr.arpa",
+            RData::PTR(Name::from_ascii("nas.lan.example.com").unwrap()),
+        ),
+    ];
     let views = vec![
         ViewConfig {
             id: ViewId::new("lan").unwrap(),
             is_default: false,
             subnets: vec![lan],
-            client_ids: Vec::new(),
-            records: vec![
-                rec("a.lan.example.com", RData::A(Ipv4Addr::new(192, 0, 2, 10))),
-                rec(
-                    "aaaa.lan.example.com",
-                    RData::AAAA(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
-                ),
-                rec(
-                    "txt.lan.example.com",
-                    RData::TXT(vec![Box::from(b"hello".as_slice())]),
-                ),
-                rec(
-                    "srv.lan.example.com",
-                    RData::SRV {
-                        priority: 10,
-                        weight: 5,
-                        port: 5060,
-                        target: Name::from_ascii("sip.lan.example.com").unwrap(),
-                    },
-                ),
-                rec(
-                    "mx.lan.example.com",
-                    RData::MX {
-                        preference: 10,
-                        exchange: Name::from_ascii("mail.lan.example.com").unwrap(),
-                    },
-                ),
-                rec(
-                    "10.2.0.192.in-addr.arpa",
-                    RData::PTR(Name::from_ascii("nas.lan.example.com").unwrap()),
-                ),
-            ],
+            nodes: Vec::new(),
             profile: ProfileId::new("default").unwrap(),
         },
         ViewConfig {
             id: ViewId::new("default").unwrap(),
             is_default: true,
             subnets: Vec::new(),
-            client_ids: Vec::new(),
-            records: Vec::new(),
+            nodes: Vec::new(),
             profile: ProfileId::new("default").unwrap(),
         },
     ];
-    let (h, engine) = engine_with(views).await;
+    let (h, engine) = engine_with(views, records).await;
     let src = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
     h.server(".").unwrap().clear_queries();
 
@@ -214,25 +220,25 @@ async fn local_records_all_types_without_resolver_traffic() {
 
 #[tokio::test]
 async fn local_records_cname_local_a_and_external() {
+    let records = vec![
+        rec(
+            "alias.example.com",
+            RData::CNAME(Name::from_ascii("nas.example.com").unwrap()),
+        ),
+        rec("nas.example.com", RData::A(Ipv4Addr::new(192, 0, 2, 10))),
+        rec(
+            "ext.example.com",
+            RData::CNAME(Name::from_ascii("cdn.example.net").unwrap()),
+        ),
+    ];
     let views = vec![ViewConfig {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
-        client_ids: Vec::new(),
-        records: vec![
-            rec(
-                "alias.example.com",
-                RData::CNAME(Name::from_ascii("nas.example.com").unwrap()),
-            ),
-            rec("nas.example.com", RData::A(Ipv4Addr::new(192, 0, 2, 10))),
-            rec(
-                "ext.example.com",
-                RData::CNAME(Name::from_ascii("cdn.example.net").unwrap()),
-            ),
-        ],
+        nodes: Vec::new(),
         profile: ProfileId::new("default").unwrap(),
     }];
-    let (h, engine) = engine_with(views).await;
+    let (h, engine) = engine_with(views, records).await;
     let src = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1));
     h.server(".").unwrap().clear_queries();
 
@@ -270,11 +276,10 @@ async fn local_records_cname_loop_stops_at_eight() {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
-        client_ids: Vec::new(),
-        records,
+        nodes: Vec::new(),
         profile: ProfileId::new("default").unwrap(),
     }];
-    let (h, engine) = engine_with(views).await;
+    let (h, engine) = engine_with(views, records).await;
     h.server(".").unwrap().clear_queries();
     let answer = engine
         .handle(ctx(
@@ -300,33 +305,36 @@ async fn local_records_split_horizon_per_view() {
     let lan = IpNet::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 0)), 24).unwrap();
     let guest = IpNet::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 0)), 24).unwrap();
     let name = "app.example.com";
+    let mut app = rec(name, RData::A(Ipv4Addr::new(192, 0, 2, 10)));
+    app.overrides.insert(
+        ViewId::new("guest").unwrap(),
+        RData::A(Ipv4Addr::new(198, 51, 100, 10)),
+    );
+    let records = vec![app];
     let views = vec![
         ViewConfig {
             id: ViewId::new("lan").unwrap(),
             is_default: false,
             subnets: vec![lan],
-            client_ids: Vec::new(),
-            records: vec![rec(name, RData::A(Ipv4Addr::new(192, 0, 2, 10)))],
+            nodes: Vec::new(),
             profile: ProfileId::new("default").unwrap(),
         },
         ViewConfig {
             id: ViewId::new("guest").unwrap(),
             is_default: false,
             subnets: vec![guest],
-            client_ids: Vec::new(),
-            records: vec![rec(name, RData::A(Ipv4Addr::new(198, 51, 100, 10)))],
+            nodes: Vec::new(),
             profile: ProfileId::new("default").unwrap(),
         },
         ViewConfig {
             id: ViewId::new("default").unwrap(),
             is_default: true,
             subnets: Vec::new(),
-            client_ids: Vec::new(),
-            records: Vec::new(),
+            nodes: Vec::new(),
             profile: ProfileId::new("default").unwrap(),
         },
     ];
-    let (_h, engine) = engine_with(views).await;
+    let (_h, engine) = engine_with(views, records).await;
 
     let from_lan = engine
         .handle(ctx(
@@ -359,18 +367,18 @@ async fn local_records_split_horizon_per_view() {
 
 #[tokio::test]
 async fn local_records_nodata_when_type_missing() {
+    let records = vec![rec(
+        "only-a.example.com",
+        RData::A(Ipv4Addr::new(192, 0, 2, 10)),
+    )];
     let views = vec![ViewConfig {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
-        client_ids: Vec::new(),
-        records: vec![rec(
-            "only-a.example.com",
-            RData::A(Ipv4Addr::new(192, 0, 2, 10)),
-        )],
+        nodes: Vec::new(),
         profile: ProfileId::new("default").unwrap(),
     }];
-    let (h, engine) = engine_with(views).await;
+    let (h, engine) = engine_with(views, records).await;
     h.server(".").unwrap().clear_queries();
     let answer = engine
         .handle(ctx(
@@ -387,23 +395,25 @@ async fn local_records_nodata_when_type_missing() {
     assert_eq!(answer.message.rcode(), Rcode::NOERROR);
 }
 
-fn default_view_with_a() -> Vec<ViewConfig> {
-    vec![ViewConfig {
+fn default_view_with_a() -> (Vec<ViewConfig>, Vec<ViewRecordConfig>) {
+    let views = vec![ViewConfig {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
-        client_ids: Vec::new(),
-        records: vec![rec(
-            "nas.example.com",
-            RData::A(Ipv4Addr::new(192, 0, 2, 10)),
-        )],
+        nodes: Vec::new(),
         profile: ProfileId::new("default").unwrap(),
-    }]
+    }];
+    let records = vec![rec(
+        "nas.example.com",
+        RData::A(Ipv4Addr::new(192, 0, 2, 10)),
+    )];
+    (views, records)
 }
 
 #[tokio::test]
 async fn synthetic_answers_mirror_client_rd() {
-    let (_h, engine) = engine_with(default_view_with_a()).await;
+    let (views, records) = default_view_with_a();
+    let (_h, engine) = engine_with(views, records).await;
     let src = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1));
     for rd in [true, false] {
         for (qtype, origin) in [
@@ -421,7 +431,8 @@ async fn synthetic_answers_mirror_client_rd() {
 
 #[tokio::test]
 async fn local_records_ignore_non_in_class() {
-    let (_h, engine) = engine_with(default_view_with_a()).await;
+    let (views, records) = default_view_with_a();
+    let (_h, engine) = engine_with(views, records).await;
     let mut c = ctx(
         IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
         "nas.example.com",

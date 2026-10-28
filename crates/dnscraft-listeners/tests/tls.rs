@@ -240,12 +240,13 @@ async fn policy_client_ids_follows_apply_config_and_lowercases() {
     assert!(!reg.is_registered("unknown"));
 
     let without = PolicyConfig {
+        client_ids: Vec::new(),
+        records: Vec::new(),
         views: vec![dnscraft_policy::ViewConfig {
             id: dnscraft_policy::ViewId::new("default").unwrap(),
             is_default: true,
             subnets: Vec::new(),
-            client_ids: Vec::new(),
-            records: Vec::new(),
+            nodes: Vec::new(),
             profile: dnscraft_policy::ProfileId::new("default").unwrap(),
         }],
         profiles: vec![dnscraft_policy::ProfileConfig {
@@ -325,6 +326,7 @@ fn inspect_public_sni_matrix() {
     // After 2 strikes → banned.
     let decision = adm.check(
         &dnscraft_listeners::ListenerConfig {
+            node_id: None,
             id: dnscraft_policy::ListenerId::new("t").unwrap(),
             protocol: dnscraft_listeners::Protocol::Dot,
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 853)),

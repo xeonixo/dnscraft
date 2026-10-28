@@ -13,6 +13,7 @@ use dnscraft_policy::{ClientId, ListenerId};
 
 fn listener(protocol: Protocol, exposure: Exposure) -> ListenerConfig {
     ListenerConfig {
+        node_id: None,
         id: ListenerId::new("test").unwrap(),
         protocol,
         address: "127.0.0.1:53".parse().unwrap(),

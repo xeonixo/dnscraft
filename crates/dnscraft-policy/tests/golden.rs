@@ -80,19 +80,25 @@ fn profile_base() -> ProfileConfig {
     }
 }
 
-fn default_view(records: Vec<ViewRecordConfig>) -> ViewConfig {
+fn default_view() -> ViewConfig {
     ViewConfig {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
-        client_ids: Vec::new(),
-        records,
+        nodes: Vec::new(),
         profile: ProfileId::new("default").unwrap(),
     }
 }
 
+fn with_records(mut cfg: PolicyConfig, records: Vec<ViewRecordConfig>) -> PolicyConfig {
+    cfg.records = records;
+    cfg
+}
+
 fn policy_cfg(profile: ProfileConfig, views: Vec<ViewConfig>) -> PolicyConfig {
     PolicyConfig {
+        client_ids: Vec::new(),
+        records: Vec::new(),
         default_rebind: true,
         ptr_prefixes: Vec::new(),
         local_nxdomain_suffixes: vec![Arc::from("local"), Arc::from("lan"), Arc::from("internal")],
@@ -123,6 +129,7 @@ fn ctx(name: &str, qtype: RecordType) -> RequestContext {
         source_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
         protocol: DnsProtocol::Udp53,
         listener_id: ListenerId::new("udp-53").unwrap(),
+        node_id: None,
         client_id: None,
         query: Query {
             name: Name::from_ascii(name).unwrap(),
@@ -219,13 +226,14 @@ async fn golden_view_and_directory_never_hit_resolver() {
 
     let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
     let eng = PolicyEngine::new(
-        policy_cfg(
-            profile_base(),
-            vec![default_view(vec![ViewRecordConfig {
+        with_records(
+            policy_cfg(profile_base(), vec![default_view()]),
+            vec![ViewRecordConfig {
                 name: Name::from_ascii("nas.lan.").unwrap(),
                 ttl: 60,
                 rdata: RData::A(Ipv4Addr::new(10, 0, 0, 1)),
-            }])],
+                overrides: Default::default(),
+            }],
         ),
         empty_filter(),
         resolver,
@@ -251,7 +259,7 @@ async fn golden_blocked_qname_never_hits_resolver() {
     let h = Hierarchy::start_with(specs_golden()).await.unwrap();
     let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
     let eng = PolicyEngine::new(
-        policy_cfg(profile_base(), vec![default_view(Vec::new())]),
+        policy_cfg(profile_base(), vec![default_view()]),
         filter_with("||ads.example^\n"),
         resolver,
         Arc::new(NoClients),
@@ -272,7 +280,7 @@ async fn golden_cname_chain_block() {
     let h = Hierarchy::start_with(specs_golden()).await.unwrap();
     let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
     let eng = PolicyEngine::new(
-        policy_cfg(profile_base(), vec![default_view(Vec::new())]),
+        policy_cfg(profile_base(), vec![default_view()]),
         filter_with("||tracker.example.test^\n"),
         resolver,
         Arc::new(NoClients),
@@ -294,7 +302,7 @@ async fn golden_rebind_matrix_a_and_svcb_hints() {
     let h = Hierarchy::start_with(specs_golden()).await.unwrap();
     let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
     let eng = PolicyEngine::new(
-        policy_cfg(profile_base(), vec![default_view(Vec::new())]),
+        policy_cfg(profile_base(), vec![default_view()]),
         empty_filter(),
         resolver,
         Arc::new(NoClients),
@@ -333,7 +341,7 @@ async fn golden_rebind_matrix_a_and_svcb_hints() {
     profile.rebind_exceptions = vec![Arc::from("*.example.test")];
     let resolver2 = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
     let eng_ex = PolicyEngine::new(
-        policy_cfg(profile, vec![default_view(Vec::new())]),
+        policy_cfg(profile, vec![default_view()]),
         empty_filter(),
         resolver2,
         Arc::new(NoClients),
@@ -362,7 +370,7 @@ async fn golden_blocked_service_not_bypassed_by_safesearch() {
         youtube_mode: YoutubeMode::Strict,
     };
     let eng = PolicyEngine::new(
-        policy_cfg(profile, vec![default_view(Vec::new())]),
+        policy_cfg(profile, vec![default_view()]),
         filter_with("||www.youtube.com^\n"),
         resolver,
         Arc::new(NoClients),
@@ -400,7 +408,7 @@ async fn golden_local_domain_fallthrough_vs_special_use_nxdomain() {
     let h = Hierarchy::start_with(specs_golden()).await.unwrap();
     let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
     let eng = PolicyEngine::new(
-        policy_cfg(profile_base(), vec![default_view(Vec::new())]),
+        policy_cfg(profile_base(), vec![default_view()]),
         empty_filter(),
         resolver,
         Arc::new(NoClients),
@@ -439,7 +447,7 @@ async fn golden_home_arpa_falls_through_to_resolver_local_zone() {
     let h = Hierarchy::start_with(specs_golden()).await.unwrap();
     let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
     let eng = PolicyEngine::new(
-        policy_cfg(profile_base(), vec![default_view(Vec::new())]),
+        policy_cfg(profile_base(), vec![default_view()]),
         empty_filter(),
         resolver,
         Arc::new(NoClients),

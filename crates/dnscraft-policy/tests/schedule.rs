@@ -82,8 +82,7 @@ fn default_view() -> ViewConfig {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
-        client_ids: Vec::new(),
-        records: Vec::new(),
+        nodes: Vec::new(),
         profile: ProfileId::new("default").unwrap(),
     }
 }
@@ -109,6 +108,7 @@ fn ctx(name: &str) -> RequestContext {
         source_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
         protocol: DnsProtocol::Udp53,
         listener_id: ListenerId::new("udp-53").unwrap(),
+        node_id: None,
         client_id: None,
         query: Query {
             name: Name::from_ascii(name).unwrap(),
@@ -138,6 +138,8 @@ async fn engine_at(
     let h = Hierarchy::start().await.unwrap();
     let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
     let cfg = PolicyConfig {
+        client_ids: Vec::new(),
+        records: Vec::new(),
         default_rebind: true,
         ptr_prefixes: Vec::new(),
         local_nxdomain_suffixes: Vec::new(),
@@ -318,6 +320,8 @@ async fn reload_swaps_windows() {
     );
 
     let mut cfg = PolicyConfig {
+        client_ids: Vec::new(),
+        records: Vec::new(),
         default_rebind: true,
         ptr_prefixes: Vec::new(),
         local_nxdomain_suffixes: Vec::new(),
@@ -434,6 +438,8 @@ async fn engine_on_hierarchy(
     profile.schedules = schedules;
     let resolver = Arc::new(Resolver::new(config_for(h)).await.unwrap());
     let cfg = PolicyConfig {
+        client_ids: Vec::new(),
+        records: Vec::new(),
         default_rebind: true,
         ptr_prefixes: Vec::new(),
         local_nxdomain_suffixes: Vec::new(),

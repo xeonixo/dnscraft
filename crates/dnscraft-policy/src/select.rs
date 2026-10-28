@@ -1,23 +1,21 @@
 //! View and profile selection for an incoming request.
 //!
-//! Order: Client ID exact match → longest-prefix subnet → default view.
-//! The hot path allocates neither `String` nor `Vec` (only `Arc` clones of
-//! the selected ids).
+//! Order: longest-prefix subnet (views valid on this node) → default view.
+//! Client IDs are not selection keys. The hot path allocates neither `String`
+//! nor `Vec` (only `Arc` clones of the selected ids).
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use ipnet::{Ipv4Net, Ipv6Net};
 
 use crate::config::RequestContext;
-use crate::ids::{ProfileId, ViewId};
+use crate::ids::{NodeId, ProfileId, ViewId};
 use crate::snapshot::{PolicySnapshot, ViewIdx};
 
 /// Why a view was selected for a request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 
 pub enum SelectionCause {
-    /// Exact match on a view's Client ID list.
-    ClientId,
     /// Longest-prefix match of the source address.
     Subnet {
         /// Network address of the matching prefix (host bits cleared).
@@ -45,16 +43,13 @@ pub struct Selection {
 impl PolicySnapshot {
     /// Selects the view and profile for `ctx`.
     ///
+    /// Order: longest-prefix subnet among views valid on the request's node,
+    /// then the default view. Client IDs never select a view.
+    ///
     /// Always succeeds when the snapshot was built successfully (a default
     /// view is guaranteed).
     pub fn select(&self, ctx: &RequestContext) -> Selection {
-        if let Some(client_id) = ctx.client_id.as_ref()
-            && let Some(&view_idx) = self.client_ids.get(client_id)
-        {
-            return self.finish(view_idx, SelectionCause::ClientId);
-        }
-
-        if let Some((view_idx, cause)) = self.match_subnet(ctx.source_ip) {
+        if let Some((view_idx, cause)) = self.match_subnet(ctx.source_ip, ctx.node_id.as_ref()) {
             return self.finish(view_idx, cause);
         }
 
@@ -72,7 +67,13 @@ impl PolicySnapshot {
         }
     }
 
-    fn match_subnet(&self, source: IpAddr) -> Option<(ViewIdx, SelectionCause)> {
+    /// Longest prefix whose view is valid on `node`. A view that is not valid
+    /// on this node is treated as absent, so a shorter prefix may still match.
+    fn match_subnet(
+        &self,
+        source: IpAddr,
+        node: Option<&NodeId>,
+    ) -> Option<(ViewIdx, SelectionCause)> {
         match selection_ip(source) {
             IpAddr::V4(addr) => {
                 for &len in &self.v4.lengths_desc {
@@ -83,6 +84,9 @@ impl PolicySnapshot {
                     else {
                         continue;
                     };
+                    if !self.views[usize::from(view_idx)].valid_on(node) {
+                        continue;
+                    }
                     return Some((
                         view_idx,
                         SelectionCause::Subnet {
@@ -102,6 +106,9 @@ impl PolicySnapshot {
                     else {
                         continue;
                     };
+                    if !self.views[usize::from(view_idx)].valid_on(node) {
+                        continue;
+                    }
                     return Some((
                         view_idx,
                         SelectionCause::Subnet {

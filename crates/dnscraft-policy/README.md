@@ -15,8 +15,8 @@ AAAA suppression.
 
 | Step | Action |
 |------|--------|
-| — | Select view/profile (Client ID → longest-prefix subnet → default) |
-| 1 | View local records (exact A/AAAA/CNAME/TXT/SRV/MX/PTR) |
+| — | Select view/profile (longest-prefix subnet among views valid on the node → default; Client IDs never select) |
+| 1 | Local records from the global name space (exact A/AAAA/CNAME/TXT/SRV/MX/PTR), with the selected view's override |
 | 2 | `ClientDirectory` names / PTR / special-use NXDOMAIN |
 | 3 | Bypass canaries (Firefox DoH, iCloud Private Relay) |
 | 4 | Filter original qname (`FilterEngine::match_name`) |
@@ -89,14 +89,21 @@ are dropped.
 
 ## Client ID registry (for listeners)
 
-`PolicyEngine::is_client_id_registered(&self, id: &str) -> bool` is the
-read-only check public listeners use before completing a TLS handshake or
-routing a DoH path. It takes a short snapshot read lock, looks up the already
-lower-cased id in the snapshot map (no allocation), and returns `false` for
-unknown or syntactically invalid ids (never panics). Hot reload is automatic:
-after `apply_config` removes an id, the next call returns `false`. The
+`PolicyEngine::registered_client_ids(&self) -> Arc<[ClientId]>` returns the
+top-level `client_ids` registry of the current snapshot (one `Arc` clone under a
+short read lock). Public listeners admit DoH/DoT Client IDs against it before a
+TLS handshake completes or a DoH path is routed. The registry is admission
+only: it never selects a view. Hot reload is automatic. The
 `dnscraft_tls::ClientIdRegistry` adapter lives in the listeners crate so policy
 does not depend on tls.
+
+## Records and nodes
+
+- `PolicyConfig.records`: one global name space keyed by owner name. Each entry
+  has a default `rdata` and optional `overrides` keyed by view id. A view without
+  an override uses the default. Snapshot build applies the overrides per view.
+- `ViewConfig.nodes`: views valid on the listed node ids (empty = every node).
+  `RequestContext.node_id` is matched against it; the default view must be empty.
 
 ## Failure codes (config)
 

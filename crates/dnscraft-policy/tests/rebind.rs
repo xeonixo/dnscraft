@@ -87,24 +87,25 @@ fn profile_base() -> ProfileConfig {
     }
 }
 
-fn default_view(records: Vec<ViewRecordConfig>) -> ViewConfig {
+fn default_view() -> ViewConfig {
     ViewConfig {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
-        client_ids: Vec::new(),
-        records,
+        nodes: Vec::new(),
         profile: ProfileId::new("default").unwrap(),
     }
 }
 
 fn policy_cfg(profile: ProfileConfig, check_zones: Vec<ForwardZoneId>) -> PolicyConfig {
     PolicyConfig {
+        client_ids: Vec::new(),
+        records: Vec::new(),
         default_rebind: true,
         ptr_prefixes: Vec::new(),
         local_nxdomain_suffixes: Vec::new(),
         rebind_check_forward_zones: check_zones,
-        views: vec![default_view(Vec::new())],
+        views: vec![default_view()],
         profiles: vec![profile],
     }
 }
@@ -130,6 +131,7 @@ fn ctx(name: &str, qtype: RecordType) -> RequestContext {
         source_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
         protocol: DnsProtocol::Udp53,
         listener_id: ListenerId::new("udp-53").unwrap(),
+        node_id: None,
         client_id: None,
         query: Query {
             name: Name::from_ascii(name).unwrap(),
@@ -434,15 +436,18 @@ async fn synthetic_private_passes_and_aaaa_suppression_is_qtype_only() {
 
     // View record pointing at a private IP skips rebind (synthetic).
     let view_cfg = PolicyConfig {
+        client_ids: Vec::new(),
+        records: vec![ViewRecordConfig {
+            name: Name::from_ascii("nas.lan.").unwrap(),
+            ttl: 60,
+            rdata: RData::A(Ipv4Addr::new(192, 168, 1, 10)),
+            overrides: Default::default(),
+        }],
         default_rebind: true,
         ptr_prefixes: Vec::new(),
         local_nxdomain_suffixes: Vec::new(),
         rebind_check_forward_zones: Vec::new(),
-        views: vec![default_view(vec![ViewRecordConfig {
-            name: Name::from_ascii("nas.lan.").unwrap(),
-            ttl: 60,
-            rdata: RData::A(Ipv4Addr::new(192, 168, 1, 10)),
-        }])],
+        views: vec![default_view()],
         profiles: vec![profile_base()],
     };
     let engine_view = engine_on(&h, view_cfg, empty_filter(), config_for(&h)).await;

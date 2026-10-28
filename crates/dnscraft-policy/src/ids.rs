@@ -85,13 +85,6 @@ macro_rules! id_type {
     };
 }
 
-impl ClientId {
-    /// Whether `s` matches `[a-z0-9-]{1,63}` without allocating.
-    pub(crate) fn is_valid_str(s: &str) -> bool {
-        validate_id(s, MAX_CLIENT_ID).is_ok()
-    }
-}
-
 id_type!(
     /// Identifier of a split-horizon view.
     ///
@@ -111,6 +104,13 @@ id_type!(
     ///
     /// Matches `[a-z0-9-]{1,64}`.
     ListenerId,
+    MAX_ID
+);
+id_type!(
+    /// Identifier of a cluster node (`node_id`), used for view node validity.
+    ///
+    /// Matches `[a-z0-9-]{1,64}`.
+    NodeId,
     MAX_ID
 );
 id_type!(
@@ -164,11 +164,10 @@ mod tests {
     }
 
     #[test]
-    fn client_id_is_valid_str_matches_new() {
-        assert!(ClientId::is_valid_str("iphone-k7q2x9"));
-        assert!(!ClientId::is_valid_str("iPhone"));
-        assert!(!ClientId::is_valid_str(""));
-        assert_eq!(ClientId::is_valid_str("a"), ClientId::new("a").is_ok());
+    fn client_id_rejects_uppercase_and_empty() {
+        assert!(ClientId::new("iphone-k7q2x9").is_ok());
+        assert!(ClientId::new("iPhone").is_err());
+        assert!(ClientId::new("").is_err());
     }
 
     #[test]

@@ -160,6 +160,7 @@ fn bench_udp(c: &mut Criterion) {
     let admission = Arc::new(std::sync::Mutex::new(Admission::new(&limits, &public)));
     let handler = Arc::new(FakeHandler::new(answer()));
     let listener = ListenerConfig {
+        node_id: None,
         id: ListenerId::new("bench-udp").unwrap(),
         protocol: Protocol::Udp53,
         address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),

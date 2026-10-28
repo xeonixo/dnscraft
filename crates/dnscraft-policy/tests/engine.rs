@@ -91,14 +91,15 @@ fn default_view(profile: &str) -> ViewConfig {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
-        client_ids: Vec::new(),
-        records: Vec::new(),
+        nodes: Vec::new(),
         profile: ProfileId::new(profile).unwrap(),
     }
 }
 
 fn policy_config(profiles: Vec<ProfileConfig>) -> PolicyConfig {
     PolicyConfig {
+        client_ids: Vec::new(),
+        records: Vec::new(),
         default_rebind: true,
         ptr_prefixes: Vec::new(),
         local_nxdomain_suffixes: Vec::new(),
@@ -129,6 +130,7 @@ fn ctx(name: &str, qtype: RecordType, test_query: bool) -> RequestContext {
         source_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
         protocol: DnsProtocol::Udp53,
         listener_id: ListenerId::new("udp-53").unwrap(),
+        node_id: None,
         client_id: None,
         query: Query {
             name: Name::from_ascii(name).unwrap(),
@@ -455,37 +457,22 @@ async fn engine_forward_loop_yields_servfail_with_cause() {
 }
 
 #[tokio::test]
-async fn client_id_registered_unknown_and_invalid() {
+async fn client_id_registry_lists_configured_ids_and_follows_apply() {
     let h = Hierarchy::start().await.unwrap();
     let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
     let mut cfg = policy_config(vec![profile("default", None)]);
-    cfg.views[0]
-        .client_ids
+    cfg.client_ids
         .push(dnscraft_policy::ClientId::new("iphone-k7q2x9").unwrap());
     let engine =
         PolicyEngine::new(cfg, empty_filter(), resolver, Arc::new(NoClients), clock()).unwrap();
 
-    assert!(engine.is_client_id_registered("iphone-k7q2x9"));
-    assert!(!engine.is_client_id_registered("unknown-id"));
-    assert!(!engine.is_client_id_registered("iPhone"));
-    assert!(!engine.is_client_id_registered("bad_id"));
-    assert!(!engine.is_client_id_registered(""));
-    assert!(!engine.is_client_id_registered(&"a".repeat(64)));
-}
+    let registered = engine.registered_client_ids();
+    assert_eq!(registered.len(), 1);
+    assert_eq!(registered[0].as_str(), "iphone-k7q2x9");
 
-#[tokio::test]
-async fn client_id_unregistered_after_apply_config_removes_it() {
-    let h = Hierarchy::start().await.unwrap();
-    let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
-    let mut cfg = policy_config(vec![profile("default", None)]);
-    cfg.views[0]
-        .client_ids
-        .push(dnscraft_policy::ClientId::new("iphone-k7q2x9").unwrap());
-    let engine =
-        PolicyEngine::new(cfg, empty_filter(), resolver, Arc::new(NoClients), clock()).unwrap();
-    assert!(engine.is_client_id_registered("iphone-k7q2x9"));
-
-    let without = policy_config(vec![profile("default", None)]);
-    engine.apply_config(without).await.unwrap();
-    assert!(!engine.is_client_id_registered("iphone-k7q2x9"));
+    engine
+        .apply_config(policy_config(vec![profile("default", None)]))
+        .await
+        .unwrap();
+    assert!(engine.registered_client_ids().is_empty());
 }

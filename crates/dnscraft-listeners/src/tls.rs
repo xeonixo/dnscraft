@@ -62,11 +62,10 @@ impl TlsStats {
     }
 }
 
-/// L0 adapter: policy snapshot as [`ClientIdRegistry`].
+/// L0 adapter: the policy Client-ID registry as [`ClientIdRegistry`].
 ///
-/// Lower-cases the lookup key because [`PolicyEngine::is_client_id_registered`]
-/// is case-sensitive. Follows [`PolicyEngine::apply_config`] automatically
-/// (shared `Arc`).
+/// Lower-cases the lookup key because registry ids are lower-case. Follows
+/// [`PolicyEngine::apply_config`] automatically (shared `Arc`).
 #[derive(Clone)]
 pub struct PolicyClientIds(pub Arc<PolicyEngine>);
 
@@ -78,8 +77,11 @@ impl fmt::Debug for PolicyClientIds {
 
 impl ClientIdRegistry for PolicyClientIds {
     fn is_registered(&self, client_id: &str) -> bool {
+        let wanted = client_id.to_ascii_lowercase();
         self.0
-            .is_client_id_registered(&client_id.to_ascii_lowercase())
+            .registered_client_ids()
+            .iter()
+            .any(|id| id.as_str() == wanted)
     }
 }
 

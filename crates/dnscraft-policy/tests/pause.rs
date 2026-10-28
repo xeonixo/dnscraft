@@ -20,6 +20,7 @@ use dnscraft_proto::{Class, Name, Rcode, RecordType};
 use dnscraft_resolver::dnssec::TrustAnchors;
 use dnscraft_resolver::{Query, Resolver, ResolverConfig};
 use dnscraft_testkit::{Hierarchy, default_servers};
+use ipnet::IpNet;
 
 fn clock_at(secs: u64) -> Arc<ManualClock> {
     Arc::new(ManualClock::new(
@@ -71,18 +72,19 @@ fn profile(id: &str) -> ProfileConfig {
     }
 }
 
-fn view(id: &str, is_default: bool, profile: &str, client_ids: &[&str]) -> ViewConfig {
+fn view(id: &str, is_default: bool, profile: &str, subnets: Vec<IpNet>) -> ViewConfig {
     ViewConfig {
         id: ViewId::new(id).unwrap(),
         is_default,
-        subnets: Vec::new(),
-        client_ids: client_ids
-            .iter()
-            .map(|c| ClientId::new(c).unwrap())
-            .collect(),
-        records: Vec::new(),
+        subnets,
+        nodes: Vec::new(),
         profile: ProfileId::new(profile).unwrap(),
     }
+}
+
+/// Host the `kids` view selects by source IP (the `ctx` default source).
+fn kids_host() -> IpNet {
+    IpNet::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)), 32).unwrap()
 }
 
 fn config_for(h: &Hierarchy) -> ResolverConfig {
@@ -102,10 +104,25 @@ fn config_for(h: &Hierarchy) -> ResolverConfig {
 }
 
 fn ctx(name: &str, qtype: RecordType, client_id: Option<&str>) -> RequestContext {
+    ctx_from(
+        IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+        name,
+        qtype,
+        client_id,
+    )
+}
+
+fn ctx_from(
+    source: IpAddr,
+    name: &str,
+    qtype: RecordType,
+    client_id: Option<&str>,
+) -> RequestContext {
     RequestContext {
-        source_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+        source_ip: source,
         protocol: DnsProtocol::Udp53,
         listener_id: ListenerId::new("udp-53").unwrap(),
+        node_id: None,
         client_id: client_id.map(|c| ClientId::new(c).unwrap()),
         query: Query {
             name: Name::from_ascii(name).unwrap(),
@@ -119,6 +136,8 @@ fn ctx(name: &str, qtype: RecordType, client_id: Option<&str>) -> RequestContext
 
 fn policy_cfg(profiles: Vec<ProfileConfig>, views: Vec<ViewConfig>) -> PolicyConfig {
     PolicyConfig {
+        client_ids: Vec::new(),
+        records: Vec::new(),
         default_rebind: true,
         ptr_prefixes: Vec::new(),
         local_nxdomain_suffixes: Vec::new(),
@@ -134,7 +153,7 @@ async fn engine_blocking(clock: Arc<ManualClock>) -> (Hierarchy, PolicyEngine) {
     let eng = PolicyEngine::new(
         policy_cfg(
             vec![profile("default")],
-            vec![view("default", true, "default", &[])],
+            vec![view("default", true, "default", Vec::new())],
         ),
         blocking_filter(),
         resolver,
@@ -193,8 +212,8 @@ async fn pause_per_profile_only_affects_that_profile() {
         policy_cfg(
             vec![profile("kids"), profile("default")],
             vec![
-                view("kids", false, "kids", &["kids"]),
-                view("default", true, "default", &[]),
+                view("kids", false, "kids", vec![kids_host()]),
+                view("default", true, "default", Vec::new()),
             ],
         ),
         blocking_filter(),
@@ -220,7 +239,12 @@ async fn pause_per_profile_only_affects_that_profile() {
     );
 
     let other = eng
-        .handle(ctx("ads.example", RecordType::A, None))
+        .handle(ctx_from(
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
+            "ads.example",
+            RecordType::A,
+            None,
+        ))
         .await
         .unwrap();
     assert!(
@@ -295,8 +319,8 @@ async fn pause_records_protection_paused_once_with_scope() {
         policy_cfg(
             vec![profile("kids"), profile("default")],
             vec![
-                view("kids", false, "kids", &["kids"]),
-                view("default", true, "default", &[]),
+                view("kids", false, "kids", vec![kids_host()]),
+                view("default", true, "default", Vec::new()),
             ],
         ),
         blocking_filter(),
@@ -321,7 +345,12 @@ async fn pause_records_protection_paused_once_with_scope() {
     assert!(!kids.record.steps.contains(&DecisionStep::FilterBlocked));
 
     let other = eng2
-        .handle(ctx("ads.example", RecordType::A, None))
+        .handle(ctx_from(
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
+            "ads.example",
+            RecordType::A,
+            None,
+        ))
         .await
         .unwrap();
     assert!(paused_steps(&other.record).is_empty());
@@ -376,7 +405,7 @@ async fn pause_skips_filter_but_keeps_canary_rebind_aaaa() {
     p.rebind = Some(true);
 
     let eng = PolicyEngine::new(
-        policy_cfg(vec![p], vec![view("default", true, "default", &[])]),
+        policy_cfg(vec![p], vec![view("default", true, "default", Vec::new())]),
         filter,
         resolver,
         Arc::new(NoClients),

@@ -38,6 +38,7 @@ fn install_ring() {
 
 fn listener_dot(addr: SocketAddr, exposure: Exposure) -> ListenerConfig {
     ListenerConfig {
+        node_id: None,
         id: ListenerId::new("test-dot").unwrap(),
         protocol: Protocol::Dot,
         address: addr,
@@ -49,6 +50,7 @@ fn listener_dot(addr: SocketAddr, exposure: Exposure) -> ListenerConfig {
 
 fn listener_tcp(addr: SocketAddr) -> ListenerConfig {
     ListenerConfig {
+        node_id: None,
         id: ListenerId::new("test-tcp").unwrap(),
         protocol: Protocol::Tcp53,
         address: addr,

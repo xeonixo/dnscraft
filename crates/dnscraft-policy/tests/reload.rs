@@ -71,24 +71,25 @@ fn profile(id: &str) -> ProfileConfig {
     }
 }
 
-fn default_view(profile: &str, records: Vec<ViewRecordConfig>) -> ViewConfig {
+fn default_view(profile: &str) -> ViewConfig {
     ViewConfig {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
-        client_ids: Vec::new(),
-        records,
+        nodes: Vec::new(),
         profile: ProfileId::new(profile).unwrap(),
     }
 }
 
 fn base_cfg() -> PolicyConfig {
     PolicyConfig {
+        client_ids: Vec::new(),
+        records: Vec::new(),
         default_rebind: true,
         ptr_prefixes: Vec::new(),
         local_nxdomain_suffixes: Vec::new(),
         rebind_check_forward_zones: Vec::new(),
-        views: vec![default_view("default", Vec::new())],
+        views: vec![default_view("default")],
         profiles: vec![profile("default")],
     }
 }
@@ -114,6 +115,7 @@ fn ctx(name: &str, qtype: RecordType) -> RequestContext {
         source_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
         protocol: DnsProtocol::Udp53,
         listener_id: ListenerId::new("udp-53").unwrap(),
+        node_id: None,
         client_id: None,
         query: Query {
             name: Name::from_ascii(name).unwrap(),
@@ -162,10 +164,11 @@ async fn apply_config_valid_takes_effect_next_query() {
     let eng = engine().await;
 
     let mut next = base_cfg();
-    next.views[0].records.push(ViewRecordConfig {
+    next.records.push(ViewRecordConfig {
         name: Name::from_ascii("local.test.").unwrap(),
         ttl: 60,
         rdata: RData::A(Ipv4Addr::new(192, 0, 2, 50)),
+        overrides: Default::default(),
     });
     eng.apply_config(next).await.unwrap();
 
@@ -201,10 +204,11 @@ async fn counters_increment_and_survive_reload() {
 
     // Local view hit.
     let mut with_local = base_cfg();
-    with_local.views[0].records.push(ViewRecordConfig {
+    with_local.records.push(ViewRecordConfig {
         name: Name::from_ascii("lan.test.").unwrap(),
         ttl: 60,
         rdata: RData::A(Ipv4Addr::new(192, 0, 2, 7)),
+        overrides: Default::default(),
     });
     eng.apply_config(with_local).await.unwrap();
     eng.handle(ctx("lan.test.", RecordType::A)).await.unwrap();
@@ -286,16 +290,13 @@ async fn apply_config_adds_new_ids_and_drops_removed_counters() {
     next.views.push(ViewConfig {
         id: ViewId::new("kids").unwrap(),
         is_default: false,
-        subnets: Vec::new(),
-        client_ids: vec![dnscraft_policy::ClientId::new("kids").unwrap()],
-        records: Vec::new(),
+        subnets: vec!["192.0.2.10/32".parse().unwrap()],
+        nodes: Vec::new(),
         profile: ProfileId::new("kids").unwrap(),
     });
     eng.apply_config(next).await.unwrap();
 
-    let mut kids_ctx = ctx("ads.example", RecordType::A);
-    kids_ctx.client_id = Some(dnscraft_policy::ClientId::new("kids").unwrap());
-    eng.handle(kids_ctx).await.unwrap();
+    eng.handle(ctx("ads.example", RecordType::A)).await.unwrap();
 
     let stats = eng.stats();
     let kids_view = stats
@@ -354,8 +355,7 @@ async fn apply_config_drops_pause_for_removed_profile() {
         id: ViewId::new("kids").unwrap(),
         is_default: false,
         subnets: Vec::new(),
-        client_ids: vec![dnscraft_policy::ClientId::new("kids").unwrap()],
-        records: Vec::new(),
+        nodes: Vec::new(),
         profile: ProfileId::new("kids").unwrap(),
     });
     let eng = PolicyEngine::new(
@@ -382,16 +382,13 @@ async fn apply_config_drops_pause_for_removed_profile() {
     again.views.push(ViewConfig {
         id: ViewId::new("kids").unwrap(),
         is_default: false,
-        subnets: Vec::new(),
-        client_ids: vec![dnscraft_policy::ClientId::new("kids").unwrap()],
-        records: Vec::new(),
+        subnets: vec!["192.0.2.10/32".parse().unwrap()],
+        nodes: Vec::new(),
         profile: ProfileId::new("kids").unwrap(),
     });
     eng.apply_config(again).await.unwrap();
 
-    let mut kids_ctx = ctx("ads.example", RecordType::A);
-    kids_ctx.client_id = Some(dnscraft_policy::ClientId::new("kids").unwrap());
-    let ans = eng.handle(kids_ctx).await.unwrap();
+    let ans = eng.handle(ctx("ads.example", RecordType::A)).await.unwrap();
     assert!(
         ans.record.steps.contains(&DecisionStep::FilterBlocked),
         "pause for removed profile must not survive reload"

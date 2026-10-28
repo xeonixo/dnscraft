@@ -88,15 +88,17 @@ async fn policy_engine() -> (Hierarchy, Arc<PolicyEngine>) {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
+        nodes: Vec::new(),
+        profile: ProfileId::new("default").unwrap(),
+    };
+    let cfg = PolicyConfig {
         client_ids: Vec::new(),
         records: vec![ViewRecordConfig {
             name: Name::from_ascii("lan.example.test.").unwrap(),
             ttl: 60,
             rdata: RData::A(Ipv4Addr::new(192, 0, 2, 99)),
+            overrides: Default::default(),
         }],
-        profile: ProfileId::new("default").unwrap(),
-    };
-    let cfg = PolicyConfig {
         views: vec![view],
         profiles: vec![profile],
         ..PolicyConfig::default()
@@ -133,6 +135,7 @@ async fn spawn_udp(
     )));
     let join = tokio::spawn(serve_udp(UdpServeParams {
         listener: ListenerConfig {
+            node_id: None,
             id: ListenerId::new("e2e-udp").unwrap(),
             protocol: Protocol::Udp53,
             address: bind,
@@ -170,6 +173,7 @@ async fn spawn_tcp(
     )));
     let join = tokio::spawn(serve_tcp(TcpServeParams {
         listener: ListenerConfig {
+            node_id: None,
             id: ListenerId::new("e2e-tcp").unwrap(),
             protocol: Protocol::Tcp53,
             address: bind,

@@ -32,6 +32,7 @@ fn addr_v4(port: u16) -> SocketAddr {
 
 fn listener(id_s: &str, protocol: Protocol, address: SocketAddr) -> ListenerConfig {
     ListenerConfig {
+        node_id: None,
         id: id(id_s),
         protocol,
         address,
@@ -59,6 +60,7 @@ fn config_spec_excerpt_validates() {
         listener("lan-udp", Protocol::Udp53, addr_v4(53)),
         listener("lan-tcp", Protocol::Tcp53, addr_v4(53)),
         ListenerConfig {
+            node_id: None,
             id: id("lan-dot"),
             protocol: Protocol::Dot,
             address: SocketAddr::from((Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 0x53), 853)),
@@ -67,6 +69,7 @@ fn config_spec_excerpt_validates() {
             tls_policy: None,
         },
         ListenerConfig {
+            node_id: None,
             id: id("public-doh"),
             protocol: Protocol::Doh,
             address: addr_v4(443),
@@ -91,6 +94,7 @@ fn config_rejects_duplicate_id() {
 #[test]
 fn config_rejects_public_plaintext() {
     let mut cfg = valid_cfg(vec![ListenerConfig {
+        node_id: None,
         id: id("pub-udp"),
         protocol: Protocol::Udp53,
         address: addr_v4(53),
@@ -106,6 +110,7 @@ fn config_rejects_public_plaintext() {
 #[test]
 fn config_rejects_public_when_disabled() {
     let mut cfg = valid_cfg(vec![ListenerConfig {
+        node_id: None,
         id: id("pub-dot"),
         protocol: Protocol::Dot,
         address: addr_v4(853),
@@ -121,6 +126,7 @@ fn config_rejects_public_when_disabled() {
 #[test]
 fn config_rejects_h3_on_non_doh() {
     let cfg = valid_cfg(vec![ListenerConfig {
+        node_id: None,
         id: id("dot-h3"),
         protocol: Protocol::Dot,
         address: addr_v4(853),
@@ -147,6 +153,7 @@ fn config_rejects_doh_h3_conflicting_with_udp() {
     let cfg = valid_cfg(vec![
         listener("udp", Protocol::Udp53, addr_v4(443)),
         ListenerConfig {
+            node_id: None,
             id: id("doh"),
             protocol: Protocol::Doh,
             address: addr_v4(443),
@@ -222,6 +229,7 @@ fn config_accepts_tls_policy_on_encrypted_listeners() {
         ),
         with_policy(
             ListenerConfig {
+                node_id: None,
                 id: id("doh"),
                 protocol: Protocol::Doh,
                 address: addr_v4(443),
@@ -342,6 +350,7 @@ async fn fake_handler_records_and_returns_canned_answer() {
         source_ip: std::net::IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
         protocol: DnsProtocol::Udp53,
         listener_id: id("lan-udp"),
+        node_id: None,
         client_id: None,
         query: Query {
             name: Name::from_ascii("example.com.").unwrap(),
@@ -376,16 +385,18 @@ async fn policy_engine_query_handler_answers_local_record() {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
-        client_ids: Vec::new(),
-        records: vec![ViewRecordConfig {
-            name: Name::from_ascii("app.example.").unwrap(),
-            ttl: 60,
-            rdata: RData::A(Ipv4Addr::new(192, 0, 2, 55)),
-        }],
+        nodes: Vec::new(),
         profile: ProfileId::new("default").unwrap(),
     };
     let engine = PolicyEngine::new(
         PolicyConfig {
+            client_ids: Vec::new(),
+            records: vec![ViewRecordConfig {
+                name: Name::from_ascii("app.example.").unwrap(),
+                ttl: 60,
+                rdata: RData::A(Ipv4Addr::new(192, 0, 2, 55)),
+                overrides: Default::default(),
+            }],
             default_rebind: true,
             ptr_prefixes: Vec::new(),
             local_nxdomain_suffixes: Vec::new(),
@@ -415,6 +426,7 @@ async fn policy_engine_query_handler_answers_local_record() {
         source_ip: std::net::IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
         protocol: DnsProtocol::Udp53,
         listener_id: id("lan-udp"),
+        node_id: None,
         client_id: None,
         query: Query {
             name: Name::from_ascii("app.example.").unwrap(),

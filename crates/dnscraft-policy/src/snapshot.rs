@@ -10,10 +10,10 @@ use ipnet::IpNet;
 
 use crate::config::{
     PolicyConfig, ProfileConfig, SAFESEARCH_PROVIDERS, SCHEDULE_WEEK, SafeSearchConfig,
-    ScheduleConfig, ViewConfig, ViewRecordConfig, is_allowed_view_rtype, name_has_wildcard_label,
+    ScheduleConfig, ViewRecordConfig, is_allowed_view_rtype, name_has_wildcard_label,
 };
 use crate::error::{ConfigReason, PolicyError};
-use crate::ids::{ClientId, ProfileId, ViewId};
+use crate::ids::{ClientId, NodeId, ProfileId, ViewId};
 
 /// Index of a view inside [`PolicySnapshot::views`].
 pub type ViewIdx = u16;
@@ -38,8 +38,18 @@ pub struct SnapshotView {
     pub(crate) is_default: bool,
     /// Profile applied for this view.
     pub(crate) profile_idx: ProfileIdx,
-    /// Exact-name local records.
+    /// Nodes this view exists on; empty means every node.
+    pub(crate) nodes: Arc<[NodeId]>,
+    /// Local records as seen in this view: the global table with this view's
+    /// overrides applied (built once per snapshot).
     pub(crate) records: HashMap<Name, ViewRrSets>,
+}
+
+impl SnapshotView {
+    /// Whether this view participates in selection on `node`.
+    pub(crate) fn valid_on(&self, node: Option<&NodeId>) -> bool {
+        self.nodes.is_empty() || node.is_some_and(|node| self.nodes.contains(node))
+    }
 }
 
 /// A pre-parsed `rebind_exceptions` entry (built once at snapshot load).
@@ -102,8 +112,8 @@ pub struct PolicySnapshot {
     pub(crate) profiles: Arc<[SnapshotProfile]>,
     /// Index of the default view.
     pub(crate) default_view: ViewIdx,
-    /// Client ID → view (exact match).
-    pub(crate) client_ids: HashMap<ClientId, ViewIdx>,
+    /// Client-ID registry (admission only; never a selection key).
+    pub(crate) client_ids: Arc<[ClientId]>,
     /// IPv4 subnet tables keyed by prefix length.
     pub(crate) v4: PrefixTable<[u8; 4]>,
     /// IPv6 subnet tables keyed by prefix length.
@@ -168,8 +178,28 @@ impl PolicySnapshot {
             });
         }
 
+        let mut registry: HashSet<ClientId> = HashSet::new();
+        for client_id in &config.client_ids {
+            if !registry.insert(client_id.clone()) {
+                return Err(PolicyError::InvalidConfig {
+                    reason: ConfigReason::DuplicateClientId {
+                        id: Arc::from(client_id.as_str()),
+                    },
+                });
+            }
+        }
+        let known_views: HashSet<ViewId> = config.views.iter().map(|v| v.id.clone()).collect();
+        for record in &config.records {
+            if let Some(view) = record.overrides.keys().find(|v| !known_views.contains(*v)) {
+                return Err(PolicyError::InvalidConfig {
+                    reason: ConfigReason::UnknownOverrideView {
+                        id: Arc::from(view.as_str()),
+                    },
+                });
+            }
+        }
+
         let mut view_by_id: HashMap<ViewId, ViewIdx> = HashMap::new();
-        let mut client_ids: HashMap<ClientId, ViewIdx> = HashMap::new();
         let mut v4 = PrefixTable::default();
         let mut v6 = PrefixTable::default();
         let mut subnet_owner: HashMap<IpNet, ViewIdx> = HashMap::new();
@@ -202,18 +232,12 @@ impl PolicySnapshot {
                         reason: ConfigReason::MultipleDefaultViews,
                     });
                 }
-                default_view = Some(view_idx);
-            }
-
-            for client_id in &view.client_ids {
-                if client_ids.contains_key(client_id) {
+                if !view.nodes.is_empty() {
                     return Err(PolicyError::InvalidConfig {
-                        reason: ConfigReason::DuplicateClientId {
-                            id: Arc::from(client_id.as_str()),
-                        },
+                        reason: ConfigReason::DefaultViewNodes,
                     });
                 }
-                client_ids.insert(client_id.clone(), view_idx);
+                default_view = Some(view_idx);
             }
 
             for net in &view.subnets {
@@ -238,12 +262,13 @@ impl PolicySnapshot {
                 }
             }
 
-            let records = build_view_records(&view)?;
+            let records = build_view_records(&config.records, &view.id)?;
             view_by_id.insert(view.id.clone(), view_idx);
             views.push(SnapshotView {
                 id: view.id,
                 is_default: view.is_default,
                 profile_idx,
+                nodes: Arc::from(view.nodes),
                 records,
             });
         }
@@ -265,7 +290,7 @@ impl PolicySnapshot {
             views: Arc::from(views),
             profiles: Arc::from(profiles),
             default_view,
-            client_ids,
+            client_ids: Arc::from(config.client_ids),
             v4,
             v6,
         })
@@ -392,9 +417,16 @@ fn validate_safesearch(mut cfg: SafeSearchConfig) -> Result<SafeSearchConfig, Po
     Ok(cfg)
 }
 
-fn build_view_records(view: &ViewConfig) -> Result<HashMap<Name, ViewRrSets>, PolicyError> {
+/// Local records as seen in `view`: each global record carries the view's
+/// override (else its default), then the usual RRset checks run.
+fn build_view_records(
+    records: &[ViewRecordConfig],
+    view: &ViewId,
+) -> Result<HashMap<Name, ViewRrSets>, PolicyError> {
     let mut by_name: HashMap<Name, Vec<ViewRecordConfig>> = HashMap::new();
-    for rec in &view.records {
+    for record in records {
+        let mut rec = record.clone();
+        rec.rdata = record.rdata_for(view).clone();
         if name_has_wildcard_label(&rec.name) {
             return Err(PolicyError::InvalidConfig {
                 reason: ConfigReason::WildcardOwner,
@@ -405,10 +437,7 @@ fn build_view_records(view: &ViewConfig) -> Result<HashMap<Name, ViewRrSets>, Po
                 reason: ConfigReason::UnsupportedRecordType,
             });
         }
-        by_name
-            .entry(rec.name.clone())
-            .or_default()
-            .push(rec.clone());
+        by_name.entry(rec.name.clone()).or_default().push(rec);
     }
 
     let mut out = HashMap::with_capacity(by_name.len());
@@ -449,7 +478,7 @@ mod tests {
         DEFAULT_LOCAL_NXDOMAIN_SUFFIXES, ProfileConfig, SCHEDULE_WEEK, SafeSearchConfig,
         ViewConfig, ViewRecordConfig,
     };
-    use crate::ids::{ClientId, ProfileId, ViewId};
+    use crate::ids::{ClientId, NodeId, ProfileId, ViewId};
     use dnscraft_proto::{Name, RData};
     use ipnet::IpNet;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -495,8 +524,7 @@ mod tests {
             id: ViewId::new("default").unwrap(),
             is_default: true,
             subnets: Vec::new(),
-            client_ids: Vec::new(),
-            records: Vec::new(),
+            nodes: Vec::new(),
             profile: ProfileId::new(profile).unwrap(),
         }
     }
@@ -506,12 +534,7 @@ mod tests {
             id: ViewId::new("lan").unwrap(),
             is_default: false,
             subnets: vec![doc_v4(), doc_v6()],
-            client_ids: Vec::new(),
-            records: vec![ViewRecordConfig {
-                name: Name::from_ascii("nas.lan.example.com").unwrap(),
-                ttl: 60,
-                rdata: RData::A(Ipv4Addr::new(192, 0, 2, 10)),
-            }],
+            nodes: Vec::new(),
             profile: ProfileId::new(profile).unwrap(),
         }
     }
@@ -528,6 +551,13 @@ mod tests {
             rebind_check_forward_zones: Vec::new(),
             views: vec![lan_view("default"), default_view("default")],
             profiles: vec![profile("default", "default")],
+            client_ids: Vec::new(),
+            records: vec![ViewRecordConfig {
+                name: Name::from_ascii("nas.lan.example.com").unwrap(),
+                ttl: 60,
+                rdata: RData::A(Ipv4Addr::new(192, 0, 2, 10)),
+                overrides: Default::default(),
+            }],
         }
     }
 
@@ -577,11 +607,11 @@ mod tests {
     }
 
     #[test]
-    fn config_rejects_client_id_on_two_views() {
+    fn config_rejects_duplicate_client_id_in_registry() {
         let mut cfg = spec_excerpt_config();
         let id = ClientId::new("iphone-k7q2x9").unwrap();
-        cfg.views[0].client_ids.push(id.clone());
-        cfg.views[1].client_ids.push(id);
+        cfg.client_ids.push(id.clone());
+        cfg.client_ids.push(id);
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert_eq!(err.code(), "policy.config.invalid");
         assert!(matches!(
@@ -627,15 +657,17 @@ mod tests {
     fn config_rejects_cname_beside_other_types() {
         let mut cfg = spec_excerpt_config();
         let name = Name::from_ascii("alias.example.com").unwrap();
-        cfg.views[0].records.push(ViewRecordConfig {
+        cfg.records.push(ViewRecordConfig {
             name: name.clone(),
             ttl: 60,
             rdata: RData::CNAME(Name::from_ascii("nas.lan.example.com").unwrap()),
+            overrides: Default::default(),
         });
-        cfg.views[0].records.push(ViewRecordConfig {
+        cfg.records.push(ViewRecordConfig {
             name,
             ttl: 60,
             rdata: RData::A(Ipv4Addr::new(192, 0, 2, 11)),
+            overrides: Default::default(),
         });
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert_eq!(err.code(), "policy.record.cname_conflict");
@@ -644,10 +676,11 @@ mod tests {
     #[test]
     fn config_rejects_unsupported_record_type() {
         let mut cfg = spec_excerpt_config();
-        cfg.views[0].records.push(ViewRecordConfig {
+        cfg.records.push(ViewRecordConfig {
             name: Name::from_ascii("ns.example.com").unwrap(),
             ttl: 60,
             rdata: RData::NS(Name::from_ascii("a.example.com").unwrap()),
+            overrides: Default::default(),
         });
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert_eq!(err.code(), "policy.config.invalid");
@@ -662,10 +695,11 @@ mod tests {
     #[test]
     fn config_rejects_wildcard_owner() {
         let mut cfg = spec_excerpt_config();
-        cfg.views[0].records.push(ViewRecordConfig {
+        cfg.records.push(ViewRecordConfig {
             name: Name::from_ascii("*.example.com").unwrap(),
             ttl: 60,
             rdata: RData::A(Ipv4Addr::new(192, 0, 2, 99)),
+            overrides: Default::default(),
         });
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert_eq!(err.code(), "policy.config.invalid");
@@ -908,13 +942,62 @@ mod tests {
     }
 
     #[test]
+    fn config_rejects_default_view_restricted_to_nodes() {
+        let mut cfg = spec_excerpt_config();
+        let default = cfg.views.iter_mut().find(|v| v.is_default).unwrap();
+        default.nodes.push(NodeId::new("node-1").unwrap());
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert!(matches!(
+            err,
+            PolicyError::InvalidConfig {
+                reason: ConfigReason::DefaultViewNodes
+            }
+        ));
+    }
+
+    #[test]
+    fn config_rejects_override_for_unknown_view() {
+        let mut cfg = spec_excerpt_config();
+        cfg.records[0].overrides.insert(
+            ViewId::new("nowhere").unwrap(),
+            RData::A(Ipv4Addr::new(192, 0, 2, 99)),
+        );
+        let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+        assert!(matches!(
+            err,
+            PolicyError::InvalidConfig {
+                reason: ConfigReason::UnknownOverrideView { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn config_applies_per_view_override_and_keeps_default_elsewhere() {
+        let mut cfg = spec_excerpt_config();
+        cfg.records[0].overrides.insert(
+            ViewId::new("lan").unwrap(),
+            RData::A(Ipv4Addr::new(192, 0, 2, 50)),
+        );
+        let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
+        let name = Name::from_ascii("nas.lan.example.com").unwrap();
+        let lan = snap.views[0].records.get(&name).unwrap();
+        assert_eq!(lan.records[0].rdata, RData::A(Ipv4Addr::new(192, 0, 2, 50)));
+        let default = snap.views[1].records.get(&name).unwrap();
+        assert_eq!(
+            default.records[0].rdata,
+            RData::A(Ipv4Addr::new(192, 0, 2, 10))
+        );
+    }
+
+    #[test]
     fn config_accepts_single_cname() {
         let mut cfg = spec_excerpt_config();
         let name = Name::from_ascii("alias.example.com").unwrap();
-        cfg.views[0].records.push(ViewRecordConfig {
+        cfg.records.push(ViewRecordConfig {
             name: name.clone(),
             ttl: 60,
             rdata: RData::CNAME(Name::from_ascii("nas.lan.example.com").unwrap()),
+            overrides: Default::default(),
         });
         let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
         let sets = snap.views[0].records.get(&name).unwrap();
@@ -925,10 +1008,11 @@ mod tests {
     fn config_collapses_exact_duplicate_records() {
         let mut cfg = spec_excerpt_config();
         for owner in ["x.example", "X.example"] {
-            cfg.views[0].records.push(ViewRecordConfig {
+            cfg.records.push(ViewRecordConfig {
                 name: Name::from_ascii(owner).unwrap(),
                 ttl: 60,
                 rdata: RData::A(Ipv4Addr::new(192, 0, 2, 50)),
+                overrides: Default::default(),
             });
         }
         let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
@@ -943,10 +1027,11 @@ mod tests {
     fn config_rejects_rrset_ttl_mismatch() {
         let mut cfg = spec_excerpt_config();
         for (ttl, last) in [(60, 50), (120, 51)] {
-            cfg.views[0].records.push(ViewRecordConfig {
+            cfg.records.push(ViewRecordConfig {
                 name: Name::from_ascii("x.example").unwrap(),
                 ttl,
                 rdata: RData::A(Ipv4Addr::new(192, 0, 2, last)),
+                overrides: Default::default(),
             });
         }
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
@@ -963,10 +1048,11 @@ mod tests {
     fn config_rejects_ttl_mismatch_on_identical_records() {
         let mut cfg = spec_excerpt_config();
         for ttl in [60, 3600] {
-            cfg.views[0].records.push(ViewRecordConfig {
+            cfg.records.push(ViewRecordConfig {
                 name: Name::from_ascii("x.example").unwrap(),
                 ttl,
                 rdata: RData::A(Ipv4Addr::new(192, 0, 2, 50)),
+                overrides: Default::default(),
             });
         }
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();

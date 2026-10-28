@@ -117,6 +117,10 @@ async fn policy_engine(client_ids: &[&str]) -> (Hierarchy, Arc<PolicyEngine>) {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
+        nodes: Vec::new(),
+        profile: ProfileId::new("default").unwrap(),
+    };
+    let cfg = PolicyConfig {
         client_ids: client_ids
             .iter()
             .map(|id| ClientId::new(id).unwrap())
@@ -125,10 +129,8 @@ async fn policy_engine(client_ids: &[&str]) -> (Hierarchy, Arc<PolicyEngine>) {
             name: Name::from_ascii("lan.example.test.").unwrap(),
             ttl: 60,
             rdata: RData::A(LOCAL_A),
+            overrides: Default::default(),
         }],
-        profile: ProfileId::new("default").unwrap(),
-    };
-    let cfg = PolicyConfig {
         views: vec![view],
         profiles: vec![profile],
         ..PolicyConfig::default()
@@ -426,6 +428,7 @@ impl EncryptedSet {
         let tls_dot = Arc::new(TlsStats::default());
         joins.push(tokio::spawn(serve_dot(DotServeParams {
             listener: ListenerConfig {
+                node_id: None,
                 id: ListenerId::new("c-dot").unwrap(),
                 protocol: Protocol::Dot,
                 address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -454,6 +457,7 @@ impl EncryptedSet {
         let tls_doh = Arc::new(TlsStats::default());
         joins.push(tokio::spawn(serve_doh(DohServeParams {
             listener: ListenerConfig {
+                node_id: None,
                 id: ListenerId::new("c-doh").unwrap(),
                 protocol: Protocol::Doh,
                 address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -483,6 +487,7 @@ impl EncryptedSet {
         let tls_doq = Arc::new(TlsStats::default());
         joins.push(tokio::spawn(serve_doq(DoqServeParams {
             listener: ListenerConfig {
+                node_id: None,
                 id: ListenerId::new("c-doq").unwrap(),
                 protocol: Protocol::Doq,
                 address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -551,6 +556,7 @@ async fn checkpoint_c_same_question_all_transports() {
     let (udp_sd_tx, udp_sd_rx) = watch::channel(false);
     let udp_join = tokio::spawn(serve_udp(UdpServeParams {
         listener: ListenerConfig {
+            node_id: None,
             id: ListenerId::new("c-udp").unwrap(),
             protocol: Protocol::Udp53,
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -574,6 +580,7 @@ async fn checkpoint_c_same_question_all_transports() {
     let (tcp_sd_tx, tcp_sd_rx) = watch::channel(false);
     let tcp_join = tokio::spawn(serve_tcp(TcpServeParams {
         listener: ListenerConfig {
+            node_id: None,
             id: ListenerId::new("c-tcp").unwrap(),
             protocol: Protocol::Tcp53,
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),

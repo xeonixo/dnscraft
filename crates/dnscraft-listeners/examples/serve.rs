@@ -84,11 +84,12 @@ async fn build_engine() -> Arc<PolicyEngine> {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
-        client_ids: Vec::new(),
-        records: Vec::new(),
+        nodes: Vec::new(),
         profile: ProfileId::new("default").unwrap(),
     };
     let cfg = PolicyConfig {
+        client_ids: Vec::new(),
+        records: Vec::new(),
         views: vec![view],
         profiles: vec![profile],
         ..PolicyConfig::default()
@@ -124,6 +125,7 @@ async fn main() {
         )));
         let mut udp_join = tokio::spawn(serve_udp(UdpServeParams {
             listener: ListenerConfig {
+                node_id: None,
                 id: ListenerId::new("demo-udp").unwrap(),
                 protocol: Protocol::Udp53,
                 address: udp_bind,
@@ -155,6 +157,7 @@ async fn main() {
 
         let mut tcp_join = tokio::spawn(serve_tcp(TcpServeParams {
             listener: ListenerConfig {
+                node_id: None,
                 id: ListenerId::new("demo-tcp").unwrap(),
                 protocol: Protocol::Tcp53,
                 address: tcp_bind,

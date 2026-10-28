@@ -25,6 +25,7 @@ fn lid() -> ListenerId {
 
 fn meta(protocol: DnsProtocol, size_limit: usize, pad: bool) -> QueryMeta {
     QueryMeta {
+        node_id: None,
         protocol,
         listener_id: lid(),
         exposure: Exposure::Local,

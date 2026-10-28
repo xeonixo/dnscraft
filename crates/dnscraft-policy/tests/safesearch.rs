@@ -85,8 +85,7 @@ fn default_view() -> ViewConfig {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
-        client_ids: Vec::new(),
-        records: Vec::new(),
+        nodes: Vec::new(),
         profile: ProfileId::new("default").unwrap(),
     }
 }
@@ -112,6 +111,7 @@ fn ctx(name: &str, qtype: RecordType) -> RequestContext {
         source_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
         protocol: DnsProtocol::Udp53,
         listener_id: ListenerId::new("udp-53").unwrap(),
+        node_id: None,
         client_id: None,
         query: Query {
             name: Name::from_ascii(name).unwrap(),
@@ -247,6 +247,8 @@ async fn engine_with(
     let h = Hierarchy::start_with(safesearch_specs()).await.unwrap();
     let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
     let cfg = PolicyConfig {
+        client_ids: Vec::new(),
+        records: Vec::new(),
         default_rebind: true,
         ptr_prefixes: Vec::new(),
         local_nxdomain_suffixes: Vec::new(),
@@ -510,6 +512,8 @@ fn schedule_unknown_filter_set_rejected() {
         end: Duration::from_secs(1),
     }];
     let cfg = PolicyConfig {
+        client_ids: Vec::new(),
+        records: Vec::new(),
         default_rebind: true,
         ptr_prefixes: Vec::new(),
         local_nxdomain_suffixes: Vec::new(),
@@ -545,6 +549,8 @@ async fn safesearch_resolve_failure_keeps_cname_and_records_resolve_failed() {
     profile.safesearch = ss(&["google"], YoutubeMode::Strict);
     let eng = PolicyEngine::new(
         PolicyConfig {
+            client_ids: Vec::new(),
+            records: Vec::new(),
             default_rebind: true,
             ptr_prefixes: Vec::new(),
             local_nxdomain_suffixes: Vec::new(),
@@ -650,6 +656,8 @@ async fn safesearch_follow_preserves_forward_zone_and_dnssec_for_rebind() {
     profile.safesearch = ss(&["google"], YoutubeMode::Strict);
     let eng = PolicyEngine::new(
         PolicyConfig {
+            client_ids: Vec::new(),
+            records: Vec::new(),
             default_rebind: true,
             ptr_prefixes: Vec::new(),
             local_nxdomain_suffixes: Vec::new(),
@@ -693,6 +701,8 @@ async fn test_query_safesearch_follow_does_not_write_cache() {
     let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
     let eng = PolicyEngine::new(
         PolicyConfig {
+            client_ids: Vec::new(),
+            records: Vec::new(),
             default_rebind: true,
             ptr_prefixes: Vec::new(),
             local_nxdomain_suffixes: Vec::new(),
