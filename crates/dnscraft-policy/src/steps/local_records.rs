@@ -6,7 +6,7 @@ use dnscraft_resolver::Query;
 use crate::config::RequestContext;
 use crate::decision::DecisionStep;
 use crate::pipeline::{Draft, Flow, StepCtx};
-use crate::snapshot::SnapshotView;
+use crate::snapshot::{SnapshotView, ViewRrSets};
 use crate::synth::{local_nodata, local_records_answer};
 
 /// Maximum CNAME hops followed within one view (spec loop guard).
@@ -41,11 +41,9 @@ enum Outcome {
 }
 
 fn answer_from_view(view: &SnapshotView, query: &Query) -> Option<Outcome> {
-    let rrsets = view.records.get(&query.name)?;
-    let cname = rrsets
-        .records
-        .iter()
-        .find(|r| r.rtype() == RecordType::CNAME);
+    let (rrsets, owner) = lookup_rrsets(view, &query.name)?;
+    let records = materialize(rrsets, &owner);
+    let cname = records.iter().find(|r| r.rtype() == RecordType::CNAME);
 
     if let Some(cname_rec) = cname {
         if query.qtype == RecordType::CNAME {
@@ -54,17 +52,52 @@ fn answer_from_view(view: &SnapshotView, query: &Query) -> Option<Outcome> {
         return Some(follow_cname(view, query, cname_rec));
     }
 
-    let matching: Vec<Record> = rrsets
-        .records
-        .iter()
+    let matching: Vec<Record> = records
+        .into_iter()
         .filter(|r| r.rtype() == query.qtype)
-        .cloned()
         .collect();
     if matching.is_empty() {
         Some(Outcome::Nodata)
     } else {
         Some(Outcome::Records(matching))
     }
+}
+
+/// Exact owner, else longest `*.<parent>` match (RFC 4592-style walk-up).
+fn lookup_rrsets<'a>(view: &'a SnapshotView, name: &Name) -> Option<(&'a ViewRrSets, Name)> {
+    if let Some(rrsets) = view.records.get(name) {
+        return Some((rrsets, name.clone()));
+    }
+    let mut parent = name.parent()?;
+    loop {
+        if parent.is_root() {
+            return None;
+        }
+        let wild = wildcard_name(&parent)?;
+        if let Some(rrsets) = view.records.get(&wild) {
+            return Some((rrsets, name.clone()));
+        }
+        parent = parent.parent()?;
+    }
+}
+
+fn wildcard_name(parent: &Name) -> Option<Name> {
+    // Display always ends with '.'; `*.barner.cloud.` parses cleanly.
+    Name::from_ascii(&format!("*.{parent}")).ok()
+}
+
+fn materialize(rrsets: &ViewRrSets, owner: &Name) -> Vec<Record> {
+    rrsets
+        .records
+        .iter()
+        .map(|r| {
+            if &r.name == owner {
+                r.clone()
+            } else {
+                Record::new(owner.clone(), r.class, r.ttl, r.rdata.clone())
+            }
+        })
+        .collect()
 }
 
 /// Returns CNAME chain (+ final qtype records when the target is local).
@@ -78,8 +111,10 @@ fn follow_cname(view: &SnapshotView, query: &Query, first: &Record) -> Outcome {
     };
 
     while answers.len() < usize::from(MAX_CNAME_HOPS) {
+        // Exact owners only: wildcard expansion on the target would re-match
+        // `*.zone` → `host.zone` CNAME loops (e.g. *.barner.cloud → proxy.barner.cloud).
         let Some(rrsets) = view.records.get(&current) else {
-            // External target: return the CNAME(s) only; client/resolver follows.
+            // External / only-via-wildcard target: return CNAME(s); client follows.
             return Outcome::Records(answers);
         };
 
@@ -234,5 +269,82 @@ mod unit {
         };
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].rtype(), RecordType::CNAME);
+    }
+
+    #[test]
+    fn local_records_wildcard_cname_synthesizes_owner() {
+        let wild = Name::from_ascii("*.barner.cloud").unwrap();
+        let qname = Name::from_ascii("app.barner.cloud").unwrap();
+        let target = Name::from_ascii("proxy.barner.cloud").unwrap();
+        let view = view_with(vec![(
+            wild,
+            vec![rec("*.barner.cloud", RData::CNAME(target))],
+        )]);
+        let q = Query {
+            name: qname.clone(),
+            qtype: RecordType::A,
+            qclass: Class::IN,
+        };
+        let Outcome::Records(recs) = answer_from_view(&view, &q).unwrap() else {
+            panic!("expected records");
+        };
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].rtype(), RecordType::CNAME);
+        assert_eq!(recs[0].name, qname);
+    }
+
+    #[test]
+    fn local_records_exact_beats_wildcard() {
+        let wild = Name::from_ascii("*.example.com").unwrap();
+        let exact = Name::from_ascii("www.example.com").unwrap();
+        let view = view_with(vec![
+            (
+                wild,
+                vec![rec(
+                    "*.example.com",
+                    RData::A(Ipv4Addr::new(192, 0, 2, 1)),
+                )],
+            ),
+            (
+                exact.clone(),
+                vec![rec(
+                    "www.example.com",
+                    RData::A(Ipv4Addr::new(192, 0, 2, 2)),
+                )],
+            ),
+        ]);
+        let q = Query {
+            name: exact,
+            qtype: RecordType::A,
+            qclass: Class::IN,
+        };
+        let Outcome::Records(recs) = answer_from_view(&view, &q).unwrap() else {
+            panic!("expected records");
+        };
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].rdata, RData::A(Ipv4Addr::new(192, 0, 2, 2)));
+    }
+
+    #[test]
+    fn local_records_wildcard_matches_deeper_labels() {
+        let wild = Name::from_ascii("*.example.com").unwrap();
+        let qname = Name::from_ascii("a.b.example.com").unwrap();
+        let view = view_with(vec![(
+            wild,
+            vec![rec(
+                "*.example.com",
+                RData::A(Ipv4Addr::new(192, 0, 2, 9)),
+            )],
+        )]);
+        let q = Query {
+            name: qname.clone(),
+            qtype: RecordType::A,
+            qclass: Class::IN,
+        };
+        let Outcome::Records(recs) = answer_from_view(&view, &q).unwrap() else {
+            panic!("expected records");
+        };
+        assert_eq!(recs[0].name, qname);
+        assert_eq!(recs[0].rdata, RData::A(Ipv4Addr::new(192, 0, 2, 9)));
     }
 }

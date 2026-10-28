@@ -76,8 +76,8 @@ pub use mcp_backend::{
     mcp_backend_for_test, mcp_backend_for_test_writes, mcp_backend_for_test_writes_with_broadcast,
 };
 pub use modules::{
-    ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyTls, ModuleAppliers,
-    ModuleFuture,
+    ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyResolver, ApplyTls,
+    ModuleAppliers, ModuleFuture,
 };
 pub use protected_list::{derive_protected_domains, populate_mcp_protected_domains};
 pub use query_log::{

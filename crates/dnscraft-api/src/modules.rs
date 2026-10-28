@@ -37,6 +37,7 @@ macro_rules! apply_trait {
 }
 
 apply_trait!(ApplyFiltering, "Applies the `filtering` config section.");
+apply_trait!(ApplyResolver, "Applies the `resolver` config section (forward zones).");
 apply_trait!(ApplyClients, "Applies the `clients` config section.");
 apply_trait!(ApplyPolicy, "Applies the `policy` config section.");
 apply_trait!(ApplyListeners, "Applies the `listeners` config section.");
@@ -51,6 +52,8 @@ apply_trait!(ApplyTls, "Applies the `tls` config section.");
 pub struct ModuleAppliers {
     /// Filtering engine adapter.
     pub filtering: Option<Arc<dyn ApplyFiltering>>,
+    /// Resolver adapter (forward zones from the versioned snapshot).
+    pub resolver: Option<Arc<dyn ApplyResolver>>,
     /// Clients engine adapter.
     pub clients: Option<Arc<dyn ApplyClients>>,
     /// Policy engine adapter.

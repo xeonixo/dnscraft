@@ -12,13 +12,14 @@
 use std::sync::{Arc, Weak};
 
 use dnscraft_api::{
-    ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyTls, ControlApiError, Db,
-    ModuleAppliers, ModuleFuture, QueryLog, apply_filter_config_offline,
+    ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyResolver, ApplyTls,
+    ControlApiError, Db, ModuleAppliers, ModuleFuture, QueryLog, apply_filter_config_offline,
 };
 use dnscraft_clients::{ClientEngine, ClientsConfig, Secret, read_secret};
 use dnscraft_filtering::{FilterConfig, FilterEngine};
 use dnscraft_listeners::{ListenerSet, ListenersConfig};
 use dnscraft_policy::{PolicyConfig, PolicyEngine};
+use dnscraft_resolver::{ForwardZone, Resolver};
 use dnscraft_tls::{TlsConfig, TlsEngine};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -35,6 +36,15 @@ const POLICY_INVALID: &str = "policy.config.invalid";
 const LISTENERS_INVALID: &str = "listeners.config.invalid";
 /// Stable code for a `tls` section that does not parse.
 const TLS_INVALID: &str = "tls.config.invalid";
+/// Stable code for a `resolver` section that does not parse.
+const RESOLVER_INVALID: &str = "resolver.config.invalid";
+
+/// Versioned `resolver` section: only forward zones are hot-applied today.
+#[derive(serde::Deserialize)]
+struct ResolverSection {
+    #[serde(default)]
+    forward_zones: Vec<ForwardZone>,
+}
 
 /// Deserializes a module section with the module's own serde contract.
 fn parse<T: DeserializeOwned>(config: &Value, code: &'static str) -> Result<T, ControlApiError> {
@@ -46,6 +56,26 @@ fn module_error(code: &'static str, reason: String) -> ControlApiError {
     ControlApiError::Module {
         code,
         params: Some(json!({ "reason": reason })),
+    }
+}
+
+/// Applies the `resolver` section's forward zones to the live resolver.
+struct ResolverApplier {
+    engine: Arc<Resolver>,
+}
+
+impl ApplyResolver for ResolverApplier {
+    fn validate(&self, config: &Value) -> Result<(), ControlApiError> {
+        parse::<ResolverSection>(config, RESOLVER_INVALID).map(|_| ())
+    }
+
+    fn apply<'a>(&'a self, config: &'a Value) -> ModuleFuture<'a> {
+        Box::pin(async move {
+            let parsed = parse::<ResolverSection>(config, RESOLVER_INVALID)?;
+            self.engine
+                .apply_forward_zones(parsed.forward_zones)
+                .map_err(|error| module_error(error.code(), error.to_string()))
+        })
     }
 }
 
@@ -206,6 +236,9 @@ pub(crate) fn appliers(
     ModuleAppliers {
         filtering: Some(Arc::new(FilteringApplier {
             engine: Arc::clone(&engines.filtering),
+        })),
+        resolver: Some(Arc::new(ResolverApplier {
+            engine: Arc::clone(&engines.resolver),
         })),
         clients: Some(Arc::new(ClientsApplier {
             engine: Arc::clone(&engines.clients),

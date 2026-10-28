@@ -171,6 +171,16 @@ pub(crate) async fn put_listener(
     }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
+    // GL2: creating/updating a public listener opens the public gate. The UI
+    // has no separate toggle; refusing the write when the gate is closed was a
+    // dead end for operators.
+    if listener
+        .get("exposure")
+        .and_then(Value::as_str)
+        .is_some_and(|e| e == "public")
+    {
+        ensure_public_gate_enabled(&mut snapshot);
+    }
     let replaced = upsert_by_id(
         array_mut(&mut snapshot, "listeners", "listeners")?,
         &id,
@@ -185,6 +195,23 @@ pub(crate) async fn put_listener(
         "created": !replaced,
     }))
     .into_response())
+}
+
+/// Sets `listeners.public.enabled = true` on the versioned snapshot.
+fn ensure_public_gate_enabled(snapshot: &mut Value) {
+    let Some(root) = snapshot.as_object_mut() else {
+        return;
+    };
+    let listeners = root
+        .entry("listeners")
+        .or_insert_with(|| json!({ "listeners": [], "public": {} }));
+    let Some(obj) = listeners.as_object_mut() else {
+        return;
+    };
+    let public = obj.entry("public").or_insert_with(|| json!({}));
+    if let Some(public) = public.as_object_mut() {
+        public.insert("enabled".to_owned(), Value::Bool(true));
+    }
 }
 
 /// `DELETE /api/v1/listeners` — body `{ "id": "..." }`.

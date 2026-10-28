@@ -373,7 +373,9 @@ pub struct DynDnsConfig {
 impl Default for DynDnsConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            // Opt-in: ACME/certificate saves must not fail because DynDNS was
+            // on by default with an empty hostname.
+            enabled: false,
             hostname: String::new(),
             public_entry: false,
             nodes: Vec::new(),
@@ -440,6 +442,7 @@ pub struct TlsConfig {
     /// DynDNS settings.
     pub dyndns: DynDnsConfig,
     /// Webhook notification settings (delivery is control-api's job).
+    #[serde(default)]
     pub notifications: NotificationsConfig,
 }
 
@@ -712,7 +715,19 @@ impl TlsConfig {
         }
 
         self.dyndns.hostname = normalise_domain(&self.dyndns.hostname).map_err(TlsError::config)?;
-        if self.dyndns.nodes.is_empty() || !self.dyndns.hostname.is_empty() {
+        if self.dyndns.nodes.is_empty() {
+            if self.dyndns.hostname.is_empty() {
+                return Err(TlsError::config(
+                    "dyndns.hostname is required when DynDNS is enabled",
+                ));
+            }
+            Self::validate_dyndns_hostname(
+                &self.dyndns.hostname,
+                &expected_suffix,
+                &self.public_domain,
+                &self.dyndns.reserved_labels,
+            )?;
+        } else if !self.dyndns.hostname.is_empty() {
             Self::validate_dyndns_hostname(
                 &self.dyndns.hostname,
                 &expected_suffix,

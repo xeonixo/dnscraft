@@ -44,6 +44,7 @@ const PARAM_DEFAULTS: Record<string, Record<string, string>> = {
 	// API usually sends `reason`; this is only the empty-param fallback.
 	error_policy_config_invalid: { reason: 'invalid' },
 	error_listeners_config_invalid: { reason: 'invalid' },
+	error_tls_config_invalid: { reason: 'invalid' },
 };
 
 /** Params are API data: only scalars are passed on, and they reach the message as plain text. */

@@ -1298,3 +1298,37 @@ async fn upstream_health_sends_no_probe_queries() {
     assert_eq!(target.hits(), 1);
     assert_eq!(resolver.stats().outgoing_queries, sent);
 }
+
+/// Hot-applied forward zones take effect without rebuilding the resolver.
+#[tokio::test]
+async fn apply_forward_zones_switches_routing() {
+    let h = Hierarchy::start().await.unwrap();
+    let target = Target::spawn(Ipv4Addr::new(192, 0, 2, 81)).await;
+    let config = config_for(&h);
+    let resolver = Resolver::new(config).await.unwrap();
+    assert!(resolver.forward_zone_ids().is_empty());
+    assert!(
+        resolver
+            .forward_zone_for(&name("www.corp.internal."), None)
+            .is_none()
+    );
+
+    resolver
+        .apply_forward_zones(vec![forward("corp.internal.", vec![target.addr])])
+        .unwrap();
+    assert_eq!(
+        resolver
+            .forward_zone_for(&name("www.corp.internal."), None)
+            .unwrap()
+            .as_str(),
+        "corp-internal"
+    );
+    resolver
+        .resolve(
+            &query("www.corp.internal.", RecordType::A),
+            RequestFlags::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(target.hits(), 1);
+}

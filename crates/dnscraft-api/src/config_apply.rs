@@ -1,7 +1,7 @@
 //! Atomic config replace and rollback.
 //!
 //! Every write validates the whole snapshot first, applies the module sections
-//! in the fixed order `filtering → clients → policy → listeners → tls`, and
+//! in the fixed order `filtering → resolver → clients → policy → listeners → tls`, and
 //! only stores a new `config_versions` row after every apply succeeded. A
 //! failure re-applies the previously active snapshot for the modules that were
 //! already touched, then returns the failing module's stable code unchanged.
@@ -28,7 +28,8 @@ use crate::modules::ModuleAppliers;
 use crate::storage::ConfigStore;
 
 /// The fixed leaf-first apply order.
-const APPLY_ORDER: [&str; 5] = ["filtering", "clients", "policy", "listeners", "tls"];
+const APPLY_ORDER: [&str; 6] =
+    ["filtering", "resolver", "clients", "policy", "listeners", "tls"];
 
 /// Top-level sections a snapshot may contain. `resolver` is carried for
 /// cross-module validation only (forward-zone ids); it is not applied here.
@@ -806,6 +807,9 @@ impl ConfigService {
         if let (Some(module), Some(config)) = (&self.modules.filtering, snapshot.get("filtering")) {
             module.validate(config)?;
         }
+        if let (Some(module), Some(config)) = (&self.modules.resolver, snapshot.get("resolver")) {
+            module.validate(config)?;
+        }
         if let (Some(module), Some(config)) = (&self.modules.clients, snapshot.get("clients")) {
             module.validate(config)?;
         }
@@ -916,6 +920,10 @@ impl ConfigService {
             };
             let result = match *name {
                 "filtering" => match &self.modules.filtering {
+                    Some(module) => module.apply(config).await,
+                    None => Ok(()),
+                },
+                "resolver" => match &self.modules.resolver {
                     Some(module) => module.apply(config).await,
                     None => Ok(()),
                 },

@@ -55,12 +55,16 @@ export const LISTENERS_ERROR_CODES = [
 	'listeners.config.public_plaintext',
 ] as const;
 
+/** TLS module codes forwarded by the control-api. */
+export const TLS_ERROR_CODES = ['tls.config.invalid'] as const;
+
 export const ERROR_CODES: readonly string[] = [
 	...CONTROL_API_ERROR_CODES,
 	...CLIENT_ERROR_CODES,
 	...FILTER_LIST_ERROR_CODES,
 	...POLICY_ERROR_CODES,
 	...LISTENERS_ERROR_CODES,
+	...TLS_ERROR_CODES,
 ];
 
 /** The CSRF mismatch code; the client refreshes the token once on it. */

@@ -135,9 +135,17 @@ pub(crate) fn validate_tls(value: &Value) -> Result<(), ControlApiError> {
         let enabled = dyndns
             .get("enabled")
             .and_then(Value::as_bool)
-            .unwrap_or(true);
+            .unwrap_or(false);
         let hostname = dyndns.get("hostname").and_then(Value::as_str).unwrap_or("");
-        if enabled && hostname.is_empty() {
+        let nodes = dyndns
+            .get("nodes")
+            .and_then(Value::as_array)
+            .map(|rows| !rows.is_empty())
+            .unwrap_or(false);
+        // Flat hostname is required only when DynDNS is on and there is no
+        // per-node profile list (standalone). Empty hostname + enabled was the
+        // default snapshot and blocked ACME saves on the certificate tab.
+        if enabled && hostname.is_empty() && !nodes {
             return Err(module_error(
                 "tls.config.invalid",
                 "dyndns.hostname is required when DynDNS is enabled",

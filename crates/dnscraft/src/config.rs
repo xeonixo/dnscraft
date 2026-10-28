@@ -9,7 +9,7 @@ use serde::Deserialize;
 use dnscraft_api::ControlApiConfig;
 pub use dnscraft_api::IpTruncate;
 use dnscraft_clients::ClientsConfig;
-use dnscraft_cluster::ClusterConfig;
+use dnscraft_cluster::{ClusterConfig, Role};
 use dnscraft_filtering::FilterConfig;
 use dnscraft_listeners::{
     DdrConfig, Exposure, Limits, ListenerConfig, ListenersConfig, Protocol, PublicConfig, TlsPolicy,
@@ -228,8 +228,8 @@ fn key_file_permissions_warning(_path: &str) -> Option<String> {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Cluster node identity of this process (`node_id`). Views with `nodes`
-    /// match it. Omitted means a standalone install, which is `local`.
+    /// Process identity for view/`nodes` matching and UniFi sync_owner.
+    /// Omitted: use `[cluster].node_id` when clustered, otherwise `local`.
     #[serde(default)]
     pub node_id: Option<String>,
     /// Public DNS domain for SNI / DDR (`dns.<domain>`).
@@ -396,9 +396,23 @@ impl Config {
         self.data_dir.as_deref()
     }
 
-    /// The node id this process serves as: `node_id`, or `local` when unset.
+    /// The node id this process serves as.
+    ///
+    /// Prefer the top-level `node_id`. When that is omitted and `[cluster]` is
+    /// `master` / `sub_node` with a non-empty `node_id`, use the cluster id so
+    /// UniFi sync_owner, view `nodes`, and listener node filters match the
+    /// identity the control-api cluster status already reports.
     pub fn node_id(&self) -> Result<NodeId, IdError> {
-        NodeId::new(self.node_id.as_deref().unwrap_or("local"))
+        if let Some(id) = self.node_id.as_deref().filter(|s| !s.is_empty()) {
+            return NodeId::new(id);
+        }
+        if let Some(cluster) = self.cluster.as_ref()
+            && matches!(cluster.role, Role::Master | Role::SubNode)
+            && !cluster.node_id.is_empty()
+        {
+            return NodeId::new(cluster.node_id.as_str());
+        }
+        NodeId::new("local")
     }
 
     /// Maps this TOML config onto a [`ListenersConfig`].

@@ -287,6 +287,14 @@ pub async fn build_with_enrollment(
     let db = Db::open(&db_path, Arc::new(dnscraft_api::SystemClock))
         .await
         .map_err(|e| Error::startup("dnscraft.startup.store", format!("config store: {e}")))?;
+    // UI-stored Cloudflare token must land before ACME renew races an empty env.
+    if let Some(engine) = engines.tls.as_ref() {
+        if let Ok(Some(token)) = dnscraft_api::cloudflare_token_from_db(&db).await {
+            let _ = engine
+                .set_cloudflare_token(dnscraft_tls::Secret::new(token))
+                .await;
+        }
+    }
     let store = ConfigStore::new(db.clone());
 
     // AS12: SQLite query-log consumer over the same database. The bounded
@@ -482,6 +490,7 @@ fn config_snapshot(config: &Config, listeners: &ListenersConfig) -> Result<Value
     }
     Ok(serde_json::json!({
         "filtering": filtering,
+        "resolver": section("resolver", &config.resolver)?,
         "clients": section("clients", &config.clients)?,
         "policy": section("policy", &policy)?,
         "listeners": section("listeners", listeners)?,
@@ -667,10 +676,10 @@ mod tests {
         assert!(err.message().contains("unknown field"), "{}", err.message());
     }
 
-    /// The bootstrap snapshot carries exactly the five applied sections, and
-    /// each one is valid JSON for the applier that consumes it.
+    /// The bootstrap snapshot carries the applied sections, and each one is
+    /// valid JSON for the applier that consumes it.
     #[test]
-    fn config_snapshot_has_the_five_applied_sections() {
+    fn config_snapshot_has_the_applied_sections() {
         let snapshot = config_snapshot(&Config::default(), &ListenersConfig::default()).unwrap();
 
         let mut keys: Vec<&str> = snapshot
@@ -680,7 +689,14 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(
             keys,
-            vec!["clients", "filtering", "listeners", "policy", "tls"]
+            vec![
+                "clients",
+                "filtering",
+                "listeners",
+                "policy",
+                "resolver",
+                "tls"
+            ]
         );
         for section in keys {
             assert!(
@@ -736,6 +752,40 @@ mod tests {
         let master = parse("[cluster]\nrole = \"master\"\nnode_id = \"master-a\"\n");
         let err = cluster_settings(&master, data_dir).unwrap_err();
         assert_eq!(err.code(), "dnscraft.config.invalid_cluster");
+    }
+
+    /// Cluster installs often set only `[cluster].node_id`. Process identity
+    /// (UniFi sync_owner, view nodes) must follow that when the top-level
+    /// `node_id` is omitted — otherwise the clients engine stays `local` and
+    /// never polls.
+    #[test]
+    fn node_id_falls_back_to_cluster_when_top_level_omitted() {
+        let parse = |body: &str| -> Config {
+            toml::from_str(&format!("public_domain = \"example.com\"\n{body}\n")).unwrap()
+        };
+
+        assert_eq!(parse("").node_id().unwrap().as_str(), "local");
+        assert_eq!(
+            parse("[cluster]\nrole = \"standalone\"\n")
+                .node_id()
+                .unwrap()
+                .as_str(),
+            "local"
+        );
+        assert_eq!(
+            parse("[cluster]\nrole = \"master\"\nnode_id = \"dns1\"\n[cluster.listen]\nbind = \"127.0.0.1\"\n")
+                .node_id()
+                .unwrap()
+                .as_str(),
+            "dns1"
+        );
+        assert_eq!(
+            parse("node_id = \"override\"\n[cluster]\nrole = \"master\"\nnode_id = \"dns1\"\n[cluster.listen]\nbind = \"127.0.0.1\"\n")
+                .node_id()
+                .unwrap()
+                .as_str(),
+            "override"
+        );
     }
 
     #[test]

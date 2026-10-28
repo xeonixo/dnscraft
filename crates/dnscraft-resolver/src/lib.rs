@@ -40,7 +40,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use dnscraft_common::clock::wait_until;
@@ -76,6 +76,11 @@ pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 #[derive(Debug)]
 struct Shared {
     config: ResolverConfig,
+    /// Forward zones, hot-swappable via [`Resolver::apply_forward_zones`].
+    ///
+    /// Kept beside [`Self::config`] so the control-api can update stub zones
+    /// from the versioned config without rebuilding the whole resolver.
+    forward_zones: RwLock<Vec<ForwardZone>>,
     local_zones: LocalZones,
     cache: cache::Cache,
     roots: Mutex<Vec<SocketAddr>>,
@@ -89,6 +94,15 @@ struct Shared {
     permits: Arc<Semaphore>,
     /// Keys whose last prefetch failed, with the time of that failure.
     prefetch_failed: Mutex<HashMap<inflight::Key, Instant>>,
+}
+
+impl Shared {
+    fn forward_zones(&self) -> Vec<ForwardZone> {
+        self.forward_zones
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 /// After a failed priming (start-up or refresh) the next attempt waits this
@@ -201,8 +215,10 @@ impl Resolver {
         };
         let cache = cache::Cache::new(cache::budget_bytes(&config));
         let next_prime = Mutex::new(next_prime_after(&config, status_ok(&status)));
+        let forward_zones = RwLock::new(config.forward_zones.clone());
         let shared = Arc::new(Shared {
             config,
+            forward_zones,
             local_zones: LocalZones::rfc6303(),
             cache,
             roots: Mutex::new(roots),
@@ -218,13 +234,27 @@ impl Resolver {
         Ok(Self { shared })
     }
 
+    /// Replaces the live forward-zone table (control-api / versioned config).
+    ///
+    /// Other resolver settings stay as constructed. Duplicate ids are rejected.
+    /// In-flight queries keep the zones they already selected; new queries see
+    /// the replacement immediately.
+    pub fn apply_forward_zones(&self, zones: Vec<ForwardZone>) -> Result<(), ResolverError> {
+        reject_duplicate_forward_zones(&zones)?;
+        *self
+            .shared
+            .forward_zones
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = zones;
+        Ok(())
+    }
+
     /// Ids of every configured forward zone, in config order.
     ///
     /// Used by policy to validate profile allow-lists. Pure lookup; no I/O.
     pub fn forward_zone_ids(&self) -> Vec<ForwardZoneId> {
         self.shared
-            .config
-            .forward_zones
+            .forward_zones()
             .iter()
             .map(|z| z.id.clone())
             .collect()
@@ -241,7 +271,8 @@ impl Resolver {
         name: &Name,
         allow: Option<&[ForwardZoneId]>,
     ) -> Option<ForwardZoneId> {
-        forward::covering(&self.shared.config.forward_zones, name, allow).map(|z| z.id.clone())
+        let zones = self.shared.forward_zones();
+        forward::covering(&zones, name, allow).map(|z| z.id.clone())
     }
 
     /// Resolves `query`.
@@ -257,12 +288,10 @@ impl Resolver {
         query: &Query,
         flags: RequestFlags,
     ) -> Result<Answer, ResolveError> {
+        let zones = self.shared.forward_zones();
         if let Some(answer) = self.shared.local_zones.answer(
             query,
-            forward::allowed_names(
-                &self.shared.config.forward_zones,
-                flags.forward_zones.as_deref(),
-            ),
+            forward::allowed_names(&zones, flags.forward_zones.as_deref()),
         ) {
             return Ok(answer);
         }
@@ -284,11 +313,8 @@ impl Resolver {
         query: &Query,
         flags: RequestFlags,
     ) -> Result<Answer, ResolveError> {
-        let route = forward::route_for(
-            &self.shared.config.forward_zones,
-            query,
-            flags.forward_zones.as_deref(),
-        );
+        let zones = self.shared.forward_zones();
+        let route = forward::route_for(&zones, query, flags.forward_zones.as_deref());
         let now = self.shared.config.clock.instant();
         let hit_started = Instant::now();
         if let Some(answer) = self.shared.cache.lookup(query, &route, now) {
@@ -306,12 +332,7 @@ impl Resolver {
         // not allowed to use is not a forward, so it is not a loop either.
         if let types::Route::Forward(id) = &route
             && let Some(client) = flags.client
-            && let Some(zone) = self
-                .shared
-                .config
-                .forward_zones
-                .iter()
-                .find(|zone| &zone.id == id)
+            && let Some(zone) = zones.iter().find(|zone| &zone.id == id)
             && zone
                 .targets
                 .iter()
@@ -461,7 +482,7 @@ impl Resolver {
         let now = self.shared.config.clock.instant();
         let stats = &self.shared.stats;
         let mut out = Vec::new();
-        for zone in &self.shared.config.forward_zones {
+        for zone in &self.shared.forward_zones() {
             for &addr in &zone.targets {
                 let target = Target::Forward {
                     zone: zone.zone.clone(),
@@ -596,15 +617,13 @@ impl Shared {
         // A flush while this resolution runs must not be undone by storing
         // its (older) result.
         let epoch = self.cache.epoch();
-        if query.qclass == Class::IN
-            && let Some(zone) = forward::covering(
-                &self.config.forward_zones,
-                &query.name,
-                flags.forward_zones.as_deref(),
-            )
-        {
-            let zone = zone.clone();
-            return self.forward_zone(zone, query, flags, epoch).await;
+        if query.qclass == Class::IN {
+            let zones = self.forward_zones();
+            if let Some(zone) = forward::covering(&zones, &query.name, flags.forward_zones.as_deref())
+            {
+                let zone = zone.clone();
+                return self.forward_zone(zone, query, flags, epoch).await;
+            }
         }
         self.reprime_if_due().await;
         let roots = lock(&self.roots).clone();

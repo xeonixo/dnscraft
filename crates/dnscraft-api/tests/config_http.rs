@@ -364,8 +364,32 @@ async fn listeners_and_tls_crud() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(code(&response), "listeners.config.public_plaintext");
 
+    // Public DoH opens the GL2 gate automatically (no separate UI toggle).
+    let (status, response) = put(
+        &h.state,
+        "/api/v1/listeners",
+        json!({
+            "id": "public-doh",
+            "protocol": "doh",
+            "address": "127.0.0.1:8443",
+            "exposure": "public"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let (status, cfg) = get(&h.state, "/api/v1/config").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cfg["data"]["config"]["listeners"]["public"]["enabled"], true);
+
     let (status, response) =
         delete(&h.state, "/api/v1/listeners", Some(json!({ "id": "lan" }))).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let (status, response) = delete(
+        &h.state,
+        "/api/v1/listeners",
+        Some(json!({ "id": "public-doh" })),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{response}");
 
     let (status, response) = put(

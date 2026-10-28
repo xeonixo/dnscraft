@@ -99,7 +99,8 @@ pub struct RequestContext {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "RecordWire", into = "RecordWire")]
 pub struct ViewRecordConfig {
-    /// Owner name (exact; wildcards are rejected at build time).
+    /// Owner name. Exact names, or a single leading `*` label
+    /// (`*.example.com`); embedded `*` labels are rejected.
     pub name: Name,
     /// TTL in seconds. [`DEFAULT_RECORD_TTL`] when omitted.
     pub ttl: u32,
@@ -203,6 +204,30 @@ pub(crate) fn is_allowed_view_rtype(rtype: RecordType) -> bool {
 /// Returns true when any label of `name` is a single `*` octet.
 pub(crate) fn name_has_wildcard_label(name: &Name) -> bool {
     name.labels().any(|label| label == b"*")
+}
+
+/// RFC 4592-style view wildcard: leftmost label is `*`, at least one more
+/// label follows, and no other label is `*`.
+pub(crate) fn is_allowed_wildcard_owner(name: &Name) -> bool {
+    let mut labels = name.labels();
+    match labels.next() {
+        Some(b"*") => {
+            let mut rest = 0usize;
+            for label in labels {
+                if label == b"*" {
+                    return false;
+                }
+                rest += 1;
+            }
+            rest >= 1
+        }
+        _ => false,
+    }
+}
+
+/// True when `name` has a `*` label that is not a valid leading wildcard.
+pub(crate) fn name_has_invalid_wildcard(name: &Name) -> bool {
+    name_has_wildcard_label(name) && !is_allowed_wildcard_owner(name)
 }
 
 /// Known SafeSearch provider ids (SPEC-policy.md). Matched case-insensitively
@@ -550,14 +575,17 @@ mod tests {
 
     #[test]
     fn config_wildcard_label_detection() {
-        assert!(name_has_wildcard_label(
-            &Name::from_ascii("*.example.com").unwrap()
-        ));
+        let leading = Name::from_ascii("*.example.com").unwrap();
+        assert!(name_has_wildcard_label(&leading));
+        assert!(is_allowed_wildcard_owner(&leading));
+        assert!(!name_has_invalid_wildcard(&leading));
         assert!(!name_has_wildcard_label(
             &Name::from_ascii("nas.lan.example.com").unwrap()
         ));
         let star_middle = Name::from_ascii("a.*.example.com").unwrap();
         assert!(name_has_wildcard_label(&star_middle));
+        assert!(!is_allowed_wildcard_owner(&star_middle));
+        assert!(name_has_invalid_wildcard(&star_middle));
     }
 
     #[test]

@@ -11,7 +11,7 @@ use ipnet::IpNet;
 use crate::config::{
     PolicyConfig, ProfileConfig, SAFESEARCH_PROVIDERS, SCHEDULE_WEEK, SafeSearchConfig,
     ScheduleConfig, ViewRecordConfig, check_client_device, check_client_label,
-    is_allowed_view_rtype, name_has_wildcard_label,
+    is_allowed_view_rtype, name_has_invalid_wildcard,
 };
 use crate::error::{ConfigReason, PolicyError};
 use crate::ids::{ClientId, NodeId, ProfileId, ViewId};
@@ -482,7 +482,7 @@ fn build_view_records(
     for record in records {
         let mut rec = record.clone();
         rec.rdata = record.rdata_for(view).clone();
-        if name_has_wildcard_label(&rec.name) {
+        if name_has_invalid_wildcard(&rec.name) {
             return Err(PolicyError::InvalidConfig {
                 reason: ConfigReason::WildcardOwner,
             });
@@ -748,10 +748,22 @@ mod tests {
     }
 
     #[test]
-    fn config_rejects_wildcard_owner() {
+    fn config_accepts_leading_wildcard_owner() {
         let mut cfg = spec_excerpt_config();
         cfg.records.push(ViewRecordConfig {
             name: Name::from_ascii("*.example.com").unwrap(),
+            ttl: 60,
+            rdata: RData::CNAME(Name::from_ascii("proxy.example.com").unwrap()),
+            overrides: Default::default(),
+        });
+        PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
+    }
+
+    #[test]
+    fn config_rejects_embedded_wildcard_owner() {
+        let mut cfg = spec_excerpt_config();
+        cfg.records.push(ViewRecordConfig {
+            name: Name::from_ascii("a.*.example.com").unwrap(),
             ttl: 60,
             rdata: RData::A(Ipv4Addr::new(192, 0, 2, 99)),
             overrides: Default::default(),

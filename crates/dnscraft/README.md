@@ -48,7 +48,7 @@ enforced in `dnscraft-listeners` and regression-tested in `dnscraft-api`.
 
 ```toml
 public_domain = "example.com"
-# node_id = "local"           # cluster / view matching; default standalone "local"
+# node_id = "dns1"            # process identity; falls back to [cluster].node_id when omitted
 # data_dir = "/var/lib/dnscraft"
 
 [log]

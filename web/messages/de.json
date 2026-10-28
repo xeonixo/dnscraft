@@ -58,6 +58,7 @@
 	"error_policy_config_invalid": "Die Eingabe wurde abgelehnt: {reason}",
 	"error_listeners_config_invalid": "Listener abgelehnt: {reason}",
 	"error_listeners_config_public_plaintext": "Klartext-DNS darf nicht öffentlich sein.",
+	"error_tls_config_invalid": "TLS-Konfiguration abgelehnt: {reason}",
 	"error_filter_list_fetch_failed": "Die Liste konnte von ihrer Quelle nicht abgerufen werden.",
 	"error_filter_list_too_large": "Die Liste ist zu groß zum Laden.",
 	"error_control_api_auth_oidc": "Die Anmeldung beim Identitätsanbieter ist fehlgeschlagen.",

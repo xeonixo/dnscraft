@@ -130,7 +130,7 @@ For each query, after selection:
 
 | Step | Action | Why this order |
 |---|---|---|
-| 1 | **Local records** — exact name in the global record table, using the selected view's `overrides` value when present (else the default) (A/AAAA/CNAME/TXT/SRV/MX/**PTR**). If the owner name has a CNAME and the qtype is not CNAME, return the CNAME (and follow **only** if the target is also a local name; otherwise leave following to the recursive path / client — do not half-resolve through filters twice) | Split-horizon must win over public data and filters for names the admin authored |
+| 1 | **Local records** — exact name in the global record table (or a leading `*.parent` wildcard), using the selected view's `overrides` value when present (else the default) (A/AAAA/CNAME/TXT/SRV/MX/**PTR**). If the owner name has a CNAME and the qtype is not CNAME, return the CNAME (and follow **only** if the target is also an **exact** local name; otherwise leave following to the recursive path / client — do not half-resolve through filters twice) | Split-horizon must win over public data and filters for names the admin authored |
 | 2 | **ClientDirectory local names / PTR** — only names `ClientDirectory` **actually knows** (FQDN match via `by_name`, or reverse for private/ULA PTR) are answered locally (**skipped** if step 1 already answered). A known name with no address of the queried type → **NODATA** (NOERROR empty), not fall-through. An **unknown** name under a local domain is **not** answered here: it continues to step 3 onward (filter → forward/recursion), because the UniFi DHCP `domainName` may be a real public domain (e.g. the one that also hosts `dns.<domain>`). Exception, see *Local domains and special-use suffixes* | Same “answer locally” idea; data from UniFi/manuals, not the view editor |
 | 3 | **Bypass / canary** — per profile: `use-application-dns.net` → NXDOMAIN; `mask.icloud.com` / `mask-h2.icloud.com` → configured answers (block Private Relay or not) | Must not depend on filter lists; fixed product behaviour |
 | 4 | **Filter original qname** — `FilterEngine::match_name(set, name, qtype)` | Block/allow/rewrite before spending recursion budget; block wins over SafeSearch (a blocked YouTube service must not be bypassed by the rewrite) |
@@ -467,7 +467,7 @@ rebind_exceptions = ["*.example.com"]
 - Always: Arc snapshot swap; clear AD on synthesised/modified answers; EDE 15 for
   operator blocks; never log test queries.
 - Ask first: new dependencies; changing pipeline order (reordered 2026-10-25: filter → SafeSearch → filter); shipping schedules /
-  SafeSearch evaluation before the stub is replaced; view-record wildcards.
+  SafeSearch evaluation before the stub is replaced.
 - Never: depend on `dnscraft-clients` directly; select profiles inside
   filtering; call the internet from tests.
 
@@ -497,7 +497,9 @@ Schedule time zones: ship UTC-only (current) or add a profile/timezone field lat
 2. **Rebind empty:** if every address was private and removed → **NOERROR /
    NODATA**; if any public address remains, return those. No EDE for pure rebind
    stripping.
-3. **View records:** **exact names only** in v1 (no wildcards).
+3. **View records:** exact names, plus a single leading `*` label
+   (`*.example.com`). Embedded `*` labels stay rejected. Lookup is exact first,
+   then walk-up `*.<parent>` (synthesised owner = qname).
 4. **Schedules / SafeSearch:** evaluated (P13/P14). Remaining open question:
    schedule local time zones (UTC offsets only today; see Schedules).
 5. **Forward-zone allow-list:** **yes** — extend resolver `RequestFlags` (or

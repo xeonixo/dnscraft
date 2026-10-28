@@ -58,6 +58,7 @@
 	"error_policy_config_invalid": "The input was rejected: {reason}",
 	"error_listeners_config_invalid": "Listener rejected: {reason}",
 	"error_listeners_config_public_plaintext": "Plaintext DNS must not be public.",
+	"error_tls_config_invalid": "TLS configuration rejected: {reason}",
 	"error_filter_list_fetch_failed": "The list could not be fetched from its source.",
 	"error_filter_list_too_large": "The list is too large to load.",
 	"error_control_api_auth_oidc": "Sign-in with the identity provider failed.",

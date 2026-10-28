@@ -469,7 +469,10 @@
 			},
 			dyndns: {
 				...objectField(tlsConfig, 'dyndns'),
-				enabled: formDyndnsEnabled,
+				// DynDNS needs a hostname (standalone) or node profiles; leave it
+				// off when the certificate tab saves ACME without DNS settings.
+				enabled:
+					formDyndnsEnabled && (flatHost !== '' || profiles.length > 0),
 				hostname: flatHost,
 				public_entry: flatEntry,
 				nodes: profiles,
@@ -478,6 +481,12 @@
 				ipv6_identifier: flatIpv6Ident,
 				interfaces: flatInterfaces,
 				proxied: false,
+			},
+			// Engine apply requires a notifications object; keep prior values.
+			notifications: {
+				on_expiry: false,
+				on_dyndns_failure: false,
+				...objectField(tlsConfig, 'notifications'),
 			},
 		};
 		try {
