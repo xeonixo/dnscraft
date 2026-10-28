@@ -235,6 +235,7 @@ impl ServerHandler for McpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let name = request.name.as_ref();
+        let token_id = token_from(&context).map(|token| token.token_id.clone());
         let result = if name == "get_status" {
             self.get_status(context).await
         } else if write::is_write_tool(name) {
@@ -247,6 +248,22 @@ impl ServerHandler for McpServer {
                 json!({ "tool": name }),
             )
         };
+        // Telemetry counter `mcp.tool_calls{tool_name, token_id, result}`. It is
+        // a structured tracing event (no metrics exporter exists yet). Unknown
+        // names collapse to one label so a client cannot grow the label set.
+        let tool_name = if self.get_tool(name).is_some() {
+            name
+        } else {
+            "unknown"
+        };
+        tracing::info!(
+            target: "dnscraft_mcp::telemetry",
+            counter = "mcp.tool_calls",
+            tool_name,
+            token_id = token_id.as_deref().unwrap_or(""),
+            result = if result.is_error == Some(true) { "error" } else { "success" },
+            "mcp tool call"
+        );
         Ok(result.into())
     }
 }

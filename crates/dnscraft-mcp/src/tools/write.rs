@@ -20,7 +20,7 @@ use rmcp::service::RequestContext;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{McpServer, invalid_input, parse_arguments, schema, token_from};
+use super::{McpServer, parse_arguments, schema, token_from};
 use crate::dto::{
     AddRuleParams, AuditEntry, AuditResult, PauseDuration, PauseParams, RemoveRuleParams,
     TempAllowParams, TokenInfo, TokenScope,
@@ -782,13 +782,15 @@ fn allow_failure_after(
 /// Wildcards, regular expressions, paths, IP literals and single-label names
 /// are rejected here, before the backend sees the request.
 fn validate_domain(raw: &str) -> Result<String, CallToolResult> {
-    if raw.chars().any(char::is_control) {
-        return Err(invalid_input("domain contains control characters"));
-    }
-    let canonical =
-        crate::protected::canonicalize(raw).map_err(|_| invalid_input("invalid domain"))?;
+    let canonical = crate::protected::canonicalize(raw).map_err(|code| {
+        if code == "filter_build.pattern_not_allowed" {
+            tool_error(code, json!({}))
+        } else {
+            tool_error("filter_build.invalid_domain", json!({ "reason": code }))
+        }
+    })?;
     if canonical.parse::<IpAddr>().is_ok() {
-        return Err(invalid_input("IP addresses are not allowed"));
+        return Err(tool_error("filter_build.pattern_not_allowed", json!({})));
     }
     if !canonical.contains('.') {
         return Err(tool_error(

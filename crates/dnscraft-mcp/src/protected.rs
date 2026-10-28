@@ -85,42 +85,49 @@ fn is_strict_subdomain(name: &str, parent: &str) -> bool {
             .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
-/// Canonical form: one trailing dot stripped, ASCII lowercased, punycode.
+/// Canonical form: surrounding whitespace trimmed, one trailing dot stripped,
+/// ASCII lowercased, punycode.
 ///
-/// Mirrors `filtering::build_rule`'s canonicalisation. Returns a stable
-/// reason for an empty or malformed name.
+/// Mirrors `filtering::build_rule`'s canonicalisation. On failure returns the
+/// filtering-namespace code (`filter_name.*`, `filter_rule.invalid_idna`), or
+/// `filter_build.pattern_not_allowed` for a wildcard, regex, path, port,
+/// scheme or IP-literal-shaped input, so callers forward the same codes the
+/// config path reports.
 pub(crate) fn canonicalize(raw: &str) -> Result<String, &'static str> {
+    let raw = raw.trim();
     if raw.is_empty() {
-        return Err("domain is empty");
+        return Err("filter_name.empty");
     }
-    if raw.chars().any(char::is_whitespace) {
-        return Err("domain contains whitespace");
-    }
-    if raw.starts_with('.') || raw.contains("..") {
-        return Err("domain has an empty label");
+    if raw.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("filter_name.invalid_char");
     }
     if raw
         .chars()
-        .any(|c| matches!(c, '/' | ':' | '*' | '@' | '?' | '#'))
+        .any(|c| matches!(c, '/' | ':' | '*' | '@' | '?' | '#' | '$' | '|' | '^'))
     {
-        return Err("domain must not contain a scheme, path, port or wildcard");
+        return Err("filter_build.pattern_not_allowed");
+    }
+    if raw.starts_with('.') || raw.contains("..") {
+        return Err("filter_name.empty_label");
     }
     let without_dot = raw.strip_suffix('.').unwrap_or(raw);
-    let ascii = idna::domain_to_ascii(without_dot).map_err(|_| "domain is not valid IDNA")?;
+    let ascii = idna::domain_to_ascii(without_dot).map_err(|_| "filter_rule.invalid_idna")?;
     let ascii = ascii.to_ascii_lowercase();
-    if ascii.is_empty() || ascii.len() > 253 {
-        return Err("domain is empty or longer than 253 characters");
+    if ascii.len() > 253 {
+        return Err("filter_name.too_long");
     }
     for label in ascii.split('.') {
+        if label.len() > 63 {
+            return Err("filter_name.label_too_long");
+        }
         if label.is_empty()
-            || label.len() > 63
             || label.starts_with('-')
             || label.ends_with('-')
             || !label
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
-            return Err("domain has an invalid label");
+            return Err("filter_name.invalid_char");
         }
     }
     Ok(ascii)
@@ -134,6 +141,30 @@ mod tests {
 
     fn protected(entries: &[&str]) -> ProtectedDomains {
         ProtectedDomains::new(entries.iter().map(|entry| (*entry).to_owned())).unwrap()
+    }
+
+    #[test]
+    fn canonicalize_trims_and_reports_filtering_codes() {
+        // GM17: surrounding whitespace is trimmed, inner whitespace is not.
+        assert_eq!(canonicalize("  Example.COM.\n").unwrap(), "example.com");
+        assert_eq!(
+            canonicalize("example.com\nIGNORE").unwrap_err(),
+            "filter_name.invalid_char"
+        );
+        // GM8: the forwarded codes match the filtering crate's namespace.
+        assert_eq!(canonicalize("").unwrap_err(), "filter_name.empty");
+        assert_eq!(
+            canonicalize("*.example.com").unwrap_err(),
+            "filter_build.pattern_not_allowed"
+        );
+        assert_eq!(
+            canonicalize("example.com/path").unwrap_err(),
+            "filter_build.pattern_not_allowed"
+        );
+        assert_eq!(
+            canonicalize("-com").unwrap_err(),
+            "filter_name.invalid_char"
+        );
     }
 
     #[test]

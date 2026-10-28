@@ -57,6 +57,26 @@ fn entry(index: usize) -> QueryLogEntry {
     }
 }
 
+/// A domain that does not parse is answered with the forwarded filtering code.
+async fn assert_domain_rejected(server: &TestServer, name: &str, arguments: Value) {
+    let client = reqwest::Client::new();
+    let (status, body) = harness::tool_call(&client, server, name, arguments.clone()).await;
+    assert_eq!(status, 200, "{name} {arguments}: {body}");
+    assert_eq!(
+        body["result"]["isError"], true,
+        "{name} {arguments}: {body}"
+    );
+    let code = harness::error_code(&body);
+    assert!(
+        code == "mcp.invalid_input"
+            || code.starts_with("filter_name.")
+            || code.starts_with("filter_build.")
+            || code.starts_with("filter_rule."),
+        "{name} {arguments}: {body}"
+    );
+    assert_eq!(body["result"]["content"][0]["text"], code);
+}
+
 async fn assert_invalid_input(server: &TestServer, name: &str, arguments: Value) {
     let client = reqwest::Client::new();
     let (status, body) = harness::tool_call(&client, server, name, arguments.clone()).await;
@@ -99,7 +119,7 @@ async fn search_query_log_schema_rejects_invalid_arguments() {
         json!({ "domain": "bad domain" }),
         json!({ "extra": true }),
     ] {
-        assert_invalid_input(&server, "search_query_log", arguments).await;
+        assert_domain_rejected(&server, "search_query_log", arguments).await;
     }
     assert_eq!(
         server
@@ -398,7 +418,7 @@ async fn explain_block_schema_rejects_invalid_arguments() {
         json!({ "domain": "example.com", "profile_id": 5 }),
         json!({ "domain": "example.com", "extra": true }),
     ] {
-        assert_invalid_input(&server, "explain_block", arguments).await;
+        assert_domain_rejected(&server, "explain_block", arguments).await;
     }
     assert!(server.backend.last_explain().is_none());
 }
@@ -569,7 +589,7 @@ async fn test_query_schema_rejects_invalid_arguments() {
         json!({ "domain": "example.com", "source_ip": "not-an-ip" }),
         json!({ "domain": "example.com", "extra": true }),
     ] {
-        assert_invalid_input(&server, "test_query", arguments).await;
+        assert_domain_rejected(&server, "test_query", arguments).await;
     }
     assert!(server.backend.last_test_query().is_none());
 }

@@ -404,6 +404,13 @@ async fn list_mcp_rules(
     }
 }
 
+/// Canonical form of a read-tool domain. A name that does not parse is
+/// answered with the forwarded `filter_name.*` or `filter_build.*` code.
+fn read_domain(raw: &str) -> Result<String, CallToolResult> {
+    canonicalize(raw)
+        .map_err(|code| tool_error(code, json!({ "domain": sanitize(raw, CAP_DOMAIN) })))
+}
+
 fn page_limit(value: Option<u32>, default: u32) -> Result<u32, CallToolResult> {
     match value.unwrap_or(default) {
         limit @ 1..=500 => Ok(limit),
@@ -463,9 +470,7 @@ impl SearchArgs {
     fn into_params(self) -> Result<QueryLogSearch, CallToolResult> {
         check_time_range(self.from.as_deref(), self.to.as_deref())?;
         let domain = match self.domain {
-            Some(domain) => {
-                Some(canonicalize(&domain).map_err(|_| invalid_input("invalid domain"))?)
-            }
+            Some(domain) => Some(read_domain(&domain)?),
             None => None,
         };
         Ok(QueryLogSearch {
@@ -523,7 +528,7 @@ impl ExplainArgs {
             ));
         }
         Ok(ExplainParams {
-            domain: canonicalize(&self.domain).map_err(|_| invalid_input("invalid domain"))?,
+            domain: read_domain(&self.domain)?,
             profile_id: self.profile_id,
             qtype,
         })
@@ -542,7 +547,7 @@ struct TestQueryArgs {
 
 impl TestQueryArgs {
     fn validate(self) -> Result<TestQueryParams, CallToolResult> {
-        let domain = canonicalize(&self.domain).map_err(|_| invalid_input("invalid domain"))?;
+        let domain = read_domain(&self.domain)?;
         let source_ip = match self.source_ip {
             Some(ref value) => Some(
                 value
