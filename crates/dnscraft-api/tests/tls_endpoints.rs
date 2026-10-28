@@ -296,6 +296,29 @@ async fn manual_certificate_upload_rejects_non_pem_material() {
 }
 
 #[tokio::test]
+async fn manual_certificate_upload_rejects_key_material_in_certificate_fields() {
+    // GA25: a private key appended to the certificate or chain is refused.
+    let harness = harness().await;
+    let cert = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+    let smuggled = "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n";
+    for body in [
+        json!({ "cert_pem": format!("{cert}{smuggled}"), "key_pem": smuggled }),
+        json!({ "cert_pem": cert, "key_pem": smuggled, "chain_pem": smuggled }),
+    ] {
+        let (code, reply) = request(
+            &harness.router,
+            Method::PUT,
+            "/api/v1/tls/certificate",
+            Some(body),
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert_eq!(reply["error"]["code"], "tls.cert.manual.invalid");
+    }
+    assert!(calls(&harness).is_empty());
+}
+
+#[tokio::test]
 async fn certificate_export_returns_a_fullchain_pem_envelope() {
     let harness = harness().await;
     let (code, body) = request(

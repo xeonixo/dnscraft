@@ -344,7 +344,10 @@ fn validate_manual_cert(
     key_pem: &str,
     chain_pem: Option<&str>,
 ) -> Result<(), ControlApiError> {
-    let is_cert = |pem: &str| pem.contains("-----BEGIN CERTIFICATE-----");
+    // Certificate fields must not smuggle key material (GA25): a key appended
+    // to the certificate or chain would otherwise be stored outside `key_pem`.
+    let is_cert =
+        |pem: &str| pem.contains("-----BEGIN CERTIFICATE-----") && !pem.contains("PRIVATE KEY");
     if !is_cert(cert_pem) {
         return Err(module_error(
             "tls.cert.manual.invalid",
