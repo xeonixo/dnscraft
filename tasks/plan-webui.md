@@ -30,4 +30,4 @@ Out of scope until owner decides: WX1–WX8, Alerts/Blocked-services backends (s
   review before committing that part.
 - Missing backends (alerts, update check, backups, blocked services, WX1-WX8): placeholder "not available" states only.
 
-Status: auto mode approved; W1-W2 done.
+Status: auto mode approved; W1-W3 done.

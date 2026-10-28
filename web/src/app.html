@@ -3,6 +3,17 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<script>
+			// Applies the stored theme before first paint (no flash). Unset or "system" leaves the attribute off.
+			try {
+				var stored = localStorage.getItem('dnscraft_theme');
+				if (stored === 'light' || stored === 'dark') {
+					document.documentElement.setAttribute('data-theme', stored);
+				}
+			} catch (error) {
+				// Storage unavailable: follow the system preference.
+			}
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
