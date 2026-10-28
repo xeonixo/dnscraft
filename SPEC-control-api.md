@@ -395,6 +395,13 @@ Decisions behind the rows:
   `allowed_hosts` default is empty, which rejects every host (fail closed). (e)
   `allow_private_destinations` defaults to false. Webhook URL and secret are never logged,
   never written to the audit row and never returned by `GET` (redacted).
+- **WP3 on-host backups (decided 2026-10-28).** "Secrets excluded" applies to config
+  exports (`GET /api/v1/config`, SPEC.md config export), not to on-host backups. A backup
+  is a `VACUUM INTO` copy of the control-api database and must be restorable, so it keeps
+  credential hashes (local accounts, token hashes) and drops only the `sessions` table
+  (ephemeral). File-permission model: the backup directory is created `0700` and each
+  file `0600`; the directory is the owner's responsibility beyond that (no encryption at
+  rest in v1). Retention counts backup files, oldest removed first.
 - **WX8 sessions.** Stored session rows keep only the truncated IP, written at login
   time with the `query_log_ip_truncate` setting (default `last_octet`), and a parsed
   browser label; the raw user agent is not stored. `id` is a public random identifier

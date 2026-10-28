@@ -3,9 +3,9 @@
 //! Both features keep their settings in the versioned config under the
 //! `control_api_settings` section, so writes get a config version and audit row
 //! like any other section. Neither feature makes an outbound call or writes a
-//! file unless it is enabled. Backups use `VACUUM INTO`, which copies the whole
-//! database file, including credential hashes and sessions; the directory is
-//! created `0700` and the files `0600`.
+//! file unless it is enabled. Backups use `VACUUM INTO`; the copy keeps the
+//! credential hashes (so a restore can sign in) and drops the `sessions` rows.
+//! The directory is created `0700` and the files `0600`.
 
 use std::path::Path;
 use std::time::UNIX_EPOCH;
@@ -197,9 +197,19 @@ pub(crate) async fn run_backup(
             .map_err(db_err)
     })
     .await?;
+    // Sessions are ephemeral bearer state: drop them from the copy. Credential
+    // hashes stay, so a restored backup can still sign in.
+    strip_sessions(&target)?;
     restrict_file(&target);
     prune(dir, retention)?;
     Ok(name)
+}
+
+/// Removes the `sessions` rows from a freshly written backup file and rebuilds
+/// it so the deleted pages are not left behind.
+fn strip_sessions(target: &Path) -> Result<(), ControlApiError> {
+    let conn = rusqlite::Connection::open(target).map_err(db_err)?;
+    conn.execute_batch("DELETE FROM sessions; VACUUM;").map_err(db_err)
 }
 
 /// Keeps the newest `retention` backup files in `dir` and removes older ones.
@@ -315,6 +325,52 @@ pub(crate) fn next_run_at(last: Option<&Value>, now: i64) -> i64 {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn backup_keeps_credentials_and_drops_sessions() {
+        use std::sync::Arc;
+        use std::time::{Duration, UNIX_EPOCH};
+        let clock = Arc::new(dnscraft_common::clock::ManualClock::new(
+            UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        ));
+        let db = Db::open_in_memory(clock).await.unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO sessions (id_hash, actor_id, created_at, last_active, expires_at)
+                 VALUES ('h1', 'alice', 1, 1, 99999999999)",
+                [],
+            )
+            .map_err(db_err)?;
+            conn.execute(
+                "INSERT INTO tokens (id_hash, name, scope, actor_id, created_at, expires_at)
+                 VALUES ('t1', 'ci', 'api:read', 'alice', 1, NULL)",
+                [],
+            )
+            .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("dnscraft-backup-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let name = run_backup(&db, &dir, 3, 1_700_000_000).await.unwrap();
+        let copy = rusqlite::Connection::open(dir.join(&name)).unwrap();
+        let sessions: i64 = copy
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        let tokens: i64 = copy
+            .query_row("SELECT COUNT(*) FROM tokens", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(sessions, 0);
+        assert_eq!(tokens, 1, "credential rows must survive");
+        let mode = std::fs::metadata(dir.join(&name)).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(mode.mode() & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn version_comparison_ignores_prefixes_and_prereleases() {
