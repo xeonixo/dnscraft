@@ -97,3 +97,11 @@
       shown in the prototype; confirm whether those belong in the resolver model.
 - [ ] **GA-W8d** No filter-list refresh/update endpoint; UI shows a footnote only.
 - [ ] **GA-W8e** CNAME uncloaking is not a filter-set API field; add it or drop from the UI toggles.
+
+## Found while building listeners/TLS/cluster/settings (W9, 2026-10-28)
+
+- [ ] **GA-W9a** MCP enable/write_tools live in bootstrap `ControlApiConfig`, not the versioned `/config`
+      snapshot. Either expose them via config snapshot or document bootstrap-only editing.
+- [ ] **GA-W9b** Temporary allows have no DELETE endpoint — UI can list but not remove.
+- [ ] **GA-W9c** Listeners lack a per-client rate-limit field in `listener_routes.rs` (SPEC/UI toggle deferred).
+- [ ] **GA-W9d** `query_log.ip_truncate` is bootstrap-only; not editable via `/config` (UI shows read-only note).

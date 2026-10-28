@@ -338,10 +338,92 @@ export function initialConfig() {
 				},
 			],
 		},
-		listeners: { items: [] },
-		tls: { mode: 'self_signed' },
+		listeners: {
+			listeners: [
+				{
+					id: 'doh-local',
+					protocol: 'doh',
+					address: '127.0.0.1:443',
+					exposure: 'local',
+					h3: false,
+				},
+				{
+					id: 'dot-public',
+					protocol: 'dot',
+					address: '0.0.0.0:853',
+					exposure: 'public',
+					h3: false,
+				},
+			],
+		},
+		tls: {
+			mode: 'self_signed',
+			public_domain: 'dns.example.test',
+			dyndns: { enabled: false, hostname: 'home.example.test', proxied: false },
+			acme: { enabled: false, email: 'ops@example.test' },
+		},
+		control_api_settings: {
+			update_check: true,
+			query_log: { retention_days: 30 },
+		},
+		mcp: {
+			enabled: true,
+			write_tools_enabled: false,
+			max_custom_rules_per_set: 100,
+		},
 	};
 }
+
+/** Initial cluster nodes for the mock master. */
+export const MOCK_CLUSTER_NODES = [
+	{
+		node_id: 'node-2',
+		role: 'sub_node',
+		fingerprint: 'ab'.repeat(32),
+		joined_at: '2026-10-20T10:00:00Z',
+		last_seen: '2026-10-27T14:02:00Z',
+		applied_config_version: 10,
+		revoked: false,
+	},
+];
+
+/** Seed audit rows (newest first in API). */
+export const MOCK_AUDIT = [
+	{
+		id: 2,
+		time: '2026-10-27T13:58:19Z',
+		node_id: 'node-1',
+		actor_id: 'admin',
+		actor_type: 'user',
+		action: 'auth.token.create',
+		object_type: 'token',
+		object_id: 'tok-0001',
+		config_version: null,
+		before_digest: null,
+		after_digest: null,
+		before: null,
+		after: { name: 'ci-token' },
+		result: 'ok',
+		error_code: null,
+	},
+	{
+		id: 1,
+		time: '2026-10-27T12:10:00Z',
+		node_id: 'node-1',
+		actor_id: '<script>alert(1)</script>',
+		actor_type: 'user',
+		action: 'config.replace',
+		object_type: 'config',
+		object_id: '12',
+		config_version: 12,
+		before_digest: 'abc',
+		after_digest: 'def',
+		before: { redacted: true },
+		after: { redacted: true },
+		result: 'ok',
+		error_code: null,
+	},
+];
 
 /** Directory rows returned by `GET /api/v1/clients` (synced). */
 export const MOCK_DIRECTORY_CLIENTS = [

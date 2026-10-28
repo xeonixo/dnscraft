@@ -11,7 +11,14 @@ import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildRecords, initialConfig, MOCK_DIRECTORY_CLIENTS, PROTOCOLS } from './fixtures.mjs';
+import {
+	buildRecords,
+	initialConfig,
+	MOCK_AUDIT,
+	MOCK_CLUSTER_NODES,
+	MOCK_DIRECTORY_CLIENTS,
+	PROTOCOLS,
+} from './fixtures.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BUILD_DIR = resolve(HERE, '..', 'build');
@@ -51,6 +58,7 @@ const TOP_LEVEL_KEYS = [
 	'resolver',
 	'control_api_settings',
 	'notifications',
+	'mcp',
 ];
 /** Sections every replace must provide (config_apply.rs REQUIRED_SECTIONS). */
 const REQUIRED_SECTIONS = ['filtering', 'clients', 'policy', 'listeners', 'tls'];
@@ -714,9 +722,11 @@ async function route(request, response, options) {
 			const body = await readJsonBody(request);
 			const seconds = DURATIONS[body.duration];
 			if (seconds === undefined) throw new ApiFailure(400, 'mcp.invalid_input');
+			const paused_until = new Date(Date.now() + seconds * 1000).toISOString();
+			options.runtime.pauseUntil = paused_until;
 			return sendData(response, {
 				filter_set_id: body.filter_set_id ?? 'default',
-				paused_until: new Date(Date.now() + seconds * 1000).toISOString(),
+				paused_until,
 			});
 		}
 		case 'POST /api/v1/filtering/temporary-allows': {
@@ -847,6 +857,158 @@ async function route(request, response, options) {
 				profile_id: 'default',
 				rcode: 'NOERROR',
 				answer: { rcode: 'NOERROR', records: [] },
+			});
+		}
+		case 'GET /api/v1/listeners':
+			return sendData(response, {
+				listeners: currentOf(options.store).config.listeners?.listeners ?? [],
+			});
+		case 'GET /api/v1/tls':
+			return sendData(response, { tls: currentOf(options.store).config.tls ?? {} });
+		case 'GET /api/v1/tls/status':
+			return sendData(response, {
+				mode: 'self_signed',
+				fingerprint_sha256: '3a9c7f11de420b886501ee2a94c30d77'.padEnd(64, '0'),
+				not_after: '2027-01-15T00:00:00Z',
+				identifiers: ['dns.example.test'],
+				self_signed: true,
+			});
+		case 'POST /api/v1/tls/renew':
+			return sendData(response, { started: true });
+		case 'POST /api/v1/tls/rotate':
+			return sendData(response, { rotated: true });
+		case 'POST /api/v1/tls/preflight':
+			return sendData(response, { ok: true, checks: [] });
+		case 'POST /api/v1/tls/dyndns':
+			return sendData(response, { updated: true });
+		case 'POST /api/v1/tls/revoke': {
+			await readJsonBody(request);
+			return sendData(response, { revoked: true });
+		}
+		case 'PUT /api/v1/tls/certificate': {
+			await readJsonBody(request);
+			return sendData(response, { mode: 'manual' });
+		}
+		case 'GET /api/v1/update/check':
+			return sendData(response, {
+				enabled: true,
+				current: '0.1.0-mock',
+				latest: '0.2.0-mock',
+				update_available: true,
+				release_url: 'https://example.com/releases/0.2.0',
+				checked_at: new Date().toISOString(),
+			});
+		case 'GET /api/v1/audit': {
+			if (options.role !== 'admin') {
+				throw new ApiFailure(403, 'control_api.auth.insufficient_scope', { required: 'admin' });
+			}
+			const limit = parseCount('limit', url.searchParams.get('limit') ?? '50', 1);
+			const offset = parseCount('offset', url.searchParams.get('offset') ?? '0', 0);
+			return sendData(response, { audit: MOCK_AUDIT.slice(offset, offset + limit) });
+		}
+		case 'GET /api/v1/auth/tokens': {
+			if (options.role !== 'admin') {
+				throw new ApiFailure(403, 'control_api.auth.insufficient_scope', { required: 'admin' });
+			}
+			return sendData(response, { tokens: options.runtime.tokens });
+		}
+		case 'POST /api/v1/auth/tokens': {
+			const body = await readJsonBody(request);
+			const id = `tok-${options.runtime.tokens.length + 1}`.padEnd(16, '0');
+			const row = {
+				id,
+				name: String(body.name ?? 'token'),
+				scope: String(body.scope ?? 'viewer'),
+				actor_id: principal.actor_id,
+				created_at: new Date().toISOString(),
+				expires_at: null,
+			};
+			options.runtime.tokens.push(row);
+			return sendData(response, {
+				...row,
+				token: `plaintext-${id}-not-a-secret`,
+				warnings: ['control_api.tls.self_signed'],
+			});
+		}
+		case 'GET /api/v1/cluster/nodes': {
+			if (options.role !== 'admin') {
+				throw new ApiFailure(403, 'control_api.auth.insufficient_scope', { required: 'admin' });
+			}
+			return sendData(response, options.runtime.clusterNodes);
+		}
+		case 'POST /api/v1/cluster/join-tokens': {
+			const body = await readJsonBody(request);
+			return sendData(response, {
+				token: `join-${String(body.node_id ?? 'node')}-one-time`,
+				expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+			});
+		}
+		case 'GET /api/v1/filtering/mcp-rules': {
+			const kind = url.searchParams.get('kind') ?? 'rules';
+			const filterSetId = url.searchParams.get('filter_set_id') ?? 'default';
+			const sets = filteringConfig(options.store).sets ?? [];
+			const set = sets.find((item) => item.id === filterSetId) ?? sets[0];
+			const rules = (set?.mcp_rules ?? []).map((rule) => ({
+				...rule,
+				rule_text: `||${rule.domain}^`,
+				filter_set_id: set.id,
+			}));
+			if (kind === 'temporary_allows') {
+				return sendData(response, {
+					filter_set_id: set?.id ?? 'default',
+					kind,
+					temporary_allows: [
+						{
+							domain: 'allowed.example.test',
+							include_subdomains: false,
+							created_at: '2026-10-27T10:00:00Z',
+							expires_at: '2026-10-27T11:00:00Z',
+							filter_set_id: set?.id ?? 'default',
+						},
+					],
+					has_more: false,
+					next_offset: null,
+				});
+			}
+			if (kind === 'pauses') {
+				return sendData(response, {
+					filter_set_id: set?.id ?? 'default',
+					kind,
+					pauses: options.runtime.pauseUntil
+						? [
+								{
+									filter_set_id: set?.id ?? 'default',
+									paused_until: options.runtime.pauseUntil,
+								},
+							]
+						: [],
+					has_more: false,
+					next_offset: null,
+				});
+			}
+			return sendData(response, {
+				filter_set_id: set?.id ?? 'default',
+				kind: 'rules',
+				rules,
+				has_more: false,
+				next_offset: null,
+			});
+		}
+		case 'POST /api/v1/filtering/resume':
+			options.runtime.pauseUntil = null;
+			return sendData(response, { filter_set_id: 'default' });
+		case 'DELETE /api/v1/filtering/custom-rules': {
+			const body = await readJsonBody(request);
+			const config = structuredClone(currentOf(options.store).config);
+			for (const set of config.filtering.sets ?? []) {
+				if (set.id !== (body.filter_set_id ?? 'default')) continue;
+				set.mcp_rules = (set.mcp_rules ?? []).filter((rule) => rule.domain !== body.domain);
+			}
+			replaceConfig(options.store, config);
+			return sendData(response, {
+				removed: true,
+				domain: body.domain,
+				filter_set_id: body.filter_set_id ?? 'default',
 			});
 		}
 		default:
@@ -985,6 +1147,62 @@ async function route(request, response, options) {
 		}
 	}
 
+	if (path === '/api/v1/listeners' && request.method !== 'GET') {
+		const body = await readJsonBody(request);
+		const config = structuredClone(currentOf(options.store).config);
+		const listeners = [...(config.listeners?.listeners ?? [])];
+		if (request.method === 'DELETE') {
+			config.listeners.listeners = listeners.filter((item) => item.id !== body.id);
+			const version = replaceConfig(options.store, config);
+			return sendData(response, { version, deleted: true, id: body.id });
+		}
+		const listener = {
+			id: body.id,
+			protocol: body.protocol,
+			address: body.address,
+			exposure: body.exposure ?? 'local',
+			h3: body.h3 === true,
+		};
+		const index = listeners.findIndex((item) => item.id === listener.id);
+		const created = index < 0;
+		if (index >= 0) listeners[index] = listener;
+		else listeners.push(listener);
+		config.listeners = { listeners };
+		const version = replaceConfig(options.store, config);
+		return sendData(response, { version, listener, created });
+	}
+
+	if (path === '/api/v1/tls' && request.method === 'PUT') {
+		const body = await readConfigBody(request);
+		const config = structuredClone(currentOf(options.store).config);
+		config.tls = body;
+		const version = replaceConfig(options.store, config);
+		return sendData(response, { version, tls: body });
+	}
+
+	const clusterDelete = /^\/api\/v1\/cluster\/nodes\/([^/]+)$/.exec(path);
+	if (request.method === 'DELETE' && clusterDelete) {
+		const nodeId = decodeURIComponent(clusterDelete[1]);
+		options.runtime.clusterNodes = options.runtime.clusterNodes.map((node) =>
+			node.node_id === nodeId ? { ...node, revoked: true } : node,
+		);
+		return sendData(response, { node_id: nodeId, revoked: true });
+	}
+
+	const tokenDelete = /^\/api\/v1\/auth\/tokens\/([^/]+)$/.exec(path);
+	if (request.method === 'DELETE' && tokenDelete) {
+		if (options.role !== 'admin') {
+			throw new ApiFailure(403, 'control_api.auth.insufficient_scope', { required: 'admin' });
+		}
+		const id = decodeURIComponent(tokenDelete[1]);
+		const before = options.runtime.tokens.length;
+		options.runtime.tokens = options.runtime.tokens.filter((token) => token.id !== id);
+		if (options.runtime.tokens.length === before) {
+			throw new ApiFailure(404, 'control_api.auth.unknown_token');
+		}
+		return sendData(response, { id, revoked: true });
+	}
+
 	if (path === '/api/v1/filter-sets' && request.method !== 'GET') {
 		const body = await readJsonBody(request);
 		const config = structuredClone(currentOf(options.store).config);
@@ -1067,13 +1285,22 @@ async function serveStatic(request, response, buildDir) {
 }
 
 /** Creates the mock HTTP server. Nothing listens until `listen` is called. */
+function createRuntimeState() {
+	return {
+		clusterNodes: structuredClone(MOCK_CLUSTER_NODES),
+		tokens: [],
+		pauseUntil: null,
+	};
+}
+
 export function createMockServer({ buildDir = DEFAULT_BUILD_DIR, role = 'admin' } = {}) {
 	const root = resolve(buildDir);
 	const store = createConfigStore();
+	const runtime = createRuntimeState();
 	return createServer(async (request, response) => {
 		try {
 			if (request.url.startsWith('/api/') || request.url.startsWith('/readyz')) {
-				await route(request, response, { role, store });
+				await route(request, response, { role, store, runtime });
 			} else {
 				await serveStatic(request, response, root);
 			}
