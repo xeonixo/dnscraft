@@ -608,7 +608,7 @@ enabled = false
 base_url = ""
 poll_interval = "1m"
 classic_clients = true
-tls = "Secure"
+insecure_skip_verify = false
 
 [tls]
 public_domain = "example.com"
