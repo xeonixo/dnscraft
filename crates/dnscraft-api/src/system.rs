@@ -209,7 +209,8 @@ pub(crate) async fn run_backup(
 /// it so the deleted pages are not left behind.
 fn strip_sessions(target: &Path) -> Result<(), ControlApiError> {
     let conn = rusqlite::Connection::open(target).map_err(db_err)?;
-    conn.execute_batch("DELETE FROM sessions; VACUUM;").map_err(db_err)
+    conn.execute_batch("DELETE FROM sessions; VACUUM;")
+        .map_err(db_err)
 }
 
 /// Keeps the newest `retention` backup files in `dir` and removes older ones.

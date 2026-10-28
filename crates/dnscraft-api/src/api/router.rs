@@ -13,8 +13,6 @@ use serde_json::json;
 
 use super::alerts_routes::list_alerts;
 use super::audit_routes::list_audit;
-use super::notifications_routes::{get_notifications, post_notification_test, put_notifications};
-use super::system_routes::{get_backups, get_update_check, put_backup_settings};
 use super::auth::local::local_login;
 use super::auth::oidc::{oidc_authorize_url, oidc_callback};
 use super::auth::session_routes::{list_sessions, revoke_session};
@@ -38,6 +36,10 @@ use super::mcp_endpoints::{
     add_custom_rule, allow_temporarily, explain_block, list_mcp_rules, pause_filter_set,
     remove_custom_rule, resume_filter_set, test_query,
 };
+use super::notifications_routes::{get_notifications, post_notification_test, put_notifications};
+use super::policy_routes::{
+    create_client_id, delete_client_id, delete_record, list_client_ids, list_records, put_record,
+};
 use super::query_log_routes::{get_query_log, list_query_log, stream_query_log};
 use super::rate_limit::rate_limit;
 use super::resolver_routes::{flush_cache, list_upstreams};
@@ -46,6 +48,7 @@ use super::stats_routes::{
     export_csv, export_ndjson, stats_cache, stats_domain, stats_overview, stats_top_clients,
     stats_top_domains,
 };
+use super::system_routes::{get_backups, get_update_check, put_backup_settings};
 use super::tls_routes::{
     delete_tls, get_tls, get_tls_account, get_tls_audit, get_tls_certificate, get_tls_order,
     get_tls_records, get_tls_status, put_tls, put_tls_certificate, trigger_tls_dyndns,
@@ -62,7 +65,10 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/status", get(status))
         .route("/filtering/explain-block", post(explain_block))
         .route("/filtering/mcp-rules", get(list_mcp_rules))
-        .route("/notifications", get(get_notifications).put(put_notifications))
+        .route(
+            "/notifications",
+            get(get_notifications).put(put_notifications),
+        )
         .route("/notifications/test", post(post_notification_test))
         .route("/filtering/services", get(list_services))
         .route("/filtering/services/{service_id}", put(put_service))
@@ -87,6 +93,18 @@ pub(crate) fn build_router(state: AppState) -> Router {
             .route("/config/versions", get(list_versions))
             .route("/config/versions/{version}/rollback", post(rollback))
             .route("/policy/views", get(list_views))
+            .route(
+                "/policy/records",
+                get(list_records)
+                    .put(put_record)
+                    .post(put_record)
+                    .delete(delete_record),
+            )
+            .route(
+                "/policy/client-ids",
+                get(list_client_ids).post(create_client_id),
+            )
+            .route("/policy/client-ids/{id}", delete(delete_client_id))
             .route(
                 "/policy/views/{id}",
                 get(get_view)

@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use axum::Extension;
 use axum::Json;
-use axum::extract::{Path, Query, State};
 use axum::extract::rejection::JsonRejection;
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use dnscraft_filtering::ServiceCatalog;
@@ -322,8 +322,15 @@ pub(crate) async fn list_services(
         .locale
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "en".to_owned());
-    if locale.len() > 16 || !locale.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-        return Err(service_error("filtering.service.invalid", "locale is malformed"));
+    if locale.len() > 16
+        || !locale
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(service_error(
+            "filtering.service.invalid",
+            "locale is malformed",
+        ));
     }
     let Some(provider) = state.service_catalog() else {
         return Ok(success(unavailable(&locale, None)));
@@ -384,14 +391,20 @@ pub(crate) async fn put_service(
 ) -> Result<impl IntoResponse, ControlApiError> {
     let body = json_body(body, "filtering.service.invalid")?;
     if !valid_id(&service_id) || !valid_id(&body.filter_set_id) {
-        return Err(service_error("filtering.service.invalid", "id is malformed"));
+        return Err(service_error(
+            "filtering.service.invalid",
+            "id is malformed",
+        ));
     }
     let catalog = state
         .service_catalog()
         .and_then(|provider| provider.catalog())
         .ok_or_else(|| service_error("filtering.catalog.unavailable", "no services catalog"))?;
     if catalog.get(&service_id).is_none() {
-        return Err(service_error("filtering.service.unknown", "unknown service id"));
+        return Err(service_error(
+            "filtering.service.unknown",
+            "unknown service id",
+        ));
     }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;

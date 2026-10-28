@@ -273,5 +273,9 @@ async fn a_subscriber_that_falls_behind_gets_a_lagged_event() {
         .and_then(|digits| digits.trim().parse().ok())
         .expect("dropped count");
     assert!(dropped >= 88, "dropped {dropped}");
-    assert!(log.stream_dropped() >= 88, "counter {}", log.stream_dropped());
+    assert!(
+        log.stream_dropped() >= 88,
+        "counter {}",
+        log.stream_dropped()
+    );
 }

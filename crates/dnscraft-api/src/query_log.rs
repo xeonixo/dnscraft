@@ -363,7 +363,11 @@ impl QueryLog {
     /// Adds `count` to the stream-drop counter and logs it.
     pub(crate) fn record_stream_dropped(&self, count: u64) {
         self.stream_dropped.fetch_add(count, Ordering::Relaxed);
-        tracing::warn!(counter = "query_log.stream_dropped", dropped = count, "live query-log subscriber lagged");
+        tracing::warn!(
+            counter = "query_log.stream_dropped",
+            dropped = count,
+            "live query-log subscriber lagged"
+        );
     }
 
     /// The active query-log configuration.

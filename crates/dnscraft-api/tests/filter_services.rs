@@ -40,7 +40,9 @@ impl ServiceCatalogProvider for FakeCatalog {
 }
 
 async fn harness(with_catalog: bool) -> AppState {
-    let clock = Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(1_700_000_000)));
+    let clock = Arc::new(ManualClock::new(
+        UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+    ));
     let db = Db::open_in_memory(clock.clone()).await.unwrap();
     let service = ConfigService::new(
         ConfigStore::new(db.clone()),
@@ -60,7 +62,12 @@ async fn harness(with_catalog: bool) -> AppState {
     }
 }
 
-async fn call(state: &AppState, method: Method, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn call(
+    state: &AppState,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let router = state
         .clone()
         .router()
@@ -83,7 +90,10 @@ async fn call(state: &AppState, method: Method, uri: &str, body: Option<Value>) 
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 /// Stores a config with one filter set `default` so the toggle has a target.
@@ -196,7 +206,13 @@ async fn locale_is_validated_and_names_follow_it() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "filtering.service.invalid");
 
-    let (status, body) = call(&state, Method::GET, "/api/v1/filtering/services?locale=de", None).await;
+    let (status, body) = call(
+        &state,
+        Method::GET,
+        "/api/v1/filtering/services?locale=de",
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["locale"], "de");
     // Without translations the default name is used.

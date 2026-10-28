@@ -85,9 +85,9 @@ pub use stats::{
 };
 pub use storage::{AuditRecord, ConfigStore, Db};
 pub use system::run_backup_if_due;
-pub use webhooks::dispatch_alerts;
 pub use tls::{
     AriStatus, CertSource, ControlApiTls, EngineStatusProvider, EngineTlsAdmin, IssueOutcome,
     IssueRecord, StoreHealth, TlsActionFuture, TlsAdmin, TlsMode, TlsStatus, TlsStatusFuture,
     TlsStatusProvider, TlsValueFuture,
 };
+pub use webhooks::dispatch_alerts;

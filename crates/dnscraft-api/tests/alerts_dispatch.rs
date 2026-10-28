@@ -96,7 +96,12 @@ impl TlsStatusProvider for Expiring {
     }
 }
 
-async fn call(state: &AppState, method: Method, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn call(
+    state: &AppState,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let router = state
         .clone()
         .router()
@@ -119,14 +124,19 @@ async fn call(state: &AppState, method: Method, uri: &str, body: Option<Value>) 
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 #[tokio::test]
 async fn expiring_certificate_reaches_the_webhook_once_until_it_clears() {
     let (address, cert_der, received) = start_receiver().await;
     let expiring = Arc::new(Expiring(Mutex::new(true)));
-    let clock = Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(1_700_000_000)));
+    let clock = Arc::new(ManualClock::new(
+        UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+    ));
     let db = Db::open_in_memory(clock.clone()).await.unwrap();
     let service = ConfigService::new(
         ConfigStore::new(db.clone()),

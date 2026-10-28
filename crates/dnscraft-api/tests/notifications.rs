@@ -135,7 +135,10 @@ async fn put_stores_the_channel_redacted_and_versioned() {
     let (_, config) = call(&state, Method::GET, "/api/v1/config", None).await;
     let text = config.to_string();
     assert!(!text.contains("/in/abc"), "URL path in snapshot: {text}");
-    assert!(!text.contains("query-secret"), "URL query in snapshot: {text}");
+    assert!(
+        !text.contains("query-secret"),
+        "URL query in snapshot: {text}"
+    );
     assert_eq!(
         config["data"]["config"]["notifications"]["channels"][0]["host"],
         "hooks.example.com"
