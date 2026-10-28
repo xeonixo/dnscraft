@@ -276,3 +276,36 @@ async fn backups_are_not_run_while_disabled() {
     assert!(!run_backup_if_due(&h.state).await.unwrap());
     assert!(!h.dir.exists());
 }
+
+#[tokio::test]
+async fn control_api_settings_accept_only_the_documented_runtime_keys() {
+    let url = closed_port_url().await;
+    let h = harness("settings-keys", &url).await;
+    let base = json!({"filtering": {}, "clients": {}, "policy": {}, "listeners": {}, "tls": {}});
+
+    for bad in [
+        json!({"oidc": {"token_skew_seconds": 2}}),
+        json!({"query_log": {"retention_days": 0}}),
+        json!({"oidc": {"client_secret": "x"}}),
+        json!({"unknown": true}),
+    ] {
+        let mut config = base.clone();
+        config["control_api_settings"] = bad.clone();
+        let (status, body) = call(&h.state, Method::PUT, "/api/v1/config", Some(config)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
+        assert_eq!(body["error"]["code"], "control_api.config.invalid");
+    }
+
+    let mut config = base.clone();
+    config["control_api_settings"] = json!({
+        "oidc": {"admin_group": "ops", "token_skew_seconds": 60},
+        "query_log": {"retention_days": 90},
+    });
+    let (status, body) = call(&h.state, Method::PUT, "/api/v1/config", Some(config)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = call(&h.state, Method::GET, "/api/v1/config", None).await;
+    assert_eq!(
+        body["data"]["config"]["control_api_settings"]["query_log"]["retention_days"],
+        90
+    );
+}

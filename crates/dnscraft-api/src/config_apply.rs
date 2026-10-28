@@ -1055,6 +1055,87 @@ fn check_if_match(raw: Option<&str>, current: Option<i64>) -> Result<(), Control
     }
 }
 
+/// Validates the non-secret runtime keys of `control_api_settings` (GA15).
+///
+/// Accepted: `update_check` (bool), `backups` (`enabled`, `retention_count`),
+/// `query_log.retention_days` (1..=3650) and `oidc` (`admin_group`,
+/// `groups_claim`, `token_skew_seconds` 5..=300). Secrets, accounts and bind
+/// settings are not accepted here; they stay in the bootstrap TOML, the
+/// environment or the local-account store.
+fn validate_control_api_settings(settings: &Value) -> Result<(), ControlApiError> {
+    let Some(map) = settings.as_object() else {
+        return Err(config_invalid("control_api_settings must be an object"));
+    };
+    for (key, value) in map {
+        match key.as_str() {
+            "update_check" => {
+                if !value.is_boolean() {
+                    return Err(config_invalid(
+                        "control_api_settings.update_check must be a boolean",
+                    ));
+                }
+            }
+            "backups" => {
+                let backups: crate::system::BackupSettings = serde_json::from_value(value.clone())
+                    .map_err(|error| {
+                        config_invalid(format!("control_api_settings.backups: {error}"))
+                    })?;
+                if backups.retention_count == 0
+                    || backups.retention_count > crate::system::BACKUP_RETENTION_MAX
+                {
+                    return Err(config_invalid(
+                        "control_api_settings.backups.retention_count is out of range",
+                    ));
+                }
+            }
+            "query_log" => {
+                let days = value.get("retention_days").and_then(Value::as_u64);
+                if value.as_object().is_none_or(|o| o.len() != 1)
+                    || !days.is_some_and(|d| (1..=3650).contains(&d))
+                {
+                    return Err(config_invalid(
+                        "control_api_settings.query_log.retention_days must be 1..=3650",
+                    ));
+                }
+            }
+            "oidc" => {
+                let object = value
+                    .as_object()
+                    .ok_or_else(|| config_invalid("control_api_settings.oidc must be an object"))?;
+                for (field, field_value) in object {
+                    match field.as_str() {
+                        "admin_group" | "groups_claim" => {
+                            if !field_value.is_string() {
+                                return Err(config_invalid(format!(
+                                    "control_api_settings.oidc.{field} must be a string"
+                                )));
+                            }
+                        }
+                        "token_skew_seconds" => {
+                            if !field_value.as_u64().is_some_and(|s| (5..=300).contains(&s)) {
+                                return Err(config_invalid(
+                                    "control_api_settings.oidc.token_skew_seconds must be 5..=300",
+                                ));
+                            }
+                        }
+                        other => {
+                            return Err(config_invalid(format!(
+                                "unknown field `control_api_settings.oidc.{other}`"
+                            )));
+                        }
+                    }
+                }
+            }
+            other => {
+                return Err(config_invalid(format!(
+                    "unknown field `control_api_settings.{other}`"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Rejects unknown top-level fields, requires the five applied sections, and
 /// applies the `mcp_rules` merge to every filter set.
 fn merge_mcp_rules(body: Value, stored: Option<&Value>) -> Result<Value, ControlApiError> {
@@ -1065,6 +1146,9 @@ fn merge_mcp_rules(body: Value, stored: Option<&Value>) -> Result<Value, Control
         if !TOP_LEVEL_KEYS.contains(&key.as_str()) {
             return Err(config_invalid(format!("unknown field `{key}`")));
         }
+    }
+    if let Some(settings) = snapshot.get(crate::system::SETTINGS_SECTION) {
+        validate_control_api_settings(settings)?;
     }
     for section in REQUIRED_SECTIONS {
         match snapshot.get(section) {
