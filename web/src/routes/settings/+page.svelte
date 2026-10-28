@@ -7,6 +7,7 @@
 	import LocaleSwitcher from '$lib/i18n/LocaleSwitcher.svelte';
 	import AuditPanel from '$lib/settings/AuditPanel.svelte';
 	import TokensPanel from '$lib/settings/TokensPanel.svelte';
+	import UnifiPanel from '$lib/settings/UnifiPanel.svelte';
 	import { getConfig } from '$lib/api/config';
 	import { getUpdateCheck, type UpdateCheck } from '$lib/api/system';
 	import { getStatus } from '$lib/api/stats';
@@ -153,6 +154,7 @@
 	{/if}
 </GroupedList>
 
+<UnifiPanel {isAdmin} />
 <TokensPanel {isAdmin} />
 <AuditPanel {isAdmin} />
 

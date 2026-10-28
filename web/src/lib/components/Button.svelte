@@ -27,8 +27,8 @@
 		justify-content: center;
 		gap: 0.375rem;
 		min-width: 2.75rem;
-		min-height: 2.75rem;
-		padding: 0.4375rem 1rem;
+		min-height: var(--control-h);
+		padding: 0.4375rem var(--control-px);
 		border: 1px solid transparent;
 		border-radius: var(--r-ctl);
 		font: inherit;

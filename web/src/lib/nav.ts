@@ -51,7 +51,7 @@ export const navSections: NavSection[] = [
 		items: [
 			item('/filter-sets', () => m.nav_filter_sets(), 'layers'),
 			item('/filter-lists', () => m.nav_filter_lists(), 'list'),
-			item('/mcp-rules', () => m.nav_rules_exceptions(), 'zap'),
+			item('/rules', () => m.nav_rules(), 'zap'),
 			item('/blocked-services', () => m.nav_blocked_services(), 'ban'),
 		],
 	},

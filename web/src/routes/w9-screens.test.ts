@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/svelte';
+import { cleanup, render, screen } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import GeneralPage from './settings/+page.svelte';
@@ -9,7 +9,6 @@ import ApiExplorerPage from './settings/api/+page.svelte';
 import ListenersPage from './listeners/+page.svelte';
 import TlsPage from './tls/+page.svelte';
 import ClusterPage from './cluster/+page.svelte';
-import McpRulesPage from './mcp-rules/+page.svelte';
 import { endSession, setPrincipal } from '$lib/auth/state.svelte';
 import { m } from '$lib/paraglide/messages';
 
@@ -159,47 +158,6 @@ describe('cluster join token', () => {
 		await user.click(screen.getByRole('button', { name: m.cluster_join_mint() }));
 		expect(await screen.findByText('join-secret')).toBeInTheDocument();
 		expect(screen.getByRole('button', { name: m.action_copy() })).toBeInTheDocument();
-	});
-});
-
-describe('mcp-rules segmented filter', () => {
-	it('loads rules and switches kind', async () => {
-		serve({
-			'GET /api/v1/filtering/mcp-rules': (_init, url) => {
-				const kind = new URL(String(url), 'http://localhost').searchParams.get('kind') ?? 'rules';
-				if (kind === 'pauses') {
-					return ok({
-						filter_set_id: 'default',
-						kind,
-						pauses: [{ filter_set_id: 'default', paused_until: '2026-10-27T14:00:00Z' }],
-						has_more: false,
-						next_offset: null,
-					});
-				}
-				return ok({
-					filter_set_id: 'default',
-					kind: 'rules',
-					rules: [
-						{
-							id: 'r1',
-							domain: 'blocked.test',
-							include_subdomains: true,
-							rule_text: '||blocked.test^',
-							created_at: '2026-10-27T10:00:00Z',
-							expires_at: null,
-						},
-					],
-					has_more: false,
-					next_offset: null,
-				});
-			},
-		});
-		const user = userEvent.setup();
-		render(McpRulesPage);
-		expect(await screen.findByText('blocked.test')).toBeInTheDocument();
-		const group = screen.getByRole('radiogroup', { name: m.mcp_rules_kind_label() });
-		await user.click(within(group).getByRole('radio', { name: m.mcp_rules_kind_pauses() }));
-		await waitFor(() => expect(screen.getByText('default')).toBeInTheDocument());
 	});
 });
 

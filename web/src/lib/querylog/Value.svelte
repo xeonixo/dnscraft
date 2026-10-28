@@ -8,13 +8,15 @@
 		mono?: boolean;
 		/** Code points shown before the value is cut behind an expansion. */
 		limit?: number;
+		/** Keeps the shown text on one line and ends it with an ellipsis; the expansion stays below. */
+		oneLine?: boolean;
 	}
 
-	let { value, mono = false, limit = DISPLAY_LIMIT }: Props = $props();
+	let { value, mono = false, limit = DISPLAY_LIMIT, oneLine = false }: Props = $props();
 	const shown = $derived(displayText(value, limit));
 </script>
 
-<span class="value" class:mono>{shown.text}</span>
+<span class="value" class:mono class:one-line={oneLine}>{shown.text}</span>
 {#if shown.truncated}
 	<details class="more">
 		<summary>{m.querylog_show_full()}</summary>
@@ -25,6 +27,16 @@
 <style>
 	.value {
 		overflow-wrap: anywhere;
+	}
+
+	.value.one-line {
+		display: block;
+		min-width: 0;
+		max-width: 100%;
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+		overflow-wrap: normal;
 	}
 
 	.mono {

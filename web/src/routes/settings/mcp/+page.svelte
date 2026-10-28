@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { resolve } from '$app/paths';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
@@ -119,6 +120,8 @@
 		>
 	{/if}
 
+	<p class="rules-link"><a href={resolve('/rules')}>{m.settings_mcp_rules_link()}</a></p>
+
 	<p class="footnote">{m.settings_mcp_footnote()}</p>
 {/if}
 
@@ -142,6 +145,15 @@
 		color: var(--label);
 		font: inherit;
 		cursor: pointer;
+	}
+
+	.rules-link {
+		margin: 0.75rem 0 0;
+		font-size: 0.875rem;
+	}
+
+	.rules-link a {
+		color: var(--accent);
 	}
 
 	.footnote {

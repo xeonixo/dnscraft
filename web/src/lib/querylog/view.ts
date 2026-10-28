@@ -71,13 +71,31 @@ export function dnssecLabel(value: string | null): string {
 }
 
 export function selectionLabel(selection: QueryRecord['selection']): string {
-	return selection.cause === 'subnet'
-		? m.querylog_cause_subnet({ prefix: selection.prefix ?? '' })
-		: m.querylog_cause_default();
+	switch (selection.cause) {
+		case 'subnet':
+			return m.querylog_cause_subnet({ prefix: selection.prefix ?? '' });
+		case 'client_id':
+			return m.querylog_cause_client_id();
+		default:
+			return m.querylog_cause_default();
+	}
 }
 
+/**
+ * Translated label for a query-log value: an answer origin (record answer_source) or a resolve
+ * step source (cache, recursion, stale). Unknown values keep their identifier.
+ */
 export function answerLabel(source: string): string {
-	return answerSourceLabel(source);
+	switch (source) {
+		case 'cache':
+			return m.source_cache();
+		case 'recursion':
+			return m.source_recursion();
+		case 'stale':
+			return m.source_stale();
+		default:
+			return answerSourceLabel(source);
+	}
 }
 
 /** Translated stage name; an unknown stage keeps its identifier. */
@@ -208,4 +226,15 @@ export function stepDetail(step: DecisionStep): { text: string; mono: boolean } 
 /** Microseconds as milliseconds, for formatMilliseconds (which adds a decimal below 10 ms). */
 export function microsToMilliseconds(us: number): number {
 	return us / 1000;
+}
+
+const BLOCKING_VERDICTS = new Set(['blocked', 'nxdomain', 'failed', 'paused']);
+
+/**
+ * Index of the step that decided the answer: the first blocking step, otherwise the last step
+ * (the one that produced the answer). -1 for an empty chain.
+ */
+export function decisiveIndex(steps: DecisionStep[]): number {
+	const blocking = steps.findIndex((step) => BLOCKING_VERDICTS.has(step.verdict));
+	return blocking >= 0 ? blocking : steps.length - 1;
 }

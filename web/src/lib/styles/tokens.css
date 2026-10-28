@@ -45,6 +45,11 @@
 	/* Shape and depth (rem so browser zoom and text scaling carry through) */
 	--r-card: 0.75rem;
 	--r-ctl: 0.5rem;
+
+	/* Control scale: 44pt (2.75rem) targets by default; compact widths override below. */
+	--control-h: 2.75rem;
+	--control-px: 1rem;
+	--gap-stack: 1.125rem;
 	--shadow: 0 1px 1px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.03);
 	--shadow-sheet: 0 -0.125rem 1.5rem rgba(0, 0, 0, 0.25);
 	--shadow-thumb: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.2);
@@ -142,6 +147,17 @@
 		--material-bg: var(--canvas);
 		--material-blur: none;
 		--scrim: rgba(0, 0, 0, 0.5);
+	}
+}
+
+/* Compact widths (below the 55rem sidebar-drawer breakpoint): denser controls. The control
+   height floor is 2.5rem (40px), above the WCAG 2.2 AA 24px target minimum; icon-only
+   toolbar buttons keep their own 2.75rem. Input font sizes stay put (iOS zooms below 16px). */
+@media (max-width: 54.99rem) {
+	:root {
+		--control-h: 2.5rem;
+		--control-px: 0.75rem;
+		--gap-stack: 0.75rem;
 	}
 }
 

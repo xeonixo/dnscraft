@@ -185,6 +185,196 @@ describe('policy screens', () => {
 		expect(screen.queryByText(m.action_edit())).not.toBeInTheDocument();
 	});
 
+	it('marks the default range, shows capped range chips and counts devices', async () => {
+		handlers['GET /api/v1/policy/views'] = () =>
+			ok({
+				views: [
+					{
+						id: 'lan',
+						is_default: true,
+						subnets: ['192.0.2.0/24', '2001:db8::/64', '10.0.0.0/8', '172.16.0.0/12'],
+						nodes: [],
+						profile: 'default',
+					},
+				],
+			});
+		render(ZonesPage);
+		expect(await screen.findByText(m.zones_badge_default())).toBeInTheDocument();
+		const more = m.zones_more({ count: 1 });
+		expect(screen.getByText(more, { exact: false })).toBeInTheDocument();
+		// The client at 192.0.2.2 lies inside 192.0.2.0/24.
+		expect(
+			screen.getByText(m.zones_count_devices_one({ count: 1 }), { exact: false }),
+		).toBeInTheDocument();
+	});
+
+	it('lists the Client IDs pinned to a range, three by name and the rest counted', async () => {
+		handlers['GET /api/v1/policy/views'] = () =>
+			ok({
+				views: [
+					{ id: 'lan', is_default: true, subnets: ['192.0.2.0/24'], nodes: [], profile: 'default' },
+					{ id: 'unterwegs', is_default: false, subnets: [], nodes: [], profile: 'default' },
+				],
+			});
+		handlers['GET /api/v1/policy/client-ids'] = () =>
+			ok({
+				client_ids: [
+					{ id: 'a-1', label: 'iPhone von Anna', device: null, view: 'unterwegs' },
+					{ id: 'b-2', label: 'Pixel 8 Jonas', device: null, view: 'unterwegs' },
+					{ id: 'c-3', label: null, device: null, view: 'unterwegs' },
+					{ id: 'd-4', label: 'Tablet', device: null, view: 'unterwegs' },
+					{ id: 'e-5', label: 'Home', device: null, view: null },
+				],
+			});
+		render(ZonesPage);
+		const pinned = m.zones_pinned({ names: 'iPhone von Anna, Pixel 8 Jonas, c-3' });
+		expect(await screen.findByText(pinned, { exact: false })).toBeInTheDocument();
+		expect(screen.getByText(m.zones_more({ count: 1 }), { exact: false })).toBeInTheDocument();
+		// No CIDRs: the detail line explains it is for pinned DoH Client IDs only.
+		expect(screen.getByText(m.zones_no_subnets(), { exact: false })).toBeInTheDocument();
+	});
+
+	it('replaces the delete button of a pinned range with the pinned names', async () => {
+		handlers['GET /api/v1/policy/views'] = () =>
+			ok({
+				views: [{ id: 'unterwegs', is_default: false, subnets: [], nodes: [], profile: 'default' }],
+			});
+		handlers['GET /api/v1/policy/client-ids'] = () =>
+			ok({
+				client_ids: [{ id: 'a-1', label: 'iPhone von Anna', device: null, view: 'unterwegs' }],
+			});
+		const user = userEvent.setup();
+		render(ZonesPage);
+		await user.click(await screen.findByRole('button', { name: /unterwegs/ }));
+		const dialog = await screen.findByRole('dialog');
+		expect(within(dialog).queryByRole('button', { name: m.action_delete() })).toBeNull();
+		expect(
+			within(dialog).getByText(m.zones_pinned_blocked({ names: 'iPhone von Anna' })),
+		).toBeInTheDocument();
+	});
+
+	it('maps the server refusal view_in_use to the same text with the device names', async () => {
+		handlers['GET /api/v1/policy/views'] = () =>
+			ok({
+				views: [{ id: 'unterwegs', is_default: false, subnets: [], nodes: [], profile: 'default' }],
+			});
+		handlers['GET /api/v1/policy/client-ids'] = () =>
+			ok({
+				client_ids: [{ id: 'a-1', label: 'iPhone von Anna', device: null, view: null }],
+			});
+		handlers['DELETE /api/v1/policy/views/unterwegs'] = () =>
+			json(400, {
+				error: {
+					code: 'policy.config.invalid',
+					params: { reason: 'view_in_use', view: 'unterwegs', client_ids: ['a-1'] },
+				},
+			});
+		const user = userEvent.setup();
+		render(ZonesPage);
+		await user.click(await screen.findByRole('button', { name: /unterwegs/ }));
+		let dialog = await screen.findByRole('dialog');
+		await user.click(within(dialog).getByRole('button', { name: m.action_delete() }));
+		dialog = screen.getByRole('dialog');
+		await user.click(within(dialog).getByRole('button', { name: m.action_delete() }));
+		expect(
+			await within(dialog).findByText(m.zones_pinned_blocked({ names: 'iPhone von Anna' })),
+		).toBeInTheDocument();
+		expect(screen.queryByText(m.error_policy_config_invalid())).not.toBeInTheDocument();
+	});
+
+	it('allows a range without subnets, saves it empty and explains its use', async () => {
+		handlers['PUT /api/v1/policy/views/unterwegs'] = () =>
+			ok({
+				version: 6,
+				view: { id: 'unterwegs', is_default: false, subnets: [], nodes: [], profile: 'default' },
+			});
+		const user = userEvent.setup();
+		render(ZonesPage);
+		await user.click(await screen.findByText(m.zones_add()));
+		await user.type(screen.getByLabelText(m.zones_id_label()), 'unterwegs');
+		expect(screen.getByText(m.zones_no_subnets())).toBeInTheDocument();
+		const save = screen.getByRole('button', { name: m.action_save() });
+		expect(save).toBeEnabled();
+		await user.click(save);
+		await waitFor(() =>
+			expect(
+				fetchMock.mock.calls.some(
+					([url, init]) =>
+						String(url).endsWith('/policy/views/unterwegs') &&
+						init?.method === 'PUT' &&
+						JSON.parse(String(init.body)).subnets.length === 0,
+				),
+			).toBe(true),
+		);
+	});
+
+	it('shows the empty state with the add action when no range exists', async () => {
+		handlers['GET /api/v1/policy/views'] = () => ok({ views: [] });
+		render(ZonesPage);
+		expect(await screen.findByText(m.zones_empty())).toBeInTheDocument();
+		expect(screen.getByText(m.zones_add())).toBeInTheDocument();
+	});
+
+	it('blocks saving while a range line is invalid and names the line', async () => {
+		const user = userEvent.setup();
+		render(ZonesPage);
+		await user.click(await screen.findByText(m.zones_add()));
+		await user.type(screen.getByLabelText(m.zones_id_label()), 'office');
+		const ranges = screen.getByLabelText(m.zones_subnets_label());
+		await user.type(ranges, '192.0.2.0/24{enter}{enter}192.0.2.1/33');
+		expect(screen.getByText(m.zones_range_invalid({ line: 3 }))).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: m.action_save() })).toBeDisabled();
+		await user.clear(ranges);
+		await user.type(ranges, '2001:db8:10::/64');
+		expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+		expect(screen.getByRole('button', { name: m.action_save() })).toBeEnabled();
+	});
+
+	it('confirms a delete inside the sheet and offers none for the default range', async () => {
+		handlers['GET /api/v1/policy/views'] = () =>
+			ok({
+				views: [
+					{ id: 'lan', is_default: true, subnets: ['192.0.2.0/24'], nodes: [], profile: 'default' },
+					{
+						id: 'office',
+						is_default: false,
+						subnets: ['10.10.0.0/16'],
+						nodes: [],
+						profile: 'default',
+					},
+				],
+			});
+		handlers['DELETE /api/v1/policy/views/office'] = () => ok({ version: 5 });
+		const user = userEvent.setup();
+		render(ZonesPage);
+
+		await user.click(await screen.findByRole('button', { name: /^lan\b/ }));
+		let dialog = await screen.findByRole('dialog');
+		expect(within(dialog).queryByRole('button', { name: m.action_delete() })).toBeNull();
+		expect(within(dialog).getByText(m.zones_default_delete_blocked())).toBeInTheDocument();
+		await user.click(within(dialog).getByRole('button', { name: m.action_cancel() }));
+		await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+		await user.click(await screen.findByRole('button', { name: /^office\b/ }));
+		dialog = await screen.findByRole('dialog');
+		await user.click(within(dialog).getByRole('button', { name: m.action_delete() }));
+		expect(within(dialog).getByText(m.zones_delete_body({ id: 'office' }))).toBeInTheDocument();
+		expect(
+			fetchMock.mock.calls.some(
+				([url, init]) => String(url).endsWith('/policy/views/office') && init?.method === 'DELETE',
+			),
+		).toBe(false);
+		await user.click(within(dialog).getByRole('button', { name: m.action_delete() }));
+		await waitFor(() =>
+			expect(
+				fetchMock.mock.calls.some(
+					([url, init]) =>
+						String(url).endsWith('/policy/views/office') && init?.method === 'DELETE',
+				),
+			).toBe(true),
+		);
+	});
+
 	it('shows unavailable state on 404 list', async () => {
 		handlers['GET /api/v1/filter-sets'] = () => fail(404, 'control_api.not_found');
 		render(FilterSetsPage);

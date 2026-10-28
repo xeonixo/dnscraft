@@ -8,6 +8,6 @@ describe('guided rule builder', () => {
 		).toBe('||ads.example.com^');
 		expect(
 			buildRuleText({ action: 'allow', domain: 'cdn.example.com', include_subdomains: false }),
-		).toBe('@@||cdn.example.com');
+		).toBe('@@|cdn.example.com^');
 	});
 });

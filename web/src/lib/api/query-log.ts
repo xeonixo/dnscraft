@@ -45,7 +45,8 @@ export interface QueryRecord {
 	view_id: string;
 	profile_id: string;
 	filter_set?: string;
-	selection: { cause: 'subnet' | 'default'; prefix?: string };
+	/** `client_id`: the request was pinned to a Netzbereich through its Client ID (no subnet matched). */
+	selection: { cause: 'subnet' | 'default' | 'client_id'; prefix?: string };
 	steps: DecisionStep[];
 	answer_source: string;
 	filter: FilterHit | null;

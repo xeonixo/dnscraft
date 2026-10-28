@@ -6,7 +6,7 @@
 	import Value from './Value.svelte';
 	import type { QueryRecord } from '$lib/api/query-log';
 	import { unicodeName } from './domain-display';
-	import { neutralize } from '$lib/safe-text';
+	import { displayText, neutralize } from '$lib/safe-text';
 	import { formatDateTime } from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
 	import { statusOf, statusStyle } from './view';
@@ -31,7 +31,10 @@
 			</span>
 			<span class="domain mono"><Value value={unicode} mono /></span>
 			<span class="meta">
-				<span>{record.client?.display_name ?? record.client_id ?? record.source_ip}</span>
+				<span class="client"
+					>{displayText(record.client?.display_name ?? record.client_id ?? record.source_ip, 32)
+						.text}</span
+				>
 				<span class="mono">{record.query.type} · {record.protocol}</span>
 			</span>
 			<span class="chev" aria-hidden="true"><Icon name="chevron-right" size="1rem" /></span>
@@ -44,10 +47,10 @@
 	.card {
 		position: relative;
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto;
-		gap: 0.25rem 0.75rem;
+		grid-template-columns: minmax(0, 1fr);
+		gap: 0.1875rem;
 		min-height: 2.75rem;
-		padding: 0.75rem 2.25rem 0.75rem 1rem;
+		padding: 0.5rem 2.25rem 0.5rem 1rem;
 		color: var(--label);
 		text-decoration: none;
 	}
@@ -77,13 +80,28 @@
 		overflow-wrap: anywhere;
 	}
 
+	/* Client on the left, type and protocol right-aligned under the time, so both edges line up. */
 	.meta {
 		display: flex;
-		flex-direction: column;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.5rem;
 		min-width: 0;
 		font-size: 0.8125rem;
 		color: var(--label-2);
 		overflow-wrap: anywhere;
+	}
+
+	.client {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.meta > span:last-child {
+		flex: 0 0 auto;
+		text-align: end;
 	}
 
 	.mono {

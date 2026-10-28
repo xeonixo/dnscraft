@@ -55,8 +55,11 @@
 			await loadMe();
 			if (auth.status === 'authenticated') {
 				// takeReturnTo() already validated the value as a same-origin path outside the public routes.
+				// The resolver's route union is too large for TypeScript to match that path, so its argument
+				// tuple is passed as the resolver's own parameter type.
 				const target = (takeReturnTo() ?? '/dashboard') as Pathname;
-				await goto(resolve(target), { replaceState: true });
+				const args = [target] as Parameters<typeof resolve>;
+				await goto(resolve(...args), { replaceState: true });
 			}
 		} catch (error) {
 			localFailure = failureOf(error);

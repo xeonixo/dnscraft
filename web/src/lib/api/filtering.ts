@@ -11,11 +11,23 @@ export interface FilterSet {
 	block_mode: BlockMode;
 }
 
+/** Per-list engine status as `GET /api/v1/filter-lists` returns it (absent for disabled or never-fetched lists). */
+export interface FilterListStatus {
+	rules_parsed: number;
+	rules_skipped: number;
+	unique_contribution: number;
+	last_success: string | null;
+	last_attempt: string | null;
+	error_code: string | null;
+	http_status: number | null;
+}
+
 export interface FilterList {
 	id: string;
 	name: string;
 	source: { url?: string; file?: string };
 	enabled: boolean;
+	status?: FilterListStatus;
 }
 
 export interface GuidedRule {
@@ -32,9 +44,9 @@ export interface CustomRuleBody {
 }
 
 export function buildRuleText(rule: GuidedRule): string {
-	const suffix = rule.include_subdomains ? '^' : '';
-	const body = `${rule.domain}${suffix}`;
-	return rule.action === 'allow' ? `@@||${body}` : `||${body}`;
+	// Matches crates/dnscraft-filtering builder.rs: `||` covers subdomains, `|` anchors the exact name.
+	const body = `${rule.include_subdomains ? '||' : '|'}${rule.domain}^`;
+	return rule.action === 'allow' ? `@@${body}` : body;
 }
 
 function parseSet(value: unknown): FilterSet | null {
@@ -56,6 +68,22 @@ function parseSet(value: unknown): FilterSet | null {
 	};
 }
 
+function parseStatus(value: unknown): FilterListStatus | undefined {
+	if (typeof value !== 'object' || value === null) return undefined;
+	const row = value as Record<string, unknown>;
+	if (typeof row.rules_parsed !== 'number') return undefined;
+	const text = (field: unknown): string | null => (typeof field === 'string' ? field : null);
+	return {
+		rules_parsed: row.rules_parsed,
+		rules_skipped: typeof row.rules_skipped === 'number' ? row.rules_skipped : 0,
+		unique_contribution: typeof row.unique_contribution === 'number' ? row.unique_contribution : 0,
+		last_success: text(row.last_success),
+		last_attempt: text(row.last_attempt),
+		error_code: text(row.error_code),
+		http_status: typeof row.http_status === 'number' ? row.http_status : null,
+	};
+}
+
 function parseList(value: unknown): FilterList | null {
 	if (typeof value !== 'object' || value === null) return null;
 	const row = value as FilterList;
@@ -64,11 +92,13 @@ function parseList(value: unknown): FilterList | null {
 		typeof row.source === 'object' && row.source !== null
 			? (row.source as FilterList['source'])
 			: {};
+	const status = parseStatus((row as { status?: unknown }).status);
 	return {
 		id: row.id,
 		name: typeof row.name === 'string' ? row.name : '',
 		source,
 		enabled: row.enabled !== false,
+		...(status ? { status } : {}),
 	};
 }
 

@@ -40,7 +40,21 @@ export const CLIENT_MALFORMED = 'client.malformed';
 
 export const CLIENT_ERROR_CODES = [CLIENT_NETWORK, CLIENT_MALFORMED] as const;
 
-export const ERROR_CODES: readonly string[] = [...CONTROL_API_ERROR_CODES, ...CLIENT_ERROR_CODES];
+/** Per-list update failures from the filter engine (`status.error_code` on a filter list). */
+export const FILTER_LIST_ERROR_CODES = [
+	'filter_list.fetch_failed',
+	'filter_list.too_large',
+] as const;
+
+/** Raised by the policy module and forwarded unchanged by the control-api (e.g. a bad Client-ID label). */
+export const POLICY_ERROR_CODES = ['policy.config.invalid'] as const;
+
+export const ERROR_CODES: readonly string[] = [
+	...CONTROL_API_ERROR_CODES,
+	...CLIENT_ERROR_CODES,
+	...FILTER_LIST_ERROR_CODES,
+	...POLICY_ERROR_CODES,
+];
 
 /** The CSRF mismatch code; the client refreshes the token once on it. */
 export const CSRF_CODE = 'control_api.auth.csrf';

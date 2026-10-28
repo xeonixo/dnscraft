@@ -121,7 +121,7 @@
 
 	@media (max-width: 54.99rem) {
 		.toolbar {
-			padding-inline: 1rem;
+			padding: calc(0.625rem + env(safe-area-inset-top)) 1rem 0.625rem;
 		}
 
 		h1 {

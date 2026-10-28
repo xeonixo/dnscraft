@@ -74,10 +74,11 @@
 	.content {
 		display: flex;
 		flex-direction: column;
-		gap: 1.125rem;
+		gap: var(--gap-stack);
 		box-sizing: border-box;
 		width: 100%;
 		max-width: 65rem;
+		margin-inline: auto;
 		padding: 1.25rem;
 	}
 
@@ -91,10 +92,9 @@
 		cursor: pointer;
 	}
 
-	/* Compact width: content gutter 16px; wide: 20px. */
+	/* Compact width: content gutter 16px; wide: 20px (gap comes from --gap-stack). */
 	@media (max-width: 54.99rem) {
 		.content {
-			gap: 1rem;
 			padding: 1rem;
 		}
 	}

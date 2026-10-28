@@ -7,6 +7,7 @@ import Page from './+page.svelte';
 import type { QueryRecord } from '$lib/api/query-log';
 import { endSession, setPrincipal } from '$lib/auth/state.svelte';
 import { m } from '$lib/paraglide/messages';
+import { TECHNICAL_KEY } from '$lib/querylog/density';
 
 const nav = vi.hoisted(() => ({ goto: vi.fn() }));
 const pageState = vi.hoisted(() => ({ url: new URL('http://localhost/query-log') }));
@@ -137,10 +138,13 @@ describe('filters and the URL', () => {
 		serve();
 		render(Page);
 
+		// No period in the URL means the default 24 h window, sent as a relative `from`.
 		await waitFor(() =>
-			expect(requested('/api/v1/query-log')).toContain(
-				'/api/v1/query-log?domain_substr=ads&protocol=doh&limit=25',
-			),
+			expect(
+				requested('/api/v1/query-log').some((url) =>
+					url.startsWith('/api/v1/query-log?domain_substr=ads&protocol=doh&limit=25&from='),
+				),
+			).toBe(true),
 		);
 	});
 
@@ -253,7 +257,9 @@ describe('prototype structure: sheet, quick segments, tags and summary', () => {
 		render(Page);
 
 		expect(screen.queryByLabelText(m.querylog_domain_exact())).not.toBeInTheDocument();
-		expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole('switch', { name: m.querylog_only_blocked() }),
+		).not.toBeInTheDocument();
 	});
 
 	it('removing a tag clears its filter in the URL', async () => {
@@ -372,6 +378,50 @@ describe('wide and compact layouts', () => {
 		expect(container.querySelector('.card .mark')?.textContent).toContain(
 			m.querylog_status_blocked(),
 		);
+		const meta = container.querySelector('.card .meta')?.textContent ?? '';
+		expect(meta).toContain('iPhone');
+		// How the client asked (DoH, DoT, plain UDP/TCP) stays visible: it matters for privacy.
+		expect(meta).toContain('doh');
+	});
+
+	it('hides technical columns by default and stores the switch for this viewer', async () => {
+		setWide(true);
+		localStorage.removeItem(TECHNICAL_KEY);
+		serve({ '/api/v1/query-log': () => pageOf([record('a')]) });
+		const user = userEvent.setup();
+		const { container } = render(Page);
+
+		await screen.findByRole('table', { name: m.querylog_table_label() });
+		expect(screen.queryByRole('columnheader', { name: m.querylog_col_answer() })).toBeNull();
+		expect(container.querySelector('tr.day th')?.getAttribute('colspan')).toBe('4');
+
+		// The native input is visually hidden (pointer-events: none); the wrapping label is the target.
+		const toggle = screen.getByRole('switch', { name: m.querylog_technical_columns() });
+		await user.click(toggle.closest('label') as HTMLElement);
+		expect(screen.getByRole('columnheader', { name: m.querylog_col_answer() })).toBeInTheDocument();
+		expect(
+			screen.getByRole('columnheader', { name: m.querylog_col_latency() }),
+		).toBeInTheDocument();
+		expect(container.querySelector('tr.day th')?.getAttribute('colspan')).toBe('6');
+		expect(localStorage.getItem(TECHNICAL_KEY)).toBe('on');
+	});
+
+	it('shows the answer facts in a card while a domain is hovered or focused', async () => {
+		setWide(true);
+		serve({ '/api/v1/query-log': () => pageOf([record('a')]) });
+		const user = userEvent.setup();
+		render(Page);
+
+		const link = await screen.findByRole('link', { name: /a/ });
+		expect(screen.queryByRole('tooltip')).toBeNull();
+		await user.hover(link);
+		const tip = await screen.findByRole('tooltip');
+		expect(tip).toHaveTextContent(m.querylog_row_rcode());
+		expect(tip).toHaveTextContent('NXDOMAIN');
+		expect(tip).toHaveTextContent('||ads.example.com^');
+		expect(link).toHaveAttribute('aria-describedby', tip.id);
+		await user.unhover(link);
+		expect(screen.queryByRole('tooltip')).toBeNull();
 	});
 
 	it('shows the empty state when no record matches', async () => {
@@ -419,8 +469,17 @@ describe('pagination and export', () => {
 		await waitFor(() => expect(requested('/api/v1/query-log').length).toBeGreaterThan(0));
 		const csv = container.querySelector('a[href*="export.csv"]');
 		const ndjson = container.querySelector('a[href*="export.ndjson"]');
-		expect(csv?.getAttribute('href')).toBe('/api/v1/query-log/export.csv?domain_substr=ads');
-		expect(ndjson?.getAttribute('href')).toBe('/api/v1/query-log/export.ndjson?domain_substr=ads');
+		for (const [link, path] of [
+			[csv, '/api/v1/query-log/export.csv'],
+			[ndjson, '/api/v1/query-log/export.ndjson'],
+		] as const) {
+			const url = new URL(link?.getAttribute('href') ?? '', 'http://localhost');
+			expect(url.pathname).toBe(path);
+			expect(url.searchParams.get('domain_substr')).toBe('ads');
+			expect(url.searchParams.has('from')).toBe(true);
+			expect(url.searchParams.has('limit')).toBe(false);
+			expect(url.searchParams.has('offset')).toBe(false);
+		}
 		expect(csv).toHaveAttribute('download');
 	});
 });

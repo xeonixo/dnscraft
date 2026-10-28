@@ -1,7 +1,7 @@
 import type { IconName, StatusTone } from '$lib/components/icons';
 import type { Result } from '$lib/api/result';
 import { NOT_READY_CODE } from '$lib/api/result';
-import type { TlsMode, TopDomain, UpstreamState } from '$lib/api/stats';
+import type { TlsMode, TopDomain, Upstream, UpstreamState } from '$lib/api/stats';
 import { errorMessage } from '$lib/i18n/locale';
 import { m } from '$lib/paraglide/messages';
 
@@ -89,19 +89,25 @@ export function topBlockedDomains(domains: TopDomain[], limit: number): TopDomai
 		.slice(0, limit);
 }
 
-/** Translated name of an answer source; unknown sources keep their stable identifier. */
+/** Translated name of an answer origin (what answered the query); unknown ids are kept as they are. */
 export function answerSourceLabel(source: string): string {
 	switch (source) {
-		case 'cache':
-			return m.source_cache();
-		case 'recursion':
-			return m.source_recursion();
-		case 'stale':
-			return m.source_stale();
-		case 'filter_block':
-			return m.source_filter_block();
 		case 'resolver':
 			return m.source_resolver();
+		case 'filter_block':
+			return m.source_filter_block();
+		case 'local_view':
+			return m.source_local_view();
+		case 'local_client':
+			return m.source_local_client();
+		case 'synth_any':
+			return m.source_synth_any();
+		case 'bypass':
+			return m.source_bypass();
+		case 'resolve_error':
+			return m.source_resolve_error();
+		case 'listener_ddr':
+			return m.source_listener_ddr();
 		default:
 			return source;
 	}
@@ -116,4 +122,71 @@ export function answerSourceRows(
 		.filter(([, count]) => count > 0)
 		.sort(([a, x], [b, y]) => y - x || a.localeCompare(b))
 		.map(([source, count]) => ({ source, count, share: total > 0 ? count / total : 0 }));
+}
+
+/** Upstreams in order: `healthy` are up; `affected` are anything else and go in front of the owner. */
+export function splitUpstreams(items: Upstream[]): { healthy: Upstream[]; affected: Upstream[] } {
+	return {
+		healthy: items.filter((item) => item.state === 'up'),
+		affected: items.filter((item) => item.state !== 'up'),
+	};
+}
+
+export interface HealthProblem {
+	label: string;
+	verdict: string;
+	/** Extra context, such as the modules a node is still waiting for. */
+	detail?: string;
+}
+
+/**
+ * What the status strip counts as a problem: a node that is not ready, a self-signed certificate,
+ * and upstreams that are degraded or down. Unknown states are not counted.
+ */
+export function healthProblems(input: {
+	ready: boolean | null;
+	modulesNotReady: string[];
+	tlsMode: TlsMode | null;
+	upstreams: Upstream[];
+}): HealthProblem[] {
+	const problems: HealthProblem[] = [];
+	if (input.ready === false) {
+		problems.push({
+			label: m.dashboard_node_label(),
+			verdict: m.status_down(),
+			detail:
+				input.modulesNotReady.length > 0
+					? m.dashboard_modules_pending({ modules: input.modulesNotReady.join(', ') })
+					: undefined,
+		});
+	}
+	if (input.tlsMode === 'self_signed') {
+		problems.push({ label: m.dashboard_tls_label(), verdict: m.status_warn() });
+	}
+	for (const item of input.upstreams) {
+		if (item.state === 'degraded' || item.state === 'down') {
+			problems.push({
+				label: item.kind === 'recursion' ? m.dashboard_recursion() : item.name,
+				verdict: upstreamVerdict(item.state).label,
+			});
+		}
+	}
+	return problems;
+}
+
+/** Legend and segment colour of an answer origin; the legend text names it too. */
+export function answerSourceTone(source: string): 'accent' | 'ok' | 'warn' | 'danger' | 'neutral' {
+	switch (source) {
+		case 'resolver':
+			return 'ok';
+		case 'filter_block':
+			return 'danger';
+		case 'resolve_error':
+			return 'warn';
+		case 'local_view':
+		case 'local_client':
+			return 'accent';
+		default:
+			return 'neutral';
+	}
 }

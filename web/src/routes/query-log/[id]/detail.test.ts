@@ -129,6 +129,23 @@ describe('why blocked view', () => {
 		expect(screen.getByText(m.querylog_provenance_list())).toBeInTheDocument();
 	});
 
+	it('labels a Client-ID pin as assigned via Client ID, not as a subnet', async () => {
+		serve({
+			'GET /api/v1/query-log/q1': () =>
+				ok(
+					record({
+						view_id: 'unterwegs',
+						selection: { cause: 'client_id' },
+						steps: [{ stage: 'select', verdict: 'selected', selection: { cause: 'client_id' } }],
+					}),
+				),
+		});
+		render(Page);
+
+		// The row and the decision step both name the cause.
+		expect((await screen.findAllByText(m.querylog_cause_client_id())).length).toBeGreaterThan(0);
+	});
+
 	it('shows the Unicode name with the ASCII form available', async () => {
 		serve({
 			'GET /api/v1/query-log/q1': () =>
@@ -162,6 +179,37 @@ describe('why blocked view', () => {
 		expect(screen.getByText(m.querylog_show_full())).toBeInTheDocument();
 	});
 
+	it('marks the decisive step and keeps the chain order', async () => {
+		serve({ 'GET /api/v1/query-log/q1': () => ok(record()) });
+		render(Page);
+
+		const steps = await screen.findAllByRole('listitem');
+		expect(steps[2]).toHaveClass('decisive');
+		expect(steps[2]).toHaveTextContent(m.querylog_step_decisive());
+		expect(steps[0]).not.toHaveClass('decisive');
+	});
+
+	it('hides the list row for a rule without a list', async () => {
+		serve({
+			'GET /api/v1/query-log/q1': () =>
+				ok(
+					record({
+						filter: {
+							reason: 'custom',
+							block_mode: 'nxdomain',
+							rule_text: '||ads.example.com^',
+							list_id: null,
+							important: false,
+						},
+					}),
+				),
+		});
+		render(Page);
+
+		await screen.findByText('||ads.example.com^');
+		expect(screen.queryByText(m.querylog_row_list())).not.toBeInTheDocument();
+	});
+
 	it('hides admin actions from a viewer', async () => {
 		setPrincipal({ role: 'viewer', actorId: 'bob', actorType: 'user', csrfToken: 'tok' });
 		serve({ 'GET /api/v1/query-log/q1': () => ok(record()) });
@@ -169,7 +217,7 @@ describe('why blocked view', () => {
 
 		await screen.findByText('ads.example.com');
 		expect(
-			screen.queryByRole('button', { name: m.querylog_allow_action() }),
+			screen.queryByRole('button', { name: m.querylog_rule_create() }),
 		).not.toBeInTheDocument();
 	});
 
@@ -182,10 +230,27 @@ describe('why blocked view', () => {
 	});
 });
 
+const filterSet = (overrides: Record<string, unknown> = {}) => ({
+	id: 'default',
+	name: 'Standard',
+	lists: [],
+	custom_rules: '',
+	services: [],
+	block_mode: 'refused',
+	...overrides,
+});
+const sets =
+	(...rows: ReturnType<typeof filterSet>[]): Handler =>
+	() =>
+		ok({ filter_sets: rows });
+const savedAllow = (): Handler => () => ok({ version: 2, filter_set: filterSet(), created: false });
+const allowedRecord = () => record({ filter: null, rcode: 'NOERROR' });
+
 describe('temporary allow', () => {
 	it('confirms the domain and announces the new expiry', async () => {
 		serve({
 			'GET /api/v1/query-log/q1': () => ok(record()),
+			'GET /api/v1/filter-sets': sets(filterSet()),
 			'POST /api/v1/filtering/temporary-allows': () =>
 				ok({
 					domain: 'ads.example.com',
@@ -198,7 +263,7 @@ describe('temporary allow', () => {
 		const user = userEvent.setup();
 		render(Page);
 
-		await user.click(await screen.findByRole('button', { name: m.querylog_allow_action() }));
+		await user.click(await screen.findByRole('button', { name: m.querylog_rule_create() }));
 		const dialog = await screen.findByRole('dialog');
 		expect(within(dialog).getByText('ads.example.com')).toBeInTheDocument();
 		await user.click(within(dialog).getByRole('button', { name: m.querylog_allow_confirm() }));
@@ -216,15 +281,165 @@ describe('temporary allow', () => {
 	it('explains that the node lacks temporary allows on 404', async () => {
 		serve({
 			'GET /api/v1/query-log/q1': () => ok(record()),
+			'GET /api/v1/filter-sets': sets(filterSet()),
 			'POST /api/v1/filtering/temporary-allows': () => fail(404, 'control_api.not_found'),
 		});
 		const user = userEvent.setup();
 		render(Page);
 
-		await user.click(await screen.findByRole('button', { name: m.querylog_allow_action() }));
+		await user.click(await screen.findByRole('button', { name: m.querylog_rule_create() }));
 		const dialog = await screen.findByRole('dialog');
 		await user.click(within(dialog).getByRole('button', { name: m.querylog_allow_confirm() }));
 
 		expect(await within(dialog).findByText(m.querylog_allow_unavailable())).toBeInTheDocument();
+	});
+});
+
+describe('rule sheet', () => {
+	it('opens on the opposite of a blocked verdict and hides the picker for one set', async () => {
+		serve({
+			'GET /api/v1/query-log/q1': () => ok(record()),
+			'GET /api/v1/filter-sets': sets(filterSet()),
+		});
+		render(Page);
+
+		await userEvent
+			.setup()
+			.click(await screen.findByRole('button', { name: m.querylog_rule_create() }));
+		const dialog = await screen.findByRole('dialog');
+		expect(
+			within(dialog).getByRole('radio', { name: m.querylog_rule_action_allow() }),
+		).toBeChecked();
+		expect(
+			within(dialog).getByRole('radio', { name: m.querylog_rule_action_block() }),
+		).not.toBeChecked();
+		expect(within(dialog).queryByRole('combobox')).not.toBeInTheDocument();
+	});
+
+	it('defaults an allowed query to a block', async () => {
+		serve({
+			'GET /api/v1/query-log/q1': () => ok(allowedRecord()),
+			'GET /api/v1/filter-sets': sets(filterSet()),
+		});
+		render(Page);
+
+		await userEvent
+			.setup()
+			.click(await screen.findByRole('button', { name: m.querylog_rule_create() }));
+		const dialog = await screen.findByRole('dialog');
+		expect(
+			within(dialog).getByRole('radio', { name: m.querylog_rule_action_block() }),
+		).toBeChecked();
+	});
+
+	it('writes a permanent allow as a new line of the filter set', async () => {
+		serve({
+			'GET /api/v1/query-log/q1': () => ok(record()),
+			'GET /api/v1/filter-sets': sets(filterSet({ custom_rules: '||tracker.example^' })),
+			'PUT /api/v1/filter-sets': savedAllow(),
+		});
+		const user = userEvent.setup();
+		render(Page);
+
+		await user.click(await screen.findByRole('button', { name: m.querylog_rule_create() }));
+		const dialog = await screen.findByRole('dialog');
+		await user.click(within(dialog).getByRole('radio', { name: m.querylog_rule_permanent() }));
+		await user.click(
+			within(dialog).getByRole('button', { name: m.querylog_rule_confirm_allow_permanent() }),
+		);
+
+		await waitFor(() =>
+			expect(live.message).toBe(
+				m.querylog_rule_saved({ rule: '@@|ads.example.com^', set: 'Standard' }),
+			),
+		);
+		const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT');
+		expect(JSON.parse(String(put?.[1]?.body))).toMatchObject({
+			id: 'default',
+			custom_rules: '||tracker.example^\n@@|ads.example.com^',
+		});
+		expect(screen.getByRole('link', { name: m.querylog_rule_view() })).toBeInTheDocument();
+	});
+
+	it('blocks permanently without touching the temporary endpoint', async () => {
+		serve({
+			'GET /api/v1/query-log/q1': () => ok(allowedRecord()),
+			'GET /api/v1/filter-sets': sets(filterSet()),
+			'PUT /api/v1/filter-sets': savedAllow(),
+		});
+		const user = userEvent.setup();
+		render(Page);
+
+		await user.click(await screen.findByRole('button', { name: m.querylog_rule_create() }));
+		const dialog = await screen.findByRole('dialog');
+		within(dialog).getByRole('switch', { name: m.querylog_allow_subdomains() }).focus();
+		await user.keyboard(' ');
+		await user.click(within(dialog).getByRole('button', { name: m.querylog_rule_confirm_block() }));
+
+		await waitFor(() => expect(live.message).toContain('||ads.example.com^'));
+		const calls = fetchMock.mock.calls.map(([url]) => String(url));
+		expect(calls.some((url) => url.includes('temporary-allows'))).toBe(false);
+		const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT');
+		expect(JSON.parse(String(put?.[1]?.body))).toMatchObject({
+			custom_rules: '||ads.example.com^',
+		});
+	});
+
+	it('writes nothing when the exact rule already exists', async () => {
+		serve({
+			'GET /api/v1/query-log/q1': () => ok(record()),
+			'GET /api/v1/filter-sets': sets(filterSet({ custom_rules: '@@|ads.example.com^' })),
+			'PUT /api/v1/filter-sets': savedAllow(),
+		});
+		const user = userEvent.setup();
+		render(Page);
+
+		await user.click(await screen.findByRole('button', { name: m.querylog_rule_create() }));
+		const dialog = await screen.findByRole('dialog');
+		await user.click(within(dialog).getByRole('radio', { name: m.querylog_rule_permanent() }));
+		await user.click(
+			within(dialog).getByRole('button', { name: m.querylog_rule_confirm_allow_permanent() }),
+		);
+
+		await waitFor(() =>
+			expect(live.message).toBe(
+				m.querylog_rule_exists({ rule: '@@|ads.example.com^', set: 'Standard' }),
+			),
+		);
+		expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
+	});
+
+	it('preselects the set that decided the query when several exist', async () => {
+		serve({
+			'GET /api/v1/query-log/q1': () => ok(record({ filter_set: 'kids' })),
+			'GET /api/v1/filter-sets': sets(filterSet(), filterSet({ id: 'kids', name: 'Kinder' })),
+		});
+		render(Page);
+
+		await userEvent
+			.setup()
+			.click(await screen.findByRole('button', { name: m.querylog_rule_create() }));
+		const dialog = await screen.findByRole('dialog');
+		expect(within(dialog).getByRole('combobox', { name: m.querylog_row_filter_set() })).toHaveValue(
+			'kids',
+		);
+	});
+
+	it('disables a permanent rule when no filter set exists', async () => {
+		serve({
+			'GET /api/v1/query-log/q1': () => ok(record()),
+			'GET /api/v1/filter-sets': sets(),
+		});
+		const user = userEvent.setup();
+		render(Page);
+
+		await user.click(await screen.findByRole('button', { name: m.querylog_rule_create() }));
+		const dialog = await screen.findByRole('dialog');
+		await user.click(within(dialog).getByRole('radio', { name: m.querylog_rule_permanent() }));
+
+		expect(
+			within(dialog).getByRole('button', { name: m.querylog_rule_confirm_allow_permanent() }),
+		).toBeDisabled();
+		expect(within(dialog).getByText(m.querylog_rule_no_sets())).toBeInTheDocument();
 	});
 });

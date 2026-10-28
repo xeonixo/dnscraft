@@ -22,6 +22,7 @@ import {
 	MOCK_AUDIT,
 	MOCK_CLUSTER_NODES,
 	MOCK_DIRECTORY_CLIENTS,
+	MOCK_TOKENS,
 	PROTOCOLS,
 } from './fixtures.mjs';
 
@@ -347,6 +348,53 @@ function send(response, status, body, headers = {}) {
 	response.end(body);
 }
 
+/**
+ * Engine status per list id, as the filter engine reports it. Times are relative to now so the
+ * page shows fresh updates. The failing list keeps the rules of its last good build.
+ */
+function listStatusFor(id, now = Date.now()) {
+	const hoursAgo = (hours) => new Date(now - hours * 3_600_000).toISOString();
+	if (id === 'adguard-dns-filter') {
+		return {
+			rules_parsed: 41230,
+			rules_skipped: 12,
+			unique_contribution: 38210,
+			last_success: hoursAgo(3),
+			last_attempt: hoursAgo(3),
+			error_code: null,
+			http_status: 200,
+		};
+	}
+	if (id === 'stevenblack-hosts') {
+		return {
+			rules_parsed: 79950,
+			rules_skipped: 3,
+			unique_contribution: 61240,
+			last_success: hoursAgo(9),
+			last_attempt: hoursAgo(9),
+			error_code: null,
+			http_status: 200,
+		};
+	}
+	if (id === 'trackers-main') {
+		return {
+			rules_parsed: 8415,
+			rules_skipped: 0,
+			unique_contribution: 1790,
+			last_success: hoursAgo(50),
+			last_attempt: hoursAgo(0.5),
+			error_code: 'filter_list.fetch_failed',
+			http_status: 503,
+		};
+	}
+	return undefined;
+}
+
+function withListStatus(list) {
+	const status = listStatusFor(list.id);
+	return status ? { ...list, status } : list;
+}
+
 function sendData(response, data, status = 200) {
 	send(response, status, JSON.stringify({ data }), {
 		'Content-Type': 'application/json; charset=utf-8',
@@ -530,6 +578,40 @@ function diffSnapshots(previous, next) {
 
 const EMPTY_DIFF = { changed_sections: [], added: [], removed: [], changed: [] };
 
+/** Trimmed label, or null when empty. Mirrors the API rule: 1..64 characters. */
+function clientIdLabel(value) {
+	if (value === null || value === undefined) return null;
+	const label = String(value).trim();
+	if (label === '') return null;
+	if (Array.from(label).length > 64)
+		throw new ApiFailure(400, 'policy.config.invalid', {
+			reason: 'client_id_label',
+			field: 'label',
+		});
+	return label;
+}
+
+function clientIdDevice(value) {
+	if (value === null || value === undefined || value === '') return null;
+	return String(value).slice(0, 128);
+}
+
+/** A pinned Netzbereich must exist in the candidate config; null (or '') clears the pin. */
+function clientIdView(value, config) {
+	if (value === null || value === undefined || value === '') return null;
+	const id = String(value);
+	if (!(config.policy.views ?? []).some((view) => view.id === id)) {
+		throw new ApiFailure(400, 'policy.config.invalid', { reason: 'view_unknown', field: 'view' });
+	}
+	return id;
+}
+
+/** Labels are unique case-insensitively; `ownId` is the entry being renamed (it may keep its label). */
+function labelTaken(ids, label, ownId) {
+	const wanted = label.toLowerCase();
+	return ids.some((item) => item.id !== ownId && (item.label ?? '').toLowerCase() === wanted);
+}
+
 function policyConfig(store) {
 	return currentOf(store).config.policy ?? {};
 }
@@ -676,8 +758,13 @@ async function route(request, response, options) {
 				order_by: 'time',
 				order: 'desc',
 			});
-			const hits = rows.filter((record) => record.answer_source === 'cache').length;
-			const misses = rows.filter((record) => record.answer_source === 'resolver').length;
+			// Mirrors stats.rs cache_stats: each resolve step counts once; source cache is a hit,
+			// any other source (recursion, stale) a miss. Steps without a source are not counted.
+			const sources = rows.flatMap((record) =>
+				record.steps.filter((step) => step.stage === 'resolve').map((step) => step.source),
+			);
+			const hits = sources.filter((source) => source === 'cache').length;
+			const misses = sources.filter((source) => source != null && source !== 'cache').length;
 			return sendData(response, {
 				hits,
 				misses,
@@ -701,14 +788,26 @@ async function route(request, response, options) {
 						last_checked: null,
 					},
 					{
+						name: 'dns.google',
+						kind: 'forward_target',
+						zone: '.',
+						protocol: 'doh',
+						state: 'up',
+						rtt_ms: { p50: 26, p95: 58 },
+						success_rate: 0.9994,
+						samples: 36,
+						last_error: null,
+						last_checked: null,
+					},
+					{
 						name: 'recursion',
 						kind: 'recursion',
 						zone: null,
 						protocol: 'udp',
 						state: 'degraded',
-						rtt_ms: null,
-						success_rate: 0.9,
-						samples: 0,
+						rtt_ms: { p50: 22, p95: 120 },
+						success_rate: 0.97,
+						samples: 1184,
 						last_error: { code: 'resolver.timeout' },
 						last_checked: null,
 					},
@@ -728,6 +827,7 @@ async function route(request, response, options) {
 			if (seconds === undefined) throw new ApiFailure(400, 'mcp.invalid_input');
 			const paused_until = new Date(Date.now() + seconds * 1000).toISOString();
 			options.runtime.pauseUntil = paused_until;
+			options.runtime.pauseSet = body.filter_set_id ?? 'default';
 			return sendData(response, {
 				filter_set_id: body.filter_set_id ?? 'default',
 				paused_until,
@@ -836,7 +936,12 @@ async function route(request, response, options) {
 		case 'GET /api/v1/policy/records':
 			return sendData(response, { records: policyConfig(options.store).records ?? [] });
 		case 'GET /api/v1/policy/client-ids':
-			return sendData(response, { client_ids: policyConfig(options.store).client_ids ?? [] });
+			return sendData(response, {
+				client_ids: (policyConfig(options.store).client_ids ?? []).map((entry) => ({
+					view: null,
+					...entry,
+				})),
+			});
 		case 'GET /api/v1/clients':
 			return sendData(response, {
 				clients: MOCK_DIRECTORY_CLIENTS,
@@ -845,7 +950,9 @@ async function route(request, response, options) {
 		case 'GET /api/v1/filter-sets':
 			return sendData(response, { filter_sets: filteringConfig(options.store).sets ?? [] });
 		case 'GET /api/v1/filter-lists':
-			return sendData(response, { filter_lists: filteringConfig(options.store).lists ?? [] });
+			return sendData(response, {
+				filter_lists: (filteringConfig(options.store).lists ?? []).map(withListStatus),
+			});
 		case 'POST /api/v1/clients/sync':
 			return sendData(response, {
 				generation: 2,
@@ -853,6 +960,19 @@ async function route(request, response, options) {
 				client_count: MOCK_DIRECTORY_CLIENTS.length,
 				ip_conflicts: 0,
 			});
+		case 'GET /api/v1/clients/unifi': {
+			const clients = clientsConfig(options.store);
+			const profiles = (clients.unifi_profiles ?? []).map((profile) => ({
+				...profile,
+				has_api_key: Boolean(options.runtime.unifiApiKeys?.[profile.id]),
+			}));
+			return sendData(response, {
+				profiles,
+				bindings: clients.unifi_bindings ?? {},
+				local_domain: clients.local_domain,
+				local_domain_mode: clients.local_domain_mode,
+			});
+		}
 		case 'POST /api/v1/policy/test-query': {
 			const body = await readJsonBody(request);
 			return sendData(response, {
@@ -918,7 +1038,7 @@ async function route(request, response, options) {
 		}
 		case 'POST /api/v1/auth/tokens': {
 			const body = await readJsonBody(request);
-			const id = `tok-${options.runtime.tokens.length + 1}`.padEnd(16, '0');
+			const id = `tok-${++options.runtime.tokenSerial}`.padEnd(16, '0');
 			const row = {
 				id,
 				name: String(body.name ?? 'token'),
@@ -954,22 +1074,24 @@ async function route(request, response, options) {
 			const set = sets.find((item) => item.id === filterSetId) ?? sets[0];
 			const rules = (set?.mcp_rules ?? []).map((rule) => ({
 				...rule,
-				rule_text: `||${rule.domain}^`,
+				rule_text: `${rule.include_subdomains ? '||' : '|'}${rule.domain}^`,
 				filter_set_id: set.id,
 			}));
 			if (kind === 'temporary_allows') {
+				const now = Date.now();
+				const setId = set?.id ?? 'default';
 				return sendData(response, {
-					filter_set_id: set?.id ?? 'default',
+					filter_set_id: setId,
 					kind,
-					temporary_allows: [
-						{
-							domain: 'allowed.example.test',
-							include_subdomains: false,
-							created_at: '2026-10-27T10:00:00Z',
-							expires_at: '2026-10-27T11:00:00Z',
-							filter_set_id: set?.id ?? 'default',
-						},
-					],
+					temporary_allows: MOCK_TEMPORARY_ALLOWS.filter(
+						(allow) => allow.filter_set_id === setId,
+					).map((allow) => ({
+						domain: allow.domain,
+						include_subdomains: allow.include_subdomains,
+						created_at: new Date(now - 60_000).toISOString(),
+						expires_at: new Date(now + allow.minutes * 60_000).toISOString(),
+						filter_set_id: setId,
+					})),
 					has_more: false,
 					next_offset: null,
 				});
@@ -978,14 +1100,15 @@ async function route(request, response, options) {
 				return sendData(response, {
 					filter_set_id: set?.id ?? 'default',
 					kind,
-					pauses: options.runtime.pauseUntil
-						? [
-								{
-									filter_set_id: set?.id ?? 'default',
-									paused_until: options.runtime.pauseUntil,
-								},
-							]
-						: [],
+					pauses:
+						options.runtime.pauseUntil && options.runtime.pauseSet === (set?.id ?? 'default')
+							? [
+									{
+										filter_set_id: set?.id ?? 'default',
+										paused_until: options.runtime.pauseUntil,
+									},
+								]
+							: [],
 					has_more: false,
 					next_offset: null,
 				});
@@ -1038,6 +1161,16 @@ async function route(request, response, options) {
 			return sendData(response, { version, view });
 		}
 		if (request.method === 'DELETE') {
+			const pinned = (policyConfig(options.store).client_ids ?? [])
+				.filter((item) => item.view === id)
+				.map((item) => item.id);
+			if (pinned.length > 0) {
+				throw new ApiFailure(400, 'policy.config.invalid', {
+					reason: 'view_in_use',
+					view: id,
+					client_ids: pinned,
+				});
+			}
 			const config = structuredClone(currentOf(options.store).config);
 			config.policy.views = (config.policy.views ?? []).filter((item) => item.id !== id);
 			const version = replaceConfig(options.store, config);
@@ -1109,18 +1242,55 @@ async function route(request, response, options) {
 		const body = await readJsonBody(request);
 		const config = structuredClone(currentOf(options.store).config);
 		const ids = [...(config.policy.client_ids ?? [])];
-		if (ids.includes(body.id)) throw new ApiFailure(400, 'policy.config.invalid');
-		ids.push(body.id);
+		const label = clientIdLabel(body.label);
+		if (ids.some((item) => item.id === body.id)) {
+			throw new ApiFailure(400, 'policy.config.invalid', { reason: 'client_id_exists' });
+		}
+		if (label !== null && labelTaken(ids, label, body.id)) {
+			throw new ApiFailure(400, 'policy.config.invalid', {
+				reason: 'client_id_label_taken',
+				field: 'label',
+			});
+		}
+		ids.push({
+			id: body.id,
+			label,
+			device: clientIdDevice(body.device),
+			view: clientIdView(body.view, config),
+		});
 		config.policy.client_ids = ids;
 		const version = replaceConfig(options.store, config);
 		return sendData(response, { version, client_id: body.id });
 	}
 
-	const clientIdDelete = /^\/api\/v1\/policy\/client-ids\/([^/]+)$/.exec(path);
-	if (clientIdDelete && request.method === 'DELETE') {
-		const id = decodeURIComponent(clientIdDelete[1]);
+	const clientIdItem = /^\/api\/v1\/policy\/client-ids\/([^/]+)$/.exec(path);
+	if (clientIdItem && request.method === 'PUT') {
+		const id = decodeURIComponent(clientIdItem[1]);
+		const body = await readJsonBody(request);
 		const config = structuredClone(currentOf(options.store).config);
-		config.policy.client_ids = (config.policy.client_ids ?? []).filter((item) => item !== id);
+		const ids = [...(config.policy.client_ids ?? [])];
+		const index = ids.findIndex((item) => item.id === id);
+		if (index < 0) throw new ApiFailure(404, 'control_api.not_found');
+		const label = body.label === undefined ? ids[index].label : clientIdLabel(body.label);
+		if (label !== null && labelTaken(ids, label, id)) {
+			throw new ApiFailure(400, 'policy.config.invalid', {
+				reason: 'client_id_label_taken',
+				field: 'label',
+			});
+		}
+		const device = body.device === undefined ? ids[index].device : clientIdDevice(body.device);
+		const view =
+			body.view === undefined ? (ids[index].view ?? null) : clientIdView(body.view, config);
+		ids[index] = { id, label, device, view };
+		config.policy.client_ids = ids;
+		const version = replaceConfig(options.store, config);
+		return sendData(response, { version, client_id: id });
+	}
+
+	if (clientIdItem && request.method === 'DELETE') {
+		const id = decodeURIComponent(clientIdItem[1]);
+		const config = structuredClone(currentOf(options.store).config);
+		config.policy.client_ids = (config.policy.client_ids ?? []).filter((item) => item.id !== id);
 		const version = replaceConfig(options.store, config);
 		return sendData(response, { version, deleted: true, id });
 	}
@@ -1160,12 +1330,23 @@ async function route(request, response, options) {
 			const version = replaceConfig(options.store, config);
 			return sendData(response, { version, deleted: true, id: body.id });
 		}
+		const nodes = Array.isArray(body.nodes)
+			? [
+					...new Set(
+						body.nodes
+							.filter((entry) => typeof entry === 'string')
+							.map((entry) => entry.trim())
+							.filter(Boolean),
+					),
+				]
+			: [];
 		const listener = {
 			id: body.id,
 			protocol: body.protocol,
 			address: body.address,
 			exposure: body.exposure ?? 'local',
 			h3: body.h3 === true,
+			nodes,
 		};
 		const index = listeners.findIndex((item) => item.id === listener.id);
 		const created = index < 0;
@@ -1296,12 +1477,27 @@ async function serveStatic(request, response, buildDir) {
 	}
 }
 
+/** Temporary allows the mock reports as running; `minutes` is counted from each read. */
+const MOCK_TEMPORARY_ALLOWS = [
+	{
+		domain: 'allowed.example.test',
+		include_subdomains: false,
+		minutes: 4,
+		filter_set_id: 'default',
+	},
+	{ domain: 'zeitung.example.de', include_subdomains: true, minutes: 42, filter_set_id: 'kids' },
+];
+
 /** Creates the mock HTTP server. Nothing listens until `listen` is called. */
 function createRuntimeState() {
 	return {
 		clusterNodes: structuredClone(MOCK_CLUSTER_NODES),
-		tokens: [],
-		pauseUntil: null,
+		tokens: structuredClone(MOCK_TOKENS),
+		tokenSerial: MOCK_TOKENS.length,
+		unifiApiKeys: Object.create(null),
+		// One pause running at start (filter set `kids`, 12 minutes), so the Regeln page has one to show.
+		pauseUntil: new Date(Date.now() + 12 * 60_000).toISOString(),
+		pauseSet: 'kids',
 	};
 }
 

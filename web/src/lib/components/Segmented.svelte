@@ -79,7 +79,7 @@
 
 	.segment {
 		min-width: 2.75rem;
-		min-height: 2.75rem;
+		min-height: var(--control-h);
 		padding: 0.3125rem 0.8125rem;
 		appearance: none;
 		border: 0;
@@ -88,6 +88,7 @@
 		color: var(--label);
 		font: inherit;
 		font-size: 0.84375rem;
+		white-space: nowrap;
 		cursor: pointer;
 	}
 

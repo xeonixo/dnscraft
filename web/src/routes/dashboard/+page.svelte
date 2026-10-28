@@ -5,9 +5,9 @@
 	import Button from '$lib/components/Button.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
+	import Icon from '$lib/components/Icon.svelte';
 	import ResultNotice from '$lib/components/ResultNotice.svelte';
 	import Segmented from '$lib/components/Segmented.svelte';
-	import ShareBar from '$lib/components/ShareBar.svelte';
 	import StatTile from '$lib/components/StatTile.svelte';
 	import StatusRow from '$lib/components/StatusRow.svelte';
 	import CacheSheet from '$lib/dashboard/CacheSheet.svelte';
@@ -15,7 +15,6 @@
 	import * as view from '$lib/dashboard/view';
 	import { settle, type Result } from '$lib/api/result';
 	import {
-		FILTER_SET,
 		getCacheStats,
 		getOverview,
 		getReadiness,
@@ -48,10 +47,13 @@
 	} from '$lib/format';
 	import { m } from '$lib/paraglide/messages';
 	import { createPoller } from '$lib/poll';
+	import { displayText } from '$lib/safe-text';
 
 	const locale = getLocale();
 	const isAdmin = $derived(auth.role === 'admin');
 
+	/** Shown for a value whose read has not produced data. */
+	const NO_VALUE = '—';
 	const POLL_INTERVAL_MS = 30_000;
 	const POLL_MAX_BACKOFF_MS = 300_000;
 	/** Rows shown per top list. */
@@ -124,12 +126,52 @@
 		};
 	});
 
+	const totals = $derived(overview.kind === 'ok' ? overview.data : null);
+	const blockRate = $derived(totals ? view.shareOf(totals.blocked, totals.total) : 0);
 	const sourceRows = $derived(
 		overview.kind === 'ok' ? view.answerSourceRows(overview.data.by_answer_source) : [],
 	);
 
+	const topDomainRows = $derived(domains.kind === 'ok' ? domains.data.slice(0, TOP_LIMIT) : []);
 	const blockedDomains = $derived(
 		domains.kind === 'ok' ? view.topBlockedDomains(domains.data, TOP_LIMIT) : [],
+	);
+	const clientRows = $derived(clients.kind === 'ok' ? clients.data : []);
+
+	/** Largest value in each list, so the proportional bars share one scale per list. */
+	const maxOf = (values: number[]): number =>
+		values.reduce((top, value) => Math.max(top, value), 0);
+	const maxDomainQueries = $derived(maxOf(topDomainRows.map((row) => row.queries)));
+	const maxBlocked = $derived(maxOf(blockedDomains.map((row) => row.blocked)));
+	const maxClientQueries = $derived(maxOf(clientRows.map((row) => row.queries)));
+
+	const healthId = $props.id();
+	const problems = $derived(
+		view.healthProblems({
+			ready: readiness.kind === 'ok' ? readiness.data.ready : null,
+			modulesNotReady: status.kind === 'ok' ? status.data.modules_not_ready : [],
+			tlsMode: status.kind === 'ok' ? (status.data.tls_mode ?? null) : null,
+			upstreams: upstreams.kind === 'ok' ? upstreams.data.items : [],
+		}),
+	);
+	/** True only when every read behind the strip has data, so 'All OK' is never shown on a guess. */
+	const healthKnown = $derived(
+		status.kind === 'ok' && readiness.kind === 'ok' && upstreams.kind === 'ok',
+	);
+	const healthTone = $derived(problems.length > 0 ? 'warn' : healthKnown ? 'ok' : 'neutral');
+	const healthIcon = $derived(
+		problems.length > 0 ? 'alert-triangle' : healthKnown ? 'check-circle' : 'help-circle',
+	);
+
+	const upstreamSplit = $derived(
+		view.splitUpstreams(upstreams.kind === 'ok' ? upstreams.data.items : []),
+	);
+	const upstreamsFooter = $derived(
+		upstreams.kind === 'ok'
+			? m.dashboard_upstreams_footer({
+					minutes: formatNumber(Math.round(upstreams.data.window_seconds / 60), locale),
+				})
+			: undefined,
 	);
 
 	function upstreamDetails(item: Upstream): string[] {
@@ -142,7 +184,8 @@
 					})
 				: m.dashboard_no_sample(),
 		);
-		if (item.success_rate !== null) {
+		// A success rate without samples is not a measurement; it is hidden until one exists.
+		if (item.samples > 0 && item.success_rate !== null) {
 			lines.push(m.dashboard_upstream_success({ rate: formatPercent(item.success_rate, locale) }));
 		}
 		if (item.last_error) {
@@ -173,252 +216,289 @@
 	}
 </script>
 
-{#if bootstrap}
-	<Banner title={m.dashboard_selfsigned_title()}>
-		<p>{m.dashboard_selfsigned_body({ names: bootstrap.names })}</p>
-		{#if bootstrap.fingerprint !== ''}
-			<p class="fingerprint">
-				<span>{m.dashboard_fingerprint_label()}</span>
-				<code>{bootstrap.fingerprint}</code>
+{#snippet upstreamRow(item: Upstream)}
+	{@const verdict = view.upstreamVerdict(item.state)}
+	<StatusRow
+		icon={verdict.icon}
+		tone={verdict.tone}
+		label={item.kind === 'recursion' ? m.dashboard_recursion() : item.name}
+		mono={item.kind !== 'recursion'}
+		details={upstreamDetails(item)}
+		verdict={verdict.label}
+	/>
+{/snippet}
+
+<div class="dash">
+	{#if bootstrap}
+		<Banner title={m.dashboard_selfsigned_title()}>
+			<p>{m.dashboard_selfsigned_body({ names: bootstrap.names })}</p>
+			{#if bootstrap.fingerprint !== ''}
+				<p class="fingerprint">
+					<span>{m.dashboard_fingerprint_label()}</span>
+					<code>{bootstrap.fingerprint}</code>
+				</p>
+			{/if}
+			<p><a href={resolve('/tls')}>{m.dashboard_tls_link()}</a></p>
+		</Banner>
+	{/if}
+
+	<header class="page-head">
+		{#if isAdmin}
+			<div class="pause">
+				<span class="pause-label">{m.dashboard_pause_row_label()}</span>
+				<Button
+					aria-label={m.dashboard_pause_title({ duration: m.dashboard_duration_5m() })}
+					onclick={() => (pauseDuration = 'PT5M')}>{m.dashboard_pause_5m()}</Button
+				>
+				<Button
+					aria-label={m.dashboard_pause_title({ duration: m.dashboard_duration_1h() })}
+					onclick={() => (pauseDuration = 'PT1H')}>{m.dashboard_pause_1h()}</Button
+				>
+			</div>
+		{/if}
+		<Segmented
+			options={periodOptions}
+			bind:value={period}
+			label={m.dashboard_period_label()}
+			onchange={() => poller.refresh()}
+		/>
+	</header>
+
+	<section class="health {healthTone}" aria-labelledby={healthId}>
+		<span class="symbol"><Icon name={healthIcon} size="1.125rem" strokeWidth={1.7} /></span>
+		<h2 class="health-title" id={healthId}>
+			{#if problems.length === 0}
+				{healthKnown ? m.dashboard_health_ok() : m.status_unknown()}
+			{:else if problems.length === 1}
+				{m.dashboard_health_one()}
+			{:else}
+				{m.dashboard_health_many({ count: formatNumber(problems.length, locale) })}
+			{/if}
+		</h2>
+		{#if problems.length > 0}
+			<ul class="problems">
+				{#each problems as problem, index (index)}
+					<li>
+						{problem.label}: {problem.verdict}{#if problem.detail}<span class="detail">
+								· {problem.detail}</span
+							>{/if}
+					</li>
+				{/each}
+			</ul>
+		{/if}
+		{#if upstreams.kind === 'ok' && upstreamSplit.healthy.length > 0 && upstreamSplit.affected.length === 0}
+			<p class="summary">
+				{m.dashboard_upstreams_healthy({
+					count: formatNumber(upstreamSplit.healthy.length, locale),
+				})}
 			</p>
 		{/if}
-		<p><a href={resolve('/tls')}>{m.dashboard_tls_link()}</a></p>
-	</Banner>
-{/if}
+	</section>
+	{#if status.kind !== 'ok'}
+		<ResultNotice result={status} onretry={() => poller.refresh()} />
+	{/if}
 
-{#if isAdmin}
-	<GroupedList header={m.dashboard_section_actions()}>
-		<GroupedRow
-			label={m.dashboard_pause_row_label()}
-			detail={m.dashboard_pause_row_detail({ set: FILTER_SET })}
-		>
-			{#snippet trailing()}
-				<div class="inline-actions">
-					<Button
-						aria-label={m.dashboard_pause_title({ duration: m.dashboard_duration_5m() })}
-						onclick={() => (pauseDuration = 'PT5M')}>{m.dashboard_pause_5m()}</Button
-					>
-					<Button
-						aria-label={m.dashboard_pause_title({ duration: m.dashboard_duration_1h() })}
-						onclick={() => (pauseDuration = 'PT1H')}>{m.dashboard_pause_1h()}</Button
-					>
-				</div>
-			{/snippet}
-		</GroupedRow>
-	</GroupedList>
-{/if}
-
-<div class="filter-row">
-	<Segmented
-		options={periodOptions}
-		bind:value={period}
-		label={m.dashboard_period_label()}
-		onchange={() => poller.refresh()}
-	/>
-</div>
-
-{#if overview.kind === 'ok'}
 	<div class="tiles">
-		<StatTile label={m.dashboard_tile_total()} value={formatNumber(overview.data.total, locale)} />
+		<StatTile
+			label={m.dashboard_tile_total()}
+			value={totals ? formatNumber(totals.total, locale) : NO_VALUE}
+		/>
 		<StatTile
 			label={m.dashboard_tile_allowed()}
-			value={formatNumber(overview.data.allowed, locale)}
-			tone="ok"
-			toneLabel={m.dashboard_share_of_total({
-				ratio: formatPercent(view.shareOf(overview.data.allowed, overview.data.total), locale),
-			})}
+			value={totals ? formatNumber(totals.allowed, locale) : NO_VALUE}
 		/>
 		<StatTile
 			label={m.dashboard_tile_blocked()}
-			value={formatNumber(overview.data.blocked, locale)}
-			tone="danger"
-			toneLabel={m.dashboard_share_of_total({
-				ratio: formatPercent(view.shareOf(overview.data.blocked, overview.data.total), locale),
-			})}
-		/>
-		<StatTile
-			label={m.dashboard_tile_blocked_share()}
-			value={formatPercent(view.shareOf(overview.data.blocked, overview.data.total), locale)}
+			value={totals ? formatNumber(totals.blocked, locale) : NO_VALUE}
+			tone={totals ? 'danger' : undefined}
+			toneLabel={totals
+				? m.dashboard_share_of_total({ ratio: formatPercent(blockRate, locale) })
+				: undefined}
 		/>
 	</div>
-	{#if overview.data.source === 'rollup'}
+	{#if totals?.source === 'rollup'}
 		<p class="note">{m.dashboard_retention_note()}</p>
 	{/if}
-{:else}
-	<ResultNotice result={overview} onretry={() => poller.refresh()} />
-{/if}
 
-{#if overview.kind === 'ok'}
-	<GroupedList header={m.dashboard_section_sources()} footer={m.dashboard_sources_footer()}>
-		{#each sourceRows as row (row.source)}
-			<GroupedRow
-				label={view.answerSourceLabel(row.source)}
-				detail={formatPercent(row.share, locale)}
-			>
-				{#snippet trailing()}
-					<span class="trail">
-						<ShareBar share={row.share} />
-						<span class="num">{formatNumber(row.count, locale)}</span>
-					</span>
-				{/snippet}
-			</GroupedRow>
+	<div class="grid">
+		<div class="cell">
+			{#if overview.kind === 'ok'}
+				<GroupedList header={m.dashboard_section_sources()} footer={m.dashboard_sources_footer()}>
+					<div class="sources">
+						{#if sourceRows.length > 0}
+							<div class="stack" aria-hidden="true">
+								{#each sourceRows as row (row.source)}
+									<span
+										class="seg fill-{view.answerSourceTone(row.source)}"
+										style:width="{row.share * 100}%"
+									></span>
+								{/each}
+							</div>
+							<ul class="legend">
+								{#each sourceRows as row (row.source)}
+									<li>
+										<span class="swatch fill-{view.answerSourceTone(row.source)}" aria-hidden="true"
+										></span>
+										<span class="name">{view.answerSourceLabel(row.source)}</span>
+										<span class="num">{formatNumber(row.count, locale)}</span>
+										<span class="pct">{formatPercent(row.share, locale)}</span>
+									</li>
+								{/each}
+							</ul>
+						{:else}
+							<p class="empty">{m.dashboard_empty_period()}</p>
+						{/if}
+					</div>
+				</GroupedList>
+			{:else}
+				<ResultNotice result={overview} onretry={() => poller.refresh()} />
+			{/if}
+		</div>
+
+		<div class="cell">
+			{#if upstreams.kind === 'ok' && upstreamSplit.affected.length > 0}
+				<GroupedList header={m.dashboard_section_upstreams()} footer={upstreamsFooter}>
+					{#each upstreamSplit.affected as item, index (index)}
+						{@render upstreamRow(item)}
+					{/each}
+					{#if upstreamSplit.healthy.length > 0}
+						<details class="disclosure fold">
+							<summary>
+								{m.dashboard_upstreams_more_ok({
+									count: formatNumber(upstreamSplit.healthy.length, locale),
+								})}
+							</summary>
+							<div class="rows">
+								{#each upstreamSplit.healthy as item, index (index)}
+									{@render upstreamRow(item)}
+								{/each}
+							</div>
+						</details>
+					{/if}
+				</GroupedList>
+			{:else if upstreams.kind === 'ok' && upstreams.data.items.length > 0}
+				<details class="disclosure card">
+					<summary>{m.dashboard_upstream_details()}</summary>
+					<div class="rows">
+						{#each upstreams.data.items as item, index (index)}
+							{@render upstreamRow(item)}
+						{/each}
+					</div>
+					<p class="foot">{upstreamsFooter}</p>
+				</details>
+			{:else if upstreams.kind !== 'ok'}
+				<ResultNotice result={upstreams} onretry={() => poller.refresh()} />
+			{/if}
+		</div>
+
+		{#if domains.kind === 'ok'}
+			<div class="cell">
+				<GroupedList header={m.dashboard_section_top_domains()}>
+					{#each topDomainRows as row, index (index)}
+						{@const shown = displayText(row.domain)}
+						<GroupedRow
+							label={shown.text}
+							mono
+							truncate
+							share={view.shareOf(row.queries, maxDomainQueries)}
+							detail={m.dashboard_count_blocked({ count: formatNumber(row.blocked, locale) })}
+						>
+							{#snippet trailing()}
+								<span class="num">{formatNumber(row.queries, locale)}</span>
+							{/snippet}
+						</GroupedRow>
+					{:else}
+						<GroupedRow label={m.dashboard_empty_period()} />
+					{/each}
+				</GroupedList>
+			</div>
+
+			<div class="cell">
+				<GroupedList header={m.dashboard_section_top_blocked()}>
+					{#each blockedDomains as row, index (index)}
+						{@const shown = displayText(row.domain)}
+						<GroupedRow
+							label={shown.text}
+							mono
+							truncate
+							share={view.shareOf(row.blocked, maxBlocked)}
+							shareTone="danger"
+							detail={m.dashboard_count_queries({ count: formatNumber(row.queries, locale) })}
+						>
+							{#snippet trailing()}
+								<span class="num">{formatNumber(row.blocked, locale)}</span>
+							{/snippet}
+						</GroupedRow>
+					{:else}
+						<GroupedRow label={m.dashboard_nothing_blocked()} />
+					{/each}
+				</GroupedList>
+			</div>
 		{:else}
-			<GroupedRow label={m.dashboard_empty_period()} />
-		{/each}
-	</GroupedList>
-{/if}
-
-{#if upstreams.kind === 'ok'}
-	<GroupedList
-		header={m.dashboard_section_upstreams()}
-		footer={m.dashboard_upstreams_footer({
-			minutes: formatNumber(Math.round(upstreams.data.window_seconds / 60), locale),
-		})}
-	>
-		{#each upstreams.data.items as item, index (index)}
-			{@const verdict = view.upstreamVerdict(item.state)}
-			<StatusRow
-				icon={verdict.icon}
-				tone={verdict.tone}
-				label={item.kind === 'recursion' ? m.dashboard_recursion() : item.name}
-				mono={item.kind !== 'recursion'}
-				details={upstreamDetails(item)}
-				verdict={verdict.label}
-			/>
-		{/each}
-	</GroupedList>
-{:else}
-	<ResultNotice result={upstreams} onretry={() => poller.refresh()} />
-{/if}
-
-{#if cache.kind !== 'ok'}
-	<ResultNotice result={cache} onretry={() => poller.refresh()} />
-{/if}
-<GroupedList header={m.dashboard_section_cache()}>
-	{#if cache.kind === 'ok'}
-		{@const stats = cache.data}
-		<GroupedRow
-			label={m.dashboard_cache_hit_ratio()}
-			detail={m.dashboard_cache_detail({
-				hits: formatNumber(stats.hits, locale),
-				misses: formatNumber(stats.misses, locale),
-			})}
-		>
-			{#snippet trailing()}
-				<span class="num">{formatPercent(stats.hit_ratio, locale)}</span>
-			{/snippet}
-		</GroupedRow>
-	{/if}
-	{#if isAdmin}
-		<GroupedRow label={m.dashboard_cache_clear()} detail={m.dashboard_cache_clear_detail()}>
-			{#snippet trailing()}
-				<Button onclick={() => (cacheOpen = true)}>{m.dashboard_cache_clear()}</Button>
-			{/snippet}
-		</GroupedRow>
-	{/if}
-</GroupedList>
-
-{#if status.kind === 'ok'}
-	{@const data = status.data}
-	<GroupedList
-		header={m.dashboard_section_modules()}
-		footer={m.dashboard_version({ version: data.version })}
-	>
-		{#if readiness.kind === 'ok'}
-			{@const ready = view.readinessVerdict(readiness.data.ready)}
-			<StatusRow
-				icon={ready.icon}
-				tone={ready.tone}
-				label={m.dashboard_node_label()}
-				details={[
-					ready.tone === 'ok' ? m.dashboard_node_ready() : m.dashboard_node_not_ready(),
-				].concat(
-					data.modules_not_ready.length > 0
-						? [m.dashboard_modules_pending({ modules: data.modules_not_ready.join(', ') })]
-						: [],
-				)}
-				verdict={ready.label}
-			/>
-		{:else}
-			{@const unknown = view.unknownVerdict()}
-			<StatusRow
-				icon={unknown.icon}
-				tone={unknown.tone}
-				label={m.dashboard_node_label()}
-				details={[view.resultText(readiness)]}
-				verdict={unknown.label}
-			/>
+			<div class="cell wide">
+				<ResultNotice result={domains} onretry={() => poller.refresh()} />
+			</div>
 		{/if}
-		{#if data.tls_mode}
-			{@const tls = view.tlsVerdict(data.tls_mode)}
-			<StatusRow
-				icon={tls.icon}
-				tone={tls.tone}
-				label={m.dashboard_tls_label()}
-				details={[view.tlsModeLabel(data.tls_mode)]}
-				verdict={tls.label}
-			/>
-		{/if}
-	</GroupedList>
-{:else}
-	<ResultNotice result={status} onretry={() => poller.refresh()} />
-{/if}
 
-{#if domains.kind === 'ok'}
-	<GroupedList header={m.dashboard_section_top_domains()}>
-		{#each domains.data.slice(0, TOP_LIMIT) as row, index (index)}
-			<GroupedRow
-				label={row.domain}
-				mono
-				detail={m.dashboard_count_blocked({ count: formatNumber(row.blocked, locale) })}
-			>
-				{#snippet trailing()}
-					<span class="num">{formatNumber(row.queries, locale)}</span>
-				{/snippet}
-			</GroupedRow>
-		{:else}
-			<GroupedRow label={m.dashboard_empty_period()} />
-		{/each}
-	</GroupedList>
+		<div class="cell">
+			{#if clients.kind === 'ok'}
+				<GroupedList header={m.dashboard_section_top_clients()}>
+					{#each clients.data as row, index (index)}
+						{@const shown = displayText(row.client_name !== '' ? row.client_name : row.client_id)}
+						<GroupedRow
+							label={shown.text}
+							mono={row.client_name === ''}
+							truncate
+							share={view.shareOf(row.queries, maxClientQueries)}
+							detail={m.dashboard_count_blocked({ count: formatNumber(row.blocked, locale) })}
+						>
+							{#snippet trailing()}
+								<span class="num">{formatNumber(row.queries, locale)}</span>
+							{/snippet}
+						</GroupedRow>
+					{:else}
+						<GroupedRow label={m.dashboard_empty_period()} />
+					{/each}
+				</GroupedList>
+			{:else}
+				<ResultNotice result={clients} onretry={() => poller.refresh()} />
+			{/if}
+		</div>
 
-	<GroupedList header={m.dashboard_section_top_blocked()}>
-		{#each blockedDomains as row, index (index)}
-			<GroupedRow
-				label={row.domain}
-				mono
-				detail={m.dashboard_count_queries({ count: formatNumber(row.queries, locale) })}
-			>
-				{#snippet trailing()}
-					<span class="num">{formatNumber(row.blocked, locale)}</span>
-				{/snippet}
-			</GroupedRow>
-		{:else}
-			<GroupedRow label={m.dashboard_nothing_blocked()} />
-		{/each}
-	</GroupedList>
-{:else}
-	<ResultNotice result={domains} onretry={() => poller.refresh()} />
-{/if}
+		<div class="cell">
+			{#if cache.kind !== 'ok'}
+				<ResultNotice result={cache} onretry={() => poller.refresh()} />
+			{/if}
+			<GroupedList header={m.dashboard_section_cache()}>
+				{#if cache.kind === 'ok'}
+					{@const stats = cache.data}
+					<GroupedRow
+						label={m.dashboard_cache_hit_ratio()}
+						detail={m.dashboard_cache_detail({
+							hits: formatNumber(stats.hits, locale),
+							misses: formatNumber(stats.misses, locale),
+						})}
+					>
+						{#snippet trailing()}
+							<span class="num">{formatPercent(stats.hit_ratio, locale)}</span>
+						{/snippet}
+					</GroupedRow>
+				{/if}
+			</GroupedList>
+			{#if isAdmin}
+				<div class="cache-actions">
+					<Button aria-label={m.dashboard_cache_clear()} onclick={() => (cacheOpen = true)}
+						>{m.dashboard_cache_clear_short()}</Button
+					>
+				</div>
+			{/if}
+		</div>
+	</div>
 
-{#if clients.kind === 'ok'}
-	<GroupedList header={m.dashboard_section_top_clients()}>
-		{#each clients.data as row, index (index)}
-			<GroupedRow
-				label={row.client_name !== '' ? row.client_name : row.client_id}
-				mono={row.client_name === ''}
-				detail={m.dashboard_count_blocked({ count: formatNumber(row.blocked, locale) })}
-			>
-				{#snippet trailing()}
-					<span class="num">{formatNumber(row.queries, locale)}</span>
-				{/snippet}
-			</GroupedRow>
-		{:else}
-			<GroupedRow label={m.dashboard_empty_period()} />
-		{/each}
-	</GroupedList>
-{:else}
-	<ResultNotice result={clients} onretry={() => poller.refresh()} />
-{/if}
+	{#if status.kind === 'ok'}
+		<p class="version">{m.dashboard_version({ version: status.data.version })}</p>
+	{/if}
+</div>
 
 {#if pauseDuration !== null}
 	<PauseSheet duration={pauseDuration} onclose={() => (pauseDuration = null)} onpaused={onPaused} />
@@ -429,26 +509,244 @@
 {/if}
 
 <style>
-	.inline-actions,
-	.trail {
+	.dash {
 		display: flex;
-		align-items: center;
-		flex-wrap: wrap;
-		justify-content: flex-end;
-		gap: 0.5rem;
+		flex-direction: column;
+		gap: 1.125rem;
+		container: dash / inline-size;
 	}
 
-	.filter-row {
+	.page-head {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
 		gap: 0.625rem;
 	}
 
+	.pause {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+		margin-inline-end: auto;
+	}
+
+	.pause-label {
+		font-size: 0.875rem;
+		font-weight: 600;
+	}
+
+	.health {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: flex-start;
+		gap: 0.5rem 0.75rem;
+		padding: 0.875rem 1rem;
+		background: var(--surface);
+		border: 1px solid var(--separator);
+		border-radius: var(--r-card);
+		box-shadow: var(--shadow);
+	}
+
+	.health .symbol {
+		display: inline-flex;
+		padding-top: 0.125rem;
+	}
+
+	.health-title {
+		margin: 0;
+		font-size: 1rem;
+		font-weight: 600;
+		color: var(--label);
+	}
+
+	.problems,
+	.summary {
+		display: flex;
+		flex: 1 1 100%;
+		flex-wrap: wrap;
+		gap: 0.25rem 1rem;
+		margin: 0;
+		padding: 0 0 0 1.875rem;
+		list-style: none;
+		font-size: 0.84375rem;
+		color: var(--label-2);
+	}
+
+	.health .detail {
+		color: var(--label-3);
+	}
+
+	.health.warn .symbol {
+		color: var(--warn);
+	}
+
+	.health.ok .symbol {
+		color: var(--ok);
+	}
+
+	.health.neutral .symbol {
+		color: var(--label-3);
+	}
+
 	.tiles {
 		display: grid;
-		grid-template-columns: repeat(4, minmax(0, 1fr));
+		grid-template-columns: repeat(3, minmax(0, 1fr));
 		gap: 0.75rem;
+	}
+
+	/* Healthy upstreams fold into a disclosure: the latency numbers are detail, not status. */
+	.disclosure > summary {
+		display: flex;
+		align-items: center;
+		min-height: 2.75rem;
+		padding: 0.5rem 1rem;
+		font-size: 0.9375rem;
+		font-weight: 500;
+		color: var(--accent);
+		cursor: pointer;
+	}
+
+	.disclosure.card {
+		overflow: hidden;
+		background: var(--surface);
+		border: 1px solid var(--separator);
+		border-radius: var(--r-card);
+		box-shadow: var(--shadow);
+	}
+
+	.disclosure .rows {
+		border-top: 1px solid var(--separator);
+	}
+
+	.disclosure .rows > :global(* + *) {
+		border-top: 1px solid var(--separator);
+	}
+
+	.disclosure .foot {
+		margin: 0;
+		padding: 0.5rem 1rem 0.75rem;
+		font-size: 0.8125rem;
+		color: var(--label-3);
+	}
+
+	/* The cache clear action is a quiet text button, not a card row. */
+	.cache-actions {
+		display: flex;
+		justify-content: flex-end;
+	}
+
+	.cache-actions :global(.btn) {
+		background: transparent;
+		border-color: transparent;
+		color: var(--accent);
+		font-weight: 500;
+	}
+
+	.grid {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr);
+		gap: 1.125rem;
+		align-items: start;
+	}
+
+	.cell {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		min-width: 0;
+	}
+
+	.wide {
+		grid-column: 1 / -1;
+	}
+
+	/* Section headings carry the hierarchy on this page: larger and higher contrast than the shared default. */
+	.dash :global(.head) {
+		font-size: 1.0625rem;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+		color: var(--label);
+	}
+
+	.sources {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		padding: 0.875rem 1rem;
+	}
+
+	.stack {
+		display: flex;
+		height: 0.75rem;
+		overflow: hidden;
+		background: var(--surface-2);
+		border-radius: var(--r-ctl);
+	}
+
+	.seg {
+		flex: 0 0 auto;
+		height: 100%;
+	}
+
+	.legend {
+		display: grid;
+		gap: 0.125rem;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	.legend li {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto 3.5rem;
+		align-items: center;
+		gap: 0.625rem;
+		min-height: 2.25rem;
+		font-size: 0.9375rem;
+	}
+
+	.swatch {
+		display: block;
+		width: 0.75rem;
+		height: 0.75rem;
+		border-radius: 0.1875rem;
+	}
+
+	.name {
+		overflow-wrap: anywhere;
+	}
+
+	.pct {
+		color: var(--label-2);
+		text-align: end;
+	}
+
+	.empty {
+		margin: 0;
+		font-size: 0.875rem;
+		color: var(--label-2);
+	}
+
+	/* Token-coloured fills for the stacked bar and legend swatches; the legend names every source. */
+	.fill-accent {
+		background: var(--accent);
+	}
+
+	.fill-ok {
+		background: var(--ok);
+	}
+
+	.fill-warn {
+		background: var(--warn);
+	}
+
+	.fill-danger {
+		background: var(--danger-fill);
+	}
+
+	.fill-neutral {
+		background: var(--label-3);
 	}
 
 	.num {
@@ -456,11 +754,16 @@
 		font-weight: 600;
 	}
 
-	.note {
+	.note,
+	.version {
 		margin: 0;
 		padding: 0 0.25rem;
 		font-size: 0.8125rem;
 		color: var(--label-3);
+	}
+
+	.version {
+		font-size: 0.75rem;
 	}
 
 	.fingerprint {
@@ -495,15 +798,25 @@
 		text-decoration: underline;
 	}
 
-	@media (max-width: 47.99rem) {
-		.tiles {
+	@container dash (min-width: 56.25rem) {
+		.grid {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 	}
 
+	/* Phones keep the three headline numbers in one row; only the tile chrome gets smaller. */
 	@media (max-width: 32.49rem) {
 		.tiles {
-			grid-template-columns: minmax(0, 1fr);
+			gap: 0.5rem;
+		}
+
+		.tiles :global(.tile) {
+			gap: 0.25rem;
+			padding: 0.625rem 0.75rem;
+		}
+
+		.tiles :global(.value) {
+			font-size: 1.5rem;
 		}
 	}
 </style>

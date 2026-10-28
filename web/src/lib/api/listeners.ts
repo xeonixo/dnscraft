@@ -7,6 +7,8 @@ export interface Listener {
 	address: string;
 	exposure: 'local' | 'public';
 	h3: boolean;
+	/** Empty = every cluster node. */
+	nodes: string[];
 }
 
 export interface ListenerBody {
@@ -15,6 +17,7 @@ export interface ListenerBody {
 	address: string;
 	exposure?: 'local' | 'public';
 	h3?: boolean;
+	nodes?: string[];
 }
 
 export interface ListenerSaveResult {
@@ -23,9 +26,21 @@ export interface ListenerSaveResult {
 	created: boolean;
 }
 
+/** Normalises a wire `nodes` array (empty = every node). */
+export function nodesFromWire(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const out: string[] = [];
+	for (const entry of value) {
+		if (typeof entry !== 'string') continue;
+		const trimmed = entry.trim();
+		if (trimmed && !out.includes(trimmed)) out.push(trimmed);
+	}
+	return out;
+}
+
 function parseListener(value: unknown): Listener | null {
 	if (typeof value !== 'object' || value === null) return null;
-	const row = value as Listener;
+	const row = value as Record<string, unknown>;
 	if (typeof row.id !== 'string' || typeof row.address !== 'string') return null;
 	if (
 		row.protocol !== 'udp53' &&
@@ -42,6 +57,7 @@ function parseListener(value: unknown): Listener | null {
 		address: row.address,
 		exposure: row.exposure === 'public' ? 'public' : 'local',
 		h3: row.h3 === true,
+		nodes: nodesFromWire(row.nodes),
 	};
 }
 

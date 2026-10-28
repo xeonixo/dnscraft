@@ -80,3 +80,27 @@ export const deleteManualClient = (
 ): Promise<{ version: number }> => del('/clients/manual', { body: { name }, ...options });
 
 export const syncClients = (): Promise<SyncSummary> => post('/clients/sync');
+
+/** UniFi profiles + bindings with `has_api_key` (no secrets). */
+export interface UnifiStatus {
+	profiles: unknown[];
+	bindings: Record<string, string>;
+}
+
+export const getUnifiStatus = (): Promise<UnifiStatus> =>
+	get<{ profiles?: unknown; bindings?: unknown }>('/clients/unifi').then((data) => ({
+		profiles: Array.isArray(data.profiles) ? data.profiles : [],
+		bindings:
+			typeof data.bindings === 'object' && data.bindings !== null && !Array.isArray(data.bindings)
+				? (data.bindings as Record<string, string>)
+				: {},
+	}));
+
+/** Write-only UniFi API key. Omit body field to keep; `null` to clear. */
+export const putUnifiApiKey = (
+	profileId: string,
+	api_key: string | null,
+): Promise<{ id: string; updated: boolean; has_api_key?: boolean }> =>
+	put(`/clients/unifi-profiles/${encodeURIComponent(profileId)}/api-key`, {
+		body: { api_key },
+	});

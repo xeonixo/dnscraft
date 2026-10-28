@@ -16,15 +16,24 @@ function styleOf(source: string): string {
 	return start === -1 ? '' : source.slice(start);
 }
 
+// Button and Segmented take their height from the shared control token, which is 2.75rem by
+// default and 2.5rem at compact widths (checked against tokens.css in tokens.test.ts).
+const CONTROL_TOKEN = /min-height:\s*var\(--control-h\)/;
+
 describe('touch targets (SPEC: 44pt minimum)', () => {
 	it.each([
-		['Button', buttonSource],
 		['Switch', switchSource],
-		['Segmented', segmentedSource],
 		['Sidebar links', sidebarSource],
 		['Toolbar buttons', toolbarSource],
 	])('%s declare a 2.75rem minimum height', (_name, source) => {
 		expect(styleOf(source)).toMatch(MIN_TARGET);
+	});
+
+	it.each([
+		['Button', buttonSource],
+		['Segmented', segmentedSource],
+	])('%s take the shared control height token', (_name, source) => {
+		expect(styleOf(source)).toMatch(CONTROL_TOKEN);
 	});
 
 	it.each([

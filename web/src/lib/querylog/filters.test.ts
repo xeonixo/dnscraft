@@ -144,6 +144,23 @@ describe('period and API parameters', () => {
 		expect(params.has('to')).toBe(false);
 	});
 
+	it('uses the 24 h default when no period and no explicit range is given', () => {
+		const params = toApiParams(draftOf(''), now);
+		expect(params.get('from')).toBe(new Date(now.getTime() - 86_400_000).toISOString());
+		expect(toApiParams(draftOf('from=2026-10-26T00:00:00Z'), now).get('from')).toBe(
+			'2026-10-26T00:00:00Z',
+		);
+	});
+
+	it('turns the short presets into minutes-wide windows', () => {
+		expect(toApiParams(draftOf('period=15m'), now).get('from')).toBe(
+			new Date(now.getTime() - 15 * 60_000).toISOString(),
+		);
+		expect(toApiParams(draftOf('period=1h'), now).get('from')).toBe(
+			new Date(now.getTime() - 3_600_000).toISOString(),
+		);
+	});
+
 	it('sends an explicit from and to only for a custom period', () => {
 		const params = toApiParams(
 			draftOf('period=custom&from=2026-10-26T00:00:00Z&to=2026-10-27T00:00:00Z'),

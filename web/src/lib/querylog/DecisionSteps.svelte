@@ -2,31 +2,39 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import Value from './Value.svelte';
 	import type { DecisionStep } from '$lib/api/query-log';
-	import { stageLabel, stepDetail, verdictLabel, verdictStyle } from './view';
+	import { decisiveIndex, stageLabel, stepDetail, verdictLabel, verdictStyle } from './view';
+	import { m } from '$lib/paraglide/messages';
 
 	interface Props {
 		steps: DecisionStep[];
 	}
 
 	let { steps }: Props = $props();
+	const decisive = $derived(decisiveIndex(steps));
 </script>
 
 <ol class="steps">
 	{#each steps as step, index (index)}
 		{@const style = verdictStyle(step.verdict)}
 		{@const detail = stepDetail(step)}
-		<li class="step">
+		{@const isDecisive = index === decisive}
+		<li class="step" class:decisive={isDecisive}>
 			<span class="index mono">{index + 1}</span>
 			<span class="symbol {style.tone}">
 				<Icon name={style.icon} size="1.125rem" strokeWidth={1.7} />
 			</span>
 			<span class="main">
-				<span class="stage">{stageLabel(step.stage)}</span>
-				<span class="verdict {style.tone}">{verdictLabel(step.verdict)}</span>
+				<span class="headline">
+					<span class="stage">{stageLabel(step.stage)}</span>
+					<span class="verdict">{verdictLabel(step.verdict)}</span>
+					{#if isDecisive}
+						<span class="tag">{m.querylog_step_decisive()}</span>
+					{/if}
+				</span>
 				{#if detail}
 					<span class="detail"><Value value={detail.text} mono={detail.mono} /></span>
 				{/if}
-				<span class="id mono"><Value value={step.stage} mono /></span>
+				<span class="id"><Value value={step.stage} mono /></span>
 			</span>
 		</li>
 	{/each}
@@ -53,6 +61,15 @@
 		border-top: 1px solid var(--separator);
 	}
 
+	/* The decisive step: tinted row and a heavier stage name; the tag and the icon carry it too. */
+	.step.decisive {
+		background: var(--accent-fill);
+	}
+
+	.step.decisive .stage {
+		font-weight: 600;
+	}
+
 	.index {
 		font-size: 0.75rem;
 		color: var(--label-3);
@@ -70,6 +87,13 @@
 		min-width: 0;
 	}
 
+	.headline {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.25rem 0.5rem;
+	}
+
 	.stage {
 		font-size: 0.9375rem;
 	}
@@ -77,6 +101,16 @@
 	.verdict {
 		font-size: 0.8125rem;
 		font-weight: 500;
+		color: var(--label-2);
+	}
+
+	.tag {
+		padding: 0 0.375rem;
+		border-radius: var(--r-ctl);
+		background: var(--surface);
+		color: var(--accent);
+		font-size: 0.75rem;
+		font-weight: 600;
 	}
 
 	.detail {
@@ -87,7 +121,7 @@
 
 	.id {
 		font-size: 0.75rem;
-		color: var(--label-3);
+		color: var(--label-2);
 		overflow-wrap: anywhere;
 	}
 

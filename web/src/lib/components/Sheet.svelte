@@ -7,9 +7,13 @@
 		title: string;
 		onclose: () => void;
 		children: Snippet;
+		/** Wide screens (55rem and up): a centred dialog of at most 32rem instead of a bottom sheet. */
+		centeredOnWide?: boolean;
+		/** Optional action bar pinned under the scrolling body (header stays on top). */
+		footer?: Snippet;
 	}
 
-	let { open, title, onclose, children }: Props = $props();
+	let { open, title, onclose, children, centeredOnWide = false, footer }: Props = $props();
 	const titleId = $props.id();
 	let dialog: HTMLDivElement | undefined = $state();
 
@@ -71,9 +75,10 @@
 		aria-label={m.action_cancel()}
 		onclick={onclose}
 	></button>
-	<div class="sheet-layer">
+	<div class="sheet-layer" class:centered-on-wide={centeredOnWide}>
 		<div
 			class="sheet"
+			class:has-footer={footer !== undefined}
 			role="dialog"
 			aria-modal="true"
 			aria-labelledby={titleId}
@@ -83,7 +88,16 @@
 		>
 			<span class="grab" aria-hidden="true"></span>
 			<h2 id={titleId}>{title}</h2>
-			{@render children()}
+			{#if footer}
+				<div class="sheet-body">
+					{@render children()}
+				</div>
+				<div class="sheet-footer">
+					{@render footer()}
+				</div>
+			{:else}
+				{@render children()}
+			{/if}
 		</div>
 	</div>
 {/if}
@@ -122,6 +136,51 @@
 
 	.sheet:focus {
 		outline: none;
+	}
+
+	/* With a footer the header stays fixed, the body scrolls and the action bar stays pinned. */
+	.sheet.has-footer {
+		display: flex;
+		flex-direction: column;
+		padding: 1rem 1.25rem 0;
+		overflow: hidden;
+	}
+
+	.sheet-body {
+		flex: 1 1 auto;
+		min-height: 0;
+		margin: 0 -1.25rem;
+		padding: 0 1.25rem var(--space-4);
+		overflow-y: auto;
+		overscroll-behavior: contain;
+	}
+
+	.sheet-footer {
+		flex: 0 0 auto;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-2) var(--space-3);
+		margin: 0 -1.25rem;
+		padding: var(--space-3) 1.25rem max(var(--space-3), env(safe-area-inset-bottom));
+		border-top: 1px solid var(--separator);
+		background: var(--surface);
+	}
+
+	@media (min-width: 55rem) {
+		.sheet-layer.centered-on-wide {
+			place-items: center;
+		}
+
+		.sheet-layer.centered-on-wide .sheet {
+			max-width: 32rem;
+			border-radius: var(--r-card);
+		}
+
+		.sheet-layer.centered-on-wide .grab {
+			display: none;
+		}
 	}
 
 	.grab {

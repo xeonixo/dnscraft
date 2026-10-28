@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { resolve } from '$app/paths';
 	import Button from '$lib/components/Button.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
@@ -168,6 +169,11 @@
 		{/each}
 	</GroupedList>
 	<p class="footnote">{m.clients_footnote()}</p>
+	{#if isAdmin}
+		<p class="footnote">
+			<a href={resolve('/settings')}>{m.clients_unifi_settings_link()}</a>
+		</p>
+	{/if}
 {/if}
 
 {#if sheetOpen && isAdmin}
@@ -233,6 +239,13 @@
 		margin-top: 0.75rem;
 		font-size: 0.8125rem;
 		color: var(--label-3);
+	}
+	.footnote a {
+		color: var(--accent);
+		text-decoration: none;
+	}
+	.footnote a:hover {
+		text-decoration: underline;
 	}
 	.field-label {
 		display: block;

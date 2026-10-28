@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DENSITY_KEY, readDensity, writeDensity } from './density';
+import {
+	DENSITY_KEY,
+	TECHNICAL_KEY,
+	readDensity,
+	readTechnical,
+	writeDensity,
+	writeTechnical,
+} from './density';
 
 afterEach(() => {
 	vi.unstubAllGlobals();
@@ -39,5 +46,37 @@ describe('density preference', () => {
 		stubStorage(undefined);
 		expect(readDensity()).toBe('comfortable');
 		expect(() => writeDensity('compact')).not.toThrow();
+	});
+});
+
+describe('technical columns preference', () => {
+	it('defaults to off and reads a stored choice', () => {
+		const values = new Map<string, string>();
+		stubStorage({
+			getItem: (key: string) => values.get(key) ?? null,
+			setItem: (key: string, value: string) => void values.set(key, value),
+		});
+		expect(readTechnical()).toBe(false);
+		writeTechnical(true);
+		expect(values.get(TECHNICAL_KEY)).toBe('on');
+		expect(readTechnical()).toBe(true);
+		writeTechnical(false);
+		expect(readTechnical()).toBe(false);
+	});
+
+	it('keeps working when storage throws or is missing', () => {
+		stubStorage({
+			getItem: () => {
+				throw new DOMException('blocked', 'SecurityError');
+			},
+			setItem: () => {
+				throw new DOMException('full', 'QuotaExceededError');
+			},
+		});
+		expect(readTechnical()).toBe(false);
+		expect(() => writeTechnical(true)).not.toThrow();
+		stubStorage(undefined);
+		expect(readTechnical()).toBe(false);
+		expect(() => writeTechnical(true)).not.toThrow();
 	});
 });

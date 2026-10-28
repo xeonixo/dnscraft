@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ClientsPage from '../routes/clients/+page.svelte';
-import McpRulesPage from '../routes/mcp-rules/+page.svelte';
+import RulesPage from '../routes/rules/+page.svelte';
 import AuditPanel from '$lib/settings/AuditPanel.svelte';
 import TokensPanel from '$lib/settings/TokensPanel.svelte';
 import QueryLogPage from '../routes/query-log/+page.svelte';
@@ -75,7 +75,7 @@ function hostileRecord(id: string, domain: string, extra: Partial<QueryRecord> =
 		filter_set: 'default',
 		selection: { cause: 'default' },
 		steps: [],
-		answer_source: 'cache',
+		answer_source: 'resolver',
 		filter: null,
 		dnssec: null,
 		forward_zone: null,
@@ -246,6 +246,19 @@ describe('XSS corpus rendering', () => {
 	it('renders hostile MCP rule domains as inert text', async () => {
 		const hostile = XSS_CORPUS[1];
 		stubFetch({
+			'GET /api/v1/filter-sets': () =>
+				ok({
+					filter_sets: [
+						{
+							id: 'default',
+							name: 'Standard',
+							lists: [],
+							custom_rules: `||${hostile}^`,
+							services: [],
+							block_mode: 'refused',
+						},
+					],
+				}),
 			'GET /api/v1/filtering/mcp-rules': () =>
 				ok({
 					filter_set_id: 'default',
@@ -255,7 +268,7 @@ describe('XSS corpus rendering', () => {
 							id: 'r1',
 							domain: hostile,
 							include_subdomains: false,
-							rule_text: `||${hostile}^`,
+							rule_text: `|${hostile}^`,
 							created_at: '2026-10-27T10:00:00Z',
 							expires_at: null,
 						},
@@ -264,7 +277,7 @@ describe('XSS corpus rendering', () => {
 					next_offset: null,
 				}),
 		});
-		const { container } = render(McpRulesPage);
+		const { container } = render(RulesPage);
 		expect(await screen.findByText(hostile)).toBeInTheDocument();
 		assertInert(container);
 	});

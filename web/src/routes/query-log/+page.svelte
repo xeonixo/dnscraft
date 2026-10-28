@@ -10,6 +10,7 @@
 	import ResultNotice from '$lib/components/ResultNotice.svelte';
 	import Segmented from '$lib/components/Segmented.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
+	import Switch from '$lib/components/Switch.svelte';
 	import { exportHref, listQueryLog, type QueryPage } from '$lib/api/query-log';
 	import { settle, type Result } from '$lib/api/result';
 	import { getOverview, type StatsOverview } from '$lib/api/stats';
@@ -18,6 +19,7 @@
 	import QueryCards from '$lib/querylog/QueryCards.svelte';
 	import QueryTable from '$lib/querylog/QueryTable.svelte';
 	import {
+		DEFAULT_PERIOD,
 		INVALID_CODE,
 		draftFromSearch,
 		emptyDraft,
@@ -32,7 +34,13 @@
 		type FilterKey,
 	} from '$lib/querylog/filters';
 	import { mediaMatches, WIDE_QUERY } from '$lib/querylog/media';
-	import { readDensity, writeDensity, type Density } from '$lib/querylog/density';
+	import {
+		readDensity,
+		readTechnical,
+		writeDensity,
+		writeTechnical,
+		type Density,
+	} from '$lib/querylog/density';
 	import { formatNumber } from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
 	import { m } from '$lib/paraglide/messages';
@@ -52,7 +60,8 @@
 		{ value: 'blocked', label: m.querylog_status_blocked() },
 	]);
 	const periodOptions = $derived<{ value: string; label: string }[]>([
-		{ value: 'all', label: m.querylog_range_all() },
+		{ value: '15m', label: m.period_15m() },
+		{ value: '1h', label: m.period_1h() },
 		{ value: '24h', label: m.period_24h() },
 		{ value: '7d', label: m.period_7d() },
 		{ value: '30d', label: m.period_30d() },
@@ -70,6 +79,7 @@
 	let overview = $state<Result<StatsOverview>>({ kind: 'loading' });
 	let wide = $state(mediaMatches(WIDE_QUERY));
 	let density = $state<Density>(readDensity());
+	let technical = $state(readTechnical());
 	let filterOpen = $state(false);
 	let searchText = $state('');
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -150,7 +160,7 @@
 	}
 
 	function setPeriod(value: string): void {
-		if (value === 'all') writeUrl(patchDraft(draft, { period: '', from: '', to: '' }));
+		if (value === DEFAULT_PERIOD) writeUrl(patchDraft(draft, { period: '', from: '', to: '' }));
 		else if (value === 'custom') {
 			writeUrl(patchDraft(draft, { period: 'custom' }));
 			filterOpen = true;
@@ -178,6 +188,11 @@
 	function chooseDensity(next: Density): void {
 		density = next;
 		writeDensity(next);
+	}
+
+	function chooseTechnical(on: boolean): void {
+		technical = on;
+		writeTechnical(on);
 	}
 </script>
 
@@ -219,6 +234,14 @@
 					onchange={chooseDensity}
 				/>
 			</div>
+			<div class="menu-toggle">
+				<span class="label" id="querylog-technical-label">{m.querylog_technical_columns()}</span>
+				<Switch
+					checked={technical}
+					aria-labelledby="querylog-technical-label"
+					onchange={(event) => chooseTechnical(event.currentTarget.checked)}
+				/>
+			</div>
 			<p class="note">{m.querylog_export_note()}</p>
 		</div>
 	</details>
@@ -233,7 +256,7 @@
 	/>
 	<Segmented
 		options={periodOptions}
-		value={draft.period || 'all'}
+		value={draft.period || (draft.from || draft.to ? 'custom' : DEFAULT_PERIOD)}
 		label={m.querylog_range_label()}
 		onchange={setPeriod}
 	/>
@@ -262,7 +285,12 @@
 			<GroupedRow label={m.querylog_empty()} />
 		</GroupedList>
 	{:else if wide}
-		<QueryTable rows={loaded.queries} compact={density === 'compact'} />
+		<QueryTable
+			rows={loaded.queries}
+			compact={density === 'compact'}
+			{technical}
+			clientSearch={(id) => toSearchParams({ ...draft, client_id: id, offset: '' }).toString()}
+		/>
 	{:else}
 		<QueryCards rows={loaded.queries} />
 	{/if}
@@ -304,10 +332,17 @@
 		min-width: 0;
 	}
 
+	/* Compact: search on its own row, Filter and the more-menu share the second row. */
+	@media (max-width: 54.99rem) {
+		.search {
+			flex-basis: 100%;
+		}
+	}
+
 	.field {
 		box-sizing: border-box;
 		width: 100%;
-		min-height: 2.75rem;
+		min-height: var(--control-h);
 		padding: 0.5rem 0.75rem;
 		background: var(--surface-2);
 		border: 1px solid var(--separator);
@@ -325,8 +360,8 @@
 	.more summary {
 		display: inline-flex;
 		align-items: center;
-		min-height: 2.75rem;
-		padding: 0 1rem;
+		min-height: var(--control-h);
+		padding: 0 var(--control-px);
 		background: var(--surface-2);
 		border: 1px solid var(--separator);
 		border-radius: var(--r-ctl);
@@ -355,7 +390,7 @@
 	.menu > a {
 		display: flex;
 		align-items: center;
-		min-height: 2.75rem;
+		min-height: var(--control-h);
 		padding: 0 0.75rem;
 		color: var(--accent);
 		text-decoration: none;
@@ -373,6 +408,14 @@
 		padding: 0.5rem 0.75rem;
 	}
 
+	.menu-toggle {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+		padding: 0 0.75rem;
+	}
+
 	.label {
 		font-size: 0.8125rem;
 		color: var(--label-2);
@@ -385,11 +428,21 @@
 		color: var(--label-3);
 	}
 
+	/* One row: the two groups sit side by side, or scroll sideways on narrow screens. The
+	   padding keeps focus rings from being clipped by the scroll container. */
 	.quick {
 		display: flex;
-		flex-wrap: wrap;
+		flex-wrap: nowrap;
 		align-items: center;
 		gap: 0.5rem 0.75rem;
+		overflow-x: auto;
+		padding: 0.25rem;
+		margin: -0.25rem;
+	}
+
+	.quick :global(.segmented) {
+		flex: 0 0 auto;
+		max-width: none;
 	}
 
 	.summary {

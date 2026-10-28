@@ -52,13 +52,21 @@
 	}
 
 	/** The shown value: a preset name, a custom range, or the typed text. Booleans have none. */
+	const presetLabels = (): Record<string, string> => ({
+		'15m': m.period_15m(),
+		'1h': m.period_1h(),
+		'24h': m.period_24h(),
+		'7d': m.period_7d(),
+		'30d': m.period_30d(),
+	});
+
 	function valueOf(id: string): string | null {
 		switch (id) {
 			case 'period':
 				if (draft.period === 'custom') {
 					return `${draft.from === '' ? '…' : draft.from} – ${draft.to === '' ? '…' : draft.to}`;
 				}
-				return draft.period === '' ? null : draft.period;
+				return draft.period === '' ? null : (presetLabels()[draft.period] ?? draft.period);
 			case 'domain':
 				return draft.domain;
 			case 'domain_substr':

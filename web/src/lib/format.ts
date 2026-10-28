@@ -75,6 +75,14 @@ export function formatDateTime(date: Date, locale: string): string {
 	return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
+export function formatDay(date: Date, locale: string): string {
+	return new Intl.DateTimeFormat(locale, { dateStyle: 'full' }).format(date);
+}
+
+export function formatTime(date: Date, locale: string): string {
+	return new Intl.DateTimeFormat(locale, { timeStyle: 'medium' }).format(date);
+}
+
 /** A SHA-256 hex digest as colon-separated upper-case pairs, the form owners compare and pin. */
 export function formatFingerprint(hex: string): string {
 	return hex

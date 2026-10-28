@@ -192,16 +192,58 @@ export const saveProfile = (
 export const deleteProfile = (id: string, options?: RequestOptions): Promise<{ version: number }> =>
 	del(`/policy/profiles/${encodeURIComponent(id)}`, options);
 
-export const listClientIds = (): Promise<string[]> =>
+/**
+ * One registered Client ID. `label` names the device, `device` is a directory client id (or null).
+ * `view` pins the ID to a Netzbereich for requests that no range recognises (or null for the default).
+ */
+export interface ClientIdEntry {
+	id: string;
+	label: string | null;
+	device: string | null;
+	view: string | null;
+}
+
+export interface ClientIdFields {
+	label?: string | null;
+	device?: string | null;
+	view?: string | null;
+}
+
+function parseClientId(value: unknown): ClientIdEntry | null {
+	if (typeof value === 'string') return { id: value, label: null, device: null, view: null };
+	const row = asObject(value);
+	if (!row || typeof row.id !== 'string') return null;
+	return {
+		id: row.id,
+		label: typeof row.label === 'string' ? row.label : null,
+		device: typeof row.device === 'string' ? row.device : null,
+		view: typeof row.view === 'string' ? row.view : null,
+	};
+}
+
+/** Strings from older snapshots read as `{ id }`; objects keep their label and device. */
+export const listClientIds = (): Promise<ClientIdEntry[]> =>
 	get<{ client_ids: unknown }>('/policy/client-ids').then((data) =>
-		Array.isArray(data.client_ids) ? data.client_ids.map(String) : [],
+		Array.isArray(data.client_ids)
+			? data.client_ids.map(parseClientId).filter((entry): entry is ClientIdEntry => entry !== null)
+			: [],
 	);
 
+/** `label`, `device` and `view` are sent only when given; `null` in a field stores "no value". */
 export const createClientId = (
 	id: string,
+	fields: ClientIdFields = {},
 	options?: RequestOptions,
 ): Promise<{ version: number; client_id: string }> =>
-	post('/policy/client-ids', { body: { id }, ...options });
+	post('/policy/client-ids', { body: { id, ...fields }, ...options });
+
+/** Changes label, device and/or view of an existing Client ID; the id itself never changes. */
+export const updateClientId = (
+	id: string,
+	fields: ClientIdFields,
+	options?: RequestOptions,
+): Promise<{ version: number; client_id: string }> =>
+	put(`/policy/client-ids/${encodeURIComponent(id)}`, { body: fields, ...options });
 
 export const revokeClientId = (
 	id: string,

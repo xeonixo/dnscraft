@@ -37,10 +37,11 @@ describe('errorMessageKey', () => {
 
 	it('falls back to error_unknown for codes without a message', () => {
 		expect(errorMessageKey('control_api.not_in_spec')).toBe('error_unknown');
-		expect(errorMessageKey('filter_list.fetch_failed')).toBe('error_unknown');
+		expect(errorMessageKey('filter_list.not_in_catalog')).toBe('error_unknown');
 	});
 
 	it('maps the server codes that have a message to their own key', () => {
+		expect(errorMessageKey('filter_list.fetch_failed')).toBe('error_filter_list_fetch_failed');
 		expect(errorMessageKey('control_api.internal')).toBe('error_control_api_internal');
 		expect(errorMessageKey('control_api.rate_limited')).toBe('error_control_api_rate_limited');
 	});

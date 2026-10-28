@@ -2,7 +2,7 @@
 // the API parameter) is read from `?key=value` pairs and written back with the same names. Empty
 // and default values are left out, so a bookmarked link stays short.
 //
-// `period` is URL-only: a preset (24h, 7d, 30d) is sent to the API as a `from` computed at request
+// `period` is URL-only: a preset (15m, 1h, 24h, 7d, 30d) is sent to the API as a `from` computed at request
 // time. Only `custom` keeps the explicit `from`/`to` pair.
 
 export const PROTOCOLS = ['udp53', 'tcp53', 'dot', 'doh', 'doq'] as const;
@@ -11,9 +11,17 @@ export const ORDER_BY = ['time', 'client', 'domain', 'rcode'] as const;
 export const ORDERS = ['asc', 'desc'] as const;
 /** Page sizes offered in the form; the URL may carry any positive value. */
 export const PAGE_SIZES = ['25', '50', '100', '200'] as const;
-export const PERIODS = ['24h', '7d', '30d', 'custom'] as const;
+export const PERIODS = ['15m', '1h', '24h', '7d', '30d', 'custom'] as const;
+/** Applied when neither a period nor an explicit from/to is in the URL. */
+export const DEFAULT_PERIOD = '24h';
 
-const PERIOD_DAYS: Record<string, number> = { '24h': 1, '7d': 7, '30d': 30 };
+const PERIOD_DAYS: Record<string, number> = {
+	'15m': 15 / 1440,
+	'1h': 1 / 24,
+	'24h': 1,
+	'7d': 7,
+	'30d': 30,
+};
 
 export const DEFAULT_LIMIT = '50';
 
@@ -139,7 +147,8 @@ export function toSearchParams(draft: Draft): URLSearchParams {
 export function toApiParams(draft: Draft, now: Date = new Date()): URLSearchParams {
 	const params = toSearchParams(draft);
 	params.delete('period');
-	const days = PERIOD_DAYS[draft.period];
+	const period = draft.period || (draft.from === '' && draft.to === '' ? DEFAULT_PERIOD : '');
+	const days = PERIOD_DAYS[period];
 	if (days !== undefined) {
 		params.delete('to');
 		params.set('from', new Date(now.getTime() - days * 86_400_000).toISOString());

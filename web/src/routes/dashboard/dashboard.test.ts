@@ -28,7 +28,7 @@ const overview = {
 	blocked: 200,
 	allowed_ratio: 0.8,
 	query_log_dropped: 0,
-	by_answer_source: { cache: 600, recursion: 300, filter_block: 100 },
+	by_answer_source: { resolver: 900, filter_block: 100 },
 };
 const topDomains = {
 	domains: [
@@ -121,20 +121,69 @@ describe('dashboard tiles and panels', () => {
 		expect(await screen.findByText('1,000')).toBeInTheDocument();
 		expect(screen.getByText('800')).toBeInTheDocument();
 		expect(screen.getByText('200')).toBeInTheDocument();
-		expect(screen.getByText('20%')).toBeInTheDocument();
-		expect(screen.getByText('80% of all queries')).toBeInTheDocument();
+		// The block rate is the secondary text of the only accented tile.
 		expect(screen.getByText('20% of all queries')).toBeInTheDocument();
+		expect(screen.queryByText('80% of all queries')).toBeNull();
 	});
 
-	it('shows upstream and module verdicts as words, not only color', async () => {
+	it('summarises health as a count of problems and names them', async () => {
 		serve();
 		render(Page);
 
-		expect(await screen.findByText('dns.quad9.net')).toBeInTheDocument();
-		expect(screen.getAllByText('OK').length).toBeGreaterThan(0);
-		expect(screen.getByText('Degraded')).toBeInTheDocument();
-		expect(screen.getByText('p50 18 ms · p95 41 ms')).toBeInTheDocument();
-		expect(screen.getByText('Last error: resolver.timeout')).toBeInTheDocument();
+		// The recursion upstream is degraded in the default fixture.
+		expect(await screen.findByText('1 problem')).toBeInTheDocument();
+		expect(screen.getByText('Recursion: Degraded')).toBeInTheDocument();
+	});
+
+	it('says All OK, names the reachable upstreams and folds their numbers when all are up', async () => {
+		serve({
+			'GET /api/v1/resolver/upstreams': () => ok({ ...upstreams, items: [upstreams.items[0]] }),
+		});
+		render(Page);
+
+		expect(await screen.findByText('All OK')).toBeInTheDocument();
+		expect(screen.getByText('All upstreams reachable (1)')).toBeInTheDocument();
+		// No upstream card while everything is fine.
+		expect(screen.queryByRole('heading', { name: 'Upstreams' })).toBeNull();
+		const details = screen.getByText('Upstream details').closest('details');
+		expect(details).not.toHaveAttribute('open');
+		expect(within(details as HTMLElement).getByText('dns.quad9.net')).toBeInTheDocument();
+		expect(within(details as HTMLElement).getByText('p50 18 ms · p95 41 ms')).toBeInTheDocument();
+		expect(
+			within(details as HTMLElement).getByText(m.dashboard_upstreams_footer({ minutes: '5' })),
+		).toBeInTheDocument();
+	});
+
+	it('hides the success rate of an upstream without measurements', async () => {
+		serve();
+		render(Page);
+
+		expect(await screen.findByText('No measurements yet')).toBeInTheDocument();
+		expect(screen.queryByText('Success rate 90%')).toBeNull();
+		expect(screen.getByText('Success rate 100%')).toBeInTheDocument();
+	});
+
+	it('lists only the affected upstream in the card and folds the healthy ones', async () => {
+		serve();
+		render(Page);
+
+		const heading = await screen.findByRole('heading', { name: 'Upstreams' });
+		const section = heading.closest('section') as HTMLElement;
+		expect(within(section).getByText('Recursion')).toBeInTheDocument();
+		expect(within(section).getByText('Degraded')).toBeInTheDocument();
+		expect(within(section).getByText('Last error: resolver.timeout')).toBeInTheDocument();
+		expect(
+			within(section).getByText(m.dashboard_upstreams_footer({ minutes: '5' })),
+		).toBeInTheDocument();
+
+		// The healthy upstream sits behind a collapsed disclosure with its latency and success rate.
+		const folded = within(section).getByText('+1 more OK').closest('details') as HTMLElement;
+		expect(folded).not.toHaveAttribute('open');
+		expect(within(folded).getByText('dns.quad9.net')).toBeInTheDocument();
+		expect(within(folded).getByText('p50 18 ms · p95 41 ms')).toBeInTheDocument();
+		expect(within(folded).getByText('Success rate 100%')).toBeInTheDocument();
+		expect(within(folded).queryByText('Recursion')).toBeNull();
+		expect(screen.queryByText('Upstream details')).toBeNull();
 	});
 
 	it('shows the cache hit ratio and the top lists', async () => {
@@ -258,7 +307,8 @@ describe('contextual admin actions', () => {
 		expect(
 			screen.getByRole('button', { name: m.dashboard_pause_title({ duration: '5 minutes' }) }),
 		).toBeInTheDocument();
-		expect(screen.getByRole('button', { name: m.dashboard_cache_clear() })).toBeInTheDocument();
+		const clear = screen.getByRole('button', { name: m.dashboard_cache_clear() });
+		expect(clear).toHaveTextContent(m.dashboard_cache_clear_short());
 	});
 
 	it('confirms a pause in a sheet, posts the body with the CSRF header and announces it', async () => {

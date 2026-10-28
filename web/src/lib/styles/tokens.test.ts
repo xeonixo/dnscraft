@@ -36,6 +36,9 @@ const REQUIRED_TOKENS = [
 	'--space-5',
 	'--space-6',
 	'--space-7',
+	'--control-h',
+	'--control-px',
+	'--gap-stack',
 	'--duration-fast',
 	'--duration-normal',
 	'--duration-slow',
@@ -157,6 +160,19 @@ describe('design tokens', () => {
 			}
 		},
 	);
+
+	it('keeps the compact control height at or above the 24px WCAG 2.2 AA target minimum', () => {
+		const compact = frames.find(
+			(f) =>
+				f.selector === ':root' &&
+				f.ancestors.some((a) => a.includes('max-width: 54.99rem')) &&
+				f.decls.has('--control-h'),
+		);
+		expect(compact, 'compact --control-h override missing').toBeDefined();
+		const rem = parseFloat(compact?.decls.get('--control-h') ?? '0');
+		expect(rem * 16).toBeGreaterThanOrEqual(24);
+		expect(rem).toBeLessThan(parseFloat(value(resolveMode('light'), '--control-h')));
+	});
 
 	it('redefines the dark palette in the dark modes', () => {
 		expect(value(resolveMode('dark'), '--canvas')).not.toBe(
