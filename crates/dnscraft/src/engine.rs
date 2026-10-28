@@ -159,7 +159,7 @@ impl dnscraft_api::ClientDirectory for EngineDirectory {
     }
 
     fn set_api_key(&self, key: Option<String>) {
-        self.engine.set_api_key(key.map(|value| Secret::new(value)));
+        self.engine.set_api_key(key.map(Secret::new));
     }
 
     fn is_sync_owner(&self) -> bool {

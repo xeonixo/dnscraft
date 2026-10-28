@@ -31,7 +31,7 @@ use rusqlite::params_from_iter;
 use rusqlite::types::Value;
 use serde_json::{Value as Json, json};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 use time::OffsetDateTime;
 use tokio::sync::{broadcast, mpsc};
 
@@ -212,7 +212,12 @@ impl QueryEventSink for QueryLogSink {
 /// Query-log consumer, reader and retention owner.
 pub struct QueryLog {
     db: Db,
-    config: QueryLogConfig,
+    /// Bootstrap `[control_api.query_log]` values: the fallback for any
+    /// setting a config version does not carry.
+    bootstrap: QueryLogConfig,
+    /// Active settings. Replaced by [`Self::apply_settings`] on every applied
+    /// config version; never held across an `.await`.
+    config: RwLock<QueryLogConfig>,
     node_id: String,
     enricher: Option<Arc<dyn ClientEnricher>>,
     sink: Option<Arc<QueryLogSink>>,
@@ -262,7 +267,8 @@ impl QueryLog {
     pub fn new(db: Db, config: QueryLogConfig, node_id: impl Into<String>) -> Self {
         Self {
             db,
-            config,
+            bootstrap: config.clone(),
+            config: RwLock::new(config),
             node_id: node_id.into(),
             enricher: None,
             sink: None,
@@ -370,9 +376,25 @@ impl QueryLog {
         );
     }
 
-    /// The active query-log configuration.
-    pub fn config(&self) -> &QueryLogConfig {
-        &self.config
+    /// A copy of the active query-log configuration.
+    pub fn config(&self) -> QueryLogConfig {
+        self.config
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Applies the runtime `control_api_settings.query_log` values of a config
+    /// version. A `None` falls back to the bootstrap value, not the hard default.
+    ///
+    /// Affects rows written from now on; stored rows keep their truncation.
+    pub fn apply_settings(&self, retention_days: Option<u32>, ip_truncate: Option<IpTruncate>) {
+        let mut config = self
+            .config
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        config.retention_days = retention_days.unwrap_or(self.bootstrap.retention_days);
+        config.ip_truncate = ip_truncate.unwrap_or(self.bootstrap.ip_truncate);
     }
 
     /// The underlying database handle (crate-internal, for stats and export).
@@ -437,7 +459,7 @@ impl QueryLog {
     /// retention. Non-loggable events are skipped.
     pub async fn insert_batch(&self, events: Vec<QueryEvent>) -> Result<usize, ControlApiError> {
         let db = self.db.clone();
-        let config = self.config.clone();
+        let config = self.config();
         let node_id = self.node_id.clone();
         let enricher = self.enricher.clone();
         let now_us = self.db.now_unix().saturating_mul(1_000_000);
@@ -524,7 +546,7 @@ impl QueryLog {
     ///
     /// Returns the number of deleted rows.
     pub async fn apply_retention(&self) -> Result<usize, ControlApiError> {
-        let window = i64::from(self.config.retention_days).saturating_mul(MICROS_PER_DAY);
+        let window = i64::from(self.config().retention_days).saturating_mul(MICROS_PER_DAY);
         let cutoff = self
             .db
             .now_unix()
@@ -542,7 +564,7 @@ impl QueryLog {
     pub async fn list(&self, filter: &QueryLogFilter) -> Result<QueryLogPage, ControlApiError> {
         let limit = filter
             .limit
-            .clamp(1, self.config.max_rows_per_request.max(1));
+            .clamp(1, self.config().max_rows_per_request.max(1));
         let offset = i64::try_from(filter.offset).unwrap_or(i64::MAX);
 
         let mut sql = String::from("SELECT record FROM query_log WHERE 1 = 1");

@@ -2,6 +2,24 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — query-log IP truncation: runtime setting, default `none` (GA-W9d)
+
+- **Live:** `control_api_settings.query_log.ip_truncate` and `.retention_days` are
+  validated optional keys in the versioned config; `QueryLog` holds them in an `RwLock`
+  and `ModuleAppliers.query_log` pushes them after every fully applied version (boot,
+  `PUT /config`, rollback, cluster sync). Missing keys fall back to the bootstrap
+  `[control_api.query_log]` value. A failed version leaves the log untouched.
+- **Default:** `IpTruncate::default()` and the binary `[log] ip_truncate` are `none`
+  (were `last_octet`). Explicit-mode tests keep their `last_octet` config.
+- **Tests:** live PUT/rollback changes the truncation of later inserted rows
+  (`tests/query_log.rs`); validator accepts/rejects the new keys (`tests/system_routes.rs`).
+- **Gate fixes outside scope:** three pre-existing clippy lints under the current toolchain
+  (`clients_routes.rs` collapsible if, `cloudflare_secrets.rs`/`unifi_secrets.rs` redundant guard),
+  plus `control_api.rs` (test module moved last, needless borrow) and `engine.rs` (redundant closure),
+  fixed behaviour-preservingly so `clippy -D warnings` passes.
+- **Gates:** `fmt --all`, `clippy -p dnscraft-api -p dnscraft --all-targets -D warnings`,
+  `test -p dnscraft-api -p dnscraft`: 474 passed, 0 failed. Nothing committed.
+
 ## 2026-10-28 — W10 rust-embed landed; SPEC Q1 / control-api Non-goals aligned
 
 - **Landed:** control-api `web-ui` feature (`rust-embed` of `embed-web-ui/`); SPA

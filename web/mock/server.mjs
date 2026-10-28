@@ -66,6 +66,8 @@ const TOP_LEVEL_KEYS = [
 	'notifications',
 	'mcp',
 ];
+/** Client-IP modes for newly recorded query-log entries (absent means `none`). */
+const QUERY_LOG_IP_TRUNCATE = ['none', 'last_octet', 'last_group'];
 /** Sections every replace must provide (config_apply.rs REQUIRED_SECTIONS). */
 const REQUIRED_SECTIONS = ['filtering', 'clients', 'policy', 'listeners', 'tls'];
 const MCP_RULE_KEYS = [
@@ -501,6 +503,17 @@ function mergeCandidate(body, stored) {
 				throw configInvalid('`mcp_rules` must be an array');
 			}
 		}
+	}
+	// query_log is a patch target: keys the candidate leaves out keep their stored value.
+	const log = snapshot.control_api_settings?.query_log;
+	const storedLog = stored?.control_api_settings?.query_log;
+	if (isObject(log) && isObject(storedLog)) {
+		for (const [key, value] of Object.entries(storedLog)) {
+			if (!(key in log)) log[key] = structuredClone(value);
+		}
+	}
+	if (isObject(log) && 'ip_truncate' in log && !QUERY_LOG_IP_TRUNCATE.includes(log.ip_truncate)) {
+		throw configInvalid('`query_log.ip_truncate` must be none, last_octet or last_group');
 	}
 	return snapshot;
 }

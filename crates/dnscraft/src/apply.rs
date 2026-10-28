@@ -13,7 +13,7 @@ use std::sync::{Arc, Weak};
 
 use dnscraft_api::{
     ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyTls, ControlApiError,
-    ModuleAppliers, ModuleFuture, apply_filter_config_offline,
+    ModuleAppliers, ModuleFuture, QueryLog, apply_filter_config_offline,
 };
 use dnscraft_clients::{ClientEngine, ClientsConfig};
 use dnscraft_filtering::{FilterConfig, FilterEngine};
@@ -162,13 +162,15 @@ impl ApplyTls for TlsApplier {
     }
 }
 
-/// Wires the five adapters around the assembled engines and listener set.
+/// Wires the five adapters around the assembled engines and listener set, plus
+/// the query log's runtime settings.
 ///
 /// A TLS section is only applied when a TLS engine exists; an unconfigured
 /// `[tls]` section leaves the slot empty, so the service treats it as a no-op.
 pub(crate) fn appliers(
     engines: &Engines,
     listeners: &Arc<ListenerSet<PolicyEngine>>,
+    query_log: &Arc<QueryLog>,
 ) -> ModuleAppliers {
     ModuleAppliers {
         filtering: Some(Arc::new(FilteringApplier {
@@ -189,6 +191,7 @@ pub(crate) fn appliers(
             }) as Arc<dyn ApplyTls>
         }),
         filtering_engine: Some(Arc::clone(&engines.filtering)),
+        query_log: Some(Arc::clone(query_log)),
     }
 }
 

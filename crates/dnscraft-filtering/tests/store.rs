@@ -330,3 +330,28 @@ fn clock_is_injected() {
     clock.advance(Duration::from_secs(5));
     assert_eq!(store.now_unix(), 1005);
 }
+
+/// The control-api and web UI speak lowercase JSON; older stored snapshots use
+/// the PascalCase names, which must keep loading.
+#[test]
+fn wire_names_are_lowercase_and_legacy_pascal_case_still_loads() {
+    use dnscraft_filtering::BlockMode;
+    let source: ListSourceSpec =
+        serde_json::from_str(r#"{"url":"https://example.com/l.txt"}"#).unwrap();
+    assert_eq!(
+        source,
+        ListSourceSpec::Url("https://example.com/l.txt".into())
+    );
+    assert_eq!(
+        serde_json::from_str::<BlockMode>(r#""nxdomain""#).unwrap(),
+        BlockMode::NxDomain
+    );
+    assert_eq!(
+        serde_json::from_str::<BlockMode>(r#""Refused""#).unwrap(),
+        BlockMode::Refused
+    );
+    assert_eq!(
+        serde_json::to_string(&BlockMode::NullIp).unwrap(),
+        r#""null_ip""#
+    );
+}

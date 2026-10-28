@@ -21,6 +21,7 @@ use std::collections::{BTreeSet, HashSet};
 use serde_json::{Map, Value, json};
 
 use crate::audit::{Audit, ConfigChangeRecord};
+use crate::config::IpTruncate;
 use crate::error::ControlApiError;
 use crate::filter_apply::refresh_filter_lists_after_config;
 use crate::modules::ModuleAppliers;
@@ -820,7 +821,10 @@ impl ConfigService {
             tracing::debug!(changed = ?tls_diff, "tls sub-blocks changed");
         }
         let (failed, mut error) = match self.apply_all(snapshot, usize::MAX).await {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                self.apply_query_log_settings(snapshot);
+                return Ok(());
+            }
             Err(failure) => failure,
         };
         if APPLY_ORDER[failed] == "tls" {
@@ -842,6 +846,26 @@ impl ConfigService {
             );
         }
         Err(error)
+    }
+
+    /// Pushes `control_api_settings.query_log` into the live query log. Runs
+    /// only once every module of the version applied, so a failed version
+    /// leaves the query log on its previous settings.
+    fn apply_query_log_settings(&self, snapshot: &Value) {
+        let Some(query_log) = self.modules.query_log.as_ref() else {
+            return;
+        };
+        let settings = snapshot.pointer("/control_api_settings/query_log");
+        let retention_days = settings
+            .and_then(|s| s.get("retention_days"))
+            .and_then(Value::as_u64)
+            .and_then(|days| u32::try_from(days).ok())
+            .filter(|days| (1..=3650).contains(days));
+        let ip_truncate = settings
+            .and_then(|s| s.get("ip_truncate"))
+            .and_then(Value::as_str)
+            .and_then(|name| IpTruncate::parse(name).ok());
+        query_log.apply_settings(retention_days, ip_truncate);
     }
 
     /// Applies modules `0..=last` in the fixed order.
@@ -1190,13 +1214,44 @@ fn validate_control_api_settings(settings: &Value) -> Result<(), ControlApiError
                 }
             }
             "query_log" => {
-                let days = value.get("retention_days").and_then(Value::as_u64);
-                if value.as_object().is_none_or(|o| o.len() != 1)
-                    || !days.is_some_and(|d| (1..=3650).contains(&d))
-                {
+                let object = value.as_object().ok_or_else(|| {
+                    config_invalid("control_api_settings.query_log must be an object")
+                })?;
+                if object.is_empty() {
                     return Err(config_invalid(
-                        "control_api_settings.query_log.retention_days must be 1..=3650",
+                        "control_api_settings.query_log must set retention_days or ip_truncate",
                     ));
+                }
+                for (field, field_value) in object {
+                    match field.as_str() {
+                        "retention_days" => {
+                            if !field_value
+                                .as_u64()
+                                .is_some_and(|d| (1..=3650).contains(&d))
+                            {
+                                return Err(config_invalid(
+                                    "control_api_settings.query_log.retention_days must be 1..=3650",
+                                ));
+                            }
+                        }
+                        "ip_truncate" => {
+                            let name = field_value.as_str().ok_or_else(|| {
+                                config_invalid(
+                                    "control_api_settings.query_log.ip_truncate must be a string",
+                                )
+                            })?;
+                            IpTruncate::parse(name).map_err(|_| {
+                                config_invalid(
+                                    "control_api_settings.query_log.ip_truncate must be `none`, `last_octet` or `last_group`",
+                                )
+                            })?;
+                        }
+                        other => {
+                            return Err(config_invalid(format!(
+                                "unknown field `control_api_settings.query_log.{other}`"
+                            )));
+                        }
+                    }
                 }
             }
             "oidc" => {

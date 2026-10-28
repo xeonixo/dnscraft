@@ -53,7 +53,7 @@ public_domain = "example.com"
 
 [log]
 queries = true                # optional stdout JSON-lines debug stream
-# ip_truncate = "last_octet"  # none | last_octet | last_group
+# ip_truncate = "none"        # none | last_octet | last_group
 
 [[listeners]]
 id = "lan-udp"

@@ -13,6 +13,7 @@ use dnscraft_filtering::FilterEngine;
 use serde_json::Value;
 
 use crate::error::ControlApiError;
+use crate::query_log::QueryLog;
 
 /// A boxed, `Send` apply future (avoids an `async-trait` dependency).
 pub type ModuleFuture<'a> = Pin<Box<dyn Future<Output = Result<(), ControlApiError>> + Send + 'a>>;
@@ -63,4 +64,8 @@ pub struct ModuleAppliers {
     /// Bootstrap seed, boot reconcile, and cluster sync apply filtering offline
     /// only; this handle is used for admin versioned writes (GF2).
     pub filtering_engine: Option<Arc<FilterEngine>>,
+    /// Query log whose runtime settings (`control_api_settings.query_log`) are
+    /// pushed after every applied config version. Not a module section: it is
+    /// updated only when the whole version applied.
+    pub query_log: Option<Arc<QueryLog>>,
 }

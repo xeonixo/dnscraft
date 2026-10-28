@@ -293,7 +293,7 @@ pub struct LogConfig {
     #[serde(default)]
     pub queries: bool,
     /// Source-IP truncation: `none`, `last_octet` or `last_group`.
-    /// Default `last_octet` (D6).
+    /// Default `none`.
     #[serde(default = "default_ip_truncate")]
     pub ip_truncate: String,
 }
@@ -308,7 +308,7 @@ impl Default for LogConfig {
 }
 
 fn default_ip_truncate() -> String {
-    "last_octet".to_owned()
+    "none".to_owned()
 }
 
 /// Resolved query-log settings (validated values).
@@ -832,7 +832,7 @@ target = "dns"
         assert!(cfg.listeners.is_empty());
         assert!(!cfg.allow_partial_bind);
         assert!(!cfg.log.queries);
-        assert_eq!(cfg.log.ip_truncate, "last_octet");
+        assert_eq!(cfg.log.ip_truncate, "none");
         assert_eq!(cfg.resolver.cache_size_mb, 64);
         assert_eq!(
             cfg.resolver.query_timeout,
@@ -868,9 +868,9 @@ exposure = "public"
     }
 
     #[test]
-    fn ip_truncate_defaults_to_last_octet() {
-        assert_eq!(LogConfig::default().ip_truncate, "last_octet");
+    fn ip_truncate_defaults_to_none() {
+        assert_eq!(LogConfig::default().ip_truncate, "none");
         let log: LogConfig = toml::from_str("").unwrap();
-        assert_eq!(log.ip_truncate, "last_octet");
+        assert_eq!(log.ip_truncate, "none");
     }
 }

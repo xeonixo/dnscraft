@@ -446,18 +446,18 @@ pub(crate) async fn get_unifi(
         enriched.push(row);
     }
     // Legacy flat unifi when profiles are empty.
-    if enriched.is_empty() {
-        if let Some(unifi) = clients.get("unifi").cloned() {
-            let mut row = unifi;
-            if let Some(obj) = row.as_object_mut() {
-                obj.insert("id".into(), json!("default"));
-                obj.insert(
-                    "has_api_key".into(),
-                    Value::Bool(has_api_key(db, "default").await?),
-                );
-            }
-            enriched.push(row);
+    if enriched.is_empty()
+        && let Some(unifi) = clients.get("unifi").cloned()
+    {
+        let mut row = unifi;
+        if let Some(obj) = row.as_object_mut() {
+            obj.insert("id".into(), json!("default"));
+            obj.insert(
+                "has_api_key".into(),
+                Value::Bool(has_api_key(db, "default").await?),
+            );
         }
+        enriched.push(row);
     }
     Ok(success(json!({
         "profiles": enriched,

@@ -63,14 +63,15 @@ const MAX_SESSION_ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(7 * 24 * 3600
 /// IP truncation level for persisted query-log records.
 ///
 /// The serde names match the wire/config names (`none`, `last_octet`,
-/// `last_group`); `last_octet` is the default for new installs.
+/// `last_group`); `none` is the default for new installs. The level is
+/// runtime-editable through `control_api_settings.query_log.ip_truncate`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IpTruncate {
-    /// Keep the full source IP.
-    None,
-    /// IPv4: zero the last octet (`x.x.x.0`); default for new installs.
+    /// Keep the full source IP; default for new installs.
     #[default]
+    None,
+    /// IPv4: zero the last octet (`x.x.x.0`).
     LastOctet,
     /// IPv6: keep the first 48 bits.
     LastGroup,

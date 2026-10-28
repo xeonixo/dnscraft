@@ -27,7 +27,7 @@ pub(crate) async fn set_api_key(
     let key = api_key_kv(profile_id);
     match api_key {
         None => db.kv_delete(&key).await,
-        Some(value) if value.is_empty() => Err(ControlApiError::Module {
+        Some("") => Err(ControlApiError::Module {
             code: "clients.config.invalid",
             params: Some(serde_json::json!({
                 "reason": "api_key must not be empty; use null to clear"

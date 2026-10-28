@@ -45,11 +45,15 @@ const configBody = {
 		policy: { profiles: [], views: [], records: [], client_ids: [] },
 		listeners: { listeners: [] },
 		tls: {},
-		control_api_settings: { query_log: { retention_days: 30 } },
+		control_api_settings: { query_log: { retention_days: 30, ip_truncate: 'none' } },
 	},
 };
 
+/** The stored query_log section the mocked GET returns; tests set it before rendering. */
+let storedQueryLog: Record<string, unknown> = { retention_days: 30, ip_truncate: 'none' };
+
 beforeEach(() => {
+	storedQueryLog = { retention_days: 30, ip_truncate: 'none' };
 	setPrincipal({ role: 'admin', actorId: 'admin', actorType: 'user', csrfToken: 'tok' });
 	vi.stubGlobal(
 		'fetch',
@@ -58,7 +62,13 @@ beforeEach(() => {
 				typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 			const url = new URL(href, 'http://localhost');
 			if (url.pathname === '/api/v1/config' && (!init?.method || init.method === 'GET')) {
-				return ok(configBody);
+				return ok({
+					...configBody,
+					config: {
+						...configBody.config,
+						control_api_settings: { query_log: storedQueryLog },
+					},
+				});
 			}
 			if (url.pathname === '/api/v1/config' && init?.method === 'PUT') {
 				return ok({ version: 2 });
@@ -155,22 +165,18 @@ describe('Einstellungen general tab', () => {
 
 		await user.clear(gateway);
 		await user.type(gateway, 'https://192.0.2.99');
-		const unifi = screen.getByRole('heading', { name: m.settings_group_unifi() }).closest('section');
+		const unifi = screen
+			.getByRole('heading', { name: m.settings_group_unifi() })
+			.closest('section');
 		expect(unifi).not.toBeNull();
 		await user.click(within(unifi as HTMLElement).getByRole('button', { name: m.action_save() }));
 
 		await waitFor(() => {
-			const puts = vi
-				.mocked(fetch)
-				.mock.calls.filter(([input, init]) => {
-					const href =
-						typeof input === 'string'
-							? input
-							: input instanceof URL
-								? input.href
-								: input.url;
-					return href.includes('/api/v1/config') && init?.method === 'PUT';
-				});
+			const puts = vi.mocked(fetch).mock.calls.filter(([input, init]) => {
+				const href =
+					typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				return href.includes('/api/v1/config') && init?.method === 'PUT';
+			});
 			expect(puts).toHaveLength(1);
 			const [, init] = puts[0]!;
 			const body = JSON.parse(String(init?.body));
@@ -178,6 +184,67 @@ describe('Einstellungen general tab', () => {
 			expect(body.clients.unifi_bindings).toEqual({ local: 'home' });
 			expect((init?.headers as Record<string, string>)['If-Match']).toBe('1');
 		});
+	});
+
+	it('shows the stored IP truncation mode', async () => {
+		storedQueryLog = { retention_days: 30, ip_truncate: 'last_group' };
+		render(GeneralPage);
+		const select = screen.getByLabelText(m.settings_ip_truncation_label());
+		await waitFor(() => expect(select).toHaveValue('last_group'));
+	});
+
+	it('saves the IP truncation mode and keeps the retention days', async () => {
+		const user = userEvent.setup();
+		render(GeneralPage);
+		await screen.findByDisplayValue('30');
+		const select = screen.getByLabelText(m.settings_ip_truncation_label());
+		await user.selectOptions(select, 'last_octet');
+		const row = select.closest('.ip-control') as HTMLElement;
+		await user.click(within(row).getByRole('button', { name: m.action_save() }));
+
+		await waitFor(() => {
+			const puts = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === 'PUT');
+			expect(puts).toHaveLength(1);
+			const [, init] = puts[0]!;
+			const body = JSON.parse(String(init?.body));
+			expect(body.control_api_settings.query_log).toEqual({
+				retention_days: 30,
+				ip_truncate: 'last_octet',
+			});
+			expect((init?.headers as Record<string, string>)['If-Match']).toBe('1');
+		});
+	});
+
+	it('keeps the IP truncation mode when the retention days are saved', async () => {
+		storedQueryLog = { retention_days: 30, ip_truncate: 'last_group' };
+		const user = userEvent.setup();
+		render(GeneralPage);
+		const retention = await screen.findByDisplayValue('30');
+		await user.clear(retention);
+		await user.type(retention, '14');
+		const row = retention.closest('.row') as HTMLElement;
+		await user.click(within(row).getByRole('button', { name: m.action_save() }));
+
+		await waitFor(() => {
+			const put = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'PUT');
+			expect(put).toBeDefined();
+			const body = JSON.parse(String(put![1]?.body));
+			expect(body.control_api_settings.query_log).toEqual({
+				retention_days: 14,
+				ip_truncate: 'last_group',
+			});
+		});
+	});
+
+	it('disables the IP truncation control for non-admins', async () => {
+		setPrincipal({ role: 'viewer', actorId: 'viewer', actorType: 'user', csrfToken: 'tok' });
+		storedQueryLog = { retention_days: 30, ip_truncate: 'last_octet' };
+		render(GeneralPage);
+		const select = screen.getByLabelText(m.settings_ip_truncation_label());
+		await waitFor(() => expect(select).toHaveValue('last_octet'));
+		expect(select).toBeDisabled();
+		const row = select.closest('.ip-control') as HTMLElement;
+		expect(within(row).queryByRole('button', { name: m.action_save() })).toBeNull();
 	});
 
 	it('asks before enabling UniFi skip-verify', async () => {

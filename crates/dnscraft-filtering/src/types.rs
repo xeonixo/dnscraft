@@ -182,15 +182,20 @@ pub enum Verdict {
 
 /// How blocked queries are answered.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BlockMode {
     /// RCODE REFUSED.
     #[default]
+    #[serde(alias = "Refused")]
     Refused,
     /// RCODE NXDOMAIN.
+    #[serde(rename = "nxdomain", alias = "NxDomain")]
     NxDomain,
     /// `0.0.0.0` for A and `::` for AAAA.
+    #[serde(alias = "NullIp")]
     NullIp,
     /// Configured addresses; a family set to `None` gets an empty answer.
+    #[serde(alias = "CustomIp")]
     CustomIp {
         /// Address for A queries.
         v4: Option<Ipv4Addr>,

@@ -16,7 +16,7 @@ pub(crate) async fn has_api_token(db: &Db) -> Result<bool, ControlApiError> {
 pub(crate) async fn set_api_token(db: &Db, token: Option<&str>) -> Result<(), ControlApiError> {
     match token {
         None => db.kv_delete(KV_KEY).await,
-        Some(value) if value.is_empty() => Err(ControlApiError::Module {
+        Some("") => Err(ControlApiError::Module {
             code: "tls.config.invalid",
             params: Some(serde_json::json!({
                 "reason": "api_token must not be empty; use null to clear"

@@ -109,4 +109,5 @@
       snapshot. Either expose them via config snapshot or document bootstrap-only editing.
 - [ ] **GA-W9b** Temporary allows have no DELETE endpoint — UI can list but not remove.
 - [ ] **GA-W9c** Listeners lack a per-client rate-limit field in `listener_routes.rs` (SPEC/UI toggle deferred).
-- [ ] **GA-W9d** `query_log.ip_truncate` is bootstrap-only; not editable via `/config` (UI shows read-only note).
+- [x] **GA-W9d** `query_log.ip_truncate` is bootstrap-only; not editable via `/config` (UI shows read-only note).
+      Done: `control_api_settings.query_log.ip_truncate` (and `retention_days`) is in the versioned snapshot and applied live to `QueryLog` on boot, `PUT /config`, rollback and cluster sync; default is now `none`.

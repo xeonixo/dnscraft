@@ -13,8 +13,9 @@ use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Request, StatusCode};
 use dnscraft_api::{
-    AppState, ClientEnricher, ClientView, Db, ManualClock, Order, OrderBy, QueryLog,
-    QueryLogFilter, QueryLogPage,
+    AppState, Audit, ClientEnricher, ClientView, ConfigActor, ConfigService, ConfigStore, Db,
+    IpTruncate, ManualClock, ModuleAppliers, Order, OrderBy, QueryLog, QueryLogFilter,
+    QueryLogPage,
 };
 use dnscraft_filtering::{BlockMode, ListId, Reason, RuleSource, SetId};
 use dnscraft_listeners::{ManualClock as ListenerClock, QueryEvent, QueryEventSink, emit_event};
@@ -24,7 +25,7 @@ use dnscraft_policy::{
 };
 use dnscraft_proto::{Class, Name, Rcode, RecordType};
 use dnscraft_resolver::{DnssecStatus, Query};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
 const BASE_SECS: u64 = 1_700_000_000;
@@ -324,8 +325,11 @@ impl ClientEnricher for FakeClients {
 async fn query_log_events_are_enriched_with_client_data_and_ip_truncated() {
     let clock = Arc::new(ManualClock::new(base_time()));
     let db = Db::open_in_memory(clock).await.unwrap();
-    let log = QueryLog::new(db, dnscraft_api::QueryLogConfig::default(), "node-a")
-        .with_client_enricher(Arc::new(FakeClients));
+    let config = dnscraft_api::QueryLogConfig {
+        ip_truncate: IpTruncate::LastOctet,
+        ..dnscraft_api::QueryLogConfig::default()
+    };
+    let log = QueryLog::new(db, config, "node-a").with_client_enricher(Arc::new(FakeClients));
 
     log.insert_batch(vec![
         sample_event(at_secs(BASE_SECS - 2), 10), // 192.0.2.11, no client
@@ -382,6 +386,92 @@ async fn query_log_events_are_enriched_with_client_data_and_ip_truncated() {
         .await
         .unwrap();
     assert_eq!(page.records.len(), 1);
+}
+
+/// Writes one config version whose `control_api_settings` is `settings` (the
+/// other sections are empty and have no applier) and returns its version.
+async fn put_settings(service: &ConfigService, settings: Value) -> i64 {
+    let body = json!({
+        "filtering": {}, "clients": {}, "policy": {}, "listeners": {}, "tls": {},
+        "control_api_settings": settings,
+    });
+    service
+        .replace(body, &ConfigActor::local(), None)
+        .await
+        .unwrap()
+}
+
+/// Inserts the sample event `index` and returns its stored `(source_ip,
+/// source_ip_truncated)`.
+async fn insert_and_read_source(log: &QueryLog, index: usize) -> (String, bool) {
+    log.insert_batch(vec![sample_event(at_secs(BASE_SECS - 2), index)])
+        .await
+        .unwrap();
+    let page = log
+        .list(&QueryLogFilter {
+            domain: Some(format!("host{}.example.com", index % 100)),
+            limit: 10,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    let record = &page.records[0];
+    (
+        record["source_ip"].as_str().unwrap().to_owned(),
+        record["source_ip_truncated"].as_bool().unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn query_log_ip_truncate_setting_applies_to_later_rows_and_rollback() {
+    let clock = Arc::new(ManualClock::new(base_time()));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    // The bootstrap `[control_api.query_log]` value is `last_octet`.
+    let config = dnscraft_api::QueryLogConfig {
+        ip_truncate: IpTruncate::LastOctet,
+        ..dnscraft_api::QueryLogConfig::default()
+    };
+    let log = Arc::new(QueryLog::new(db.clone(), config, "node-a"));
+    let modules = ModuleAppliers {
+        query_log: Some(Arc::clone(&log)),
+        ..ModuleAppliers::default()
+    };
+    let service = ConfigService::new(
+        ConfigStore::new(db.clone()),
+        Audit::new(db),
+        modules,
+        "node-a",
+    );
+
+    // No config version yet: the bootstrap value is in force.
+    assert_eq!(
+        insert_and_read_source(&log, 10).await,
+        ("192.0.2.0".to_owned(), true)
+    );
+
+    // An explicit `none` keeps the full address for rows written from now on.
+    let none = put_settings(&service, json!({"query_log": {"ip_truncate": "none"}})).await;
+    assert_eq!(
+        insert_and_read_source(&log, 11).await,
+        ("192.0.2.12".to_owned(), false)
+    );
+
+    // A version without `ip_truncate` falls back to the bootstrap value.
+    put_settings(&service, json!({"query_log": {"retention_days": 30}})).await;
+    assert_eq!(
+        insert_and_read_source(&log, 12).await,
+        ("192.0.2.0".to_owned(), true)
+    );
+
+    // Rolling back to the `none` version restores the live setting.
+    service
+        .rollback(u64::try_from(none).unwrap(), &ConfigActor::local(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        insert_and_read_source(&log, 13).await,
+        ("192.0.2.14".to_owned(), false)
+    );
 }
 
 /// A sample event from `source` carrying a Client ID and, when registered

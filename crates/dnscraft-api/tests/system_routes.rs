@@ -286,6 +286,10 @@ async fn control_api_settings_accept_only_the_documented_runtime_keys() {
     for bad in [
         json!({"oidc": {"token_skew_seconds": 2}}),
         json!({"query_log": {"retention_days": 0}}),
+        json!({"query_log": {}}),
+        json!({"query_log": {"ip_truncate": "everything"}}),
+        json!({"query_log": {"ip_truncate": 1}}),
+        json!({"query_log": {"retention_days": 90, "unknown": true}}),
         json!({"oidc": {"client_secret": "x"}}),
         json!({"unknown": true}),
     ] {
@@ -299,13 +303,12 @@ async fn control_api_settings_accept_only_the_documented_runtime_keys() {
     let mut config = base.clone();
     config["control_api_settings"] = json!({
         "oidc": {"admin_group": "ops", "token_skew_seconds": 60},
-        "query_log": {"retention_days": 90},
+        "query_log": {"retention_days": 90, "ip_truncate": "none"},
     });
     let (status, body) = call(&h.state, Method::PUT, "/api/v1/config", Some(config)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (_, body) = call(&h.state, Method::GET, "/api/v1/config", None).await;
-    assert_eq!(
-        body["data"]["config"]["control_api_settings"]["query_log"]["retention_days"],
-        90
-    );
+    let query_log = &body["data"]["config"]["control_api_settings"]["query_log"];
+    assert_eq!(query_log["retention_days"], 90);
+    assert_eq!(query_log["ip_truncate"], "none");
 }

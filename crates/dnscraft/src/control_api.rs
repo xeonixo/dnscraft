@@ -189,7 +189,7 @@ pub(crate) async fn start(
     }
     if let Some(engine) = engines.tls.as_ref() {
         // UI-stored token (kv) overrides a missing env token after restart.
-        if let Ok(Some(token)) = dnscraft_api::cloudflare_token_from_db(&db).await {
+        if let Ok(Some(token)) = dnscraft_api::cloudflare_token_from_db(db).await {
             let _ = engine
                 .set_cloudflare_token(dnscraft_tls::Secret::new(token))
                 .await;
@@ -444,6 +444,29 @@ fn api_origin(api: &dnscraft_api::ControlApiConfig, hostname: &str) -> Option<St
     })
 }
 
+/// Seeds the `break-glass` admin from `DNSCRAFT_ADMIN_PASSWORD_FILE` on a fresh
+/// install (no local accounts yet). Existing accounts are never overwritten, so
+/// removing the file after first boot is safe.
+async fn seed_break_glass_admin(accounts: &LocalAccountStore) -> Result<(), Error> {
+    let Some(path) = std::env::var_os("DNSCRAFT_ADMIN_PASSWORD_FILE") else {
+        return Ok(());
+    };
+    let fail = |message: String| Error::startup("dnscraft.startup.control_api_auth", message);
+    let existing = accounts
+        .snapshot_entries()
+        .await
+        .map_err(|error| fail(format!("control-api local accounts: {error}")))?;
+    if !existing.is_empty() {
+        return Ok(());
+    }
+    let password = std::fs::read_to_string(&path)
+        .map_err(|error| fail(format!("DNSCRAFT_ADMIN_PASSWORD_FILE: {error}")))?;
+    accounts
+        .upsert("break-glass", password.trim(), dnscraft_api::Role::Admin)
+        .await
+        .map_err(|error| fail(format!("seeding break-glass admin: {error}")))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -489,27 +512,4 @@ mod tests {
         );
         assert_eq!(api_origin(&api, "localhost"), None);
     }
-}
-
-/// Seeds the `break-glass` admin from `DNSCRAFT_ADMIN_PASSWORD_FILE` on a fresh
-/// install (no local accounts yet). Existing accounts are never overwritten, so
-/// removing the file after first boot is safe.
-async fn seed_break_glass_admin(accounts: &LocalAccountStore) -> Result<(), Error> {
-    let Some(path) = std::env::var_os("DNSCRAFT_ADMIN_PASSWORD_FILE") else {
-        return Ok(());
-    };
-    let fail = |message: String| Error::startup("dnscraft.startup.control_api_auth", message);
-    let existing = accounts
-        .snapshot_entries()
-        .await
-        .map_err(|error| fail(format!("control-api local accounts: {error}")))?;
-    if !existing.is_empty() {
-        return Ok(());
-    }
-    let password = std::fs::read_to_string(&path)
-        .map_err(|error| fail(format!("DNSCRAFT_ADMIN_PASSWORD_FILE: {error}")))?;
-    accounts
-        .upsert("break-glass", password.trim(), dnscraft_api::Role::Admin)
-        .await
-        .map_err(|error| fail(format!("seeding break-glass admin: {error}")))
 }

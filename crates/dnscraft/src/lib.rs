@@ -359,7 +359,7 @@ pub async fn build_with_enrollment(
         }
     }
 
-    let modules = apply::appliers(&engines, &set);
+    let modules = apply::appliers(&engines, &set, &query_log);
     let config_service = Arc::new(ConfigService::new(
         store,
         Audit::new(db.clone()),

@@ -408,7 +408,7 @@ Decisions behind the rows:
   file `0600`; the directory is the owner's responsibility beyond that (no encryption at
   rest in v1). Retention counts backup files, oldest removed first.
 - **WX8 sessions.** Stored session rows keep only the truncated IP, written at login
-  time with the `query_log_ip_truncate` setting (default `last_octet`), and a parsed
+  time with the `ip_truncate` setting (default `none`; see § Retention and privacy), and a parsed
   browser label; the raw user agent is not stored. `id` is a public random identifier
   separate from the cookie value, so the list never exposes a usable session secret.
   Admin list shows all actors; a viewer sees their own only. Revoking the current
@@ -488,13 +488,20 @@ category such as `adblock` (decision recorded with GA24).
 ### Retention and privacy
 
 - Default retention: **30 days** (`query_log_retention_days`).
-- `source_ip` can be truncated with `query_log_ip_truncate`:
+- `source_ip` can be truncated with `ip_truncate`:
   - `none` = full IP,
   - `last_octet` = IPv4 `x.x.x.0`,
   - `last_group` = IPv6 first 48 bits.
 - Privacy implications: full IPs allow per-device log filtering but increase
   identifiability. The UI explains this during setup. Default for new installs
-  is `last_octet`, but the owner may choose `none`.
+  is `none`; the owner may choose `last_octet` or `last_group`.
+- Both `ip_truncate` and `retention_days` are runtime-editable through the
+  versioned config as `control_api_settings.query_log.{ip_truncate, retention_days}`
+  (optional keys, at least one required; unknown keys are rejected with
+  `control_api.config.invalid`). The live query log takes the value of every applied
+  version (boot, `PUT /config`, rollback, cluster sync). A version without a key falls
+  back to the bootstrap `[control_api.query_log]` value. The change affects rows written
+  from then on; stored rows keep the truncation they were written with.
 - Query-log records are written through a bounded channel and dropped with
   `query_log.dropped` counter when the sink is full; DNS answering is never
   blocked.
@@ -854,7 +861,7 @@ local_login_enabled = true
 
 [control_api.query_log]
 retention_days = 30
-ip_truncate = "last_octet"       # none | last_octet | last_group
+ip_truncate = "none"            # none | last_octet | last_group (runtime-editable)
 max_rows_per_request = 10000
 
 [control_api.rate_limit]
@@ -885,7 +892,7 @@ Limits/defaults:
 | Setting | Default | Limit |
 |---|---|---|
 | `retention_days` | 30 | 1–3650 |
-| `ip_truncate` | `last_octet` | enum |
+| `ip_truncate` | `none` | enum |
 | `max_rows_per_request` | 10000 | 100–100000 |
 | `local_login_max_attempts` | 5 | 1–20 |
 | `local_login_lock_window` | 15m | 1m–24h |

@@ -43,6 +43,14 @@
 	let confirmDelete = $state(false);
 	let togglingId = $state<string | null>(null);
 	let toggleFailure = $state<Failure | null>(null);
+	// Backend ids must match [a-z0-9-]{1,64}; derive them from whatever the owner typed.
+	function slugify(text: string): string {
+		return text
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, '-')
+			.replace(/^-+|-+$/g, '')
+			.slice(0, 64);
+	}
 	let formId = $state('');
 	let formName = $state('');
 	let formUrl = $state('');
@@ -162,7 +170,7 @@
 
 	async function submit(): Promise<void> {
 		busy = true;
-		const id = editing?.id ?? formId.trim();
+		const id = editing?.id ?? slugify(formId.trim() || formName);
 		const source = formUrl.startsWith('http') ? { url: formUrl.trim() } : { file: formUrl.trim() };
 		try {
 			await saveFilterList({ id, name: formName, source, enabled: formEnabled });

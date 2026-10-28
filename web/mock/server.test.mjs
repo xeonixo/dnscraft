@@ -548,3 +548,52 @@ describe('mock Netzbereich pins for client ids', () => {
 		}
 	});
 });
+
+describe('mock query log IP truncation setting', () => {
+	let truncateServer;
+	let truncateBase;
+
+	const getConfig = async () => (await fetch(`${truncateBase}/api/v1/config`)).json();
+	const putConfig = (body, ifMatch) =>
+		fetch(`${truncateBase}/api/v1/config`, {
+			method: 'PUT',
+			headers: {
+				'Content-Type': 'application/json',
+				'X-CSRF-Token': MOCK_CSRF,
+				'If-Match': String(ifMatch),
+			},
+			body: JSON.stringify(body),
+		});
+
+	before(async () => {
+		truncateServer = createMockServer({ buildDir, role: 'admin' });
+		await new Promise((resolve) => truncateServer.listen(0, '127.0.0.1', resolve));
+		truncateBase = `http://127.0.0.1:${truncateServer.address().port}`;
+	});
+
+	after(() => {
+		truncateServer.close();
+	});
+
+	it('stores a new mode and keeps retention_days when the candidate omits it', async () => {
+		const { data: current } = await getConfig();
+		const candidate = structuredClone(current.config);
+		candidate.control_api_settings.query_log = { ip_truncate: 'last_octet' };
+		const response = await putConfig(candidate, current.version);
+		assert.equal(response.status, 200);
+		const { data } = await getConfig();
+		assert.deepEqual(data.config.control_api_settings.query_log, {
+			retention_days: 30,
+			ip_truncate: 'last_octet',
+		});
+	});
+
+	it('rejects an unknown mode with 400 and stores nothing', async () => {
+		const { data: current } = await getConfig();
+		const candidate = structuredClone(current.config);
+		candidate.control_api_settings.query_log = { ip_truncate: 'everything' };
+		const response = await putConfig(candidate, current.version);
+		assert.equal(response.status, 400);
+		assert.equal((await getConfig()).data.version, current.version);
+	});
+});

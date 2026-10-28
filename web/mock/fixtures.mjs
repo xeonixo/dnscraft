@@ -1605,7 +1605,7 @@ export function initialConfig() {
 		},
 		control_api_settings: {
 			update_check: true,
-			query_log: { retention_days: 30 },
+			query_log: { retention_days: 30, ip_truncate: 'none' },
 		},
 		mcp: {
 			enabled: true,
