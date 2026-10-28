@@ -19,7 +19,7 @@ use dnscraft_tls::{
     CloudflareClient, CloudflareConfig, DEFAULT_EXPIRY_WARN, DnsProviderKind, DynDnsConfig,
     FakeAcmeDirectory, FakeAcmeFail, KeyType, ManualClock, ManualDns01Config, Secret, TlsConfig,
     TlsError, TlsStatus, ari_certificate_id, challenge_txt_name, current_ari_window, issue,
-    next_renewal,
+    next_renewal, sign_csr,
 };
 use mock_cloudflare::{MockCloudflare, MockZone};
 use tokio::net::UdpSocket;
@@ -630,5 +630,128 @@ async fn ari_window_from_ca_drives_the_schedule() {
     let loaded = env.store.load().unwrap().unwrap();
     let due = planned_renewal(&no_ari, &env, now).await;
     assert_eq!(due, loaded.not_after - env.cfg.renew_before);
+    let _ = fs::remove_dir_all(&env.data);
+}
+
+/// A node-side PKCS #10 request for `names`, with the key that signs it.
+fn node_csr(names: &[&str]) -> (String, rcgen::KeyPair) {
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+    let names: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
+    let csr = rcgen::CertificateParams::new(names)
+        .unwrap()
+        .serialize_request(&key)
+        .unwrap();
+    (csr.pem().unwrap(), key)
+}
+
+fn leaf_dns_names(chain_pem: &str) -> Vec<String> {
+    let (_, pem) = x509_parser::pem::parse_x509_pem(chain_pem.as_bytes()).expect("pem");
+    let cert = pem.parse_x509().expect("x509");
+    let san = cert
+        .subject_alternative_name()
+        .expect("san ext")
+        .expect("san present");
+    san.value
+        .general_names
+        .iter()
+        .filter_map(|n| match n {
+            x509_parser::extensions::GeneralName::DNSName(d) => Some((*d).to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn leaf_public_key(chain_pem: &str) -> Vec<u8> {
+    let (_, pem) = x509_parser::pem::parse_x509_pem(chain_pem.as_bytes()).expect("pem");
+    let cert = pem.parse_x509().expect("x509");
+    cert.public_key().subject_public_key.data.to_vec()
+}
+
+async fn sign_with_clock_drive(
+    acme: &FakeAcmeDirectory,
+    env: &Env,
+    csr_pem: &str,
+) -> Result<String, TlsError> {
+    let clk = env.clock.clone();
+    let driver = {
+        let c = clk.clone();
+        tokio::spawn(async move {
+            drive_clock(&c, Duration::from_secs(5), 10).await;
+        })
+    };
+    let result = sign_csr(acme, &env.cf, &env.store, &env.cfg, csr_pem, clk.as_ref()).await;
+    driver.abort();
+    result
+}
+
+#[tokio::test]
+async fn sign_csr_returns_chain_for_the_node_key_and_keeps_the_master_cert() {
+    let env = setup(KeyType::EcdsaP256, Duration::from_secs(60)).await;
+    let challenge = challenge_txt_name(&format!("dns.{DOMAIN}"));
+    issue_with_clock_drive(&FakeAcmeDirectory::new(), &env)
+        .await
+        .unwrap();
+    let before = env.store.load().unwrap().unwrap().chain_pem;
+
+    let (csr, key) = node_csr(&["dns.example.com", "*.dns.example.com"]);
+    let acme = FakeAcmeDirectory::new();
+    let chain = sign_with_clock_drive(&acme, &env, &csr)
+        .await
+        .expect("sign");
+
+    assert_eq!(leaf_public_key(&chain), key.public_key_raw());
+    assert_eq!(
+        leaf_dns_names(&chain),
+        vec!["dns.example.com".to_owned(), "*.dns.example.com".to_owned()]
+    );
+    assert_eq!(acme.order_status().state, "valid");
+    assert_eq!(env.store.load().unwrap().unwrap().chain_pem, before);
+    assert!(env.mock.txt_contents(&challenge).await.is_empty());
+    let _ = fs::remove_dir_all(&env.data);
+}
+
+#[tokio::test]
+async fn sign_csr_refuses_foreign_names_and_garbage_before_ordering() {
+    let env = setup(KeyType::EcdsaP256, Duration::from_secs(60)).await;
+    let acme = FakeAcmeDirectory::new();
+
+    let (foreign, _) = node_csr(&["dns.example.net"]);
+    let err = sign_with_clock_drive(&acme, &env, &foreign)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "tls.acme.order");
+
+    let err = sign_with_clock_drive(&acme, &env, "not a certification request")
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "tls.acme.order");
+
+    assert!(
+        acme.replaces_log().is_empty(),
+        "no ACME order may start for a refused CSR"
+    );
+    let _ = fs::remove_dir_all(&env.data);
+}
+
+#[tokio::test]
+async fn sign_csr_finalize_failure_removes_txt_and_keeps_master_cert() {
+    let env = setup(KeyType::EcdsaP256, Duration::from_secs(60)).await;
+    let challenge = challenge_txt_name(&format!("dns.{DOMAIN}"));
+    issue_with_clock_drive(&FakeAcmeDirectory::new(), &env)
+        .await
+        .unwrap();
+    let before = env.store.load().unwrap().unwrap().chain_pem;
+
+    let (csr, _) = node_csr(&["dns.example.com", "*.dns.example.com"]);
+    let err = sign_with_clock_drive(
+        &FakeAcmeDirectory::failing(FakeAcmeFail::Finalize),
+        &env,
+        &csr,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code(), "tls.acme.order");
+    assert!(env.mock.txt_contents(&challenge).await.is_empty());
+    assert_eq!(env.store.load().unwrap().unwrap().chain_pem, before);
     let _ = fs::remove_dir_all(&env.data);
 }

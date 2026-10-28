@@ -100,6 +100,17 @@ resolver and small helpers those modules call.
    last good cert on a failed renewal.
 5. After success: atomic store write + hot-reload into the shared cert resolver.
 
+**Signing a node CSR (multi-node, `sign_csr`).** The master can also finalize an
+order with a CSR it did not generate, so a sub-node keeps its own key
+(SPEC-cluster § TLS certificate distribution). The same account, DNS-01 TXT
+handling, propagation wait, rate-limit state and order progress apply. The
+request may name only `dns.<public_domain>` and `*.dns.<public_domain>`; any
+other name, a non-DNS SAN, or a request whose signature does not verify is
+refused before an order starts (`tls.acme.order`). The chain is returned to the
+caller only: the stored certificate, key and resolver are not changed. Orders
+are serialized (one pending-order slot per account), so a node order waits for
+an in-flight renewal and the reverse.
+
 ### Certificate store
 
 - Directory `<data>/tls/` mode **0o700**; files **0o600**.

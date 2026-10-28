@@ -2,6 +2,18 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — cluster CF10: TLS CSR signing (dnscraft-tls)
+
+- **Done:** `dnscraft_tls::sign_csr` (free fn) and `TlsEngine::sign_csr`: an ACME DNS-01 order finalized with the
+  node's CSR, chain returned, key never seen. Shares `order_dns01` with `issue` (account, TXT cleanup, propagation,
+  rate-limit state, order progress); CSR names must be `dns.<domain>` / `*.dns.<domain>`. `AcmeOrder::finish_dns01_order_csr`
+  (default: unsupported). Node and master orders serialized by `order_lock`.
+- **Adapter:** `dnscraft_api::TlsEngineCsrSigner` (`TlsCsrSigner`) and `ClusterRuntime::attach_tls_engine`. Placed in
+  dnscraft-api to avoid a new dnscraft → dnscraft-cluster edge (Cargo.lock).
+- **Tests:** `dnscraft-tls/tests/issue.rs` `sign_csr_*` (Fake ACME + mock Cloudflare). Crate suite green; clippy `-D warnings` clean.
+- **Open:** the assembler does not start `ClusterRuntime`, so nothing calls `attach_tls_engine` in production yet.
+  Pebble (ignored) coverage for the CSR path not added.
+
 ## 2026-10-28 — assembler wave 2: G0 wiring (AS5, AS7, GA6c, GA28, GA29, GM3, GM4, GL2, GC1)
 
 - **Done:** `EngineDirectory` (dnscraft-api `ClientDirectory` over `ClientEngine`) wired with `with_clients`; `/readyz`

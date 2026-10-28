@@ -11,7 +11,7 @@
 //! So far: [`TlsConfig`], [`TlsError`], [`Clock`] / [`ManualClock`],
 //! [`read_secret`], SNI helpers, [`CertStore`], [`CertResolver`], ACME
 //! ([`InstantAcme`], [`AcmeDirectory`], [`AcmeOrder`]), [`CloudflareClient`],
-//! DNS-01 [`wait_for_txt`], [`issue`], renewal scheduling ([`next_renewal`]),
+//! DNS-01 [`wait_for_txt`], [`issue`], [`sign_csr`], renewal scheduling ([`next_renewal`]),
 //! DynDNS ([`dyndns_once`]), and [`TlsEngine`].
 
 #![deny(missing_docs)]
@@ -58,7 +58,7 @@ pub use dyndns::{
 };
 pub use engine::{EngineDeps, EngineInner, TlsEngine};
 pub use error::{TlsError, parse_retry_after_header};
-pub use issue::issue;
+pub use issue::{issue, sign_csr};
 pub use pem_util::{KeyPem, fingerprint_sha256};
 pub use propagation::{resolve_nameservers, wait_for_txt, wait_for_txt_with_query_timeout};
 pub use renew::{

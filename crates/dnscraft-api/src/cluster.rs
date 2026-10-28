@@ -40,11 +40,11 @@ use dnscraft_cluster::{
     ClusterBroadcast, ClusterCa, ClusterClient, ClusterConfig, ClusterError, ClusterServer,
     ClusterServerConfig, ClusterStore, ConfigApplier, ConfigSync, LogIngest, LogOutbox, LogRecord,
     LogStreamer, NodeIdentity, OfflineWriteQueue, PendingNodeIdentity, RelayResponse, RelayedActor,
-    Role, RuntimeCommandApplier, StreamRecord, TlsPaths, WriteExecutor, WriteRelay,
+    Role, RuntimeCommandApplier, StreamRecord, TlsCsrSigner, TlsPaths, WriteExecutor, WriteRelay,
 };
 use dnscraft_common::clock::{Clock, add_duration, wait_until};
 use dnscraft_common::secret::Secret;
-use dnscraft_tls::{CertResolver, CertStore};
+use dnscraft_tls::{CertResolver, CertStore, TlsEngine};
 
 use crate::api::auth::{AuthSnapshot, AuthState, Scope, authorize, requirement};
 use crate::api::clients_routes::{ManualEntryBody, name as manual_name, reject_conflict};
@@ -162,6 +162,31 @@ impl CertInstaller for TlsCertInstaller {
             )
             .map_err(|error| ClusterError::CertPushFailed {
                 message: error.to_string(),
+            })
+    }
+}
+
+/// Master signer: finalizes a sub-node's CSR through the TLS engine's ACME
+/// account. The node's key stays on the node.
+pub struct TlsEngineCsrSigner {
+    engine: Arc<TlsEngine>,
+}
+
+impl TlsEngineCsrSigner {
+    /// Wraps the master's TLS engine.
+    pub fn new(engine: Arc<TlsEngine>) -> Self {
+        Self { engine }
+    }
+}
+
+#[async_trait]
+impl TlsCsrSigner for TlsEngineCsrSigner {
+    async fn sign(&self, _node_id: &str, csr_pem: &str) -> Result<String, ClusterError> {
+        self.engine
+            .sign_csr(csr_pem)
+            .await
+            .map_err(|error| ClusterError::Internal {
+                message: format!("TLS certificate request failed ({})", error.code()),
             })
     }
 }
@@ -1151,6 +1176,14 @@ impl ClusterRuntime {
     /// The master's volatile broadcast handle, when this runtime is the master.
     pub fn broadcast_handle(&self) -> Option<ClusterBroadcast> {
         self.server.as_ref().map(ClusterServer::broadcast_handle)
+    }
+
+    /// Attaches the master's TLS certificate signer, backed by `engine`, so a
+    /// node's CSR is finalized through ACME. No-op unless this is the master.
+    pub fn attach_tls_engine(&self, engine: Arc<TlsEngine>) {
+        if let Some(server) = &self.server {
+            server.attach_tls_signer(Arc::new(TlsEngineCsrSigner::new(engine)));
+        }
     }
 
     /// Stops the listener and background tasks.

@@ -17,7 +17,7 @@ use crate::cloudflare::{CLOUDFLARE_API_BASE, CloudflareClient};
 use crate::config::{DnsProviderKind, TlsConfig};
 use crate::dyndns::{DynDnsResult, EchoClient, InventoryRecord, dyndns_interval, dyndns_pass};
 use crate::error::TlsError;
-use crate::issue::issue;
+use crate::issue::{issue, sign_csr};
 use crate::pem_util::{certified_key_from_pem, fingerprint_sha256, parse_leaf_info};
 use crate::renew::{
     AriWindow, RenewFn, RenewScheduler, ScheduleFn, StatusFn, current_ari_window, next_renewal,
@@ -76,6 +76,9 @@ pub struct EngineInner {
     issue_flight: Mutex<Option<broadcast::Sender<Result<(), TlsError>>>>,
     /// Single-flight for DynDNS.
     dyndns_lock: Mutex<()>,
+    /// Serializes ACME orders: the account has one pending-order slot, so a
+    /// node CSR order and the master's own renewal must not overlap.
+    order_lock: Mutex<()>,
     acme_enabled: Arc<AtomicBool>,
     dyndns_enabled: Arc<AtomicBool>,
     allow_http_for_tests: bool,
@@ -231,6 +234,7 @@ impl TlsEngine {
             rate_limit: RwLock::new(RateLimitStatus::default()),
             issue_flight: Mutex::new(None),
             dyndns_lock: Mutex::new(()),
+            order_lock: Mutex::new(()),
             acme_enabled: Arc::clone(&acme_enabled),
             dyndns_enabled: Arc::clone(&dyndns_enabled),
             allow_http_for_tests: deps.allow_http_for_tests,
@@ -563,6 +567,13 @@ impl TlsEngine {
         PreflightReport::from_checks(checks)
     }
 
+    /// Signs a node's CSR for the public names through the master's ACME
+    /// account. The node keeps its key; the master's stored certificate is
+    /// untouched. See [`crate::sign_csr`].
+    pub async fn sign_csr(&self, csr_pem: &str) -> Result<String, TlsError> {
+        self.inner.sign_csr(csr_pem).await
+    }
+
     /// Forces a new certificate with a fresh private key.
     pub async fn rotate_key(&self) -> Result<(), TlsError> {
         let acme_enabled = self.inner.config.read().await.acme.enabled;
@@ -671,6 +682,7 @@ impl EngineInner {
         let result = if !cfg.acme.enabled {
             Err(TlsError::config("ACME is disabled"))
         } else {
+            let _order = self.order_lock.lock().await;
             let cf = self.cloudflare.read().await.clone();
             issue(
                 self.acme.as_ref(),
@@ -701,6 +713,24 @@ impl EngineInner {
         // that arrived during this renew.
         self.refresh_ari().await;
         self.refresh_status().await;
+        result
+    }
+
+    async fn sign_csr(&self, csr_pem: &str) -> Result<String, TlsError> {
+        let _order = self.order_lock.lock().await;
+        let cfg = self.config.read().await.clone();
+        let cf = self.cloudflare.read().await.clone();
+        let result = sign_csr(
+            self.acme.as_ref(),
+            &cf,
+            &self.store,
+            &cfg,
+            csr_pem,
+            self.clock.as_ref(),
+        )
+        .await;
+        let outcome = result.as_ref().map(|_| ()).map_err(TlsError::clone);
+        *self.rate_limit.write().await = rate_limit_after(&outcome, self.clock.now());
         result
     }
 

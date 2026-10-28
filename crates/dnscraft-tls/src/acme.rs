@@ -16,8 +16,10 @@ use instant_acme::{
     RevocationReason as AcmeRevocationReason, RevocationRequest,
 };
 use rcgen::{
-    CertificateParams, DistinguishedName, KeyPair, PKCS_ECDSA_P256_SHA256, PKCS_ECDSA_P384_SHA384,
+    CertificateParams, CertificateSigningRequestParams, DistinguishedName, Issuer, KeyPair,
+    PKCS_ECDSA_P256_SHA256, PKCS_ECDSA_P384_SHA384, SanType,
 };
+use rustls_pki_types::CertificateSigningRequestDer;
 use tracing::{debug, info, warn};
 
 use crate::acme_http::ReqwestHttpClient;
@@ -221,6 +223,15 @@ pub trait AcmeOrder: Send + Sync {
     /// After TXT is visible: set challenges ready, poll, finalize with a fresh
     /// ECDSA key of `key_type`, download the chain. Returns `(chain_pem, key_pem)`.
     async fn finish_dns01_order(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), TlsError>;
+
+    /// Like [`Self::finish_dns01_order`], but finalizes with the caller's
+    /// DER-encoded CSR. The private key never reaches this crate; returns the
+    /// chain PEM.
+    async fn finish_dns01_order_csr(&self, _csr_der: &[u8]) -> Result<Vec<u8>, TlsError> {
+        Err(TlsError::AcmeOrder {
+            message: "CSR finalization is not supported by this backend".into(),
+        })
+    }
 
     /// Drops any in-flight order without finalizing.
     async fn abort_order(&self);
@@ -557,68 +568,13 @@ impl AcmeOrder for InstantAcme {
     }
 
     async fn finish_dns01_order(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), TlsError> {
-        let result = async {
-            let mut order = self
-                .pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-                .ok_or_else(|| TlsError::AcmeOrderPending {
-                    message: "no pending order".into(),
-                })?;
+        self.finish_pending(key_type, None).await
+    }
 
-            // Mark every DNS-01 challenge ready.
-            {
-                let mut authorizations = order.authorizations();
-                while let Some(result) = authorizations.next().await {
-                    let mut authz = result
-                        .map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
-                    if authz.status == AuthorizationStatus::Valid {
-                        continue;
-                    }
-                    let mut challenge = authz.challenge(ChallengeType::Dns01).ok_or_else(|| {
-                        TlsError::AcmeChallenge {
-                            message: "no dns-01 challenge to set ready".into(),
-                        }
-                    })?;
-                    challenge
-                        .set_ready()
-                        .await
-                        .map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
-                }
-            }
-
-            let status = order
-                .poll_ready(&RetryPolicy::default())
-                .await
-                .map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
-            if status != OrderStatus::Ready {
-                return Err(TlsError::AcmeChallenge {
-                    message: format!("order not ready: {status:?}"),
-                });
-            }
-
-            finalize_with_key_type(&mut order, key_type, &self.http).await
-        }
-        .await;
-        {
-            let mut progress = self
-                .progress
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match &result {
-                Ok(_) => {
-                    progress.state = "valid".into();
-                    progress.next_attempt_at = None;
-                    progress.last_error = None;
-                    for challenge in &mut progress.challenges {
-                        challenge.status = "valid".into();
-                    }
-                }
-                Err(e) => mark_failed(&mut progress, e),
-            }
-        }
-        result
+    async fn finish_dns01_order_csr(&self, csr_der: &[u8]) -> Result<Vec<u8>, TlsError> {
+        self.finish_pending(KeyType::EcdsaP256, Some(csr_der))
+            .await
+            .map(|(chain, _key)| chain)
     }
 
     fn order_status(&self) -> AcmeOrderStatus {
@@ -693,9 +649,113 @@ impl AcmeOrder for InstantAcme {
     }
 }
 
-async fn finalize_with_key_type(
+impl InstantAcme {
+    /// Marks the pending order's challenges ready, then finalizes it with a
+    /// generated key (`csr_der == None`, returns `(chain, key)`) or with the
+    /// caller's CSR (returns `(chain, empty)`). Updates order progress.
+    async fn finish_pending(
+        &self,
+        key_type: KeyType,
+        csr_der: Option<&[u8]>,
+    ) -> Result<(Vec<u8>, Vec<u8>), TlsError> {
+        let result = async {
+            let mut order = self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .ok_or_else(|| TlsError::AcmeOrderPending {
+                    message: "no pending order".into(),
+                })?;
+
+            // Mark every DNS-01 challenge ready.
+            {
+                let mut authorizations = order.authorizations();
+                while let Some(result) = authorizations.next().await {
+                    let mut authz = result
+                        .map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
+                    if authz.status == AuthorizationStatus::Valid {
+                        continue;
+                    }
+                    let mut challenge = authz.challenge(ChallengeType::Dns01).ok_or_else(|| {
+                        TlsError::AcmeChallenge {
+                            message: "no dns-01 challenge to set ready".into(),
+                        }
+                    })?;
+                    challenge
+                        .set_ready()
+                        .await
+                        .map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
+                }
+            }
+
+            let status = order
+                .poll_ready(&RetryPolicy::default())
+                .await
+                .map_err(|e| map_acme_challenge(e, self.http.take_last_retry_after()))?;
+            if status != OrderStatus::Ready {
+                return Err(TlsError::AcmeChallenge {
+                    message: format!("order not ready: {status:?}"),
+                });
+            }
+
+            finalize(&mut order, key_type, csr_der, &self.http).await
+        }
+        .await;
+        {
+            let mut progress = self
+                .progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &result {
+                Ok(_) => {
+                    progress.state = "valid".into();
+                    progress.next_attempt_at = None;
+                    progress.last_error = None;
+                    for challenge in &mut progress.challenges {
+                        challenge.status = "valid".into();
+                    }
+                }
+                Err(e) => mark_failed(&mut progress, e),
+            }
+        }
+        result
+    }
+}
+
+/// DNS names (lowercase) a PKCS #10 request asks for. Rejects a request whose
+/// signature does not verify (proof of possession), a non-DNS SAN, or none.
+pub(crate) fn csr_dns_names(csr_der: &[u8]) -> Result<Vec<String>, TlsError> {
+    let der = CertificateSigningRequestDer::from(csr_der);
+    let csr = CertificateSigningRequestParams::from_der(&der).map_err(|e| TlsError::AcmeOrder {
+        message: format!("CSR: {e}"),
+    })?;
+    let mut names: Vec<String> = Vec::new();
+    for san in &csr.params.subject_alt_names {
+        let SanType::DnsName(name) = san else {
+            return Err(TlsError::AcmeOrder {
+                message: "CSR may request DNS names only".into(),
+            });
+        };
+        let name = name.to_string().to_ascii_lowercase();
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    if names.is_empty() {
+        return Err(TlsError::AcmeOrder {
+            message: "CSR requests no DNS name".into(),
+        });
+    }
+    Ok(names)
+}
+
+/// Finalizes `order` with the caller's CSR when given (empty key returned), or
+/// with a fresh key of `key_type`. Returns `(chain_pem, key_pem)`.
+async fn finalize(
     order: &mut Order,
     key_type: KeyType,
+    csr_der: Option<&[u8]>,
     http: &ReqwestHttpClient,
 ) -> Result<(Vec<u8>, Vec<u8>), TlsError> {
     let mut names = Vec::new();
@@ -708,6 +768,18 @@ async fn finalize_with_key_type(
                     .to_string(),
             );
         }
+    }
+
+    if let Some(der) = csr_der {
+        order
+            .finalize_csr(der)
+            .await
+            .map_err(|e| map_acme_order(e, http.take_last_retry_after()))?;
+        let chain = order
+            .poll_certificate(&RetryPolicy::default())
+            .await
+            .map_err(|e| map_acme_order(e, http.take_last_retry_after()))?;
+        return Ok((chain.into_bytes(), Vec::new()));
     }
 
     let alg = match key_type {
@@ -1047,44 +1119,13 @@ impl AcmeOrder for FakeAcmeDirectory {
     }
 
     async fn finish_dns01_order(&self, key_type: KeyType) -> Result<(Vec<u8>, Vec<u8>), TlsError> {
-        let pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .ok_or_else(|| TlsError::AcmeOrder {
-                message: "no pending fake order".into(),
-            })?;
+        self.finish_fake(key_type, None).await
+    }
 
-        let result = if self.fail_at == Some(FakeAcmeFail::Challenge) {
-            Err(TlsError::AcmeChallenge {
-                message: "fake challenge failure".into(),
-            })
-        } else if self.fail_at == Some(FakeAcmeFail::Finalize) {
-            Err(TlsError::AcmeOrder {
-                message: "fake finalize failure".into(),
-            })
-        } else {
-            mint_self_signed(&pending.identifiers, key_type)
-        };
-        {
-            let mut progress = self
-                .progress
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match &result {
-                Ok(_) => {
-                    progress.state = "valid".into();
-                    progress.next_attempt_at = None;
-                    progress.last_error = None;
-                    for challenge in &mut progress.challenges {
-                        challenge.status = "valid".into();
-                    }
-                }
-                Err(e) => mark_failed(&mut progress, e),
-            }
-        }
-        result
+    async fn finish_dns01_order_csr(&self, csr_der: &[u8]) -> Result<Vec<u8>, TlsError> {
+        self.finish_fake(KeyType::EcdsaP256, Some(csr_der))
+            .await
+            .map(|(chain, _key)| chain)
     }
 
     async fn abort_order(&self) {
@@ -1130,6 +1171,90 @@ impl AcmeOrder for FakeAcmeDirectory {
     ) -> Option<AriWindow> {
         self.ari_window
     }
+}
+
+impl FakeAcmeDirectory {
+    /// Shared finish: generated key (`None`) or the caller's CSR (`Some`).
+    async fn finish_fake(
+        &self,
+        key_type: KeyType,
+        csr_der: Option<&[u8]>,
+    ) -> Result<(Vec<u8>, Vec<u8>), TlsError> {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .ok_or_else(|| TlsError::AcmeOrder {
+                message: "no pending fake order".into(),
+            })?;
+
+        let result = if self.fail_at == Some(FakeAcmeFail::Challenge) {
+            Err(TlsError::AcmeChallenge {
+                message: "fake challenge failure".into(),
+            })
+        } else if self.fail_at == Some(FakeAcmeFail::Finalize) {
+            Err(TlsError::AcmeOrder {
+                message: "fake finalize failure".into(),
+            })
+        } else if let Some(der) = csr_der {
+            mint_for_csr(&pending.identifiers, der).map(|chain| (chain, Vec::new()))
+        } else {
+            mint_self_signed(&pending.identifiers, key_type)
+        };
+        {
+            let mut progress = self
+                .progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &result {
+                Ok(_) => {
+                    progress.state = "valid".into();
+                    progress.next_attempt_at = None;
+                    progress.last_error = None;
+                    for challenge in &mut progress.challenges {
+                        challenge.status = "valid".into();
+                    }
+                }
+                Err(e) => mark_failed(&mut progress, e),
+            }
+        }
+        result
+    }
+}
+
+/// Signs the caller's CSR like a CA would: the CSR names must equal the order's
+/// identifiers, and the leaf carries the CSR's public key (no key is generated).
+fn mint_for_csr(identifiers: &[String], csr_der: &[u8]) -> Result<Vec<u8>, TlsError> {
+    let mut names = csr_dns_names(csr_der)?;
+    let mut wanted = identifiers.to_vec();
+    names.sort();
+    wanted.sort();
+    if names != wanted {
+        return Err(TlsError::AcmeOrder {
+            message: "fake CA: CSR names differ from the order identifiers".into(),
+        });
+    }
+    let mut csr =
+        CertificateSigningRequestParams::from_der(&CertificateSigningRequestDer::from(csr_der))
+            .map_err(|e| TlsError::AcmeOrder {
+                message: format!("fake CSR: {e}"),
+            })?;
+    csr.params.use_authority_key_identifier_extension = true;
+    let ca_key =
+        KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(|e| TlsError::AcmeOrder {
+            message: format!("fake CA key: {e}"),
+        })?;
+    let ca = CertificateParams::new(vec!["dnscraft fake ca".to_owned()]).map_err(|e| {
+        TlsError::AcmeOrder {
+            message: format!("fake CA params: {e}"),
+        }
+    })?;
+    let issuer = Issuer::new(ca, ca_key);
+    let cert = csr.signed_by(&issuer).map_err(|e| TlsError::AcmeOrder {
+        message: format!("fake sign: {e}"),
+    })?;
+    Ok(cert.pem().into_bytes())
 }
 
 fn mint_self_signed(
