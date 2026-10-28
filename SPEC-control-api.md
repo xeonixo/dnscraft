@@ -667,17 +667,22 @@ any module `apply_config` call.
 A config save is an all-or-nothing operation:
 
 1. Validate full configuration and calculate a new generation/version.
-2. Persist the new version in a SQLite transaction.
-3. Apply to modules sequentially, starting with leaf dependencies:
+2. Apply to modules sequentially, starting with leaf dependencies:
    - `filtering`
    - `clients`
    - `policy`
    - `listeners`
    - `tls` if needed
-4. If any module `apply_config` returns an error, roll back previously applied
-   modules by re-applying the previous snapshot, mark the version as failed,
-   and return an error with the stable module error code.
-5. On success, expose the new config version.
+3. If any module `apply_config` returns an error, roll back previously applied
+   modules by re-applying the previous snapshot and return an error with the
+   stable module error code. No version row is written.
+4. On success, persist the new version (SQLite transaction with its audit row)
+   and expose it.
+
+Persisting after apply is deliberate: the schema has no failed-status column,
+so a version that did not apply can never become current (`MAX(version)` is
+the current pointer). A failed attempt therefore leaves no trace in
+`/config/versions`; the audit row records the failure.
 
 `PolicyEngine`, `ClientEngine`, `ListenerSet` and TLS already use `Arc`
 snapshots, so hot reload happens without blocking DNS queries.
