@@ -466,6 +466,7 @@ impl TlsEngine {
     pub async fn rate_limit_status(&self) -> RateLimitStatus;
     pub async fn record_inventory(&self) -> Result<Vec<InventoryRecord>, TlsError>;
     pub async fn dyndns_audit(&self) -> Vec<DynDnsAuditEntry>;
+    pub async fn metrics(&self) -> TlsMetrics;
 }
 ```
 
@@ -508,8 +509,11 @@ kind = "cloudflare"                    # "cloudflare" | "manual" | "none"
 zone_id = ""
 # Additional zones, resolved by longest suffix match.
 # zones = [{ name = "sub.example.com", zone_id = "..." }]
-# Operator-published TXT for kind = "manual":
-# manual_txt = { name = "_acme-challenge.dns.example.com", value = "..." }
+# Operator-published TXT for kind = "manual" (one entry per DNS-01 value; apex + wildcard need two):
+# manual_txt = [
+#   { name = "_acme-challenge.dns.example.com", value = "..." },
+#   { name = "_acme-challenge.dns.example.com", value = "..." },
+# ]
 
 [tls.dyndns]
 enabled = true

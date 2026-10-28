@@ -2,6 +2,17 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — tls GT1–GT3 verified + task ticks
+
+- **GT1:** `manual_txt` is a list (one row per DNS-01 value); `publish_manual` checks all challenge
+  TXTs against it — regression `manual_provider_succeeds_with_both_published_values` (Fake ACME).
+- **GT2:** `mark_failed` sets `next_attempt_at` + clears stale challenges on early order errors —
+  regression `early_order_failure_updates_progress_and_next_attempt`.
+- **GT3:** `apply_config` / `open` install bootstrap `config.manual` only when the store has no cert
+  and state is not revoked — regression `apply_config_does_not_revert_upload_or_unrevoke`.
+- **Docs:** SPEC TOML example for `manual_txt` array; `TlsEngine::metrics` in interface sketch.
+- **Gates:** `cargo fmt/clippy/test -p dnscraft-tls --locked` green (171 tests, 2 ignored Pebble).
+
 ## 2026-10-28 — assembler AS13: Docker delivery
 
 - **Done (AS13):** Multi-stage `Dockerfile` (Debian bookworm-slim, glibc, in-image `HEALTHCHECK` → `/healthz` on `127.0.0.1:8080`), optional `Dockerfile.musl` (Alpine builder → static musl on `scratch`), `compose.yaml` smoke (volume `data_dir`, ports 5300/8080), `deploy/dnscraft.docker.toml`, `deploy/README.md` (buildx amd64/arm64, secrets table). Root README links deploy docs.
