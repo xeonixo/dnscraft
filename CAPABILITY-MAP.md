@@ -15,9 +15,9 @@ Status matches [tasks/progress.md](tasks/progress.md) "Current state".
 | `policy` | Query → profile by source subnet/IP: filter set, split-horizon answers | resolver, filtering | [SPEC-policy.md](SPEC-policy.md) | complete |
 | `listeners` | Do53 UDP/TCP, DoT, DoH (h2/h3), DoQ; multiple NICs/addresses; public listeners for registered Client IDs | policy, tls | [SPEC-listeners.md](SPEC-listeners.md) | complete |
 | `control-api` | REST API, configuration, query log (filterable by device), statistics, OIDC (Authentik) + local break-glass login, locale-neutral error codes | policy, clients | [SPEC-control-api.md](SPEC-control-api.md) | complete |
-| `web-ui` | TypeScript frontend, fully internationalized, embedded into the binary as static assets | control-api | [SPEC-web-ui.md](SPEC-web-ui.md) (draft) | pending |
+| `web-ui` | TypeScript frontend, fully internationalized, embedded into the binary as static assets (`web-ui` Cargo feature) | control-api | [SPEC-web-ui.md](SPEC-web-ui.md) | in progress (SPA + mock + rust-embed; release still copies `web/build` → `embed-web-ui/`) |
 | `mcp` | MCP server for AI assistants: query log, "why blocked?", test query, stats (viewer); temporary allow, rules, pause (admin); internal listener only, same tokens/roles/audit as the API | control-api | [SPEC-mcp.md](SPEC-mcp.md) | complete |
-| `cluster` | Master/sub-nodes: config sync, writes from any node (forwarded to master, offline fallback), keep serving without the master, log/stats aggregation on the master | control-api | [SPEC-cluster.md](SPEC-cluster.md) (draft) | implemented (awaiting control-api wiring) |
+| `cluster` | Master/sub-nodes: config sync, writes from any node (forwarded to master, offline fallback), keep serving without the master, log/stats aggregation on the master | control-api | [SPEC-cluster.md](SPEC-cluster.md) | complete (wired into the `dnscraft` binary) |
 
 ## Build order
 
@@ -32,7 +32,9 @@ resolver, filtering, clients, tls   (can run in parallel)
 ## Shared crates (not capabilities)
 
 - `dnscraft-proto`: DNS wire format and DNSSEC record types, used by every module that touches DNS messages. Built first (plan phase "wire format").
+- `dnscraft-common`: injectable `Clock`, `Secret` wrappers, duration/hash/net helpers shared across crates.
 - `dnscraft-testkit`: test-only helpers.
+- `dnscraft` (binary): TOML bootstrap and assembler that wires engines, control-api, optional MCP, and cluster.
 
 ## Decisions recorded at map level
 

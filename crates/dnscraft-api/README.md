@@ -3,14 +3,24 @@
 Control API for DNScraft: HTTP REST API, configuration persistence, query log,
 statistics, audit trail, and authentication (OIDC + local break-glass login + API
 tokens). This crate is the internal-only configuration boundary for the web UI
-and the MCP server.
+and the MCP server. The `dnscraft` binary assembles live engines and mounts this
+crate; see [`crates/dnscraft/README.md`](../dnscraft/README.md).
 
 Formal requirements: [`SPEC-control-api.md`](../../SPEC-control-api.md).
-Plan / task list: [`tasks/archive/todo-control-api.md`](../../tasks/archive/todo-control-api.md).
+Endpoint explorer: [`docs/API-REFERENCE.md`](../../docs/API-REFERENCE.md).
+Plan / task list (historical): [`tasks/archive/todo-control-api.md`](../../tasks/archive/todo-control-api.md).
 
 ## Status
 
-**A0–A14 complete.** The crate is feature-complete for Checkpoint F:
+**Checkpoint F (A0–A14) complete and owner-approved.** Later assembler work
+also lives here:
+
+- MCP: `McpBackend` adapter + `/mcp/v1` mount when enabled
+- Cluster: `ClusterRuntime` hooks (config sync, write relay, log ingest, TLS CSR)
+- Optional SPA: Cargo feature `web-ui` (`rust-embed` of `embed-web-ui/`)
+- Boot: `seed_if_empty` + `apply_stored_current` (offline catalog on restore)
+
+Original A0–A14 checklist (still accurate for the core API):
 
 - A0 crate skeleton, config model, stable error type
 - A1 SQLite storage, migrations, kv store, audit log
@@ -40,9 +50,12 @@ Plan / task list: [`tasks/archive/todo-control-api.md`](../../tasks/archive/todo
 - **Audit log**: every mutating action with actor, timestamp, and redacted
   before/after digests
 - **Authentication**: OIDC via Authentik, local break-glass login, API bearer
-  tokens with the four fixed scopes
-- **HTTP API**: REST endpoints under `/api/v1/` and `/mcp/v1` with
-  locale-neutral `area.reason` error codes
+  tokens with the four fixed scopes (`viewer` / `admin` / `mcp:read` / `mcp:write`)
+- **HTTP API**: REST under `/api/v1/`, optional MCP under `/mcp/v1`, health at
+  `/healthz` and `/readyz`, locale-neutral `area.reason` error codes
+- **Optional web UI**: with `--features web-ui`, non-API GET/HEAD paths serve
+  embedded static assets (SPA fallback). Copy a production `web/build` into
+  `embed-web-ui/` before release builds ([notes](../../tasks/w10-rust-embed-notes.md))
 
 This crate does **not** decide which DNS answers are produced — it calls
 `policy`, `clients`, `listeners`, `resolver` and `tls` APIs and persists their

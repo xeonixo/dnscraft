@@ -4,6 +4,9 @@ Container delivery for the [`dnscraft`](../crates/dnscraft/) binary. Sample
 config: [`dnscraft.example.toml`](dnscraft.example.toml) (loopback dev) and
 [`dnscraft.docker.toml`](dnscraft.docker.toml) (compose / image default).
 
+Project overview and non-Docker quick start: [root README](../README.md).
+Binary behaviour (control API, MCP, cluster): [`crates/dnscraft/README.md`](../crates/dnscraft/README.md).
+
 ## Quick smoke (compose)
 
 From the repository root:

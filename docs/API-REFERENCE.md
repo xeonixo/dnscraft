@@ -3,7 +3,8 @@
 Every API function DNScraft exposes, in one place. Covers the two surfaces the
 control plane offers: the **REST control API** (`/api/v1`, implemented in
 `crates/dnscraft-api`) and the **MCP tool API** (13 tools implemented in
-`crates/dnscraft-mcp`, to be mounted under `/mcp/v1`).
+`crates/dnscraft-mcp`, mounted under `/mcp/v1` when
+`[control_api.mcp] enabled = true`).
 
 Source of truth is the code, not this file: route assembly lives in
 [`crates/dnscraft-api/src/api/router.rs`](../crates/dnscraft-api/src/api/router.rs)
