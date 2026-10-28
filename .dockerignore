@@ -1,0 +1,12 @@
+/target
+**/.DS_Store
+.git
+.github
+web/
+.pnpm-store/
+**/node_modules/
+tasks/
+docs/design/
+fuzz/corpus/
+*.md
+!deploy/README.md

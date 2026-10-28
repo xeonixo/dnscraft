@@ -27,6 +27,19 @@ A lightweight, self-hosted, recursive DNS resolver for home networks — written
 cargo run -p dnscraft-resolver --example query -- example.com A
 ```
 
+## Docker (single-node smoke)
+
+Build and run with compose (DNS on port **5300**, control API on **8080**;
+persistence under `/var/lib/dnscraft`):
+
+```bash
+docker compose up --build
+curl -fsS http://127.0.0.1:8080/healthz
+```
+
+See [deploy/README.md](deploy/README.md) for image variants (glibc vs musl/scratch),
+multi-arch `buildx` commands, and runtime secrets.
+
 ## Workspace layout
 
 | Crate | Role | Module id |

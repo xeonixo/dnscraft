@@ -58,7 +58,7 @@
 - [x] **AS15** Binary version on `/status` via additive `AppState::with_version`.
 - [x] **AS16** Blocked-services catalog adapter, `with_db` + backup dir, hourly `run_backup_if_due`.
       `with_update_api_url` skipped (no mirror key in config). Smoke covers `/api/v1/backups` and `/filtering/services`.
-- [ ] **AS13** Delivery (gated on owner Q7): Dockerfile variants, compose, `HEALTHCHECK`, multi-arch
+- [x] **AS13** Delivery (owner Q7: in scope): Dockerfile variants, compose, `HEALTHCHECK`, multi-arch
       `linux/amd64`/`linux/arm64`, musl static build. Closes the delivery findings.
 
 ## Checkpoints
@@ -67,4 +67,4 @@
 - [x] Phase 1: smoke `build()` boots every engine (`crates/dnscraft/tests/smoke.rs::boots_every_engine_and_serves_the_control_api`); a second boot keeps the seeded config (`second_boot_keeps_the_seeded_config`).
 - [x] Phase 2: `PUT /config` round-trips through SQLite and applies to a live engine (`put_config_round_trips_and_applies_live`).
 - [x] Phase 3: `GET /healthz`/`/readyz` + `/mcp/v1` mount + `tools/list` respond (same smoke test).
-- [ ] Phase 4: `cargo deny` passes and `cargo tree -i aws-lc-rs|openssl-sys` is empty (verified 2026-10-28); docker build NOT done (AS13 gated on owner Q7).
+- [x] Phase 4: `cargo deny` passes and `cargo tree -i aws-lc-rs|openssl-sys` is empty (verified 2026-10-28); Docker delivery (AS13) — glibc default + musl/scratch variant, compose smoke.

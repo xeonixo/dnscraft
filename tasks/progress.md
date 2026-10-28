@@ -2,6 +2,12 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — assembler AS13: Docker delivery
+
+- **Done (AS13):** Multi-stage `Dockerfile` (Debian bookworm-slim, glibc, in-image `HEALTHCHECK` → `/healthz` on `127.0.0.1:8080`), optional `Dockerfile.musl` (Alpine builder → static musl on `scratch`), `compose.yaml` smoke (volume `data_dir`, ports 5300/8080), `deploy/dnscraft.docker.toml`, `deploy/README.md` (buildx amd64/arm64, secrets table). Root README links deploy docs.
+- **Choice:** glibc default — no musl toolchain in workspace/CI; musl documented as secondary image.
+- **Gates:** `docker build` not run here (Colima/docker daemon socket absent); Dockerfiles written for local verification.
+
 ## 2026-10-28 — assembler wave 3: cluster wiring, backups, services catalog (AS14–AS17)
 
 - **Done (AS14):** `[cluster]` is parsed into the binary `Config` (`deny_unknown_fields` kept) and validated before any

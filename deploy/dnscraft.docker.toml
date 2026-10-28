@@ -1,0 +1,36 @@
+# Single-node Docker smoke configuration (documentation addresses only).
+#
+# Used by the default image and docker compose. Mount a host directory on
+# /var/lib/dnscraft for persistence. Secrets (TLS, OIDC, UniFi, Cloudflare,
+# cluster join) are supplied via environment variables or mounted files — never
+# baked into the image.
+
+public_domain = "example.com"
+data_dir = "/var/lib/dnscraft"
+
+[log]
+queries = false
+
+[resolver]
+root_hints = ["192.0.2.53:53"]
+
+[[listeners]]
+id = "lan-udp"
+protocol = "udp53"
+address = "0.0.0.0:5300"
+
+[[listeners]]
+id = "lan-tcp"
+protocol = "tcp53"
+address = "0.0.0.0:5300"
+
+[control_api]
+bind = "127.0.0.1"
+port = 8080
+tls = false
+
+[control_api.mcp]
+enabled = false
+
+[clients.unifi]
+enabled = false

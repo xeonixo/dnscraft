@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1
+#
+# Experimental musl static binary on scratch (no shell, no curl).
+# Use orchestrator health checks (see compose.yaml) or the glibc Dockerfile
+# when you need an in-image HEALTHCHECK.
+#
+# Build with buildx (see deploy/README.md); TARGETARCH selects the musl triple.
+
+ARG RUST_VERSION=1.88
+
+FROM rust:${RUST_VERSION}-alpine AS builder
+
+RUN apk add --no-cache musl-dev
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock deny.toml ./
+COPY crates ./crates
+
+ARG TARGETARCH
+RUN case "${TARGETARCH}" in \
+        amd64) export MUSL_TARGET=x86_64-unknown-linux-musl ;; \
+        arm64) export MUSL_TARGET=aarch64-unknown-linux-musl ;; \
+        *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && rustup target add "${MUSL_TARGET}" \
+    && cargo build --release -p dnscraft --locked --target "${MUSL_TARGET}" \
+    && mv "target/${MUSL_TARGET}/release/dnscraft" /dnscraft
+
+FROM scratch
+
+COPY --from=builder /dnscraft /dnscraft
+
+EXPOSE 5300/udp 5300/tcp 8080/tcp
+
+ENTRYPOINT ["/dnscraft"]
+CMD ["/config/config.toml"]
