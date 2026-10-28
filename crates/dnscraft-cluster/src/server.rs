@@ -46,7 +46,7 @@ use serde_json::json;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Semaphore, mpsc, watch};
 use tokio_rustls::TlsAcceptor;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -66,6 +66,15 @@ use crate::sync::{
 pub(crate) const PROTOCOL_HEADER: &str = "x-cluster-protocol";
 
 const NDJSON: &str = "application/x-ndjson";
+
+/// Concurrent cluster connections (handshaking, idle or streaming) the master
+/// accepts. One sub-node holds about one stream plus short uploads, so this is
+/// far above a fleet's size. ponytail: one global cap; add a per-node cap and
+/// heartbeat/enroll rate limits when the binary wires `ClusterRuntime`.
+const MAX_CONNECTIONS: usize = 128;
+
+/// Time allowed for the mTLS handshake, so a silent peer cannot hold a slot.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Master hook that produces the current auth snapshot for a connecting node.
 ///
@@ -271,43 +280,61 @@ impl ClusterServer {
         });
         let router = router(Arc::clone(&state));
 
+        let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         let handle = tokio::spawn(async move {
             loop {
-                tokio::select! {
+                // Take a slot before accepting: connections beyond the cap wait
+                // in the kernel backlog instead of holding a socket and TLS state.
+                let permit = tokio::select! {
                     changed = shutdown_rx.changed() => {
                         if changed.is_err() || *shutdown_rx.borrow() {
                             break;
                         }
+                        continue;
                     }
-                    accepted = listener.accept() => {
-                        let Ok((stream, _peer)) = accepted else {
-                            continue;
-                        };
-                        let acceptor = acceptor.clone();
-                        let router = router.clone();
-                        tokio::spawn(async move {
-                            let Ok(tls) = acceptor.accept(stream).await else {
-                                // Handshake failure (for example a client
-                                // certificate signed by another CA). The
-                                // documented `cluster.transport.tls` code
-                                // cannot be delivered once the handshake is
-                                // rejected; there is no HTTP channel left.
-                                return;
-                            };
-                            let peer = tls
-                                .get_ref()
-                                .1
-                                .peer_certificates()
-                                .and_then(|certs| certs.first())
-                                .map(|der| PeerIdentity::from_der(der.as_ref()));
-                            let io = TokioIo::new(tls);
-                            let service = TowerToHyperService::new(router.layer(Extension(peer)));
-                            let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
-                                .serve_connection(io, service)
-                                .await;
-                        });
+                    permit = Arc::clone(&slots).acquire_owned() => match permit {
+                        Ok(permit) => permit,
+                        Err(_) => break,
+                    },
+                };
+                let accepted = tokio::select! {
+                    changed = shutdown_rx.changed() => {
+                        if changed.is_err() || *shutdown_rx.borrow() {
+                            break;
+                        }
+                        continue;
                     }
-                }
+                    accepted = listener.accept() => accepted,
+                };
+                let Ok((stream, _peer)) = accepted else {
+                    continue;
+                };
+                let acceptor = acceptor.clone();
+                let router = router.clone();
+                tokio::spawn(async move {
+                    // Held for the whole connection; dropping it frees the slot.
+                    let _permit = permit;
+                    let handshake =
+                        tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(stream));
+                    let Ok(Ok(tls)) = handshake.await else {
+                        // Handshake failure or timeout (for example a client
+                        // certificate signed by another CA). The documented
+                        // `cluster.transport.tls` code cannot be delivered once
+                        // the handshake is rejected; there is no HTTP channel left.
+                        return;
+                    };
+                    let peer = tls
+                        .get_ref()
+                        .1
+                        .peer_certificates()
+                        .and_then(|certs| certs.first())
+                        .map(|der| PeerIdentity::from_der(der.as_ref()));
+                    let io = TokioIo::new(tls);
+                    let service = TowerToHyperService::new(router.layer(Extension(peer)));
+                    let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                        .serve_connection(io, service)
+                        .await;
+                });
             }
         });
 

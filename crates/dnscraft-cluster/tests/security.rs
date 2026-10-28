@@ -1139,3 +1139,52 @@ async fn threat_per_node_quotas_bound_a_faulty_node() {
 
     master.shutdown().await;
 }
+
+/// Connections the master accepts at once (`MAX_CONNECTIONS` in `server.rs`).
+const CONNECTION_CAP: usize = 128;
+
+#[tokio::test]
+async fn threat_connection_flood_is_capped_and_slots_are_released() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    let dir = TestDir::new("conn-cap");
+    let master = start_master(
+        &dir,
+        clock(),
+        Arc::new(MasterExecutor::new(false)),
+        Arc::new(NoLogs),
+        QuotaConfig::default(),
+    )
+    .await;
+    let addr = master.server.addr();
+
+    // Silent peers occupy every slot: accepted, but waiting for a ClientHello.
+    let mut idle = Vec::with_capacity(CONNECTION_CAP);
+    for _ in 0..CONNECTION_CAP {
+        idle.push(TcpStream::connect(addr).await.unwrap());
+    }
+
+    // One more peer sends junk. Over the cap it is not accepted, so nothing
+    // answers: the read must not complete (a bounded wait proves the negative).
+    let mut extra = TcpStream::connect(addr).await.unwrap();
+    extra.write_all(b"GET / HTTP/1.1\r\n\r\n").await.unwrap();
+    let mut answer = Vec::new();
+    let blocked =
+        tokio::time::timeout(Duration::from_millis(300), extra.read_to_end(&mut answer)).await;
+    assert!(
+        blocked.is_err(),
+        "connection beyond the cap must not be served"
+    );
+
+    // Dropping one silent peer frees its slot; the queued peer is then accepted,
+    // fails the handshake on its junk (TLS alert) and is closed (EOF).
+    drop(idle.pop());
+    tokio::time::timeout(Duration::from_secs(10), extra.read_to_end(&mut answer))
+        .await
+        .expect("queued connection is served once a slot frees")
+        .unwrap();
+
+    drop(idle);
+    master.shutdown().await;
+}
