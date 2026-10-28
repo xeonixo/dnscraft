@@ -66,7 +66,7 @@ Records (the wire shapes):
 
 | Item | Purpose |
 |---|---|
-| `Hello`, `ConfigPush`, `ConfigAck`, `CertPush`, `AuthSnapshotPush`, `StreamRecord`, `StreamError` | downstream NDJSON stream records |
+| `Hello`, `ConfigPush`, `ConfigAck`, `TlsRenewed`, `AuthSnapshotPush`, `StreamRecord`, `StreamError` | downstream NDJSON stream records |
 | `LogBatch`, `LogRecord`, `LogAck` | log uploads and the contiguous acknowledgement |
 | `WriteRelay`, `RelayedActor`, `RelayResponse`, `RuntimeCommand` | forwarded writes and volatile runtime commands |
 | `NodeLag`, `canonical_snapshot_bytes`, `snapshot_digest` | lag tracking and the snapshot SHA-256 |
@@ -76,7 +76,8 @@ Traits implemented by the caller:
 | Trait | Implemented by | Contract |
 |---|---|---|
 | `ConfigApplier` | control-api (CL15) | apply a full snapshot atomically; rollback on failure |
-| `CertInstaller` | tls/assembler | install a pushed chain + key without restart; never order ACME while a master is known |
+| `CertInstaller` | tls/assembler | install a node's own chain with its local key without restart; never order ACME while a master is known |
+| `TlsCsrSigner` | tls/assembler (master) | sign a node's CSR through an ACME order; not yet implemented by `dnscraft-tls` (SPEC-cluster § TLS certificate distribution) |
 | `AuthSnapshotApplier` | control-api | apply the replicated token/session epoch |
 | `WriteExecutor` | control-api | re-check RBAC, run the canonical write handler, audit with `node_id` |
 | `RuntimeCommandApplier` | control-api | apply pause/resume and temporary allow locally |
@@ -206,7 +207,7 @@ unchanged (for example `control_api.config.version`,
 | `cluster.log_buffer_dropped` | Sub-node dropped buffered log rows (status count) |
 | `cluster.log_gap` | Master received a batch after a sequence gap (status count) |
 | `cluster.runtime_command.failed` | Node failed to apply a broadcast runtime command |
-| `cluster.cert_push.failed` | Sub-node failed to install a pushed certificate/key |
+| `cluster.cert_push.failed` | Sub-node failed to install the certificate it requested |
 | `cluster.clock_skew` | Node clock skew above the threshold (status warning) |
 
 With `role = "standalone"` the cluster routes do not exist and return

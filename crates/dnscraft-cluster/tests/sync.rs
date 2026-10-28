@@ -1,7 +1,8 @@
 //! Loopback proof of the config-sync slice: master push → digest check →
 //! applier → ack → zero lag, plus digest mismatch, apply failure, and
 //! reconnect reconciliation (stale node and master-wins). Also proves the
-//! certificate push (exact chain+key, failure code) and auth-snapshot push.
+//! TLS renewal notice (names only) and the per-node certificate request (the
+//! node's key never reaches the master), and the auth-snapshot push.
 //!
 //! Real sockets on `127.0.0.1:0`, generated CA/certs via `rcgen`, an injectable
 //! [`ManualClock`], a mock [`ConfigApplier`], and no wall-clock waits.
@@ -20,10 +21,11 @@ use dnscraft_cluster::{
     AuthSnapshotApplier, CertInstaller, ClusterCa, ClusterClient, ClusterError, ClusterServer,
     ClusterServerConfig, ClusterStore, ConfigApplier, ConfigPush, ListenConfig, LogIngest,
     LogRecord, NodeIdentity, PendingNodeIdentity, QuotaConfig, RelayResponse, RelayedActor,
-    TlsPaths, WriteExecutor,
+    StreamRecord, TlsCsrSigner, TlsPaths, WriteExecutor,
 };
 use dnscraft_common::clock::ManualClock;
 use dnscraft_common::secret::Secret;
+use rcgen::{CertificateSigningRequestParams, Issuer, KeyPair};
 use serde_json::{Value, json};
 
 const NODE_CERT_TTL: Duration = Duration::from_secs(90 * 24 * 3600);
@@ -362,29 +364,118 @@ async fn a_sub_node_ahead_of_the_master_is_overwritten() {
     master.server.shutdown().await;
 }
 
+/// Signs a node's CSR with the test cluster CA (the master's ACME stand-in).
+/// It sees only the CSR, never a key.
+struct CaSigner {
+    ca_dir: PathBuf,
+    seen: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl TlsCsrSigner for CaSigner {
+    async fn sign(&self, _node_id: &str, csr_pem: &str) -> Result<String, ClusterError> {
+        self.seen.lock().unwrap().push(csr_pem.to_owned());
+        let ca_pem = fs::read_to_string(self.ca_dir.join("ca.pem")).unwrap();
+        let ca_key =
+            KeyPair::from_pem(&fs::read_to_string(self.ca_dir.join("ca.key")).unwrap()).unwrap();
+        let issuer = Issuer::from_ca_cert_pem(&ca_pem, ca_key).unwrap();
+        let csr = CertificateSigningRequestParams::from_pem(csr_pem).unwrap();
+        let cert = csr.params.signed_by(&csr.public_key, &issuer).unwrap();
+        Ok(cert.pem())
+    }
+}
+
 #[tokio::test]
-async fn cert_push_reaches_the_installer_with_the_exact_chain_and_key() {
-    let master = start_master("cert-push").await;
+async fn tls_renewal_notice_carries_names_and_no_key() {
+    let master = start_master("tls-notice").await;
     let client = client_for(&master, "node-a").await;
     let mut stream = client.open_stream().await.unwrap();
-    let installer = MockCertInstaller::default();
 
-    let chain = "-----BEGIN CERTIFICATE-----\nleaf-certificate\n-----END CERTIFICATE-----\n";
-    let key = Secret::new("-----BEGIN PRIVATE KEY-----\nkey-material\n-----END PRIVATE KEY-----\n");
-    master.server.push_cert(chain, &key);
+    let names = vec!["example.net".to_owned(), "*.example.net".to_owned()];
+    master.server.notify_tls_renewed(&names);
 
-    assert!(
-        client
-            .apply_cert_next(&mut stream, &installer)
-            .await
-            .unwrap()
-    );
-    assert_eq!(
-        installer.seen(),
-        vec![(chain.to_owned(), key.expose().to_owned())]
-    );
+    let record = stream.next_record().await.unwrap();
+    let StreamRecord::TlsRenewed(notice) = &record else {
+        panic!("expected a tls_renewed notice, got {record:?}");
+    };
+    assert_eq!(notice.names, names);
+    assert!(!format!("{record:?}").contains("PRIVATE KEY"));
 
     drop(stream);
+    master.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn node_requests_its_own_certificate_and_the_master_never_sees_its_key() {
+    let master = start_master("tls-csr").await;
+    let client = client_for(&master, "node-a").await;
+    let signer = Arc::new(CaSigner {
+        ca_dir: master.dir.path().to_owned(),
+        seen: Mutex::new(Vec::new()),
+    });
+    master.server.attach_tls_signer(signer.clone());
+    let installer = MockCertInstaller::default();
+    let names = vec!["example.net".to_owned(), "*.example.net".to_owned()];
+
+    client
+        .request_tls_certificate(&names, &installer)
+        .await
+        .unwrap();
+    client
+        .request_tls_certificate(&names, &installer)
+        .await
+        .unwrap();
+
+    // The master signed two CSRs and each one carries no key material.
+    let csrs = signer.seen.lock().unwrap().clone();
+    assert_eq!(csrs.len(), 2);
+    assert!(csrs.iter().all(|csr| !csr.contains("PRIVATE KEY")));
+    assert_ne!(csrs[0], csrs[1], "each request uses a fresh node key");
+
+    // The node installs the signed chain with its own key, and a new key per request.
+    let seen = installer.seen();
+    assert_eq!(seen.len(), 2);
+    assert_ne!(seen[0].1, seen[1].1);
+    assert!(seen[0].0.starts_with("-----BEGIN CERTIFICATE-----"));
+    assert!(KeyPair::from_pem(&seen[0].1).is_ok());
+
+    master.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn tls_certificate_request_without_a_signer_is_refused() {
+    let master = start_master("tls-nosigner").await;
+    let client = client_for(&master, "node-a").await;
+    let installer = MockCertInstaller::default();
+
+    let error = client
+        .request_tls_certificate(&["example.net".to_owned()], &installer)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "cluster.internal");
+    assert!(installer.seen().is_empty());
+
+    master.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn revoked_node_cannot_request_a_tls_certificate() {
+    let master = start_master("tls-revoked").await;
+    let client = client_for(&master, "node-a").await;
+    master.server.attach_tls_signer(Arc::new(CaSigner {
+        ca_dir: master.dir.path().to_owned(),
+        seen: Mutex::new(Vec::new()),
+    }));
+    master.store.revoke("node-a").await.unwrap();
+    let installer = MockCertInstaller::default();
+
+    let error = client
+        .request_tls_certificate(&["example.net".to_owned()], &installer)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "cluster.node.revoked");
+    assert!(installer.seen().is_empty());
+
     master.server.shutdown().await;
 }
 
@@ -392,22 +483,19 @@ async fn cert_push_reaches_the_installer_with_the_exact_chain_and_key() {
 async fn failing_cert_install_is_reported_as_cert_push_failed() {
     let master = start_master("cert-fail").await;
     let client = client_for(&master, "node-a").await;
-    let mut stream = client.open_stream().await.unwrap();
+    master.server.attach_tls_signer(Arc::new(CaSigner {
+        ca_dir: master.dir.path().to_owned(),
+        seen: Mutex::new(Vec::new()),
+    }));
     let installer = MockCertInstaller::failing();
 
-    master.server.push_cert(
-        "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n",
-        &Secret::new("-----BEGIN PRIVATE KEY-----\nkey-material\n-----END PRIVATE KEY-----\n"),
-    );
-
     let error = client
-        .apply_cert_next(&mut stream, &installer)
+        .request_tls_certificate(&["example.net".to_owned()], &installer)
         .await
         .unwrap_err();
     assert_eq!(error.code(), "cluster.cert_push.failed");
     assert!(installer.seen().is_empty());
 
-    drop(stream);
     master.server.shutdown().await;
 }
 

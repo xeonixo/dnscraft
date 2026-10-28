@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime};
 
 use dnscraft_common::clock::{Clock, add_duration, wait_until};
 use dnscraft_common::secret::Secret;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{Notify, mpsc, watch};
 
@@ -168,42 +168,18 @@ impl fmt::Debug for ConfigPush {
     }
 }
 
-/// Master → sub-node certificate/key push (`cert_push`).
+/// Master → sub-node notice that the TLS certificate was renewed
+/// (`tls_renewed`).
 ///
-/// The chain is a public PEM bundle; the private key is a [`Secret`] that is
-/// redacted by [`Debug`] and transmitted only over the already-mTLS stream.
-/// `Secret`'s own [`Serialize`] redacts, so the wire form is written explicitly
-/// with the key for transport and rebuilt as a `Secret` on receipt.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CertPush {
+/// Carries only the names the certificate covers. It never carries key
+/// material: a node that receives it generates its own key and requests its
+/// own certificate (see [`crate::ClusterClient::request_tls_certificate`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TlsRenewed {
     /// Cluster protocol version.
     pub protocol: u32,
-    /// Certificate chain (PEM), leaf first.
-    pub chain_pem: String,
-    /// Matching private key (PEM), never logged or formatted.
-    #[serde(
-        serialize_with = "serialize_secret",
-        deserialize_with = "deserialize_secret"
-    )]
-    pub private_key: Secret,
-}
-
-impl fmt::Debug for CertPush {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CertPush")
-            .field("protocol", &self.protocol)
-            .field("chain_pem", &self.chain_pem)
-            .field("private_key", &"<redacted>")
-            .finish()
-    }
-}
-
-fn serialize_secret<S: Serializer>(secret: &Secret, serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(secret.expose())
-}
-
-fn deserialize_secret<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Secret, D::Error> {
-    Ok(Secret::new(String::deserialize(deserializer)?))
+    /// DNS names the renewed certificate covers.
+    pub names: Vec<String>,
 }
 
 /// Master → sub-node encrypted auth-state push (`auth_snapshot`).
@@ -246,7 +222,7 @@ pub struct StreamError {
 /// One NDJSON record exchanged over the cluster stream.
 ///
 /// Serialized as a single JSON object with a `type` tag
-/// (`hello`, `config_push`, `cert_push`, `auth_snapshot`, `ack`,
+/// (`hello`, `config_push`, `tls_renewed`, `auth_snapshot`, `ack`,
 /// `runtime_command`, `error`) followed by a newline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -255,8 +231,8 @@ pub enum StreamRecord {
     Hello(Hello),
     /// Full configuration snapshot.
     ConfigPush(ConfigPush),
-    /// Certificate chain + private key for hot reload.
-    CertPush(CertPush),
+    /// The master's TLS certificate was renewed; request a node-local one.
+    TlsRenewed(TlsRenewed),
     /// Encrypted auth-state snapshot.
     #[serde(rename = "auth_snapshot")]
     AuthSnapshotPush(AuthSnapshotPush),
@@ -667,22 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn cert_push_debug_and_auth_snapshot_never_leak_material() {
-        let key_material =
-            "-----BEGIN PRIVATE KEY-----\nsuper-secret-key\n-----END PRIVATE KEY-----";
-        let cert = CertPush {
-            protocol: crate::PROTOCOL_VERSION,
-            chain_pem: "chain".to_owned(),
-            private_key: Secret::new(key_material),
-        };
-        for rendered in [
-            format!("{cert:?}"),
-            format!("{:?}", StreamRecord::CertPush(cert.clone())),
-        ] {
-            assert!(!rendered.contains("super-secret-key"));
-            assert!(rendered.contains("<redacted>"));
-        }
-
+    fn auth_snapshot_debug_never_leaks_material() {
         let auth = AuthSnapshotPush {
             protocol: crate::PROTOCOL_VERSION,
             snapshot: json!({ "secret": "do-not-log" }),
@@ -697,22 +658,16 @@ mod tests {
     }
 
     #[test]
-    fn cert_push_round_trips_over_the_wire_with_the_key() {
-        let key_material =
-            "-----BEGIN PRIVATE KEY-----\nsuper-secret-key\n-----END PRIVATE KEY-----";
-        let record = StreamRecord::CertPush(CertPush {
+    fn tls_renewed_round_trips_without_key_material() {
+        let record = StreamRecord::TlsRenewed(TlsRenewed {
             protocol: crate::PROTOCOL_VERSION,
-            chain_pem: "chain".to_owned(),
-            private_key: Secret::new(key_material),
+            names: vec!["example.net".to_owned(), "*.example.net".to_owned()],
         });
         let line = serde_json::to_string(&record).unwrap();
-        assert!(line.starts_with(r#"{"type":"cert_push""#));
-        assert!(line.contains("super-secret-key"));
-        let StreamRecord::CertPush(decoded) = serde_json::from_str(&line).unwrap() else {
-            panic!("expected cert_push record");
-        };
-        assert_eq!(decoded.private_key.expose(), key_material);
-        assert_eq!(decoded.chain_pem, "chain");
+        assert!(line.starts_with(r#"{"type":"tls_renewed""#));
+        assert!(!line.contains("PRIVATE KEY"));
+        let decoded: StreamRecord = serde_json::from_str(&line).unwrap();
+        assert_eq!(decoded, record);
 
         let auth = StreamRecord::AuthSnapshotPush(AuthSnapshotPush {
             protocol: crate::PROTOCOL_VERSION,

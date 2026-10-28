@@ -12,6 +12,8 @@ use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, SystemTime};
 
 use dnscraft_common::clock::{Clock, add_duration, wait_until};
+use dnscraft_common::secret::Secret;
+use rcgen::{CertificateParams, DistinguishedName, KeyPair, PKCS_ECDSA_P256_SHA256};
 use reqwest::Client;
 use rustls::RootCertStore;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -28,10 +30,12 @@ use crate::error::ClusterError;
 use crate::identity::NodeIdentity;
 use crate::log::{LogAck, LogBatch};
 use crate::relay::{RelayResponse, RuntimeCommand, RuntimeCommandApplier, WriteRelay};
-use crate::server::{HeartbeatRequest, HeartbeatResponse, PROTOCOL_HEADER, rfc3339};
+use crate::server::{
+    HeartbeatRequest, HeartbeatResponse, PROTOCOL_HEADER, TlsCsrRequest, TlsCsrResponse, rfc3339,
+};
 use crate::sync::{
-    AuthSnapshotApplier, AuthSnapshotPush, CertInstaller, CertPush, ConfigAck, ConfigApplier,
-    ConfigPush, Hello, StreamError, StreamRecord,
+    AuthSnapshotApplier, AuthSnapshotPush, CertInstaller, ConfigAck, ConfigApplier, ConfigPush,
+    Hello, StreamError, StreamRecord,
 };
 
 const ENROLL_PATH: &str = "/cluster/v1/enroll";
@@ -41,6 +45,7 @@ const ACK_PATH: &str = "/cluster/v1/ack";
 const LOGS_PATH: &str = "/cluster/v1/logs";
 const RELAY_PATH: &str = "/cluster/v1/writes";
 const RENEW_PATH: &str = "/cluster/v1/renew";
+const TLS_CERT_PATH: &str = "/cluster/v1/tls/certificate";
 const NDJSON: &str = "application/x-ndjson";
 
 /// A sub-node's HTTP/2 mTLS client for the master's cluster listener.
@@ -322,48 +327,6 @@ impl ClusterClient {
             })
     }
 
-    /// Reads one stream record; installs a pushed certificate.
-    ///
-    /// Returns `true` when a `cert_push` was handled, `false` for any other
-    /// record. The key is handed to the installer by reference and never
-    /// formatted or logged here.
-    pub async fn apply_cert_next(
-        &self,
-        stream: &mut ClusterStream,
-        installer: &dyn CertInstaller,
-    ) -> Result<bool, ClusterError> {
-        match stream.next_record().await? {
-            StreamRecord::CertPush(push) => {
-                self.apply_cert(&push, installer).await?;
-                Ok(true)
-            }
-            StreamRecord::Error { error } => Err(map_wire_error(&error)),
-            _ => Ok(false),
-        }
-    }
-
-    /// Installs one pushed certificate/key through `installer`.
-    ///
-    /// Any installer failure is reported as `cluster.cert_push.failed`.
-    pub async fn apply_cert(
-        &self,
-        push: &CertPush,
-        installer: &dyn CertInstaller,
-    ) -> Result<(), ClusterError> {
-        if push.protocol != PROTOCOL_VERSION {
-            return Err(ClusterError::ProtocolVersion);
-        }
-        installer
-            .install(&push.chain_pem, &push.private_key)
-            .await
-            .map_err(|error| match error {
-                ClusterError::CertPushFailed { .. } => error,
-                other => ClusterError::CertPushFailed {
-                    message: other.to_string(),
-                },
-            })
-    }
-
     /// Reads one stream record; applies a pushed auth snapshot.
     ///
     /// Returns `true` when an `auth_snapshot` was applied, `false` for any
@@ -394,6 +357,62 @@ impl ClusterClient {
             return Err(ClusterError::ProtocolVersion);
         }
         applier.apply(&push.snapshot).await
+    }
+
+    /// Requests this node's own TLS certificate for `names` and installs it.
+    ///
+    /// A key pair is generated on this node and only its CSR is sent. The
+    /// master answers with the chain, and `installer` receives that chain with
+    /// the local key. The key never reaches the master or the wire.
+    pub async fn request_tls_certificate(
+        &self,
+        names: &[String],
+        installer: &dyn CertInstaller,
+    ) -> Result<(), ClusterError> {
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(|error| {
+            ClusterError::Internal {
+                message: format!("TLS key generation: {error}"),
+            }
+        })?;
+        let mut params =
+            CertificateParams::new(names.to_vec()).map_err(|error| ClusterError::Internal {
+                message: format!("TLS CSR params: {error}"),
+            })?;
+        params.distinguished_name = DistinguishedName::new();
+        let csr_pem = params
+            .serialize_request(&key)
+            .map_err(|error| ClusterError::Internal {
+                message: format!("TLS CSR generation: {error}"),
+            })?
+            .pem()
+            .map_err(|error| ClusterError::Internal {
+                message: format!("TLS CSR encoding: {error}"),
+            })?;
+        let body = serde_json::to_vec(&TlsCsrRequest {
+            protocol: PROTOCOL_VERSION,
+            csr_pem,
+        })
+        .map_err(|error| ClusterError::Internal {
+            message: format!("encode TLS CSR request: {error}"),
+        })?;
+        let response = self
+            .http()
+            .post(format!("{}{TLS_CERT_PATH}", self.base_url))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(master_unavailable)?;
+        let issued: TlsCsrResponse = json_body(ensure_success(response).await?).await?;
+        installer
+            .install(&issued.chain_pem, &Secret::new(key.serialize_pem()))
+            .await
+            .map_err(|error| match error {
+                ClusterError::CertPushFailed { .. } => error,
+                other => ClusterError::CertPushFailed {
+                    message: other.to_string(),
+                },
+            })
     }
 
     async fn post_ack(&self, applied_version: i64) -> Result<(), ClusterError> {

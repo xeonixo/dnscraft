@@ -2245,6 +2245,39 @@ async fn master_ingest_deduplicates_and_the_outbox_resumes_from_the_cursor() {
 }
 
 #[tokio::test]
+async fn expired_unacked_outbox_rows_are_pruned_and_the_gap_is_reported() {
+    let db = Db::open_in_memory(Arc::new(ApiClock::new(at(NOW))))
+        .await
+        .unwrap();
+    let log = Arc::new(QueryLog::new(
+        db,
+        dnscraft_api::QueryLogConfig::default(),
+        "node-b",
+    ));
+    // Rows 1 and 2 are older than the cutoff; row 3 is inside the retention window.
+    let ingest = QueryLogIngest::new(Arc::clone(&log));
+    let batch = vec![
+        remote_record("r1", 1),
+        remote_record("r2", 2),
+        remote_record("r3", 3),
+    ];
+    assert_eq!(ingest.ingest("node-b", 1, 3, &batch).await.unwrap(), 3);
+
+    let outbox = QueryLogOutbox::new(Arc::clone(&log));
+    let cutoff = SystemTime::UNIX_EPOCH + Duration::from_secs(NOW) + Duration::from_micros(3);
+    assert_eq!(outbox.prune(cutoff).await.unwrap(), 2);
+
+    // The pruned prefix is gone; sending resumes from the oldest kept row.
+    assert_eq!(outbox.next_unacked_seq().await.unwrap(), 3);
+    let rows = outbox.fetch_batch(3, 10).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, "r3");
+
+    // Nothing else is old enough: a second prune drops nothing.
+    assert_eq!(outbox.prune(cutoff).await.unwrap(), 0);
+}
+
+#[tokio::test]
 async fn master_ingest_is_per_node_and_acks_only_contiguously() {
     let db = Db::open_in_memory(Arc::new(ApiClock::new(at(NOW))))
         .await

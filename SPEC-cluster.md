@@ -160,7 +160,8 @@ identity, never an authorization subject.
 - HTTP/2 over the TLS connection. Downstream pushes are the response body of a
   long-lived `GET /cluster/v1/stream` (NDJSON records, one JSON object per line);
   upstream messages are ordinary `POST`s on the same connection (`/cluster/v1/logs`,
-  `/cluster/v1/writes`, `/cluster/v1/heartbeat`, `/cluster/v1/renew`). No custom framing or webhook
+  `/cluster/v1/writes`, `/cluster/v1/heartbeat`, `/cluster/v1/renew`,
+  `/cluster/v1/tls/certificate`). No custom framing or webhook
   callbacks.
 - Cluster protocol version is negotiated in the first stream message; a version
   mismatch fails the session with `cluster.protocol.version` and the sub-node
@@ -243,7 +244,8 @@ still replicated so any node can adopt a view without a per-node diff.
   maintenance tick (heartbeat, then certificate renewal when due);
   `master_timeout` bounds each connect and the relay retry window;
   `reconnect_backoff`/`reconnect_backoff_max` shape the reconnect and relay
-  retry loops. Offline-queue replay keeps its built-in backoff.
+  retry loops, and offline-queue replay uses the same backoff for 5xx and
+  transport retries.
 - The master tracks, per node, when its oldest unacknowledged push was sent. A
   node still unacknowledged after `config_apply_timeout` is **degraded**: its
   heartbeat response carries `cluster.config.stale`, and the master status
@@ -261,27 +263,40 @@ write.
 
 ### TLS certificate distribution
 
-- **Open question (owner decision): per-node key exposure.** `CertPush` carries
-  the private key of the shared wildcard certificate to every connected node,
-  and a revoked node keeps the key it already holds. The cluster mTLS identity
-  is separate (node certificate and key on each node), so a `CertPush` never
-  affects a node's cluster membership. Options:
-  - **A. Keep the shared key, rotate on revoke.** On revoking a node the master
-    re-orders the wildcard certificate (new key) and pushes it to the remaining
-    nodes. No protocol change; costs one ACME order per revocation and leaves a
-    window until the rotation completes.
-  - **B. Per-node CSR relay (recommended).** Each sub-node generates its own
-    key and sends a CSR over mTLS; the master submits the CSR to the ACME order
-    and returns the chain. The key never leaves the node, and revocation removes
-    the node's own TLS credential. Costs one order per node and needs SPEC-tls
-    to accept an external CSR and a per-node certificate.
-  - **C. Sub-node orders its own certificate.** Rejected: it gives every node
-    DNS credentials and breaks "sub-nodes never order ACME certificates".
-  Until the owner decides, `push_cert` stays latent (no production caller).
-- Only the master obtains/renews ACME certificates (SPEC-tls.md). After a
-  successful renewal the master pushes `CertPush { chain, private_key }` over
-  the mTLS stream; the sub-node installs it through the `tls` module's hot-reload
-  path. Key material is never logged, exported, or written to audit.
+**Decided (owner, wave 2): per-node CSR relay (option B). The shared wildcard
+private key is never sent to a node.** The master is the only ACME client; a
+sub-node obtains its own TLS certificate for the same names.
+
+- After a successful master renewal the master sends `TlsRenewed { names }`
+  (`tls_renewed` record) over the mTLS stream. It carries names only, never key
+  material.
+- On that notice a sub-node generates a fresh ECDSA P-256 key locally, builds a
+  CSR for `names`, and posts `TlsCsrRequest { protocol, csr_pem }` to
+  `POST /cluster/v1/tls/certificate`. The request is authenticated by the node
+  certificate, so a revoked node is refused (`cluster.node.revoked`).
+- The master passes the CSR to its `TlsCsrSigner`, which finalizes an ACME order
+  with that CSR and returns the chain (`TlsCsrResponse { chain_pem }`). The
+  signer checks that the CSR names only the names the master may issue for. The
+  key stays on the node; the master never receives it.
+- The sub-node installs the chain with its local key through the `tls` module's
+  hot-reload path (`CertInstaller`). The request runs in the background, so
+  config pushes on the stream are not held up.
+- Revocation needs no key rotation: a revoked node cannot request certificates,
+  and the one it holds expires on its own schedule.
+- **Cost:** one ACME order per node per renewal (ACME rate limits apply; the
+  fleet size bounds the number of orders).
+- **Not yet available:** the `TlsCsrSigner` implementation. `dnscraft-tls`
+  generates the key inside `finish_dns01_order` and has no path that finalizes
+  with an external CSR, so a master without a signer answers
+  `cluster.internal` (`no TLS certificate signer is attached`). The TLS module
+  must add that path (SPEC-tls.md) before the feature is live. Until then no
+  node receives a certificate from the cluster.
+- Rejected alternatives: keeping the shared key and rotating on revoke (every
+  node still holds the wildcard key and rotation costs an order per revocation);
+  letting each sub-node order its own certificate (gives every node DNS
+  credentials and breaks "sub-nodes never order ACME certificates").
+- Only the master obtains/renews ACME certificates (SPEC-tls.md). Key material is
+  never logged, exported, or written to audit.
 - While a sub-node knows a master exists (`cluster_master_present` state) it
   never starts an ACME order. If the master is unreachable, the sub-node keeps
   the last certificate; if that certificate expires, encrypted listeners fail
@@ -416,9 +431,11 @@ logs are aggregated on the master only; sub-nodes keep a short local buffer
   record `id`. Either both exist or neither does; a crash cannot silently drop a
   loggable query.
 - The buffer keeps `cluster.log.buffer_retention` (default 24 h, range 1 h–7 d).
-  Oldest rows are dropped when either the time window or the row cap is hit,
-  incrementing `cluster.log_buffer_dropped`. The buffer must not exceed the
-  master's `control_api.query_log.retention_days`.
+  Unacknowledged rows older than that are detached from the outbox (the query rows
+  stay local), at most once a minute, also while the master is unreachable, and
+  counted in `cluster.log_buffer_dropped`. The master then records the range as a
+  gap on backfill. A row-count cap is not configured in v1. The buffer must not
+  exceed the master's `control_api.query_log.retention_days`.
 - `seq` is allocated on insert, so local ordering equals query order.
 
 ### Streaming
@@ -629,7 +646,7 @@ control-api. Codes owned by other modules are forwarded unchanged (for example
 | `cluster.log_buffer_dropped` | Sub-node dropped buffered log rows (informational/status count) |
 | `cluster.log_gap` | Master received a batch after a sequence gap (informational/status count) |
 | `cluster.runtime_command.failed` | Node failed to apply a broadcast runtime command |
-| `cluster.cert_push.failed` | Sub-node failed to install a pushed certificate/key |
+| `cluster.cert_push.failed` | Sub-node failed to install the certificate it requested (chain with its local key) |
 | `cluster.clock_skew` | Node clock skew above the threshold (status warning) |
 
 When cluster is disabled (`role = "standalone"`), cluster routes do not exist

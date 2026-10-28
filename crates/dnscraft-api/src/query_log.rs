@@ -732,6 +732,32 @@ impl QueryLog {
             .await
     }
 
+    /// Detaches unacknowledged outbox rows recorded at or before `cutoff_us`
+    /// (microseconds since the epoch) from the outbox, for the sub-node's
+    /// `buffer_retention`. The rows stay in the local query log; only their
+    /// `seq` is cleared, so [`Self::next_seq`] skips them and the gap is
+    /// reported. Returns how many outbox rows were detached.
+    pub async fn prune_outbox_before(&self, cutoff_us: i64) -> Result<u64, ControlApiError> {
+        let node_id = self.node_id.clone();
+        self.db
+            .transaction(move |conn| {
+                let acked = read_counter(conn, &outbox_key(ACKED_SEQ_PREFIX, &node_id), 0)?;
+                // Everything up to the newest expired unacknowledged row goes,
+                // so the outbox keeps a contiguous tail.
+                let changed = conn
+                    .execute(
+                        "UPDATE query_log SET seq = NULL
+                         WHERE seq > ?1
+                           AND seq <= (SELECT MAX(seq) FROM query_log
+                                       WHERE seq > ?1 AND time < ?2)",
+                        params![acked, cutoff_us],
+                    )
+                    .map_err(db_err)?;
+                Ok(u64::try_from(changed).unwrap_or(u64::MAX))
+            })
+            .await
+    }
+
     /// Marks every record up to `seq` as acknowledged and returns the new
     /// contiguous cursor.
     ///

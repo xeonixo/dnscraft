@@ -204,6 +204,9 @@ pub struct OfflineWriteQueue {
     store: ClusterStore,
     config: OfflineWritesConfig,
     validator: Option<Arc<dyn ActorValidator>>,
+    /// Retry backoff for 5xx and transport failures during replay
+    /// (`[cluster.timing] reconnect_backoff` and `reconnect_backoff_max`).
+    backoff: (Duration, Duration),
 }
 
 impl OfflineWriteQueue {
@@ -213,7 +216,14 @@ impl OfflineWriteQueue {
             store,
             config,
             validator: None,
+            backoff: (DEFAULT_RECONNECT_BACKOFF, DEFAULT_RECONNECT_BACKOFF_MAX),
         }
+    }
+
+    /// Sets the replay retry backoff from `[cluster.timing]`.
+    pub fn with_backoff(mut self, initial: Duration, max: Duration) -> Self {
+        self.backoff = (initial, max);
+        self
     }
 
     /// Re-checks queued actors against `validator` before every replay.
@@ -466,7 +476,7 @@ impl OfflineWriteQueue {
         let clock = self.store.clock();
         let deadline = Self::deadline(row.enqueued_at, self.config.max_age);
         let wake = tokio::sync::Notify::new();
-        let mut backoff = Backoff::new(DEFAULT_RECONNECT_BACKOFF, DEFAULT_RECONNECT_BACKOFF_MAX);
+        let mut backoff = Backoff::new(self.backoff.0, self.backoff.1);
 
         loop {
             let started = clock.now();

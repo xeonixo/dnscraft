@@ -21,10 +21,10 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use dnscraft_cluster::{
-    AuthSnapshotPush, CertPush, ClusterCa, ClusterClient, ClusterConfig, ClusterError,
-    ClusterServer, ClusterServerConfig, ClusterStore, ConfigPush, EnrollRequest, ListenConfig,
-    LogBatch, LogIngest, LogRecord, NodeIdentity, PROTOCOL_VERSION, PendingNodeIdentity,
-    QuotaConfig, RelayResponse, RelayedActor, StreamRecord, TlsPaths, WriteExecutor, WriteRelay,
+    AuthSnapshotPush, ClusterCa, ClusterClient, ClusterConfig, ClusterError, ClusterServer,
+    ClusterServerConfig, ClusterStore, ConfigPush, EnrollRequest, ListenConfig, LogBatch,
+    LogIngest, LogRecord, NodeIdentity, PROTOCOL_VERSION, PendingNodeIdentity, QuotaConfig,
+    RelayResponse, RelayedActor, StreamRecord, TlsPaths, TlsRenewed, WriteExecutor, WriteRelay,
     cert_fingerprint,
 };
 use dnscraft_common::clock::ManualClock;
@@ -985,12 +985,11 @@ async fn threat_ca_key_and_secrets_never_leak() {
 
     let push = ConfigPush::new(1, &json!({ "secret": "do-not-log" })).unwrap();
     assert!(!format!("{push:?}").contains("do-not-log"));
-    let cert = CertPush {
+    let notice = TlsRenewed {
         protocol: PROTOCOL_VERSION,
-        chain_pem: "chain".to_owned(),
-        private_key: Secret::new("super-secret-key"),
+        names: vec!["example.net".to_owned()],
     };
-    assert!(!format!("{cert:?}").contains("super-secret-key"));
+    assert!(!format!("{notice:?}").contains("PRIVATE KEY"));
     let auth = AuthSnapshotPush {
         protocol: PROTOCOL_VERSION,
         snapshot: json!({ "token_hash": "leaked-hash" }),

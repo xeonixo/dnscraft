@@ -7,8 +7,8 @@
 //! - [`SyncedConfigApplier`] — applies a pushed snapshot through
 //!   [`ConfigService::apply_synced_config`](crate::ConfigService::apply_synced_config),
 //!   filtering node-scoped policy views first.
-//! - [`TlsCertInstaller`] — installs a pushed certificate through the TLS
-//!   hot-reload resolver and store.
+//! - [`TlsCertInstaller`] — installs a node's own certificate (requested with
+//!   a node-local key) through the TLS hot-reload resolver and store.
 //! - [`StateAuthApplier`] — replaces local auth state with a pushed
 //!   [`AuthSnapshot`](crate::AuthSnapshot).
 //! - [`StateRuntimeApplier`] — applies a volatile runtime command to the local
@@ -880,6 +880,16 @@ impl LogOutbox for QueryLogOutbox {
         })?;
         self.log.ack(seq).await.map(|_| ()).map_err(internal)
     }
+
+    async fn prune(&self, cutoff: SystemTime) -> Result<u64, ClusterError> {
+        let cutoff_us = cutoff
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |age| i64::try_from(age.as_micros()).unwrap_or(i64::MAX));
+        self.log
+            .prune_outbox_before(cutoff_us)
+            .await
+            .map_err(internal)
+    }
 }
 
 /// Master hook: deduplicating query-log ingest.
@@ -1397,7 +1407,10 @@ impl ClusterRuntime {
         let connection_clock = clock.clone();
         let connection_state = state.clone();
         let queue = state.offline_write_queue_arc().map(|queue| {
-            let queue = (*queue).clone();
+            let queue = (*queue).clone().with_backoff(
+                config.timing.reconnect_backoff,
+                config.timing.reconnect_backoff_max,
+            );
             match &auth_state {
                 Some(auth) => Arc::new(
                     queue
@@ -1423,10 +1436,12 @@ impl ClusterRuntime {
         let maintenance_clock = clock.clone();
         let maintenance_service = Arc::clone(&service);
         let maintenance_queue = queue.clone();
+        let maintenance_streamer = log_streamer.clone();
         let interval = config.timing.heartbeat_interval;
         let mut maintenance_shutdown = self.shutdown.subscribe();
         self.tasks.push(tokio::spawn(async move {
             let wake = Notify::new();
+            let mut reported_drops = 0_u64;
             loop {
                 maintenance_pass(
                     &maintenance_client,
@@ -1436,6 +1451,14 @@ impl ClusterRuntime {
                     maintenance_queue.as_deref(),
                 )
                 .await;
+                if let Some(streamer) = &maintenance_streamer {
+                    let dropped = streamer.dropped_rows();
+                    if dropped > reported_drops {
+                        let code = ClusterError::LogBufferDropped { count: dropped }.code();
+                        tracing::warn!(code, dropped, "cluster log buffer dropped rows");
+                        reported_drops = dropped;
+                    }
+                }
                 let deadline = add_duration(maintenance_clock.now(), interval);
                 tokio::select! {
                     () = wait_until(maintenance_clock.as_ref(), deadline, &wake) => {}
@@ -1670,15 +1693,24 @@ async fn run_sub_node_loop(
                             }
                         }
                     }
-                    Ok(StreamRecord::CertPush(push)) => match &cert_installer {
+                    Ok(StreamRecord::TlsRenewed(notice)) => match &cert_installer {
                         Some(installer) => {
-                            if let Err(error) = client.apply_cert(&push, installer.as_ref()).await {
-                                tracing::warn!(error = %error, "cluster cert install failed");
-                                status.update(|status| status.master_reachable = false);
-                                break;
-                            }
+                            // A node requests its own certificate: the key is made
+                            // here and never leaves the node. Run it in the
+                            // background, since the master's signing may take a
+                            // while and must not stall config pushes.
+                            let client = Arc::clone(&client);
+                            let installer = Arc::clone(installer);
+                            tokio::spawn(async move {
+                                if let Err(error) = client
+                                    .request_tls_certificate(&notice.names, installer.as_ref())
+                                    .await
+                                {
+                                    tracing::warn!(error = %error, "cluster TLS certificate request failed");
+                                }
+                            });
                         }
-                        None => tracing::warn!("cluster cert push ignored: no TLS resolver wired"),
+                        None => tracing::warn!("cluster TLS renewal notice ignored: no TLS resolver wired"),
                     },
                     Ok(StreamRecord::AuthSnapshotPush(push)) => {
                         match &auth_applier {

@@ -18,7 +18,9 @@
 //! `cluster.log_gap` and streaming continues from the oldest buffered row.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, SystemTime};
 
 use dnscraft_common::clock::{Clock, add_duration, wait_until};
 use serde::{Deserialize, Serialize};
@@ -148,6 +150,15 @@ pub trait LogOutbox: Send + Sync {
 
     /// Marks every `seq` up to and including `seq` as acknowledged.
     async fn ack(&self, seq: u64) -> Result<(), ClusterError>;
+
+    /// Drops unacknowledged rows recorded before `cutoff` from the outbox
+    /// (`buffer_retention`). Returns how many were dropped. The rows stay in
+    /// the local query log; only the outbox position is lost, so the next
+    /// [`next_unacked_seq`](Self::next_unacked_seq) skips them and the gap is
+    /// reported. The default keeps every row.
+    async fn prune(&self, _cutoff: SystemTime) -> Result<u64, ClusterError> {
+        Ok(0)
+    }
 }
 
 /// Master ingest hook.
@@ -224,7 +235,17 @@ pub struct LogStreamer {
     client: Arc<ClusterClient>,
     config: LogConfig,
     clock: Arc<dyn Clock>,
+    /// When the outbox was last pruned; pruning runs at most once per
+    /// [`PRUNE_INTERVAL`], also while the master is unreachable.
+    last_prune: Mutex<Option<SystemTime>>,
+    /// Rows dropped from the outbox by `buffer_retention`
+    /// (`cluster.log_buffer_dropped`).
+    dropped: AtomicU64,
 }
+
+/// Minimum time between two outbox prunes.
+// ponytail: fixed interval; prune on every flush only if this shows up in profiles.
+const PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 
 impl LogStreamer {
     /// Creates a streamer over the node's outbox and mTLS client.
@@ -239,11 +260,42 @@ impl LogStreamer {
             client,
             config,
             clock,
+            last_prune: Mutex::new(None),
+            dropped: AtomicU64::new(0),
         }
+    }
+
+    /// Rows dropped from the outbox by `buffer_retention` since start
+    /// (`cluster.log_buffer_dropped`).
+    pub fn dropped_rows(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Drops rows older than `buffer_retention` from the outbox, at most once
+    /// per [`PRUNE_INTERVAL`].
+    async fn prune_if_due(&self) -> Result<(), ClusterError> {
+        let now = self.clock.now();
+        {
+            let mut last = self
+                .last_prune
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if last.is_some_and(|at| now.duration_since(at).is_ok_and(|age| age < PRUNE_INTERVAL)) {
+                return Ok(());
+            }
+            *last = Some(now);
+        }
+        let cutoff = now
+            .checked_sub(self.config.buffer_retention)
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let count = self.outbox.prune(cutoff).await?;
+        self.dropped.fetch_add(count, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Sends the next batch from the local outbox, if any rows are waiting.
     pub async fn flush_once(&self) -> Result<Option<FlushOutcome>, ClusterError> {
+        self.prune_if_due().await?;
         let from_seq = self.outbox.next_unacked_seq().await?;
         self.flush_from(from_seq).await
     }

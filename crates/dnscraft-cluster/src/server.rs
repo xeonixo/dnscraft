@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use axum::body::{Body, Bytes};
@@ -31,7 +31,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use dnscraft_common::clock::Clock;
-use dnscraft_common::secret::Secret;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::service::TowerToHyperService;
 use rcgen::{
@@ -60,7 +59,7 @@ use crate::quota::QuotaLimiter;
 use crate::relay::{RuntimeCommand, WriteExecutor, WriteRelay};
 use crate::store::ClusterStore;
 use crate::sync::{
-    AuthSnapshotPush, CertPush, ConfigAck, ConfigSync, Hello, StreamError, StreamRecord,
+    AuthSnapshotPush, ConfigAck, ConfigSync, Hello, StreamError, StreamRecord, TlsRenewed,
 };
 
 /// Request header carrying the sub-node's cluster protocol version.
@@ -80,6 +79,46 @@ const MAX_CONNECTIONS_PER_NODE: usize = 8;
 
 /// Time allowed for the mTLS handshake, so a silent peer cannot hold a slot.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Master hook that signs a sub-node's TLS certificate request.
+///
+/// The master owns the ACME account and the wildcard order. For a node it
+/// finalizes an order with the node's CSR, so the node's private key never
+/// reaches the master. The implementation checks that the CSR names only the
+/// names the master may issue for.
+#[async_trait::async_trait]
+pub trait TlsCsrSigner: Send + Sync {
+    /// Returns the PEM chain (leaf first) that certifies `csr_pem` for
+    /// `node_id`.
+    async fn sign(&self, node_id: &str, csr_pem: &str) -> Result<String, ClusterError>;
+}
+
+/// `POST /cluster/v1/tls/certificate` request body.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct TlsCsrRequest {
+    /// Cluster protocol version; must equal [`PROTOCOL_VERSION`].
+    pub protocol: u32,
+    /// PEM PKCS #10 request; the key it carries stays on the node.
+    pub csr_pem: String,
+}
+
+impl TlsCsrRequest {
+    /// Rejects a request from an incompatible cluster protocol version.
+    pub fn check_protocol(&self) -> Result<(), ClusterError> {
+        if self.protocol == PROTOCOL_VERSION {
+            Ok(())
+        } else {
+            Err(ClusterError::ProtocolVersion)
+        }
+    }
+}
+
+/// `POST /cluster/v1/tls/certificate` response body.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct TlsCsrResponse {
+    /// Certificate chain (PEM), leaf first.
+    pub chain_pem: String,
+}
 
 /// Master hook that produces the current auth snapshot for a connecting node.
 ///
@@ -175,16 +214,17 @@ impl ClusterBroadcast {
             .broadcast(StreamRecord::RuntimeCommand(command));
     }
 
-    /// Broadcasts a renewed certificate/key to every connected node.
+    /// Tells every connected node that the TLS certificate was renewed for
+    /// `names`. Carries no key material: each node requests its own certificate.
     ///
-    /// Best-effort: a node that is offline keeps its previous certificate. The
-    /// key travels only over the mTLS stream and is never logged.
-    pub fn push_cert(&self, chain_pem: &str, private_key: &Secret) {
-        self.config_sync.broadcast(StreamRecord::CertPush(CertPush {
-            protocol: PROTOCOL_VERSION,
-            chain_pem: chain_pem.to_owned(),
-            private_key: private_key.clone(),
-        }));
+    /// Best-effort: an offline node asks for its certificate when it next
+    /// receives a notice, so the caller re-sends after a reconnect if needed.
+    pub fn notify_tls_renewed(&self, names: &[String]) {
+        self.config_sync
+            .broadcast(StreamRecord::TlsRenewed(TlsRenewed {
+                protocol: PROTOCOL_VERSION,
+                names: names.to_vec(),
+            }));
     }
 
     /// Broadcasts an auth snapshot to every connected node.
@@ -220,6 +260,7 @@ pub struct ClusterServer {
     config_sync: Arc<ConfigSync>,
     clock: Arc<dyn Clock>,
     config_apply_timeout: Duration,
+    tls_signer: Arc<OnceLock<Arc<dyn TlsCsrSigner>>>,
     shutdown: watch::Sender<bool>,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -276,6 +317,7 @@ impl ClusterServer {
         let (shutdown, mut shutdown_rx) = watch::channel(false);
         let config_sync = ConfigSync::start(clock.clone(), shutdown_rx.clone());
         let config_apply_timeout = config.timing.config_apply_timeout;
+        let tls_signer: Arc<OnceLock<Arc<dyn TlsCsrSigner>>> = Arc::new(OnceLock::new());
 
         let state = Arc::new(ServerState {
             ca,
@@ -283,6 +325,7 @@ impl ClusterServer {
             clock: Arc::clone(&clock),
             node_cert_ttl: config.node_cert_ttl,
             config_apply_timeout,
+            tls_signer: Arc::clone(&tls_signer),
             config_sync: Arc::clone(&config_sync),
             quotas: QuotaLimiter::new(config.quota),
             write_executor,
@@ -368,6 +411,7 @@ impl ClusterServer {
             config_sync,
             clock,
             config_apply_timeout,
+            tls_signer,
             shutdown,
             handle: Some(handle),
         })
@@ -428,13 +472,17 @@ impl ClusterServer {
             .broadcast_runtime_command(kind, payload);
     }
 
-    /// Broadcasts a renewed certificate/key to every connected node.
-    ///
-    /// Best-effort like [`Self::broadcast_runtime_command`]: a node that is
-    /// offline keeps its previous certificate. The key travels only over the
-    /// mTLS stream and is never logged.
-    pub fn push_cert(&self, chain_pem: &str, private_key: &Secret) {
-        self.broadcast_handle().push_cert(chain_pem, private_key);
+    /// Tells every connected node that the TLS certificate was renewed for
+    /// `names`; see [`ClusterBroadcast::notify_tls_renewed`].
+    pub fn notify_tls_renewed(&self, names: &[String]) {
+        self.broadcast_handle().notify_tls_renewed(names);
+    }
+
+    /// Attaches the master's TLS certificate signer. Until one is attached,
+    /// `POST /cluster/v1/tls/certificate` answers `cluster.internal`.
+    pub fn attach_tls_signer(&self, signer: Arc<dyn TlsCsrSigner>) {
+        // A second attach keeps the first signer; the runtime attaches once.
+        let _ = self.tls_signer.set(signer);
     }
 
     /// Broadcasts an encrypted auth snapshot to every connected node.
@@ -469,6 +517,7 @@ struct ServerState {
     clock: Arc<dyn Clock>,
     node_cert_ttl: Duration,
     config_apply_timeout: Duration,
+    tls_signer: Arc<OnceLock<Arc<dyn TlsCsrSigner>>>,
     config_sync: Arc<ConfigSync>,
     quotas: QuotaLimiter,
     write_executor: Arc<dyn WriteExecutor>,
@@ -541,6 +590,7 @@ fn router(state: Arc<ServerState>) -> Router {
         .route("/cluster/v1/logs", post(log_batch))
         .route("/cluster/v1/writes", post(write_relay))
         .route("/cluster/v1/renew", post(renew))
+        .route("/cluster/v1/tls/certificate", post(tls_certificate))
         .route_layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             authenticate,
@@ -922,6 +972,28 @@ async fn write_relay(
                 StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             (status, Json(response.body)).into_response()
         }
+        Err(error) => error_response(&error),
+    }
+}
+
+/// `POST /cluster/v1/tls/certificate` — signs a sub-node's TLS certificate
+/// request through the master's signer. The response is the chain only; the
+/// key in the CSR never leaves the node.
+async fn tls_certificate(
+    State(state): State<Arc<ServerState>>,
+    Extension(auth): Extension<AuthenticatedNode>,
+    Json(request): Json<TlsCsrRequest>,
+) -> Response {
+    if let Err(error) = request.check_protocol() {
+        return error_response(&error);
+    }
+    let Some(signer) = state.tls_signer.get() else {
+        return error_response(&ClusterError::Internal {
+            message: "no TLS certificate signer is attached on this master".to_owned(),
+        });
+    };
+    match signer.sign(&auth.0, &request.csr_pem).await {
+        Ok(chain_pem) => Json(TlsCsrResponse { chain_pem }).into_response(),
         Err(error) => error_response(&error),
     }
 }

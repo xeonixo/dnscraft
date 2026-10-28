@@ -20,7 +20,7 @@
 //! - [`StreamRecord`] / [`Hello`] / [`ConfigPush`] / [`ConfigAck`] — the NDJSON
 //!   stream records, plus [`ConfigApplier`] and [`ConfigSync`] for full-snapshot
 //!   configuration push, digest verification, acknowledgement, lag, and retry.
-//! - [`CertPush`] / [`CertInstaller`] and [`AuthSnapshotPush`] /
+//! - [`TlsRenewed`] / [`CertInstaller`] and [`AuthSnapshotPush`] /
 //!   [`AuthSnapshotApplier`] — master pushes for TLS certificate hot-reload and
 //!   encrypted auth-state replication.
 //! - [`WriteRelay`] / [`WriteExecutor`] / [`RelayResponse`] — live write relay
@@ -73,12 +73,12 @@ pub use relay::{
 };
 pub use server::{
     AuthSnapshotSource, ClusterBroadcast, ClusterServer, ClusterServerConfig, HeartbeatRequest,
-    HeartbeatResponse, StatusWarning,
+    HeartbeatResponse, StatusWarning, TlsCsrRequest, TlsCsrResponse, TlsCsrSigner,
 };
 pub use store::{ClusterNode, ClusterStore, MintedJoinToken};
 pub use sync::{
-    AuthSnapshotApplier, AuthSnapshotPush, CertInstaller, CertPush, ConfigAck, ConfigApplier,
-    ConfigPush, ConfigSync, Hello, NodeLag, StreamError, StreamRecord, canonical_snapshot_bytes,
+    AuthSnapshotApplier, AuthSnapshotPush, CertInstaller, ConfigAck, ConfigApplier, ConfigPush,
+    ConfigSync, Hello, NodeLag, StreamError, StreamRecord, TlsRenewed, canonical_snapshot_bytes,
     snapshot_digest,
 };
 
