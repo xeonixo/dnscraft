@@ -10,10 +10,9 @@ ARG RUST_VERSION=1.88
 
 FROM node:22-bookworm-slim AS web
 WORKDIR /web
-RUN corepack enable
-COPY web/package.json web/pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN corepack enable && corepack prepare pnpm@9 --activate
 COPY web .
+RUN pnpm install --frozen-lockfile
 RUN pnpm run build
 
 FROM rust:${RUST_VERSION}-bookworm AS builder
