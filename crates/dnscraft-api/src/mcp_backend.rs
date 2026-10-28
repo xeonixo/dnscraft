@@ -2,7 +2,6 @@
 //! the control-api services and module engines.
 
 use std::net::IpAddr;
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -11,6 +10,7 @@ use dnscraft_filtering::{
     BlockMode, DomainName, FilterEngine, RecordTypeSel, RuleAction, RuleSpec, SetId, TempAllow,
     Verdict, build_rule,
 };
+use dnscraft_listeners::ListenersStatus;
 use dnscraft_mcp::ProtectedDomains;
 use dnscraft_mcp::backend::{BackendError, McpBackend};
 use dnscraft_mcp::dto::{
@@ -24,18 +24,20 @@ use dnscraft_mcp::dto::{
     TokenInfo, TokenScope,
 };
 use dnscraft_policy::RequestContext;
+use dnscraft_resolver::{PrimingStatus, Resolver};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::api::auth::roles::Scope;
+use crate::api::clients_routes::{ClientDirectory, DirectoryClient};
 use crate::api::query_log_routes::parse_timestamp;
 use crate::audit::Audit;
 use crate::config_apply::{ConfigActor, ConfigService, MutationAudit};
 use crate::error::ControlApiError;
 use crate::query_log::{Order, OrderBy, QueryLog, QueryLogFilter};
 use crate::server::AppState;
-use crate::stats::TopBy;
+use crate::stats::{StatsScope, TopBy};
 use crate::tls::TlsStatusProvider;
 use dnscraft_common::clock::Clock;
 
@@ -44,6 +46,10 @@ use dnscraft_common::clock::Clock;
 /// Starts empty: a standalone node or sub-node never attaches a handle, and
 /// every broadcast is then a no-op.
 pub(crate) type SharedClusterBroadcast = Arc<Mutex<Option<dnscraft_cluster::ClusterBroadcast>>>;
+
+/// Reads the live listener-set status (GM4). The binary passes a closure over
+/// its listener set, so the backend never owns the set.
+pub type ListenersSource = Arc<dyn Fn() -> ListenersStatus + Send + Sync>;
 
 /// Service handles the MCP backend needs.
 ///
@@ -59,7 +65,12 @@ pub struct McpBackendInner {
     pub(crate) config: Option<Arc<ConfigService>>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) tls: Option<Arc<dyn TlsStatusProvider>>,
-    pub(crate) resolver_cache_size: Arc<AtomicU64>,
+    /// Recursive resolver for the `resolver` block of `get_status` (GM4).
+    pub(crate) resolver: Option<Arc<Resolver>>,
+    /// Client directory for `list_clients` (GM3).
+    pub(crate) clients: Option<Arc<dyn ClientDirectory>>,
+    /// Listener-set status for the `listeners` block of `get_status` (GM4).
+    pub(crate) listeners: Option<ListenersSource>,
     pub(crate) node_id: String,
     pub(crate) version: String,
     pub(crate) start_time: std::time::Instant,
@@ -82,6 +93,9 @@ pub struct McpBackendInner {
 /// `query_log` is `None` until the SQLite query-log consumer lands (AS12);
 /// the log-reading tools then report `control_api.internal` until it is wired.
 /// A standalone node leaves the cluster broadcast handle empty.
+///
+/// `clients`, `resolver` and `listeners` back `list_clients` and the
+/// `resolver`/`listeners` blocks of `get_status` (GM3/GM4).
 #[allow(clippy::too_many_arguments)]
 pub fn mcp_backend_inner(
     filter: Arc<FilterEngine>,
@@ -92,6 +106,9 @@ pub fn mcp_backend_inner(
     tokens: crate::api::auth::TokenStore,
     clock: Arc<dyn Clock>,
     tls: Option<Arc<dyn TlsStatusProvider>>,
+    clients: Arc<dyn ClientDirectory>,
+    resolver: Arc<Resolver>,
+    listeners: ListenersSource,
     node_id: impl Into<String>,
     version: impl Into<String>,
     mcp_config: dnscraft_mcp::McpConfig,
@@ -106,7 +123,9 @@ pub fn mcp_backend_inner(
         config: Some(config),
         clock,
         tls,
-        resolver_cache_size: Arc::new(AtomicU64::new(0)),
+        resolver: Some(resolver),
+        clients: Some(clients),
+        listeners: Some(listeners),
         node_id: node_id.into(),
         version: version.into(),
         start_time: std::time::Instant::now(),
@@ -213,7 +232,9 @@ pub fn mcp_backend_for_test(query_log: Option<Arc<QueryLog>>) -> Arc<dyn McpBack
         config: None,
         clock: Arc::new(dnscraft_common::clock::SystemClock),
         tls: None,
-        resolver_cache_size: Arc::new(AtomicU64::new(0)),
+        resolver: None,
+        clients: None,
+        listeners: None,
         node_id: "test".to_owned(),
         version: "0.0.0".to_owned(),
         start_time: std::time::Instant::now(),
@@ -282,7 +303,9 @@ pub fn mcp_backend_for_test_writes_with_broadcast(
         config: Some(config),
         clock,
         tls: None,
-        resolver_cache_size: Arc::new(AtomicU64::new(0)),
+        resolver: None,
+        clients: None,
+        listeners: None,
         node_id: "test".to_owned(),
         version: "0.0.0".to_owned(),
         start_time: std::time::Instant::now(),
@@ -293,6 +316,40 @@ pub fn mcp_backend_for_test_writes_with_broadcast(
 }
 
 // ---- helpers ----
+
+/// Maps one directory entry onto the MCP `client_list` shape (GM3).
+fn client_info(client: &DirectoryClient) -> dnscraft_mcp::dto::ClientInfo {
+    dnscraft_mcp::dto::ClientInfo {
+        id: client.id.clone(),
+        display_name: client.name.clone(),
+        source: client.source.to_owned(),
+        addresses: client.ips.iter().map(ToString::to_string).collect(),
+        macs: client.macs.clone(),
+        vlan: client.vlan.map(|id| dnscraft_mcp::dto::VlanInfo {
+            id: u32::from(id),
+            name: String::new(),
+        }),
+        local_domain: (!client.local_domain.is_empty()).then(|| client.local_domain.clone()),
+    }
+}
+
+/// Maps one listener binding onto the MCP `get_status` shape (GM4).
+fn listener_status(
+    listener: &dnscraft_listeners::ListenerStatus,
+) -> dnscraft_mcp::dto::ListenerStatus {
+    dnscraft_mcp::dto::ListenerStatus {
+        id: listener.id.as_str().to_owned(),
+        protocol: listener.protocol.as_str().to_owned(),
+        bind: listener
+            .bound
+            .unwrap_or(listener.configured_address)
+            .to_string(),
+        status: match &listener.error {
+            Some(error) => error.code().to_owned(),
+            None => "running".to_owned(),
+        },
+    }
+}
 
 pub(crate) fn rfc3339(ts: SystemTime) -> String {
     let d = ts.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
@@ -1402,20 +1459,25 @@ impl McpBackend for ControlMcpBackend {
         let stats_err = |what: &str, e: ControlApiError| BackendError::Internal {
             message: format!("{what}: {}", e.code()),
         };
+        // GM6: the optional profile filter scopes every stats block.
+        let scope = StatsScope {
+            node_id: None,
+            profile_id: params.profile_id.as_deref(),
+        };
         let overview = log
-            .stats_overview(from_us, to_us, None)
+            .stats_overview_scoped(from_us, to_us, scope)
             .await
             .map_err(|e| stats_err("stats overview", e))?;
         let top_clients = log
-            .top_clients(from_us, to_us, None, 10, TopBy::Queries)
+            .top_clients_scoped(from_us, to_us, scope, 10, TopBy::Queries)
             .await
             .map_err(|e| stats_err("stats top clients", e))?;
         let top_blocked = log
-            .top_blocked_domains(from_us, to_us, None, 10)
+            .top_blocked_domains_scoped(from_us, to_us, scope, 10)
             .await
             .map_err(|e| stats_err("stats top blocked domains", e))?;
         let cache = log
-            .cache_stats(from_us, to_us, None)
+            .cache_stats_scoped(from_us, to_us, scope)
             .await
             .map_err(|e| stats_err("stats cache", e))?;
         let count = |key: &str| overview.dnssec.get(key).copied().unwrap_or(0).max(0) as u64;
@@ -1459,21 +1521,60 @@ impl McpBackend for ControlMcpBackend {
 
     async fn list_clients(
         &self,
-        _params: dnscraft_mcp::dto::ClientListParams,
+        params: dnscraft_mcp::dto::ClientListParams,
     ) -> Result<dnscraft_mcp::dto::ClientListResult, BackendError> {
+        // GM3: filter the directory snapshot, then page it.
+        let directory = self.inner.clients.clone();
+        let matching: Vec<dnscraft_mcp::dto::ClientInfo> = directory
+            .map(|d| d.clients())
+            .unwrap_or_default()
+            .iter()
+            .filter(|c| {
+                params
+                    .source
+                    .as_deref()
+                    .is_none_or(|source| source == c.source)
+            })
+            .filter(|c| {
+                params
+                    .name_substr
+                    .as_deref()
+                    .is_none_or(|needle| c.name.to_lowercase().contains(&needle.to_lowercase()))
+            })
+            .map(client_info)
+            .collect();
+        let offset = params.offset as usize;
+        let page: Vec<_> = matching
+            .iter()
+            .skip(offset)
+            .take(params.limit as usize)
+            .cloned()
+            .collect();
+        let next = offset + page.len();
+        let has_more = next < matching.len();
         Ok(dnscraft_mcp::dto::ClientListResult {
-            clients: vec![],
-            has_more: false,
-            next_offset: None,
+            clients: page,
+            has_more,
+            next_offset: has_more.then_some(next as u32),
         })
     }
 
     async fn get_status(&self) -> Result<NodeStatus, BackendError> {
         let uptime = self.inner.start_time.elapsed().as_secs();
-        let cache_size = self
+        // GM4: resolver state and listener bindings come from the live handles.
+        let (primed, cache_size) = match self.inner.resolver.as_ref() {
+            Some(resolver) => (
+                matches!(resolver.priming_status(), PrimingStatus::Primed { .. }),
+                resolver.stats().cache_entries,
+            ),
+            None => (false, 0),
+        };
+        let listeners = self
             .inner
-            .resolver_cache_size
-            .load(std::sync::atomic::Ordering::Relaxed);
+            .listeners
+            .as_ref()
+            .map(|source| source().listeners.iter().map(listener_status).collect())
+            .unwrap_or_default();
         let tls = self
             .inner
             .tls
@@ -1515,11 +1616,8 @@ impl McpBackend for ControlMcpBackend {
             node_id: self.inner.node_id.clone(),
             version: self.inner.version.clone(),
             uptime_seconds: uptime,
-            resolver: ResolverStatus {
-                primed: cache_size > 0,
-                cache_size,
-            },
-            listeners: vec![],
+            resolver: ResolverStatus { primed, cache_size },
+            listeners,
             tls,
             filtering,
         })

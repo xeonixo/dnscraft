@@ -306,3 +306,25 @@ async fn get_stats_aggregates_the_window() {
     assert!(!stats.period.from.is_empty());
     assert!(!stats.period.to.is_empty());
 }
+
+/// GM6: `profile_id` scopes every stats block. The fixture records all use
+/// the `default` profile, so another profile sees an empty window.
+#[tokio::test]
+async fn get_stats_profile_filter_scopes_every_block() {
+    let backend = backend().await;
+    let window = |profile: Option<&str>| StatsParams {
+        from: Some("2023-11-14T22:13:17Z".to_owned()),
+        to: Some("2023-11-14T22:13:21Z".to_owned()),
+        profile_id: profile.map(str::to_owned),
+    };
+
+    let own = backend.get_stats(window(Some("default"))).await.unwrap();
+    assert_eq!(own.total_queries, 4);
+    assert!(!own.top_blocked_domains.is_empty());
+
+    let other = backend.get_stats(window(Some("kids"))).await.unwrap();
+    assert_eq!(other.total_queries, 0);
+    assert_eq!(other.blocked_queries, 0);
+    assert!(other.top_blocked_domains.is_empty());
+    assert!(other.top_clients.is_empty());
+}
