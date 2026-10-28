@@ -134,6 +134,8 @@ pub struct AuthConfig {
     pub oidc_client_secret: Secret,
     /// Group name that maps to the `admin` role.
     pub oidc_admin_group: String,
+    /// ID-token claim that lists the user's groups (default `groups`, GA12).
+    pub oidc_groups_claim: String,
     /// Allowed clock skew when validating `iat`/`exp` (5–300 s).
     pub oidc_token_skew: Duration,
     /// Whether the local break-glass login is enabled.
@@ -158,6 +160,7 @@ impl Default for AuthConfig {
             oidc_client_id: String::new(),
             oidc_client_secret: Secret::default(),
             oidc_admin_group: "dnscraft-admin".into(),
+            oidc_groups_claim: "groups".into(),
             oidc_token_skew: DEFAULT_OIDC_TOKEN_SKEW,
             local_login_enabled: true,
             local_login_max_attempts: DEFAULT_LOCAL_LOGIN_MAX_ATTEMPTS,
@@ -286,6 +289,17 @@ impl ControlApiConfig {
             MIN_LOCAL_LOGIN_LOCK_WINDOW,
             MAX_LOCAL_LOGIN_LOCK_WINDOW,
         )?;
+        let claim = &auth.oidc_groups_claim;
+        if claim.is_empty()
+            || claim.len() > 64
+            || !claim
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(ControlApiError::config(
+                "auth.oidc_groups_claim must be 1..=64 letters, digits, '_' or '-'",
+            ));
+        }
         check_duration_range(
             "auth.oidc_token_skew",
             auth.oidc_token_skew,
@@ -560,6 +574,7 @@ mod tests {
                 oidc_client_id: "dnscraft".into(),
                 oidc_client_secret: Secret::new("real-secret-value"),
                 oidc_admin_group: "admins".into(),
+                oidc_groups_claim: "groups".into(),
                 oidc_token_skew: Duration::from_secs(60),
                 local_login_enabled: true,
                 local_login_max_attempts: 3,

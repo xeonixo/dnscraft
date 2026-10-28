@@ -579,6 +579,7 @@ mod tests {
                 oidc_client_id: "client-123".into(),
                 oidc_client_secret: Secret::new("real-secret-value"),
                 oidc_admin_group: "admins".into(),
+                oidc_groups_claim: "groups".into(),
                 oidc_token_skew: Duration::from_secs(60),
                 local_login_enabled: false,
                 local_login_max_attempts: 3,

@@ -71,13 +71,25 @@ const ASYMMETRIC_SIGNING_ALGS: [CoreJwsSigningAlgorithm; 10] = [
     CoreJwsSigningAlgorithm::EdDsa,
 ];
 
-/// The provider-specific claims this API reads. The configurable admin group
-/// name is fixed at `groups` by the spec's default; only group membership is
-/// consumed, never email or profile claims.
+/// The provider-specific claims this API reads: every top-level claim is kept
+/// so the configured groups claim (GA12) can be looked up by name. Only that
+/// claim is consumed; email and profile claims are never read.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct OidcAdditionalClaims {
-    #[serde(default)]
-    groups: Option<Vec<String>>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl OidcAdditionalClaims {
+    /// The string array under `claim`, or `None` when absent or not all strings.
+    fn groups(&self, claim: &str) -> Option<Vec<String>> {
+        self.extra
+            .get(claim)?
+            .as_array()?
+            .iter()
+            .map(|group| group.as_str().map(str::to_owned))
+            .collect()
+    }
 }
 
 impl AdditionalClaims for OidcAdditionalClaims {}
@@ -165,6 +177,7 @@ pub struct OidcState {
     client_id: ClientId,
     client_secret: Option<ClientSecret>,
     admin_group: String,
+    groups_claim: String,
     token_skew: Duration,
     clock: Arc<dyn Clock>,
     http: OidcHttpClient,
@@ -196,8 +209,15 @@ pub struct OidcSettings {
     pub client_id: String,
     /// Group name that maps to the `admin` role.
     pub admin_group: String,
+    /// ID-token claim that lists groups. Absent in older snapshots: `groups`.
+    #[serde(default = "default_groups_claim")]
+    pub groups_claim: String,
     /// Allowed clock skew when validating `iat`/`exp`, in seconds.
     pub token_skew_secs: u64,
+}
+
+fn default_groups_claim() -> String {
+    "groups".to_owned()
 }
 
 impl OidcState {
@@ -207,6 +227,7 @@ impl OidcState {
             issuer: self.issuer.as_str().to_owned(),
             client_id: self.client_id.as_str().to_owned(),
             admin_group: self.admin_group.clone(),
+            groups_claim: self.groups_claim.clone(),
             token_skew_secs: self.token_skew.as_secs(),
         }
     }
@@ -246,6 +267,7 @@ impl OidcState {
             client_secret: (!client_secret.is_empty())
                 .then(|| ClientSecret::new(client_secret.to_owned())),
             admin_group: auth.oidc_admin_group.clone(),
+            groups_claim: auth.oidc_groups_claim.clone(),
             token_skew: auth.oidc_token_skew,
             clock,
             http: OidcHttpClient {
@@ -376,7 +398,11 @@ impl OidcState {
             }
         }
 
-        let role = match claims.additional_claims().groups.as_deref() {
+        let role = match claims
+            .additional_claims()
+            .groups(&self.groups_claim)
+            .as_deref()
+        {
             Some(groups) if groups.iter().any(|group| group == &self.admin_group) => Role::Admin,
             _ => Role::Viewer,
         };
@@ -590,5 +616,34 @@ mod tests {
                 "ID-token algorithm list must not accept {algorithm:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod claim_tests {
+    use super::*;
+
+    #[test]
+    fn groups_are_read_from_the_configured_claim_only() {
+        let claims: OidcAdditionalClaims = serde_json::from_value(json!({
+            "roles": ["dnscraft-admin"],
+            "groups": "not-an-array",
+            "email": "a@example.net",
+        }))
+        .unwrap();
+        assert_eq!(
+            claims.groups("roles"),
+            Some(vec!["dnscraft-admin".to_owned()])
+        );
+        assert_eq!(claims.groups("groups"), None, "non-array claim is ignored");
+        assert_eq!(claims.groups("missing"), None);
+    }
+
+    #[test]
+    fn a_non_string_entry_voids_the_whole_claim() {
+        let claims: OidcAdditionalClaims =
+            serde_json::from_value(json!({ "groups": ["ok", 7] })).unwrap();
+        assert_eq!(claims.groups("groups"), None);
     }
 }
