@@ -107,3 +107,6 @@ export const ICON_SHAPES = {
 } satisfies Record<string, IconShape[]>;
 
 export type IconName = keyof typeof ICON_SHAPES;
+
+/** Semantic tone of a status; always paired with an icon and a word. */
+export type StatusTone = 'ok' | 'warn' | 'danger' | 'neutral';

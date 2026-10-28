@@ -65,3 +65,14 @@
 - [ ] **GA-W4d** CSRF token is delivered in the `auth/me`/login body only; the `dnscraft_csrf` cookie from the
       web-ui decision does not exist. Either add it or amend SPEC-web-ui to "body field only".
 - [ ] **GA-W4e** `Retry-After` on 429 should be exposed as `params.retry_after` so the SPA can back off.
+
+## Found while building the dashboard (W5, 2026-10-28)
+
+- [ ] **GA-W5a** `stats/overview`: add response-time percentiles (p50/p95) and a time series so the dashboard can
+      show latency tiles and sparklines (SPEC-web-ui Dashboard bullet).
+- [ ] **GA-W5b** Route a blocked-domains ranking (`top_blocked_domains` exists in the library, not routed);
+      the UI currently approximates it client-side from the top 100 domains.
+- [ ] **GA-W5c** Expose the active pause state (read endpoint) so the UI can show/resume an active pause.
+- [ ] **GA-W5d** Add `resolver.*` upstream error codes to the stable-code catalogue for translation.
+- [ ] **GA-W5e** SPEC-web-ui: the pause path is `/filtering/pause`, not `/policy/pause`; no `/statistics` route
+      exists (merged into the dashboard) — align the spec.

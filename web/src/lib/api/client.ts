@@ -27,6 +27,8 @@ export interface RequestOptions {
 	idempotencyKey?: string | true;
 	/** Login and the OIDC start. A 401 there is the answer to the request, not a lost session. */
 	public?: boolean;
+	/** The path is absolute from the origin (for example `/readyz`), not under `/api/v1`. */
+	root?: boolean;
 	signal?: AbortSignal;
 }
 
@@ -64,7 +66,7 @@ async function send(
 	if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
 
 	try {
-		return await fetch(API_BASE + path, {
+		return await fetch((options.root ? '' : API_BASE) + path, {
 			method,
 			headers,
 			credentials: 'include',
