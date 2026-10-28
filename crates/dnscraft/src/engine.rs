@@ -245,8 +245,7 @@ fn default_filter_and_policy(
         id: view_id,
         is_default: true,
         subnets: Vec::new(),
-        client_ids: Vec::new(),
-        records: Vec::new(),
+        nodes: Vec::new(),
         profile: profile_id,
     });
     Ok((filtering, policy))

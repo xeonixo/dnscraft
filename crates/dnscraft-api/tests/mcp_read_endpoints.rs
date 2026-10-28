@@ -87,13 +87,17 @@ fn view() -> ViewConfig {
         id: ViewId::new("default").unwrap(),
         is_default: true,
         subnets: Vec::new(),
-        client_ids: Vec::new(),
-        records: vec![ViewRecordConfig {
-            name: Name::from_ascii("local.example.com.").unwrap(),
-            ttl: 60,
-            rdata: RData::A(Ipv4Addr::new(192, 0, 2, 1)),
-        }],
+        nodes: Vec::new(),
         profile: ProfileId::new("default").unwrap(),
+    }
+}
+
+fn local_record() -> ViewRecordConfig {
+    ViewRecordConfig {
+        name: Name::from_ascii("local.example.com.").unwrap(),
+        ttl: 60,
+        rdata: RData::A(Ipv4Addr::new(192, 0, 2, 1)),
+        overrides: Default::default(),
     }
 }
 
@@ -104,6 +108,7 @@ async fn policy_engine(filter: Arc<FilterEngine>) -> Arc<PolicyEngine> {
             PolicyConfig {
                 views: vec![view()],
                 profiles: vec![profile()],
+                records: vec![local_record()],
                 ..PolicyConfig::default()
             },
             filter,

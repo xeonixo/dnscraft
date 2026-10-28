@@ -21,6 +21,7 @@ fn any_query() -> RequestContext {
         source_ip: Ipv4Addr::LOCALHOST.into(),
         protocol: DnsProtocol::Udp53,
         listener_id: ListenerId::new("lan").unwrap(),
+        node_id: None,
         client_id: None,
         query: Query {
             name: Name::from_ascii("localhost.").unwrap(),

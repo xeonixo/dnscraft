@@ -1239,7 +1239,6 @@ fn client_json(client: &ClientView) -> Json {
 
 fn selection_json(cause: SelectionCause) -> Json {
     match cause {
-        SelectionCause::ClientId => json!({ "cause": "client_id" }),
         SelectionCause::Subnet {
             network,
             prefix_len,

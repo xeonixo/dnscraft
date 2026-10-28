@@ -535,11 +535,6 @@ fn txt_escape(bytes: &[u8]) -> String {
 
 fn selection_cause_json(cause: &dnscraft_policy::SelectionCause) -> Selection {
     match cause {
-        dnscraft_policy::SelectionCause::ClientId => Selection {
-            cause: "client_id".to_owned(),
-            prefix: None,
-            client_id: None,
-        },
         dnscraft_policy::SelectionCause::Subnet {
             network,
             prefix_len,
@@ -1230,6 +1225,7 @@ pub(crate) async fn run_test_query(
         selection: Selection {
             cause: sel.cause,
             prefix: sel.prefix,
+        node_id: None,
             client_id: record.client_id.as_ref().map(|id| id.to_string()),
         },
         verdict: verdict.to_owned(),

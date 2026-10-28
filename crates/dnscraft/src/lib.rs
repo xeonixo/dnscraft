@@ -291,6 +291,9 @@ pub async fn build(
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let api_acme = certs.clone();
     let set = Arc::new(
+    let node_id = config
+        .node_id()
+        .map_err(|e| Error::startup("dnscraft.startup.node_id", format!("node_id: {e}")))?;
         ListenerSet::start(
             listeners,
             Arc::clone(&engines.policy),
@@ -299,6 +302,7 @@ pub async fn build(
             clock,
             config.public_domain.clone(),
         )
+            Some(node_id),
         .await
         .map_err(|e| Error::startup("dnscraft.startup.listeners", format!("listeners: {e}")))?,
     );

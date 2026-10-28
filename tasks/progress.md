@@ -2,6 +2,35 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — policy model v2 (GP1–GP3, P1–P5, L1–L2, A1–A3, AS)
+
+- **Model (GP1–GP3):** selection is source-IP only (`ClientId` branch and `SelectionCause::ClientId` removed).
+  `PolicyConfig.client_ids` is a flat admission registry (`PolicyEngine::registered_client_ids()`); the
+  listeners' `PolicyClientIds` reads it. Records are a global name space (`PolicyConfig.records`, default
+  `rdata` + per-view `overrides`); the snapshot precomputes each view's effective table. `ViewConfig.nodes`
+  (default view must be empty); `RequestContext.node_id` (`Option<NodeId>`).
+- **Listeners (L2):** `ListenerConfig.node_id` (serde skip) is set by `ListenerSet::start` from the assembler's
+  `node_id` (top-level key, default `local`) and stamped on `QueryMeta`.
+- **API:** views drop `client_ids`/`records`, add `nodes`; `GET|PUT|POST|DELETE /policy/records` (presentation
+  text, one entry per name+type); `GET|POST /policy/client-ids`, `DELETE /policy/client-ids/{id}`. Tests in
+  `tests/policy_records_http.rs`. Docs: API-REFERENCE, SPEC-control-api open question 1 resolved.
+- Gates: policy and listeners `cargo test` green (7 known macOS listeners failures), clippy `-D warnings` and
+  fmt clean for both crates. API: new suite green; `mcp_backend_read` stats test and `dnscraft` smoke tests are
+  red from other in-progress work.
+- Open: GP7 (TOML record form), rollback test for rejected records, smoke boot with `node_id`.
+
+## 2026-10-28 — cluster follow-ups: TLS per-node CSR (CF5), outbox pruning (CF8), replay backoff (CF9)
+
+- **Done:** CF5 owner decision (option B) implemented on the cluster side: `push_cert` and the key broadcast
+  are gone; the master sends `tls_renewed` (names only); nodes generate their own key and request a chain
+  via `POST /cluster/v1/tls/certificate` (`request_tls_certificate`). CF8 outbox pruning at `buffer_retention`
+  (`LogOutbox::prune`, `QueryLog::prune_outbox_before`, `cluster.log_buffer_dropped`). CF9 replay backoff from
+  `[cluster.timing]`.
+- **Open:** CF10 (🔴 for the feature): `dnscraft-tls` needs ACME finalize with an external CSR; the master
+  answers `cluster.internal` until a `TlsCsrSigner` is attached.
+- **Gates:** `cargo test -p dnscraft-cluster` 120 green, fmt and clippy clean; api cluster suites green
+  (29 + 8 + 2); api clippy clean. Commit b27d31f; the `query_log.rs` commit stages only my hunk.
+
 ## 2026-10-28 — cluster wave 2: renewal, timing, durable relay answers, channel limits (CF1–CF7)
 
 - **Done (crate + api wiring):** CF1 certificate renewal (`POST /cluster/v1/renew`, key kept, superseded

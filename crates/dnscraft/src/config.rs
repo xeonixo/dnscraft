@@ -13,7 +13,7 @@ use dnscraft_filtering::FilterConfig;
 use dnscraft_listeners::{
     DdrConfig, Exposure, Limits, ListenerConfig, ListenersConfig, Protocol, PublicConfig, TlsPolicy,
 };
-use dnscraft_policy::{ListenerId, PolicyConfig};
+use dnscraft_policy::{IdError, ListenerId, NodeId, PolicyConfig};
 use dnscraft_resolver::ResolverConfig;
 use dnscraft_tls::{Secret, TlsConfig};
 
@@ -164,6 +164,10 @@ fn key_file_permissions_warning(_path: &str) -> Option<String> {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Cluster node identity of this process (`node_id`). Views with `nodes`
+    /// match it. Omitted means a standalone install, which is `local`.
+    #[serde(default)]
+    pub node_id: Option<String>,
     /// Public DNS domain for SNI / DDR (`dns.<domain>`).
     pub public_domain: String,
     /// Directory for the SQLite store, TLS state and filter-list bodies.
@@ -309,6 +313,11 @@ impl Config {
         self.data_dir.as_deref()
     }
 
+    /// The node id this process serves as: `node_id`, or `local` when unset.
+    pub fn node_id(&self) -> Result<NodeId, IdError> {
+        NodeId::new(self.node_id.as_deref().unwrap_or("local"))
+    }
+
     /// Maps this TOML config onto a [`ListenersConfig`].
     ///
     /// `[listeners_limits]`, `[listeners_public]` and `[listeners_ddr]` are
@@ -350,6 +359,7 @@ impl Config {
                 exposure,
                 h3: listener.h3,
                 tls_policy: listener.tls_policy.clone().map(TlsPolicyToml::into_policy),
+                node_id: None,
             });
         }
         let cfg = ListenersConfig {
