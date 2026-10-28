@@ -8,6 +8,9 @@ rust-version.workspace = true
 publish = false
 description = "Control API (config, query log, stats, audit, auth) for DNScraft"
 
+[features]
+web-ui = ["dep:rust-embed"]
+
 [lints]
 workspace = true
 
@@ -46,6 +49,7 @@ tower-http = { workspace = true }
 tracing = { workspace = true }
 webpki-roots = { workspace = true }
 zeroize = { workspace = true }
+rust-embed = { version = "8.7.0", optional = true }
 
 [dev-dependencies]
 dnscraft-testkit = { path = "../dnscraft-testkit" }

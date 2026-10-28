@@ -30,4 +30,4 @@ Out of scope until owner decides: WX1–WX8, Alerts/Blocked-services backends (s
   review before committing that part.
 - Missing backends (alerts, update check, backups, blocked services, WX1-WX8): placeholder "not available" states only.
 
-Status: auto mode approved; W1–W9 done; W10 web (PWA/CSP/XSS/e2e) committed; rust-embed draft uncommitted — owner STOP before Rust commit (see tasks/w10-rust-embed-notes.md).
+Status: auto mode approved; W1–W10 done (web + rust-embed `web-ui` feature). Out of scope until owner decides: WX1–WX8 and missing backends (alerts/update/backups/blocked-services placeholders only).

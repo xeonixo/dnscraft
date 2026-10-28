@@ -1,31 +1,22 @@
-# W10 rust-embed draft (uncommitted — owner review)
+# W10 rust-embed (control-api `web-ui` feature)
 
-## Files touched (draft, leave unstaged)
+## Files
 
-- `crates/dnscraft-api/src/web_ui.rs` — `rust-embed` asset handler with security headers, cache policy, SPA `index.html` fallback, path traversal guard.
-- `crates/dnscraft-api/embed-web-ui/index.html` — placeholder so `web-ui` feature compiles without `web/build`.
-- `crates/dnscraft-api/src/api/router.rs` — `web-ui` feature replaces the outer fallback with static serving for non-API paths.
-- `crates/dnscraft-api/src/lib.rs` — `mod web_ui` behind the same feature.
-- `crates/dnscraft-api/Cargo.toml` — optional `rust-embed` dependency and `web-ui` feature (not committed by agent if lockfile would churn).
+- `crates/dnscraft-api/src/web_ui.rs` — `rust-embed` asset handler: security headers, cache policy, SPA `index.html` fallback, path traversal guard, CSP from `csp-script-hashes.json` when present.
+- `crates/dnscraft-api/embed-web-ui/index.html` — placeholder so `--features web-ui` compiles without copying `web/build`.
+- `crates/dnscraft-api/src/api/router.rs` — outer fallback serves the SPA for non-`/api`/`/mcp` paths when `web-ui` is enabled; API/MCP misses stay JSON 404.
+- `crates/dnscraft-api/src/lib.rs` — `mod web_ui` behind the feature.
+- `crates/dnscraft-api/Cargo.toml` — optional `rust-embed` + `web-ui` feature.
 
-## Enable locally
+## Release embed
 
-1. Build the SPA: `cd web && pnpm build`.
-2. Copy `web/build/*` into `crates/dnscraft-api/embed-web-ui/` (or point `#[folder = "..."]` at `../../web/build` once paths are stable).
-3. Add to `crates/dnscraft-api/Cargo.toml`:
+1. `cd web && pnpm build` (also writes `build/csp-script-hashes.json`).
+2. Replace `crates/dnscraft-api/embed-web-ui/` contents with `web/build/*` (keep the hashes file).
+3. Build control-api with `--features web-ui`.
 
-   ```toml
-   [features]
-   web-ui = ["dep:rust-embed"]
+## Routing
 
-   [dependencies]
-   rust-embed = { version = "8.7.0", optional = true }
-   ```
-
-4. Build control-api with `--features web-ui`.
-
-## Routing intent
-
-- `GET/HEAD` under `/api/v1`, `/mcp/v1`, `/healthz`, `/readyz` — unchanged (unknown API paths stay JSON 404).
-- Any other `GET/HEAD` — embedded asset or SPA fallback.
-- No directory traversal (`..`, `\` rejected).
+- `GET/HEAD` under `/api/…`, `/mcp/…` — JSON envelopes (unknown paths stay `control_api.not_found`).
+- `/healthz`, `/readyz` — unchanged explicit routes.
+- Any other `GET/HEAD` — embedded asset or SPA `index.html`.
+- `..` / `\` rejected with 400.

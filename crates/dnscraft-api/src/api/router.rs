@@ -337,9 +337,25 @@ async fn status(State(state): State<AppState>) -> impl IntoResponse {
     success(serde_json::Value::Object(body))
 }
 
-async fn not_found(req: Request) -> impl IntoResponse {
-    ControlApiError::NotFound {
-        what: req.uri().path().to_owned(),
+async fn not_found(req: Request) -> Response {
+    let path = req.uri().path();
+    // Nested `/api/v1` and `/mcp/v1` misses bubble to this fallback; keep those JSON.
+    if path.starts_with("/api/") || path.starts_with("/mcp/") {
+        return ControlApiError::NotFound {
+            what: path.to_owned(),
+        }
+        .into_response();
+    }
+    #[cfg(feature = "web-ui")]
+    {
+        return crate::web_ui::serve(req.uri().clone(), req.method().clone()).await;
+    }
+    #[cfg(not(feature = "web-ui"))]
+    {
+        ControlApiError::NotFound {
+            what: path.to_owned(),
+        }
+        .into_response()
     }
 }
 
