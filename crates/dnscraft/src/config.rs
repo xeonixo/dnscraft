@@ -713,7 +713,7 @@ tos_agreed = false
 auto_deactivate = false
 
 [tls.dns_provider]
-kind = "Cloudflare"
+kind = "cloudflare"
 zones = []
 manual_txt = []
 
@@ -733,7 +733,7 @@ interfaces = []
 record_inventory = false
 
 [tls.dyndns.ipv6_identifier]
-mode = "Eui64"
+mode = "eui64"
 
 [tls.notifications]
 on_expiry = false

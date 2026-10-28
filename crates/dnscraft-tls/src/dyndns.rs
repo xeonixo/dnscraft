@@ -1,4 +1,8 @@
-//! DynDNS: discover public IPs and upsert Cloudflare A/AAAA only on change.
+//! DynDNS: discover public IPs and upsert Cloudflare records only on change.
+//!
+//! Each node publishes **A/AAAA** for its own hostname. The single public-entry
+//! node also publishes **CNAME** for `dns.<domain>` and `*.dns.<domain>` → its
+//! hostname (DoT Client-IDs resolve via the wildcard without duplicating IPs).
 //!
 //! Failures return [`TlsError::DyndnsEcho`] / [`TlsError::DyndnsUpdate`] and
 //! never touch the certificate store.
@@ -41,7 +45,7 @@ pub struct DynDnsResult {
 pub struct InventoryRecord {
     /// Record owner name.
     pub name: String,
-    /// Record type (`A` / `AAAA`).
+    /// Record type (`A` / `AAAA` / `CNAME`).
     pub record_type: String,
     /// Record content.
     pub content: String,
@@ -189,16 +193,36 @@ pub fn dyndns_interval_with_rng(base: Duration, rng: &mut impl Rng) -> Duration 
     Duration::from_secs_f64((secs + delta).max(1.0))
 }
 
-/// Owner names this node maintains for DynDNS.
-///
-/// Always includes the node hostname. When `public_entry`, also
-/// `*.dns.<public_domain>` and `dns.<public_domain>`.
-pub fn dyndns_names(cfg: &DynDnsConfig, public_domain: &str) -> Vec<String> {
-    let mut names = vec![cfg.hostname.clone()];
-    if cfg.public_entry {
-        names.push(format!("*.dns.{public_domain}"));
-        names.push(format!("dns.{public_domain}"));
+/// Owner names that receive **A/AAAA** for this node (always the node hostname).
+pub fn dyndns_address_names(cfg: &DynDnsConfig) -> Vec<String> {
+    if cfg.hostname.is_empty() {
+        Vec::new()
+    } else {
+        vec![cfg.hostname.clone()]
     }
+}
+
+/// Owner names that receive **CNAME → hostname** when this node is public entry.
+///
+/// Apex `dns.<domain>` and wildcard `*.dns.<domain>` point at the entry node's
+/// hostname so DoT Client-IDs resolve without duplicating A/AAAA on every name.
+pub fn dyndns_cname_names(cfg: &DynDnsConfig, public_domain: &str) -> Vec<String> {
+    if !cfg.public_entry || cfg.hostname.is_empty() {
+        return Vec::new();
+    }
+    vec![
+        format!("*.dns.{public_domain}"),
+        format!("dns.{public_domain}"),
+    ]
+}
+
+/// All owner names this node maintains (address + CNAME targets).
+///
+/// Prefer [`dyndns_address_names`] / [`dyndns_cname_names`] when the record
+/// type matters.
+pub fn dyndns_names(cfg: &DynDnsConfig, public_domain: &str) -> Vec<String> {
+    let mut names = dyndns_address_names(cfg);
+    names.extend(dyndns_cname_names(cfg, public_domain));
     names
 }
 
@@ -266,11 +290,15 @@ pub async fn record_inventory(
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    for name in dyndns_names(cfg, public_domain) {
+    for name in dyndns_address_names(cfg) {
         for record_type in ["A", "AAAA"] {
             let records = cloudflare.list_records(&name, record_type).await?;
             append_inventory(&mut out, records);
         }
+    }
+    for name in dyndns_cname_names(cfg, public_domain) {
+        let records = cloudflare.list_records(&name, "CNAME").await?;
+        append_inventory(&mut out, records);
     }
     Ok(out)
 }
@@ -368,16 +396,21 @@ pub(crate) async fn dyndns_pass(
             return Ok(());
         }
 
-        let names = dyndns_names(cfg, public_domain);
         let _guard = cloudflare.write_guard().await;
 
-        for name in &names {
+        // Per-node hostname: A/AAAA from the echo / interface discovery.
+        for name in dyndns_address_names(cfg) {
             if let Some(v4) = result.ipv4 {
-                ensure_address(cloudflare, name, "A", &v4.to_string(), &mut result).await?;
+                ensure_address(cloudflare, &name, "A", &v4.to_string(), &mut result).await?;
             }
             if let Some(v6) = result.ipv6 {
-                ensure_address(cloudflare, name, "AAAA", &v6.to_string(), &mut result).await?;
+                ensure_address(cloudflare, &name, "AAAA", &v6.to_string(), &mut result).await?;
             }
+        }
+
+        // Public entry: apex + wildcard CNAME → this node's hostname (DoT).
+        for name in dyndns_cname_names(cfg, public_domain) {
+            ensure_cname(cloudflare, &name, &cfg.hostname, &mut result).await?;
         }
 
         Ok(())
@@ -405,6 +438,35 @@ async fn ensure_address(
         .upsert_address(name, record_type, content)
         .await
         .map_err(map_update_err)?;
+    push_audit(result, name, record_type, content);
+    Ok(())
+}
+
+async fn ensure_cname(
+    cloudflare: &CloudflareClient,
+    name: &str,
+    target: &str,
+    result: &mut DynDnsResult,
+) -> Result<(), TlsError> {
+    let existing = cloudflare
+        .list_records(name, "CNAME")
+        .await
+        .map_err(map_update_err)?;
+    if existing
+        .iter()
+        .any(|r| r.content.eq_ignore_ascii_case(target))
+    {
+        return Ok(());
+    }
+    cloudflare
+        .upsert_cname(name, target)
+        .await
+        .map_err(map_update_err)?;
+    push_audit(result, name, "CNAME", target);
+    Ok(())
+}
+
+fn push_audit(result: &mut DynDnsResult, name: &str, record_type: &str, content: &str) {
     let now = SystemTime::now();
     result.changed = true;
     result.last_change = Some(now);
@@ -414,7 +476,6 @@ async fn ensure_address(
         record_type: record_type.to_owned(),
         content: content.to_owned(),
     });
-    Ok(())
 }
 
 fn map_update_err(err: TlsError) -> TlsError {
@@ -457,10 +518,19 @@ mod unit {
             ..DynDnsConfig::default()
         };
         assert_eq!(
+            dyndns_address_names(&cfg),
+            vec!["node1.dns.example.com".to_owned()]
+        );
+        assert!(dyndns_cname_names(&cfg, "example.com").is_empty());
+        assert_eq!(
             dyndns_names(&cfg, "example.com"),
             vec!["node1.dns.example.com".to_owned()]
         );
         cfg.public_entry = true;
+        assert_eq!(
+            dyndns_cname_names(&cfg, "example.com"),
+            vec!["*.dns.example.com".to_owned(), "dns.example.com".to_owned(),]
+        );
         assert_eq!(
             dyndns_names(&cfg, "example.com"),
             vec![

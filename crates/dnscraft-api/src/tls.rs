@@ -492,6 +492,8 @@ pub trait TlsAdmin: Send + Sync {
     fn record_inventory(&self) -> TlsValueFuture<'_>;
     /// DynDNS audit trail.
     fn dyndns_audit(&self) -> TlsValueFuture<'_>;
+    /// Installs or clears the Cloudflare API token in the live engine.
+    fn set_cloudflare_token(&self, token: Option<Secret>) -> TlsActionFuture<'_>;
 }
 
 /// [`TlsAdmin`] over the real engine.
@@ -672,6 +674,16 @@ impl TlsAdmin for EngineTlsAdmin {
                     }))
                     .collect::<Vec<_>>(),
             }))
+        })
+    }
+
+    fn set_cloudflare_token(&self, token: Option<Secret>) -> TlsActionFuture<'_> {
+        let secret = dnscraft_tls::Secret::new(token.as_ref().map(|t| t.expose()).unwrap_or(""));
+        Box::pin(async move {
+            self.engine
+                .set_cloudflare_token(secret)
+                .await
+                .map_err(|error| ControlApiError::from_tls(&error))
         })
     }
 }

@@ -123,6 +123,9 @@ pub(crate) async fn start(
         auth_config.local_login_max_attempts,
         auth_config.local_login_lock_window,
     );
+    if auth_config.local_login_enabled {
+        seed_break_glass_admin(&local_accounts).await?;
+    }
     let sessions = SessionStore::new(
         db.clone(),
         auth_config.session_idle_timeout,
@@ -185,6 +188,12 @@ pub(crate) async fn start(
         state = state.with_tls(Arc::clone(provider));
     }
     if let Some(engine) = engines.tls.as_ref() {
+        // UI-stored token (kv) overrides a missing env token after restart.
+        if let Ok(Some(token)) = dnscraft_api::cloudflare_token_from_db(&db).await {
+            let _ = engine
+                .set_cloudflare_token(dnscraft_tls::Secret::new(token))
+                .await;
+        }
         state = state.with_tls_admin(Arc::new(EngineTlsAdmin::new(Arc::clone(engine))));
     }
     // GA6c: the client directory behind `/clients` and `/clients/sync`.
@@ -480,4 +489,27 @@ mod tests {
         );
         assert_eq!(api_origin(&api, "localhost"), None);
     }
+}
+
+/// Seeds the `break-glass` admin from `DNSCRAFT_ADMIN_PASSWORD_FILE` on a fresh
+/// install (no local accounts yet). Existing accounts are never overwritten, so
+/// removing the file after first boot is safe.
+async fn seed_break_glass_admin(accounts: &LocalAccountStore) -> Result<(), Error> {
+    let Some(path) = std::env::var_os("DNSCRAFT_ADMIN_PASSWORD_FILE") else {
+        return Ok(());
+    };
+    let fail = |message: String| Error::startup("dnscraft.startup.control_api_auth", message);
+    let existing = accounts
+        .snapshot_entries()
+        .await
+        .map_err(|error| fail(format!("control-api local accounts: {error}")))?;
+    if !existing.is_empty() {
+        return Ok(());
+    }
+    let password = std::fs::read_to_string(&path)
+        .map_err(|error| fail(format!("DNSCRAFT_ADMIN_PASSWORD_FILE: {error}")))?;
+    accounts
+        .upsert("break-glass", password.trim(), dnscraft_api::Role::Admin)
+        .await
+        .map_err(|error| fail(format!("seeding break-glass admin: {error}")))
 }

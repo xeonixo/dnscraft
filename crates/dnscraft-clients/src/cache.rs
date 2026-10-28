@@ -58,11 +58,8 @@ pub fn networks_to_value(nets: &[NetworkInfo]) -> serde_json::Value {
 }
 
 /// Deserialises UniFi observations from the cluster wire shape.
-pub fn observations_from_value(
-    value: &serde_json::Value,
-) -> Result<Vec<UnifiObservation>, String> {
-    let rows: Vec<DiskObs> =
-        serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+pub fn observations_from_value(value: &serde_json::Value) -> Result<Vec<UnifiObservation>, String> {
+    let rows: Vec<DiskObs> = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
     rows.into_iter().map(DiskObs::into_obs).collect()
 }
 

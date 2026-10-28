@@ -1134,19 +1134,21 @@ async fn drop_stops_background_task() {
 #[tokio::test]
 async fn non_owner_sync_returns_not_owner() {
     let clock = Arc::new(ManualClock::new(start()));
-    let mut cfg = ClientsConfig::default();
-    cfg.unifi_profiles = vec![UnifiProfile {
-        id: "home".into(),
-        sync_owner: "master".into(),
-        connection: UnifiConfig {
-            enabled: true,
-            base_url: "https://192.0.2.1".into(),
-            site_id: None,
-            poll_interval: Duration::from_secs(60),
-            classic_clients: false,
-            tls: TlsMode::Insecure,
-        },
-    }];
+    let mut cfg = ClientsConfig {
+        unifi_profiles: vec![UnifiProfile {
+            id: "home".into(),
+            sync_owner: "master".into(),
+            connection: UnifiConfig {
+                enabled: true,
+                base_url: "https://192.0.2.1".into(),
+                site_id: None,
+                poll_interval: Duration::from_secs(60),
+                classic_clients: false,
+                tls: TlsMode::Insecure,
+            },
+        }],
+        ..ClientsConfig::default()
+    };
     cfg.unifi_bindings.insert("master".into(), "home".into());
     cfg.unifi_bindings.insert("garage".into(), "home".into());
     let eng = ClientEngine::new_with_secret_and_node(

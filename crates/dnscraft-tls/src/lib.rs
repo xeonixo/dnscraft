@@ -2,8 +2,8 @@
 //!
 //! This crate obtains and renews the shared certificate for encrypted DNS
 //! listeners (`dns.<domain>` and `*.dns.<domain>`), exposes a hot-reloadable
-//! cert resolver, and keeps the node's public A/AAAA records current via
-//! Cloudflare.
+//! cert resolver, and keeps public DNS records current via Cloudflare
+//! (per-node A/AAAA plus public-entry CNAMEs for DoT Client-IDs).
 //!
 //! It does **not** bind sockets (that is `listeners`) and does **not** own the
 //! Client-ID registry (that is `policy` / `control-api`).
@@ -47,14 +47,15 @@ pub use cloudflare::{
 pub use config::{
     AcmeAccountConfig, AcmeConfig, AcmeDirectoryKind, CloudflareConfig, DEFAULT_DYNDNS_INTERVAL,
     DEFAULT_ECHO_URL, DEFAULT_EXPIRY_WARN, DEFAULT_PROPAGATION_POLL, DEFAULT_PROPAGATION_TIMEOUT,
-    DEFAULT_RENEW_BEFORE, DnsProvider, DnsProviderKind, DynDnsConfig, Eab, Ipv6Identifier,
-    Ipv6IdentifierMode, KeyType, ManualCertConfig, ManualDns01Config, NodeEntry,
+    DEFAULT_RENEW_BEFORE, DnsProvider, DnsProviderKind, DynDnsConfig, DynDnsNodeProfile, Eab,
+    Ipv6Identifier, Ipv6IdentifierMode, KeyType, ManualCertConfig, ManualDns01Config, NodeEntry,
     NotificationsConfig, TlsConfig, TrustPin, ZoneConfig, validate_public_entry,
 };
 pub use dnscraft_common::secret::Secret;
 pub use dyndns::{
-    DynDnsResult, EchoClient, InventoryRecord, dyndns_interval, dyndns_interval_with_rng,
-    dyndns_names, dyndns_once, parse_trace_ip, record_inventory,
+    DynDnsResult, EchoClient, InventoryRecord, dyndns_address_names, dyndns_cname_names,
+    dyndns_interval, dyndns_interval_with_rng, dyndns_names, dyndns_once, parse_trace_ip,
+    record_inventory,
 };
 pub use engine::{EngineDeps, EngineInner, TlsEngine};
 pub use error::{TlsError, parse_retry_after_header};

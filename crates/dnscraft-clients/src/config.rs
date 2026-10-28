@@ -1001,7 +1001,9 @@ mod tests {
             unifi_bindings: BTreeMap::from([("garage".into(), "home".into())]),
             ..ClientsConfig::default()
         };
-        let err = cfg.validate_with_secret(ok_secret).expect_err("owner unbound");
+        let err = cfg
+            .validate_with_secret(ok_secret)
+            .expect_err("owner unbound");
         assert_eq!(err.code(), "clients.config.invalid");
         assert!(err.to_string().contains("sync_owner"));
     }

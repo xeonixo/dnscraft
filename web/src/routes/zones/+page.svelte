@@ -4,6 +4,7 @@
 	import Button from '$lib/components/Button.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
+	import NodeChecklist from '$lib/components/NodeChecklist.svelte';
 	import ResultNotice from '$lib/components/ResultNotice.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
 	import Switch from '$lib/components/Switch.svelte';
@@ -22,6 +23,7 @@
 	} from '$lib/api/policy';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
+	import { formatNodesDetail, nodeChoicesFor, toggleNodeId } from '$lib/cluster/nodes';
 	import { m } from '$lib/paraglide/messages';
 	import { bestPrefix, findInvalidRange, parseRanges } from '$lib/policy/cidr';
 	import { displayText } from '$lib/safe-text';
@@ -62,13 +64,7 @@
 	const canSave = $derived(
 		!busy && invalidRange === null && (editing !== null || formId.trim() !== ''),
 	);
-	const nodeChoices = $derived.by(() => {
-		const ids = [...clusterNodeIds];
-		for (const id of formNodes) {
-			if (!ids.includes(id)) ids.push(id);
-		}
-		return ids;
-	});
+	const nodeChoices = $derived(nodeChoicesFor(clusterNodeIds, formNodes));
 
 	function plural(count: number): string {
 		return count === 1
@@ -146,11 +142,7 @@
 	}
 
 	function toggleNode(id: string, checked: boolean): void {
-		if (checked) {
-			if (!formNodes.includes(id)) formNodes = [...formNodes, id];
-			return;
-		}
-		formNodes = formNodes.filter((node) => node !== id);
+		formNodes = toggleNodeId(formNodes, id, checked);
 	}
 
 	async function load(): Promise<void> {
@@ -309,6 +301,7 @@
 						{#if count !== null}
 							<span class="zone-count">{plural(count)}</span>
 						{/if}
+						<span class="zone-count">{formatNodesDetail(view.nodes)}</span>
 					</span>
 				{/snippet}
 				{#if isAdmin}
@@ -378,30 +371,16 @@
 
 			<details class="advanced">
 				<summary>{m.zones_advanced()}</summary>
-				<p class="field-label" id="zone-nodes-label">{m.zones_nodes_label()}</p>
-				{#if nodeChoices.length > 0}
-					<div
-						class="node-list"
-						role="group"
-						aria-labelledby="zone-nodes-label"
-						aria-describedby="zone-nodes-hint"
-					>
-						{#each nodeChoices as nodeId (nodeId)}
-							<label class="node-row">
-								<span class="mono">{displayText(nodeId).text}</span>
-								<input
-									type="checkbox"
-									checked={formNodes.includes(nodeId)}
-									onchange={(event) =>
-										toggleNode(nodeId, (event.currentTarget as HTMLInputElement).checked)}
-								/>
-							</label>
-						{/each}
-					</div>
-					<p id="zone-nodes-hint" class="hint">{m.zones_nodes_hint()}</p>
-				{:else}
-					<p class="hint">{m.zones_nodes_solo()}</p>
-				{/if}
+				<NodeChecklist
+					nodeIds={nodeChoices}
+					selected={formNodes}
+					label={m.zones_nodes_label()}
+					hint={m.zones_nodes_hint()}
+					solo={m.zones_nodes_solo()}
+					labelId="zone-nodes-label"
+					hintId="zone-nodes-hint"
+					ontoggle={toggleNode}
+				/>
 			</details>
 
 			{#snippet footer()}
@@ -660,33 +639,6 @@
 		min-height: var(--control-h);
 		color: var(--accent);
 		cursor: pointer;
-	}
-	.node-list {
-		overflow: hidden;
-		margin: 0.375rem 0 0.5rem;
-		border: 1px solid var(--separator);
-		border-radius: var(--r-ctl);
-		background: var(--surface-2);
-	}
-	.node-row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.75rem;
-		min-height: 2.5rem;
-		padding: 0 0.75rem;
-		cursor: pointer;
-	}
-	.node-row + .node-row {
-		border-top: 1px solid var(--separator);
-	}
-	.node-row input {
-		width: 1.05rem;
-		height: 1.05rem;
-		accent-color: var(--accent-solid);
-	}
-	.advanced .hint {
-		padding: 0;
 	}
 
 	.danger-text {

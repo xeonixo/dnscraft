@@ -11,9 +11,6 @@ data_dir = "/var/lib/dnscraft"
 [log]
 queries = false
 
-[resolver]
-root_hints = ["192.0.2.53:53"]
-
 [[listeners]]
 id = "lan-udp"
 protocol = "udp53"
@@ -30,7 +27,4 @@ port = 8080
 tls = false
 
 [control_api.mcp]
-enabled = false
-
-[clients.unifi]
 enabled = false

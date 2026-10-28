@@ -53,8 +53,9 @@ use super::stats_routes::{
 use super::system_routes::{get_backups, get_update_check, put_backup_settings};
 use super::tls_routes::{
     delete_tls, get_tls, get_tls_account, get_tls_audit, get_tls_certificate, get_tls_order,
-    get_tls_records, get_tls_status, put_tls, put_tls_certificate, trigger_tls_dyndns,
-    trigger_tls_preflight, trigger_tls_renew, trigger_tls_revoke, trigger_tls_rotate,
+    get_tls_records, get_tls_status, put_cloudflare_token, put_tls, put_tls_certificate,
+    trigger_tls_dyndns, trigger_tls_preflight, trigger_tls_renew, trigger_tls_revoke,
+    trigger_tls_rotate,
 };
 use crate::error::ControlApiError;
 use crate::mcp_backend::ControlMcpBackend;
@@ -171,6 +172,10 @@ pub(crate) fn build_router(state: AppState) -> Router {
                 get(get_tls).put(put_tls).post(put_tls).delete(delete_tls),
             )
             .route("/tls/status", get(get_tls_status))
+            .route(
+                "/tls/cloudflare-token",
+                axum::routing::put(put_cloudflare_token),
+            )
             .route(
                 "/tls/certificate",
                 get(get_tls_certificate).put(put_tls_certificate),

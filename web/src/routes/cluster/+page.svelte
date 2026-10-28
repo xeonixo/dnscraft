@@ -4,6 +4,7 @@
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
+	import Icon from '$lib/components/Icon.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
 	import {
 		listClusterNodes,
@@ -13,13 +14,22 @@
 	} from '$lib/api/cluster';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
+	import { nodeLag, nodeRoleLabel, nodeStatusLabel, nodeVerdict } from '$lib/cluster/nodes';
 	import { displayText } from '$lib/safe-text';
-	import { formatDateTime, formatFingerprint } from '$lib/format';
+	import { formatDateTime, formatFingerprint, formatNumber } from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
 	import { m } from '$lib/paraglide/messages';
 
 	const isAdmin = $derived(auth.role === 'admin');
 	const locale = getLocale();
+
+	const nodeRows = $derived.by(() => {
+		if (result.kind !== 'ok') return [];
+		const lags = nodeLag(result.data);
+		return result.data.map((node, index) => ({ node, lag: lags[index] ?? 0 }));
+	});
+	const activeCount = $derived(nodeRows.filter((row) => !row.node.revoked).length);
+	const behindCount = $derived(nodeRows.filter((row) => !row.node.revoked && row.lag > 0).length);
 
 	let result = $state<Result<ClusterNode[]>>({ kind: 'loading' });
 	let joinOpen = $state(false);
@@ -103,19 +113,34 @@
 		</div>
 	{/if}
 
+	<p class="summary">
+		{m.cluster_summary({
+			nodes: formatNumber(activeCount, locale),
+			behind: formatNumber(behindCount, locale),
+		})}
+	</p>
+
 	<GroupedList header={m.cluster_nodes_group()}>
-		{#each result.data as node (node.node_id)}
+		{#each nodeRows as { node, lag } (node.node_id)}
 			<GroupedRow
 				label={displayText(node.node_id).text}
 				detail={node.revoked
-					? m.cluster_revoked()
-					: m.cluster_node_meta({
-							version: node.applied_config_version ?? '—',
-							seen: node.last_seen
-								? formatDateTime(new Date(node.last_seen), locale)
-								: m.cluster_never_seen(),
-						})}
+					? `${nodeRoleLabel(node.role)} · ${m.cluster_revoked()}`
+					: `${nodeRoleLabel(node.role)} · ${nodeStatusLabel(node, lag, locale)} · ${m.cluster_node_meta(
+							{
+								version: node.applied_config_version ?? '—',
+								seen: node.last_seen
+									? formatDateTime(new Date(node.last_seen), locale)
+									: m.cluster_never_seen(),
+							},
+						)}`}
 			>
+				{#snippet leading()}
+					{@const verdict = nodeVerdict(node, lag)}
+					<span class="symbol {verdict.tone}">
+						<Icon name={verdict.icon} size="1.125rem" strokeWidth={1.7} />
+					</span>
+				{/snippet}
 				{#snippet trailing()}
 					<Button onclick={() => (detail = node)}>{m.cluster_detail()}</Button>
 					{#if isAdmin && !node.revoked}
@@ -184,6 +209,11 @@
 					: m.cluster_never_seen()}
 				detailMono
 			/>
+			<GroupedRow
+				label={m.cluster_field_applied_version()}
+				detail={String(detail.applied_config_version ?? '—')}
+				detailMono
+			/>
 		</GroupedList>
 		<div class="actions">
 			<Button onclick={() => (detail = null)}>{m.action_close()}</Button>
@@ -211,6 +241,29 @@
 
 	.toolbar {
 		margin-bottom: 0.75rem;
+	}
+
+	.summary {
+		margin: 0 0 0.5rem;
+		font-size: 0.84375rem;
+		color: var(--label-2);
+	}
+
+	.symbol {
+		display: inline-flex;
+		flex: 0 0 auto;
+	}
+
+	.symbol.ok {
+		color: var(--ok);
+	}
+
+	.symbol.warn {
+		color: var(--warn);
+	}
+
+	.symbol.neutral {
+		color: var(--label-3);
 	}
 
 	.state,

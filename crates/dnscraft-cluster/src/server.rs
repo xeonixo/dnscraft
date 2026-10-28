@@ -59,8 +59,8 @@ use crate::quota::QuotaLimiter;
 use crate::relay::{RuntimeCommand, WriteExecutor, WriteRelay};
 use crate::store::ClusterStore;
 use crate::sync::{
-    AuthSnapshotPush, ClientsDirectoryPush, ConfigAck, ConfigSync, Hello, SecretPush,
-    StreamError, StreamRecord, TlsRenewed,
+    AuthSnapshotPush, ClientsDirectoryPush, ConfigAck, ConfigSync, Hello, SecretPush, StreamError,
+    StreamRecord, TlsRenewed,
 };
 
 /// Request header carrying the sub-node's cluster protocol version.

@@ -185,6 +185,32 @@ describe('policy screens', () => {
 		expect(screen.queryByText(m.action_edit())).not.toBeInTheDocument();
 	});
 
+	it('shows node scope on the zones list', async () => {
+		handlers['GET /api/v1/policy/views'] = () =>
+			ok({
+				views: [
+					{
+						id: 'lan',
+						is_default: true,
+						subnets: ['192.0.2.0/24'],
+						nodes: [],
+						profile: 'default',
+					},
+					{
+						id: 'cabin',
+						is_default: false,
+						subnets: [],
+						nodes: ['node2'],
+						profile: 'default',
+					},
+				],
+			});
+		render(ZonesPage);
+		expect(await screen.findByText('cabin')).toBeInTheDocument();
+		expect(screen.getByText('node2')).toBeInTheDocument();
+		expect(screen.getByText(m.listeners_nodes_all())).toBeInTheDocument();
+	});
+
 	it('marks the default range, shows capped range chips and counts devices', async () => {
 		handlers['GET /api/v1/policy/views'] = () =>
 			ok({

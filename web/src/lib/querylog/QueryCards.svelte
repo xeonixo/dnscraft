@@ -35,7 +35,9 @@
 					>{displayText(record.client?.display_name ?? record.client_id ?? record.source_ip, 32)
 						.text}</span
 				>
-				<span class="mono">{record.query.type} · {record.protocol}</span>
+				<span class="mono"
+					>{record.query.type} · {record.protocol}{#if record.node_id} · {record.node_id}{/if}</span
+				>
 			</span>
 			<span class="chev" aria-hidden="true"><Icon name="chevron-right" size="1rem" /></span>
 			<span class="sr-only">{m.querylog_open_row({ domain: neutralize(unicode) })}</span>

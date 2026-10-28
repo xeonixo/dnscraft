@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use axum::Extension;
 use axum::Json;
-use axum::extract::{Path, State};
 use axum::extract::rejection::JsonRejection;
+use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use serde::Deserialize;

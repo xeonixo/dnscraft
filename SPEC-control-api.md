@@ -263,7 +263,8 @@ or secret token material. The `CertResolver` is passed to listeners as
 | GET/POST/PUT/DELETE | `/api/v1/filter-sets` | admin | filter set configuration | `filtering.config.*` |
 | GET/POST/PUT/DELETE | `/api/v1/filter-lists` | admin | URL list management | `filtering.*` |
 | GET/POST/PUT/DELETE | `/api/v1/listeners` | admin | listener CRUD (`nodes[]` optional; empty = all nodes) | `listeners.config.*` |
-| GET/POST/PUT/DELETE | `/api/v1/tls` | admin | TLS config (including `acme`, `dyndns`, `dns_provider`, `notifications`) | `tls.config.*` |
+| GET/POST/PUT/DELETE | `/api/v1/tls` | admin | TLS config (including `acme`, `dyndns`, `dns_provider`, `notifications`); GET also returns `has_cloudflare_token` (boolean, never the token) | `tls.config.*` |
+| PUT | `/api/v1/tls/cloudflare-token` | admin | write-only Cloudflare API token (`{ "api_token": "…" }` set, `null` clear); stored in kv + live engine | `tls.config.invalid`, `tls.secret.missing` |
 | GET | `/api/v1/tls/status` | viewer/admin | typed TLS status DTO (mode, fingerprint, expiry, chain, ARI, history, store health) | `control_api.not_ready` |
 | PUT | `/api/v1/tls/certificate` | admin | upload a PEM certificate + key (+ optional chain); switches to `tls_mode = manual`; returns `{ "mode": "manual" }` | `tls.cert.manual.invalid` |
 | GET | `/api/v1/tls/certificate` | admin | fullchain PEM export, **certificates only** (`{ "fullchain_pem": "..." }`) | `control_api.internal` |

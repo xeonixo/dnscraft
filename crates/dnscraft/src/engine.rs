@@ -159,8 +159,7 @@ impl dnscraft_api::ClientDirectory for EngineDirectory {
     }
 
     fn set_api_key(&self, key: Option<String>) {
-        self.engine
-            .set_api_key(key.map(|value| Secret::new(value)));
+        self.engine.set_api_key(key.map(|value| Secret::new(value)));
     }
 
     fn is_sync_owner(&self) -> bool {
@@ -197,12 +196,11 @@ impl dnscraft_api::ClientDirectory for EngineDirectory {
                     params: Some(serde_json::json!({ "reason": message })),
                 }
             })?;
-            let nets = networks_from_value(&networks).map_err(|message| {
-                ControlApiError::Module {
+            let nets =
+                networks_from_value(&networks).map_err(|message| ControlApiError::Module {
                     code: "clients.config.invalid",
                     params: Some(serde_json::json!({ "reason": message })),
-                }
-            })?;
+                })?;
             self.engine
                 .apply_directory_push(&profile_id, obs, nets)
                 .await

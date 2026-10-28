@@ -13,6 +13,8 @@
 	import CacheSheet from '$lib/dashboard/CacheSheet.svelte';
 	import PauseSheet from '$lib/dashboard/PauseSheet.svelte';
 	import * as view from '$lib/dashboard/view';
+	import { listClusterNodes, type ClusterNode } from '$lib/api/cluster';
+	import { nodeLag, nodeRoleLabel, nodeStatusLabel, nodeVerdict } from '$lib/cluster/nodes';
 	import { settle, type Result } from '$lib/api/result';
 	import {
 		getCacheStats,
@@ -76,6 +78,8 @@
 	let clients = $state<Result<TopClient[]>>({ kind: 'loading' });
 	let cache = $state<Result<CacheStats>>({ kind: 'loading' });
 	let upstreams = $state<Result<UpstreamsData>>({ kind: 'loading' });
+	/** Registry rows for the cluster card; a failed read leaves the list empty. */
+	let clusterNodes = $state<ClusterNode[]>([]);
 
 	/** The duration being confirmed; the sheet is mounted only while it is set. */
 	let pauseDuration = $state<PauseDuration | null>(null);
@@ -112,7 +116,18 @@
 
 	onMount(() => {
 		poller.start();
+		void settle(listClusterNodes()).then((result) => {
+			if (result.kind === 'ok') clusterNodes = result.data;
+		});
 		return () => poller.stop();
+	});
+
+	/** Each non-revoked node with its config lag, in registry order. */
+	const clusterRows = $derived.by(() => {
+		const lags = nodeLag(clusterNodes);
+		return clusterNodes
+			.map((node, index) => ({ node, lag: lags[index] ?? 0 }))
+			.filter((row) => !row.node.revoked);
 	});
 
 	/** Self-signed bootstrap: the names it is issued for and its fingerprint to pin. */
@@ -216,6 +231,13 @@
 	}
 </script>
 
+{#snippet nodeIcon(node: ClusterNode, lag: number)}
+	{@const verdict = nodeVerdict(node, lag)}
+	<span class="symbol {verdict.tone}"
+		><Icon name={verdict.icon} size="1.125rem" strokeWidth={1.7} /></span
+	>
+{/snippet}
+
 {#snippet upstreamRow(item: Upstream)}
 	{@const verdict = view.upstreamVerdict(item.state)}
 	<StatusRow
@@ -296,6 +318,37 @@
 	</section>
 	{#if status.kind !== 'ok'}
 		<ResultNotice result={status} onretry={() => poller.refresh()} />
+	{/if}
+
+	{#if status.kind === 'ok' && status.data.cluster}
+		{@const cluster = status.data.cluster}
+		<GroupedList header={m.dashboard_cluster_header()}>
+			<GroupedRow label={m.dashboard_cluster_role()} detail={nodeRoleLabel(cluster.role)} />
+			<GroupedRow label={m.dashboard_cluster_lag()}>
+				{#snippet trailing()}
+					<span class="num">{m.sidebar_node_lag({ lag: formatNumber(cluster.lag, locale) })}</span>
+				{/snippet}
+			</GroupedRow>
+			<GroupedRow label={m.dashboard_cluster_degraded()}>
+				{#snippet trailing()}
+					<span class="num">{formatNumber(cluster.degraded_nodes, locale)}</span>
+				{/snippet}
+			</GroupedRow>
+			{#each clusterRows as { node, lag } (node.node_id)}
+				<GroupedRow
+					label={displayText(node.node_id).text}
+					mono
+					truncate
+					detail={`${nodeRoleLabel(node.role)} · ${nodeStatusLabel(node, lag, locale)}`}
+					href="/cluster"
+				>
+					{#snippet leading()}
+						{@render nodeIcon(node, lag)}
+					{/snippet}
+				</GroupedRow>
+			{/each}
+			<GroupedRow label={m.dashboard_cluster_open()} href="/cluster" />
+		</GroupedList>
 	{/if}
 
 	<div class="tiles">
@@ -574,6 +627,23 @@
 	}
 
 	.health .detail {
+		color: var(--label-3);
+	}
+
+	.symbol {
+		display: inline-flex;
+		flex: 0 0 auto;
+	}
+
+	.symbol.ok {
+		color: var(--ok);
+	}
+
+	.symbol.warn {
+		color: var(--warn);
+	}
+
+	.symbol.neutral {
 		color: var(--label-3);
 	}
 

@@ -18,6 +18,7 @@
 
 mod api;
 mod audit;
+mod cloudflare_secrets;
 mod cluster;
 mod cluster_status;
 mod cluster_write_relay;
@@ -91,6 +92,11 @@ pub use stats::{
 };
 pub use storage::{AuditRecord, ConfigStore, Db};
 pub use system::run_backup_if_due;
+
+/// Loads a UI-stored Cloudflare API token from the config database, if any.
+pub async fn cloudflare_token_from_db(db: &Db) -> Result<Option<String>, ControlApiError> {
+    cloudflare_secrets::get_api_token(db).await
+}
 pub use tls::{
     AriStatus, CertSource, ControlApiTls, EngineStatusProvider, EngineTlsAdmin, IssueOutcome,
     IssueRecord, StoreHealth, TlsActionFuture, TlsAdmin, TlsMode, TlsStatus, TlsStatusFuture,

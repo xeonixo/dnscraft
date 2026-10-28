@@ -1,11 +1,38 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen } from '@testing-library/svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Sidebar from './Sidebar.svelte';
 import { navSections, type NavSection } from '$lib/nav';
+import { m } from '$lib/paraglide/messages';
 
-afterEach(() => cleanup());
+const json = (body: unknown): Response =>
+	new Response(JSON.stringify(body), {
+		status: 200,
+		headers: { 'Content-Type': 'application/json' },
+	});
+
+function mockStatus(data: Record<string, unknown>): void {
+	vi.stubGlobal(
+		'fetch',
+		vi.fn(async (input: RequestInfo | URL) => {
+			const url = String(input);
+			if (url.includes('/api/v1/status')) return json({ data });
+			return new Response(JSON.stringify({ error: { code: 'control_api.not_found' } }), {
+				status: 404,
+			});
+		}),
+	);
+}
+
+afterEach(() => {
+	cleanup();
+	vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+	mockStatus({ version: '1.0.0', ready: true, modules_not_ready: [] });
+});
 
 const adminSections: NavSection[] = [
 	{
@@ -58,6 +85,31 @@ describe('Sidebar', () => {
 			props: { currentPath: '/zones', sections: adminSections, role: 'admin', open: true },
 		});
 		expect(screen.getByRole('link', { name: 'Admin item' })).toBeInTheDocument();
+	});
+
+	it('shows standalone in the footer when status has no cluster', async () => {
+		render(Sidebar, { props: { currentPath: '/dashboard' } });
+		expect(await screen.findByText(m.sidebar_node_standalone())).toBeInTheDocument();
+	});
+
+	it('shows the cluster role in the footer when status includes cluster', async () => {
+		mockStatus({
+			version: '1.0.0',
+			ready: true,
+			modules_not_ready: [],
+			cluster: {
+				role: 'sub_node',
+				master_reachable: true,
+				applied_version: 2,
+				lag: 3,
+				queue_depth: 0,
+				last_sync: null,
+				degraded_nodes: 0,
+			},
+		});
+		render(Sidebar, { props: { currentPath: '/dashboard' } });
+		expect(await screen.findByText(new RegExp(m.sidebar_node_sub()))).toBeInTheDocument();
+		expect(screen.getByText(new RegExp(m.sidebar_node_lag({ lag: '3' })))).toBeInTheDocument();
 	});
 
 	it('is closed on compact widths unless the drawer is open', async () => {

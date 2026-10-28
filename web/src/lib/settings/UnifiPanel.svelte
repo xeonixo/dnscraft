@@ -72,36 +72,47 @@
 		if (isAdmin) void load();
 	});
 
-	async function resolveSelfNode(): Promise<{ self: string; nodes: string[] }> {
+	async function resolveSelfNode(): Promise<{
+		self: string;
+		nodes: string[];
+		clusterActive: boolean;
+	}> {
 		try {
 			const status = await getStatus();
-			const cluster = (status as { cluster?: { role?: string } }).cluster;
+			const cluster = status.cluster;
 			if (!cluster?.role) {
-				return { self: 'local', nodes: ['local'] };
+				return { self: 'local', nodes: ['local'], clusterActive: false };
 			}
 			const nodes = await listClusterNodes().catch(() => []);
 			const ids = nodes.map((n) => n.node_id);
 			if (cluster.role === 'master') {
-				const master = nodes.find((n) => n.role === 'master')?.node_id ?? ids[0] ?? 'local';
-				return { self: master, nodes: ids.length > 0 ? ids : [master] };
+				const master = nodes.find((n) => n.role === 'master')?.node_id ?? ids[0] ?? '';
+				const nodeList = ids.length > 0 ? ids : master ? [master] : [];
+				return { self: master, nodes: nodeList, clusterActive: true };
 			}
-			// Sub-node: node list may be empty; keep sync_owner labels from profiles.
-			return { self: '', nodes: ids.length > 0 ? ids : ['local'] };
+			// Sub-node: registry list is master-only; empty ids are normal.
+			const self = nodes.find((n) => n.role === 'sub_node')?.node_id ?? ids[0] ?? '';
+			return { self, nodes: ids, clusterActive: true };
 		} catch {
-			return { self: 'local', nodes: ['local'] };
+			return { self: 'local', nodes: ['local'], clusterActive: false };
 		}
 	}
 
 	async function load(): Promise<void> {
 		loadFailure = null;
 		try {
-			const [{ self, nodes }, snapshot, unifi] = await Promise.all([
+			const [{ self, nodes, clusterActive }, snapshot, unifi] = await Promise.all([
 				resolveSelfNode(),
 				getConfig(),
 				getUnifiStatus().catch(() => ({ profiles: [], bindings: {} })),
 			]);
-			selfNodeId = self || 'local';
-			nodeIds = nodes.includes('local') ? nodes : ['local', ...nodes];
+			if (clusterActive) {
+				selfNodeId = self;
+				nodeIds = nodes.length > 0 ? nodes : self ? [self] : [];
+			} else {
+				selfNodeId = self || 'local';
+				nodeIds = nodes.includes('local') ? nodes : ['local', ...nodes];
+			}
 			form = formFromClients(snapshot.config?.clients, unifi);
 			loaded = true;
 		} catch (cause) {
@@ -294,7 +305,7 @@
 					type="url"
 					autocomplete="off"
 					spellcheck="false"
-					placeholder="https://192.0.2.1"
+					placeholder={m.settings_unifi_gateway_placeholder()}
 					value={profile.base_url}
 					oninput={(event) =>
 						updateProfile({ base_url: (event.currentTarget as HTMLInputElement).value })}
@@ -381,7 +392,7 @@
 						type="text"
 						autocomplete="off"
 						spellcheck="false"
-						placeholder="sha256:…"
+						placeholder={m.settings_unifi_pin_placeholder()}
 						value={profile.tls_pin_sha256}
 						oninput={(event) =>
 							updateProfile({
@@ -398,7 +409,7 @@
 						type="text"
 						autocomplete="off"
 						spellcheck="false"
-						placeholder="/etc/dnscraft/unifi-ca.pem"
+						placeholder={m.settings_unifi_ca_placeholder()}
 						value={profile.ca_file}
 						oninput={(event) =>
 							updateProfile({ ca_file: (event.currentTarget as HTMLInputElement).value })}

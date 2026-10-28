@@ -195,6 +195,7 @@ pub struct ZoneConfig {
 
 /// Which DNS provider publishes ACME DNS-01 TXT records.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DnsProviderKind {
     /// Cloudflare API (the only provider that can publish automatically).
     #[default]
@@ -240,8 +241,9 @@ impl DnsProvider {
 
 /// How the stable IPv6 address is chosen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Ipv6IdentifierMode {
-    /// EUI-64 derived address (OS default).
+    /// EUI-64 derived address (OS default): dynamic prefix, stable interface id.
     #[default]
     Eui64,
     /// Stable-privacy address (OS default).
@@ -270,16 +272,76 @@ pub struct NotificationsConfig {
     pub on_dyndns_failure: bool,
 }
 
-/// DynDNS settings for this node's public hostname.
+fn default_true() -> bool {
+    true
+}
+
+/// Per-node DynDNS profile inside a cluster-wide config snapshot.
+///
+/// Each cluster member picks the entry whose [`Self::node_id`] matches its
+/// local id (`DNSCRAFT_NODE_ID`). Standalone deployments leave
+/// [`DynDnsConfig::nodes`] empty and use the flat hostname fields.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DynDnsNodeProfile {
+    /// Cluster node id (e.g. `node1`).
+    pub node_id: String,
+    /// This node's public hostname, e.g. `ns1.dns.example.com`.
+    pub hostname: String,
+    /// When false, this node does not run DynDNS (per-node opt-out).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Publish A for this node when DynDNS runs.
+    #[serde(default = "default_true")]
+    pub ipv4: bool,
+    /// Publish AAAA for this node when DynDNS runs.
+    #[serde(default = "default_true")]
+    pub ipv6: bool,
+    /// When true, this node maintains apex/wildcard **CNAME** → its hostname.
+    /// At most one profile may set this; requires [`Self::enabled`].
+    #[serde(default)]
+    pub public_entry: bool,
+    /// How this node selects its IPv6 address (EUI-64 / stable-privacy / static).
+    #[serde(default)]
+    pub ipv6_identifier: Ipv6Identifier,
+    /// Local interfaces for IPv6 discovery on this node. Empty = public-IP echo.
+    #[serde(default)]
+    pub interfaces: Vec<String>,
+}
+
+impl Default for DynDnsNodeProfile {
+    fn default() -> Self {
+        Self {
+            node_id: String::new(),
+            hostname: String::new(),
+            enabled: true,
+            ipv4: true,
+            ipv6: true,
+            public_entry: false,
+            ipv6_identifier: Ipv6Identifier::default(),
+            interfaces: Vec::new(),
+        }
+    }
+}
+
+/// DynDNS settings for public hostnames at the DNS provider.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DynDnsConfig {
-    /// When false, DynDNS tasks do not run.
+    /// When false, DynDNS tasks do not run on this process.
     pub enabled: bool,
-    /// This node's public hostname, e.g. `node1.dns.example.com`.
+    /// This node's public hostname, e.g. `ns1.dns.example.com`.
+    ///
+    /// Used when [`Self::nodes`] is empty (standalone). With a non-empty
+    /// `nodes` list, prefer [`Self::resolve_for_node`].
     pub hostname: String,
-    /// When true, this node also maintains `*.dns.<domain>` and `dns.<domain>`.
-    /// At most one node in the cluster may set this (see [`validate_public_entry`]).
+    /// When true, this node also maintains `*.dns.<domain>` and `dns.<domain>`
+    /// as **CNAME** records targeting [`Self::hostname`].
     pub public_entry: bool,
+    /// Per-node hostnames / opt-in flags for a cluster snapshot.
+    ///
+    /// Empty = use flat [`Self::hostname`] / [`Self::public_entry`] /
+    /// [`Self::enabled`] / [`Self::ipv4`] / [`Self::ipv6`].
+    #[serde(default)]
+    pub nodes: Vec<DynDnsNodeProfile>,
     /// Reserved (non–Client-ID) labels for this deployment, usually node names.
     /// The hostname's leftmost label must be one of these.
     pub reserved_labels: Vec<String>,
@@ -308,6 +370,7 @@ impl Default for DynDnsConfig {
             enabled: true,
             hostname: String::new(),
             public_entry: false,
+            nodes: Vec::new(),
             reserved_labels: Vec::new(),
             interval: DEFAULT_DYNDNS_INTERVAL,
             echo_url: DEFAULT_ECHO_URL.to_owned(),
@@ -318,6 +381,29 @@ impl Default for DynDnsConfig {
             interfaces: Vec::new(),
             record_inventory: false,
         }
+    }
+}
+
+impl DynDnsConfig {
+    /// Apply the cluster profile for `node_id` onto a copy of this config.
+    ///
+    /// Prefers a matching [`Self::nodes`] entry for hostname, public-entry,
+    /// enabled, address-family flags, and IPv6 discovery; otherwise keeps the
+    /// flat fields.
+    pub fn resolve_for_node(&self, node_id: Option<&str>) -> Self {
+        let mut out = self.clone();
+        if let Some(id) = node_id
+            && let Some(profile) = self.nodes.iter().find(|p| p.node_id == id)
+        {
+            out.hostname = profile.hostname.clone();
+            out.public_entry = profile.public_entry && profile.enabled;
+            out.enabled = self.enabled && profile.enabled;
+            out.ipv4 = profile.ipv4;
+            out.ipv6 = profile.ipv6;
+            out.ipv6_identifier = profile.ipv6_identifier.clone();
+            out.interfaces = profile.interfaces.clone();
+        }
+        out
     }
 }
 
@@ -372,8 +458,10 @@ impl Default for TlsConfig {
 impl TlsConfig {
     /// Validates and normalises this config in place.
     ///
-    /// When ACME or DynDNS is enabled, also requires
-    /// [`CLOUDFLARE_API_TOKEN_ENV`] (or its `_FILE` form).
+    /// When ACME or DynDNS needs Cloudflare, probes
+    /// [`CLOUDFLARE_API_TOKEN_ENV`] (or its `_FILE` form). An empty or
+    /// deferred token is allowed here — the control-api / UI may supply it
+    /// separately; Cloudflare calls fail later with `tls.secret.missing`.
     pub fn validate(&mut self) -> Result<(), TlsError> {
         self.validate_with_token_impl(read_secret, false)
     }
@@ -418,7 +506,13 @@ impl TlsConfig {
         self.validate_trust_pin()?;
         self.validate_notifications(allow_http)?;
         if self.dns_provider.uses_cloudflare() && (self.acme.enabled || self.dyndns.enabled) {
-            let _ = lookup(CLOUDFLARE_API_TOKEN_ENV)?;
+            // Probe only: `Err` means the lookup itself failed in a hard way.
+            // Missing / empty tokens are deferred to runtime (UI/kv/env).
+            match lookup(CLOUDFLARE_API_TOKEN_ENV) {
+                Ok(_) => {}
+                Err(TlsError::SecretMissing { .. }) => {}
+                Err(other) => return Err(other),
+            }
         }
         Ok(())
     }
@@ -559,9 +653,73 @@ impl TlsConfig {
         check_https_url(&self.dyndns.echo_url, allow_http, "dyndns.echo_url")
             .map_err(TlsError::config)?;
 
-        // IPv6 stable identifier: static mode needs a valid fixed address.
-        let static_addr = self.dyndns.ipv6_identifier.static_address.as_deref();
-        match self.dyndns.ipv6_identifier.mode {
+        Self::normalise_ipv6_identifier(&mut self.dyndns.ipv6_identifier)?;
+        self.dyndns.interfaces = Self::normalise_interfaces(&self.dyndns.interfaces)?;
+
+        // Normalise reserved labels (lower-case, trim).
+        for label in &mut self.dyndns.reserved_labels {
+            *label = label.trim().to_ascii_lowercase();
+            if label.is_empty() {
+                return Err(TlsError::config(
+                    "dyndns.reserved_labels contains an empty label",
+                ));
+            }
+            if label.contains('.') {
+                return Err(TlsError::config(
+                    "dyndns.reserved_labels must be single labels, not FQDNs",
+                ));
+            }
+        }
+
+        let expected_suffix = format!("dns.{}", self.public_domain);
+
+        for profile in &mut self.dyndns.nodes {
+            profile.node_id = profile.node_id.trim().to_owned();
+            if profile.node_id.is_empty() {
+                return Err(TlsError::config("dyndns.nodes[].node_id is empty"));
+            }
+            profile.hostname = normalise_domain(&profile.hostname).map_err(TlsError::config)?;
+            Self::validate_dyndns_hostname(
+                &profile.hostname,
+                &expected_suffix,
+                &self.public_domain,
+                &self.dyndns.reserved_labels,
+            )?;
+            if profile.public_entry && !profile.enabled {
+                return Err(TlsError::config(
+                    "dyndns.nodes[] public_entry requires enabled=true",
+                ));
+            }
+            if profile.enabled && !profile.ipv4 && !profile.ipv6 {
+                return Err(TlsError::config(format!(
+                    "dyndns.nodes[{}] must enable at least one of ipv4 or ipv6",
+                    profile.node_id
+                )));
+            }
+            if profile.enabled && profile.ipv6 {
+                Self::normalise_ipv6_identifier(&mut profile.ipv6_identifier)?;
+            }
+            profile.interfaces = Self::normalise_interfaces(&profile.interfaces)?;
+        }
+        if self.dyndns.nodes.iter().filter(|p| p.public_entry).count() > 1 {
+            return Err(TlsError::DyndnsEntryConflict);
+        }
+
+        self.dyndns.hostname = normalise_domain(&self.dyndns.hostname).map_err(TlsError::config)?;
+        if self.dyndns.nodes.is_empty() || !self.dyndns.hostname.is_empty() {
+            Self::validate_dyndns_hostname(
+                &self.dyndns.hostname,
+                &expected_suffix,
+                &self.public_domain,
+                &self.dyndns.reserved_labels,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn normalise_ipv6_identifier(ident: &mut Ipv6Identifier) -> Result<(), TlsError> {
+        let static_addr = ident.static_address.as_deref();
+        match ident.mode {
             Ipv6IdentifierMode::Static => {
                 let Some(addr) = static_addr else {
                     return Err(TlsError::DyndnsIpv6 {
@@ -586,13 +744,15 @@ impl TlsConfig {
                 }
             }
         }
-        if let Some(addr) = &mut self.dyndns.ipv6_identifier.static_address {
+        if let Some(addr) = &mut ident.static_address {
             *addr = addr.trim().to_owned();
         }
+        Ok(())
+    }
 
-        // Normalise interface names (trim, drop empties, keep order).
-        let mut interfaces = Vec::with_capacity(self.dyndns.interfaces.len());
-        for name in &self.dyndns.interfaces {
+    fn normalise_interfaces(raw: &[String]) -> Result<Vec<String>, TlsError> {
+        let mut interfaces = Vec::with_capacity(raw.len());
+        for name in raw {
             let name = name.trim().to_owned();
             if name.is_empty() {
                 return Err(TlsError::config(
@@ -603,35 +763,23 @@ impl TlsConfig {
                 interfaces.push(name);
             }
         }
-        self.dyndns.interfaces = interfaces;
+        Ok(interfaces)
+    }
 
-        // Normalise reserved labels (lower-case, trim).
-        for label in &mut self.dyndns.reserved_labels {
-            *label = label.trim().to_ascii_lowercase();
-            if label.is_empty() {
-                return Err(TlsError::config(
-                    "dyndns.reserved_labels contains an empty label",
-                ));
-            }
-            if label.contains('.') {
-                return Err(TlsError::config(
-                    "dyndns.reserved_labels must be single labels, not FQDNs",
-                ));
-            }
-        }
-
-        self.dyndns.hostname = normalise_domain(&self.dyndns.hostname).map_err(TlsError::config)?;
-        let expected_suffix = format!("dns.{}", self.public_domain);
-        let Some((label, rest)) = self.dyndns.hostname.split_once('.') else {
+    fn validate_dyndns_hostname(
+        hostname: &str,
+        expected_suffix: &str,
+        public_domain: &str,
+        reserved_labels: &[String],
+    ) -> Result<(), TlsError> {
+        let Some((label, rest)) = hostname.split_once('.') else {
             return Err(TlsError::config(format!(
-                "dyndns.hostname {:?} is not <label>.dns.<public_domain>",
-                self.dyndns.hostname
+                "dyndns.hostname {hostname:?} is not <label>.dns.<public_domain>"
             )));
         };
         if rest != expected_suffix {
             return Err(TlsError::config(format!(
-                "dyndns.hostname {:?} must be <label>.dns.{}",
-                self.dyndns.hostname, self.public_domain
+                "dyndns.hostname {hostname:?} must be <label>.dns.{public_domain}"
             )));
         }
         if label.contains('.') {
@@ -639,9 +787,7 @@ impl TlsConfig {
                 "dyndns.hostname must have exactly one label below dns.<domain>",
             ));
         }
-        let reserved_ok = self
-            .dyndns
-            .reserved_labels
+        let reserved_ok = reserved_labels
             .iter()
             .any(|r| r.eq_ignore_ascii_case(label));
         if !reserved_ok {
@@ -713,6 +859,7 @@ mod tests {
                 enabled: true,
                 hostname: "Node1.DNS.Example.COM.".into(),
                 public_entry: false,
+                nodes: Vec::new(),
                 reserved_labels: vec!["node1".into(), "node2".into()],
                 interval: DEFAULT_DYNDNS_INTERVAL,
                 echo_url: DEFAULT_ECHO_URL.into(),
@@ -792,21 +939,21 @@ mod tests {
     }
 
     #[test]
-    fn config_missing_token_with_acme_enabled() {
+    fn config_missing_token_with_acme_enabled_is_deferred() {
+        // Token may arrive later via UI/kv; config validation must not block.
         let mut cfg = example_config();
-        let err = cfg.validate_with_token(missing_token).expect_err("token");
-        assert_eq!(err.code(), "tls.secret.missing");
-        assert!(!format!("{err:?}").contains("test-token"));
+        cfg.validate_with_token(missing_token)
+            .expect("deferred token ok at config time");
     }
 
     #[test]
-    fn config_missing_token_with_dyndns_enabled() {
+    fn config_missing_token_with_dyndns_enabled_is_deferred() {
         let mut cfg = example_config();
         cfg.acme.enabled = false;
         cfg.acme.email.clear();
         cfg.dyndns.enabled = true;
-        let err = cfg.validate_with_token(missing_token).expect_err("token");
-        assert_eq!(err.code(), "tls.secret.missing");
+        cfg.validate_with_token(missing_token)
+            .expect("deferred token ok at config time");
     }
 
     #[test]
@@ -856,6 +1003,80 @@ mod tests {
         ];
         validate_public_entry(&nodes).expect("one entry ok");
         validate_public_entry(&[]).expect("empty ok");
+    }
+
+    #[test]
+    fn resolve_for_node_applies_opt_in_and_families() {
+        let cfg = DynDnsConfig {
+            hostname: "ns1.dns.example.com".into(),
+            public_entry: true,
+            enabled: true,
+            ipv4: true,
+            ipv6: true,
+            nodes: vec![
+                DynDnsNodeProfile {
+                    node_id: "node1".into(),
+                    hostname: "ns1.dns.example.com".into(),
+                    enabled: true,
+                    ipv4: true,
+                    ipv6: true,
+                    public_entry: true,
+                    interfaces: vec!["eth0".into()],
+                    ipv6_identifier: Ipv6Identifier {
+                        mode: Ipv6IdentifierMode::Eui64,
+                        static_address: None,
+                    },
+                },
+                DynDnsNodeProfile {
+                    node_id: "node2".into(),
+                    hostname: "ns2.dns.example.com".into(),
+                    enabled: false,
+                    ipv4: true,
+                    ipv6: true,
+                    public_entry: false,
+                    interfaces: vec!["enp1s0".into()],
+                    ..Default::default()
+                },
+            ],
+            ..DynDnsConfig::default()
+        };
+        let n1 = cfg.resolve_for_node(Some("node1"));
+        assert!(n1.enabled);
+        assert!(n1.public_entry);
+        assert!(n1.ipv4);
+        assert!(n1.ipv6);
+        assert_eq!(n1.interfaces, vec!["eth0".to_owned()]);
+        let n2 = cfg.resolve_for_node(Some("node2"));
+        assert!(!n2.enabled);
+        assert!(!n2.public_entry);
+        assert_eq!(n2.hostname, "ns2.dns.example.com");
+        assert_eq!(n2.interfaces, vec!["enp1s0".to_owned()]);
+    }
+
+    #[test]
+    fn config_rejects_public_entry_on_disabled_profile() {
+        let mut cfg = example_config();
+        cfg.dyndns.nodes = vec![DynDnsNodeProfile {
+            node_id: "node1".into(),
+            hostname: "node1.dns.example.com".into(),
+            enabled: false,
+            ipv4: true,
+            ipv6: true,
+            public_entry: true,
+            ..Default::default()
+        }];
+        let err = cfg
+            .validate_with_token(ok_token)
+            .expect_err("entry needs enabled");
+        assert_eq!(err.code(), "tls.config.invalid");
+    }
+
+    #[test]
+    fn ipv6_mode_serialises_snake_case() {
+        let json = serde_json::to_value(Ipv6IdentifierMode::StablePrivacy).unwrap();
+        assert_eq!(json, "stable_privacy");
+        let back: Ipv6IdentifierMode = serde_json::from_value(serde_json::json!("eui64")).unwrap();
+        assert_eq!(back, Ipv6IdentifierMode::Eui64);
     }
 
     #[test]

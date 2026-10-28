@@ -5,6 +5,8 @@
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
+	import NodeChecklist from '$lib/components/NodeChecklist.svelte';
+	import Segmented from '$lib/components/Segmented.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
 	import Switch from '$lib/components/Switch.svelte';
 	import UnavailableNotice from '$lib/components/UnavailableNotice.svelte';
@@ -19,11 +21,13 @@
 	} from '$lib/api/listeners';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
+	import { formatNodesDetail, nodeChoicesFor, toggleNodeId } from '$lib/cluster/nodes';
 	import { displayText } from '$lib/safe-text';
 	import { m } from '$lib/paraglide/messages';
 
 	const isAdmin = $derived(auth.role === 'admin');
 	const protocols: ListenerBody['protocol'][] = ['udp53', 'tcp53', 'dot', 'doh', 'doq'];
+	type AddrFamily = 'ipv4' | 'ipv6';
 
 	let result = $state<Result<Listener[]>>({ kind: 'loading' });
 	let configVersion = $state<number | null>(null);
@@ -35,6 +39,7 @@
 
 	let formId = $state('');
 	let formProtocol = $state<ListenerBody['protocol']>('doh');
+	let formFamily = $state<AddrFamily>('ipv4');
 	let formAddress = $state('127.0.0.1:443');
 	let formPublic = $state(false);
 	let formH3 = $state(false);
@@ -44,14 +49,118 @@
 	const hasPublic = $derived(
 		result.kind === 'ok' && result.data.some((l) => l.exposure === 'public'),
 	);
+	const canBePublic = $derived(allowsPublic(formProtocol));
 
-	const nodeChoices = $derived.by(() => {
-		const ids = [...clusterNodeIds];
-		for (const id of formNodes) {
-			if (!ids.includes(id)) ids.push(id);
+	const nodeChoices = $derived(nodeChoicesFor(clusterNodeIds, formNodes));
+
+	const familyOptions: { value: AddrFamily; label: string }[] = [
+		{ value: 'ipv4', label: m.listeners_family_ipv4() },
+		{ value: 'ipv6', label: m.listeners_family_ipv6() },
+	];
+
+	/** Encrypted listeners only — matches `Protocol::allows_public` in dnscraft-listeners. */
+	function allowsPublic(protocol: ListenerBody['protocol']): boolean {
+		return protocol === 'dot' || protocol === 'doh' || protocol === 'doq';
+	}
+
+	function defaultPort(protocol: ListenerBody['protocol']): string {
+		switch (protocol) {
+			case 'udp53':
+			case 'tcp53':
+				return '53';
+			case 'dot':
+			case 'doq':
+				return '853';
+			case 'doh':
+				return '443';
 		}
-		return ids;
-	});
+	}
+
+	function defaultHost(family: AddrFamily, isPublic: boolean): string {
+		if (family === 'ipv6') return isPublic ? '[::]' : '[::1]';
+		return isPublic ? '0.0.0.0' : '127.0.0.1';
+	}
+
+	function composeAddress(
+		family: AddrFamily,
+		protocol: ListenerBody['protocol'],
+		isPublic: boolean,
+	): string {
+		return `${defaultHost(family, isPublic)}:${defaultPort(protocol)}`;
+	}
+
+	function detectFamily(address: string): AddrFamily {
+		const trimmed = address.trim();
+		if (trimmed.startsWith('[') || trimmed.includes('::')) return 'ipv6';
+		return 'ipv4';
+	}
+
+	function isStockHost(host: string): boolean {
+		return (
+			host === '127.0.0.1' ||
+			host === '0.0.0.0' ||
+			host === '[::1]' ||
+			host === '[::]' ||
+			host === '::1' ||
+			host === '::'
+		);
+	}
+
+	function splitHostPort(address: string): { host: string; port: string | null } {
+		const trimmed = address.trim();
+		if (!trimmed) return { host: '', port: null };
+		if (trimmed.startsWith('[')) {
+			const end = trimmed.indexOf(']');
+			if (end > 0) {
+				const rest = trimmed.slice(end + 1);
+				if (rest.startsWith(':') && /^\d+$/.test(rest.slice(1))) {
+					return { host: trimmed.slice(0, end + 1), port: rest.slice(1) };
+				}
+				return { host: trimmed.slice(0, end + 1), port: null };
+			}
+		}
+		const colon = trimmed.lastIndexOf(':');
+		if (colon > 0 && /^\d+$/.test(trimmed.slice(colon + 1))) {
+			return { host: trimmed.slice(0, colon), port: trimmed.slice(colon + 1) };
+		}
+		return { host: trimmed, port: null };
+	}
+
+	/** Keep a custom host; rewrite stock hosts and always apply the protocol port. */
+	function withProtocolPort(
+		address: string,
+		protocol: ListenerBody['protocol'],
+		family: AddrFamily,
+		isPublic: boolean,
+	): string {
+		const port = defaultPort(protocol);
+		const { host } = splitHostPort(address);
+		if (!host || isStockHost(host)) {
+			return composeAddress(family, protocol, isPublic);
+		}
+		return `${host}:${port}`;
+	}
+
+	function onProtocolChange(protocol: ListenerBody['protocol']): void {
+		const nextPublic = allowsPublic(protocol) ? formPublic : false;
+		formProtocol = protocol;
+		formPublic = nextPublic;
+		formAddress = withProtocolPort(formAddress, protocol, formFamily, nextPublic);
+		if (protocol !== 'doh') formH3 = false;
+	}
+
+	function onFamilyChange(family: AddrFamily): void {
+		formFamily = family;
+		formAddress = composeAddress(family, formProtocol, formPublic && allowsPublic(formProtocol));
+	}
+
+	function onPublicChange(checked: boolean): void {
+		formPublic = checked;
+		const { host } = splitHostPort(formAddress);
+		if (!host || isStockHost(host)) {
+			formAddress = composeAddress(formFamily, formProtocol, checked);
+		}
+	}
 
 	const grouped = $derived.by(() => {
 		if (result.kind !== 'ok') return [] as { protocol: Listener['protocol']; rows: Listener[] }[];
@@ -73,17 +182,8 @@
 		return labels[protocol]?.() ?? protocol;
 	}
 
-	function nodesDetail(listener: Listener): string {
-		if (listener.nodes.length === 0) return m.listeners_nodes_all();
-		return listener.nodes.join(', ');
-	}
-
 	function toggleNode(id: string, checked: boolean): void {
-		if (checked) {
-			if (!formNodes.includes(id)) formNodes = [...formNodes, id];
-			return;
-		}
-		formNodes = formNodes.filter((node) => node !== id);
+		formNodes = toggleNodeId(formNodes, id, checked);
 	}
 
 	function rowDetail(listener: Listener): string {
@@ -91,7 +191,7 @@
 			listener.exposure === 'public'
 				? m.listeners_exposure_public()
 				: m.listeners_exposure_local();
-		const parts = [listener.address, exposure, nodesDetail(listener)];
+		const parts = [listener.address, exposure, formatNodesDetail(listener.nodes)];
 		if (listener.h3) parts.push('h3');
 		return parts.join(' · ');
 	}
@@ -111,8 +211,9 @@
 		editing = null;
 		formId = '';
 		formProtocol = 'doh';
-		formAddress = '127.0.0.1:443';
+		formFamily = 'ipv4';
 		formPublic = false;
+		formAddress = composeAddress('ipv4', 'doh', false);
 		formH3 = false;
 		formNodes = [];
 		failure = null;
@@ -123,8 +224,9 @@
 		editing = listener;
 		formId = listener.id;
 		formProtocol = listener.protocol;
+		formFamily = detectFamily(listener.address);
 		formAddress = listener.address;
-		formPublic = listener.exposure === 'public';
+		formPublic = listener.exposure === 'public' && allowsPublic(listener.protocol);
 		formH3 = listener.h3;
 		formNodes = [...listener.nodes];
 		failure = null;
@@ -139,8 +241,8 @@
 			id: formId.trim(),
 			protocol: formProtocol,
 			address: formAddress.trim(),
-			exposure: formPublic ? 'public' : 'local',
-			h3: formH3,
+			exposure: formPublic && allowsPublic(formProtocol) ? 'public' : 'local',
+			h3: formProtocol === 'doh' && formH3,
 			nodes: formNodes,
 		};
 		try {
@@ -246,37 +348,55 @@
 		<input id="listener-id" class="field" bind:value={formId} disabled={editing !== null} />
 
 		<label class="field-label" for="listener-protocol">{m.listeners_protocol_label()}</label>
-		<select id="listener-protocol" class="field" bind:value={formProtocol}>
+		<select
+			id="listener-protocol"
+			class="field"
+			value={formProtocol}
+			onchange={(event) =>
+				onProtocolChange((event.currentTarget as HTMLSelectElement).value as ListenerBody['protocol'])}
+		>
 			{#each protocols as protocol (protocol)}
 				<option value={protocol}>{protocolLabel(protocol)}</option>
 			{/each}
 		</select>
 
+		<p class="field-label">{m.listeners_family_label()}</p>
+		<Segmented
+			options={familyOptions}
+			bind:value={formFamily}
+			label={m.listeners_family_label()}
+			onchange={onFamilyChange}
+		/>
+
 		<label class="field-label" for="listener-address">{m.listeners_address_label()}</label>
 		<input id="listener-address" class="field mono" bind:value={formAddress} />
+		<p class="hint tight">{m.listeners_address_hint()}</p>
 
-		{#if nodeChoices.length > 0}
-			<p class="field-label" id="listener-nodes-label">{m.listeners_nodes_label()}</p>
-			<div class="node-list" role="group" aria-labelledby="listener-nodes-label" aria-describedby="listener-nodes-hint">
-				{#each nodeChoices as nodeId (nodeId)}
-					<label class="node-row">
-						<span class="mono">{displayText(nodeId).text}</span>
-						<input
-							type="checkbox"
-							checked={formNodes.includes(nodeId)}
-							onchange={(event) =>
-								toggleNode(nodeId, (event.currentTarget as HTMLInputElement).checked)}
-						/>
-					</label>
-				{/each}
-			</div>
-			<p id="listener-nodes-hint" class="hint">{m.listeners_nodes_hint()}</p>
+		<NodeChecklist
+			nodeIds={nodeChoices}
+			selected={formNodes}
+			label={m.listeners_nodes_label()}
+			hint={m.listeners_nodes_hint()}
+			solo={m.zones_nodes_solo()}
+			labelId="listener-nodes-label"
+			hintId="listener-nodes-hint"
+			ontoggle={toggleNode}
+		/>
+
+		{#if canBePublic}
+			<label class="public-row">
+				<Switch
+					bind:checked={formPublic}
+					aria-label={m.listeners_exposure_public()}
+					onchange={(event) =>
+						onPublicChange((event.currentTarget as HTMLInputElement).checked)}
+				/>
+				<span>{m.listeners_exposure_public()}</span>
+			</label>
+			<p class="hint tight">{m.listeners_exposure_public_hint()}</p>
+		{:else}
+			<p class="hint tight">{m.listeners_exposure_plaintext_hint()}</p>
 		{/if}
-
-		<label class="public-row">
-			<Switch bind:checked={formPublic} aria-label={m.listeners_exposure_public()} />
-			<span>{m.listeners_exposure_public()}</span>
-		</label>
 
 		{#if formProtocol === 'doh'}
 			<label class="public-row">
@@ -335,43 +455,11 @@
 		margin: 0.75rem 0 0;
 		color: var(--label-2);
 		font-size: 0.84375rem;
+		line-height: 1.35;
 	}
 
-	.hint {
-		margin: -0.25rem 0 1rem;
-	}
-
-	.node-list {
-		overflow: hidden;
-		margin: 0 0 0.5rem;
-		border: 1px solid var(--separator);
-		border-radius: var(--r-ctl);
-		background: var(--surface-2);
-	}
-
-	.node-row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.75rem;
-		min-height: 2.5rem;
-		padding: 0 0.75rem;
-		cursor: pointer;
-	}
-
-	.node-row + .node-row {
-		border-top: 1px solid var(--separator);
-	}
-
-	.node-row input {
-		width: 1.05rem;
-		height: 1.05rem;
-		accent-color: var(--accent-solid);
-	}
-
-	.node-row .mono {
-		font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-		font-size: 0.875rem;
+	.hint.tight {
+		margin: -0.5rem 0 1rem;
 	}
 
 	.notice {

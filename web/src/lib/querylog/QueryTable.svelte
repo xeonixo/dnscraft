@@ -124,7 +124,11 @@
 								<Value value={clientName} limit={32} />
 							{/if}
 						</span>
-						<span class="sub mono"><Value value={record.source_ip} mono /> · {record.protocol}</span
+						<span class="sub mono"
+							><Value value={record.source_ip} mono /> · {record.protocol}{#if record.node_id} · <Value
+									value={record.node_id}
+									mono
+								/>{/if}</span
 						>
 					</td>
 					<td>
@@ -159,6 +163,10 @@
 		style:top="{tip.top}px"
 	>
 		<dl>
+			{#if hit.node_id}
+				<dt>{m.querylog_row_node()}</dt>
+				<dd class="mono">{hit.node_id}</dd>
+			{/if}
 			<dt>{m.querylog_row_rcode()}</dt>
 			<dd class="mono">{hit.rcode}</dd>
 			<dt>{m.querylog_row_answer_source()}</dt>

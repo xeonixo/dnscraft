@@ -110,11 +110,8 @@ impl TlsEngine {
         clock: Arc<dyn Clock>,
     ) -> Result<Self, TlsError> {
         config.validate()?;
-        let token = if config.acme.enabled || config.dyndns.enabled {
-            read_secret(CLOUDFLARE_API_TOKEN_ENV)?
-        } else {
-            Secret::new("")
-        };
+        // Env / `*_FILE` when present; empty when the UI/kv will supply it later.
+        let token = read_secret(CLOUDFLARE_API_TOKEN_ENV).unwrap_or_else(|_| Secret::new(""));
         let deps = EngineDeps {
             acme: Arc::new(InstantAcme::new()?),
             cloudflare_base_url: None,
@@ -288,6 +285,29 @@ impl TlsEngine {
             renew_success_total: self.inner.renew_success.load(Ordering::Relaxed),
             renew_failure_total: self.inner.renew_failure.load(Ordering::Relaxed),
         }
+    }
+
+    /// Installs or clears the Cloudflare API token (UI/kv or env bootstrap).
+    ///
+    /// Rebuilds the Cloudflare client against the current config. An empty
+    /// secret clears the in-memory token.
+    pub async fn set_cloudflare_token(&self, token: Secret) -> Result<(), TlsError> {
+        let config = self.inner.config.read().await.clone();
+        let base = self
+            .inner
+            .cloudflare_base_url
+            .clone()
+            .unwrap_or_else(|| CLOUDFLARE_API_BASE.to_owned());
+        let cf = CloudflareClient::with_base_url(
+            token.clone(),
+            config.public_domain.clone(),
+            &config.dns_provider.cloudflare,
+            base,
+        )?
+        .with_zones(config.dns_provider.zones.clone());
+        *self.inner.token.write().await = token;
+        *self.inner.cloudflare.write().await = cf;
+        Ok(())
     }
 
     /// Validates `config`, swaps it in, and updates background flags.
@@ -741,7 +761,10 @@ impl EngineInner {
             return Ok(DynDnsResult::default());
         }
         let cf = self.cloudflare.read().await.clone();
-        let (result, outcome) = dyndns_pass(&cfg.dyndns, &cfg.public_domain, &self.echo, &cf).await;
+        // Cluster: pick this node's hostname / public_entry from dyndns.nodes.
+        let node_id = std::env::var("DNSCRAFT_NODE_ID").ok();
+        let dyndns = cfg.dyndns.resolve_for_node(node_id.as_deref());
+        let (result, outcome) = dyndns_pass(&dyndns, &cfg.public_domain, &self.echo, &cf).await;
         let now = self.clock.now();
         let next = now + dyndns_interval(cfg.dyndns.interval);
 

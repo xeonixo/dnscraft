@@ -22,6 +22,16 @@ const PERIOD_MS: Record<Period, number> = {
 	'1y': 365 * DAY_MS,
 };
 
+export interface StatusCluster {
+	role: string;
+	master_reachable: boolean;
+	applied_version: number | null;
+	lag: number;
+	queue_depth: number;
+	last_sync: string | null;
+	degraded_nodes: number;
+}
+
 export interface StatusData {
 	version: string;
 	ready: boolean;
@@ -29,6 +39,7 @@ export interface StatusData {
 	tls_mode?: TlsMode;
 	tls_fingerprint?: string;
 	tls?: { identifiers?: string[] };
+	cluster?: StatusCluster;
 }
 
 export interface Readiness {

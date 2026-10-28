@@ -8,6 +8,10 @@ rust-version.workspace = true
 publish = false
 description = "DNScraft DNS server (minimal binary bootstrap)"
 
+[features]
+# Serve the embedded SPA from the control API (build web/ and copy web/build to crates/dnscraft-api/embed-web-ui first).
+web-ui = ["dnscraft-api/web-ui"]
+
 [lints]
 workspace = true
 

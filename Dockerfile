@@ -8,13 +8,22 @@
 
 ARG RUST_VERSION=1.88
 
+FROM node:22-bookworm-slim AS web
+WORKDIR /web
+RUN corepack enable
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY web .
+RUN pnpm run build
+
 FROM rust:${RUST_VERSION}-bookworm AS builder
 WORKDIR /build
 
 COPY Cargo.toml Cargo.lock deny.toml rust-toolchain.toml ./
 COPY crates ./crates
+COPY --from=web /web/build ./crates/dnscraft-api/embed-web-ui
 
-RUN cargo build --release -p dnscraft --locked
+RUN cargo build --release -p dnscraft --features web-ui --locked
 
 FROM debian:bookworm-slim AS runtime
 

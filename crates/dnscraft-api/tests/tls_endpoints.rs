@@ -155,6 +155,23 @@ impl TlsAdmin for FakeAdmin {
     fn dyndns_audit(&self) -> TlsValueFuture<'_> {
         self.value("audit", json!({ "entries": [] }))
     }
+
+    fn set_cloudflare_token(&self, token: Option<Secret>) -> TlsActionFuture<'_> {
+        self.record(format!(
+            "cloudflare_token:{}",
+            token
+                .as_ref()
+                .map(|t| !t.expose().is_empty())
+                .unwrap_or(false)
+        ));
+        let fail = self.fail;
+        Box::pin(async move {
+            match fail {
+                Some(code) => Err(ControlApiError::Module { code, params: None }),
+                None => Ok(()),
+            }
+        })
+    }
 }
 
 struct Harness {

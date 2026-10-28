@@ -166,11 +166,8 @@ impl ClientEngine {
     ) -> Result<Arc<Self>, ClientsError> {
         let node_id = node_id.into();
         config.migrate_legacy_unifi();
-        let needs_key = config.unifi.enabled
-            || config
-                .unifi_profiles
-                .iter()
-                .any(|p| p.connection.enabled);
+        let needs_key =
+            config.unifi.enabled || config.unifi_profiles.iter().any(|p| p.connection.enabled);
         let key = if needs_key {
             match api_key {
                 Some(k) => Some(k),
@@ -410,11 +407,8 @@ impl ClientEngine {
         let _guard = self.inner.sync_lock.lock().await;
         config.migrate_legacy_unifi();
         let node_id = self.inner.node_id.clone();
-        let needs_key = config.unifi.enabled
-            || config
-                .unifi_profiles
-                .iter()
-                .any(|p| p.connection.enabled);
+        let needs_key =
+            config.unifi.enabled || config.unifi_profiles.iter().any(|p| p.connection.enabled);
         let mut lookup = lookup;
         let fresh_key = if needs_key {
             let stored = self
@@ -564,13 +558,8 @@ impl ClientEngine {
             .clone();
         let built = merge::build(&cfg.manual, &observations, &networks, &prev, &cfg, now)?;
         self.record_merge_stats(&built.stats);
-        let rebuilt = self.install_snapshot(
-            built.lookup,
-            built.state,
-            &observations,
-            &networks,
-            true,
-        );
+        let rebuilt =
+            self.install_snapshot(built.lookup, built.state, &observations, &networks, true);
         let generation = self
             .inner
             .status

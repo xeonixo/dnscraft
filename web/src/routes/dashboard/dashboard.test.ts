@@ -114,6 +114,32 @@ afterEach(() => {
 });
 
 describe('dashboard tiles and panels', () => {
+	it('shows the cluster summary when status includes cluster', async () => {
+		serve({
+			'GET /api/v1/status': () =>
+				ok({
+					...status,
+					cluster: {
+						role: 'master',
+						master_reachable: true,
+						applied_version: 3,
+						lag: 0,
+						queue_depth: 0,
+						last_sync: null,
+						degraded_nodes: 0,
+					},
+				}),
+		});
+		render(Page);
+
+		expect(await screen.findByText(m.dashboard_cluster_header())).toBeInTheDocument();
+		expect(screen.getByText(m.sidebar_node_master())).toBeInTheDocument();
+		expect(screen.getByRole('link', { name: m.dashboard_cluster_open() })).toHaveAttribute(
+			'href',
+			'/cluster',
+		);
+	});
+
 	it('renders the headline tiles with text and tone labels', async () => {
 		serve();
 		render(Page);

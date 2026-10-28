@@ -707,6 +707,15 @@ async function route(request, response, options) {
 				tls_mode: 'acme',
 				tls_fingerprint: '',
 				tls: { identifiers: ['dns.example.test'] },
+				cluster: {
+					role: 'master',
+					master_reachable: true,
+					applied_version: 12,
+					lag: 0,
+					queue_depth: 0,
+					last_sync: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+					degraded_nodes: 1,
+				},
 			});
 		case 'GET /api/v1/stats/overview':
 			return sendData(response, overview(url.searchParams));
@@ -988,14 +997,28 @@ async function route(request, response, options) {
 				listeners: currentOf(options.store).config.listeners?.listeners ?? [],
 			});
 		case 'GET /api/v1/tls':
-			return sendData(response, { tls: currentOf(options.store).config.tls ?? {} });
+			return sendData(response, {
+				tls: currentOf(options.store).config.tls ?? {},
+				has_cloudflare_token: Boolean(options.runtime.cloudflareApiToken),
+			});
 		case 'GET /api/v1/tls/status':
 			return sendData(response, {
 				mode: 'self_signed',
 				fingerprint_sha256: '3a9c7f11de420b886501ee2a94c30d77'.padEnd(64, '0'),
+				not_before: '2026-10-26T11:02:00Z',
 				not_after: '2027-01-15T00:00:00Z',
-				identifiers: ['dns.example.test'],
+				days_to_expiry: 79,
+				identifiers: ['dns.example.test', '*.dns.example.test'],
+				issuer: 'DNScraft (self-signed)',
+				subject: 'dns.example.test',
+				key_type: 'ECDSA P-256',
+				last_issue: '2026-10-26T11:02:00Z',
+				last_renew_attempt: null,
+				last_error: null,
 				self_signed: true,
+				dyndns_ipv4: '192.0.2.10',
+				dyndns_ipv6: '2001:db8:8f3a:1:a00:27ff:fe4e:66a1',
+				last_dyndns_success: new Date(Date.now() - 5 * 60_000).toISOString(),
 			});
 		case 'POST /api/v1/tls/renew':
 			return sendData(response, { started: true });
@@ -1012,6 +1035,24 @@ async function route(request, response, options) {
 		case 'PUT /api/v1/tls/certificate': {
 			await readJsonBody(request);
 			return sendData(response, { mode: 'manual' });
+		}
+		case 'PUT /api/v1/tls/cloudflare-token': {
+			const body = await readJsonBody(request);
+			if (!Object.prototype.hasOwnProperty.call(body, 'api_token')) {
+				return sendData(response, { updated: false });
+			}
+			if (body.api_token === null) {
+				options.runtime.cloudflareApiToken = null;
+				return sendData(response, { updated: true, has_cloudflare_token: false });
+			}
+			const token = String(body.api_token ?? '');
+			if (!token) {
+				throw new ApiFailure(400, 'tls.config.invalid', {
+					reason: 'api_token must not be empty; use null to clear',
+				});
+			}
+			options.runtime.cloudflareApiToken = token;
+			return sendData(response, { updated: true, has_cloudflare_token: true });
 		}
 		case 'GET /api/v1/update/check':
 			return sendData(response, {
@@ -1495,6 +1536,7 @@ function createRuntimeState() {
 		tokens: structuredClone(MOCK_TOKENS),
 		tokenSerial: MOCK_TOKENS.length,
 		unifiApiKeys: Object.create(null),
+		cloudflareApiToken: 'mock-cloudflare-token',
 		// One pause running at start (filter set `kids`, 12 minutes), so the Regeln page has one to show.
 		pauseUntil: new Date(Date.now() + 12 * 60_000).toISOString(),
 		pauseSet: 'kids',

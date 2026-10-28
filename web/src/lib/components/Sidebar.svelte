@@ -1,7 +1,10 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
 	import Icon from './Icon.svelte';
+	import { getStatus, type StatusCluster } from '$lib/api/stats';
 	import { m } from '$lib/paraglide/messages';
+	import { createPoller } from '$lib/poll';
 	import {
 		isActivePath,
 		isVisible,
@@ -12,6 +15,11 @@
 		type NavSection,
 		type Role,
 	} from '$lib/nav';
+
+	const STATUS_POLL_MS = 30_000;
+	const STATUS_POLL_MAX_BACKOFF_MS = 300_000;
+
+	type NodeDot = 'ok' | 'degraded' | 'unknown';
 
 	interface Props {
 		/** Route path of the current screen; only the item for that screen (or its sub-path) gets aria-current. */
@@ -32,6 +40,58 @@
 		id,
 		onnavigate,
 	}: Props = $props();
+
+	let nodeLabel = $state<string>(m.sidebar_node_unknown());
+	let nodeDot = $state<NodeDot>('unknown');
+
+	function applyNodeStatus(cluster: StatusCluster): void {
+		if (cluster.role === 'master') {
+			const base = m.sidebar_node_master();
+			nodeLabel =
+				cluster.degraded_nodes > 0
+					? `${base} · ${m.sidebar_node_degraded({ count: cluster.degraded_nodes })}`
+					: base;
+			nodeDot = cluster.degraded_nodes > 0 ? 'degraded' : 'ok';
+			return;
+		}
+		if (cluster.role === 'sub_node') {
+			const base = m.sidebar_node_sub();
+			nodeLabel =
+				cluster.lag > 0 ? `${base} · ${m.sidebar_node_lag({ lag: cluster.lag })}` : base;
+			nodeDot = cluster.lag > 0 ? 'degraded' : 'ok';
+			return;
+		}
+		nodeLabel = m.sidebar_node_unknown();
+		nodeDot = 'unknown';
+	}
+
+	async function refreshNodeStatus(): Promise<boolean> {
+		try {
+			const status = await getStatus();
+			if (!status.cluster) {
+				nodeLabel = m.sidebar_node_standalone();
+				nodeDot = 'ok';
+			} else {
+				applyNodeStatus(status.cluster);
+			}
+			return true;
+		} catch {
+			nodeLabel = m.sidebar_node_unknown();
+			nodeDot = 'unknown';
+			return false;
+		}
+	}
+
+	const statusPoller = createPoller(refreshNodeStatus, {
+		intervalMs: STATUS_POLL_MS,
+		maxBackoffMs: STATUS_POLL_MAX_BACKOFF_MS,
+		doc: globalThis.document,
+	});
+
+	onMount(() => {
+		statusPoller.start();
+		return () => statusPoller.stop();
+	});
 </script>
 
 {#snippet link(entry: NavItem)}
@@ -69,8 +129,14 @@
 
 	<div class="sidebar-foot">
 		<p class="node">
-			<span class="node-dot" aria-hidden="true"></span>
-			{m.sidebar_node_unknown()}
+			<span
+				class="node-dot"
+				class:ok={nodeDot === 'ok'}
+				class:degraded={nodeDot === 'degraded'}
+				class:unknown={nodeDot === 'unknown'}
+				aria-hidden="true"
+			></span>
+			{nodeLabel}
 		</p>
 		<a class="foot-link" href={resolve(navFeedback.path)} onclick={() => onnavigate?.()}>
 			{navFeedback.label()}
@@ -221,6 +287,17 @@
 		width: 0.5rem;
 		height: 0.5rem;
 		border-radius: 50%;
+	}
+
+	.node-dot.ok {
+		background: var(--ok);
+	}
+
+	.node-dot.degraded {
+		background: var(--warn);
+	}
+
+	.node-dot.unknown {
 		background: var(--track-off);
 	}
 

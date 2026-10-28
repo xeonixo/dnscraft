@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use dnscraft_tls::{
-    CertMeta, CertStore, CloudflareClient, CloudflareConfig, DynDnsConfig, EchoClient, Secret,
-    dyndns_once,
+    CertMeta, CertStore, CloudflareClient, CloudflareConfig, DynDnsConfig, DynDnsNodeProfile,
+    EchoClient, Secret, dyndns_once,
 };
 use mock_cloudflare::{MockCloudflare, MockZone};
 use mock_echo::{MockEcho, trace_body};
@@ -36,6 +36,7 @@ fn cfg(echo_url: &str) -> DynDnsConfig {
         enabled: true,
         hostname: NODE.into(),
         public_entry: false,
+        nodes: Vec::new(),
         reserved_labels: vec!["node1".into()],
         interval: Duration::from_secs(300),
         echo_url: echo_url.into(),
@@ -132,7 +133,7 @@ async fn same_ip_zero_writes_changed_ip_one_update() {
 }
 
 #[tokio::test]
-async fn public_entry_updates_wildcard_and_apex() {
+async fn public_entry_cnames_wildcard_and_apex_to_node() {
     let echo = MockEcho::start([trace_body("198.51.100.7")]).await;
     let (cf_mock, cf) = mock_cf().await;
     let echo_client = EchoClient::unbound().unwrap();
@@ -143,15 +144,120 @@ async fn public_entry_updates_wildcard_and_apex() {
         .await
         .unwrap();
     assert!(r.changed);
-    assert_eq!(write_count(&cf_mock.requests().await), 3); // node + wildcard + apex
+    // A for node + CNAME for wildcard + CNAME for apex
+    assert_eq!(write_count(&cf_mock.requests().await), 3);
 
     let recs = cf_mock.records().await;
-    let names: Vec<&str> = recs.iter().map(|r| r.name.as_str()).collect();
-    assert!(names.contains(&NODE));
-    assert!(names.contains(&"*.dns.example.com"));
-    assert!(names.contains(&"dns.example.com"));
-    assert!(recs.iter().all(|r| r.content == "198.51.100.7"));
-    assert!(recs.iter().all(|r| !r.proxied));
+    let node = recs.iter().find(|r| r.name == NODE).expect("node A");
+    assert_eq!(node.record_type, "A");
+    assert_eq!(node.content, "198.51.100.7");
+
+    for name in ["*.dns.example.com", "dns.example.com"] {
+        let cname = recs
+            .iter()
+            .find(|r| r.name == name)
+            .unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(cname.record_type, "CNAME");
+        assert_eq!(cname.content, NODE);
+        assert!(!cname.proxied);
+    }
+}
+
+#[tokio::test]
+async fn resolve_for_node_entry_writes_cnames_peer_does_not() {
+    let echo = MockEcho::start([trace_body("198.51.100.9")]).await;
+    let (cf_mock, cf) = mock_cf().await;
+    let echo_client = EchoClient::unbound().unwrap();
+    let mut dyndns = cfg(&echo.url());
+    dyndns.hostname = "ns1.dns.example.com".into();
+    dyndns.public_entry = true;
+    dyndns.reserved_labels = vec!["ns1".into(), "ns2".into()];
+    dyndns.nodes = vec![
+        DynDnsNodeProfile {
+            node_id: "node1".into(),
+            hostname: "ns1.dns.example.com".into(),
+            enabled: true,
+            ipv4: true,
+            ipv6: false,
+            public_entry: true,
+            ..Default::default()
+        },
+        DynDnsNodeProfile {
+            node_id: "node2".into(),
+            hostname: "ns2.dns.example.com".into(),
+            enabled: true,
+            ipv4: true,
+            ipv6: false,
+            public_entry: false,
+            ..Default::default()
+        },
+    ];
+
+    let entry = dyndns.resolve_for_node(Some("node1"));
+    dyndns_once(&entry, DOMAIN, &echo_client, &cf)
+        .await
+        .unwrap();
+    let recs = cf_mock.records().await;
+    assert!(
+        recs.iter()
+            .any(|r| r.name == "ns1.dns.example.com" && r.record_type == "A")
+    );
+    assert!(
+        recs.iter()
+            .any(|r| r.name == "*.dns.example.com" && r.record_type == "CNAME")
+    );
+
+    echo.set_bodies([trace_body("198.51.100.10")]).await;
+    let peer = dyndns.resolve_for_node(Some("node2"));
+    dyndns_once(&peer, DOMAIN, &echo_client, &cf).await.unwrap();
+    let recs = cf_mock.records().await;
+    let peer_a = recs
+        .iter()
+        .find(|r| r.name == "ns2.dns.example.com")
+        .expect("peer A");
+    assert_eq!(peer_a.content, "198.51.100.10");
+    // Peer must not retarget the CNAMEs away from the entry host.
+    for name in ["*.dns.example.com", "dns.example.com"] {
+        let cname = recs.iter().find(|r| r.name == name).unwrap();
+        assert_eq!(cname.content, "ns1.dns.example.com");
+    }
+}
+
+#[tokio::test]
+async fn resolve_for_node_opt_out_skips_writes() {
+    let echo = MockEcho::start([trace_body("198.51.100.11")]).await;
+    let (cf_mock, cf) = mock_cf().await;
+    let echo_client = EchoClient::unbound().unwrap();
+    let mut dyndns = cfg(&echo.url());
+    dyndns.reserved_labels = vec!["ns1".into(), "ns2".into()];
+    dyndns.nodes = vec![
+        DynDnsNodeProfile {
+            node_id: "node1".into(),
+            hostname: "ns1.dns.example.com".into(),
+            enabled: true,
+            ipv4: true,
+            ipv6: false,
+            public_entry: false,
+            ..Default::default()
+        },
+        DynDnsNodeProfile {
+            node_id: "node2".into(),
+            hostname: "ns2.dns.example.com".into(),
+            enabled: false,
+            ipv4: true,
+            ipv6: false,
+            public_entry: false,
+            ..Default::default()
+        },
+    ];
+
+    let opted_out = dyndns.resolve_for_node(Some("node2"));
+    assert!(!opted_out.enabled);
+    let r = dyndns_once(&opted_out, DOMAIN, &echo_client, &cf)
+        .await
+        .unwrap();
+    assert!(!r.changed);
+    assert_eq!(write_count(&cf_mock.requests().await), 0);
 }
 
 #[tokio::test]

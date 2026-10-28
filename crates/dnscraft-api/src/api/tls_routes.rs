@@ -2,8 +2,8 @@
 //!
 //! The TLS section is validated against the `tls` module's documented rules
 //! before the atomic apply, forwarding `tls.config.invalid`. The Cloudflare API
-//! token is supplied out-of-band and never accepted here; it is redacted on
-//! store anyway.
+//! token is write-only via `PUT /api/v1/tls/cloudflare-token` (kv + live engine);
+//! it is never accepted inside the TLS config object and never returned.
 //!
 //! The action endpoints (`renew`, `revoke`, `rotate`, `preflight`, `dyndns`,
 //! manual certificate upload) delegate to [`crate::TlsAdmin`], audit every
@@ -188,7 +188,14 @@ pub(crate) async fn get_tls(
 ) -> Result<impl IntoResponse, ControlApiError> {
     let snapshot = stored_snapshot(service(&state)?).await?;
     let tls = snapshot.get("tls").cloned().unwrap_or_else(|| json!({}));
-    Ok(success(json!({ "tls": tls })))
+    let has_cloudflare_token = match state.db() {
+        Some(db) => crate::cloudflare_secrets::has_api_token(db).await?,
+        None => false,
+    };
+    Ok(success(json!({
+        "tls": tls,
+        "has_cloudflare_token": has_cloudflare_token,
+    })))
 }
 
 /// `PUT|POST /api/v1/tls` — replace the TLS config section.
@@ -264,6 +271,74 @@ pub(crate) async fn delete_tls(
 // ---------------------------------------------------------------------------
 // TLS admin actions
 // ---------------------------------------------------------------------------
+
+/// Body of `PUT /api/v1/tls/cloudflare-token` (write-only).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CloudflareTokenBody {
+    /// Omit to keep, `null` to clear, string to set.
+    #[serde(default)]
+    api_token: OptionalApiToken,
+}
+
+#[derive(Default)]
+enum OptionalApiToken {
+    #[default]
+    Absent,
+    Clear,
+    Set(String),
+}
+
+impl<'de> Deserialize<'de> for OptionalApiToken {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match Option::<String>::deserialize(deserializer)? {
+            None => Ok(Self::Clear),
+            Some(value) => Ok(Self::Set(value)),
+        }
+    }
+}
+
+/// `PUT /api/v1/tls/cloudflare-token` — write-only Cloudflare API token.
+pub(crate) async fn put_cloudflare_token(
+    State(state): State<AppState>,
+    auth: Option<Extension<Authenticated>>,
+    body: Result<Json<CloudflareTokenBody>, JsonRejection>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let _ = service(&state)?;
+    let Json(body) = match body {
+        Ok(v) => v,
+        Err(rejection) => return Err(ControlApiError::config(rejection.body_text())),
+    };
+    let db = state.db().ok_or_else(|| ControlApiError::NotReady {
+        module: "database".into(),
+    })?;
+    let actor = actor(auth);
+    let (updated, has_token) = match body.api_token {
+        OptionalApiToken::Absent => {
+            return Ok(success(json!({ "updated": false })));
+        }
+        OptionalApiToken::Clear => {
+            crate::cloudflare_secrets::set_api_token(db, None).await?;
+            if let Ok(admin) = tls_admin(&state) {
+                admin.set_cloudflare_token(None).await?;
+            }
+            audit(&state, &actor, "tls.cloudflare.token.clear", None).await;
+            (true, false)
+        }
+        OptionalApiToken::Set(value) => {
+            crate::cloudflare_secrets::set_api_token(db, Some(value.as_str())).await?;
+            if let Ok(admin) = tls_admin(&state) {
+                admin.set_cloudflare_token(Some(Secret::new(value))).await?;
+            }
+            audit(&state, &actor, "tls.cloudflare.token.set", None).await;
+            (true, true)
+        }
+    };
+    Ok(success(json!({
+        "updated": updated,
+        "has_cloudflare_token": has_token,
+    })))
+}
 
 /// Body of `PUT /api/v1/tls/certificate`.
 ///

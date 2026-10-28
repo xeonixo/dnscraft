@@ -15,8 +15,10 @@ resolver and small helpers those modules call.
 
 ## Assumptions
 
-1. `tls` is a library: configuration as Rust values; secrets
-   (`DNSCRAFT_CLOUDFLARE_API_TOKEN` / `*_FILE`) from env / Docker secrets only.
+1. `tls` is a library: configuration as Rust values. The Cloudflare API token
+   comes from env / Docker secrets (`DNSCRAFT_CLOUDFLARE_API_TOKEN` / `*_FILE`)
+   **or** from the control-api write-only store (`PUT /api/v1/tls/cloudflare-token`,
+   SQLite kv + live engine); never from the TLS config JSON and never returned.
 2. Crypto stack matches the rest of the workspace: **rustls + ring**, no aws-lc
    (same decision as reqwest in filtering — see `tasks/archive/progress-2026-10.md`).
 3. ACME challenge is **DNS-01** (no HTTP-01; the node may not be reachable on
@@ -176,9 +178,9 @@ pub fn accept_public_sni(
     the node hostname.
   - **DoT/DoQ** (e.g. Android “Private DNS”): the one configured hostname is both
     the name the client **resolves** and the TLS **SNI**, so it is
-    `<client-id>.dns.<domain>` and **must have an A/AAAA record**. The
-    wildcard records `*.dns.<domain>` / `dns.<domain>` (see DynDNS) point every
-    Client-ID hostname at the public entry node.
+    `<client-id>.dns.<domain>` and **must resolve**. The public-entry node
+    publishes `*.dns.<domain>` / `dns.<domain>` as **CNAME → entry hostname**
+    (see DynDNS), so every Client-ID hostname follows to that node’s A/AAAA.
   The wildcard cert covers all of these. `ClientIdRegistry`
   (policy/control-api) is the single source of truth for “registered”.
 - **Reserved labels:** node hostnames (`node1.dns.<domain>`, …) share the
@@ -204,16 +206,19 @@ pub fn accept_public_sni(
   **SPEC-cluster.md**. Until cluster exists, interim: only the master needs a
   live ACME path; sub-nodes load whatever was last synced/copied.
 - **DynDNS:** **per-node hostname** under the wildcard, e.g.
-  `node1.dns.<public_domain>`, `node2.dns.<public_domain>` — each public node
+  `ns1.dns.<public_domain>`, `ns2.dns.<public_domain>` — each public node
   updates **only its own** A/AAAA. No shared single record contended by peers.
-  In addition, exactly one node is the **public entry node**
-  (`dyndns.public_entry = true`, at most one in v1; config validation rejects
-  two) and maintains the wildcard records `*.dns.<public_domain>` and
-  `dns.<public_domain>` (A/AAAA, DNS-only). Every Client-ID hostname therefore
-  resolves to that node (explicit `<node>.dns.…` records take precedence over
-  the wildcard). Client-ID hostnames work on any node that has the cert; DoH
-  profiles / DDR may point at a specific node hostname. Multiple public entry
-  nodes (geo, failover) are out of scope for v1 — future work for SPEC-cluster.
+  Cluster snapshots may list every node under `dyndns.nodes[]`
+  (`node_id`, `hostname`, `public_entry`); at runtime each process selects its
+  profile via `DNSCRAFT_NODE_ID` (`DynDnsConfig::resolve_for_node`). Exactly one
+  node is the **public entry node** (`public_entry = true`, at most one; config
+  validation rejects two) and maintains `*.dns.<public_domain>` and
+  `dns.<public_domain>` as **CNAME → its hostname** (DNS-only, not A/AAAA).
+  Client-ID names therefore resolve by following the CNAME to the entry node’s
+  address records (explicit `<node>.dns.…` A/AAAA take precedence over the
+  wildcard). DoH profiles / DDR may point at a specific node hostname. Multiple
+  public entry nodes (geo, failover) are out of scope for v1 — future work for
+  SPEC-cluster.
 - Public DoH/DoT remains **per-node, off by default** (SPEC.md).
 
 ### DynDNS
@@ -226,10 +231,11 @@ pub fn accept_public_sni(
   Cloudflare `cdn-cgi/trace`).
 - Compare to the current Cloudflare record content; **PATCH/PUT only on change**.
 - Records: DNS-only (`proxied: false`), TTL automatic or 300; hostname is the
-  **node’s** public name (see Multi-node). On the public entry node, the same
-  discovered IPs also drive the wildcard `*.dns.<public_domain>` and apex
-  `dns.<public_domain>` records (same compare-then-update rule). A node without
-  `public_entry` never touches them.
+  **node’s** public name (see Multi-node) and receives A/AAAA from the echo.
+  On the public entry node, `*.dns.<public_domain>` and `dns.<public_domain>`
+  are upserted as **CNAME → hostname** (existing A/AAAA at those owners are
+  removed first so the name stays RFC-legal). A node without `public_entry`
+  never touches apex/wildcard.
 - Failures set `stale`/error codes without touching the certificate path.
 
 ### ACME DNS-01 propagation
@@ -504,10 +510,10 @@ auto_deactivate = false                # deactivate when ACME is turned off
 [tls.dns_provider]
 kind = "cloudflare"                    # "cloudflare" | "manual" | "none"
 [tls.dns_provider.cloudflare]
-# token from DNSCRAFT_CLOUDFLARE_API_TOKEN / _FILE
-# zone_id optional if resolvable by public_domain
+# token: DNSCRAFT_CLOUDFLARE_API_TOKEN / _FILE, or UI via PUT /api/v1/tls/cloudflare-token
+# zone_id optional if resolvable by public_domain (edited in the TLS → DNS UI)
 zone_id = ""
-# Additional zones, resolved by longest suffix match.
+# Additional zones, resolved by longest suffix match (TLS → DNS UI).
 # zones = [{ name = "sub.example.com", zone_id = "..." }]
 # Operator-published TXT for kind = "manual" (one entry per DNS-01 value; apex + wildcard need two):
 # manual_txt = [
@@ -522,7 +528,13 @@ reserved_labels = ["node1", "node2"]
 # per-node public hostname under the wildcard (not shared across nodes)
 hostname = "node1.dns.example.com"
 # exactly one node: also maintains *.dns.example.com and dns.example.com
+# as CNAME → hostname (DoT Client-IDs)
 public_entry = false
+# optional cluster snapshot; runtime picks the profile for DNSCRAFT_NODE_ID
+# [[tls.dyndns.nodes]]
+# node_id = "node1"
+# hostname = "ns1.dns.example.com"
+# public_entry = true
 interval = "5m"
 echo_url = "https://cloudflare.com/cdn-cgi/trace"
 ipv4 = true
@@ -574,9 +586,10 @@ on_dyndns_failure = false
    `*.dns.<domain>`; a node-hostname SNI (e.g. `node1.dns.example.com`) is
    classified `NodeHostname`, not as an unknown Client ID.
 4a. With `public_entry = true`, DynDNS creates `*.dns.example.com` and
-   `dns.example.com` A/AAAA on the mock Cloudflare, so a Client-ID hostname
-   resolves to the node; with `public_entry = false` those records are never
-   touched; two entry nodes are rejected (`tls.dyndns.entry_conflict`).
+   `dns.example.com` as CNAME → the node hostname on the mock Cloudflare, so a
+   Client-ID hostname resolves via the entry node’s A/AAAA; with
+   `public_entry = false` those records are never touched; two entry nodes are
+   rejected (`tls.dyndns.entry_conflict`).
 5. Feature flags on `instant-acme` do not pull aws-lc into the workspace
    (`cargo tree -i aws-lc-rs` empty).
 6. DoD gates green once implemented.
@@ -648,8 +661,12 @@ remain in force.
 12. **Review 2026-10-25 (Claude):** DoT/DoQ hostname == SNI, so Client-ID
     hostnames must resolve; DoH-only claim of “connect to node hostname, ID in
     SNI” corrected. DynDNS on the single **public entry node**
-    (`dyndns.public_entry`) maintains `*.dns.<domain>` and `dns.<domain>`;
-    multiple entry nodes deferred to SPEC-cluster. Node names + a fixed set
-    (`dns`, `www`, `api`, `admin`, `ns`) are **reserved labels** (`ReservedLabels`,
-    `SniKind`); Client-ID registration rejects collisions. `CertResolver` uses
-    `RwLock<Arc<CertifiedKey>>`, no ArcSwap.
+    (`dyndns.public_entry`) maintains `*.dns.<domain>` and `dns.<domain>` as
+    **CNAME → entry hostname**; multiple entry nodes deferred to SPEC-cluster.
+    Node names + a fixed set (`dns`, `www`, `api`, `admin`, `ns`) are
+    **reserved labels** (`ReservedLabels`, `SniKind`); Client-ID registration
+    rejects collisions. `CertResolver` uses `RwLock<Arc<CertifiedKey>>`, no
+    ArcSwap.
+13. **Review 2026-10-28:** Prefer CNAME for apex/wildcard over multi-IP
+    round-robin. Cluster snapshots use `dyndns.nodes[]`; each process selects
+    via `DNSCRAFT_NODE_ID` / `resolve_for_node`.

@@ -2,6 +2,9 @@
 	import Button from '$lib/components/Button.svelte';
 	import Segmented from '$lib/components/Segmented.svelte';
 	import Switch from '$lib/components/Switch.svelte';
+	import { onMount } from 'svelte';
+	import { listClusterNodes } from '$lib/api/cluster';
+	import { nodeChoicesFor } from '$lib/cluster/nodes';
 	import { errorMessage } from '$lib/i18n/locale';
 	import { m } from '$lib/paraglide/messages';
 	import {
@@ -54,6 +57,24 @@
 			? [...PAGE_SIZES]
 			: [...PAGE_SIZES, draft.limit],
 	);
+	// Registered node ids; null while loading or when the cluster API is unavailable (standalone),
+	// which keeps the free-text node field.
+	let clusterNodeIds = $state<string[] | null>(null);
+	onMount(() => {
+		listClusterNodes()
+			.then((nodes) => {
+				clusterNodeIds = nodes.filter((node) => !node.revoked).map((node) => node.node_id);
+			})
+			.catch(() => {
+				clusterNodeIds = null;
+			});
+	});
+	const nodeChoices = $derived<string[] | null>(
+		clusterNodeIds === null
+			? null
+			: nodeChoicesFor(clusterNodeIds, draft.node_id ? [draft.node_id] : []),
+	);
+
 	const orderOptions = $derived<{ value: string; label: string }[]>([
 		{ value: 'asc', label: m.querylog_order_asc() },
 		{ value: 'desc', label: m.querylog_order_desc() },
@@ -205,17 +226,33 @@
 			</div>
 			<div class="field-wrap">
 				<label class="field-label" for={inputId('node_id')}>{m.querylog_node_id()}</label>
-				<input
-					id={inputId('node_id')}
-					class="field mono-field"
-					type="text"
-					maxlength="128"
-					autocomplete="off"
-					spellcheck="false"
-					bind:value={draft.node_id}
-					aria-invalid={errorOf('node_id') !== null}
-					aria-describedby={errorOf('node_id') !== null ? errorId('node_id') : undefined}
-				/>
+				{#if nodeChoices === null}
+					<input
+						id={inputId('node_id')}
+						class="field mono-field"
+						type="text"
+						maxlength="128"
+						autocomplete="off"
+						spellcheck="false"
+						bind:value={draft.node_id}
+						aria-invalid={errorOf('node_id') !== null}
+						aria-describedby={errorOf('node_id') !== null ? errorId('node_id') : undefined}
+					/>
+				{:else}
+					<select
+						id={inputId('node_id')}
+						class="field"
+						value={draft.node_id}
+						aria-invalid={errorOf('node_id') !== null}
+						aria-describedby={errorOf('node_id') !== null ? errorId('node_id') : undefined}
+						onchange={(event) => (draft.node_id = event.currentTarget.value)}
+					>
+						<option value="">{m.listeners_nodes_all()}</option>
+						{#each nodeChoices as nodeId (nodeId)}
+							<option value={nodeId}>{nodeId}</option>
+						{/each}
+					</select>
+				{/if}
 				{@render fieldError('node_id')}
 			</div>
 			<div class="field-wrap">

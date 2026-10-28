@@ -261,9 +261,48 @@ impl CloudflareClient {
                 "upsert_address: unsupported type {record_type}"
             )));
         }
+        self.upsert_record(name, record_type, content, false).await
+    }
+
+    /// Upserts a DNS-only CNAME (`proxied: false`) at `name` → `target`.
+    ///
+    /// Removes conflicting A/AAAA at the same owner first (a name cannot hold
+    /// both address records and a CNAME). Used by DynDNS public-entry to point
+    /// `dns.<domain>` / `*.dns.<domain>` at the entry node's hostname.
+    pub async fn upsert_cname(&self, name: &str, target: &str) -> Result<DnsRecord, TlsError> {
+        // CNAME cannot coexist with A/AAAA at the same owner.
+        self.delete_records_of_types(name, &["A", "AAAA"]).await?;
+        self.upsert_record(name, "CNAME", target, false).await
+    }
+
+    /// Deletes every record of the given types at `name`.
+    pub async fn delete_records_of_types(
+        &self,
+        name: &str,
+        types: &[&str],
+    ) -> Result<(), TlsError> {
+        let zone = self.zone_for_name(name).await?;
+        for record_type in types {
+            for record in self.list_records(name, record_type).await? {
+                self.delete_record_in(&zone.id, &record.id).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn upsert_record(
+        &self,
+        name: &str,
+        record_type: &str,
+        content: &str,
+        proxied: bool,
+    ) -> Result<DnsRecord, TlsError> {
         let existing = self.list_records(name, record_type).await?;
         let zone = self.zone_for_name(name).await?;
         if let Some(prev) = existing.into_iter().next() {
+            if prev.content.eq_ignore_ascii_case(content) && prev.proxied == proxied {
+                return Ok(prev);
+            }
             let url = format!(
                 "{}/zones/{}/dns_records/{}",
                 self.base_url, zone.id, prev.id
@@ -273,7 +312,7 @@ impl CloudflareClient {
                 "name": name,
                 "content": content,
                 "ttl": TTL_AUTO,
-                "proxied": false,
+                "proxied": proxied,
             });
             let envelope: Envelope<ApiRecord> = self
                 .request(
@@ -294,7 +333,7 @@ impl CloudflareClient {
                 "name": name,
                 "content": content,
                 "ttl": TTL_AUTO,
-                "proxied": false,
+                "proxied": proxied,
             });
             let envelope: Envelope<ApiRecord> = self
                 .request(
@@ -307,7 +346,7 @@ impl CloudflareClient {
             envelope
                 .result
                 .map(DnsRecord::from)
-                .ok_or_else(|| TlsError::cloudflare_http("create address: empty result"))
+                .ok_or_else(|| TlsError::cloudflare_http("create record: empty result"))
         }
     }
 

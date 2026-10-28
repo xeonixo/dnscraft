@@ -102,6 +102,7 @@ mounted PEM files). The binary rejects conflicting duplicate sources.
 | `DNSCRAFT_TLS_CERT` / `DNSCRAFT_TLS_CERT_FILE` | PEM chain for DoT/DoH/DoQ listeners |
 | `DNSCRAFT_TLS_KEY` / `DNSCRAFT_TLS_KEY_FILE` | PEM private key |
 | `DNSCRAFT_OIDC_CLIENT_SECRET` / `*_FILE` | OIDC client secret (control-api auth) |
+| `DNSCRAFT_ADMIN_PASSWORD_FILE` | Seeds the local `break-glass` admin on a fresh install (only while no local account exists) |
 | `DNSCRAFT_UNIFI_API_KEY` / `*_FILE` | UniFi integration |
 | `DNSCRAFT_CLOUDFLARE_API_TOKEN` / `*_FILE` | ACME DNS-01 (see `dnscraft-tls`) |
 | `DNSCRAFT_CLUSTER_JOIN_TOKEN` / `*_FILE` | Sub-node enrollment |
