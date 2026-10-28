@@ -26,7 +26,7 @@
 
 ## WX2 — Live-Mitschnitt Query-Log
 
-- [ ] **WX2** `GET /api/v1/query-log/stream` (SSE), owner `control-api`, role viewer/admin.
+- [x] **WX2** `GET /api/v1/query-log/stream` (SSE), owner `control-api`, role viewer/admin. Phases 0–2 built (aa652b6); no `query_log.stream_dropped` counter yet; Phase 3 UI open.
   - [ ] Phase 0: sign off no replay, node-local only, 512-event queue per subscriber,
         4 streams per principal / 32 per node, 30 min idle close.
   - [ ] Phase 1: `dnscraft-api` fan-out over the query-log sink (non-blocking broadcast);
@@ -112,7 +112,7 @@
 
 ## WX7 — Benachrichtigungen (webhook / ntfy)
 
-- [ ] **WX7** `GET/PUT /api/v1/notifications` and `POST /api/v1/notifications/test`,
+- [x] **WX7** (routes and egress guard built, f9c2f59; automatic event dispatch not wired, only the test send) `GET/PUT /api/v1/notifications` and `POST /api/v1/notifications/test`,
       owner `control-api` (delivery module in `dnscraft-api`), role viewer/admin read,
       admin write.
   - [x] Phase 0: owner decisions recorded in `SPEC-control-api.md` (WX7 paragraph), 2026-10-28:

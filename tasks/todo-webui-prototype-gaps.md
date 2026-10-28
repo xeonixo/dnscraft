@@ -26,17 +26,19 @@
       TLS expiry, failed filter-list updates, cluster node offline and DynDNS failures,
       with `active_count` and `items[]` (`id`, `severity`, `module`, `params`, `target_route`).
       Tests: no alerts → empty list; cert within threshold → one item; viewer allowed.
-- [ ] **WP2** Implement `GET /api/v1/update/check` in `control-api` (viewer/admin): binary
+- [x] **WP2** Implement `GET /api/v1/update/check` (built 2026-10-28, 0eaa305: opt-in, cached, tests `update_check_*`)
+      — original spec: in `control-api` (viewer/admin): binary
       fetches the GitHub latest release, caches it, returns `update_available` and
       `release_url`; disabled or unreachable → `latest: null`. Tests: opt-out returns no
       outbound request; unreachable GitHub returns a coded error, not a 500.
-- [ ] **WP3** Implement `GET /api/v1/backups` and `PUT /api/v1/backups/settings` in
+- [x] **WP3** Implement `GET /api/v1/backups` (built 2026-10-28, 0eaa305: VACUUM INTO, retention; the binary must call `run_backup_if_due`)
+      — original spec:  and `PUT /api/v1/backups/settings` in
       `control-api` (admin): last run, next run, directory, retention count. Tests:
       admin read/write; viewer `403`; invalid retention rejected.
 - [x] **WP4** (filtering crate part done 2026-10-28; the route is WP5) Filtering crate: download, cache and back off `services.json` and
       `services_i18n.json` like a filter list, with `available` and `catalog_updated_at`.
       Tests: catalog absent → `available: false`; cached catalog loads offline.
-- [ ] **WP5** `control-api`: `GET /api/v1/filtering/services` (viewer/admin) and
+- [x] **WP5** `control-api` (built 2026-10-28, c7aaa3a; the catalog provider is `ServiceCatalogProvider`, the assembler must implement it, until then `available: false`): `GET /api/v1/filtering/services` (viewer/admin) and
       `PUT /api/v1/filtering/services/{service_id}` (admin, `filter_set_id`, `enabled`);
       icons sanitized before serving. Tests: unknown id → `filtering.service.unknown`;
       catalog absent → `filtering.catalog.unavailable`; viewer → `403`.

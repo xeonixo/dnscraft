@@ -194,7 +194,7 @@ approval before Phase 0 code.
 - [x] **GA12** 🟠 [code] OIDC `groups` claim name hardcoded (no config field). *(oidc.rs:74-81; config.rs:100-126)*
 - [x] **GA13** 🟠 [code] OIDC login success/failure not audited; token create/revoke and logout not audited. *(oidc.rs:297-488, tokens.rs:326-367, auth/mod.rs:296-315)*
 - [x] **GA14** 🟠 [code] `GET /status` returns only TLS fields (no node/module/version). *(router.rs:235-250)*
-- [ ] **GA15** 🟠 [code] Runtime-editable keys (OIDC/accounts/retention/rollups) not exposed via `/config`. *(config_apply.rs:33-44)*
+- [x] **GA15** 🟠 [code] *Done 2026-10-28: `control_api_settings` keys (`update_check`, `backups`, `query_log.retention_days`, `oidc` non-secret keys) validated and versioned (b0a5966). Retention and OIDC take effect on restart; not hot-reloaded.*  Runtime-editable keys (OIDC/accounts/retention/rollups) not exposed via `/config`. *(config_apply.rs:33-44)*
 - [x] **GA16** 🟠 [code] `stats/overview` omits filter-hit by list/rule, `query_log.dropped`, active clients; stats read only raw log, not rollups (1-year dashboards → 30 days). *(stats.rs:113-140, stats_routes.rs:85-126)*
   *Done 2026-10-28 (commit fbf3200, docs 8ac9464):* `source` raw/rollup, `active_clients`, `query_log_dropped` (needs `QueryLog::with_sink` in the assembler, see report), `filter_hits`.
 - [x] **GA17** 🟠 [code] SQLite query-log read errors map to `control_api.internal`, not `query_log.read`. *(query_log.rs:419-423, 467-494)*
@@ -207,10 +207,14 @@ approval before Phase 0 code.
 - [x] **GA24** 🟡 [spec] `filter.reason` stores provenance, not the documented `"adblock"`-style reason. *(query_log.rs:824-838)*
 - [x] **GA25** 🟡 [code] Manual cert upload accepts private-key material. *(tls_routes.rs:348-377)*
 - [x] **GA26** 🟡 [code] UniFi settings / local-domain mode have no typed route. *(clients_routes.rs)*
-- [ ] **GA27** 🟡 [code] No control-api fuzz target. *(fuzz/fuzz_targets/)*
+- [x] **GA27** 🟡 [code] *Done 2026-10-28 (1937e51): `fuzz/fuzz_targets/control_api_config.rs`; `fuzz/Cargo.lock` grew by the `dnscraft-api` closure (owner-approved).* No control-api fuzz target. *(fuzz/fuzz_targets/)*
 - [x] **GA28** 🟡 [code] No bootstrap-to-SQLite config seeding path. *(config.rs:192-227; config_apply.rs:845-853)*
 - [x] **GA29** 🟡 [code] `/readyz` reports ready with no module producers. *(server.rs:289-324)* — API side done: `Readiness::expect_module` keeps `/readyz` at 503 until each registered module calls `set_ready`; **open for the assembler (`crates/dnscraft`, G0): register and report each module.**
       *Done 2026-10-28:* `control_api.rs::report_readiness` registers resolver, filtering, clients, policy, listeners (and tls when configured) and reports each from the live engine; a listener bind failure reports `listeners` not ready.
+
+- [x] **GX-audit** 2026-10-28 (partial): all 60 endpoints in the `SPEC-control-api.md` table have a route segment
+      in `router.rs`; 70 spec error codes checked against source literals (only field names were missing). No new
+      unplanned features found beyond the items above. A per-field diff of response shapes was not done.
 
 ## MCP (`SPEC-mcp.md` ↔ `crates/dnscraft-mcp` + `dnscraft-api` mcp files)
 

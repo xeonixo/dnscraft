@@ -72,6 +72,20 @@ Resume point for interrupted sessions. Newest entry first.
 - **Cross-crate:** `ClusterServerConfig` gained `timing` (literals updated in api and cluster tests);
   `ClusterStatus` gained `degraded_nodes`; `RenewRequest` exported. No other crate touched.
 
+## 2026-10-28 — control-api wave 3: WP1, WP2, WP3, WP5, GA15, GA27, WX2, WX7
+
+- **Done:** WP2 update check (opt-in, cache, `control_api.update.unreachable` as a field); WP3 backups
+  (`VACUUM INTO`, retention, `run_backup_if_due` for the binary to call hourly); WP5 services list/toggle
+  (`ServiceCatalogProvider` trait, assembler implements); GA15 validated `control_api_settings` keys; GA27 fuzz
+  target (fuzz lock change owner-approved); WP1 master `cluster.node.offline` alert; WX2 SSE stream with limits;
+  WX7 webhook channels with egress guard and test send. Commits 1937e51, 0eaa305, c7aaa3a, b0a5966, bf9a527,
+  aa652b6, f9c2f59, eeb5a53.
+- **Not done:** WX7 automatic event dispatch (only the test send delivers); WX2 `stream_dropped` counter; WP5 icon
+  sanitizer (icons omitted); GX audit only partial; `QueryLog::with_sink`, `ServiceCatalogProvider` and
+  `run_backup_if_due` wiring in `crates/dnscraft`; MCP `get_stats` profile call (`mcp_backend.rs`).
+- **Caution:** `cargo fmt -p dnscraft-api` was run in this session and may have reformatted other agents'
+  uncommitted files in the crate (whitespace only).
+
 ## 2026-10-28 — control-api wave 2: GA16, GA22, GM6 (partial)
 
 - **Done:** GA16 stats overview (`source` raw/rollup, `active_clients`, `query_log_dropped` via
