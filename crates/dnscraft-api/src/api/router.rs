@@ -40,7 +40,8 @@ use super::rate_limit::rate_limit;
 use super::resolver_routes::{flush_cache, list_upstreams};
 use super::response::{BODY_LIMIT_BYTES, error_response, success};
 use super::stats_routes::{
-    export_csv, export_ndjson, stats_cache, stats_overview, stats_top_clients, stats_top_domains,
+    export_csv, export_ndjson, stats_cache, stats_domain, stats_overview, stats_top_clients,
+    stats_top_domains,
 };
 use super::tls_routes::{
     delete_tls, get_tls, get_tls_account, get_tls_audit, get_tls_certificate, get_tls_order,
@@ -163,7 +164,8 @@ pub(crate) fn build_router(state: AppState) -> Router {
             .route("/stats/overview", get(stats_overview))
             .route("/stats/top_clients", get(stats_top_clients))
             .route("/stats/top_domains", get(stats_top_domains))
-            .route("/stats/cache", get(stats_cache));
+            .route("/stats/cache", get(stats_cache))
+            .route("/stats/domains/{name}", get(stats_domain));
     }
     if state.cluster_store().is_some() {
         // Master-only admin surface. A standalone node has no cluster routes

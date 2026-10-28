@@ -5,17 +5,19 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
+use crate::api::config_routes::module_error;
 use crate::api::query_log_routes::{RawQueryLogParams, parse_timestamp};
 use crate::api::response::success;
 use crate::error::ControlApiError;
 use crate::query_log::QueryLog;
 use crate::server::AppState;
 use crate::stats::{ExportFormat, TOP_CLIENTS_MAX, TOP_DOMAINS_MAX, TopBy, export_body};
+use dnscraft_filtering::DomainName;
 
 /// Stats query parameters, kept as strings so malformed values map to the
 /// documented error envelopes instead of axum rejections.
@@ -113,6 +115,40 @@ pub(crate) async fn stats_top_clients(
         log.top_clients(from, to, params.node_id(), limit, by)
             .await?,
     ))
+}
+
+/// Invalid domain or window parameter for the domain detail (WX5).
+const DOMAIN_INVALID: &str = "control_api.stats.invalid_domain";
+
+/// Query parameters of `GET /api/v1/stats/domains/{name}`.
+#[derive(serde::Deserialize)]
+pub(crate) struct DomainParams {
+    days: Option<String>,
+}
+
+/// `GET /api/v1/stats/domains/{name}?days=7|30` — one domain over the raw query
+/// log (WX5). Unseen names inside retention are `404`.
+pub(crate) async fn stats_domain(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Query(params): Query<DomainParams>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let log = query_log(&state)?;
+    let days = match params.days.as_deref() {
+        None | Some("7") => 7,
+        Some("30") => 30,
+        Some(_) => {
+            return Err(module_error(DOMAIN_INVALID, "days must be 7 or 30"));
+        }
+    };
+    let domain = DomainName::parse(&name)
+        .map_err(|_| module_error(DOMAIN_INVALID, "domain is not a valid DNS name"))?;
+    match log.domain_detail(domain.as_str(), days).await? {
+        Some(detail) => Ok(success(detail)),
+        None => Err(ControlApiError::NotFound {
+            what: format!("domain {}", domain.as_str()),
+        }),
+    }
 }
 
 /// `GET /api/v1/stats/top_domains` — top N queried domains.

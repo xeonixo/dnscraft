@@ -608,3 +608,45 @@ async fn query_log_full_sink_drops_without_blocking_and_counts() {
     emit_event(sink.as_ref(), &clock, event);
     assert_eq!(sink.dropped(), 2);
 }
+
+#[tokio::test]
+async fn domain_detail_counts_split_blocked_and_allowed_per_name() {
+    // WX5: `host1` (index 1, 101, 201) is never blocked; `host0` (0, 100, 200) is.
+    let (log, _clock) = harness(dnscraft_api::QueryLogConfig::default()).await;
+    let events: Vec<_> = (0..300)
+        .map(|i| sample_event(at_secs(BASE_SECS - 1 - i as u64), i))
+        .collect();
+    log.insert_batch(events).await.unwrap();
+
+    let (status, body) = get(&log, "/api/v1/stats/domains/HOST1.Example.COM.").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let data = &body["data"];
+    assert_eq!(data["domain"], "host1.example.com");
+    assert_eq!(data["retention_limited"], true);
+    assert_eq!(data["counts"]["total"], 3);
+    assert_eq!(data["counts"]["blocked"], 0);
+    assert_eq!(data["counts"]["allowed"], 3);
+    assert!(data["top_clients"].as_array().unwrap().len() <= 10);
+    assert_eq!(data["last_decision"]["status"], "allowed");
+    assert!(data["last_decision"]["rule_text"].is_null());
+
+    let (status, body) = get(&log, "/api/v1/stats/domains/host0.example.com").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["counts"]["blocked"], 3);
+    assert_eq!(body["data"]["last_decision"]["status"], "blocked");
+    assert_eq!(body["data"]["last_decision"]["rule_text"], "||ads.example^");
+    assert_eq!(body["data"]["last_decision"]["source"], "list");
+    assert!(!body["data"]["daily"].as_array().unwrap().is_empty());
+
+    let (status, body) = get(&log, "/api/v1/stats/domains/unseen.example.com").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "control_api.not_found");
+
+    let (status, body) = get(&log, "/api/v1/stats/domains/*.example.com").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "control_api.stats.invalid_domain");
+
+    let (status, body) = get(&log, "/api/v1/stats/domains/host1.example.com?days=5").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "control_api.stats.invalid_domain");
+}

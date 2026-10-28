@@ -886,3 +886,133 @@ mod tests {
         assert_eq!(ratio(1, 4), 0.25);
     }
 }
+
+/// Microseconds per day, for the query log's `time` column.
+const MICROS_PER_DAY: i64 = 86_400_000_000;
+/// Clients listed per domain (WX5).
+const DOMAIN_TOP_CLIENTS: i64 = 10;
+
+impl QueryLog {
+    /// Per-domain detail over the raw query log (WX5). `None` when the name is
+    /// not seen inside retention. `days` bounds the counts, the daily series and
+    /// the top clients; `first_seen` and `last_seen` cover the whole retention.
+    pub async fn domain_detail(
+        &self,
+        domain: &str,
+        days: u32,
+    ) -> Result<Option<Json>, ControlApiError> {
+        let db = self.db();
+        let name = domain.to_owned();
+        let now_us = db.now_unix().saturating_mul(1_000_000);
+        let from = now_us.saturating_sub(i64::from(days) * MICROS_PER_DAY);
+        db.with_conn(move |conn| {
+            use rusqlite::OptionalExtension as _;
+            let (first, last): (Option<i64>, Option<i64>) = conn
+                .query_row(
+                    "SELECT MIN(time), MAX(time) FROM query_log WHERE query_name = ?1",
+                    params![name],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(db_err)?;
+            let (Some(first), Some(last)) = (first, last) else {
+                return Ok(None);
+            };
+            let (total, blocked): (i64, i64) = conn
+                .query_row(
+                    "SELECT COUNT(*), COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
+                     FROM query_log WHERE query_name = ?1 AND time >= ?2",
+                    params![name, from],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(db_err)?;
+
+            let mut stmt = conn
+                .prepare(
+                    "SELECT COALESCE(client_name, client_id, source_ip) AS who, COUNT(*)
+                     FROM query_log WHERE query_name = ?1 AND time >= ?2
+                     GROUP BY who ORDER BY COUNT(*) DESC, who ASC LIMIT ?3",
+                )
+                .map_err(db_err)?;
+            let clients: Vec<Json> = stmt
+                .query_map(params![name, from, DOMAIN_TOP_CLIENTS], |row| {
+                    Ok(serde_json::json!({
+                        "client": row.get::<_, String>(0)?,
+                        "queries": row.get::<_, i64>(1)?,
+                    }))
+                })
+                .map_err(db_err)?
+                .collect::<Result<_, _>>()
+                .map_err(db_err)?;
+
+            let mut stmt = conn
+                .prepare(
+                    "SELECT time / ?4 AS day, COUNT(*),
+                            COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
+                     FROM query_log WHERE query_name = ?1 AND time >= ?2
+                     GROUP BY day ORDER BY day",
+                )
+                .map_err(db_err)?;
+            let daily: Vec<Json> = stmt
+                .query_map(params![name, from, MICROS_PER_DAY, MICROS_PER_DAY], |row| {
+                    let day: i64 = row.get(0)?;
+                    Ok(serde_json::json!({
+                        "day": format_day(day),
+                        "total": row.get::<_, i64>(1)?,
+                        "blocked": row.get::<_, i64>(2)?,
+                    }))
+                })
+                .map_err(db_err)?
+                .collect::<Result<_, _>>()
+                .map_err(db_err)?;
+
+            let last_decision = conn
+                .query_row(
+                    "SELECT id, time, status, record FROM query_log
+                     WHERE query_name = ?1 ORDER BY time DESC, id DESC LIMIT 1",
+                    params![name],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(db_err)?
+                .map(|(id, time, status, record)| {
+                    let filter = serde_json::from_str::<Json>(&record)
+                        .ok()
+                        .and_then(|value| value.get("filter").cloned())
+                        .unwrap_or(Json::Null);
+                    serde_json::json!({
+                        "id": id,
+                        "time": format_micros(time),
+                        "status": status,
+                        "rule_text": filter.get("rule_text").cloned().unwrap_or(Json::Null),
+                        "source": filter.get("reason").cloned().unwrap_or(Json::Null),
+                    })
+                });
+
+            Ok(Some(serde_json::json!({
+                "domain": name,
+                "retention_limited": true,
+                "first_seen": format_micros(first),
+                "last_seen": format_micros(last),
+                "counts": { "total": total, "blocked": blocked, "allowed": total - blocked },
+                "top_clients": clients,
+                "daily": daily,
+                "last_decision": last_decision,
+            })))
+        })
+        .await
+    }
+}
+
+/// `YYYY-MM-DD` for a day index (days since the Unix epoch).
+fn format_day(day: i64) -> String {
+    time::OffsetDateTime::from_unix_timestamp(day.saturating_mul(86_400))
+        .map(|t| t.date().to_string())
+        .unwrap_or_default()
+}
