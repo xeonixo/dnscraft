@@ -92,7 +92,7 @@ admission rates restarts the affected listeners on `apply_config`.
 | Field | Default | Meaning |
 |---|---|---|
 | `udp_payload_max` | 1232 | EDNS UDP payload advertised / enforced (DNS Flag Day 2020) |
-| `query_timeout` | 10 s | per-query deadline (UDP drop; TCP/DoT/DoH/DoQ SERVFAIL) |
+| `query_timeout` | 5 s | per-query deadline (UDP drop; TCP/DoT/DoH/DoQ SERVFAIL) |
 | `tcp_idle_timeout` | 10 s | TCP/DoT idle; also the HTTP/3 request budget (below) |
 | `tls_handshake_timeout` | 5 s | TLS handshake deadline |
 | `max_inflight_per_listener` | 4096 | in-flight queries per listener |

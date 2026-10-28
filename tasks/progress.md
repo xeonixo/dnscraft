@@ -238,6 +238,18 @@ the CL15 follow-up).
 
 ## Log
 
+- 2026-10-27 — **listeners gaps GL7–GL12 (audit + close).** Re-verified against code/tests: GL7 (events
+  for pre-policy/admission/timeout answers) and GL8 (DoQ/DoH QR=1 + undecodable rules) and GL9 (DoQ
+  SNI rejected during the handshake) were already fixed by `4c5253a` and have tests (`core.rs`
+  `core_logs_pre_policy_error_answers`, `error_result_from_wire_logs_admission_and_timeout_answers`,
+  `doh.rs` QR=1 → 400, `doq.rs` `qr1_and_headerless_messages_are_dropped_silently`, `doq.rs`
+  `public_sni_matrix`). GL12 [spec]: default `query_timeout` is 5 s (the binary's resolver default);
+  SPEC-listeners.md and README updated. GL10 [spec]: per-listener banned-source counters already exist;
+  the ban table is shared by design and reported as `ban_entries`; SPEC clarified. GL2 stays open
+  ([owner]/G0: the assembler in `crates/dnscraft` must map `listeners_public.enabled`, not this crate).
+  Gates: `cargo fmt -p dnscraft-listeners --check` clean; clippy `-D warnings` clean; tests: 7 known
+  macOS-only failures (checkpoint_c 3, tcp 2, udp 1, runtime 1), all others green.
+
 - 2026-10-27 — **resolver gaps GR3/GR6/GR7.** RFC 5011 rollover: Valid/AddPending/Missing state
   machine with 30-day add/remove hold-downs, SEP+ZONE candidate selection, DS+DNSKEY anchor
   matching, and self-signature revocation over the observed root DNSKEY RRset (seeded from the

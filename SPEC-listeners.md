@@ -107,7 +107,7 @@ Every query is admitted before policy sees it:
   the 65 535 limit.
 - **Padding:** on DoT/DoH/DoQ responses pad to a multiple of 468 bytes when the client sent OPT
   (RFC 8467 recommended policy).
-- **Deadline:** every query has an overall deadline (`query_timeout`, default 10 s matching the resolver
+- **Deadline:** every query has an overall deadline (`query_timeout`, default 5 s matching the binary's resolver
   deadline); on expiry → `SERVFAIL` (UDP: drop).
 - **Concurrency caps:** in-flight queries per listener, connections per listener and per source IP,
   streams per QUIC connection — all configurable, with defaults below.
@@ -198,7 +198,9 @@ alpn = ["h2", "http/1.1"]           # DoH over TCP; default ["h2", "http/1.1"]
   others. `apply_config` rebinds only changed listeners, keeps unchanged ones (open connections survive);
   `shutdown` stops accepting, drains in-flight queries up to a grace period.
 - `status()` per listener: bound / error code, protocol, address, connections, queries, dropped,
-  rate-limited, banned sources, TLS failures.
+  rate-limited, banned sources, TLS failures. "Banned sources" counts queries refused by a ban on
+  that listener. The ban table itself is shared by all listeners (a ban applies everywhere) and is
+  reported once as `ban_entries`.
 
 ### Error codes
 
@@ -247,7 +249,7 @@ alpn = ["h2", "http/1.1"]          # DoH over TCP; DoT/DoQ use dot/doq
 
 [listeners_limits]
 udp_payload_max = 1232
-query_timeout = "10s"
+query_timeout = "5s"
 tcp_idle_timeout = "10s"
 tls_handshake_timeout = "5s"
 max_inflight_per_listener = 4096
