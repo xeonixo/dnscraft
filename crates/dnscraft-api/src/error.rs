@@ -18,6 +18,7 @@
 //! | [`ControlApiError::QueryLogRead`] | `control_api.query_log.read` |
 //! | [`ControlApiError::QueryLogExport`] | `control_api.query_log.export` |
 //! | [`ControlApiError::QueryLogInvalid`] | `control_api.query_log.invalid` |
+//! | [`ControlApiError::QueryLogStreamLimit`] | `control_api.query_log.stream_limit` |
 //! | [`ControlApiError::AuthOidc`] | `control_api.auth.oidc` |
 //! | [`ControlApiError::AuthLocal`] | `control_api.auth.local` |
 //! | [`ControlApiError::AuthLocked`] | `control_api.auth.locked` |
@@ -101,6 +102,9 @@ pub enum ControlApiError {
         /// Detail for logs.
         message: String,
     },
+    /// Too many live query-log streams for this principal or node (WX2).
+    #[error("too many live query-log streams")]
+    QueryLogStreamLimit,
     /// A query-log filter parameter is malformed or out of range.
     #[error("invalid query-log filter: {reason}")]
     QueryLogInvalid {
@@ -223,6 +227,7 @@ impl ControlApiError {
             Self::QueryLogRead { .. } => "control_api.query_log.read",
             Self::QueryLogExport { .. } => "control_api.query_log.export",
             Self::QueryLogInvalid { .. } => "control_api.query_log.invalid",
+            Self::QueryLogStreamLimit => "control_api.query_log.stream_limit",
             Self::AuthOidc { .. } => "control_api.auth.oidc",
             Self::AuthLocal => "control_api.auth.local",
             Self::AuthLocked => "control_api.auth.locked",
@@ -316,6 +321,7 @@ mod tests {
             ControlApiError::QueryLogExport {
                 message: "x".into(),
             },
+            ControlApiError::QueryLogStreamLimit,
             ControlApiError::QueryLogInvalid {
                 reason: "bad filter".into(),
             },

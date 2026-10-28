@@ -3,10 +3,21 @@
 //! Both routes are viewer-accessible reads (the centralized RBAC middleware
 //! maps every non-config `GET` under `/api/v1` to `Requirement::Api`).
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::Extension;
 use axum::extract::{Path, Query, State};
-use axum::response::IntoResponse;
+use axum::http::{HeaderValue, header};
+use axum::response::{IntoResponse, Response};
+use hyper::body::Bytes;
 use serde::Deserialize;
 use serde_json::json;
+use tokio::sync::{broadcast, mpsc};
+use tokio::time::Instant;
+
+use crate::api::auth::Authenticated;
+use crate::stats::ChannelBody;
 
 use crate::api::pagination::Pagination;
 use crate::api::response::success;
@@ -181,6 +192,117 @@ pub(crate) async fn get_query_log(
             what: format!("query log entry {id}"),
         })?;
     Ok(success(record))
+}
+
+/// Live stream: close after this long without a row (WX2 idle close).
+const STREAM_IDLE: Duration = Duration::from_secs(30 * 60);
+/// Heartbeat interval (WX2 `: ping`).
+const STREAM_PING: Duration = Duration::from_secs(15);
+/// Rows fetched per filter query when the stream is behind.
+const STREAM_BATCH: usize = 256;
+
+/// `GET /api/v1/query-log/stream` — live rows as Server-Sent Events (WX2).
+///
+/// Same filter parameters as the list (paging parameters are ignored). Live
+/// only, no replay. Rows arrive as `event: row` with the stored record as data;
+/// a subscriber that falls behind gets `event: lagged` with the dropped count.
+pub(crate) async fn stream_query_log(
+    State(state): State<AppState>,
+    auth: Option<Extension<Authenticated>>,
+    Query(params): Query<RawQueryLogParams>,
+) -> Result<Response, ControlApiError> {
+    let log = Arc::clone(state.query_log().ok_or_else(|| ControlApiError::NotFound {
+        what: "query log".to_owned(),
+    })?);
+    let filter = params.into_filter()?;
+    let principal = auth
+        .as_ref()
+        .map_or("anonymous", |Extension(who)| who.actor_id())
+        .to_owned();
+    let guard = log
+        .acquire_stream(&principal)
+        .ok_or(ControlApiError::QueryLogStreamLimit)?;
+    let mut rows = log.subscribe_stream();
+    let (tx, rx) = mpsc::channel::<Result<Bytes, ControlApiError>>(16);
+    tokio::spawn(async move {
+        let _guard = guard;
+        if !send_text(&tx, ": open\n\n").await {
+            return;
+        }
+        let mut ping = tokio::time::interval_at(Instant::now() + STREAM_PING, STREAM_PING);
+        let idle = tokio::time::sleep(STREAM_IDLE);
+        tokio::pin!(idle);
+        loop {
+            tokio::select! {
+                received = rows.recv() => {
+                    let mut ids = Vec::new();
+                    match received {
+                        Ok(id) => ids.push(id),
+                        Err(broadcast::error::RecvError::Lagged(dropped)) => {
+                            if !send_lagged(&tx, dropped).await {
+                                return;
+                            }
+                            continue;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => return,
+                    }
+                    while ids.len() < STREAM_BATCH {
+                        match rows.try_recv() {
+                            Ok(id) => ids.push(id),
+                            Err(broadcast::error::TryRecvError::Lagged(dropped)) => {
+                                if !send_lagged(&tx, dropped).await {
+                                    return;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    let records = match log.stream_rows(&filter, &ids).await {
+                        Ok(records) => records,
+                        Err(error) => {
+                            tracing::warn!(error = %error, "query-log stream read failed");
+                            return;
+                        }
+                    };
+                    for record in records {
+                        if !send_text(&tx, &format!("event: row\ndata: {record}\n\n")).await {
+                            return;
+                        }
+                    }
+                    idle.as_mut().reset(Instant::now() + STREAM_IDLE);
+                }
+                _ = ping.tick() => {
+                    if !send_text(&tx, ": ping\n\n").await {
+                        return;
+                    }
+                }
+                () = &mut idle => return,
+            }
+        }
+    });
+    let mut response = Response::new(axum::body::Body::new(ChannelBody { rx }));
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
+    Ok(response)
+}
+
+/// Sends one SSE chunk; `false` when the client has gone.
+async fn send_text(tx: &mpsc::Sender<Result<Bytes, ControlApiError>>, text: &str) -> bool {
+    tx.send(Ok(Bytes::from(text.to_owned()))).await.is_ok()
+}
+
+/// Sends the `lagged` event; `false` when the client has gone.
+async fn send_lagged(tx: &mpsc::Sender<Result<Bytes, ControlApiError>>, dropped: u64) -> bool {
+    send_text(
+        tx,
+        &format!("event: lagged\ndata: {{\"dropped\":{dropped}}}\n\n"),
+    )
+    .await
 }
 
 #[cfg(test)]

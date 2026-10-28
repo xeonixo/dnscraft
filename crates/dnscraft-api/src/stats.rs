@@ -1148,8 +1148,8 @@ fn ratio(part: i64, whole: i64) -> f64 {
 }
 
 /// Response body backed by a bounded channel of rendered chunks.
-struct ChannelBody {
-    rx: mpsc::Receiver<Result<Bytes, ControlApiError>>,
+pub(crate) struct ChannelBody {
+    pub(crate) rx: mpsc::Receiver<Result<Bytes, ControlApiError>>,
 }
 
 impl HttpBody for ChannelBody {

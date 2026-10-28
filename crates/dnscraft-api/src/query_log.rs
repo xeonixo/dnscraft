@@ -30,8 +30,10 @@ use rusqlite::params;
 use rusqlite::params_from_iter;
 use rusqlite::types::Value;
 use serde_json::{Value as Json, json};
+use std::collections::HashMap;
+use std::sync::Mutex;
 use time::OffsetDateTime;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 use crate::config::{IpTruncate, QueryLogConfig};
 use crate::error::ControlApiError;
@@ -39,6 +41,13 @@ use crate::storage::{Db, db_err, kv_get, kv_set};
 
 /// Largest batch drained from the channel before one SQLite transaction.
 const BATCH_MAX: usize = 1024;
+
+/// Live-stream queue per subscriber, in events (WX2).
+const STREAM_QUEUE: usize = 512;
+/// Live streams one principal may hold open (WX2).
+pub const STREAM_PER_PRINCIPAL: usize = 4;
+/// Live streams one node may serve in total (WX2).
+pub const STREAM_PER_NODE: usize = 32;
 
 /// Milliseconds in a day, used to turn [`QueryLogConfig::retention_days`] into
 /// a microsecond window.
@@ -207,6 +216,44 @@ pub struct QueryLog {
     node_id: String,
     enricher: Option<Arc<dyn ClientEnricher>>,
     sink: Option<Arc<QueryLogSink>>,
+    stream_tx: broadcast::Sender<Arc<str>>,
+    streams: Arc<StreamSlots>,
+}
+
+/// Open live-stream counts, per principal and per node (WX2).
+#[derive(Debug, Default)]
+struct StreamSlots {
+    per_principal: Mutex<HashMap<String, usize>>,
+    total: Mutex<usize>,
+}
+
+/// Holds one live-stream slot; releases it on drop.
+#[derive(Debug)]
+pub(crate) struct StreamGuard {
+    slots: Arc<StreamSlots>,
+    principal: String,
+}
+
+impl Drop for StreamGuard {
+    fn drop(&mut self) {
+        let mut per = self
+            .slots
+            .per_principal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(count) = per.get_mut(&self.principal) {
+            *count -= 1;
+            if *count == 0 {
+                per.remove(&self.principal);
+            }
+        }
+        let mut total = self
+            .slots
+            .total
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *total -= 1;
+    }
 }
 
 impl QueryLog {
@@ -218,7 +265,73 @@ impl QueryLog {
             node_id: node_id.into(),
             enricher: None,
             sink: None,
+            stream_tx: broadcast::channel(STREAM_QUEUE).0,
+            streams: Arc::new(StreamSlots::default()),
         }
+    }
+
+    /// Subscribes to ids of newly stored rows (node-local inserts only).
+    pub(crate) fn subscribe_stream(&self) -> broadcast::Receiver<Arc<str>> {
+        self.stream_tx.subscribe()
+    }
+
+    /// Takes one live-stream slot for `principal`, or `None` past the limits.
+    pub(crate) fn acquire_stream(&self, principal: &str) -> Option<StreamGuard> {
+        let mut per = self
+            .streams
+            .per_principal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut total = self
+            .streams
+            .total
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = per.entry(principal.to_owned()).or_insert(0);
+        if *count >= STREAM_PER_PRINCIPAL || *total >= STREAM_PER_NODE {
+            if *count == 0 {
+                per.remove(principal);
+            }
+            return None;
+        }
+        *count += 1;
+        *total += 1;
+        Some(StreamGuard {
+            slots: Arc::clone(&self.streams),
+            principal: principal.to_owned(),
+        })
+    }
+
+    /// Returns the stored records among `ids` that match `filter`, oldest first.
+    ///
+    /// Uses the same filter SQL as [`Self::list`], so a stream never disagrees
+    /// with the list endpoint about what matches.
+    pub(crate) async fn stream_rows(
+        &self,
+        filter: &QueryLogFilter,
+        ids: &[Arc<str>],
+    ) -> Result<Vec<String>, ControlApiError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (clause, clause_values) = filter_clause(filter);
+        let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+        self.db
+            .with_conn(move |conn| {
+                let placeholders = vec!["?"; ids.len()].join(",");
+                let sql = format!(
+                    "SELECT record FROM query_log WHERE id IN ({placeholders}){clause}
+                     ORDER BY time ASC, rowid ASC"
+                );
+                let mut values: Vec<Value> = ids.into_iter().map(Value::Text).collect();
+                values.extend(clause_values);
+                let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+                let rows = stmt
+                    .query_map(params_from_iter(values), |row| row.get::<_, String>(0))
+                    .map_err(db_err)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+            })
+            .await
     }
 
     /// Attaches the sink returned by [`Self::channel`], so the stats overview
@@ -310,29 +423,31 @@ impl QueryLog {
         let node_id = self.node_id.clone();
         let enricher = self.enricher.clone();
         let now_us = self.db.now_unix().saturating_mul(1_000_000);
-        db.with_conn(move |conn| {
-            let mut rows = Vec::with_capacity(events.len());
-            for event in &events {
-                if event.loggable {
-                    rows.push(prepare_row(event, &node_id, &config, enricher.as_deref())?);
+        let ids = db
+            .with_conn(move |conn| {
+                let mut rows = Vec::with_capacity(events.len());
+                for event in &events {
+                    if event.loggable {
+                        rows.push(prepare_row(event, &node_id, &config, enricher.as_deref())?);
+                    }
                 }
-            }
-            let cutoff = now_us
-                .saturating_sub(i64::from(config.retention_days).saturating_mul(MICROS_PER_DAY));
-            let tx = conn.transaction().map_err(db_err)?;
-            // Retention is an indexed range delete; running it with each batch
-            // keeps the window bounded without an extra timer task.
-            tx.execute("DELETE FROM query_log WHERE time < ?1", params![cutoff])
-                .map_err(db_err)?;
-            // The per-node `seq` is allocated in this same transaction: a
-            // crash can roll the rows and the cursor back together, never
-            // leaving a logged query without an outbox position.
-            let seq_key = outbox_key(SEQ_ALLOC_PREFIX, &node_id);
-            let first_seq = read_counter(&tx, &seq_key, 1)?;
-            {
-                let mut stmt = tx
-                    .prepare(
-                        "INSERT INTO query_log (
+                let cutoff = now_us.saturating_sub(
+                    i64::from(config.retention_days).saturating_mul(MICROS_PER_DAY),
+                );
+                let tx = conn.transaction().map_err(db_err)?;
+                // Retention is an indexed range delete; running it with each batch
+                // keeps the window bounded without an extra timer task.
+                tx.execute("DELETE FROM query_log WHERE time < ?1", params![cutoff])
+                    .map_err(db_err)?;
+                // The per-node `seq` is allocated in this same transaction: a
+                // crash can roll the rows and the cursor back together, never
+                // leaving a logged query without an outbox position.
+                let seq_key = outbox_key(SEQ_ALLOC_PREFIX, &node_id);
+                let first_seq = read_counter(&tx, &seq_key, 1)?;
+                {
+                    let mut stmt = tx
+                        .prepare(
+                            "INSERT INTO query_log (
                              id, time, node_id, source_ip, query_name, listener_id,
                              protocol, source_ip_truncated, client_id, client_name,
                              query_type, query_class, view_id, profile_id, status,
@@ -341,43 +456,50 @@ impl QueryLog {
                              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                              ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
                          )",
-                    )
-                    .map_err(db_err)?;
-                for (offset, row) in rows.iter().enumerate() {
-                    let seq = first_seq.saturating_add(i64::try_from(offset).unwrap_or(i64::MAX));
-                    stmt.execute(params![
-                        row.id,
-                        row.time_us,
-                        row.node_id,
-                        row.source_ip,
-                        row.query_name,
-                        row.listener_id,
-                        row.protocol,
-                        row.source_ip_truncated,
-                        row.client_id,
-                        row.client_name,
-                        row.query_type,
-                        row.query_class,
-                        row.view_id,
-                        row.profile_id,
-                        row.status,
-                        row.answer_source,
-                        row.rcode,
-                        row.record,
-                        seq,
-                    ])
-                    .map_err(db_err)?;
+                        )
+                        .map_err(db_err)?;
+                    for (offset, row) in rows.iter().enumerate() {
+                        let seq =
+                            first_seq.saturating_add(i64::try_from(offset).unwrap_or(i64::MAX));
+                        stmt.execute(params![
+                            row.id,
+                            row.time_us,
+                            row.node_id,
+                            row.source_ip,
+                            row.query_name,
+                            row.listener_id,
+                            row.protocol,
+                            row.source_ip_truncated,
+                            row.client_id,
+                            row.client_name,
+                            row.query_type,
+                            row.query_class,
+                            row.view_id,
+                            row.profile_id,
+                            row.status,
+                            row.answer_source,
+                            row.rcode,
+                            row.record,
+                            seq,
+                        ])
+                        .map_err(db_err)?;
+                    }
                 }
-            }
-            if !rows.is_empty() {
-                let next_alloc =
-                    first_seq.saturating_add(i64::try_from(rows.len()).unwrap_or(i64::MAX));
-                kv_set(&tx, &seq_key, &next_alloc.to_string())?;
-            }
-            tx.commit().map_err(db_err)?;
-            Ok(rows.len())
-        })
-        .await
+                if !rows.is_empty() {
+                    let next_alloc =
+                        first_seq.saturating_add(i64::try_from(rows.len()).unwrap_or(i64::MAX));
+                    kv_set(&tx, &seq_key, &next_alloc.to_string())?;
+                }
+                tx.commit().map_err(db_err)?;
+                Ok(rows.into_iter().map(|row| row.id).collect::<Vec<_>>())
+            })
+            .await?;
+        let written = ids.len();
+        for id in ids {
+            // No subscriber is a normal state; the DNS path never waits here.
+            let _ = self.stream_tx.send(Arc::from(id));
+        }
+        Ok(written)
     }
 
     /// Deletes rows older than the configured retention window.
