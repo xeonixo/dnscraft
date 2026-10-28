@@ -17,7 +17,9 @@ use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
 async fn harness() -> AppState {
-    let clock = Arc::new(ManualClock::new(UNIX_EPOCH + Duration::from_secs(1_700_000_000)));
+    let clock = Arc::new(ManualClock::new(
+        UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+    ));
     let db = Db::open_in_memory(clock.clone()).await.unwrap();
     let service = ConfigService::new(
         ConfigStore::new(db.clone()),
@@ -31,7 +33,12 @@ async fn harness() -> AppState {
         .with_config_service(Arc::new(service))
 }
 
-async fn call(state: &AppState, method: Method, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn call(
+    state: &AppState,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let router = state
         .clone()
         .router()
@@ -54,7 +61,10 @@ async fn call(state: &AppState, method: Method, uri: &str, body: Option<Value>) 
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 fn channel(id: &str, url: &str) -> Value {
@@ -83,7 +93,10 @@ async fn empty_allowlist_rejects_every_host() {
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(body["error"]["code"], "control_api.notifications.host_not_allowed");
+    assert_eq!(
+        body["error"]["code"],
+        "control_api.notifications.host_not_allowed"
+    );
 }
 
 #[tokio::test]
@@ -128,15 +141,33 @@ async fn secret_is_kept_when_omitted_and_cleared_on_null() {
         }
         json!({"allowed_hosts": ["example.com"], "channels": [channel]})
     };
-    let (status, _) = call(&state, Method::PUT, "/api/v1/notifications", Some(base(Some(json!("first"))))).await;
+    let (status, _) = call(
+        &state,
+        Method::PUT,
+        "/api/v1/notifications",
+        Some(base(Some(json!("first")))),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
-    let (status, _) = call(&state, Method::PUT, "/api/v1/notifications", Some(base(None))).await;
+    let (status, _) = call(
+        &state,
+        Method::PUT,
+        "/api/v1/notifications",
+        Some(base(None)),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let (_, body) = call(&state, Method::GET, "/api/v1/notifications", None).await;
     assert_eq!(body["data"]["channels"][0]["has_secret"], true);
 
-    let (status, _) = call(&state, Method::PUT, "/api/v1/notifications", Some(base(Some(Value::Null)))).await;
+    let (status, _) = call(
+        &state,
+        Method::PUT,
+        "/api/v1/notifications",
+        Some(base(Some(Value::Null))),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let (_, body) = call(&state, Method::GET, "/api/v1/notifications", None).await;
     assert_eq!(body["data"]["channels"][0]["has_secret"], false);
@@ -184,7 +215,10 @@ async fn test_send_to_a_private_destination_is_refused_before_any_request() {
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(body["error"]["code"], "control_api.notifications.egress_denied");
+    assert_eq!(
+        body["error"]["code"],
+        "control_api.notifications.egress_denied"
+    );
 }
 
 #[tokio::test]
@@ -198,5 +232,8 @@ async fn test_send_to_an_unknown_channel_is_404() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(body["error"]["code"], "control_api.notifications.unknown_channel");
+    assert_eq!(
+        body["error"]["code"],
+        "control_api.notifications.unknown_channel"
+    );
 }

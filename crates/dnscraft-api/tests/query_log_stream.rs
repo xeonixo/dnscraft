@@ -13,7 +13,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Request, StatusCode};
-use hyper::body::Body as HttpBody;
 use dnscraft_api::{AppState, Db, ManualClock, QueryLog, QueryLogConfig};
 use dnscraft_filtering::{BlockMode, ListId, Reason, RuleSource, SetId};
 use dnscraft_listeners::QueryEvent;
@@ -23,6 +22,7 @@ use dnscraft_policy::{
 };
 use dnscraft_proto::{Class, Name, Rcode, RecordType};
 use dnscraft_resolver::{AnswerSource, DnssecStatus, Query};
+use hyper::body::Body as HttpBody;
 use serde_json::Value;
 use tower::ServiceExt as _;
 
@@ -146,8 +146,6 @@ impl Spec {
     }
 }
 
-
-
 /// Issues a GET through the real router and returns the status and the open body.
 async fn open_stream(log: &Arc<QueryLog>, uri: &str) -> (StatusCode, axum::http::HeaderMap, Body) {
     let state = AppState::new().with_query_log(Arc::clone(log));
@@ -158,7 +156,11 @@ async fn open_stream(log: &Arc<QueryLog>, uri: &str) -> (StatusCode, axum::http:
         .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
         .await
         .unwrap();
-    (response.status(), response.headers().clone(), response.into_body())
+    (
+        response.status(),
+        response.headers().clone(),
+        response.into_body(),
+    )
 }
 
 /// Reads frames for `window` and returns everything received as text.
@@ -195,15 +197,21 @@ async fn stream_applies_the_same_filters_as_the_list() {
     let mut blocked = Spec::new(at_secs(BASE_SECS - 1), "ads.example.com");
     blocked.blocked = true;
     let allowed = Spec::new(at_secs(BASE_SECS - 1), "ok.example.com");
-    let (status, headers, mut body) = open_stream(&log, "/api/v1/query-log/stream?status=blocked").await;
+    let (status, headers, mut body) =
+        open_stream(&log, "/api/v1/query-log/stream?status=blocked").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers["content-type"], "text/event-stream");
     assert_eq!(headers["cache-control"], "no-store");
     assert_eq!(headers["x-accel-buffering"], "no");
 
-    log.insert_batch(vec![blocked.event(), allowed.event()]).await.unwrap();
+    log.insert_batch(vec![blocked.event(), allowed.event()])
+        .await
+        .unwrap();
     let text = collect_for(&mut body, Duration::from_millis(400)).await;
-    let rows: Vec<&str> = text.lines().filter(|line| line.starts_with("data: ")).collect();
+    let rows: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("data: "))
+        .collect();
     assert_eq!(rows.len(), 1, "{text}");
     let record: Value = serde_json::from_str(rows[0].trim_start_matches("data: ")).unwrap();
     assert_eq!(record["query"]["name"], "ads.example.com");
@@ -235,7 +243,8 @@ async fn stream_limit_per_principal_returns_429() {
 #[tokio::test]
 async fn invalid_filter_is_rejected_before_the_stream_opens() {
     let log = new_log().await;
-    let (status, _, body) = open_stream(&log, "/api/v1/query-log/stream?protocol=carrier-pigeon").await;
+    let (status, _, body) =
+        open_stream(&log, "/api/v1/query-log/stream?protocol=carrier-pigeon").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap();
@@ -252,7 +261,11 @@ async fn a_subscriber_that_falls_behind_gets_a_lagged_event() {
         .collect();
     log.insert_batch(events).await.unwrap();
     let text = collect_for(&mut body, Duration::from_millis(500)).await;
-    assert!(text.contains("event: lagged"), "no lagged event: {}", &text[..text.len().min(200)]);
+    assert!(
+        text.contains("event: lagged"),
+        "no lagged event: {}",
+        &text[..text.len().min(200)]
+    );
     let dropped: u64 = text
         .split("\"dropped\":")
         .nth(1)

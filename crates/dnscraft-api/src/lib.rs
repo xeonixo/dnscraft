@@ -32,8 +32,8 @@ mod server;
 mod stats;
 mod storage;
 mod system;
-mod webhooks;
 mod tls;
+mod webhooks;
 
 pub use api::auth::{
     ActorType, AuthSnapshot, AuthState, Authenticated, CreatedSession, CreatedToken,
