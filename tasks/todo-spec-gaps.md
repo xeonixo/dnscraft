@@ -199,9 +199,9 @@ approval before Phase 0 code.
 - [x] **GA23** 🟡 [code] `protocol`/`status` filter values not validated as enums. *(query_log_routes.rs:59-76)*
 - [x] **GA24** 🟡 [spec] `filter.reason` stores provenance, not the documented `"adblock"`-style reason. *(query_log.rs:824-838)*
 - [x] **GA25** 🟡 [code] Manual cert upload accepts private-key material. *(tls_routes.rs:348-377)*
-- [ ] **GA26** 🟡 [code] UniFi settings / local-domain mode have no typed route. *(clients_routes.rs)*
+- [x] **GA26** 🟡 [code] UniFi settings / local-domain mode have no typed route. *(clients_routes.rs)*
 - [ ] **GA27** 🟡 [code] No control-api fuzz target. *(fuzz/fuzz_targets/)*
-- [ ] **GA28** 🟡 [code] No bootstrap-to-SQLite config seeding path. *(config.rs:192-227; config_apply.rs:845-853)*
+- [x] **GA28** 🟡 [code] No bootstrap-to-SQLite config seeding path. *(config.rs:192-227; config_apply.rs:845-853)*
 - [ ] **GA29** 🟡 [code] `/readyz` reports ready with no module producers. *(server.rs:289-324)* — API side done: `Readiness::expect_module` keeps `/readyz` at 503 until each registered module calls `set_ready`; **open for the assembler (`crates/dnscraft`, G0): register and report each module.**
 
 ## MCP (`SPEC-mcp.md` ↔ `crates/dnscraft-mcp` + `dnscraft-api` mcp files)

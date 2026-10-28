@@ -228,6 +228,21 @@ impl ConfigService {
         self.store.versions(limit, offset).await
     }
 
+    /// Stores `snapshot` as the first version when SQLite holds no config yet
+    /// (bootstrap seed, GA28). Returns the new version, or `None` when a config
+    /// already exists and the bootstrap values are ignored.
+    ///
+    /// Called once at startup, before the listeners serve, so the check and the
+    /// first write need no lock against a concurrent writer.
+    pub async fn seed_if_empty(&self, snapshot: Value) -> Result<Option<i64>, ControlApiError> {
+        if self.store.current().await?.is_some() {
+            return Ok(None);
+        }
+        self.replace(snapshot, &ConfigActor::local(), None)
+            .await
+            .map(Some)
+    }
+
     /// Validates, applies and stores a full config replace.
     ///
     /// Returns the new version. `if_match` is the raw `If-Match` header value.

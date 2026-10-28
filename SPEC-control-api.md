@@ -658,8 +658,12 @@ contacted over the internet from CI; tests use an in-process mock provider.
 - Query-log retention and statistics rollup settings.
 
 Bootstrap values from TOML/environment are only used to initialise the first
-config generation if SQLite is empty. After that, the API and SQLite are the
-source of truth.
+config generation if SQLite is empty (`ConfigService::seed_if_empty`). After that,
+the API and SQLite are the source of truth.
+
+UniFi settings and local-domain mode (GA26 decision) are edited through the
+`clients` section of `PUT /api/v1/config` (validated by the clients module); v1
+has no separate typed route for them.
 
 ### Validation
 

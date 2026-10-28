@@ -534,3 +534,21 @@ async fn http_put_module_error_propagates_module_code() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(response["error"]["code"], "policy.config.invalid");
 }
+
+#[tokio::test]
+async fn bootstrap_seed_initialises_only_an_empty_store() {
+    // GA28: TOML/env values become version 1 only when SQLite has no config.
+    let h = harness().await;
+    assert_eq!(
+        h.service.seed_if_empty(snapshot("boot")).await.unwrap(),
+        Some(1)
+    );
+    assert_eq!(h.service.current().await.unwrap().0, Some(1));
+    // A later start with different bootstrap values changes nothing.
+    assert_eq!(
+        h.service.seed_if_empty(snapshot("later")).await.unwrap(),
+        None
+    );
+    let (_, stored) = h.service.current().await.unwrap();
+    assert_eq!(stored.unwrap()["filtering"]["marker"], "boot");
+}
