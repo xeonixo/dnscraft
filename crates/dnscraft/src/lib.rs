@@ -251,9 +251,8 @@ pub async fn build_with_enrollment(
     let cluster = cluster_settings(&config, &engine::engine_data_dir(&config))?;
     let engines = engine::build_engines(&config, clock).await?;
 
-    // AS9: SQLite config store under `data_dir`, seeded from the TOML config on
-    // first run. A non-empty store wins; the live engines were still built from
-    // TOML in this phase.
+    // AS9: SQLite config store under `data_dir`. TOML seeds an empty store once;
+    // after that the stored snapshot is applied to the live engines below (D4).
     let snapshot = config_snapshot(&config, &listeners)?;
     let data_dir = engine::engine_data_dir(&config);
     let db_path = data_dir.join(CONFIG_DB_FILE);
@@ -373,6 +372,7 @@ pub async fn build_with_enrollment(
     if cluster.as_ref().map(|c| c.role) != Some(Role::SubNode) {
         seed_config_store(&config_service, snapshot).await?;
     }
+    apply_stored_config(&config_service).await?;
 
     // AS10/AS11: serve the control-api (and mount `/mcp/v1` when enabled)
     // alongside the DNS listeners.
@@ -473,9 +473,10 @@ fn section<T: serde::Serialize>(name: &str, value: &T) -> Result<Value, Error> {
 
 /// Seeds an empty config store from the TOML snapshot (GA28, D4).
 ///
-/// The TOML file is a first-run bootstrap only: [`ConfigService::seed_if_empty`]
-/// stores it once and keeps an operator's stored (API-managed) configuration
-/// otherwise, so a single warning says so.
+/// The TOML file is bootstrap-only for an empty store. Non-versioned server
+/// fields (`data_dir`, `[control_api]` bind/TLS/MCP, `[cluster]`, `[resolver]`,
+/// `[log]`) still come from TOML on every start; versioned DNS modules and
+/// `control_api_settings` live in SQLite once seeded.
 async fn seed_config_store(config_service: &ConfigService, snapshot: Value) -> Result<(), Error> {
     match config_service.seed_if_empty(snapshot).await {
         Ok(Some(version)) => {
@@ -490,6 +491,21 @@ async fn seed_config_store(config_service: &ConfigService, snapshot: Value) -> R
         }
         Err(e) => Err(Error::startup(
             "dnscraft.startup.config_seed",
+            format!("config store: {e}"),
+        )),
+    }
+}
+
+/// Reconciles live module engines with the current SQLite snapshot (D4).
+async fn apply_stored_config(config_service: &ConfigService) -> Result<(), Error> {
+    match config_service.apply_stored_current().await {
+        Ok(Some(version)) => {
+            tracing::info!(version, "applied the stored config to live engines");
+            Ok(())
+        }
+        Ok(None) => Ok(()),
+        Err(e) => Err(Error::startup(
+            "dnscraft.startup.config_apply",
             format!("config store: {e}"),
         )),
     }

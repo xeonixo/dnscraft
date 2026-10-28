@@ -253,6 +253,29 @@ impl ConfigService {
             .map(Some)
     }
 
+    /// Applies the current stored snapshot to live modules without writing a
+    /// new version (assembler boot, D4).
+    ///
+    /// Returns the applied version, or `None` when the store is still empty.
+    /// The TOML-built engines are the replay baseline on failure (`previous`
+    /// is `None`), so a bad stored snapshot fails startup instead of silently
+    /// serving stale TOML.
+    pub async fn apply_stored_current(&self) -> Result<Option<i64>, ControlApiError> {
+        let _guard = self.apply_lock.lock().await;
+        let Some(version) = self.store.current().await? else {
+            return Ok(None);
+        };
+        let Some(snapshot) = self.store.load(version).await? else {
+            return Err(ControlApiError::Internal {
+                message: format!(
+                    "config store points at version {version} but no snapshot is stored"
+                ),
+            });
+        };
+        self.validate_and_apply(&snapshot, None).await?;
+        Ok(Some(version))
+    }
+
     /// Validates, applies and stores a full config replace.
     ///
     /// Returns the new version. `if_match` is the raw `If-Match` header value.

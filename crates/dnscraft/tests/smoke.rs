@@ -320,6 +320,63 @@ async fn second_boot_keeps_the_seeded_config() {
     let _ = std::fs::remove_dir_all(&data_dir);
 }
 
+/// D4: after a config write, a restart must apply SQLite to live engines, not
+/// revert to the unchanged TOML bootstrap snapshot.
+#[tokio::test(flavor = "multi_thread")]
+async fn second_boot_applies_stored_config_to_live_engines() {
+    let data_dir = temp_dir("reboot-apply");
+
+    let port = free_port();
+    let first = boot(&config_toml(&data_dir, port, "first-seed")).await;
+    wait_for_api(port);
+    let admin = token(&data_dir, Scope::Admin).await;
+
+    let (status, body) = get(port, "/api/v1/config", &admin);
+    assert_eq!(status, 200, "get config: {body}");
+    let mut snapshot = body["data"]["config"].clone();
+    snapshot["clients"]["manual"]
+        .as_array_mut()
+        .expect("manual list")
+        .push(json!({ "name": "from-api", "ip": "192.0.2.9", "cidr": null, "domain": null }));
+
+    let (status, body) = http(
+        port,
+        "PUT",
+        "/api/v1/config",
+        &[
+            ("Authorization", format!("Bearer {admin}")),
+            ("Content-Type", "application/json".to_owned()),
+        ],
+        &snapshot.to_string(),
+    );
+    assert_eq!(status, 200, "put config: {body}");
+
+    first.shutdown(Duration::from_secs(1)).await;
+
+    let port = free_port();
+    let second = boot(&config_toml(&data_dir, port, "second-toml-only")).await;
+    wait_for_api(port);
+    let admin = token(&data_dir, Scope::Admin).await;
+    let (status, body) = get(port, "/api/v1/clients", &admin);
+    assert_eq!(status, 200, "clients: {body}");
+    let clients = body.to_string();
+    assert!(
+        clients.contains("from-api"),
+        "SQLite change must survive reboot: {clients}"
+    );
+    assert!(
+        clients.contains("first-seed"),
+        "stored manual client must survive reboot: {clients}"
+    );
+    assert!(
+        !clients.contains("second-toml-only"),
+        "TOML manual must not override stored config: {clients}"
+    );
+
+    second.shutdown(Duration::from_secs(1)).await;
+    let _ = std::fs::remove_dir_all(&data_dir);
+}
+
 /// Phase 2 e2e: `PUT /api/v1/config` stores a new version in SQLite and
 /// applies it to the live client engine (ApplyClients), visible on the next
 /// `GET /api/v1/clients`.

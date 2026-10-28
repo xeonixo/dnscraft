@@ -552,3 +552,24 @@ async fn bootstrap_seed_initialises_only_an_empty_store() {
     let (_, stored) = h.service.current().await.unwrap();
     assert_eq!(stored.unwrap()["filtering"]["marker"], "boot");
 }
+
+#[tokio::test]
+async fn apply_stored_current_reconciles_live_modules_without_a_new_version() {
+    let h = harness().await;
+    h.service
+        .replace(snapshot("live"), &ConfigActor::local(), None)
+        .await
+        .unwrap();
+    h.log.lock().unwrap().clear();
+    assert_eq!(
+        h.service.apply_stored_current().await.unwrap(),
+        Some(1),
+        "applies the current row"
+    );
+    let applied = h.log.lock().unwrap().join(",");
+    assert!(
+        applied.contains("filtering:live"),
+        "expected live marker in apply log, got {applied}"
+    );
+    assert_eq!(h.service.current().await.unwrap().0, Some(1));
+}

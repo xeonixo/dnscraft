@@ -2,6 +2,17 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — cluster: sub-node status applied_version vs ack
+
+- **Fix:** `SyncedConfigApplier` updates `ClusterStatusHandle` immediately after `apply_synced_config`, before `ClusterClient::apply_push` posts the HTTP config ack (clients could already reflect the snapshot while status still showed the old version).
+- **Tests:** `synced_config_applier_publishes_applied_version_before_config_ack` (`cluster_wiring.rs`); master `PUT /config` version assert in assembler `cluster.rs` smoke test.
+- **Gates:** `cargo test -p dnscraft --test cluster --locked`; `cargo clippy -p dnscraft-api -p dnscraft --all-targets --locked -D warnings`.
+
+## 2026-10-28 — assembler D4: apply SQLite config on boot
+
+- **Fix:** after `seed_if_empty`, `ConfigService::apply_stored_current` loads the current snapshot and applies it to live module engines before serving (TOML remains bootstrap-only for empty stores + non-versioned fields).
+- **Tests:** `second_boot_applies_stored_config_to_live_engines` (`smoke.rs`); `apply_stored_current_reconciles_live_modules_without_a_new_version` (`config_apply.rs`).
+
 ## 2026-10-28 — AS13 follow-up + sub-node config relay (assembler/api)
 
 - **Docker:** `deploy/dnscraft.docker.toml` binds control API on `0.0.0.0:8080` (host port maps work); `Dockerfile`/`Dockerfile.musl` copy `rust-toolchain.toml`; `deploy/README.md` documents exposure + production hardening.
