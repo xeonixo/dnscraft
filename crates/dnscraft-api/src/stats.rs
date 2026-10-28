@@ -162,6 +162,8 @@ pub struct StatsOverview {
     pub active_clients: Option<i64>,
     /// Events dropped by the query-log sink since process start (node-local).
     pub query_log_dropped: u64,
+    /// Live-stream events skipped by lagging subscribers since process start.
+    pub query_log_stream_dropped: u64,
     /// Filter-hit breakdown (`null` in rollup mode).
     pub filter_hits: Option<FilterHits>,
     /// Query counts by transport.
@@ -408,6 +410,7 @@ impl QueryLog {
         let (from, to) = resolve_window(db, from_us, to_us)?;
         let scope = Scope::from(scope);
         let dropped = self.sink_dropped();
+        let stream_dropped = self.stream_dropped();
         let retention_secs =
             i64::from(self.config().retention_days).saturating_mul(SECONDS_PER_DAY);
         let raw_horizon = db
@@ -415,7 +418,7 @@ impl QueryLog {
             .saturating_sub(retention_secs)
             .saturating_mul(1_000_000);
         if from < raw_horizon {
-            return rollup_overview(db, from, to, scope, dropped).await;
+            return rollup_overview(db, from, to, scope, dropped, stream_dropped).await;
         }
         let (total, allowed, blocked) = db
             .with_conn({
@@ -475,6 +478,7 @@ impl QueryLog {
             allowed_ratio: ratio(allowed, total),
             active_clients: Some(active_clients),
             query_log_dropped: dropped,
+            query_log_stream_dropped: stream_dropped,
             filter_hits: Some(filter_hits),
             by_protocol,
             by_view,
@@ -859,6 +863,7 @@ async fn rollup_overview(
     to: i64,
     scope: Scope,
     dropped: u64,
+    stream_dropped: u64,
 ) -> Result<StatsOverview, ControlApiError> {
     let from_day = from.div_euclid(MICROS_PER_DAY);
     let to_day = to.div_euclid(MICROS_PER_DAY);
@@ -894,6 +899,7 @@ async fn rollup_overview(
         allowed_ratio: ratio(total - blocked, total),
         active_clients: None,
         query_log_dropped: dropped,
+        query_log_stream_dropped: stream_dropped,
         filter_hits: None,
         by_protocol,
         by_view: BTreeMap::new(),

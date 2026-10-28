@@ -217,6 +217,7 @@ pub struct QueryLog {
     enricher: Option<Arc<dyn ClientEnricher>>,
     sink: Option<Arc<QueryLogSink>>,
     stream_tx: broadcast::Sender<Arc<str>>,
+    stream_dropped: AtomicU64,
     streams: Arc<StreamSlots>,
 }
 
@@ -266,6 +267,7 @@ impl QueryLog {
             enricher: None,
             sink: None,
             stream_tx: broadcast::channel(STREAM_QUEUE).0,
+            stream_dropped: AtomicU64::new(0),
             streams: Arc::new(StreamSlots::default()),
         }
     }
@@ -350,6 +352,18 @@ impl QueryLog {
     pub fn with_client_enricher(mut self, enricher: Arc<dyn ClientEnricher>) -> Self {
         self.enricher = Some(enricher);
         self
+    }
+
+    /// Live-stream events skipped by lagging subscribers since process start
+    /// (the `query_log.stream_dropped` counter).
+    pub fn stream_dropped(&self) -> u64 {
+        self.stream_dropped.load(Ordering::Relaxed)
+    }
+
+    /// Adds `count` to the stream-drop counter and logs it.
+    pub(crate) fn record_stream_dropped(&self, count: u64) {
+        self.stream_dropped.fetch_add(count, Ordering::Relaxed);
+        tracing::warn!(counter = "query_log.stream_dropped", dropped = count, "live query-log subscriber lagged");
     }
 
     /// The active query-log configuration.

@@ -239,6 +239,7 @@ pub(crate) async fn stream_query_log(
                     match received {
                         Ok(id) => ids.push(id),
                         Err(broadcast::error::RecvError::Lagged(dropped)) => {
+                            log.record_stream_dropped(dropped);
                             if !send_lagged(&tx, dropped).await {
                                 return;
                             }
@@ -250,6 +251,7 @@ pub(crate) async fn stream_query_log(
                         match rows.try_recv() {
                             Ok(id) => ids.push(id),
                             Err(broadcast::error::TryRecvError::Lagged(dropped)) => {
+                                log.record_stream_dropped(dropped);
                                 if !send_lagged(&tx, dropped).await {
                                     return;
                                 }
