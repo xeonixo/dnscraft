@@ -2,6 +2,21 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — resolver + filtering spec-gap audit (GR1, GF9, GF10, WP4, WX3)
+
+- **GR1** closed: `ResolverConfig` already has serde and the assembler maps `[resolver]` (AS1–AS3).
+  SPEC-resolver forward-zone excerpt now shows the required `id`, `host:port` targets and `validate`.
+- **GF10** retry backoff: a scheduled round with a failed list or catalog update retries after 5 min,
+  doubling per consecutive failed round, capped at the update interval. Test
+  `failing_rounds_retry_with_backoff_before_the_interval` (fails with the fix disabled).
+- **GF9** SPEC-filtering interface sketch now matches the code (`Arc<Self>`, `now`, `Result`, `created_at`).
+- **WP4** (filtering part) `FilterEngine::services_updated_at()` (Unix seconds). Offline load, absent
+  catalog and keep-last-good were already covered. Route and `available` flag remain WP5 (dnscraft-api).
+- **WX3 deferred item** closed: a forwarded answer that fails DNSSEC validation is charged to the target
+  that gave it, via a re-labelled sample (no extra sample). Test `bogus_forwarded_answer_counts_against_its_target`.
+- Gates: filtering and resolver `cargo fmt --check`, `clippy --all-targets -D warnings`, `cargo test` all green.
+- Still open: GF2 (control-api mapping of list error codes), none else in these crates.
+
 ## 2026-10-28 — clients GC7 + tls GT12 (spec-gap audit)
 
 - **GC7 — `[clients.unifi]` keys.** `UnifiConfig` now (de)serialises as the flat SPEC-clients.md keys

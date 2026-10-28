@@ -46,7 +46,7 @@ approval before Phase 0 code.
 
 ## Resolver (`SPEC-resolver.md` ↔ `crates/dnscraft-resolver`)
 
-- [ ] **GR1** 🔴 [owner] `[resolver]` config is not deserializable: `ResolverConfig` has no serde,
+- [x] **GR1** 🔴 [owner] (closed: serde on `ResolverConfig` plus the assembler `[resolver]` mapping, AS1–AS3; forward-zone spec excerpt fixed) `[resolver]` config is not deserializable: `ResolverConfig` has no serde,
       and no TOML loader maps the spec keys (`cache_size_mb`, `ttl_min/max`, `serve_stale`,
       `prefetch`, `negative_trust_anchors`, `forward_zones`). *(config.rs:64-65, 181-195)*
       Note: the spec's forward-zone excerpt omits the `id` the code requires.
@@ -82,9 +82,9 @@ approval before Phase 0 code.
       block); spec's hosts analogy suggests only the rewrite should be ignored. *(modifiers.rs:450-452)*
 - [x] **GF8** 🟡 [code] No `tests/data/` golden fixtures; parser proptest only for the builder
       round-trip. *(tests/ has no data dir)*
-- [ ] **GF9** 🟡 [spec] Interface sketch drift: `new` returns `Arc<Self>`, `match_*` take `now`
+- [x] **GF9** 🟡 [spec] Interface sketch drift: `new` returns `Arc<Self>`, `match_*` take `now`
       + return `Result`, `TempAllow` requires `created_at`. *(engine.rs:138-142 etc.)*
-- [ ] **GF10** 🟡 [spec] No backoff state for list/catalog update retries (fixed interval only). *(scheduler.rs:94-111)*
+- [x] **GF10** 🟡 [spec] No backoff state for list/catalog update retries (fixed interval only). *(scheduler.rs:94-111)*
 - [x] **GF11** 🟡 [spec] Match budget p99 ~18.9 µs > 10 µs for deep names; owner waived at
       Checkpoint B but spec not updated. *(README.md:209)*
 

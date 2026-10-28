@@ -33,7 +33,7 @@
 - [ ] **WP3** Implement `GET /api/v1/backups` and `PUT /api/v1/backups/settings` in
       `control-api` (admin): last run, next run, directory, retention count. Tests:
       admin read/write; viewer `403`; invalid retention rejected.
-- [ ] **WP4** Filtering crate: download, cache and back off `services.json` and
+- [x] **WP4** (filtering crate part done 2026-10-28; the route is WP5) Filtering crate: download, cache and back off `services.json` and
       `services_i18n.json` like a filter list, with `available` and `catalog_updated_at`.
       Tests: catalog absent → `available: false`; cached catalog loads offline.
 - [ ] **WP5** `control-api`: `GET /api/v1/filtering/services` (viewer/admin) and
