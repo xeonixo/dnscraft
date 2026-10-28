@@ -99,9 +99,9 @@ pub(crate) async fn revoke_node(
 /// `GET /api/v1/cluster/writes/{request_id}` — state of a buffered offline
 /// write.
 ///
-/// The queue only persists the lifecycle state and attempt count; the
-/// enqueue-time expiry and the replay result are not stored, so those fields
-/// are `null`.
+/// `expires_at` is the 202 deadline (RFC 3339) and `result` is `{status}` once
+/// a replay has produced the master's answer. Both are `null` until known, and
+/// for rows queued before the queue stored them.
 pub(crate) async fn get_write(
     State(state): State<AppState>,
     Path(request_id): Path<String>,
@@ -115,7 +115,7 @@ pub(crate) async fn get_write(
         "request_id": entry.request_id,
         "state": entry.state.as_str(),
         "queued_at": rfc3339(entry.enqueued_at),
-        "expires_at": Value::Null,
-        "result": Value::Null,
+        "expires_at": entry.expires_at.map(rfc3339),
+        "result": entry.result_status.map(|status| json!({ "status": status })),
     })))
 }

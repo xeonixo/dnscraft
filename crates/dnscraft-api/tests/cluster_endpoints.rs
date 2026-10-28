@@ -314,6 +314,10 @@ async fn write_with_a_queue_reports_its_state() {
     assert_eq!(body["data"]["request_id"], "r1");
     assert_eq!(body["data"]["state"], "pending");
     assert_eq!(body["data"]["queued_at"], json!(rfc3339(NOW)));
+    // The 202 deadline is persisted and reported; no replay has run yet.
+    let max_age = OfflineWritesConfig::default().max_age.as_secs();
+    assert_eq!(body["data"]["expires_at"], json!(rfc3339(NOW + max_age)));
+    assert!(body["data"]["result"].is_null());
 
     // Unknown request ids are 404, not an empty record.
     let (status, body) = send(
