@@ -73,7 +73,6 @@ impl ControlApiError {
             ControlApiError::RateLimited => S::TOO_MANY_REQUESTS,
             ControlApiError::QueryLogRead { .. } => S::INTERNAL_SERVER_ERROR,
             ControlApiError::QueryLogExport { .. } => S::INTERNAL_SERVER_ERROR,
-            ControlApiError::QueryLogDropped { .. } => S::OK,
             ControlApiError::QueryLogInvalid { .. } => S::BAD_REQUEST,
             ControlApiError::AuthOidc { .. } => S::BAD_GATEWAY,
             ControlApiError::AuthLocal => S::UNAUTHORIZED,

@@ -17,7 +17,6 @@
 //! | [`ControlApiError::RateLimited`] | `control_api.rate_limited` |
 //! | [`ControlApiError::QueryLogRead`] | `control_api.query_log.read` |
 //! | [`ControlApiError::QueryLogExport`] | `control_api.query_log.export` |
-//! | [`ControlApiError::QueryLogDropped`] | `control_api.query_log.dropped` |
 //! | [`ControlApiError::QueryLogInvalid`] | `control_api.query_log.invalid` |
 //! | [`ControlApiError::AuthOidc`] | `control_api.auth.oidc` |
 //! | [`ControlApiError::AuthLocal`] | `control_api.auth.local` |
@@ -101,12 +100,6 @@ pub enum ControlApiError {
     QueryLogExport {
         /// Detail for logs.
         message: String,
-    },
-    /// Query events were dropped by a full sink (informational, not an HTTP error).
-    #[error("dropped {count} query-log events")]
-    QueryLogDropped {
-        /// Number of events dropped.
-        count: u64,
     },
     /// A query-log filter parameter is malformed or out of range.
     #[error("invalid query-log filter: {reason}")]
@@ -229,7 +222,6 @@ impl ControlApiError {
             Self::RateLimited => "control_api.rate_limited",
             Self::QueryLogRead { .. } => "control_api.query_log.read",
             Self::QueryLogExport { .. } => "control_api.query_log.export",
-            Self::QueryLogDropped { .. } => "control_api.query_log.dropped",
             Self::QueryLogInvalid { .. } => "control_api.query_log.invalid",
             Self::AuthOidc { .. } => "control_api.auth.oidc",
             Self::AuthLocal => "control_api.auth.local",
@@ -324,7 +316,6 @@ mod tests {
             ControlApiError::QueryLogExport {
                 message: "x".into(),
             },
-            ControlApiError::QueryLogDropped { count: 3 },
             ControlApiError::QueryLogInvalid {
                 reason: "bad filter".into(),
             },

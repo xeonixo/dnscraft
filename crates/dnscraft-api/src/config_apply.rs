@@ -723,6 +723,13 @@ impl ConfigService {
         if APPLY_ORDER[failed] == "tls" {
             error = annotate_tls_failure(error, &tls_diff);
         }
+        // A module error without its own stable code is reported as the
+        // generic apply failure (GA22), so the client sees `config.apply`.
+        if !matches!(error, ControlApiError::Module { .. }) {
+            error = ControlApiError::ConfigApply {
+                message: format!("module `{}` failed: {}", APPLY_ORDER[failed], error.code()),
+            };
+        }
         if let Some(previous) = previous
             && let Err((_, replay)) = self.apply_all(previous, failed).await
         {
@@ -1540,6 +1547,42 @@ mod tests {
         );
         assert_eq!(service.current().await.unwrap(), (Some(7), Some(snapshot)));
         assert_eq!(db.audit_list(10, 0).await.unwrap().len(), 1);
+    }
+
+    /// Filtering applier that fails without a module-specific code.
+    struct UncodedFiltering;
+
+    impl ApplyFiltering for UncodedFiltering {
+        fn apply<'a>(&'a self, _config: &'a Value) -> ModuleFuture<'a> {
+            Box::pin(async {
+                Err(ControlApiError::Internal {
+                    message: "disk full".to_owned(),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn unmapped_module_failure_is_reported_as_config_apply() {
+        let clock = Arc::new(ManualClock::new(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        ));
+        let db = Db::open_in_memory(clock).await.unwrap();
+        let service = ConfigService::new(
+            ConfigStore::new(db.clone()),
+            Audit::new(db.clone()),
+            ModuleAppliers {
+                filtering: Some(Arc::new(UncodedFiltering)),
+                ..ModuleAppliers::default()
+            },
+            "node-b",
+        );
+
+        let err = service
+            .apply_synced_config(synced_snapshot("new", false), 3)
+            .await
+            .expect_err("the injected module apply fails");
+        assert_eq!(err.code(), "control_api.config.apply");
     }
 
     #[tokio::test]

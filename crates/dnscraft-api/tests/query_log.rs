@@ -594,15 +594,7 @@ async fn query_log_full_sink_drops_without_blocking_and_counts() {
     emit_event(sink.as_ref(), &clock, quiet);
     assert_eq!(sink.dropped(), 2);
 
-    // The counter is the informational `control_api.query_log.dropped` value.
-    assert_eq!(
-        dnscraft_api::ControlApiError::QueryLogDropped {
-            count: sink.dropped()
-        }
-        .code(),
-        "control_api.query_log.dropped"
-    );
-
+    // The counter is surfaced as `query_log_dropped` in `GET /api/v1/stats/overview`.
     // Draining the channel lets new events through again.
     assert!(rx.try_recv().is_ok());
     emit_event(sink.as_ref(), &clock, event);
