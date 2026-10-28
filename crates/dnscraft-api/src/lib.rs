@@ -76,8 +76,9 @@ pub use query_log::{
 };
 pub use server::{AppState, Readiness, serve};
 pub use stats::{
-    CacheStats, ROLLUP_RETENTION_DAYS, RollupRow, RollupWindow, StatsOverview, TOP_CLIENTS_MAX,
-    TOP_DOMAINS_MAX, TopBy, TopClient, TopClients, TopDomain, TopDomains,
+    CacheStats, FilterHits, ROLLUP_RETENTION_DAYS, RollupRow, RollupWindow, RuleHits,
+    StatsOverview, StatsScope, TOP_CLIENTS_MAX, TOP_DOMAINS_MAX, TopBy, TopClient, TopClients,
+    TopDomain, TopDomains,
 };
 pub use storage::{AuditRecord, ConfigStore, Db};
 pub use tls::{

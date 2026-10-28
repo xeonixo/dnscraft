@@ -386,9 +386,27 @@ impl QueryLog {
         to_us: Option<i64>,
         node_id: Option<&str>,
     ) -> Result<StatsOverview, ControlApiError> {
+        self.stats_overview_scoped(
+            from_us,
+            to_us,
+            StatsScope {
+                node_id,
+                profile_id: None,
+            },
+        )
+        .await
+    }
+
+    /// [`Self::stats_overview`] restricted by a [`StatsScope`] (GM6 profile filter).
+    pub async fn stats_overview_scoped(
+        &self,
+        from_us: Option<i64>,
+        to_us: Option<i64>,
+        scope: StatsScope<'_>,
+    ) -> Result<StatsOverview, ControlApiError> {
         let db = self.db();
         let (from, to) = resolve_window(db, from_us, to_us)?;
-        let node_id = node_id.map(str::to_owned);
+        let scope = Scope::from(scope);
         let dropped = self.sink_dropped();
         let retention_secs =
             i64::from(self.config().retention_days).saturating_mul(SECONDS_PER_DAY);
@@ -397,59 +415,56 @@ impl QueryLog {
             .saturating_sub(retention_secs)
             .saturating_mul(1_000_000);
         if from < raw_horizon {
-            return rollup_overview(db, from, to, node_id, dropped).await;
+            return rollup_overview(db, from, to, scope, dropped).await;
         }
-        let totals_node_id = node_id.clone();
         let (total, allowed, blocked) = db
-            .with_conn(move |conn| {
-                conn.query_row(
-                    "SELECT COUNT(*),
-                            COALESCE(SUM(CASE WHEN status = 'allowed' THEN 1 ELSE 0 END), 0),
-                            COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
-                     FROM query_log
-                     WHERE time >= ?1 AND time <= ?2
-                       AND (?3 IS NULL OR node_id = ?3)",
-                    params![from, to, totals_node_id],
-                    |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, i64>(1)?,
-                            row.get::<_, i64>(2)?,
-                        ))
-                    },
-                )
-                .map_err(db_err)
+            .with_conn({
+                let scope = scope.clone();
+                move |conn| {
+                    conn.query_row(
+                        "SELECT COUNT(*),
+                                COALESCE(SUM(CASE WHEN status = 'allowed' THEN 1 ELSE 0 END), 0),
+                                COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
+                         FROM query_log
+                         WHERE time >= ?1 AND time <= ?2
+                           AND (?3 IS NULL OR node_id = ?3)
+                           AND (?4 IS NULL OR profile_id = ?4)",
+                        params![from, to, scope.node_id, scope.profile_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, i64>(1)?,
+                                row.get::<_, i64>(2)?,
+                            ))
+                        },
+                    )
+                    .map_err(db_err)
+                }
             })
             .await?;
-        let by_protocol = counts_by(db, "protocol", from, to, node_id.clone()).await?;
-        let by_view = counts_by(db, "view_id", from, to, node_id.clone()).await?;
-        let by_profile = counts_by(db, "profile_id", from, to, node_id.clone()).await?;
-        let by_answer_source = counts_by(db, "answer_source", from, to, node_id.clone()).await?;
-        let by_rcode = counts_by(db, "rcode", from, to, node_id.clone()).await?;
-        let dnssec = counts_by(
-            db,
-            "json_extract(record, '$.dnssec')",
-            from,
-            to,
-            node_id.clone(),
-        )
-        .await?;
+        let by_protocol = counts_by(db, "protocol", from, to, &scope).await?;
+        let by_view = counts_by(db, "view_id", from, to, &scope).await?;
+        let by_profile = counts_by(db, "profile_id", from, to, &scope).await?;
+        let by_answer_source = counts_by(db, "answer_source", from, to, &scope).await?;
+        let by_rcode = counts_by(db, "rcode", from, to, &scope).await?;
+        let dnssec = counts_by(db, "json_extract(record, '$.dnssec')", from, to, &scope).await?;
         let active_clients = db
             .with_conn({
-                let node_id = node_id.clone();
+                let scope = scope.clone();
                 move |conn| {
                     conn.query_row(
                         "SELECT COUNT(DISTINCT client_id) FROM query_log
                          WHERE time >= ?1 AND time <= ?2 AND client_id IS NOT NULL
-                           AND (?3 IS NULL OR node_id = ?3)",
-                        params![from, to, node_id],
+                           AND (?3 IS NULL OR node_id = ?3)
+                           AND (?4 IS NULL OR profile_id = ?4)",
+                        params![from, to, scope.node_id, scope.profile_id],
                         |row| row.get::<_, i64>(0),
                     )
                     .map_err(db_err)
                 }
             })
             .await?;
-        let filter_hits = filter_hits(db, from, to, node_id).await?;
+        let filter_hits = filter_hits(db, from, to, &scope).await?;
         Ok(StatsOverview {
             source: "raw",
             from: format_micros(from),
@@ -482,9 +497,26 @@ impl QueryLog {
         limit: u32,
         by: TopBy,
     ) -> Result<TopClients, ControlApiError> {
+        let scope = StatsScope {
+            node_id,
+            profile_id: None,
+        };
+        self.top_clients_scoped(from_us, to_us, scope, limit, by)
+            .await
+    }
+
+    /// [`Self::top_clients`] restricted by a [`StatsScope`].
+    pub async fn top_clients_scoped(
+        &self,
+        from_us: Option<i64>,
+        to_us: Option<i64>,
+        scope: StatsScope<'_>,
+        limit: u32,
+        by: TopBy,
+    ) -> Result<TopClients, ControlApiError> {
         let db = self.db();
         let (from, to) = resolve_window(db, from_us, to_us)?;
-        let node_id = node_id.map(str::to_owned);
+        let scope = Scope::from(scope);
         let limit = i64::from(limit.clamp(1, TOP_CLIENTS_MAX));
         let order = match by {
             TopBy::Queries => "queries DESC, client_id ASC",
@@ -501,20 +533,24 @@ impl QueryLog {
                      FROM query_log
                      WHERE time >= ?1 AND time <= ?2 AND client_id IS NOT NULL
                        AND (?4 IS NULL OR node_id = ?4)
+                       AND (?5 IS NULL OR profile_id = ?5)
                      GROUP BY client_id, client_name
                      ORDER BY {order}
                      LIMIT ?3"
                 );
                 let mut stmt = conn.prepare(&sql).map_err(db_err)?;
                 let rows = stmt
-                    .query_map(params![from, to, limit, node_id], |row| {
-                        Ok(TopClient {
-                            client_id: row.get(0)?,
-                            client_name: row.get(1)?,
-                            queries: row.get(2)?,
-                            blocked: row.get(3)?,
-                        })
-                    })
+                    .query_map(
+                        params![from, to, limit, scope.node_id, scope.profile_id],
+                        |row| {
+                            Ok(TopClient {
+                                client_id: row.get(0)?,
+                                client_name: row.get(1)?,
+                                queries: row.get(2)?,
+                                blocked: row.get(3)?,
+                            })
+                        },
+                    )
                     .map_err(db_err)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
             })
@@ -536,43 +572,23 @@ impl QueryLog {
         node_id: Option<&str>,
         limit: u32,
     ) -> Result<TopDomains, ControlApiError> {
-        let db = self.db();
-        let (from, to) = resolve_window(db, from_us, to_us)?;
-        let node_id = node_id.map(str::to_owned);
-        let limit = i64::from(limit.clamp(1, TOP_DOMAINS_MAX));
-        let domains = db
-            .with_conn(move |conn| {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT query_name,
-                                COUNT(*) AS queries,
-                                COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
-                                    AS blocked
-                         FROM query_log
-                         WHERE time >= ?1 AND time <= ?2
-                           AND (?4 IS NULL OR node_id = ?4)
-                         GROUP BY query_name
-                         ORDER BY queries DESC, query_name ASC
-                         LIMIT ?3",
-                    )
-                    .map_err(db_err)?;
-                let rows = stmt
-                    .query_map(params![from, to, limit, node_id], |row| {
-                        Ok(TopDomain {
-                            domain: row.get(0)?,
-                            queries: row.get(1)?,
-                            blocked: row.get(2)?,
-                        })
-                    })
-                    .map_err(db_err)?;
-                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
-            })
-            .await?;
-        Ok(TopDomains {
-            from: format_micros(from),
-            to: format_micros(to),
-            domains,
-        })
+        let scope = StatsScope {
+            node_id,
+            profile_id: None,
+        };
+        self.top_domains_scoped(from_us, to_us, scope, limit).await
+    }
+
+    /// [`Self::top_domains`] restricted by a [`StatsScope`].
+    pub async fn top_domains_scoped(
+        &self,
+        from_us: Option<i64>,
+        to_us: Option<i64>,
+        scope: StatsScope<'_>,
+        limit: u32,
+    ) -> Result<TopDomains, ControlApiError> {
+        self.ranked_domains(from_us, to_us, scope, limit, "queries DESC, query_name ASC")
+            .await
     }
 
     /// Top domains by blocked count for `[from_us, to_us]`.
@@ -585,34 +601,73 @@ impl QueryLog {
         node_id: Option<&str>,
         limit: u32,
     ) -> Result<TopDomains, ControlApiError> {
+        let scope = StatsScope {
+            node_id,
+            profile_id: None,
+        };
+        self.top_blocked_domains_scoped(from_us, to_us, scope, limit)
+            .await
+    }
+
+    /// [`Self::top_blocked_domains`] restricted by a [`StatsScope`].
+    pub async fn top_blocked_domains_scoped(
+        &self,
+        from_us: Option<i64>,
+        to_us: Option<i64>,
+        scope: StatsScope<'_>,
+        limit: u32,
+    ) -> Result<TopDomains, ControlApiError> {
+        self.ranked_domains(
+            from_us,
+            to_us,
+            scope,
+            limit,
+            "blocked DESC, queries DESC, query_name ASC",
+        )
+        .await
+    }
+
+    /// Shared body of the two domain rankings; `order` is a fixed constant.
+    async fn ranked_domains(
+        &self,
+        from_us: Option<i64>,
+        to_us: Option<i64>,
+        scope: StatsScope<'_>,
+        limit: u32,
+        order: &'static str,
+    ) -> Result<TopDomains, ControlApiError> {
         let db = self.db();
         let (from, to) = resolve_window(db, from_us, to_us)?;
-        let node_id = node_id.map(str::to_owned);
+        let scope = Scope::from(scope);
         let limit = i64::from(limit.clamp(1, TOP_DOMAINS_MAX));
         let domains = db
             .with_conn(move |conn| {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT query_name,
-                                COUNT(*) AS queries,
-                                COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
-                                    AS blocked
-                         FROM query_log
-                         WHERE time >= ?1 AND time <= ?2
-                           AND (?4 IS NULL OR node_id = ?4)
-                         GROUP BY query_name
-                         ORDER BY blocked DESC, queries DESC, query_name ASC
-                         LIMIT ?3",
-                    )
-                    .map_err(db_err)?;
+                // `order` is always one of the constants passed above.
+                let sql = format!(
+                    "SELECT query_name,
+                            COUNT(*) AS queries,
+                            COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
+                                AS blocked
+                     FROM query_log
+                     WHERE time >= ?1 AND time <= ?2
+                       AND (?4 IS NULL OR node_id = ?4)
+                       AND (?5 IS NULL OR profile_id = ?5)
+                     GROUP BY query_name
+                     ORDER BY {order}
+                     LIMIT ?3"
+                );
+                let mut stmt = conn.prepare(&sql).map_err(db_err)?;
                 let rows = stmt
-                    .query_map(params![from, to, limit, node_id], |row| {
-                        Ok(TopDomain {
-                            domain: row.get(0)?,
-                            queries: row.get(1)?,
-                            blocked: row.get(2)?,
-                        })
-                    })
+                    .query_map(
+                        params![from, to, limit, scope.node_id, scope.profile_id],
+                        |row| {
+                            Ok(TopDomain {
+                                domain: row.get(0)?,
+                                queries: row.get(1)?,
+                                blocked: row.get(2)?,
+                            })
+                        },
+                    )
                     .map_err(db_err)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
             })
@@ -634,9 +689,23 @@ impl QueryLog {
         to_us: Option<i64>,
         node_id: Option<&str>,
     ) -> Result<CacheStats, ControlApiError> {
+        let scope = StatsScope {
+            node_id,
+            profile_id: None,
+        };
+        self.cache_stats_scoped(from_us, to_us, scope).await
+    }
+
+    /// [`Self::cache_stats`] restricted by a [`StatsScope`].
+    pub async fn cache_stats_scoped(
+        &self,
+        from_us: Option<i64>,
+        to_us: Option<i64>,
+        scope: StatsScope<'_>,
+    ) -> Result<CacheStats, ControlApiError> {
         let db = self.db();
         let (from, to) = resolve_window(db, from_us, to_us)?;
-        let node_id = node_id.map(str::to_owned);
+        let scope = Scope::from(scope);
         let (hits, misses) = db
             .with_conn(move |conn| {
                 conn.query_row(
@@ -648,8 +717,9 @@ impl QueryLog {
                      FROM query_log AS q, json_each(q.record, '$.steps') AS step
                      WHERE q.time >= ?1 AND q.time <= ?2
                        AND (?3 IS NULL OR q.node_id = ?3)
+                       AND (?4 IS NULL OR q.profile_id = ?4)
                        AND json_extract(step.value, '$.stage') = 'resolve'",
-                    params![from, to, node_id],
+                    params![from, to, scope.node_id, scope.profile_id],
                     |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
                 )
                 .map_err(db_err)
@@ -662,6 +732,32 @@ impl QueryLog {
             misses,
             hit_ratio: ratio(hits, hits.saturating_add(misses)),
         })
+    }
+}
+
+/// Optional node and profile filters shared by the dashboard aggregations
+/// (GM6 adds the profile dimension; `None` means "all").
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StatsScope<'a> {
+    /// Exact `node_id` filter.
+    pub node_id: Option<&'a str>,
+    /// Exact policy profile filter.
+    pub profile_id: Option<&'a str>,
+}
+
+/// Owned form of [`StatsScope`] for moving into `with_conn` closures.
+#[derive(Clone, Debug, Default)]
+struct Scope {
+    node_id: Option<String>,
+    profile_id: Option<String>,
+}
+
+impl From<StatsScope<'_>> for Scope {
+    fn from(scope: StatsScope<'_>) -> Self {
+        Self {
+            node_id: scope.node_id.map(str::to_owned),
+            profile_id: scope.profile_id.map(str::to_owned),
+        }
     }
 }
 
@@ -688,14 +784,14 @@ async fn filter_hits(
     db: &Db,
     from: i64,
     to: i64,
-    node_id: Option<String>,
+    scope: &Scope,
 ) -> Result<FilterHits, ControlApiError> {
     let by_list = counts_by(
         db,
         "json_extract(record, '$.filter.list_id')",
         from,
         to,
-        node_id.clone(),
+        scope,
     )
     .await?;
     let by_reason = counts_by(
@@ -703,9 +799,10 @@ async fn filter_hits(
         "json_extract(record, '$.filter.reason')",
         from,
         to,
-        node_id.clone(),
+        scope,
     )
     .await?;
+    let scope = scope.clone();
     let top_rules = db
         .with_conn(move |conn| {
             let mut stmt = conn
@@ -715,18 +812,28 @@ async fn filter_hits(
                      WHERE time >= ?1 AND time <= ?2
                        AND json_extract(record, '$.filter.rule_text') IS NOT NULL
                        AND (?3 IS NULL OR node_id = ?3)
+                       AND (?4 IS NULL OR profile_id = ?4)
                      GROUP BY rule
                      ORDER BY hits DESC, rule ASC
-                     LIMIT ?4",
+                     LIMIT ?5",
                 )
                 .map_err(db_err)?;
             let rows = stmt
-                .query_map(params![from, to, node_id, OVERVIEW_TOP_RULES], |row| {
-                    Ok(RuleHits {
-                        rule: row.get(0)?,
-                        hits: row.get(1)?,
-                    })
-                })
+                .query_map(
+                    params![
+                        from,
+                        to,
+                        scope.node_id,
+                        scope.profile_id,
+                        OVERVIEW_TOP_RULES
+                    ],
+                    |row| {
+                        Ok(RuleHits {
+                            rule: row.get(0)?,
+                            hits: row.get(1)?,
+                        })
+                    },
+                )
                 .map_err(db_err)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
         })
@@ -750,31 +857,33 @@ async fn rollup_overview(
     db: &Db,
     from: i64,
     to: i64,
-    node_id: Option<String>,
+    scope: Scope,
     dropped: u64,
 ) -> Result<StatsOverview, ControlApiError> {
     let from_day = from.div_euclid(MICROS_PER_DAY);
     let to_day = to.div_euclid(MICROS_PER_DAY);
     let (total, blocked) = db
         .with_conn({
-            let node_id = node_id.clone();
+            let scope = scope.clone();
             move |conn| {
                 conn.query_row(
                     "SELECT COALESCE(SUM(query_count), 0),
                             COALESCE(SUM(CASE WHEN answer_source = 'filter_block'
                                               THEN query_count ELSE 0 END), 0)
                      FROM stats_daily
-                     WHERE day >= ?1 AND day <= ?2 AND (?3 IS NULL OR node_id = ?3)",
-                    params![from_day, to_day, node_id],
+                     WHERE day >= ?1 AND day <= ?2
+                       AND (?3 IS NULL OR node_id = ?3)
+                       AND (?4 IS NULL OR profile_id = ?4)",
+                    params![from_day, to_day, scope.node_id, scope.profile_id],
                     |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
                 )
                 .map_err(db_err)
             }
         })
         .await?;
-    let by_protocol = rollup_counts_by(db, "protocol", from_day, to_day, node_id.clone()).await?;
-    let by_profile = rollup_counts_by(db, "profile_id", from_day, to_day, node_id.clone()).await?;
-    let by_answer_source = rollup_counts_by(db, "answer_source", from_day, to_day, node_id).await?;
+    let by_protocol = rollup_counts_by(db, "protocol", from_day, to_day, &scope).await?;
+    let by_profile = rollup_counts_by(db, "profile_id", from_day, to_day, &scope).await?;
+    let by_answer_source = rollup_counts_by(db, "answer_source", from_day, to_day, &scope).await?;
     Ok(StatsOverview {
         source: "rollup",
         from: format_micros(from),
@@ -801,19 +910,23 @@ async fn rollup_counts_by(
     expr: &'static str,
     from_day: i64,
     to_day: i64,
-    node_id: Option<String>,
+    scope: &Scope,
 ) -> Result<BTreeMap<String, i64>, ControlApiError> {
+    let scope = scope.clone();
     db.with_conn(move |conn| {
         // `expr` is always a constant from this module, never user input.
         let sql = format!(
             "SELECT {expr}, COALESCE(SUM(query_count), 0) FROM stats_daily
-             WHERE day >= ?1 AND day <= ?2 AND (?3 IS NULL OR node_id = ?3) GROUP BY 1"
+             WHERE day >= ?1 AND day <= ?2
+               AND (?3 IS NULL OR node_id = ?3)
+               AND (?4 IS NULL OR profile_id = ?4) GROUP BY 1"
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
         let rows = stmt
-            .query_map(params![from_day, to_day, node_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })
+            .query_map(
+                params![from_day, to_day, scope.node_id, scope.profile_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
             .map_err(db_err)?;
         let mut counts = BTreeMap::new();
         for row in rows {
@@ -831,18 +944,20 @@ async fn counts_by(
     expr: &'static str,
     from: i64,
     to: i64,
-    node_id: Option<String>,
+    scope: &Scope,
 ) -> Result<BTreeMap<String, i64>, ControlApiError> {
+    let scope = scope.clone();
     db.with_conn(move |conn| {
         // `expr` is always a constant from this module, never user input.
         let sql = format!(
             "SELECT COALESCE({expr}, ''), COUNT(*) FROM query_log
              WHERE time >= ?1 AND time <= ?2
-               AND (?3 IS NULL OR node_id = ?3) GROUP BY 1"
+               AND (?3 IS NULL OR node_id = ?3)
+               AND (?4 IS NULL OR profile_id = ?4) GROUP BY 1"
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
         let rows = stmt
-            .query_map(params![from, to, node_id], |row| {
+            .query_map(params![from, to, scope.node_id, scope.profile_id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
             })
             .map_err(db_err)?;

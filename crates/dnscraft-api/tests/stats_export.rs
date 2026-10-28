@@ -45,6 +45,7 @@ struct Spec {
     protocol: DnsProtocol,
     domain: String,
     client: Option<String>,
+    profile: &'static str,
     blocked: bool,
     cache: bool,
 }
@@ -56,6 +57,7 @@ impl Spec {
             protocol: DnsProtocol::Udp53,
             domain: domain.into(),
             client: None,
+            profile: "default",
             blocked: false,
             cache: false,
         }
@@ -125,7 +127,7 @@ impl Spec {
             duration: Duration::from_millis(1),
             decision: DecisionRecord {
                 view_id: ViewId::new("lan").unwrap(),
-                profile_id: ProfileId::new("default").unwrap(),
+                profile_id: ProfileId::new(self.profile).unwrap(),
                 selection,
                 client_id: None,
                 filter_set: SetId::new("default").unwrap(),
@@ -609,4 +611,37 @@ async fn stats_overview_long_range_is_answered_from_rollups() {
     assert!(overview["active_clients"].is_null());
     assert!(overview["filter_hits"].is_null());
     assert_eq!(overview["by_view"].as_object().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn stats_profile_filter_scopes_every_dashboard_endpoint() {
+    let (log, _clock) = harness(QueryLogConfig::default()).await;
+    let mut events = Vec::new();
+    for i in 0..4u64 {
+        let mut spec = Spec::new(at_secs(BASE_SECS - 10 + i), "kid.example.com");
+        spec.profile = if i < 3 { "kids" } else { "default" };
+        spec.client = Some(format!("client-{i}"));
+        spec.blocked = i == 0;
+        spec.cache = i == 1;
+        events.push(spec.event());
+    }
+    log.insert_batch(events).await.unwrap();
+
+    let (status, _, body) = request(&log, "/api/v1/stats/overview?profile_id=kids").await;
+    assert_eq!(status, StatusCode::OK);
+    let overview = &json(&body)["data"];
+    assert_eq!(overview["total"], 3);
+    assert_eq!(overview["blocked"], 1);
+    assert_eq!(overview["by_profile"]["default"], Value::Null);
+    assert_eq!(overview["filter_hits"]["total"], 1);
+
+    let (_, _, body) = request(&log, "/api/v1/stats/top_clients?profile_id=default").await;
+    assert_eq!(json(&body)["data"]["clients"].as_array().unwrap().len(), 1);
+
+    let (_, _, body) = request(&log, "/api/v1/stats/cache?profile_id=kids").await;
+    assert_eq!(json(&body)["data"]["hits"], 1);
+    assert_eq!(json(&body)["data"]["misses"], 1);
+
+    let (_, _, body) = request(&log, "/api/v1/stats/top_domains?profile_id=nobody").await;
+    assert_eq!(json(&body)["data"]["domains"].as_array().unwrap().len(), 0);
 }

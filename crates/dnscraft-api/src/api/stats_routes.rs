@@ -16,7 +16,9 @@ use crate::api::response::success;
 use crate::error::ControlApiError;
 use crate::query_log::QueryLog;
 use crate::server::AppState;
-use crate::stats::{ExportFormat, TOP_CLIENTS_MAX, TOP_DOMAINS_MAX, TopBy, export_body};
+use crate::stats::{
+    ExportFormat, StatsScope, TOP_CLIENTS_MAX, TOP_DOMAINS_MAX, TopBy, export_body,
+};
 use dnscraft_filtering::DomainName;
 
 /// Stats query parameters, kept as strings so malformed values map to the
@@ -28,12 +30,21 @@ pub(crate) struct RawStatsParams {
     node_id: Option<String>,
     limit: Option<String>,
     by: Option<String>,
+    profile_id: Option<String>,
 }
 
 impl RawStatsParams {
     /// Exact `node_id` filter (`None` when absent or empty).
     fn node_id(&self) -> Option<&str> {
         self.node_id.as_deref().filter(|value| !value.is_empty())
+    }
+
+    /// Exact `profile_id` filter (`None` when absent or empty).
+    fn scope(&self) -> StatsScope<'_> {
+        StatsScope {
+            node_id: self.node_id(),
+            profile_id: self.profile_id.as_deref().filter(|value| !value.is_empty()),
+        }
     }
 
     fn window(&self) -> Result<(Option<i64>, Option<i64>), ControlApiError> {
@@ -98,7 +109,7 @@ pub(crate) async fn stats_overview(
     let log = query_log(&state)?;
     let (from, to) = params.window()?;
     Ok(success(
-        log.stats_overview(from, to, params.node_id()).await?,
+        log.stats_overview_scoped(from, to, params.scope()).await?,
     ))
 }
 
@@ -112,7 +123,7 @@ pub(crate) async fn stats_top_clients(
     let limit = parse_limit(params.limit.as_deref(), TOP_CLIENTS_MAX, 10)?;
     let by = parse_top_by(params.by.as_deref())?;
     Ok(success(
-        log.top_clients(from, to, params.node_id(), limit, by)
+        log.top_clients_scoped(from, to, params.scope(), limit, by)
             .await?,
     ))
 }
@@ -160,7 +171,8 @@ pub(crate) async fn stats_top_domains(
     let (from, to) = params.window()?;
     let limit = parse_limit(params.limit.as_deref(), TOP_DOMAINS_MAX, 10)?;
     Ok(success(
-        log.top_domains(from, to, params.node_id(), limit).await?,
+        log.top_domains_scoped(from, to, params.scope(), limit)
+            .await?,
     ))
 }
 
@@ -171,7 +183,9 @@ pub(crate) async fn stats_cache(
 ) -> Result<impl IntoResponse, ControlApiError> {
     let log = query_log(&state)?;
     let (from, to) = params.window()?;
-    Ok(success(log.cache_stats(from, to, params.node_id()).await?))
+    Ok(success(
+        log.cache_stats_scoped(from, to, params.scope()).await?,
+    ))
 }
 
 /// `GET /api/v1/query-log/export.ndjson` — streaming NDJSON export.
