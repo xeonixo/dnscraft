@@ -80,6 +80,9 @@ Supported modifiers: `$important`, `$badfilter`, `$dnstype=…` (incl. negation 
 - A list has id, name, URL (HTTPS, or a local file path), enabled flag, and is shared by
   any number of filter sets (loaded and stored once).
 - Update interval: global, default **24 h**; manual "update now" per list and for all.
+- Retry backoff: a scheduled round with any failed list or catalog update retries after 5 min,
+  doubling per further consecutive failed round, capped at the update interval. A clean round
+  returns to the regular interval. Manual updates do not change the schedule.
 - Downloads: conditional requests (`ETag`/`If-Modified-Since`), timeout 30 s, size cap
   64 MiB per list, redirects at most 5 and HTTPS → HTTP downgrades refused. A failed
   download or parse keeps the last good version and records the error.
@@ -101,15 +104,19 @@ Supported modifiers: `$important`, `$badfilter`, `$dnstype=…` (incl. negation 
 
 - Catalog from AdGuard HostlistsRegistry `services.json` + `services_i18n.json`, downloaded
   at runtime like a list (GPL-3.0 data, never bundled), cached in the data directory,
-  same update/backoff rules. Without a catalog the feature shows as unavailable.
+  same update and retry-backoff rules as lists. Without a catalog the feature shows as
+  unavailable (`services()` is `None`; `services_updated_at()` is `None`). A cached catalog
+  loads offline at start-up; `services_updated_at()` reports the last successful download
+  (Unix seconds).
 - A set enables services by id; their rules join the set with source "service: <id>".
 - The catalog API exposes id, name, icon (SVG data from the catalog), group, and the
   translated names by locale for the web UI.
 
 ### Temporary allow
 
-- `allow_temporarily(set, TempAllow { domain, include_subdomains, until })`; expires automatically
-  (injectable clock), listed with remaining time, removable early.
+- `allow_temporarily(set, TempAllow { domain, include_subdomains, until, created_at })`; expires
+  automatically (injectable clock), listed with remaining time, removable early. `created_at` is
+  stamped by the engine from its clock; a caller-supplied value is replaced.
 
 ### Matching
 
@@ -130,18 +137,23 @@ Supported modifiers: `$important`, `$badfilter`, `$dnstype=…` (incl. negation 
 pub struct FilterEngine { /* … */ }
 
 impl FilterEngine {
-    pub fn new(config: FilterConfig, store: ListStore, clock: Arc<dyn Clock>) -> Result<Self, FilterError>;
-    pub fn match_name(&self, set: &SetId, name: &Name, qtype: RecordType) -> Verdict;
-    pub fn match_chain(&self, set: &SetId, names: &[Name], qtype: RecordType) -> Verdict;
+    /// Returns a shared handle; the update scheduler holds only a weak reference.
+    pub fn new(config: FilterConfig, store: ListStore, clock: Arc<dyn Clock>) -> Result<Arc<Self>, FilterError>;
+    /// `now` is passed explicitly so tests can freeze time; errors are unknown set ids.
+    pub fn match_name(&self, set: &SetId, name: &DomainName, qtype: u16, now: SystemTime) -> Result<Verdict, FilterError>;
+    pub fn match_chain(&self, set: &SetId, names: &[DomainName], qtype: u16, now: SystemTime) -> Result<Verdict, FilterError>;
+    pub fn match_answer_ip(&self, set: &SetId, ip: IpAddr, now: SystemTime) -> Result<Verdict, FilterError>;
     pub async fn apply_config(&self, config: FilterConfig) -> Result<ReloadReport, FilterError>;
     pub async fn update_lists(&self, which: ListSelection) -> Vec<ListStatus>;
+    pub async fn update_services(&self) -> ServicesUpdateReport;
     pub fn allow_temporarily(&self, set: &SetId, rule: TempAllow) -> Result<(), FilterError>;
     pub fn list_status(&self) -> Vec<ListStatus>;
-    pub fn services(&self) -> Option<ServiceCatalog>;
+    pub fn services(&self) -> Option<Arc<ServiceCatalog>>;
+    pub fn services_updated_at(&self) -> Option<u64>;
     pub fn stats(&self) -> FilterStats;
 }
 pub fn parse_rule(text: &str) -> Result<Rule, RuleError>;
-pub fn build_rule(spec: &RuleSpec) -> String;
+pub fn build_rule(spec: &RuleSpec) -> Result<String, BuildError>;
 ```
 
 Every error exposes a stable `code()` for API and i18n (`filter_list.fetch_failed`,
