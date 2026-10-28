@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::header::{HeaderName, HeaderValue};
-use axum::http::{HeaderMap, Method};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
@@ -254,7 +254,7 @@ fn resolve_source(peer: IpAddr, trusted: &[IpAddr], headers: &HeaderMap) -> IpAd
 
 /// Classifies a request into its rate-limit bucket: auth paths use the auth
 /// bucket regardless of method, GET/HEAD are reads, everything else is a write.
-fn classify(method: &Method, path: &str) -> BucketClass {
+pub(crate) fn classify(method: &Method, path: &str) -> BucketClass {
     if path.starts_with("/api/v1/auth") {
         BucketClass::Auth
     } else if method == Method::GET || method == Method::HEAD {
@@ -267,6 +267,10 @@ fn classify(method: &Method, path: &str) -> BucketClass {
 /// Rate-limit middleware: resolves the source IP from the trusted peer, picks
 /// the bucket class, and rejects with `429` + `control_api.rate_limited` when
 /// the source has exhausted its bucket.
+///
+/// A `401` from `/mcp/v1` is also charged to the auth bucket of its source, so
+/// unauthenticated probing cannot avoid the auth limit by using the MCP path.
+/// Once that bucket is empty the 401 is replaced by `429`.
 pub(crate) async fn rate_limit(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -280,17 +284,44 @@ pub(crate) async fn rate_limit(
         req.headers(),
     );
     let class = classify(req.method(), req.uri().path());
+    let is_mcp = req.uri().path().starts_with("/mcp/v1");
     match limiter.check(&source.to_string(), class) {
-        Ok(()) => next.run(req).await,
-        Err(seconds) => {
-            let mut res = ControlApiError::RateLimited.into_response();
-            if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
-                res.headers_mut()
-                    .insert(HeaderName::from_static("retry-after"), value);
+        Ok(()) => {
+            let res = next.run(req).await;
+            if is_mcp
+                && res.status() == StatusCode::UNAUTHORIZED
+                && let Err(seconds) = limiter.check(&source.to_string(), BucketClass::Auth)
+            {
+                return rate_limited_response(seconds);
             }
             res
         }
+        Err(seconds) => rate_limited_response(seconds),
     }
+}
+
+/// Charges an authenticated principal against its own bucket (GA8). Keys
+/// are prefixed so they can never collide with a source IP string.
+pub(crate) fn check_principal(
+    state: &AppState,
+    actor_id: &str,
+    method: &Method,
+    path: &str,
+) -> Result<(), Response> {
+    state
+        .rate_limiter()
+        .check(&format!("principal:{actor_id}"), classify(method, path))
+        .map_err(rate_limited_response)
+}
+
+/// The `429` envelope with `Retry-After` in seconds.
+fn rate_limited_response(seconds: u64) -> Response {
+    let mut res = ControlApiError::RateLimited.into_response();
+    if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
+        res.headers_mut()
+            .insert(HeaderName::from_static("retry-after"), value);
+    }
+    res
 }
 
 #[cfg(test)]
@@ -429,6 +460,66 @@ mod tests {
             HeaderValue::from_static("not-an-ip"),
         );
         assert_eq!(resolve_source(peer, &trusted, &headers), peer);
+    }
+
+    #[test]
+    fn principal_bucket_is_separate_from_source_bucket() {
+        let state = AppState::new().with_rate_limiter(Arc::new(RateLimiter::with_capacity(
+            cfg(2, 2),
+            clock(),
+            Vec::new(),
+            8,
+        )));
+        for _ in 0..4 {
+            check_principal(&state, "alice", &Method::GET, "/api/v1/status").unwrap();
+        }
+        assert!(check_principal(&state, "alice", &Method::GET, "/api/v1/status").is_err());
+        // Another principal and the source bucket are unaffected.
+        check_principal(&state, "bob", &Method::GET, "/api/v1/status").unwrap();
+        assert!(
+            state
+                .rate_limiter()
+                .check("127.0.0.1", BucketClass::Read)
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_probing_is_throttled_by_the_auth_bucket() {
+        use axum::Router;
+        use axum::body::Body;
+        use axum::extract::connect_info::MockConnectInfo;
+        use axum::middleware;
+        use axum::routing::get;
+        use tower::ServiceExt as _;
+
+        // Reads are plentiful; only the auth bucket (burst 1) is tight. Each
+        // 401 from /mcp/v1 is charged to it, so the second probe is throttled.
+        let config = RateLimitConfig {
+            read_per_second: 100,
+            write_per_second: 100,
+            auth_per_second: 1,
+            burst_factor: 1,
+        };
+        let limiter = RateLimiter::with_capacity(config, clock(), Vec::new(), 8);
+        let state = AppState::new().with_rate_limiter(Arc::new(limiter));
+        let app = Router::new()
+            .route(
+                "/mcp/v1",
+                get(|| async { StatusCode::UNAUTHORIZED.into_response() }),
+            )
+            .layer(middleware::from_fn_with_state(state, rate_limit))
+            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
+        let probe = || {
+            Request::builder()
+                .uri("/mcp/v1")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let first = app.clone().oneshot(probe()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
+        let second = app.oneshot(probe()).await.unwrap();
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[test]

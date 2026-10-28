@@ -161,12 +161,12 @@ approval before Phase 0 code.
 - [x] **GL4** 🟠 [code] Shutdown drains only UDP; TCP/DoT/DoH/DoQ abort in-flight queries. *(conn.rs:227-305, doh.rs:190-196, doq.rs:198-205)*
 - [x] **GL5** 🟠 [code] Malformed DoH never records a ban strike. *(bans.rs:11-18; only doq.rs uses it)*
 - [x] **GL6** 🟠 [code] Error replies (NOTIMP/FORMERR/REFUSED) drop EDNS OPT. *(core.rs:107-158)*
-- [ ] **GL7** 🟡 [code] Query events omitted for pre-policy/admission/timeout answers. *(core.rs:99-174, conn.rs:417-429)*
-- [ ] **GL8** 🟡 [code] DoQ/DoH diverge from the core's FORMERR/drop rules (QR=1, undecodable). *(doq.rs:518-588, doh.rs:531-537)*
-- [ ] **GL9** 🟡 [code] DoQ completes handshake before SNI Client-ID check (no handshake rejection). *(doq.rs:304-369)*
-- [ ] **GL10** 🟡 [code] Banned sources aggregated globally, not per listener. *(status.rs:12-37)*
+- [x] **GL7** 🟡 [code] Query events omitted for pre-policy/admission/timeout answers. *(core.rs:99-174, conn.rs:417-429)*
+- [x] **GL8** 🟡 [code] DoQ/DoH diverge from the core's FORMERR/drop rules (QR=1, undecodable). *(doq.rs:518-588, doh.rs:531-537)*
+- [x] **GL9** 🟡 [code] DoQ completes handshake before SNI Client-ID check (no handshake rejection). *(doq.rs:304-369)*
+- [x] **GL10** 🟡 [code] Banned sources aggregated globally, not per listener. *(status.rs:12-37)*
 - [x] **GL11** 🟡 [code] DDR endpoints built from config, not from successfully bound listeners. *(set.rs:600-613)*
-- [ ] **GL12** 🟡 [code] Listener default query timeout 10 s vs binary resolver 5 s. *(config.rs:14; engine.rs:49-52)*
+- [x] **GL12** 🟡 [code] Listener default query timeout 10 s vs binary resolver 5 s. *(config.rs:14; engine.rs:49-52)*
 
 ## control-api (`SPEC-control-api.md` ↔ `crates/dnscraft-api`)
 
@@ -174,15 +174,15 @@ approval before Phase 0 code.
 > GA1–GA4/GA6 (the web-ui blockers) are planned in `plan-webui-api-gaps.md` ·
 > `todo-webui-api-gaps.md`. The cluster-work caveat above is resolved (CL6–CL8 landed).
 
-- [ ] **GA1** 🔴 [code] `GET /api/v1/auth/me` route missing. *(router.rs:153-168; roles.rs:184 reserves it)*
+- [x] **GA1** 🔴 [code] `GET /api/v1/auth/me` route missing. *(router.rs:153-168; roles.rs:184 reserves it)*
 - [x] **GA2** 🔴 [code] `GET /api/v1/auth/tokens` missing (only POST). *(router.rs:155; tokens.rs:263-287 unused)*
 - [x] **GA3** 🔴 [code] `DELETE /api/v1/auth/tokens/{id}` missing; `revoke` lacks owner check. *(router.rs; tokens.rs:294-308)*
 - [x] **GA4** 🔴 [code] `GET /api/v1/audit` missing (`Db::audit_list` + `AuditRead` exist but unwired). *(storage/audit.rs:118-125; error.rs:154-159)*
 - [ ] **GA5** 🔴 [owner] `Apply*` traits have no production impl → `PUT /config` persists but applies nothing. *(modules.rs:49-60)* — belongs to G0.
 - [ ] **GA6** 🟠 [code] `GET /api/v1/clients` hardcodes `[]`; `POST /clients/sync` always `not_configured`. *(clients_routes.rs:129-138, 230-242)*
 - [ ] **GA7** 🟠 [code] Idempotency-Key not read or stored anywhere. *(grep Idempotency → 0)*
-- [ ] **GA8** 🟠 [code] Rate limit keyed only by source IP, not per principal. *(rate_limit.rs:1-9, 242-293)*
-- [ ] **GA9** 🟠 [code] `/mcp/v1` requests don't count against the auth bucket. *(rate_limit.rs:256-264)*
+- [x] **GA8** 🟠 [code] Rate limit keyed only by source IP, not per principal. *(rate_limit.rs:1-9, 242-293)*
+- [x] **GA9** 🟠 [code] `/mcp/v1` requests don't count against the auth bucket. *(rate_limit.rs:256-264)*
 - [ ] **GA10** 🟠 [code] `X-Forwarded-Proto` honoured unconditionally (spoofable); only `X-Forwarded-For` checks `trusted_proxies`. *(local.rs:346-351, oidc.rs:495-513)*
 - [ ] **GA11** 🟠 [code] Local-login lockout per account only, no per-IP counter. *(local.rs:181-276, migrations.rs:92-99)*
 - [ ] **GA12** 🟠 [code] OIDC `groups` claim name hardcoded (no config field). *(oidc.rs:74-81; config.rs:100-126)*

@@ -308,6 +308,13 @@ pub async fn rbac_middleware(
     if let Err(err) = authorize(requirement, scope) {
         return err.into_response();
     }
+    // Per-principal bucket (SPEC-control-api § General rules): the same
+    // class the source bucket uses, charged to the authenticated actor.
+    if let Err(response) =
+        crate::api::rate_limit::check_principal(&state, &actor_id, req.method(), req.uri().path())
+    {
+        return response;
+    }
     req.extensions_mut().insert(Authenticated {
         actor_id,
         scope,
