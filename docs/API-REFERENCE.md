@@ -120,7 +120,6 @@ invalid credential → `401 control_api.auth.unauthenticated`.
 | GET | `/api/v1/query-log/{id}` | One record with the full decision record ("why blocked?"). |
 | GET | `/api/v1/query-log/export.ndjson` | NDJSON stream of the current filter. |
 | GET | `/api/v1/query-log/export.csv` | CSV export of the current filter. |
-| GET | `/api/v1/query-log/{id}` | One record ("why blocked?"). |
 
 Query-log query parameters: `from`, `to`, `client_id`, `client_name_substr`,
 `domain`, `domain_substr`, `protocol`, `view_id`, `profile_id`, `status`,
