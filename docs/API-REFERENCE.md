@@ -130,13 +130,13 @@ Malformed values → `control_api.query_log.invalid`.
 
 | Method | Path | Summary |
 |---|---|---|
-| GET | `/api/v1/stats/overview` | Dashboard aggregate. |
+| GET | `/api/v1/stats/overview` | Dashboard aggregate: totals, `by_*` breakdowns, `active_clients` (distinct attributed clients), `query_log_dropped` (sink drops since process start, node-local), `filter_hits` (`total`, `by_list`, `by_reason`, `top_rules` max 10). `source` is `raw`, or `rollup` when `from` lies before the raw retention horizon; rollup mode is day-granular, has no `by_view`, `by_rcode`, `dnssec`, `active_clients` or `filter_hits` (empty or `null`), and counts `blocked` from the `filter_block` answer origin. |
 | GET | `/api/v1/stats/top_clients` | Top clients by queries/blocked. |
 | GET | `/api/v1/stats/top_domains` | Top domains. |
 | GET | `/api/v1/stats/cache` | Cache hit ratio. |
 | GET | `/api/v1/stats/domains/{name}?days=7\|30` | One domain over the raw query log: `counts`, `first_seen`/`last_seen` (retention bounded), `daily`, `top_clients` (max 10), `last_decision`. `control_api.not_found` when unseen, `control_api.stats.invalid_domain` for a bad name or `days`. |
 
-Stats query parameters: `from`, `to`, `limit`, `by`.
+Stats query parameters: `from`, `to`, `node_id`, `profile_id` (exact filters, GM6; `overview`, `top_clients`, `top_domains`, `cache`), `limit`, `by`.
 
 ### Resolver (viewer/admin read, admin write)
 
