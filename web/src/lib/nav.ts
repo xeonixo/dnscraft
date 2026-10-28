@@ -5,9 +5,15 @@ import { m } from '$lib/paraglide/messages';
 /** Roles from SPEC-web-ui.md § Role gating. A viewer never sees an item that needs admin. */
 export type Role = 'viewer' | 'admin';
 
+/**
+ * Routes that take no parameters. Navigation lists only these; a dynamic route (such as
+ * /query-log/[id]) is linked with resolve(route, params) at the call site instead.
+ */
+export type StaticRouteId = Exclude<RouteId, '/query-log/[id]'>;
+
 export interface NavItem {
 	/** SvelteKit route path, also the key for the page title and the active item. */
-	path: RouteId;
+	path: StaticRouteId;
 	label: () => string;
 	icon: IconName;
 	minRole: Role;
@@ -19,7 +25,7 @@ export interface NavSection {
 }
 
 const item = (
-	path: RouteId,
+	path: StaticRouteId,
 	label: () => string,
 	icon: IconName,
 	minRole: Role = 'viewer',
@@ -85,7 +91,11 @@ const routed: NavItem[] = [
 
 /** The nav entry for a route, used for the toolbar title, document title and placeholder icon. */
 export function navItemForPath(pathname: string): NavItem | undefined {
-	return routed.find((entry) => entry.path === pathname);
+	return (
+		routed.find((entry) => entry.path === pathname) ??
+		// Detail routes (for example /query-log/:id) belong to the section they open from.
+		routed.find((entry) => pathname.startsWith(`${entry.path}/`))
+	);
 }
 
 export function isVisible(entry: NavItem, role: Role): boolean {

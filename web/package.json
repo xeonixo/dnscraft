@@ -9,12 +9,13 @@
 		"build": "vite build",
 		"prebuild": "node scripts/gen-inlang.mjs",
 		"preview": "vite preview",
+		"mock": "node mock/server.mjs",
 		"prepare": "svelte-kit sync && node scripts/gen-inlang.mjs",
 		"i18n": "node scripts/gen-inlang.mjs && paraglide-js compile --project ./.generated/project.inlang --outdir ./src/lib/paraglide --disable-async-local-storage",
 		"check": "pnpm run i18n && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
 		"lint": "pnpm run i18n && eslint . && prettier --check .",
 		"format": "prettier --write .",
-		"test": "vitest run",
+		"test": "vitest run && node --test mock/server.test.mjs",
 		"pretest": "node scripts/gen-inlang.mjs"
 	},
 	"devDependencies": {

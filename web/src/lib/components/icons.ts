@@ -102,6 +102,7 @@ export const ICON_SHAPES = {
 		polyline('16 11 18 13 22 9'),
 	],
 	'x-circle': [circle(12, 12, 9), line(15, 9, 9, 15), line(9, 9, 15, 15)],
+	x: [line(18, 6, 6, 18), line(6, 6, 18, 18)],
 	zap: [path('M13 2 3 14h9l-1 8 10-12h-9l1-8z')],
 	'arrow-right': [path('M5 12h14'), polyline('13 6 19 12 13 18')],
 } satisfies Record<string, IconShape[]>;

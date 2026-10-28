@@ -76,3 +76,12 @@
 - [ ] **GA-W5d** Add `resolver.*` upstream error codes to the stable-code catalogue for translation.
 - [ ] **GA-W5e** SPEC-web-ui: the pause path is `/filtering/pause`, not `/policy/pause`; no `/statistics` route
       exists (merged into the dashboard) — align the spec.
+
+## Found while building the query log (W6, 2026-10-28)
+
+- [ ] **GA-W6a** Query-log records carry no `status`; the UI derives it. Add an explicit status and a `cache` filter value.
+- [ ] **GA-W6b** `query_log_dropped` is only available via `GET /stats/overview`; expose it on the query-log response.
+- [ ] **GA-W6c** Add a total count (or a cheap estimate) and a qtype/IP filter to `GET /query-log`.
+- [ ] **GA-W6d** `mcp.*` error codes (e.g. protected domain) need translations in the code catalogue.
+- [ ] **OWNER** "Dauerhaft blockieren" from the log: custom rules expire at `max_block_rule_lifetime`; decide whether a
+      permanent block belongs in the UI (not built).

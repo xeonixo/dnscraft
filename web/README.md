@@ -26,3 +26,16 @@ Client-side SvelteKit SPA (adapter-static, `index.html` fallback), built into `w
   `error_*` message IDs (unknown codes fall back to `error_unknown`).
 - Tests: `messages.test.ts` (key parity, placeholders), `locale.test.ts` (error mapping, storage
   failures), `no-literals.test.ts` (raw text and literal `aria-label`/`title`/`placeholder`/`alt` scan).
+
+## Query log and local mock
+
+- `/query-log` lists the query log: a domain search (debounced, `domain_substr`), every documented filter and
+  paging parameter in the URL (`src/lib/querylog/filters.ts` maps URL, draft and API parameters), wide table or
+  compact card list, density per viewer (localStorage, optional), pagination, and NDJSON/CSV export links that
+  carry the current filters. `/query-log/:id` shows the decision steps, matching rule, client, timings, and for
+  admins a temporary allow (`POST /api/v1/filtering/temporary-allows`).
+- Untrusted values (domains, client names, rule text) go through `src/lib/safe-text.ts` and render as text only.
+- `pnpm mock` starts a local fake control-api on `http://127.0.0.1:4173` (`MOCK_PORT`, `MOCK_ROLE=admin|viewer`,
+  `MOCK_DROPPED=n` for the dropped-events notice). It serves `build/` with the SPA fallback and answers `/api/v1`
+  from `mock/fixtures.mjs` (about 200 deterministic query-log rows, including hostile names). It binds loopback only
+  and makes no outbound connections. Run `pnpm build` first. `pnpm test` also runs `mock/server.test.mjs`.

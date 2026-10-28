@@ -3,6 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import LiveRegion from '$lib/components/LiveRegion.svelte';
 import Page from './+page.svelte';
 import { endSession, setPrincipal } from '$lib/auth/state.svelte';
 import { live } from '$lib/live.svelte';
@@ -233,6 +234,11 @@ describe('self-signed bootstrap banner', () => {
 });
 
 describe('contextual admin actions', () => {
+	beforeEach(() => {
+		// The polite region lives in the root layout; the page tests mount it next to the screen.
+		render(LiveRegion);
+	});
+
 	it('shows no pause or cache controls to a viewer', async () => {
 		endSession();
 		setPrincipal({ role: 'viewer', actorId: 'bob', actorType: 'user', csrfToken: null });

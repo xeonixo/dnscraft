@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { resolve } from '$app/paths';
-	import type { RouteId } from '$app/types';
+	import type { StaticRouteId } from '$lib/nav';
 
 	interface Props {
 		/** Primary label (translated, or untrusted data rendered as text). */
@@ -11,7 +11,7 @@
 		leading?: Snippet;
 		trailing?: Snippet;
 		/** Makes the whole row a link (SvelteKit route path). */
-		href?: RouteId;
+		href?: StaticRouteId;
 		/** Primary label is a domain, IP or identifier: SF Mono. */
 		mono?: boolean;
 		/** Secondary label is an identifier: SF Mono. */

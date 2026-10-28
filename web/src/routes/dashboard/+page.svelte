@@ -5,7 +5,6 @@
 	import Button from '$lib/components/Button.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
-	import LiveRegion from '$lib/components/LiveRegion.svelte';
 	import ResultNotice from '$lib/components/ResultNotice.svelte';
 	import Segmented from '$lib/components/Segmented.svelte';
 	import ShareBar from '$lib/components/ShareBar.svelte';
@@ -428,8 +427,6 @@
 {#if cacheOpen}
 	<CacheSheet onclose={() => (cacheOpen = false)} onflushed={onFlushed} />
 {/if}
-
-<LiveRegion />
 
 <style>
 	.inline-actions,

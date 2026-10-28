@@ -8,6 +8,7 @@
 	import { resolve } from '$app/paths';
 	import AppShell from '$lib/components/AppShell.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
+	import LiveRegion from '$lib/components/LiveRegion.svelte';
 	import { roleLabel, routeDecision } from '$lib/auth/guards';
 	import { isPublicPath } from '$lib/auth/public-routes';
 	import { auth } from '$lib/auth/state.svelte';
@@ -72,6 +73,9 @@
 		<p class="pending">{m.state_loading()}</p>
 	</main>
 {/if}
+
+<!-- One polite region for every screen: announcements from any route reach it. -->
+<LiveRegion />
 
 <style>
 	.standalone {
