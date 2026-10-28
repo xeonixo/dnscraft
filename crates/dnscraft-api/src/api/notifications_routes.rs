@@ -198,7 +198,7 @@ pub(crate) async fn put_notifications(
         "allow_private_destinations": body
             .get("allow_private_destinations")
             .cloned()
-            .unwrap_or_else(|| json!(false)),
+            .unwrap_or(json!(false)),
         "channels": clean_channels,
     });
     validate_section(&section)?;

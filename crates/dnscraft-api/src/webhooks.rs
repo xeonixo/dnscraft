@@ -381,75 +381,6 @@ pub(crate) async fn channel_secret(
     db.kv_get(&secret_key(channel_id)).await
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn private_ranges_are_denied() {
-        for ip in [
-            "127.0.0.1",
-            "10.1.2.3",
-            "172.16.0.9",
-            "192.168.1.1",
-            "169.254.1.1",
-            "100.64.0.1",
-            "224.0.0.1",
-            "0.0.0.0",
-            "::1",
-            "fe80::1",
-            "fd00::1",
-            "::ffff:10.0.0.1",
-        ] {
-            assert!(is_private_address(ip.parse().unwrap()), "{ip}");
-        }
-        for ip in ["203.0.113.5", "1.1.1.1", "2606:4700::1111"] {
-            assert!(!is_private_address(ip.parse().unwrap()), "{ip}");
-        }
-    }
-
-    #[test]
-    fn allowlist_matches_exact_and_subdomains_only() {
-        let allowed = vec!["example.com".to_owned()];
-        assert!(host_allowed("example.com", &allowed));
-        assert!(host_allowed("hooks.example.com", &allowed));
-        assert!(!host_allowed("evilexample.com", &allowed));
-        assert!(!host_allowed("example.com.evil.net", &allowed));
-        assert!(!host_allowed("example.com", &[]), "empty list rejects all");
-    }
-
-    #[test]
-    fn urls_must_be_https_without_credentials() {
-        assert!(parse_channel_url("http://example.com/h").is_err());
-        assert!(parse_channel_url("https://user:pw@example.com/h").is_err());
-        assert!(parse_channel_url("https://example.com/h#frag").is_err());
-        assert!(parse_channel_url("https://example.com/h?token=x").is_ok());
-    }
-
-    #[test]
-    fn payload_has_no_client_or_domain_names_by_default() {
-        let body = payload(
-            "tls.cert.expiring",
-            "warning",
-            "tls",
-            json!({"days": 3}),
-            10,
-        );
-        let keys: Vec<&str> = body
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
-        assert_eq!(
-            keys,
-            ["code", "created_at", "id", "module", "params", "severity"]
-        );
-        assert_eq!(body["id"].as_str().unwrap().len(), 32);
-    }
-}
-
 /// Alert-to-webhook cooldown: one attempt per channel and alert per hour.
 const DISPATCH_COOLDOWN_SECS: i64 = 3600;
 /// `kv` key of the dispatch ledger: `"<channel>:<alert>" -> last attempt (unix s)`.
@@ -574,4 +505,73 @@ pub async fn dispatch_alerts(state: &AppState) -> Result<usize, ControlApiError>
     db.kv_set(DISPATCH_LEDGER_KEY, &Value::Object(ledger).to_string())
         .await?;
     Ok(delivered)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_ranges_are_denied() {
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.9",
+            "192.168.1.1",
+            "169.254.1.1",
+            "100.64.0.1",
+            "224.0.0.1",
+            "0.0.0.0",
+            "::1",
+            "fe80::1",
+            "fd00::1",
+            "::ffff:10.0.0.1",
+        ] {
+            assert!(is_private_address(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["203.0.113.5", "1.1.1.1", "2606:4700::1111"] {
+            assert!(!is_private_address(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    #[test]
+    fn allowlist_matches_exact_and_subdomains_only() {
+        let allowed = vec!["example.com".to_owned()];
+        assert!(host_allowed("example.com", &allowed));
+        assert!(host_allowed("hooks.example.com", &allowed));
+        assert!(!host_allowed("evilexample.com", &allowed));
+        assert!(!host_allowed("example.com.evil.net", &allowed));
+        assert!(!host_allowed("example.com", &[]), "empty list rejects all");
+    }
+
+    #[test]
+    fn urls_must_be_https_without_credentials() {
+        assert!(parse_channel_url("http://example.com/h").is_err());
+        assert!(parse_channel_url("https://user:pw@example.com/h").is_err());
+        assert!(parse_channel_url("https://example.com/h#frag").is_err());
+        assert!(parse_channel_url("https://example.com/h?token=x").is_ok());
+    }
+
+    #[test]
+    fn payload_has_no_client_or_domain_names_by_default() {
+        let body = payload(
+            "tls.cert.expiring",
+            "warning",
+            "tls",
+            json!({"days": 3}),
+            10,
+        );
+        let keys: Vec<&str> = body
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            ["code", "created_at", "id", "module", "params", "severity"]
+        );
+        assert_eq!(body["id"].as_str().unwrap().len(), 32);
+    }
 }
