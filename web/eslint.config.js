@@ -12,4 +12,9 @@ export default tseslint.config(
 			parserOptions: { parser: tseslint.parser },
 		},
 	},
+	{
+		// Rune modules (state and store) are TypeScript, not .svelte components.
+		files: ['**/*.svelte.ts'],
+		languageOptions: { parser: tseslint.parser },
+	},
 );

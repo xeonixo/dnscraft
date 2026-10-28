@@ -53,3 +53,15 @@
 - [ ] After GA1–GA4: auth + audit routes served; RBAC matrix green.
 - [ ] After GA6: `GET /clients` returns the real directory; `POST /clients/sync`
       returns a report (or `not_configured` without UniFi); assembler boots.
+
+## Found while building the SPA login (W4, 2026-10-28)
+
+- [ ] **GA-W4a** OIDC callback (`api/auth/oidc.rs`) returns a JSON envelope; it must redirect back to the SPA
+      (validated same-origin `return_to`), otherwise the browser login ends on a JSON page.
+- [ ] **GA-W4b** `authorize-url` accepts no `return_to`; add it (same-origin path only, validated server-side).
+- [ ] **GA-W4c** `auth_middleware` validates any cookie before public routes (`/auth/local/login`,
+      `authorize-url`): an expired cookie yields 401 `session_expired` with no `Set-Cookie` to clear it, so the
+      user cannot sign in again. Public routes must ignore/clear a stale cookie; logout must clear it too.
+- [ ] **GA-W4d** CSRF token is delivered in the `auth/me`/login body only; the `dnscraft_csrf` cookie from the
+      web-ui decision does not exist. Either add it or amend SPEC-web-ui to "body field only".
+- [ ] **GA-W4e** `Retry-After` on 429 should be exposed as `params.retry_after` so the SPA can back off.

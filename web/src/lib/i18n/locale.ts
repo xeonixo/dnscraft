@@ -38,10 +38,27 @@ export function errorMessageKey(code: string): string {
 	return typeof catalog[key] === 'function' ? key : 'error_unknown';
 }
 
+/** Placeholders a message needs even when the API omits the param (only the required role has one). */
+const PARAM_DEFAULTS: Record<string, Record<string, string>> = {
+	error_control_api_auth_insufficient_scope: { required: 'admin' },
+};
+
+/** Params are API data: only scalars are passed on, and they reach the message as plain text. */
+function textParams(params: Record<string, unknown>): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const [name, value] of Object.entries(params)) {
+		if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+			out[name] = String(value);
+		}
+	}
+	return out;
+}
+
 /** Translated text for an error code; the raw code stays with the caller for a copyable line. */
-export function errorMessage(code: string, params?: Record<string, unknown>): string {
-	const fn = catalog[errorMessageKey(code)];
-	return fn ? fn(params) : m.error_unknown();
+export function errorMessage(code: string, params: Record<string, unknown> = {}): string {
+	const key = errorMessageKey(code);
+	const fn = catalog[key];
+	return fn ? fn({ ...PARAM_DEFAULTS[key], ...textParams(params) }) : m.error_unknown();
 }
 
 /** Native display name of a locale, read from its `locale_name_<code>` message. */
