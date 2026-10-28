@@ -274,18 +274,50 @@
 	{:else}
 		<GroupedList>
 			{#each rows as view (view.id)}
-				<GroupedRow
-					label={displayText(view.id).text}
-					detail={rowDetail(view)}
-					detailMono
-					onclick={isAdmin ? () => openEdit(view) : undefined}
-				>
-					{#snippet trailing()}
-						{#if view.is_default}
-							<span class="badge">{m.zones_badge_default()}</span>
+				{@const ranges = rangeParts(view)}
+				{@const pins = pinSummary(view.id)}
+				{@const count = deviceCount(view)}
+				{#snippet body()}
+					<span class="zone-main">
+						<span class="zone-title">
+							<span class="zone-name">{displayText(view.id).text}</span>
+							{#if view.is_default}
+								<span class="badge">{m.zones_badge_default()}</span>
+							{/if}
+						</span>
+						{#if ranges.length > 0}
+							<span class="zone-ranges">
+								{#each ranges as part, i (part + String(i))}
+									{#if i > 0}<span class="sep" aria-hidden="true">·</span>{/if}
+									<span class:soft={part === m.zones_default_rest() || part.startsWith('+')}
+										>{part}</span
+									>
+								{/each}
+							</span>
+						{:else}
+							<span class="zone-empty">{m.zones_no_subnets()}</span>
 						{/if}
-					{/snippet}
-				</GroupedRow>
+						{#if pins}
+							<span class="zone-pins">
+								<span class="pins-label">{m.zones_pinned_label()}</span>
+								{pins}
+							</span>
+						{/if}
+					</span>
+					<span class="zone-meta">
+						<span class="zone-profile">{displayText(view.profile, 60).text}</span>
+						{#if count !== null}
+							<span class="zone-count">{plural(count)}</span>
+						{/if}
+					</span>
+				{/snippet}
+				{#if isAdmin}
+					<button type="button" class="zone-row interactive" onclick={() => openEdit(view)}>
+						{@render body()}
+					</button>
+				{:else}
+					<div class="zone-row">{@render body()}</div>
+				{/if}
 			{/each}
 		</GroupedList>
 		<p class="note">{m.zones_footnote()}</p>
@@ -356,13 +388,13 @@
 					>
 						{#each nodeChoices as nodeId (nodeId)}
 							<label class="node-row">
+								<span class="mono">{displayText(nodeId).text}</span>
 								<input
 									type="checkbox"
 									checked={formNodes.includes(nodeId)}
 									onchange={(event) =>
 										toggleNode(nodeId, (event.currentTarget as HTMLInputElement).checked)}
 								/>
-								<span class="mono">{displayText(nodeId).text}</span>
 							</label>
 						{/each}
 					</div>
@@ -469,12 +501,98 @@
 		color: var(--label-2);
 	}
 
+	.zone-row {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 1rem;
+		width: 100%;
+		min-height: 3.25rem;
+		padding: 0.875rem 1rem;
+		border: none;
+		background: transparent;
+		color: var(--label);
+		font: inherit;
+		text-align: start;
+	}
+	.zone-row.interactive {
+		cursor: pointer;
+	}
+	.zone-row.interactive:hover {
+		background: var(--surface-2);
+	}
+	.zone-main {
+		display: flex;
+		flex: 1 1 auto;
+		flex-direction: column;
+		gap: 0.2rem;
+		min-width: 0;
+	}
+	.zone-title {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.zone-name {
+		font-size: 0.9375rem;
+		font-weight: 600;
+		overflow-wrap: anywhere;
+	}
 	.badge {
-		padding: 0 0.375rem;
-		border: 1px solid var(--separator);
-		border-radius: var(--r-ctl);
-		font-size: 0.75rem;
+		padding: 0.05rem 0.4rem;
+		border-radius: 999px;
+		background: var(--accent-fill);
+		font-size: 0.6875rem;
+		font-weight: 600;
+		color: var(--accent);
+		white-space: nowrap;
+	}
+	.zone-ranges {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 0.25rem 0.35rem;
+		font-family: var(--font-mono);
+		font-size: 0.78125rem;
 		color: var(--label-2);
+		overflow-wrap: anywhere;
+	}
+	.zone-ranges .sep {
+		color: var(--label-3);
+	}
+	.zone-ranges .soft,
+	.zone-empty {
+		font-family: inherit;
+		font-size: 0.78125rem;
+		color: var(--label-3);
+	}
+	.zone-pins {
+		font-size: 0.78125rem;
+		color: var(--label-2);
+		overflow-wrap: anywhere;
+	}
+	.pins-label {
+		margin-inline-end: 0.25rem;
+		color: var(--label-3);
+	}
+	.zone-meta {
+		display: flex;
+		flex: 0 0 auto;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 0.125rem;
+		padding-top: 0.1rem;
+		text-align: end;
+	}
+	.zone-profile {
+		font-size: 0.8125rem;
+		font-weight: 500;
+		color: var(--label);
+	}
+	.zone-count {
+		font-size: 0.75rem;
+		color: var(--label-3);
 		white-space: nowrap;
 	}
 
@@ -544,22 +662,31 @@
 		cursor: pointer;
 	}
 	.node-list {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-		margin: 0.5rem 0;
+		overflow: hidden;
+		margin: 0.375rem 0 0.5rem;
+		border: 1px solid var(--separator);
+		border-radius: var(--r-ctl);
+		background: var(--surface-2);
 	}
 	.node-row {
 		display: flex;
 		align-items: center;
-		gap: 0.5rem;
-		min-height: 2.25rem;
+		justify-content: space-between;
+		gap: 0.75rem;
+		min-height: 2.5rem;
+		padding: 0 0.75rem;
 		cursor: pointer;
 	}
+	.node-row + .node-row {
+		border-top: 1px solid var(--separator);
+	}
 	.node-row input {
-		width: 1rem;
-		height: 1rem;
+		width: 1.05rem;
+		height: 1.05rem;
 		accent-color: var(--accent-solid);
+	}
+	.advanced .hint {
+		padding: 0;
 	}
 
 	.danger-text {

@@ -260,13 +260,13 @@
 			<div class="node-list" role="group" aria-labelledby="listener-nodes-label" aria-describedby="listener-nodes-hint">
 				{#each nodeChoices as nodeId (nodeId)}
 					<label class="node-row">
+						<span class="mono">{displayText(nodeId).text}</span>
 						<input
 							type="checkbox"
 							checked={formNodes.includes(nodeId)}
 							onchange={(event) =>
 								toggleNode(nodeId, (event.currentTarget as HTMLInputElement).checked)}
 						/>
-						<span class="mono">{displayText(nodeId).text}</span>
 					</label>
 				{/each}
 			</div>
@@ -342,23 +342,30 @@
 	}
 
 	.node-list {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
+		overflow: hidden;
 		margin: 0 0 0.5rem;
+		border: 1px solid var(--separator);
+		border-radius: var(--r-ctl);
+		background: var(--surface-2);
 	}
 
 	.node-row {
 		display: flex;
 		align-items: center;
-		gap: 0.5rem;
-		min-height: 2.25rem;
+		justify-content: space-between;
+		gap: 0.75rem;
+		min-height: 2.5rem;
+		padding: 0 0.75rem;
 		cursor: pointer;
 	}
 
+	.node-row + .node-row {
+		border-top: 1px solid var(--separator);
+	}
+
 	.node-row input {
-		width: 1rem;
-		height: 1rem;
+		width: 1.05rem;
+		height: 1.05rem;
 		accent-color: var(--accent-solid);
 	}
 

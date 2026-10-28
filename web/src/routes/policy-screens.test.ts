@@ -227,11 +227,14 @@ describe('policy screens', () => {
 				],
 			});
 		render(ZonesPage);
-		const pinned = m.zones_pinned({ names: 'iPhone von Anna, Pixel 8 Jonas, c-3' });
-		expect(await screen.findByText(pinned, { exact: false })).toBeInTheDocument();
+		expect(await screen.findByText(m.zones_pinned_label())).toBeInTheDocument();
+		expect(
+			screen.getByText(m.zones_pinned({ names: 'iPhone von Anna, Pixel 8 Jonas, c-3' }), {
+				exact: false,
+			}),
+		).toBeInTheDocument();
 		expect(screen.getByText(m.zones_more({ count: 1 }), { exact: false })).toBeInTheDocument();
-		// No CIDRs: the detail line explains it is for pinned DoH Client IDs only.
-		expect(screen.getByText(m.zones_no_subnets(), { exact: false })).toBeInTheDocument();
+		expect(screen.getByText(m.zones_no_subnets())).toBeInTheDocument();
 	});
 
 	it('replaces the delete button of a pinned range with the pinned names', async () => {
