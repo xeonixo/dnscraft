@@ -143,7 +143,7 @@ Malformed values → `control_api.query_log.invalid`.
 
 | Method | Path | Summary |
 |---|---|---|
-| GET | `/api/v1/stats/overview` | Dashboard aggregate: totals, `by_*` breakdowns, `active_clients` (distinct attributed clients), `query_log_dropped` (sink drops since process start, node-local), `filter_hits` (`total`, `by_list`, `by_reason`, `top_rules` max 10). `source` is `raw`, or `rollup` when `from` lies before the raw retention horizon; rollup mode is day-granular, has no `by_view`, `by_rcode`, `dnssec`, `active_clients` or `filter_hits` (empty or `null`), and counts `blocked` from the `filter_block` answer origin. |
+| GET | `/api/v1/stats/overview` | Dashboard aggregate: totals, `by_*` breakdowns, `active_clients` (distinct attributed clients), `query_log_dropped` (sink drops since process start, node-local), `query_log_stream_dropped` (live-stream events skipped by lagging subscribers), `filter_hits` (`total`, `by_list`, `by_reason`, `top_rules` max 10). `source` is `raw`, or `rollup` when `from` lies before the raw retention horizon; rollup mode is day-granular, has no `by_view`, `by_rcode`, `dnssec`, `active_clients` or `filter_hits` (empty or `null`), and counts `blocked` from the `filter_block` answer origin. |
 | GET | `/api/v1/stats/top_clients` | Top clients by queries/blocked. |
 | GET | `/api/v1/stats/top_domains` | Top domains. |
 | GET | `/api/v1/stats/cache` | Cache hit ratio. |
@@ -176,9 +176,12 @@ Stats query parameters: `from`, `to`, `node_id`, `profile_id` (exact filters, GM
 Webhook channels only (v1). The `notifications` config section holds
 `allowed_hosts` (empty rejects every host), `allow_private_destinations`
 (default false) and `channels[]` (`id`, `type: webhook`, `enabled`, HTTPS `url`,
-`events` from the catalog). Secrets are write-only: a `secret` string sets it,
-`null` clears it, an omitted key keeps it. Responses never contain the query,
-userinfo or secret.
+`events` from the catalog). The full channel URL is a secret (it may embed a token):
+it is write-only, kept outside the config snapshot, and the snapshot holds only
+`host`. A `url` string on PUT sets it; omitting `url` keeps the stored one for an
+existing channel. `secret` (bearer token) is write-only too: a string sets it,
+`null` clears it, an omitted key keeps it. Responses never contain the URL,
+query, userinfo or secret.
 
 | Method | Path | Summary |
 |---|---|---|
@@ -186,10 +189,16 @@ userinfo or secret.
 | PUT | `/api/v1/notifications` | Replaces the channel set (versioned config write). Hosts outside `allowed_hosts` → 422 `control_api.notifications.host_not_allowed`. |
 | POST | `/api/v1/notifications/test` | `{ "channel_id" }`: one delivery, audited without URL or secret. 422 `egress_denied` for private destinations, 502 `delivery`, 404 `unknown_channel`. |
 
+Automatic dispatch (`dispatch_alerts`, called periodically by the binary): every
+active alert from `GET /api/v1/alerts` is sent to each enabled channel subscribed to
+its id (the event catalog is the alert id list). Each channel and alert pair is
+attempted at most once per hour; a cleared alert leaves the ledger, so its
+recurrence is sent again. Failures are logged and count as attempts. The same
+egress guard applies.
+
 Egress: HTTPS only, every resolved address checked (loopback, private, link-local,
 multicast, CGNAT, ULA and IPv4-mapped denied), connection pinned to the checked
-address, no redirects, 5 s connect and 10 s total timeout. Automatic event
-dispatch is not wired yet; only the test send delivers.
+address, no redirects, 5 s connect and 10 s total timeout.
 
 ### System (viewer/admin, admin where noted)
 
@@ -199,10 +208,11 @@ dispatch is not wired yet; only the test send delivers.
 | GET | `/api/v1/backups` | Admin. Backup settings, directory, `files`, `last_run`, `next_run`. 404 when no backup directory is configured. |
 | PUT | `/api/v1/backups/settings` | Admin. `{ "enabled", "retention_count" }` (1..=365), versioned config write. Invalid → `control_api.backups.invalid`. |
 
-Backups copy the whole database with `VACUUM INTO` into the backup directory
-(created `0700`, files `0600`), keeping the newest `retention_count`. The copy
-includes credential hashes and sessions. The binary must call
-`run_backup_if_due` periodically; it runs at most once per 24 h.
+Backups copy the database with `VACUUM INTO` into the backup directory (created
+`0700`, files `0600`), keeping the newest `retention_count`. The copy keeps
+credential hashes (so a restore can sign in) and drops the `sessions` rows. The
+"secrets excluded" rule applies to config exports, not to on-host backups. The
+binary must call `run_backup_if_due` periodically; it runs at most once per 24 h.
 
 ### Alerts (viewer/admin)
 
