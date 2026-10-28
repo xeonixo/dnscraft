@@ -17,9 +17,9 @@ returning `Result<Secret, String>`). Delete the three local copies — tls
 handling). Drop `zeroize` from clients' deps (only used in its `secret.rs`).
 
 **Acceptance criteria:**
-- [ ] One `Secret` + one `read_secret` in `dnscraft-common`; 3 local copies removed
-- [ ] tls `Deserialize` behavior (redacted marker round-trip) preserved
-- [ ] `zeroize` removed from `crates/dnscraft-clients/Cargo.toml`
+- [x] One `Secret` + one `read_secret` in `dnscraft-common`; 3 local copies removed
+- [x] tls `Deserialize` behavior (redacted marker round-trip) preserved
+- [x] `zeroize` removed from `crates/dnscraft-clients/Cargo.toml`
 
 **Verification:** `cargo build --workspace --locked`; `cargo test --workspace --locked`
 **Dependencies:** none
@@ -36,9 +36,9 @@ Delete the still-live copies and re-export: `normalise_domain`/`check_https_url`
 (mcp/api/cluster-store) and `sha256_hex` (api/audit, cluster/lib) to common.
 
 **Acceptance criteria:**
-- [ ] One copy of each helper; the `policy` NAT64-aware `is_private_v4`/`is_cgnat` is canonical
-- [ ] `unix_seconds` (i64) and `sha256_hex` defined once in common
-- [ ] The f64 `unix_seconds` in `dnscraft/src/events.rs` (sub-second) stays local (different semantics)
+- [x] One copy of each helper; the `policy` NAT64-aware `is_private_v4`/`is_cgnat` is canonical
+- [x] `unix_seconds` (i64) and `sha256_hex` defined once in common
+- [x] The f64 `unix_seconds` in `dnscraft/src/events.rs` (sub-second) stays local (different semantics)
 
 **Verification:** `cargo build --workspace --locked`; `cargo test --workspace --locked`
 **Dependencies:** Task 1
@@ -57,9 +57,9 @@ one-clock rule (current ADR says "every crate carries its own copy", which the c
 already violates).
 
 **Acceptance criteria:**
-- [ ] Exactly one `Clock` trait + `SystemClock` + `ManualClock` in the workspace
-- [ ] api/mcp/resolver `clock.rs` deleted; resolver still gets monotonic time via `clock.instant()`
-- [ ] ADR-0005 updated to match reality
+- [x] Exactly one `Clock` trait + `SystemClock` + `ManualClock` in the workspace
+- [x] api/mcp/resolver `clock.rs` deleted; resolver still gets monotonic time via `clock.instant()`
+- [x] ADR-0005 updated to match reality
 
 **Verification:** `cargo build --workspace --locked`; `cargo test --workspace --locked`
 **Dependencies:** Task 1 (mcp gains the common dep here)
@@ -70,21 +70,21 @@ already violates).
 
 ## Phase 1 — per-crate cleanup (independent)
 
-## Task 4: listeners — dedup `release_per_source` ×5 and `ConnActivity` ×3
+## Task 4: listeners — dedup `release_per_source` ×5 and `ConnActivity` ×3 — ✅ done (commit `3bc4191`)
 
 **Description:** Extract one `release_per_source(&Mutex<HashMap<IpAddr,u32>>)` free
 fn shared by `doh`, `doh_h3`, `doq`, `dot`, `tcp`; unify the three `ConnActivity`
 structs on `SystemTime`.
 
 **Acceptance criteria:**
-- [ ] 5 copies of `release_per_source` → 1; 3 `ConnActivity` → 1
+- [x] 5 copies of `release_per_source` → 1; 3 `ConnActivity` → 1
 
 **Verification:** `cargo test -p dnscraft-listeners --locked`
 **Dependencies:** none (clock already in common)
 **Files:** `crates/dnscraft-listeners/src/{doh,doh_h3,doq,dot,tcp}.rs`
 **Estimated scope:** Medium
 
-## Task 5: api routes — dedup `actor`/`if_match`/`IdBody`, `valid_cidr`, `serialize_err`, `protocol_str`
+## Task 5: api routes — dedup `actor`/`if_match`/`IdBody`, `valid_cidr`, `serialize_err`, `protocol_str` — ✅ done (commit `bf8b07b`)
 
 **Description:** Make `actor` + `if_match` `pub(crate)` in `config_routes.rs`, delete
 the 4 copies (filter/clients/listener/tls routes); move `IdBody` to one location and
@@ -93,15 +93,15 @@ re-export; replace `valid_cidr` with `valid_ip_or_cidr` + `split_once`; move
 `DnsProtocol::as_str()` (added in `policy`).
 
 **Acceptance criteria:**
-- [ ] `actor`/`if_match`/`IdBody` each defined once; callers unchanged
-- [ ] No hand-rolled `valid_cidr`, duplicate `serialize_err`, or free `protocol_str`
+- [x] `actor`/`if_match`/`IdBody` each defined once; callers unchanged
+- [x] No hand-rolled `valid_cidr`, duplicate `serialize_err`, or free `protocol_str`
 
 **Verification:** `cargo test -p dnscraft-api --locked`; `cargo build --workspace --locked`
 **Dependencies:** Task 2 (protocol_str touches policy)
 **Files:** `crates/dnscraft-api/src/api/{config,clients,filter,listener,tls}_routes.rs`, `query_log.rs`, `error.rs`, `crates/dnscraft-policy/src/config.rs`, `crates/dnscraft/src/events.rs`
 **Estimated scope:** Medium
 
-## Task 6: api config/store — inline validators, drop aliases/dead code, merge `IpTruncate`
+## Task 6: api config/store — inline validators, drop aliases/dead code, merge `IpTruncate` — ✅ done (commit `93e5569`)
 
 **Description:** Inline `validate_auth`/`validate_query_log`/`validate_rate_limit`
 into `ControlApiConfig::validate`; delete `SharedConfigService` alias (use
@@ -110,28 +110,28 @@ into `ControlApiConfig::validate`; delete `SharedConfigService` alias (use
 the binary copy).
 
 **Acceptance criteria:**
-- [ ] No dead/`#[allow(dead_code)]` items remain in these files
-- [ ] One `IpTruncate`; binary reuses the api one
+- [x] No dead/`#[allow(dead_code)]` items remain in these files
+- [x] One `IpTruncate`; binary reuses the api one
 
 **Verification:** `cargo test -p dnscraft-api --locked`; `cargo build --workspace --locked`
 **Dependencies:** none
 **Files:** `crates/dnscraft-api/src/config.rs`, `config_apply.rs`, `audit.rs`, `crates/dnscraft/src/config.rs`
 **Estimated scope:** Small
 
-## Task 7: api auth — drop `Auth` pass-through wrapper
+## Task 7: api auth — drop `Auth` pass-through wrapper — ✅ done (commit `b5d98f5`)
 
 **Description:** `Auth` is a single-implementation pass-through around
 `SessionStore`. Replace `State<Auth>` with `State<SessionStore>` and delete the struct.
 
 **Acceptance criteria:**
-- [ ] `Auth` removed; session access goes through `SessionStore` directly
+- [x] `Auth` removed; session access goes through `SessionStore` directly
 
 **Verification:** `cargo test -p dnscraft-api --locked`
 **Dependencies:** none
 **Files:** `crates/dnscraft-api/src/api/auth/mod.rs` + route handlers using `State<Auth>`
 **Estimated scope:** Small
 
-## Task 8: api tls — drop `AcmeResolver` single-impl trait *(new)*
+## Task 8: api tls — drop `AcmeResolver` single-impl trait *(new)* — ✅ done (commit `cc46a45`)
 
 **Description:** `trait AcmeResolver` in `crates/dnscraft-api/src/tls.rs` has exactly
 one impl (`dnscraft_tls::CertResolver`) that forwards to methods `CertResolver`
@@ -140,15 +140,15 @@ that does not exist. Hold the concrete `CertResolver` (or its `Arc`) directly an
 delete the trait + forwarding impl.
 
 **Acceptance criteria:**
-- [ ] `AcmeResolver` trait gone; `FallbackResolver` uses `dnscraft_tls::CertResolver`
-- [ ] `resolve`/`leaf_der` behavior unchanged
+- [x] `AcmeResolver` trait gone; `FallbackResolver` uses `dnscraft_tls::CertResolver`
+- [x] `resolve`/`leaf_der` behavior unchanged
 
 **Verification:** `cargo test -p dnscraft-api --locked`
 **Dependencies:** none
 **Files:** `crates/dnscraft-api/src/tls.rs`
 **Estimated scope:** Small
 
-## Task 9: mcp — drop `SafeText`, inline `iso_duration`, dedup `service()`, `allowed_origins`
+## Task 9: mcp — drop `SafeText`, inline `iso_duration`, dedup `service()`, `allowed_origins` — ✅ done (commit `7a59bb1`; `allowed_origins` audit item dropped as false positive)
 
 **Description:** Delete the `SafeText` newtype (export `sanitize(x, CAP)` only, apply
 at call sites); inline `iso_duration()` as `format!("PT{}S", as_secs())`; replace the
@@ -156,15 +156,16 @@ at call sites); inline `iso_duration()` as `format!("PT{}S", as_secs())`; replac
 `allowed_origins` field (derived at runtime per `config.rs` doc).
 
 **Acceptance criteria:**
-- [ ] `SafeText` gone; call sites use `sanitize(x, CAP)`
-- [ ] `iso_duration`/`service` wrappers gone; `allowed_origins` field gone
+- [x] `SafeText` gone; call sites use `sanitize(x, CAP)`
+- [x] `iso_duration`/`service` wrappers gone
+- [ ] `allowed_origins` field gone *(dropped — live Origin/CSRF validation; see plan-audit-cleanup)*
 
 **Verification:** `cargo test -p dnscraft-mcp --locked`
 **Dependencies:** none
 **Files:** `crates/dnscraft-mcp/src/{sanitize,lib,tools/read,tools/write,config,transport}.rs`
 **Estimated scope:** Medium
 
-## Task 10: tls — delete dead fns/fields, inline `redact_acme_err`, `read_echo_body`
+## Task 10: tls — delete dead fns/fields, inline `redact_acme_err`, `read_echo_body` — ✅ done (commit `ff48ff1`)
 
 **Description:** Delete `plan_renewal` + `apply_cert_flags` (test-only) and
 `NodeEntry.name` (unused); inline `redact_acme_err` (body is `e.to_string()`); move
@@ -172,50 +173,51 @@ at call sites); inline `iso_duration()` as `format!("PT{}S", as_secs())`; replac
 `read_capped` pattern.
 
 **Acceptance criteria:**
-- [ ] No dead/test-only fns or unused fields remain
-- [ ] `redact_acme_err` call sites use `e.to_string()`; no `allow_http_for_tests` in prod config
+- [x] No dead/test-only fns or unused fields remain
+- [x] `redact_acme_err` call sites use `e.to_string()`; no `allow_http_for_tests` in prod config
 
 **Verification:** `cargo test -p dnscraft-tls --locked`
 **Dependencies:** Task 2 (config helpers already in common)
 **Files:** `crates/dnscraft-tls/src/{renew,acme,config,dyndns}.rs`
 **Estimated scope:** Medium
 
-## Task 11: filtering/clients — delete aliases, stdlib `is_unicast_link_local`
+## Task 11: filtering/clients — delete aliases, stdlib `is_unicast_link_local` — ✅ done (commit `4596d7c`)
 
 **Description:** Delete `FilterEngine::open()` and `snapshot_arc()` (1-line aliases),
 inline call sites; replace hand-rolled `is_unicast_link_local` with
 `Ipv6Addr::is_unicast_link_local()`.
 
 **Acceptance criteria:**
-- [ ] `open`/`snapshot_arc` gone; call sites use `new`/`snapshot`
-- [ ] `is_unicast_link_local` fn gone
+- [x] `open`/`snapshot_arc` gone; call sites use `new`/`snapshot`
+- [x] `is_unicast_link_local` fn gone
 
 **Verification:** `cargo test -p dnscraft-filtering -p dnscraft-clients --locked`
 **Dependencies:** none
 **Files:** `crates/dnscraft-filtering/src/engine.rs`, `crates/dnscraft-clients/src/merge.rs`
 **Estimated scope:** Small
 
-## Task 12: policy — inline `name_to_domain`/`ede_text`, drop dead `emit` params
+## Task 12: policy — inline `name_to_domain`/`ede_text`, drop dead `emit` params — ✅ done (commit `896ff7b`)
 
 **Description:** Inline the one-line wrappers `name_to_domain` and `ede_text`; remove
 the always-`None` `forward_zone`/`dnssec` params from `emit()`.
 
 **Acceptance criteria:**
-- [ ] `name_to_domain`/`ede_text` gone; `emit()` takes no unused params
+- [x] `name_to_domain`/`ede_text` gone; `emit()` takes no unused params
 
 **Verification:** `cargo test -p dnscraft-policy --locked`
 **Dependencies:** none
 **Files:** `crates/dnscraft-policy/src/util.rs`, `engine.rs`
 **Estimated scope:** Small
 
-## Task 13: resolver — dedup `BoxFuture`, delete `FromStr`
+## Task 13: resolver — dedup `BoxFuture`, delete `FromStr` — ✅ done (commit `e03c4bc`; `FromStr` audit item dropped as false positive)
 
 **Description:** Inline the two identical `BoxFuture<'a,T>` type aliases; delete
 `FromStr for ForwardZoneId` (only its own test uses it). (The concrete-clock change
 is handled in Task 3.)
 
 **Acceptance criteria:**
-- [ ] No duplicate `BoxFuture` alias; `FromStr` impl removed
+- [x] No duplicate `BoxFuture` alias
+- [ ] `FromStr` impl removed *(dropped — used by policy `serde_ids`; see plan-audit-cleanup)*
 
 **Verification:** `cargo test -p dnscraft-resolver --locked`
 **Dependencies:** none
@@ -234,7 +236,7 @@ with `time` + the `formatting` feature (already enabled in `dnscraft-cluster`); 
 testkit — nothing to do.)
 
 **Acceptance criteria:**
-- [ ] `chrono` no longer in `Cargo.toml`/`Cargo.lock`; date output unchanged
+- [x] `chrono` no longer in `Cargo.toml`/`Cargo.lock`; date output unchanged
 
 **Verification:** `cargo build --workspace --locked`; `cargo test --workspace --locked`
 **Dependencies:** none
@@ -248,7 +250,7 @@ only inside the workspace (`filtering/modifiers.rs`, `filtering/parser.rs`,
 `resolver/stats.rs` + 1 more). Re-verify with a full check.
 
 **Acceptance criteria:**
-- [ ] `#[non_exhaustive]` removed; no `match` breaks
+- [x] `#[non_exhaustive]` removed; no `match` breaks
 
 **Verification:** `cargo check --workspace --locked`
 **Dependencies:** none
@@ -263,7 +265,7 @@ only inside the workspace (`filtering/modifiers.rs`, `filtering/parser.rs`,
 directory.
 
 **Acceptance criteria:**
-- [ ] `spikes/` gone; `git grep` shows no reference to it; workspace build unaffected
+- [x] `spikes/` gone; `git grep` shows no reference to it; workspace build unaffected *(exploratory subdirs removed in `2333bf0`; empty `spikes/` may remain locally)*
 
 **Verification:** `cargo build --workspace --locked`
 **Dependencies:** none

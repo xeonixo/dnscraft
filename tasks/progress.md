@@ -2,6 +2,12 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — api: wire policy records + client-ids routes (router fix)
+
+- **Fixed:** `build_router` mounts `/policy/records` and `/policy/client-ids` (handlers/tests from cfcbbed were unwired). Commit `5e8e355`.
+- **Tests:** `policy_records_http` 5/5; `mcp_backend_read::get_stats_profile_filter_scopes_every_block` (GM6).
+- **Todos:** GA5, GM6, CF5, CF10; audit-cleanup acceptance boxes (plan `e9c82db`). `API-REFERENCE.md` already had these routes.
+
 ## 2026-10-28 — tls GT1–GT3 verified + task ticks
 
 - **GT1:** `manual_txt` is a list (one row per DNS-01 value); `publish_manual` checks all challenge
