@@ -35,6 +35,8 @@ mod stats;
 mod storage;
 mod system;
 mod tls;
+#[cfg(feature = "web-ui")]
+mod web_ui;
 mod webhooks;
 
 pub use api::auth::{
@@ -65,7 +67,7 @@ pub use dnscraft_cluster::{ClusterStore, OfflineWriteQueue};
 pub use dnscraft_common::clock::{Clock, ManualClock, SystemClock};
 pub use dnscraft_common::secret::Secret;
 pub use error::ControlApiError;
-pub use filter_apply::{apply_filter_config, filter_error};
+pub use filter_apply::{apply_filter_config, apply_filter_config_offline, filter_error};
 pub use mcp_backend::{McpBackendInner, mcp_backend_inner};
 #[doc(hidden)]
 pub use mcp_backend::{

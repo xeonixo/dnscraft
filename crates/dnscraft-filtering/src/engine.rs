@@ -354,6 +354,18 @@ impl FilterEngine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Configuration last installed by [`Self::apply_config`], when store-backed.
+    pub fn installed_config(&self) -> Option<FilterConfig> {
+        let inner = self.inner.as_ref()?;
+        Some(
+            inner
+                .config
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+        )
+    }
+
     /// Unix seconds of the last successful `services.json` download (from the
     /// cache metadata), or `None` when no catalog is cached.
     pub fn services_updated_at(&self) -> Option<u64> {

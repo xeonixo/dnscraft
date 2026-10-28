@@ -124,6 +124,7 @@ async fn harness() -> Harness {
         })),
         listeners: Some(Arc::new(listeners)),
         tls: Some(Arc::new(tls)),
+        ..ModuleAppliers::default()
     };
     let service = Arc::new(ConfigService::new(
         ConfigStore::new(db.clone()),

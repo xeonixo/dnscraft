@@ -22,7 +22,7 @@ use tokio::sync::Notify;
 use tower::ServiceExt as _;
 
 use dnscraft_api::{
-    ApplyFiltering, Clock as ApiClock, ControlApiError, ModuleFuture, apply_filter_config,
+    ApplyFiltering, Clock as ApiClock, ControlApiError, ModuleFuture, apply_filter_config_offline,
 };
 use dnscraft_filtering::{
     BlockMode, Clock as FilterClock, DomainName, FilterConfig, FilterSetConfig, ListConfig, ListId,
@@ -201,7 +201,7 @@ impl ApplyFiltering for FilterApplier {
     fn apply<'a>(&'a self, config: &'a Value) -> ModuleFuture<'a> {
         Box::pin(async move {
             let parsed = filter_config_from_json(config)?;
-            apply_filter_config(&self.engine, parsed).await
+            apply_filter_config_offline(&self.engine, parsed).await
         })
     }
 }

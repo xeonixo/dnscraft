@@ -22,6 +22,7 @@ use serde_json::{Map, Value, json};
 
 use crate::audit::{Audit, ConfigChangeRecord};
 use crate::error::ControlApiError;
+use crate::filter_apply::refresh_filter_lists_after_config;
 use crate::modules::ModuleAppliers;
 use crate::storage::ConfigStore;
 
@@ -474,26 +475,37 @@ impl ConfigService {
             result: "ok".to_owned(),
             error_code: None,
         };
-        match self.validate_and_apply(&snapshot, previous.as_ref()).await {
-            Ok(()) => match self.store.store_with_audit(&snapshot, change.clone()).await {
-                Ok(version) => {
-                    self.notify_change(version);
-                    Ok(Some(version))
-                }
-                Err(err) => {
-                    self.record(
-                        actor,
-                        action,
-                        current_version,
-                        change.before.as_ref(),
-                        change.after.as_ref(),
-                        "error",
-                        Some(err.code()),
-                    )
-                    .await;
-                    Err(err)
-                }
-            },
+        if let Err(err) = self.validate_and_apply(&snapshot, previous.as_ref()).await {
+            self.record(
+                actor,
+                action,
+                current_version,
+                change.before.as_ref(),
+                change.after.as_ref(),
+                "error",
+                Some(err.code()),
+            )
+            .await;
+            return Err(err);
+        }
+        if let Err(err) = self.refresh_filtering_lists(&snapshot).await {
+            self.record(
+                actor,
+                action,
+                current_version,
+                change.before.as_ref(),
+                change.after.as_ref(),
+                "error",
+                Some(err.code()),
+            )
+            .await;
+            return Err(err);
+        }
+        match self.store.store_with_audit(&snapshot, change.clone()).await {
+            Ok(version) => {
+                self.notify_change(version);
+                Ok(Some(version))
+            }
             Err(err) => {
                 self.record(
                     actor,
@@ -566,6 +578,7 @@ impl ConfigService {
         version: Option<i64>,
     ) -> Result<i64, ControlApiError> {
         self.validate_and_apply(snapshot, previous).await?;
+        self.refresh_filtering_lists(snapshot).await?;
         let version = match version {
             Some(version) => self.store.store_at(snapshot, version).await?,
             None => self.store.store(snapshot).await?,
@@ -695,6 +708,19 @@ impl ConfigService {
             .await;
             return Err(err);
         }
+        if let Err(err) = self.refresh_filtering_lists(&snapshot).await {
+            self.record(
+                actor,
+                "config.rollback",
+                current_version,
+                previous.as_ref(),
+                Some(&snapshot),
+                "error",
+                Some(err.code()),
+            )
+            .await;
+            return Err(err);
+        }
 
         let version = self.store.store(&snapshot).await?;
         self.notify_change(version);
@@ -732,6 +758,18 @@ impl ConfigService {
             module.validate(config)?;
         }
         Ok(())
+    }
+
+    /// Refreshes remote filter lists after a versioned apply (GF2). Boot via
+    /// [`Self::apply_stored_current`] skips this so startup stays offline.
+    async fn refresh_filtering_lists(&self, _snapshot: &Value) -> Result<(), ControlApiError> {
+        let Some(engine) = self.modules.filtering_engine.as_ref() else {
+            return Ok(());
+        };
+        let Some(config) = engine.installed_config() else {
+            return Ok(());
+        };
+        refresh_filter_lists_after_config(engine, &config).await
     }
 
     /// Applies the snapshot; on failure replays `previous` up to the failed

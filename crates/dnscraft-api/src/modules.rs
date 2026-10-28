@@ -9,6 +9,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use dnscraft_filtering::FilterEngine;
 use serde_json::Value;
 
 use crate::error::ControlApiError;
@@ -57,4 +58,9 @@ pub struct ModuleAppliers {
     pub listeners: Option<Arc<dyn ApplyListeners>>,
     /// TLS engine adapter.
     pub tls: Option<Arc<dyn ApplyTls>>,
+    /// Filtering engine used to refresh remote lists after a versioned write (GF2).
+    ///
+    /// Boot via [`crate::ConfigService::apply_stored_current`] applies filtering
+    /// offline only; this handle is not used there.
+    pub filtering_engine: Option<Arc<FilterEngine>>,
 }

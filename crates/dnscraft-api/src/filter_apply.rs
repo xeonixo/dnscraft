@@ -14,21 +14,36 @@ use crate::error::ControlApiError;
 const LIST_FETCH_FAILED: &str = "filter_list.fetch_failed";
 const LIST_TOO_LARGE: &str = "filter_list.too_large";
 
+/// Rebuilds the filter snapshot from config and cached list bodies only (no network).
+pub async fn apply_filter_config_offline(
+    engine: &FilterEngine,
+    config: FilterConfig,
+) -> Result<(), ControlApiError> {
+    engine.apply_config(config).await.map_err(filter_error)?;
+    Ok(())
+}
+
+/// Refreshes remote filter lists (and the services catalog when `All`) after a
+/// versioned config write; surfaces list-level fetch/size errors (GF2).
+pub async fn refresh_filter_lists_after_config(
+    engine: &FilterEngine,
+    config: &FilterConfig,
+) -> Result<(), ControlApiError> {
+    let statuses = engine.update_lists(ListSelection::All).await;
+    if let Some(error) = list_level_error(&statuses, config) {
+        return Err(error);
+    }
+    Ok(())
+}
+
 /// Applies a filtering section: rebuild, refresh remote lists, then surface
 /// list-level fetch/size errors promised by `SPEC.md`.
 pub async fn apply_filter_config(
     engine: &FilterEngine,
     config: FilterConfig,
 ) -> Result<(), ControlApiError> {
-    engine
-        .apply_config(config.clone())
-        .await
-        .map_err(filter_error)?;
-    let statuses = engine.update_lists(ListSelection::All).await;
-    if let Some(error) = list_level_error(&statuses, &config) {
-        return Err(error);
-    }
-    Ok(())
+    apply_filter_config_offline(engine, config.clone()).await?;
+    refresh_filter_lists_after_config(engine, &config).await
 }
 
 /// Maps a [`FilterError`] to a forwarded module error.

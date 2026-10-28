@@ -2,6 +2,12 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — boot: apply stored config offline (no catalog fetch)
+
+- **Fix:** `FilteringApplier` / `apply_stored_current` rebuild filtering from cache only; versioned writes (`replace`, rollback, `mutate_audited`, cluster sync) call `refresh_filter_lists_after_config` via `ModuleAppliers::filtering_engine` (GF2 unchanged).
+- **Tests:** `apply_stored_current_does_not_fetch_remote_catalog` (`apply_stored_offline.rs`); smoke `available: false` unchanged.
+- **Gates:** `cargo test -p dnscraft --locked`; `cargo test -p dnscraft-api --test filter_apply_errors --test config_apply --test apply_stored_offline --locked`; clippy touched crates.
+
 ## 2026-10-28 — cluster: sub-node status applied_version vs ack
 
 - **Fix:** `SyncedConfigApplier` updates `ClusterStatusHandle` immediately after `apply_synced_config`, before `ClusterClient::apply_push` posts the HTTP config ack (clients could already reflect the snapshot while status still showed the old version).
