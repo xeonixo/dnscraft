@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 
 use dnscraft_filtering::SetId;
 use dnscraft_policy::{
-    ClientFlags, ClientId, DnsProtocol, ListenerId, NodeId, PolicyConfig, PolicySnapshot,
-    ProfileConfig, ProfileId, RequestContext, SafeSearchConfig, SelectionCause, ViewConfig, ViewId,
+    ClientFlags, ClientId, ClientIdEntry, ConfigReason, DnsProtocol, ListenerId, NodeId,
+    PolicyConfig, PolicyError, PolicySnapshot, ProfileConfig, ProfileId, RequestContext,
+    SafeSearchConfig, SelectionCause, ViewConfig, ViewId,
 };
 use dnscraft_proto::{Class, Name, RecordType};
 use dnscraft_resolver::Query;
@@ -82,7 +83,7 @@ fn ctx_on(source: IpAddr, node: Option<&str>, client_id: Option<&str>) -> Reques
 /// LAN /24 + /32 guest host, kids /28, IPv6 /48 + /64, plus default.
 fn table_snapshot() -> PolicySnapshot {
     let cfg = PolicyConfig {
-        client_ids: vec![ClientId::new("iphone-k7q2x9").unwrap()],
+        client_ids: vec![ClientId::new("iphone-k7q2x9").unwrap().into()],
         records: Vec::new(),
         default_rebind: true,
         ptr_prefixes: Vec::new(),
@@ -346,4 +347,125 @@ fn select_p50_under_1us_with_100_views() {
     );
     let sel = snap.select(&req);
     assert_eq!(sel.view_id.as_str(), "v42");
+}
+
+/// Snapshot with one lan /24 (node-1 only view), a pinned "unterwegs" view
+/// (no subnets, profile "kids"), a node-2-only pinned view, and the default.
+fn pinned_snapshot() -> PolicySnapshot {
+    let mut client_ids: Vec<ClientIdEntry> = serde_json::from_value(serde_json::json!([
+        { "id": "iphone-k7q2x9", "view": "unterwegs" },
+        { "id": "ipad-m3p8", "view": "node2-only" },
+        { "id": "plain-phone" },
+        { "id": "to-default", "view": "default" },
+    ]))
+    .unwrap();
+    client_ids.push(ClientIdEntry::Plain(ClientId::new("unpinned").unwrap()));
+    let cfg = PolicyConfig {
+        client_ids,
+        records: Vec::new(),
+        default_rebind: true,
+        ptr_prefixes: Vec::new(),
+        local_nxdomain_suffixes: Vec::new(),
+        rebind_check_forward_zones: Vec::new(),
+        views: vec![
+            view(
+                "lan",
+                false,
+                vec![net4(192, 0, 2, 0, 24)],
+                vec![],
+                "default",
+            ),
+            view("unterwegs", false, vec![], vec![], "kids"),
+            view("node2-only", false, vec![], vec!["node-2"], "kids"),
+            view("default", true, vec![], vec![], "default"),
+        ],
+        profiles: vec![profile("default"), profile("kids")],
+    };
+    PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap()
+}
+
+const UNMATCHED: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 1);
+
+#[test]
+fn pin_never_beats_a_matching_subnet() {
+    let snap = pinned_snapshot();
+    let sel = snap.select(&ctx(
+        IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+        Some("iphone-k7q2x9"),
+    ));
+    assert_eq!(sel.view_id.as_str(), "lan");
+    assert!(matches!(sel.matched_by, SelectionCause::Subnet { .. }));
+}
+
+#[test]
+fn pin_replaces_default_for_unmatched_ip() {
+    let snap = pinned_snapshot();
+    let sel = snap.select(&ctx(IpAddr::V4(UNMATCHED), Some("iphone-k7q2x9")));
+    assert_eq!(sel.view_id.as_str(), "unterwegs");
+    assert_eq!(sel.profile_id.as_str(), "kids");
+    assert_eq!(sel.matched_by, SelectionCause::ClientId);
+}
+
+#[test]
+fn unpinned_or_unknown_or_missing_client_id_gets_default() {
+    let snap = pinned_snapshot();
+    for id in [Some("plain-phone"), Some("unpinned"), Some("ghost"), None] {
+        let sel = snap.select(&ctx(IpAddr::V4(UNMATCHED), id));
+        assert_eq!(sel.view_id.as_str(), "default", "{id:?}");
+        assert_eq!(sel.matched_by, SelectionCause::Default, "{id:?}");
+    }
+}
+
+#[test]
+fn pin_to_default_view_is_a_no_op_on_the_view() {
+    let snap = pinned_snapshot();
+    let sel = snap.select(&ctx(IpAddr::V4(UNMATCHED), Some("to-default")));
+    assert_eq!(sel.view_id.as_str(), "default");
+}
+
+#[test]
+fn pin_to_view_not_valid_on_node_falls_back_to_default() {
+    let snap = pinned_snapshot();
+    let source = IpAddr::V4(UNMATCHED);
+    let on_node_1 = snap.select(&ctx_on(source, Some("node-1"), Some("ipad-m3p8")));
+    assert_eq!(on_node_1.view_id.as_str(), "default");
+    assert_eq!(on_node_1.matched_by, SelectionCause::Default);
+    let on_node_2 = snap.select(&ctx_on(source, Some("node-2"), Some("ipad-m3p8")));
+    assert_eq!(on_node_2.view_id.as_str(), "node2-only");
+    assert_eq!(on_node_2.matched_by, SelectionCause::ClientId);
+    // No node id: a node-restricted pin is not valid either.
+    let no_node = snap.select(&ctx_on(source, None, Some("ipad-m3p8")));
+    assert_eq!(no_node.view_id.as_str(), "default");
+}
+
+#[test]
+fn unknown_pinned_view_is_rejected_at_build() {
+    let cfg = PolicyConfig {
+        client_ids: vec![
+            serde_json::from_value(serde_json::json!({ "id": "iphone-k7q2x9", "view": "gone" }))
+                .unwrap(),
+        ],
+        records: Vec::new(),
+        default_rebind: true,
+        ptr_prefixes: Vec::new(),
+        local_nxdomain_suffixes: Vec::new(),
+        rebind_check_forward_zones: Vec::new(),
+        views: vec![view("default", true, vec![], vec![], "default")],
+        profiles: vec![profile("default")],
+    };
+    let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
+    match err {
+        PolicyError::InvalidConfig {
+            reason:
+                ConfigReason::InvalidClientMeta {
+                    id,
+                    field,
+                    reason: _,
+                },
+        } => {
+            assert_eq!(&*id, "iphone-k7q2x9");
+            assert_eq!(field, "view");
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
 }

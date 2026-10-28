@@ -13,7 +13,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
-use dnscraft_filtering::ServiceCatalog;
+use dnscraft_filtering::{ListStatus, ServiceCatalog};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -25,6 +25,7 @@ use crate::api::config_routes::{
 use crate::api::response::{success, unix_rfc3339};
 use crate::config_apply::{list_source_path_is_safe, list_source_url_is_safe};
 use crate::error::ControlApiError;
+use crate::mcp_backend::rfc3339;
 use crate::server::AppState;
 
 // ---------------------------------------------------------------------------
@@ -258,9 +259,33 @@ pub(crate) async fn list_filter_lists(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     let snapshot = stored_snapshot(service(&state)?).await?;
-    Ok(success(json!({
-        "filter_lists": array(&snapshot, "filtering", "lists"),
-    })))
+    let mut lists = array(&snapshot, "filtering", "lists");
+    if let Some(engine) = state.filter_engine() {
+        merge_list_status(&mut lists, &engine.list_status());
+    }
+    Ok(success(json!({ "filter_lists": lists })))
+}
+
+/// Adds a `status` object to each stored list that has engine status for its
+/// id. Lists without status (disabled, never fetched) are left unchanged.
+fn merge_list_status(lists: &mut [Value], statuses: &[ListStatus]) {
+    for list in lists.iter_mut() {
+        let Some(id) = list["id"].as_str() else {
+            continue;
+        };
+        let Some(status) = statuses.iter().find(|s| s.id.as_str() == id) else {
+            continue;
+        };
+        list["status"] = json!({
+            "rules_parsed": status.rules_parsed,
+            "rules_skipped": status.rules_skipped,
+            "unique_contribution": status.unique_contribution,
+            "last_success": status.last_success.map(rfc3339),
+            "last_attempt": status.last_attempt.map(rfc3339),
+            "error_code": status.error_code,
+            "http_status": status.http_status,
+        });
+    }
 }
 
 /// `POST|PUT /api/v1/filter-lists` — create or replace a list by id.
@@ -496,4 +521,46 @@ fn unavailable(locale: &str, updated: Option<u64>) -> Value {
 /// A module-coded error (HTTP 400) for the blocked-services routes.
 fn service_error(code: &'static str, reason: &str) -> ControlApiError {
     module_error(code, reason)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use dnscraft_filtering::{ListId, ListStatus, SkipCounts};
+    use serde_json::json;
+
+    use super::merge_list_status;
+
+    #[test]
+    fn merge_adds_status_only_to_lists_with_engine_status() {
+        let mut lists = vec![
+            json!({ "id": "ads", "name": "Ads", "enabled": true }),
+            json!({ "id": "never", "name": "Never", "enabled": false }),
+        ];
+        let statuses = vec![ListStatus {
+            id: ListId::new("ads").unwrap(),
+            last_attempt: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_100)),
+            last_success: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+            error_code: Some("filter_list.fetch_failed".to_owned()),
+            http_status: Some(503),
+            rules_parsed: 41_230,
+            rules_skipped: 7,
+            skipped_by_reason: SkipCounts::default(),
+            unique_contribution: 1_200,
+        }];
+
+        merge_list_status(&mut lists, &statuses);
+
+        assert_eq!(lists[0]["name"], "Ads");
+        assert_eq!(lists[0]["status"]["rules_parsed"], 41_230);
+        assert_eq!(lists[0]["status"]["rules_skipped"], 7);
+        assert_eq!(lists[0]["status"]["unique_contribution"], 1_200);
+        assert_eq!(lists[0]["status"]["last_success"], "2023-11-14T22:13:20Z");
+        assert_eq!(lists[0]["status"]["last_attempt"], "2023-11-14T22:15:00Z");
+        assert_eq!(lists[0]["status"]["error_code"], "filter_list.fetch_failed");
+        assert_eq!(lists[0]["status"]["http_status"], 503);
+        assert!(lists[1].get("status").is_none());
+    }
 }

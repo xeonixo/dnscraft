@@ -327,6 +327,7 @@ fn inspect_public_sni_matrix() {
     let decision = adm.check(
         &dnscraft_listeners::ListenerConfig {
             node_id: None,
+            nodes: Vec::new(),
             id: dnscraft_policy::ListenerId::new("t").unwrap(),
             protocol: dnscraft_listeners::Protocol::Dot,
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 853)),

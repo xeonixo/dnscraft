@@ -332,15 +332,28 @@ async fn listeners_and_tls_crud() {
     let (status, response) = put(
         &h.state,
         "/api/v1/listeners",
-        json!({ "id": "lan", "protocol": "udp53", "address": "127.0.0.1:53" }),
+        json!({
+            "id": "lan",
+            "protocol": "udp53",
+            "address": "127.0.0.1:53",
+            "nodes": ["garage", " garage ", "office", ""]
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{response}");
     assert_eq!(response["data"]["listener"]["exposure"], "local");
+    assert_eq!(
+        response["data"]["listener"]["nodes"],
+        json!(["garage", "office"])
+    );
 
     let (status, response) = get(&h.state, "/api/v1/listeners").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(response["data"]["listeners"][0]["id"], "lan");
+    assert_eq!(
+        response["data"]["listeners"][0]["nodes"],
+        json!(["garage", "office"])
+    );
 
     let (status, response) = put(
         &h.state,

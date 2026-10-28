@@ -33,6 +33,7 @@ fn addr_v4(port: u16) -> SocketAddr {
 fn listener(id_s: &str, protocol: Protocol, address: SocketAddr) -> ListenerConfig {
     ListenerConfig {
         node_id: None,
+        nodes: Vec::new(),
         id: id(id_s),
         protocol,
         address,
@@ -61,6 +62,7 @@ fn config_spec_excerpt_validates() {
         listener("lan-tcp", Protocol::Tcp53, addr_v4(53)),
         ListenerConfig {
             node_id: None,
+            nodes: Vec::new(),
             id: id("lan-dot"),
             protocol: Protocol::Dot,
             address: SocketAddr::from((Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 0x53), 853)),
@@ -70,6 +72,7 @@ fn config_spec_excerpt_validates() {
         },
         ListenerConfig {
             node_id: None,
+            nodes: Vec::new(),
             id: id("public-doh"),
             protocol: Protocol::Doh,
             address: addr_v4(443),
@@ -95,6 +98,7 @@ fn config_rejects_duplicate_id() {
 fn config_rejects_public_plaintext() {
     let mut cfg = valid_cfg(vec![ListenerConfig {
         node_id: None,
+        nodes: Vec::new(),
         id: id("pub-udp"),
         protocol: Protocol::Udp53,
         address: addr_v4(53),
@@ -111,6 +115,7 @@ fn config_rejects_public_plaintext() {
 fn config_rejects_public_when_disabled() {
     let mut cfg = valid_cfg(vec![ListenerConfig {
         node_id: None,
+        nodes: Vec::new(),
         id: id("pub-dot"),
         protocol: Protocol::Dot,
         address: addr_v4(853),
@@ -127,6 +132,7 @@ fn config_rejects_public_when_disabled() {
 fn config_rejects_h3_on_non_doh() {
     let cfg = valid_cfg(vec![ListenerConfig {
         node_id: None,
+        nodes: Vec::new(),
         id: id("dot-h3"),
         protocol: Protocol::Dot,
         address: addr_v4(853),
@@ -154,6 +160,7 @@ fn config_rejects_doh_h3_conflicting_with_udp() {
         listener("udp", Protocol::Udp53, addr_v4(443)),
         ListenerConfig {
             node_id: None,
+            nodes: Vec::new(),
             id: id("doh"),
             protocol: Protocol::Doh,
             address: addr_v4(443),
@@ -230,6 +237,7 @@ fn config_accepts_tls_policy_on_encrypted_listeners() {
         with_policy(
             ListenerConfig {
                 node_id: None,
+                nodes: Vec::new(),
                 id: id("doh"),
                 protocol: Protocol::Doh,
                 address: addr_v4(443),
@@ -330,6 +338,7 @@ fn canned_answer() -> PolicyAnswer {
             profile_id: ProfileId::new("default").unwrap(),
             selection: SelectionCause::Default,
             client_id: None,
+            client_label: None,
             filter_set: SetId::new("default").unwrap(),
             steps: Vec::new(),
             filter: None,

@@ -71,6 +71,7 @@ pub fn decision() -> DecisionRecord {
         profile_id: ProfileId::new("default").unwrap(),
         selection: SelectionCause::Default,
         client_id: None,
+        client_label: None,
         filter_set: SetId::new("default").unwrap(),
         steps: Vec::new(),
         filter: None,
@@ -135,6 +136,7 @@ pub fn encode_a_query_edns(id: u16, name: &str, udp_payload: u16) -> Vec<u8> {
 pub fn listener(protocol: Protocol, address: SocketAddr) -> ListenerConfig {
     ListenerConfig {
         node_id: None,
+        nodes: Vec::new(),
         id: ListenerId::new("test-udp").unwrap(),
         protocol,
         address,
@@ -338,7 +340,10 @@ pub async fn policy_engine_with_client_ids(ids: &[&str]) -> Arc<PolicyEngine> {
         profile: ProfileId::new("default").unwrap(),
     };
     let cfg = PolicyConfig {
-        client_ids: ids.iter().map(|id| ClientId::new(id).unwrap()).collect(),
+        client_ids: ids
+            .iter()
+            .map(|id| ClientId::new(id).unwrap().into())
+            .collect(),
         records: Vec::new(),
         views: vec![view],
         profiles: vec![profile],

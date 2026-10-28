@@ -45,6 +45,7 @@ fn decision() -> DecisionRecord {
         profile_id: ProfileId::new("default").unwrap(),
         selection: SelectionCause::Default,
         client_id: None,
+        client_label: None,
         filter_set: SetId::new("default").unwrap(),
         steps: Vec::new(),
         filter: None,

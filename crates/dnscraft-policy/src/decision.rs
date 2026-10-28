@@ -1,5 +1,7 @@
 //! Decision record returned with every policy answer.
 
+use std::sync::Arc;
+
 use dnscraft_filtering::{BlockMode, Reason};
 use dnscraft_proto::Rcode;
 use dnscraft_resolver::{AnswerSource, DnssecStatus, ForwardZoneId};
@@ -165,6 +167,9 @@ pub struct DecisionRecord {
     pub selection: SelectionCause,
     /// Client ID from the request, if any.
     pub client_id: Option<ClientId>,
+    /// Label of the registered Client ID, when it has one. The query log shows it
+    /// when no client-directory entry matches the source IP.
+    pub client_label: Option<Arc<str>>,
     /// Effective filter set for this query (profile default or active schedule).
     pub filter_set: dnscraft_filtering::SetId,
     /// Ordered pipeline breadcrumbs.

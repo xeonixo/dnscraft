@@ -79,6 +79,22 @@ pub enum ConfigReason {
         /// The duplicated Client ID.
         id: Arc<str>,
     },
+    /// A Client-ID label or device reference is malformed.
+    #[error("client id {id}: {field} {reason}")]
+    InvalidClientMeta {
+        /// The Client ID the field belongs to.
+        id: Arc<str>,
+        /// `label` or `device`.
+        field: &'static str,
+        /// Why the value was rejected.
+        reason: &'static str,
+    },
+    /// Two Client IDs share a label (compared case-insensitively).
+    #[error("client label {label} is used more than once")]
+    DuplicateClientLabel {
+        /// The duplicated label (trimmed).
+        label: Arc<str>,
+    },
     /// The default view is restricted to some nodes; it must exist on every node.
     #[error("the default view must not restrict nodes")]
     DefaultViewNodes,

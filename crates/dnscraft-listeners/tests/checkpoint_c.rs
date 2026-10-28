@@ -123,7 +123,7 @@ async fn policy_engine(client_ids: &[&str]) -> (Hierarchy, Arc<PolicyEngine>) {
     let cfg = PolicyConfig {
         client_ids: client_ids
             .iter()
-            .map(|id| ClientId::new(id).unwrap())
+            .map(|id| ClientId::new(id).unwrap().into())
             .collect(),
         records: vec![ViewRecordConfig {
             name: Name::from_ascii("lan.example.test.").unwrap(),
@@ -429,6 +429,7 @@ impl EncryptedSet {
         joins.push(tokio::spawn(serve_dot(DotServeParams {
             listener: ListenerConfig {
                 node_id: None,
+                nodes: Vec::new(),
                 id: ListenerId::new("c-dot").unwrap(),
                 protocol: Protocol::Dot,
                 address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -458,6 +459,7 @@ impl EncryptedSet {
         joins.push(tokio::spawn(serve_doh(DohServeParams {
             listener: ListenerConfig {
                 node_id: None,
+                nodes: Vec::new(),
                 id: ListenerId::new("c-doh").unwrap(),
                 protocol: Protocol::Doh,
                 address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -488,6 +490,7 @@ impl EncryptedSet {
         joins.push(tokio::spawn(serve_doq(DoqServeParams {
             listener: ListenerConfig {
                 node_id: None,
+                nodes: Vec::new(),
                 id: ListenerId::new("c-doq").unwrap(),
                 protocol: Protocol::Doq,
                 address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -557,6 +560,7 @@ async fn checkpoint_c_same_question_all_transports() {
     let udp_join = tokio::spawn(serve_udp(UdpServeParams {
         listener: ListenerConfig {
             node_id: None,
+            nodes: Vec::new(),
             id: ListenerId::new("c-udp").unwrap(),
             protocol: Protocol::Udp53,
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -581,6 +585,7 @@ async fn checkpoint_c_same_question_all_transports() {
     let tcp_join = tokio::spawn(serve_tcp(TcpServeParams {
         listener: ListenerConfig {
             node_id: None,
+            nodes: Vec::new(),
             id: ListenerId::new("c-tcp").unwrap(),
             protocol: Protocol::Tcp53,
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),

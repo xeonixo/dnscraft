@@ -16,6 +16,7 @@
 //! | [`ClientsError::HttpBody`] | `clients.http.body` |
 //! | [`ClientsError::SyncPartial`] | `clients.sync.partial` |
 //! | [`ClientsError::SyncBackoff`] | `clients.sync.backoff` |
+//! | [`ClientsError::SyncNotOwner`] | `clients.sync.not_owner` |
 //! | [`ClientsError::TooMany`] | `clients.too_many` |
 //! | [`ClientsError::IpConflict`] | `clients.ip.conflict` |
 //! | [`ClientsError::NameCollision`] | `clients.name.collision` |
@@ -80,6 +81,12 @@ pub enum ClientsError {
         /// Detail for logs.
         message: String,
     },
+    /// This node is bound to a UniFi profile but is not its `sync_owner`.
+    #[error("sync not owner: {message}")]
+    SyncNotOwner {
+        /// Detail for logs.
+        message: String,
+    },
     /// Hard client / address cap exceeded.
     #[error("too many clients: {message}")]
     TooMany {
@@ -115,6 +122,7 @@ impl ClientsError {
             Self::HttpBody { .. } => "clients.http.body",
             Self::SyncPartial { .. } => "clients.sync.partial",
             Self::SyncBackoff { .. } => "clients.sync.backoff",
+            Self::SyncNotOwner { .. } => "clients.sync.not_owner",
             Self::TooMany { .. } => "clients.too_many",
             Self::IpConflict { .. } => "clients.ip.conflict",
             Self::NameCollision { .. } => "clients.name.collision",
@@ -161,6 +169,9 @@ mod tests {
             ClientsError::SyncBackoff {
                 message: "x".into(),
             },
+            ClientsError::SyncNotOwner {
+                message: "x".into(),
+            },
             ClientsError::TooMany {
                 message: "x".into(),
             },
@@ -184,6 +195,6 @@ mod tests {
             }
             assert!(!err.to_string().is_empty());
         }
-        assert_eq!(seen.len(), 12);
+        assert_eq!(seen.len(), 13);
     }
 }

@@ -88,13 +88,26 @@ the snapshot. `notifications` is the webhook section described below.
 | Method | Path | Summary |
 |---|---|---|
 | GET | `/api/v1/policy/views` | List views. |
-| GET / PUT / POST / DELETE | `/api/v1/policy/views/{id}` | Read / create-or-replace / delete one view. A view carries `subnets`, `nodes` (empty = every node; the default view must be empty) and `profile`. |
+| GET / PUT / POST / DELETE | `/api/v1/policy/views/{id}` | Read / create-or-replace / delete one view. A view carries `subnets`, `nodes` (empty = every node; the default view must be empty) and `profile`. Deleting a view that a Client ID is pinned to: `policy.config.invalid` with `params` `{ "reason": "view_in_use", "view": "<id>", "client_ids": ["…"] }`; clear the pins first. |
 | GET | `/api/v1/policy/records` | Local records: one global name space. Each entry has `name`, `type` (A, AAAA, CNAME, TXT, SRV, MX, PTR), `ttl`, `rdata` and per-view `overrides` (presentation text, e.g. `192.0.2.10`, `10 mx.example.com.`). |
 | PUT / POST | `/api/v1/policy/records` | Create or replace the record `{ "name", "type", "ttl"?, "rdata", "overrides"? }`. One entry per name and type through this API; `policy.config.invalid` on bad type or value. |
 | DELETE | `/api/v1/policy/records` | Remove the record with body `{ "name", "type" }`. `control_api.not_found` if absent. |
-| GET | `/api/v1/policy/client-ids` | DoH/DoT Client-ID registry (`client_ids`). Admission only; never a selection key. |
-| POST | `/api/v1/policy/client-ids` | Register `{ "id" }` (`[a-z0-9-]{1,63}`). Duplicates are `policy.config.invalid`. |
+| GET | `/api/v1/policy/client-ids` | DoH/DoT Client-ID registry. Returns `{ "client_ids": [ { "id", "label", "device", "view" } ] }` in stored order; bare-string entries show `label`, `device` and `view` as `null`. Admission only; a `view` pin is the only way a Client ID selects a view (see below). |
+| POST | `/api/v1/policy/client-ids` | Register `{ "id", "label"?, "device"?, "view"? }` (`id` matches `[a-z0-9-]{1,63}`; `view` is an existing view id). Returns `{ "version", "client_id": "<id>" }`. Duplicate id: `policy.config.invalid`. Duplicate or malformed label/device: `policy.config.invalid` with `params.field` set to `label` or `device`. Unknown view: `policy.config.invalid` with `params.field = "view"`. |
+| PUT | `/api/v1/policy/client-ids/{id}` | Update `{ "label"?, "device"?, "view"? }`: absent fields are unchanged, `null` clears, blank after trimming clears. `view` must name an existing view (`params.field = "view"` otherwise). The id never changes. Returns `{ "version", "client_id": { "id", "label", "device", "view" } }`. Unknown id: `control_api.not_found`. Unknown keys (including `id`): `policy.config.invalid`. |
 | DELETE | `/api/v1/policy/client-ids/{id}` | Revoke a Client ID. `control_api.not_found` if absent. |
+
+Client-ID view pin: `view` is the Netzbereich a Client ID is pinned to. The pin
+applies only when the source IP matches no subnet (a subnet always wins) and the
+view is valid on the request's node; otherwise the default view applies. Stored as
+`"view": "<view id>"` in the entry object.
+
+Client-ID rules: `label` is trimmed, 1 to 64 characters, no control characters,
+unique case-insensitively among Client IDs (`policy.config.invalid`,
+`params.field = "label"`). `device` is a free-text reference to a client-directory
+entry, trimmed, at most 128 characters, no control characters. A blank label or
+device is stored as absent. An entry without label, device or view is stored as the bare
+string `"<id>"`, so snapshots written before labels existed stay unchanged.
 | GET / PUT / POST / DELETE | `/api/v1/policy/profiles/{id}` | Profile CRUD. `policy.config.unknown_filter_set` on bad references. |
 | GET / PUT / POST / DELETE | `/api/v1/policy/pause` | Global/per-profile pause state (singleton). |
 
@@ -105,20 +118,22 @@ the snapshot. `notifications` is the webhook section described below.
 | GET | `/api/v1/clients/manual` | Manual IP/CIDR/domain entries. |
 | POST / PUT / DELETE | `/api/v1/clients/manual` | Add / create-or-replace / delete (body `{ "name": … }`) a manual entry. |
 | GET | `/api/v1/clients` | Manual entries + the synced directory (`id`, `name`, `dns_label`, `local_domain`, `source`, `ips`, `macs`, `vlan`, `online`, `last_seen`). The directory is empty until the binary wires a `ClientDirectory` adapter. |
-| POST | `/api/v1/clients/sync` | Trigger a UniFi sync; returns `generation`, `rebuilt`, `client_count`, `ip_conflicts`. `clients.sync.not_configured` without an adapter. |
+| POST | `/api/v1/clients/sync` | Trigger a UniFi sync on the profile `sync_owner` for this node; returns `generation`, `rebuilt`, `client_count`, `ip_conflicts`. `clients.sync.not_configured` without an adapter; `clients.sync.not_owner` when this node is bound but not the owner. |
+| GET | `/api/v1/clients/unifi` | UniFi profiles, bindings, and per-profile `has_api_key` (never the key). |
+| PUT | `/api/v1/clients/unifi-profiles/{id}/api-key` | Write-only API key body `{ "api_key": "…" \| null }` (omit field = keep, `null` = clear). |
 
 ### Filtering (admin)
 
 | Method | Path | Summary |
 |---|---|---|
 | GET / POST / PUT / DELETE | `/api/v1/filter-sets` | Filter-set CRUD (`id`, `name`, `lists`, `custom_rules`, `services`, `block_mode`, `mcp_rules`). Pauses are runtime state, not a field here. |
-| GET / POST / PUT / DELETE | `/api/v1/filter-lists` | Filter-list CRUD (URL list sources). Local `file` sources are path-traversal-guarded (`filtering.list_source_path_not_safe`). |
+| GET / POST / PUT / DELETE | `/api/v1/filter-lists` | Filter-list CRUD (URL list sources). Local `file` sources are path-traversal-guarded (`filtering.list_source_path_not_safe`). `GET` adds a `status` object per list when the filter engine is attached and has status for that id: `rules_parsed`, `rules_skipped`, `unique_contribution`, `last_success`, `last_attempt` (RFC 3339 or null), `error_code`, `http_status`. Lists without status (disabled, never fetched) have no `status` key. |
 
 ### Listeners (admin)
 
 | Method | Path | Summary |
 |---|---|---|
-| GET / POST / PUT / DELETE | `/api/v1/listeners` | Listener CRUD (`id`, `protocol`, `address`, `exposure`, `h3`). Forwards `listeners.config.*`. |
+| GET / POST / PUT / DELETE | `/api/v1/listeners` | Listener CRUD (`id`, `protocol`, `address`, `exposure`, `h3`, optional `nodes[]`). Empty `nodes` = every cluster node. Forwards `listeners.config.*`. |
 
 ### TLS (admin)
 
@@ -139,6 +154,16 @@ Query-log query parameters: `from`, `to`, `client_id`, `client_name_substr`,
 `domain`, `domain_substr`, `protocol`, `view_id`, `profile_id`, `status`,
 `only_blocked`, `only_with_clients`, `order_by`, `order`, `limit`, `offset`.
 Malformed values → `control_api.query_log.invalid`.
+
+Record `client` object (`null` when no client applies): `{ "id", "display_name",
+"source", "macs", "vlan_id", "vlan_name", "local_domain" }`, always this field set.
+`source` is `"manual"` or `"unifi"` for a directory client, or `"client_id"` when the
+name comes from a registered Client-ID label: `id` is the Client ID, `macs` is `[]`
+and `vlan_id`, `vlan_name`, `local_domain` are `null`. The stored `client_name`
+column (used by `client_name_substr` and `order_by=client`) holds the same display
+name. Name precedence: directory client matched by source IP → label of the
+registered Client ID on the request → none. `POST /api/v1/policy/test-query` returns
+the label in `decision.client` (the dry run has no directory lookup).
 
 ### Stats (viewer/admin)
 

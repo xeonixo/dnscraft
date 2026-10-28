@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use crate::Secret;
 use crate::cache::{self, CachePayload};
 use crate::clock::{self, Clock};
-use crate::config::{ClientsConfig, UnifiConfig};
+use crate::config::{ClientsConfig, LOCAL_NODE_ID, UnifiConfig};
 use crate::error::ClientsError;
 use crate::gateway::GatewayClient;
 use crate::lookup::ClientLookup;
@@ -93,6 +93,8 @@ impl std::fmt::Debug for ClientEngine {
 struct Inner {
     clock: Arc<dyn Clock>,
     data_dir: PathBuf,
+    /// Cluster / local node id used for UniFi profile binding and sync_owner.
+    node_id: String,
     config: RwLock<ClientsConfig>,
     api_key: RwLock<Option<Secret>>,
     lookup: RwLock<Arc<ClientLookup>>,
@@ -146,23 +148,49 @@ impl ClientEngine {
     /// Like [`Self::new`], but uses `api_key` when provided (tests inject a key
     /// without touching process environment).
     pub fn new_with_secret(
-        mut config: ClientsConfig,
+        config: ClientsConfig,
         data_dir: PathBuf,
         clock: Arc<dyn Clock>,
         api_key: Option<Secret>,
     ) -> Result<Arc<Self>, ClientsError> {
-        let key = if config.unifi.enabled {
-            let k = match api_key {
-                Some(k) => k,
-                None => crate::read_secret(crate::UNIFI_API_KEY_ENV)?,
-            };
+        Self::new_with_secret_and_node(config, data_dir, clock, api_key, LOCAL_NODE_ID)
+    }
+
+    /// Like [`Self::new_with_secret`], binding UniFi profiles to `node_id`.
+    pub fn new_with_secret_and_node(
+        mut config: ClientsConfig,
+        data_dir: PathBuf,
+        clock: Arc<dyn Clock>,
+        api_key: Option<Secret>,
+        node_id: impl Into<String>,
+    ) -> Result<Arc<Self>, ClientsError> {
+        let node_id = node_id.into();
+        config.migrate_legacy_unifi();
+        let needs_key = config.unifi.enabled
+            || config
+                .unifi_profiles
+                .iter()
+                .any(|p| p.connection.enabled);
+        let key = if needs_key {
+            match api_key {
+                Some(k) => Some(k),
+                None => Some(crate::read_secret(crate::UNIFI_API_KEY_ENV)?),
+            }
+        } else {
+            api_key
+        };
+        if let Some(ref k) = key {
             let for_validate = k.clone();
-            config.validate_with_secret(move |_| Ok(for_validate))?;
-            Some(k)
+            config.validate_with_secret(move |_| Ok(for_validate.clone()))?;
         } else {
             config.validate_with_secret(|_| Ok(Secret::new("unused")))?;
-            None
-        };
+        }
+        config.resolve_for_node(&node_id);
+        if config.unifi.enabled && key.is_none() {
+            return Err(ClientsError::SecretMissing {
+                name: crate::UNIFI_API_KEY_ENV.to_owned(),
+            });
+        }
 
         let now = clock.now();
         let cached = cache::load(&data_dir).unwrap_or_else(|e| {
@@ -271,6 +299,7 @@ impl ClientEngine {
         let inner = Arc::new(Inner {
             clock: Arc::clone(&clock),
             data_dir,
+            node_id,
             config: RwLock::new(config),
             api_key: RwLock::new(key),
             lookup: RwLock::new(Arc::new(lookup)),
@@ -376,11 +405,18 @@ impl ClientEngine {
     pub async fn apply_config_with_secret(
         &self,
         mut config: ClientsConfig,
-        lookup: impl FnOnce(&str) -> Result<Secret, ClientsError>,
+        lookup: impl FnMut(&str) -> Result<Secret, ClientsError>,
     ) -> Result<(), ClientsError> {
         let _guard = self.inner.sync_lock.lock().await;
-
-        let fresh_key = if config.unifi.enabled {
+        config.migrate_legacy_unifi();
+        let node_id = self.inner.node_id.clone();
+        let needs_key = config.unifi.enabled
+            || config
+                .unifi_profiles
+                .iter()
+                .any(|p| p.connection.enabled);
+        let mut lookup = lookup;
+        let fresh_key = if needs_key {
             let stored = self
                 .inner
                 .api_key
@@ -392,10 +428,12 @@ impl ClientEngine {
                 Err(e) => stored.ok_or(e)?,
             };
             let for_validate = key.clone();
-            config.validate_with_secret(move |_| Ok(for_validate))?;
+            config.validate_with_secret(move |_| Ok(for_validate.clone()))?;
+            config.resolve_for_node(&node_id);
             Some(key)
         } else {
             config.validate_with_secret(|_| Ok(Secret::new("unused")))?;
+            config.resolve_for_node(&node_id);
             None
         };
 
@@ -479,8 +517,173 @@ impl ClientEngine {
     ///
     /// Does not kick the poll loop (that would race a second sync). The
     /// background timer continues on its own schedule.
+    ///
+    /// Returns [`ClientsError::SyncNotOwner`] when this node is bound to a
+    /// UniFi profile but is not its `sync_owner`.
     pub async fn sync_now(&self) -> Result<SyncReport, ClientsError> {
+        let cfg = self
+            .inner
+            .config
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let bound = cfg.bound_profile(&self.inner.node_id);
+        if bound.is_some() && !cfg.is_sync_owner(&self.inner.node_id) {
+            return Err(ClientsError::SyncNotOwner {
+                message: format!(
+                    "node `{}` is not sync_owner for its UniFi profile",
+                    self.inner.node_id
+                ),
+            });
+        }
         self.run_sync().await
+    }
+
+    /// Installs a UniFi directory snapshot pushed from the sync_owner (non-owners).
+    ///
+    /// Replaces cached UniFi observations/networks and rebuilds the lookup;
+    /// manuals come from the current config.
+    pub async fn apply_unifi_directory(
+        &self,
+        observations: Vec<UnifiObservation>,
+        networks: Vec<NetworkInfo>,
+    ) -> Result<SyncReport, ClientsError> {
+        let _guard = self.inner.sync_lock.lock().await;
+        let cfg = self
+            .inner
+            .config
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let now = self.inner.clock.now();
+        let prev = self
+            .inner
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let built = merge::build(&cfg.manual, &observations, &networks, &prev, &cfg, now)?;
+        self.record_merge_stats(&built.stats);
+        let rebuilt = self.install_snapshot(
+            built.lookup,
+            built.state,
+            &observations,
+            &networks,
+            true,
+        );
+        let generation = self
+            .inner
+            .status
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .generation;
+        {
+            let mut st = self
+                .inner
+                .status
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            st.last_success = Some(now);
+            st.stale = false;
+            st.last_error = None;
+        }
+        self.persist_cache();
+        Ok(SyncReport {
+            generation,
+            rebuilt,
+            client_count: self
+                .inner
+                .lookup
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            classic_error: None,
+            ip_conflicts: built.stats.ip_conflicts,
+            superseded: false,
+        })
+    }
+
+    /// This engine's cluster / local node id.
+    pub fn node_id(&self) -> &str {
+        &self.inner.node_id
+    }
+
+    /// Installs or clears the in-memory UniFi API key (from kv / `SecretPush`).
+    pub fn set_api_key(&self, key: Option<Secret>) {
+        *self
+            .inner
+            .api_key
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = key;
+    }
+
+    /// Bound UniFi profile id for this node, when configured.
+    pub fn bound_profile_id(&self) -> Option<String> {
+        let cfg = self
+            .inner
+            .config
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cfg.unifi_bindings.get(&self.inner.node_id).cloned()
+    }
+
+    /// True when this node is the sync_owner of its bound UniFi profile.
+    pub fn is_sync_owner(&self) -> bool {
+        let cfg = self
+            .inner
+            .config
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cfg.is_sync_owner(&self.inner.node_id)
+    }
+
+    /// Cached UniFi observations/networks for directory uplink / push.
+    pub fn export_unifi_directory(&self) -> (Vec<UnifiObservation>, Vec<NetworkInfo>, u64) {
+        let obs = self
+            .inner
+            .cached_obs
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let nets = self
+            .inner
+            .cached_nets
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let generation = self
+            .inner
+            .status
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .generation;
+        (obs, nets, generation)
+    }
+
+    /// Applies a cluster directory push when this node is bound to `profile_id`
+    /// and is not the sync_owner (owners already have local data).
+    pub async fn apply_directory_push(
+        &self,
+        profile_id: &str,
+        observations: Vec<UnifiObservation>,
+        networks: Vec<NetworkInfo>,
+    ) -> Result<Option<SyncReport>, ClientsError> {
+        let cfg = self
+            .inner
+            .config
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let bound = cfg.unifi_bindings.get(&self.inner.node_id);
+        if bound.map(String::as_str) != Some(profile_id) {
+            return Ok(None);
+        }
+        if cfg.is_sync_owner(&self.inner.node_id) {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.apply_unifi_directory(observations, networks).await?,
+        ))
     }
 
     async fn run_sync(&self) -> Result<SyncReport, ClientsError> {

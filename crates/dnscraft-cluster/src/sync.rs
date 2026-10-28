@@ -219,11 +219,50 @@ pub struct StreamError {
     pub params: Option<Value>,
 }
 
+/// Master → sync_owner UniFi API key (`secret_push`).
+///
+/// Never appears in config snapshots or acks. Debug redacts the key.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct SecretPush {
+    /// Cluster protocol version.
+    pub protocol: u32,
+    /// UniFi profile id (`unifi.api_key.{profile_id}`).
+    pub profile_id: String,
+    /// API key plaintext, or `null` to clear.
+    pub api_key: Option<String>,
+}
+
+impl fmt::Debug for SecretPush {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecretPush")
+            .field("protocol", &self.protocol)
+            .field("profile_id", &self.profile_id)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// Master → bound nodes UniFi directory snapshot (`clients_directory_push`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ClientsDirectoryPush {
+    /// Cluster protocol version.
+    pub protocol: u32,
+    /// UniFi profile id this directory belongs to.
+    pub profile_id: String,
+    /// Owner-side generation (informational).
+    pub generation: u64,
+    /// Serialised UniFi observations (cache wire shape).
+    pub observations: Value,
+    /// Serialised network metadata (cache wire shape).
+    pub networks: Value,
+}
+
 /// One NDJSON record exchanged over the cluster stream.
 ///
 /// Serialized as a single JSON object with a `type` tag
 /// (`hello`, `config_push`, `tls_renewed`, `auth_snapshot`, `ack`,
-/// `runtime_command`, `error`) followed by a newline.
+/// `runtime_command`, `secret_push`, `clients_directory_push`, `error`)
+/// followed by a newline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamRecord {
@@ -241,6 +280,10 @@ pub enum StreamRecord {
     Ack(ConfigAck),
     /// Volatile runtime command (never persisted or queued).
     RuntimeCommand(RuntimeCommand),
+    /// UniFi API key for the profile's sync_owner only.
+    SecretPush(SecretPush),
+    /// UniFi directory snapshot for nodes bound to a profile.
+    ClientsDirectoryPush(ClientsDirectoryPush),
     /// Terminal stream error.
     Error {
         /// Error code and optional parameters.
@@ -514,6 +557,13 @@ impl ConfigSync {
         }
     }
 
+    /// Sends one record to a single connected node (best-effort, no retry).
+    pub(crate) fn send_to(&self, node_id: &str, record: StreamRecord) {
+        if let Some(node) = self.lock().nodes.get(node_id) {
+            let _ = node.tx.try_send(record);
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, SyncState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -655,6 +705,35 @@ mod tests {
             assert!(!rendered.contains("do-not-log"));
             assert!(rendered.contains("<opaque>"));
         }
+    }
+
+    #[test]
+    fn secret_push_debug_redacts_api_key_and_round_trips() {
+        let record = StreamRecord::SecretPush(SecretPush {
+            protocol: crate::PROTOCOL_VERSION,
+            profile_id: "home".to_owned(),
+            api_key: Some("super-secret-key".to_owned()),
+        });
+        let rendered = format!("{record:?}");
+        assert!(!rendered.contains("super-secret-key"));
+        assert!(rendered.contains("<redacted>"));
+        let line = serde_json::to_string(&record).unwrap();
+        assert!(line.starts_with(r#"{"type":"secret_push""#));
+        assert_eq!(serde_json::from_str::<StreamRecord>(&line).unwrap(), record);
+
+        let directory = StreamRecord::ClientsDirectoryPush(ClientsDirectoryPush {
+            protocol: crate::PROTOCOL_VERSION,
+            profile_id: "home".to_owned(),
+            generation: 3,
+            observations: json!([]),
+            networks: json!([]),
+        });
+        let line = serde_json::to_string(&directory).unwrap();
+        assert!(line.starts_with(r#"{"type":"clients_directory_push""#));
+        assert_eq!(
+            serde_json::from_str::<StreamRecord>(&line).unwrap(),
+            directory
+        );
     }
 
     #[test]

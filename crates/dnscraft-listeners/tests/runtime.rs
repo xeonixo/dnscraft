@@ -25,6 +25,7 @@ use tokio::sync::Notify;
 fn udp_cfg(id: &str, addr: SocketAddr) -> ListenerConfig {
     ListenerConfig {
         node_id: None,
+        nodes: Vec::new(),
         id: ListenerId::new(id).unwrap(),
         protocol: Protocol::Udp53,
         address: addr,
@@ -37,6 +38,7 @@ fn udp_cfg(id: &str, addr: SocketAddr) -> ListenerConfig {
 fn tcp_cfg(id: &str, addr: SocketAddr) -> ListenerConfig {
     ListenerConfig {
         node_id: None,
+        nodes: Vec::new(),
         id: ListenerId::new(id).unwrap(),
         protocol: Protocol::Tcp53,
         address: addr,
@@ -49,6 +51,7 @@ fn tcp_cfg(id: &str, addr: SocketAddr) -> ListenerConfig {
 fn doh_cfg(id: &str, addr: SocketAddr, h3: bool) -> ListenerConfig {
     ListenerConfig {
         node_id: None,
+        nodes: Vec::new(),
         id: ListenerId::new(id).unwrap(),
         protocol: Protocol::Doh,
         address: addr,
@@ -472,6 +475,7 @@ async fn runtime_full_sink_never_blocks_and_test_query_silent() {
                 profile_id: ProfileId::new("default").unwrap(),
                 selection: SelectionCause::Default,
                 client_id: None,
+                client_label: None,
                 filter_set: SetId::new("default").unwrap(),
                 steps: Vec::new(),
                 filter: None,
@@ -594,6 +598,7 @@ async fn runtime_reload_keeps_bans_across_rate_and_public_changes() {
     let cfg = ListenersConfig {
         listeners: vec![ListenerConfig {
             node_id: None,
+            nodes: Vec::new(),
             id: ListenerId::new("pub-dot").unwrap(),
             protocol: Protocol::Dot,
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),

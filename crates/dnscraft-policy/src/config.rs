@@ -329,7 +329,7 @@ pub struct PolicyConfig {
     /// Client-ID registry: IDs that public listeners admit. A registry, not a
     /// selection key; selection is source-IP only.
     #[serde(default)]
-    pub client_ids: Vec<ClientId>,
+    pub client_ids: Vec<ClientIdEntry>,
     /// Local records: one global name space, with per-view overrides.
     #[serde(default)]
     pub records: Vec<ViewRecordConfig>,
@@ -351,6 +351,102 @@ impl Default for PolicyConfig {
             records: Vec::new(),
         }
     }
+}
+
+/// Maximum length of a Client-ID label, in characters (after trimming).
+pub const MAX_CLIENT_LABEL_CHARS: usize = 64;
+/// Maximum length of a Client-ID device reference, in characters (after trimming).
+pub const MAX_CLIENT_DEVICE_CHARS: usize = 128;
+
+/// One Client-ID registry entry: a bare id (the original form, still valid) or
+/// the object form with an optional label and device reference.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ClientIdEntry {
+    /// `"iphone-k7q2x9"`.
+    Plain(ClientId),
+    /// `{ "id": "iphone-k7q2x9", "label": "iPhone von Anna", "device": "..." }`.
+    Detailed(ClientIdMeta),
+}
+
+/// Object form of a [`ClientIdEntry`]. Unknown keys are rejected.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientIdMeta {
+    /// The registered Client ID.
+    pub id: ClientId,
+    /// Display name shown in the UI and the query log (trimmed, 1..=64 characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Free-text reference to a client-directory entry (trimmed, at most 128 characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    /// Pinned view: selected for this Client ID when no subnet matches the source IP
+    /// (and the view is valid on the request's node). Must name an existing view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<ViewId>,
+}
+
+impl ClientIdEntry {
+    /// The registered Client ID.
+    pub fn id(&self) -> &ClientId {
+        match self {
+            Self::Plain(id) => id,
+            Self::Detailed(meta) => &meta.id,
+        }
+    }
+
+    /// The label, if the entry has one.
+    pub fn label(&self) -> Option<&str> {
+        match self {
+            Self::Plain(_) => None,
+            Self::Detailed(meta) => meta.label.as_deref(),
+        }
+    }
+
+    /// The device reference, if the entry has one.
+    pub fn device(&self) -> Option<&str> {
+        match self {
+            Self::Plain(_) => None,
+            Self::Detailed(meta) => meta.device.as_deref(),
+        }
+    }
+
+    /// The pinned view, if the entry has one.
+    pub fn view(&self) -> Option<&ViewId> {
+        match self {
+            Self::Plain(_) => None,
+            Self::Detailed(meta) => meta.view.as_ref(),
+        }
+    }
+}
+
+impl From<ClientId> for ClientIdEntry {
+    fn from(id: ClientId) -> Self {
+        Self::Plain(id)
+    }
+}
+
+/// Checks a trimmed, non-empty Client-ID label. Returns the reason on failure.
+pub fn check_client_label(label: &str) -> Result<(), &'static str> {
+    if label.chars().count() > MAX_CLIENT_LABEL_CHARS {
+        return Err("is longer than 64 characters");
+    }
+    if label.chars().any(char::is_control) {
+        return Err("contains control characters");
+    }
+    Ok(())
+}
+
+/// Checks a trimmed, non-empty device reference. Returns the reason on failure.
+pub fn check_client_device(device: &str) -> Result<(), &'static str> {
+    if device.chars().count() > MAX_CLIENT_DEVICE_CHARS {
+        return Err("is longer than 128 characters");
+    }
+    if device.chars().any(char::is_control) {
+        return Err("contains control characters");
+    }
+    Ok(())
 }
 
 /// Serde adapter for `SetId` / `ForwardZoneId`: text on the wire, parsed back
@@ -492,7 +588,7 @@ mod tests {
                 nodes: vec![NodeId::new("node-1").unwrap()],
                 profile: ProfileId::new("default").unwrap(),
             }],
-            client_ids: vec![ClientId::new("iphone-k7q2x9").unwrap()],
+            client_ids: vec![ClientId::new("iphone-k7q2x9").unwrap().into()],
             records: vec![
                 ViewRecordConfig {
                     name: Name::from_ascii("nas.lan.example.com").unwrap(),

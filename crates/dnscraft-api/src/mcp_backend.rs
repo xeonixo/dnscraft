@@ -600,6 +600,11 @@ fn selection_cause_json(cause: &dnscraft_policy::SelectionCause) -> Selection {
             prefix: Some(format!("{network}/{prefix_len}")),
             client_id: None,
         },
+        dnscraft_policy::SelectionCause::ClientId => Selection {
+            cause: "client_id".to_owned(),
+            prefix: None,
+            client_id: None,
+        },
         dnscraft_policy::SelectionCause::Default => Selection {
             cause: "default".to_owned(),
             prefix: None,

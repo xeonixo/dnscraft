@@ -29,7 +29,10 @@ mod sync;
 mod tls;
 mod types;
 
-pub use cache::{CACHE_VERSION, CachePayload, MAX_CACHE_BYTES, cache_path};
+pub use cache::{
+    CACHE_VERSION, CachePayload, MAX_CACHE_BYTES, cache_path, networks_from_value,
+    networks_to_value, observations_from_value, observations_to_value,
+};
 pub use classic::{
     CLASSIC_PREFIX, ClassicFetch, fetch as fetch_classic,
     parse_clients_json as parse_classic_clients_json, resolve_site_key as resolve_classic_site_key,
@@ -37,7 +40,8 @@ pub use classic::{
 pub use clock::{Clock, ManualClock, SystemClock, wait_until};
 pub use config::{
     ClientsConfig, DEFAULT_IPV6_ADDRESS_TTL, DEFAULT_LOCAL_DOMAIN, DEFAULT_OFFLINE_RETAIN,
-    DEFAULT_POLL_INTERVAL, LocalDomainMode, MAX_MANUAL_ENTRIES, ManualEntry, TlsMode, UnifiConfig,
+    DEFAULT_POLL_INTERVAL, DEFAULT_UNIFI_PROFILE_ID, LOCAL_NODE_ID, LocalDomainMode,
+    MAX_MANUAL_ENTRIES, ManualEntry, TlsMode, UnifiConfig, UnifiProfile,
 };
 pub use dnscraft_common::secret::Secret;
 pub use engine::{ClientEngine, SyncReport};

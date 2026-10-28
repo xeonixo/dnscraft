@@ -34,6 +34,9 @@ pub(crate) struct ListenerBody {
     exposure: Option<String>,
     #[serde(default)]
     h3: bool,
+    /// Cluster node ids that bind this listener; empty = every node.
+    #[serde(default)]
+    nodes: Vec<String>,
 }
 
 impl ListenerBody {
@@ -78,12 +81,29 @@ impl ListenerBody {
                 "h3 is only valid for protocol doh",
             ));
         }
+        let mut nodes = Vec::new();
+        for node in &self.nodes {
+            let trimmed = node.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if !valid_id(trimmed) {
+                return Err(module_error(
+                    "listeners.config.invalid",
+                    "node id must match [a-z0-9-]{1,64}",
+                ));
+            }
+            if !nodes.iter().any(|n| n == trimmed) {
+                nodes.push(trimmed.to_owned());
+            }
+        }
         Ok(json!({
             "id": self.id,
             "protocol": self.protocol,
             "address": address.to_string(),
             "exposure": exposure,
             "h3": self.h3,
+            "nodes": nodes,
         }))
     }
 }

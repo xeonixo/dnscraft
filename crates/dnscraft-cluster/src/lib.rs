@@ -77,9 +77,9 @@ pub use server::{
 };
 pub use store::{ClusterNode, ClusterStore, MintedJoinToken};
 pub use sync::{
-    AuthSnapshotApplier, AuthSnapshotPush, CertInstaller, ConfigAck, ConfigApplier, ConfigPush,
-    ConfigSync, Hello, NodeLag, StreamError, StreamRecord, TlsRenewed, canonical_snapshot_bytes,
-    snapshot_digest,
+    AuthSnapshotApplier, AuthSnapshotPush, CertInstaller, ClientsDirectoryPush, ConfigAck,
+    ConfigApplier, ConfigPush, ConfigSync, Hello, NodeLag, SecretPush, StreamError, StreamRecord,
+    TlsRenewed, canonical_snapshot_bytes, snapshot_digest,
 };
 
 /// Lowercase hex SHA-256 of `bytes` (used for fingerprints and token hashes).

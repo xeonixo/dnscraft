@@ -25,10 +25,12 @@ This module does **not** resolve, filter, select views (that is `policy`), obtai
 2. `tls::TlsEngine::resolver()` returns the shared `Arc<CertResolver>` (hot reload included);
    `tls::accept_public_sni` + `tls::ClientIdRegistry` decide public DoT/DoQ admission; `SniKind` tells a
    node hostname / apex apart from an unknown Client ID (no ban strike for those).
-3. Registered Client IDs are owned by control-api/policy; their storage is TBD
-   (`SPEC-policy.md` removed the `views[].client_ids` selection key, so this spec's
-   earlier reference is stale — see SPEC-control-api § Open questions). Policy
-   exposes a cheap read-only check for them (small cross-module task L0 in the plan).
+3. Registered Client IDs are owned by control-api/policy; they live in
+   `policy.client_ids` (a string or `{id, label?, device?, view?}`; see `SPEC-policy.md` and
+   `SPEC-control-api.md`). Client IDs are not subnet selection keys; a pinned Client ID
+   (`view`) selects its view only for IPs no subnet matches (SPEC-policy.md, selection
+   order). Policy exposes a cheap
+   read-only check for them (`PolicyClientIds` adapter).
 4. Real client source addresses reach the process (macvlan/ipvlan or host networking, SPEC.md).
 5. Linux is the production platform (amd64, arm64). Other platforms only need to compile.
 
@@ -67,6 +69,9 @@ A **listener** is one `(id, protocol, socket address, exposure)` entry:
   (config error otherwise) and only when the node has public DoH/DoT enabled (SPEC.md: per node, off by
   default).
 - `id`: `policy::ListenerId` (`[a-z0-9-]{1,64}`), unique; passed to policy as `RequestContext.listener_id`.
+- `nodes`: optional list of cluster `node_id`s that bind this listener. Empty / omitted means
+  every node (same pattern as policy views). The cluster snapshot stays uniform; each node
+  filters before bind / apply ([SPEC-cluster.md](SPEC-cluster.md)).
 
 ### Source classification and admission
 
@@ -215,7 +220,7 @@ Every error has a stable `code()` (`listeners.<area>.<reason>`), covered by a un
 
 ```rust
 pub struct ListenersConfig { pub listeners: Vec<ListenerConfig>, pub limits: Limits, pub public: PublicConfig, pub ddr: DdrConfig }
-pub struct ListenerConfig { pub id: ListenerId, pub protocol: Protocol, pub address: SocketAddr, pub exposure: Exposure, pub h3: bool, pub tls_policy: Option<TlsPolicy> }
+pub struct ListenerConfig { pub id: ListenerId, pub protocol: Protocol, pub address: SocketAddr, pub exposure: Exposure, pub h3: bool, pub tls_policy: Option<TlsPolicy>, pub nodes: Vec<NodeId> }
 pub struct TlsPolicy { pub min_version: String, pub ciphersuites: Option<Vec<String>>, pub alpn: Vec<String> }
 pub trait QueryEventSink: Send + Sync { fn try_send(&self, event: QueryEvent) -> bool; }
 pub struct ListenerSet { /* … */ }
@@ -235,6 +240,7 @@ The transport-independent core (`handle_wire(bytes, meta) -> Option<bytes>`) is 
 ```toml
 [[listeners]]
 id = "lan-udp"        ; protocol = "udp53" ; address = "0.0.0.0:53"
+# nodes = ["garage"]  ; optional — bind only on listed cluster nodes
 [[listeners]]
 id = "lan-tcp"        ; protocol = "tcp53" ; address = "0.0.0.0:53"
 [[listeners]]

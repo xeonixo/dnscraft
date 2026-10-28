@@ -335,6 +335,7 @@ async fn ddr_udp_serve_end_to_end() {
     let join = tokio::spawn(serve_udp(UdpServeParams {
         listener: ListenerConfig {
             node_id: None,
+            nodes: Vec::new(),
             id: ListenerId::new("ddr-udp").unwrap(),
             protocol: Protocol::Udp53,
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),

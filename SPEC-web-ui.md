@@ -60,7 +60,7 @@ locale-neutral codes and structured parameters.
 - Screens: login, first-run wizard, dashboard/status, configuration (per-module and
   full-config editor, versions, rollback), query log (filters, pagination, single
   record "why blocked?", NDJSON/CSV export), statistics, clients, filter sets,
-  filter lists, listeners, TLS, MCP rules/allows/pauses, API tokens, audit log, and
+  filter lists, listeners, TLS, rules (text and MCP-managed) with running allows and pauses, API tokens, audit log, and
   settings (theme, locale).
 - i18n through Paraglide JS with `en` and `de` shipped, zero missing keys, no raw
   literals.
@@ -491,7 +491,7 @@ listed in [SPEC-control-api.md](SPEC-control-api.md) § Endpoint table.
 | `/dashboard` | Dashboard / node status | viewer/admin | `GET /api/v1/status`, `GET /api/v1/stats/overview`, `GET /readyz` | Stat-tile row (blocked/allowed with semantic color plus text/icon), grouped module-status list, toolbar refresh; persistent self-signed warning banner |
 | `/config` | Full config editor / import-export | read: viewer; write: admin | `GET /api/v1/config`, `PUT /api/v1/config` | Grouped form sections with explanatory footers; save in the toolbar; diff presented in a sheet; `If-Match` with `config_version`; secrets never returned |
 | `/config/versions` | Config versions and rollback | list: viewer; rollback: admin | `GET /api/v1/config/versions`, `POST /api/v1/config/versions/{version}/rollback` | Inset grouped list; version rows with secondary metadata; rollback in a confirmation sheet |
-| `/config/policy` | **Zonen** (selection scopes), **Namen** (local records with per-zone overrides), **Profile** (behavior), **Test-Abfrage** (decision preview) | read: viewer via config; write: admin | `GET /api/v1/policy/views`, `GET /api/v1/policy/views/{id}`, `PUT/POST /api/v1/policy/views/{id}`, `DELETE /api/v1/policy/views/{id}`, `GET /api/v1/policy/records`, `PUT/POST /api/v1/policy/records`, `GET/POST/PUT/DELETE /api/v1/policy/profiles/{id}`, `GET/POST/PUT/DELETE /api/v1/policy/pause`, `POST /api/v1/policy/test-query` | **Zonen** editor: create/delete zones + their Bereiche (subnet ranges), node validity, profile link — no records here. **Namen** editor: one global name space, each name shows its records with a **default value plus per-zone overrides** (e.g. `nas.lan` resolves differently in Gäste vs VPN); records A/AAAA/CNAME/TXT/SRV/MX/PTR, exact names only, CNAME exclusivity, TTL default 60 s. Selection is source-IP only (longest-prefix → default, DoH/DoT clients included); test-query renders the ordered decision steps without writing the log |
+| `/config/policy` | **Zonen** (selection scopes), **Namen** (local records with per-zone overrides), **Profile** (behavior), **Test-Abfrage** (decision preview) | read: viewer via config; write: admin | `GET /api/v1/policy/views`, `GET /api/v1/policy/views/{id}`, `PUT/POST /api/v1/policy/views/{id}`, `DELETE /api/v1/policy/views/{id}`, `GET /api/v1/policy/records`, `PUT/POST /api/v1/policy/records`, `GET/POST/PUT/DELETE /api/v1/policy/profiles/{id}`, `GET/POST/PUT/DELETE /api/v1/policy/pause`, `POST /api/v1/policy/test-query` | **Netzbereiche** editor (nav and page label; the query log calls a row's selection its «Netzbereich»): create/delete ranges with their IPv4/IPv6 networks (one CIDR per line, validated before save), default flag, profile link; node validity under «Erweitert». Cards show a Standard badge and, for admins, the directory device count inside the ranges. No records here. **Namen** editor: one global name space, each name shows its records with a **default value plus per-zone overrides** (e.g. `nas.lan` resolves differently in Gäste vs VPN); records A/AAAA/CNAME/TXT/SRV/MX/PTR, exact names only, CNAME exclusivity, TTL default 60 s. Selection is source-IP only (longest-prefix → default, DoH/DoT clients included); test-query renders the ordered decision steps without writing the log |
 | `/forward-zones` | Forward zones (conditional forwarding) | read: viewer via config; write: admin | resolver config (`GET/PUT /api/v1/config` forward-zones section) | Inset grouped list; each zone shows domain, upstream server, reverse zone and optional profile allow-list; add/edit in a sheet |
 | `/query-log` | Query log | viewer/admin | `GET /api/v1/query-log`, `GET /api/v1/query-log/export.ndjson`, `GET /api/v1/query-log/export.csv` | Sidebar; search field plus filter sheet; inset grouped table on wide, card list on narrow; domain/client/ID in SF Mono; status as icon + color + text; pagination footer; export in the overflow menu |
 | `/query-log/:id` | Query detail ("why blocked?") | viewer/admin | `GET /api/v1/query-log/{id}` | Grouped detail sections; ordered decision steps; rule and list in SF Mono; toolbar allow action |
@@ -499,16 +499,16 @@ listed in [SPEC-control-api.md](SPEC-control-api.md) § Endpoint table.
 | `/statistics` | Statistics dashboard | viewer/admin | `GET /api/v1/stats/overview`, `GET /api/v1/stats/top_clients`, `GET /api/v1/stats/top_domains`, `GET /api/v1/stats/cache` | Stat-tile row, period segmented control, inset grouped tables, inline SVG sparklines; rolls up to one year |
 | `/statistics/domains/:name` | Domain detail (WX5, proposed) | viewer/admin | `GET /api/v1/stats/domains/{name}`, `GET /api/v1/query-log/{id}` (last decision link) | Stat-tile row with first/last seen (labelled as retention-limited), inset grouped blocked/allowed split and top clients, daily sparkline; reached from the palette, top-domains table and query-log domain cell; empty state when not seen in retention |
 | `/clients` | Clients / device directory | list: viewer/admin; edit: admin | `GET /api/v1/clients`, `GET/POST/PUT/DELETE /api/v1/clients/manual`, `POST /api/v1/clients/sync` | Search field; inset grouped table on wide, card list on narrow; source badge; IP/MAC in SF Mono; edit in a sheet; names are untrusted data |
-| `/doh-clients` | Verified DoH/DoT clients (Client IDs) | read: viewer via config; write: admin | `GET /api/v1/policy/views` (reads client identity), `PUT/POST /api/v1/policy/views/{id}` | Inset grouped list grouped by the **source-IP derived** Zone (not the Client ID); create in a sheet with a generated Client ID and the DoH `/dns-query/<id>` + DoT `<id>.dns.<domain>` endpoints; unknown IDs are rejected by the listener; client ID and protocol are query-log facets |
+| `/doh-clients` | Verified DoH/DoT clients (Client IDs) | read: viewer via config; write: admin | `GET/POST /api/v1/policy/client-ids`, `PUT/DELETE /api/v1/policy/client-ids/{id}`, `GET /api/v1/tls`, `GET /api/v1/clients`, `GET /api/v1/policy/records`, `GET /api/v1/query-log?client_id=` | Cards with label, id, DoH URL and DoT hostname (copy), linked directory device, last-seen line (time, protocol, how the last query was assigned); create/edit in a sheet with a generated id; setup check (public name, trusted certificate, DoH listener, `dns.<public_domain>` record with a home-range override); "Apple-Profil laden" builds a `.mobileconfig` in the browser (optional home-Wi-Fi SSID, https/tls, bootstrap IPs); Android Private DNS hostname; unknown IDs are rejected by the listener |
 | `/filter-sets` | Filter sets | read: viewer via config; write: admin | `GET/POST/PUT/DELETE /api/v1/filter-sets`, `GET /api/v1/config` | Grouped form plus a guided rule-builder sheet and a CodeMirror raw-editor sheet; never require hard-to-type characters |
-| `/filter-lists` | Filter list URLs | read: viewer via config; write: admin | `GET/POST/PUT/DELETE /api/v1/filter-lists`, `GET /api/v1/config` | Inset grouped list with status rows; add in the toolbar; edit in a sheet; per-list effectiveness is a gap (no endpoint) |
+| `/filter-lists` | Filter list URLs | read: viewer via config; write: admin | `GET/POST/PUT/DELETE /api/v1/filter-lists`, `GET /api/v1/config` | Inset grouped list with status rows (rule count, last update or error from `status` on each list); enable switch for admins; add as primary header button; delete inside the edit sheet; used-by filter sets from `GET /api/v1/filter-sets`; per-list hits are not available |
 | `/listeners` | DNS listeners | read: viewer via config/status; write: admin | `GET/POST/PUT/DELETE /api/v1/listeners`, `GET /api/v1/status`, `GET /api/v1/config` | Inset grouped list; switches per protocol; exposure warning banner; warn that public listeners expose only registered Client IDs |
 | `/tls` | TLS / ACME / DynDNS | read: viewer via config/status; write: admin | `GET/POST/PUT/DELETE /api/v1/tls`, `GET /api/v1/status`, `GET /api/v1/config` | Grouped status section plus grouped form; fingerprint in SF Mono; warning banner; destructive changes confirmed in a sheet; never render private keys |
 | `/cluster` | Cluster / node administration | read: viewer; write: admin (master only) | `GET /api/v1/cluster/nodes`, `POST /api/v1/cluster/join-tokens`, `DELETE /api/v1/cluster/nodes/{id}` | Inset grouped list of nodes; join-token issuance in a sheet (intended `node_id`, TTL, one-time token + copy, enrollment command); node detail (cert fingerprint, `joined_at`, `last_seen`, applied config version, lag, queue depth); revoke/remove with confirmation; cert-distribution status; standalone/sub-node role views; `node_id` as a query-log/stats facet |
-| `/mcp-rules` | MCP-managed rules, allows, pauses | read: viewer/admin; write: admin | `GET /api/v1/filtering/mcp-rules`, `DELETE /api/v1/filtering/custom-rules`, `POST /api/v1/filtering/pause`, `POST /api/v1/filtering/resume` | Segmented control for `kind` (rules / temporary allows / pauses); inset grouped list; expiry countdown; removal in a confirmation sheet; 404 degrades to "not available on this node" |
+| `/rules` | Regeln: every rule of every filter set (text rules and MCP-managed rules), plus running temporary allows and pauses | read: viewer/admin; write: admin | `GET /api/v1/filter-sets`, `PUT /api/v1/filter-sets` (text rules), `GET /api/v1/filtering/mcp-rules` (per set, `kind` rules / temporary_allows / pauses), `DELETE /api/v1/filtering/custom-rules`, `POST /api/v1/filtering/resume` | Header with a plain intro and an admin "Regel hinzufügen" sheet (block/allow, domain, subdomains switch, filter set; dedupe reported). "Gerade aktiv" lists running temporary allows (read-only: no endpoint ends one early) and pauses ("Fortsetzen"), with minutes left. The list is sorted by domain, searchable, filterable by action and filter set; each row shows domain (or an "Erweiterte Regel" with its raw text), Gesperrt/Erlaubt with icon and text, and the set, origin, scope and expiry. Admin rows open a details sheet: a text rule is removed by its own line only (the rest of the set's text is kept byte-identical), an MCP rule through `DELETE /filtering/custom-rules`; both need a second tap to confirm. 404 on the MCP reads shows "not available on this node" and keeps the text rules. `/mcp-rules` redirects here (307) |
 | `/tokens` | API tokens | admin | `GET/POST /api/v1/auth/tokens`, `DELETE /api/v1/auth/tokens/{id}` | Inset grouped list; create in a sheet; one-time plaintext callout with copy; revoke confirmation; scope labels; self-signed confirmation before MCP tokens |
 | `/audit` | Audit log | admin (see Open questions) | `GET /api/v1/audit` | Search field plus inset grouped table; row detail sheet renders redacted before/after JSON in SF Mono; never secrets |
-| `/settings` | Einstellungen / Allgemein | viewer/admin | `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`, client-side theme/locale storage | Grouped form; theme segmented control (light/dark/system); locale picker; privacy footers; update notice and backup status live here (see "Feature coverage") |
+| `/settings` | Einstellungen / Allgemein | viewer/admin | `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`, client-side theme/locale storage; admin: `GET/PUT` clients UniFi via config + `GET /api/v1/clients/unifi`, `PUT …/unifi-profiles/{id}/api-key`, `POST /api/v1/clients/sync` | Grouped form; theme segmented control (light/dark/system); locale picker; **UniFi profiles** (gateway/TLS/site/poll, sync_owner, write-only API key, node bindings); privacy footers; update notice and backup status live here (see "Feature coverage") |
 | `/alerts` | Alerts / notifications | viewer/admin | assembled from `/api/v1/status`, TLS status, filter-list status (no dedicated endpoint today — see Required additions) | Grouped list of active notices (cert expiry, failed list updates, node offline, DynDNS failure); each links to its screen; empty state when none |
 | `/blocked-services` | Blocked services (one-click catalog) | read: viewer via config; write: admin | (catalog download + per-profile toggle are a filtering+web-ui gap — see Required additions) | Grouped catalog with name/icon; per-profile toggle; runtime-downloaded `services.json` (GPL-3.0), never bundled |
 | `/feedback` | Bug report / feedback | viewer/admin | client-side assembly; diagnostics endpoint is a Required addition | Form: summary, expected vs actual, one fenced JSON diagnostics block; opens a pre-filled GitHub issue or copies markdown; never auto-submits |
@@ -641,7 +641,9 @@ draft did not enumerate them; for a complete, usable UI each is a guided control
   `use-application-dns.net` canary + iCloud Private Relay), DNS-rebind protection
   with per-domain exceptions, selectable blocking mode, and pause state.
 - **Filter-sets screen**: blocking mode (`0.0.0.0`/`::`, NXDOMAIN, REFUSED, custom
-  IP), CNAME uncloaking, and per-set temporary allows (MCP-managed).
+  IP), CNAME uncloaking, and per-set custom rules as text lines.
+- **Regeln screen** (`/rules`): one place for the owner's rules across all filter sets,
+  including MCP-managed rules, temporary allows and pauses (see the route table).
 - **Listeners screen**: per-client rate limit (queries/s per source IP) alongside
   the protocol switches.
 
@@ -658,7 +660,7 @@ administrative ("who can change things"):
 | Section | Screens |
 |---|---|
 | Übersicht | Dashboard (inkl. Statistik), Anfragen, Alerts |
-| Filterung | Filtersätze, Filterlisten, Regeln & Freigaben, Blockierte Dienste |
+| Filterung | Filtersätze, Filterlisten, Regeln, Blockierte Dienste |
 | DNS-Regelwerk | Zonen, Namen, Forward-Zonen, Profile, Test-Abfrage |
 | Netzwerk | Geräte, DoH-Clients, Listener, TLS, Knoten |
 | Einstellungen (single item, gear icon, set apart below the sections) | Tabs: Allgemein (Konto, Darstellung, Protokollierung, Update-Benachrichtigung, API-Tokens, Audit-Log), Konfiguration (Editor, Import/Export, Versionen, Backups), MCP, API-Explorer |
@@ -1223,10 +1225,9 @@ Deliberately not included:
    it; if yes, add an endpoint (for example `/api/v1/query-log/stream`) and define
    event shape, filtering, heartbeat and cookie-auth behavior. Recommendation: defer
    to v2; polling and export cover the v1 acceptance criteria.
-9. **Filter-list effectiveness.** [SPEC.md](SPEC.md) requires per-list loaded rules,
-   unique contribution and hits, but there is no control-api endpoint for it
-   (`/filter-lists` is CRUD configuration only). Add a read endpoint or defer the
-   screen section.
+9. ~~**Filter-list effectiveness.**~~ Resolved for rules and unique contribution: `GET /api/v1/filter-lists`
+   returns a per-list `status` object (`rules_parsed`, `rules_skipped`, `unique_contribution`, update
+   times, error). Per-list hits are still not exposed.
 10. **First-run local admin provisioning.** The wizard is required, but the endpoint
     table has no create-local-account route; "local accounts" are listed as editable
     configuration with no route. Decide: bootstrap the first admin from TOML/env only,
@@ -1342,8 +1343,9 @@ GA1–GA4/GA6 in `tasks/todo-spec-gaps.md`):
   for the i18n coverage test.
 - Documented statistics query parameters (`from`, `to`, `profile_id`, top-N `limit`)
   and their defaults.
-- A filter-list effectiveness read endpoint (per-list rules/hits/unique
-  contribution), or an owner decision to omit that UI section.
+- ~~A filter-list effectiveness read endpoint (per-list rules/hits/unique
+  contribution), or an owner decision to omit that UI section.~~ Rules and unique
+  contribution are now in `GET /api/v1/filter-lists` `status`; per-list hits remain open.
 - An SSE live query-log endpoint, only if the live tail is kept in v1 (with event
   shape, filtering and heartbeat). Proposal (WX2): `GET /api/v1/query-log/stream`, see
   the extra-features list at the end of this section.
@@ -1371,11 +1373,8 @@ GA1–GA4/GA6 in `tasks/todo-spec-gaps.md`):
   /api/v1/cluster/join-tokens`, `DELETE /api/v1/cluster/nodes/{id}`,
   `GET /api/v1/cluster/writes/{request_id}`) — defined in
   `SPEC-control-api.md` § Cluster contract.~~ Resolved: all four routes exist.
-- DoH/DoT Client-ID CRUD (list/create/rename/revoke). This spec currently reads
-  client identity from `policy/views`, but `SPEC-policy.md` removed
-  `views[].client_ids` and no endpoint stores Client IDs.
-- Device-profile downloads (`.mobileconfig`, Android Private DNS) if the
-  DoH-Clients screen offers them.
+- ~~DoH/DoT Client-ID CRUD~~ Resolved 2026-10-28: `GET/POST /policy/client-ids`, `PUT` (label/device) and `DELETE` exist; entries are a string or `{id, label?, device?}`.
+- ~~Device-profile downloads~~ Resolved 2026-10-28: the `.mobileconfig` is generated in the browser (`web/src/lib/doh/mobileconfig.ts`); open: whether iOS accepts it without `ServerAddresses` (owner device test).
 - Manual-client create/edit form shape (fields, manual-vs-UniFi precedence and
   collision display); the API (`/api/v1/clients/manual`) exists but the form
   contract is undefined.

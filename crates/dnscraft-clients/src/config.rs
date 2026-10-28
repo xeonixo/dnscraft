@@ -4,6 +4,7 @@
 //! [`ClientsConfig::validate`] normalises domains and enforces the v1 rules from
 //! SPEC-clients.md (HTTPS gateway URL, pin format, manual IP xor CIDR, caps).
 
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -14,6 +15,11 @@ use crate::error::ClientsError;
 use crate::{Secret, UNIFI_API_KEY_ENV, read_secret};
 use dnscraft_common::config::normalise_domain;
 use dnscraft_common::net::is_loopback_host_str;
+
+/// Profile id used when migrating a legacy flat `[clients.unifi]` block.
+pub const DEFAULT_UNIFI_PROFILE_ID: &str = "default";
+/// Solo / non-cluster `sync_owner` and binding key after legacy migration.
+pub const LOCAL_NODE_ID: &str = "local";
 
 /// serde adapter for an optional [`IpNet`], which has no serde implementation
 /// used by this crate. Uses the CIDR presentation form (`192.0.2.0/24`).
@@ -228,6 +234,20 @@ impl TryFrom<UnifiWire> for UnifiConfig {
     }
 }
 
+/// One named UniFi gateway profile (shared by one or more nodes).
+///
+/// The API key is never stored here — see control-api kv `unifi.api_key.{id}`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UnifiProfile {
+    /// Stable profile id (e.g. `home`).
+    pub id: String,
+    /// `node_id` of the only node allowed to poll this gateway.
+    pub sync_owner: String,
+    /// Connection settings (enabled, URL, TLS, …).
+    #[serde(flatten)]
+    pub connection: UnifiConfig,
+}
+
 /// One manual name entry (exact IP or CIDR).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ManualEntry {
@@ -255,7 +275,16 @@ pub struct ClientsConfig {
     /// How long to keep previously observed UniFi IPv6 addresses.
     #[serde(with = "dnscraft_common::duration::serde")]
     pub ipv6_address_ttl: Duration,
-    /// UniFi gateway settings.
+    /// Named UniFi profiles (preferred). Empty until migrate or UI creates one.
+    #[serde(default)]
+    pub unifi_profiles: Vec<UnifiProfile>,
+    /// `node_id` → profile id. Missing node → UniFi off on that node.
+    #[serde(default)]
+    pub unifi_bindings: BTreeMap<String, String>,
+    /// Effective UniFi settings for **this process** after
+    /// [`Self::resolve_for_node`]. Also accepts legacy flat `[clients.unifi]`
+    /// on deserialize (migrated into [`Self::unifi_profiles`] on validate).
+    #[serde(default)]
     pub unifi: UnifiConfig,
     /// Manual IP / CIDR names (≤ [`MAX_MANUAL_ENTRIES`]).
     pub manual: Vec<ManualEntry>,
@@ -271,6 +300,8 @@ impl Default for ClientsConfig {
             local_domain_mode: LocalDomainMode::UnifiThenConfig,
             offline_retain: DEFAULT_OFFLINE_RETAIN,
             ipv6_address_ttl: DEFAULT_IPV6_ADDRESS_TTL,
+            unifi_profiles: Vec::new(),
+            unifi_bindings: BTreeMap::new(),
             unifi: UnifiConfig::default(),
             manual: Vec::new(),
             allow_http_for_tests: false,
@@ -279,22 +310,83 @@ impl Default for ClientsConfig {
 }
 
 impl ClientsConfig {
+    /// Kv / env lookup name for a profile's API key.
+    ///
+    /// Profile [`DEFAULT_UNIFI_PROFILE_ID`] uses [`UNIFI_API_KEY_ENV`]; others use
+    /// the opaque kv key `unifi.api_key.{id}` (control-api) or a namespaced env.
+    pub fn api_key_lookup_name(profile_id: &str) -> String {
+        if profile_id == DEFAULT_UNIFI_PROFILE_ID {
+            UNIFI_API_KEY_ENV.to_owned()
+        } else {
+            format!("unifi.api_key.{profile_id}")
+        }
+    }
+
+    /// Moves a legacy flat [`Self::unifi`] block into [`Self::unifi_profiles`]
+    /// when no profiles exist yet.
+    pub fn migrate_legacy_unifi(&mut self) {
+        if !self.unifi_profiles.is_empty() {
+            return;
+        }
+        if !self.unifi.enabled && self.unifi.base_url.is_empty() {
+            return;
+        }
+        let id = DEFAULT_UNIFI_PROFILE_ID.to_owned();
+        self.unifi_profiles.push(UnifiProfile {
+            id: id.clone(),
+            sync_owner: LOCAL_NODE_ID.to_owned(),
+            connection: self.unifi.clone(),
+        });
+        if self.unifi.enabled {
+            self.unifi_bindings
+                .entry(LOCAL_NODE_ID.to_owned())
+                .or_insert(id);
+        }
+    }
+
+    /// Profile bound to `node_id`, if any.
+    pub fn bound_profile(&self, node_id: &str) -> Option<&UnifiProfile> {
+        let profile_id = self.unifi_bindings.get(node_id)?;
+        self.unifi_profiles.iter().find(|p| p.id == *profile_id)
+    }
+
+    /// True when this node may poll UniFi for its bound profile.
+    pub fn is_sync_owner(&self, node_id: &str) -> bool {
+        self.bound_profile(node_id)
+            .is_some_and(|p| p.connection.enabled && p.sync_owner == node_id)
+    }
+
+    /// Sets [`Self::unifi`] to the connection this process should use for polling.
+    ///
+    /// Non-owners and unbound nodes get `enabled = false` (directory arrives via
+    /// cluster push). Call after [`Self::migrate_legacy_unifi`].
+    pub fn resolve_for_node(&mut self, node_id: &str) {
+        self.unifi = if self.is_sync_owner(node_id) {
+            self.bound_profile(node_id)
+                .map(|p| p.connection.clone())
+                .unwrap_or_default()
+        } else {
+            UnifiConfig::default()
+        };
+    }
+
     /// Validates and normalises this config in place.
     ///
-    /// When UniFi is enabled, also requires [`UNIFI_API_KEY_ENV`] (or its `_FILE`
-    /// form).
+    /// When a UniFi profile is enabled, also requires its API key via
+    /// [`Self::api_key_lookup_name`].
     pub fn validate(&mut self) -> Result<(), ClientsError> {
         self.validate_with_secret(read_secret)
     }
 
-    /// Like [`Self::validate`], but uses `lookup` for the UniFi API key.
+    /// Like [`Self::validate`], but uses `lookup` for UniFi API keys.
     ///
     /// Tests inject a fake lookup so they never mutate process environment
     /// (`set_var` is `unsafe` and forbidden in this workspace).
     pub fn validate_with_secret(
         &mut self,
-        lookup: impl FnOnce(&str) -> Result<Secret, ClientsError>,
+        mut lookup: impl FnMut(&str) -> Result<Secret, ClientsError>,
     ) -> Result<(), ClientsError> {
+        self.migrate_legacy_unifi();
         self.local_domain = normalise_domain(&self.local_domain).map_err(ClientsError::config)?;
         if self.local_domain.is_empty() {
             return Err(ClientsError::config("local_domain is empty"));
@@ -314,53 +406,118 @@ impl ClientsConfig {
         for (i, entry) in self.manual.iter_mut().enumerate() {
             validate_manual(entry, i)?;
         }
-        self.validate_unifi(lookup)?;
+        self.validate_profiles(&mut lookup)?;
         Ok(())
     }
 
-    fn validate_unifi(
+    fn validate_profiles(
         &mut self,
-        lookup: impl FnOnce(&str) -> Result<Secret, ClientsError>,
+        lookup: &mut impl FnMut(&str) -> Result<Secret, ClientsError>,
     ) -> Result<(), ClientsError> {
-        if !self.unifi.enabled {
-            return Ok(());
-        }
-        if self.unifi.poll_interval.is_zero() {
-            return Err(ClientsError::config("unifi.poll_interval must be positive"));
-        }
-        check_https_url(
-            &self.unifi.base_url,
-            self.allow_http_for_tests,
-            "unifi.base_url",
-        )?;
-        // Trim trailing slash for a stable base.
-        while self.unifi.base_url.ends_with('/') {
-            self.unifi.base_url.pop();
-        }
-        if let Some(site) = &mut self.unifi.site_id {
-            let trimmed = site.trim();
-            if trimmed.is_empty() {
-                self.unifi.site_id = None;
-            } else {
-                *site = trimmed.to_owned();
+        let mut seen = BTreeMap::<String, usize>::new();
+        for (i, profile) in self.unifi_profiles.iter_mut().enumerate() {
+            let id = profile.id.trim();
+            if id.is_empty() {
+                return Err(ClientsError::config(format!(
+                    "unifi_profiles[{i}].id is empty"
+                )));
             }
-        }
-        match &self.unifi.tls {
-            TlsMode::Pin(_) | TlsMode::Secure => {}
-            TlsMode::CaFile(path) => {
-                if path.as_os_str().is_empty() {
-                    return Err(ClientsError::config("unifi.ca_file is empty"));
+            profile.id = id.to_owned();
+            let owner = profile.sync_owner.trim();
+            if owner.is_empty() {
+                return Err(ClientsError::config(format!(
+                    "unifi_profiles[{i}].sync_owner is empty"
+                )));
+            }
+            profile.sync_owner = owner.to_owned();
+            if seen.insert(profile.id.clone(), i).is_some() {
+                return Err(ClientsError::config(format!(
+                    "duplicate unifi profile id `{}`",
+                    profile.id
+                )));
+            }
+            normalise_unifi_connection(
+                &mut profile.connection,
+                self.allow_http_for_tests,
+                &format!("unifi_profiles[{i}]"),
+            )?;
+            if profile.connection.enabled {
+                let bound = self.unifi_bindings.get(&profile.sync_owner);
+                if bound.map(String::as_str) != Some(profile.id.as_str()) {
+                    return Err(ClientsError::config(format!(
+                        "unifi_profiles[{i}].sync_owner `{}` must be bound to profile `{}`",
+                        profile.sync_owner, profile.id
+                    )));
                 }
-            }
-            TlsMode::Insecure => {
-                // Allowed only when explicitly configured. The default is
-                // `Secure`, so reaching this arm means the caller opted in.
-                // Engine warns when the TLS client is built.
+                let _ = lookup(&Self::api_key_lookup_name(&profile.id))?;
             }
         }
-        let _ = lookup(UNIFI_API_KEY_ENV)?;
+        for (node, profile_id) in &self.unifi_bindings {
+            if node.trim().is_empty() || profile_id.trim().is_empty() {
+                return Err(ClientsError::config(
+                    "unifi_bindings entries must have non-empty node and profile id",
+                ));
+            }
+            if !self.unifi_profiles.iter().any(|p| p.id == *profile_id) {
+                return Err(ClientsError::config(format!(
+                    "unifi_bindings[`{node}`] references unknown profile `{profile_id}`"
+                )));
+            }
+        }
+        // Keep legacy `unifi` aligned with profile `default` when present so
+        // older readers of the struct still see connection settings.
+        if let Some(default) = self
+            .unifi_profiles
+            .iter()
+            .find(|p| p.id == DEFAULT_UNIFI_PROFILE_ID)
+        {
+            self.unifi = default.connection.clone();
+        }
         Ok(())
     }
+}
+
+fn normalise_unifi_connection(
+    unifi: &mut UnifiConfig,
+    allow_http_for_tests: bool,
+    field_prefix: &str,
+) -> Result<(), ClientsError> {
+    if !unifi.enabled {
+        return Ok(());
+    }
+    if unifi.poll_interval.is_zero() {
+        return Err(ClientsError::config(format!(
+            "{field_prefix}.poll_interval must be positive"
+        )));
+    }
+    check_https_url(
+        &unifi.base_url,
+        allow_http_for_tests,
+        &format!("{field_prefix}.base_url"),
+    )?;
+    while unifi.base_url.ends_with('/') {
+        unifi.base_url.pop();
+    }
+    if let Some(site) = &mut unifi.site_id {
+        let trimmed = site.trim();
+        if trimmed.is_empty() {
+            unifi.site_id = None;
+        } else {
+            *site = trimmed.to_owned();
+        }
+    }
+    match &unifi.tls {
+        TlsMode::Pin(_) | TlsMode::Secure => {}
+        TlsMode::CaFile(path) => {
+            if path.as_os_str().is_empty() {
+                return Err(ClientsError::config(format!(
+                    "{field_prefix}.ca_file is empty"
+                )));
+            }
+        }
+        TlsMode::Insecure => {}
+    }
+    Ok(())
 }
 
 fn validate_manual(entry: &mut ManualEntry, index: usize) -> Result<(), ClientsError> {
@@ -484,7 +641,7 @@ mod tests {
                     domain: None,
                 },
             ],
-            allow_http_for_tests: false,
+            ..ClientsConfig::default()
         }
     }
 
@@ -670,7 +827,7 @@ mod tests {
                     domain: None,
                 },
             ],
-            allow_http_for_tests: false,
+            ..ClientsConfig::default()
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -781,5 +938,71 @@ mod tests {
             serde_json::to_string(&LocalDomainMode::Config).unwrap(),
             "\"config\""
         );
+    }
+
+    #[test]
+    fn legacy_unifi_migrates_to_default_profile() {
+        let mut cfg = example_config();
+        cfg.validate_with_secret(ok_secret).unwrap();
+        assert_eq!(cfg.unifi_profiles.len(), 1);
+        assert_eq!(cfg.unifi_profiles[0].id, DEFAULT_UNIFI_PROFILE_ID);
+        assert_eq!(cfg.unifi_profiles[0].sync_owner, LOCAL_NODE_ID);
+        assert_eq!(
+            cfg.unifi_bindings.get(LOCAL_NODE_ID).map(String::as_str),
+            Some(DEFAULT_UNIFI_PROFILE_ID)
+        );
+        assert!(cfg.is_sync_owner(LOCAL_NODE_ID));
+    }
+
+    #[test]
+    fn shared_profile_bindings_validate_and_resolve() {
+        let pin = TlsMode::pin_from_str(
+            "sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        )
+        .unwrap();
+        let mut cfg = ClientsConfig {
+            unifi_profiles: vec![UnifiProfile {
+                id: "home".into(),
+                sync_owner: "master".into(),
+                connection: UnifiConfig {
+                    enabled: true,
+                    base_url: "https://192.0.2.1".into(),
+                    tls: pin,
+                    ..UnifiConfig::default()
+                },
+            }],
+            unifi_bindings: BTreeMap::from([
+                ("master".into(), "home".into()),
+                ("garage".into(), "home".into()),
+            ]),
+            ..ClientsConfig::default()
+        };
+        cfg.validate_with_secret(ok_secret).unwrap();
+        assert!(cfg.is_sync_owner("master"));
+        assert!(!cfg.is_sync_owner("garage"));
+        cfg.resolve_for_node("master");
+        assert!(cfg.unifi.enabled);
+        cfg.resolve_for_node("garage");
+        assert!(!cfg.unifi.enabled);
+    }
+
+    #[test]
+    fn sync_owner_must_be_bound_to_same_profile() {
+        let mut cfg = ClientsConfig {
+            unifi_profiles: vec![UnifiProfile {
+                id: "home".into(),
+                sync_owner: "master".into(),
+                connection: UnifiConfig {
+                    enabled: true,
+                    base_url: "https://192.0.2.1".into(),
+                    ..UnifiConfig::default()
+                },
+            }],
+            unifi_bindings: BTreeMap::from([("garage".into(), "home".into())]),
+            ..ClientsConfig::default()
+        };
+        let err = cfg.validate_with_secret(ok_secret).expect_err("owner unbound");
+        assert_eq!(err.code(), "clients.config.invalid");
+        assert!(err.to_string().contains("sync_owner"));
     }
 }

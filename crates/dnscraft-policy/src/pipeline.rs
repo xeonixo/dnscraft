@@ -96,6 +96,7 @@ impl Draft {
             profile_id: self.selection.profile_id,
             selection: self.selection.matched_by,
             client_id,
+            client_label: None,
             filter_set: self.filter_set,
             steps: self.steps,
             filter: self.filter,

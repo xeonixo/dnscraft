@@ -43,6 +43,7 @@ fn answer() -> PolicyAnswer {
             profile_id: ProfileId::new("default").unwrap(),
             selection: SelectionCause::Default,
             client_id: None,
+            client_label: None,
             filter_set: SetId::new("default").unwrap(),
             steps: Vec::new(),
             filter: None,
@@ -161,6 +162,7 @@ fn bench_udp(c: &mut Criterion) {
     let handler = Arc::new(FakeHandler::new(answer()));
     let listener = ListenerConfig {
         node_id: None,
+        nodes: Vec::new(),
         id: ListenerId::new("bench-udp").unwrap(),
         protocol: Protocol::Udp53,
         address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),

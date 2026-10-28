@@ -48,6 +48,7 @@ async fn connect_small_window(addr: SocketAddr) -> TcpStream {
 fn listener_cfg(addr: SocketAddr) -> ListenerConfig {
     ListenerConfig {
         node_id: None,
+        nodes: Vec::new(),
         id: ListenerId::new("test-tcp").unwrap(),
         protocol: Protocol::Tcp53,
         address: addr,

@@ -22,10 +22,17 @@ selects filter profiles or views — that stays in `policy`
    this crate.
 3. UniFi is optional. With UniFi disabled or unreachable, manual names still
    work and lookups return `None` rather than blocking DNS answering.
-4. Secrets (UniFi API key) come only from environment variables or Docker
-   secrets (`*_FILE`), never from the config export (SPEC.md).
+4. Secrets (UniFi API key) are write-only via control-api
+   (`PUT /api/v1/clients/unifi-profiles/{id}/api-key`, stored in SQLite kv
+   `unifi.api_key.{id}`) and may also be bootstrapped from
+   `DNSCRAFT_UNIFI_API_KEY` / `*_FILE` for the `default` profile. Keys never
+   appear in config export, audit snapshots, or `GET /api/v1/config` (SPEC.md).
 5. Non-goal (SPEC.md): Docker API / socket access. Bridge-NAT containers are
    named manually; macvlan containers appear as UniFi clients.
+6. UniFi is configured as **named profiles** plus **per-node bindings**. Several
+   nodes may share one profile (same gateway). Exactly one `sync_owner` node
+   per profile polls UniFi; other bound nodes receive the client directory via
+   the cluster (`ClientsDirectoryPush`), not by polling.
 
 ## Requirements
 
@@ -153,8 +160,8 @@ that creates a `policy → clients` Cargo dependency.
 
 **Naming:** UniFi/manual devices are `ClientInfo` (enrichment). DoH/DoT
 **Client IDs** (`iphone-k7q2x9`) are a different identifier owned by
-policy/control-api for profile selection — never confused with UniFi client
-UUIDs.
+policy/control-api (registry, optional view pin for unmatched IPs) — never confused
+with UniFi client UUIDs.
 
 ### Local domain (dynamic)
 
@@ -193,6 +200,10 @@ When building the IP index, later lower-priority sources lose collisions:
 1. **Manual single IP** (exact host entry)
 2. **Manual CIDR** — **longest prefix wins** among overlapping ranges
 3. **UniFi** (classic + Integration snapshot)
+
+The query log uses the same IP match. A DoH/DoT request without a directory match
+falls back to the label of its registered Client ID (see `SPEC-policy.md`, log name
+precedence), and a directory match always wins.
 
 Name collisions **within the same local_domain** after normalisation:
 **first-seen wins**. The label assignment (`client id → dns_label`) is persisted
@@ -285,13 +296,15 @@ test:
 | Code | When |
 |---|---|
 | `clients.config.invalid` | bad URL, empty pin when required, overlapping manuals that cannot be ordered, etc. |
-| `clients.secret.missing` | UniFi enabled but API key env/`*_FILE` absent |
+| `clients.secret.missing` | Profile enabled for poll but API key absent (kv and env/`*_FILE`) |
 | `clients.tls.untrusted` | cert does not match pin / CA |
 | `clients.tls.handshake` | other TLS failures |
 | `clients.connect` | TCP / DNS of gateway hostname failed |
 | `clients.http.status` | non-success HTTP (incl. 401/403/429) |
 | `clients.http.body` | JSON parse / schema mismatch (lenient skip of bad rows preferred; fatal only if page unusable) |
 | `clients.sync.partial` | some pages failed; last good kept |
+| `clients.sync.not_owner` | `POST /clients/sync` on a node that is not the profile `sync_owner` |
+| `clients.sync.not_configured` | no UniFi profile bound to this node / no adapter |
 | `clients.too_many` | hard client/address cap exceeded |
 | `clients.ip.conflict` | informational: two clients claimed one IP; loser dropped from index (counter, not fatal) |
 | `clients.name.collision` | reserved for validation surfaces that refuse ambiguous manuals (rare; usually auto-suffix) |
@@ -315,27 +328,47 @@ local_domain_mode = "unifi_then_config"
 offline_retain = "7d"
 ipv6_address_ttl = "24h"
 
-[clients.unifi]
+# Named UniFi profiles. Several nodes may bind to the same profile (shared gateway).
+# Exactly one sync_owner polls; other bound nodes receive the directory via cluster.
+[[clients.unifi_profiles]]
+id = "home"
 enabled = true
-base_url = "https://192.0.2.1"     # documentation range; gateway address
-# site_id optional: if omitted, use the sole site or fail with clients.config.invalid
+base_url = "https://192.0.2.1"
 site_id = "00000000-0000-0000-0000-000000000000"
 poll_interval = "60s"
-# classic client feed on by default (needed for full IPv6); Integration still used for sites/networks
 classic_clients = true
-# TLS: pin or ca_file; insecure_skip_verify = false by default
-tls_pin_sha256 = "sha256:AB:CD:…"   # or ca_file = "/path/to/ca.pem"
-# api_key from env DNSCRAFT_UNIFI_API_KEY or DNSCRAFT_UNIFI_API_KEY_FILE
+tls_pin_sha256 = "sha256:AB:CD:…"
+sync_owner = "master"   # node_id; must also appear under unifi_bindings for this profile
+
+[clients.unifi_bindings]
+# node_id = profile_id; omit a node for manuals-only on that node
+"master" = "home"
+"garage" = "home"
+
+# Legacy flat [clients.unifi] still deserialises: migrated to profile id "default"
+# with sync_owner "local" on validate when unifi_profiles is empty.
 
 [[clients.manual]]
 name = "paperless"
 ip = "198.51.100.5"
-# optional domain = "…" overrides UniFi/fallback for this entry only
 
 [[clients.manual]]
 name = "Docker on server1"
 cidr = "198.51.100.0/24"
 ```
+
+### Profiles, bindings, and directory fan-out
+
+- `unifi_profiles`: connection settings per gateway (no API key in config).
+- `unifi_bindings`: which profile a node uses. Missing → UniFi off on that node.
+- `sync_owner`: the only node that may call the UniFi HTTP API for that profile.
+- After a successful owner sync, control-api/cluster uploads the UniFi portion of
+  the directory to the master; the master pushes `ClientsDirectoryPush` to every
+  other node bound to the same profile. Manuals always come from the replicated
+  config snapshot, never from the directory push.
+- API key: write-only UI/API into kv `unifi.api_key.{profile_id}`; cluster
+  `SecretPush` delivers it only to `sync_owner`. Env bootstrap remains for the
+  `default` profile (`DNSCRAFT_UNIFI_API_KEY` / `*_FILE`).
 
 ## Testing
 
@@ -363,10 +396,11 @@ cidr = "198.51.100.0/24"
 ## Boundaries
 
 - Always: keep last good snapshot on sync failure; never block DNS on UniFi I/O;
-  secrets only via env / `*_FILE`; treat UniFi JSON as untrusted; defensive
-  classic parsing. HTTP defaults aligned with filtering: **30 s** timeout per
-  request, **response size cap** (propose 8 MiB per page), HTTPS only to the
-  gateway URL.
+  secrets only via write-only kv / env bootstrap — never in config export; treat
+  UniFi JSON as untrusted; defensive classic parsing. HTTP defaults aligned with
+  filtering: **30 s** timeout per request, **response size cap** (propose 8 MiB
+  per page), HTTPS only to the gateway URL. Only `sync_owner` opens outbound
+  UniFi connections.
 - Ask first: new dependencies (e.g. `unicode-normalization`, only if UTS 46
   proves insufficient for label folding); username/password cookie login if API-key-on-classic
   fails on real hardware; raising the 10 000 client hard cap; changing approved
@@ -420,7 +454,11 @@ domain from UniFi when present.
 7. **TLS bootstrap UX:** first-run offers pin paste and CA file; optional
    temporary insecure fetch that **only** displays the pin for the admin to
    confirm (never silently leaves skip-verify on).
-8. **API key env:** `DNSCRAFT_UNIFI_API_KEY` / `DNSCRAFT_UNIFI_API_KEY_FILE`.
+8. **API key:** write-only via control-api into kv `unifi.api_key.{profile_id}`;
+   env bootstrap `DNSCRAFT_UNIFI_API_KEY` / `*_FILE` for profile `default` only.
+15. **Per-node UniFi profiles (2026-10-28):** named profiles + `unifi_bindings` +
+    `sync_owner`; shared gateways without duplicating connection settings;
+    directory fan-out for non-owners via cluster.
 9. **Last-good disk cache:** persist under `<data>/clients/` (atomic write like
    filtering `ListStore`) so restart serves names before the first successful
    poll; treat file as untrusted.

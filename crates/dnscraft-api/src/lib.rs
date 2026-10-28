@@ -35,6 +35,7 @@ mod stats;
 mod storage;
 mod system;
 mod tls;
+mod unifi_secrets;
 #[cfg(feature = "web-ui")]
 mod web_ui;
 mod webhooks;
@@ -45,14 +46,14 @@ pub use api::auth::{
     Requirement, Role, Scope, SessionMeta, SessionStore, TokenPrincipal, TokenSnapshot, TokenStore,
     auth_middleware, authorize, rbac_middleware, requirement, secure_cookie, session_set_cookie,
 };
-pub use api::clients_routes::{ClientDirectory, DirectoryClient, SyncSummary};
+pub use api::clients_routes::{ClientDirectory, DirectoryClient, DirectoryExport, SyncSummary};
 pub use api::filter_routes::ServiceCatalogProvider;
 pub use api::rate_limit::{DEFAULT_MAX_TRACKED_SOURCES, RateLimiter};
 pub use audit::{Audit, ConfigChangeRecord};
 pub use cluster::{
     ClusterRuntime, ClusterRuntimeOptions, ConfigWriteExecutor, QueryLogIngest, QueryLogOutbox,
     StateAuthApplier, StateRuntimeApplier, SyncedConfigApplier, TlsCertInstaller, backfill_logs,
-    node_scoped_views,
+    node_scoped_snapshot, node_scoped_views,
 };
 pub use cluster_status::{ClusterStatus, ClusterStatusHandle, ClusterStatusProvider};
 pub use config::{

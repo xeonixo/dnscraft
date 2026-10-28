@@ -59,7 +59,8 @@ use crate::quota::QuotaLimiter;
 use crate::relay::{RuntimeCommand, WriteExecutor, WriteRelay};
 use crate::store::ClusterStore;
 use crate::sync::{
-    AuthSnapshotPush, ConfigAck, ConfigSync, Hello, StreamError, StreamRecord, TlsRenewed,
+    AuthSnapshotPush, ClientsDirectoryPush, ConfigAck, ConfigSync, Hello, SecretPush,
+    StreamError, StreamRecord, TlsRenewed,
 };
 
 /// Request header carrying the sub-node's cluster protocol version.
@@ -246,6 +247,38 @@ impl ClusterBroadcast {
     /// node stops receiving config, auth and certificate pushes immediately.
     pub fn disconnect(&self, node_id: &str) {
         self.config_sync.remove(node_id);
+    }
+
+    /// Pushes a UniFi API key to the profile's `sync_owner` only.
+    pub fn push_unifi_secret(&self, node_id: &str, profile_id: &str, api_key: Option<&str>) {
+        self.config_sync.send_to(
+            node_id,
+            StreamRecord::SecretPush(SecretPush {
+                protocol: PROTOCOL_VERSION,
+                profile_id: profile_id.to_owned(),
+                api_key: api_key.map(str::to_owned),
+            }),
+        );
+    }
+
+    /// Fans a UniFi directory snapshot to every connected node.
+    ///
+    /// Receivers ignore profiles they are not bound to.
+    pub fn push_clients_directory(
+        &self,
+        profile_id: &str,
+        generation: u64,
+        observations: &serde_json::Value,
+        networks: &serde_json::Value,
+    ) {
+        self.config_sync
+            .broadcast(StreamRecord::ClientsDirectoryPush(ClientsDirectoryPush {
+                protocol: PROTOCOL_VERSION,
+                profile_id: profile_id.to_owned(),
+                generation,
+                observations: observations.clone(),
+                networks: networks.clone(),
+            }));
     }
 }
 
@@ -591,6 +624,7 @@ fn router(state: Arc<ServerState>) -> Router {
         .route("/cluster/v1/writes", post(write_relay))
         .route("/cluster/v1/renew", post(renew))
         .route("/cluster/v1/tls/certificate", post(tls_certificate))
+        .route("/cluster/v1/clients-directory", post(clients_directory))
         .route_layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             authenticate,
@@ -875,6 +909,47 @@ async fn stream(
         .headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(NDJSON));
     response
+}
+
+/// `POST /cluster/v1/clients-directory` body from a UniFi sync_owner.
+#[derive(Debug, Deserialize)]
+struct ClientsDirectoryBody {
+    profile_id: String,
+    generation: u64,
+    observations: serde_json::Value,
+    networks: serde_json::Value,
+}
+
+/// `POST /cluster/v1/clients-directory` — fan-out a UniFi directory snapshot.
+///
+/// The authenticated node is the sync_owner; the master does not re-validate
+/// ownership here (config replication already agreed the binding). Receivers
+/// ignore profiles they are not bound to.
+async fn clients_directory(
+    State(state): State<Arc<ServerState>>,
+    Extension(_auth): Extension<AuthenticatedNode>,
+    body: Bytes,
+) -> Response {
+    let Ok(body) = serde_json::from_slice::<ClientsDirectoryBody>(&body) else {
+        return error_response(&ClusterError::Internal {
+            message: "clients-directory body invalid".to_owned(),
+        });
+    };
+    if body.profile_id.trim().is_empty() {
+        return error_response(&ClusterError::Internal {
+            message: "clients-directory profile_id required".to_owned(),
+        });
+    }
+    state
+        .config_sync
+        .broadcast(StreamRecord::ClientsDirectoryPush(ClientsDirectoryPush {
+            protocol: PROTOCOL_VERSION,
+            profile_id: body.profile_id,
+            generation: body.generation,
+            observations: body.observations,
+            networks: body.networks,
+        }));
+    Json(json!({ "ok": true })).into_response()
 }
 
 /// `POST /cluster/v1/ack` — records a sub-node's applied config version.

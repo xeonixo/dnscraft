@@ -23,7 +23,7 @@ use dnscraft_api::{
     ControlApiError, Db, LocalAccountStore, ManualClock as ApiClock, ModuleAppliers, ModuleFuture,
     OidcState, QueryLog, QueryLogIngest, QueryLogOutbox, SessionStore, StateAuthApplier,
     StateRuntimeApplier, SyncedConfigApplier, TlsCertInstaller, TokenStore,
-    mcp_backend_for_test_writes_with_broadcast, node_scoped_views,
+    mcp_backend_for_test_writes_with_broadcast, node_scoped_snapshot, node_scoped_views,
 };
 use dnscraft_cluster::{
     AuthSnapshotApplier, CertInstaller, ClusterCa, ClusterClient, ClusterConfig, ClusterServer,
@@ -2428,6 +2428,31 @@ async fn a_default_view_invalid_on_the_node_is_rejected() {
     let error = node_scoped_views(&snapshot, "node-a").unwrap_err();
     assert_eq!(error.code(), "cluster.config.apply");
     assert!(error.to_string().contains("policy.config.invalid"));
+}
+
+#[test]
+fn node_scoped_snapshot_filters_listeners() {
+    let snapshot = json!({
+        "filtering": { "lists": [], "sets": [] },
+        "clients": {},
+        "policy": { "profiles": [], "views": [] },
+        "listeners": {
+            "listeners": [
+                { "id": "all", "protocol": "udp53", "address": "127.0.0.1:53", "exposure": "local", "h3": false },
+                { "id": "garage-only", "protocol": "udp53", "address": "192.0.2.1:53", "exposure": "local", "h3": false, "nodes": ["garage"] },
+                { "id": "office-only", "protocol": "tcp53", "address": "192.0.2.2:53", "exposure": "local", "h3": false, "nodes": ["office"] }
+            ]
+        },
+        "tls": {}
+    });
+    let filtered = node_scoped_snapshot(&snapshot, "garage").unwrap();
+    let ids: Vec<&str> = filtered["listeners"]["listeners"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["all", "garage-only"]);
 }
 
 // ---------------------------------------------------------------------------

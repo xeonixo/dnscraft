@@ -10,7 +10,8 @@ use ipnet::IpNet;
 
 use crate::config::{
     PolicyConfig, ProfileConfig, SAFESEARCH_PROVIDERS, SCHEDULE_WEEK, SafeSearchConfig,
-    ScheduleConfig, ViewRecordConfig, is_allowed_view_rtype, name_has_wildcard_label,
+    ScheduleConfig, ViewRecordConfig, check_client_device, check_client_label,
+    is_allowed_view_rtype, name_has_wildcard_label,
 };
 use crate::error::{ConfigReason, PolicyError};
 use crate::ids::{ClientId, NodeId, ProfileId, ViewId};
@@ -114,6 +115,10 @@ pub struct PolicySnapshot {
     pub(crate) default_view: ViewIdx,
     /// Client-ID registry (admission only; never a selection key).
     pub(crate) client_ids: Arc<[ClientId]>,
+    /// Labels of registered Client IDs that have one (read-only view for the log).
+    pub(crate) client_labels: Arc<HashMap<ClientId, Arc<str>>>,
+    /// Client-ID pins: registered Client ID → pinned view (consulted after the subnet match).
+    pub(crate) client_pins: Arc<HashMap<ClientId, ViewIdx>>,
     /// IPv4 subnet tables keyed by prefix length.
     pub(crate) v4: PrefixTable<[u8; 4]>,
     /// IPv6 subnet tables keyed by prefix length.
@@ -179,13 +184,44 @@ impl PolicySnapshot {
         }
 
         let mut registry: HashSet<ClientId> = HashSet::new();
-        for client_id in &config.client_ids {
+        let mut client_id_list: Vec<ClientId> = Vec::with_capacity(config.client_ids.len());
+        let mut client_labels: HashMap<ClientId, Arc<str>> = HashMap::new();
+        let mut label_keys: HashSet<String> = HashSet::new();
+        for entry in &config.client_ids {
+            let client_id = entry.id();
             if !registry.insert(client_id.clone()) {
                 return Err(PolicyError::InvalidConfig {
                     reason: ConfigReason::DuplicateClientId {
                         id: Arc::from(client_id.as_str()),
                     },
                 });
+            }
+            client_id_list.push(client_id.clone());
+            if let Some(label) = entry.label().map(str::trim).filter(|s| !s.is_empty()) {
+                check_client_label(label).map_err(|reason| PolicyError::InvalidConfig {
+                    reason: ConfigReason::InvalidClientMeta {
+                        id: Arc::from(client_id.as_str()),
+                        field: "label",
+                        reason,
+                    },
+                })?;
+                if !label_keys.insert(label.to_lowercase()) {
+                    return Err(PolicyError::InvalidConfig {
+                        reason: ConfigReason::DuplicateClientLabel {
+                            label: Arc::from(label),
+                        },
+                    });
+                }
+                client_labels.insert(client_id.clone(), Arc::from(label));
+            }
+            if let Some(device) = entry.device().map(str::trim).filter(|s| !s.is_empty()) {
+                check_client_device(device).map_err(|reason| PolicyError::InvalidConfig {
+                    reason: ConfigReason::InvalidClientMeta {
+                        id: Arc::from(client_id.as_str()),
+                        field: "device",
+                        reason,
+                    },
+                })?;
             }
         }
         let known_views: HashSet<ViewId> = config.views.iter().map(|v| v.id.clone()).collect();
@@ -282,6 +318,23 @@ impl PolicySnapshot {
         v4.finish();
         v6.finish();
 
+        let mut client_pins: HashMap<ClientId, ViewIdx> = HashMap::new();
+        for entry in &config.client_ids {
+            let Some(view) = entry.view() else {
+                continue;
+            };
+            let Some(&view_idx) = view_by_id.get(view) else {
+                return Err(PolicyError::InvalidConfig {
+                    reason: ConfigReason::InvalidClientMeta {
+                        id: Arc::from(entry.id().as_str()),
+                        field: "view",
+                        reason: "names a view that does not exist",
+                    },
+                });
+            };
+            client_pins.insert(entry.id().clone(), view_idx);
+        }
+
         Ok(Self {
             default_rebind: config.default_rebind,
             ptr_prefixes: Arc::from(config.ptr_prefixes),
@@ -290,7 +343,9 @@ impl PolicySnapshot {
             views: Arc::from(views),
             profiles: Arc::from(profiles),
             default_view,
-            client_ids: Arc::from(config.client_ids),
+            client_ids: Arc::from(client_id_list),
+            client_labels: Arc::new(client_labels),
+            client_pins: Arc::new(client_pins),
             v4,
             v6,
         })
@@ -475,8 +530,8 @@ fn build_view_records(
 mod tests {
     use super::*;
     use crate::config::{
-        DEFAULT_LOCAL_NXDOMAIN_SUFFIXES, ProfileConfig, SCHEDULE_WEEK, SafeSearchConfig,
-        ViewConfig, ViewRecordConfig,
+        ClientIdEntry, ClientIdMeta, DEFAULT_LOCAL_NXDOMAIN_SUFFIXES, ProfileConfig, SCHEDULE_WEEK,
+        SafeSearchConfig, ViewConfig, ViewRecordConfig,
     };
     use crate::ids::{ClientId, NodeId, ProfileId, ViewId};
     use dnscraft_proto::{Name, RData};
@@ -610,8 +665,8 @@ mod tests {
     fn config_rejects_duplicate_client_id_in_registry() {
         let mut cfg = spec_excerpt_config();
         let id = ClientId::new("iphone-k7q2x9").unwrap();
-        cfg.client_ids.push(id.clone());
-        cfg.client_ids.push(id);
+        cfg.client_ids.push(id.clone().into());
+        cfg.client_ids.push(id.into());
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert_eq!(err.code(), "policy.config.invalid");
         assert!(matches!(
@@ -1089,5 +1144,101 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn client_id_labels_and_devices_are_checked() {
+        let with = |entries: Vec<serde_json::Value>| {
+            let mut cfg = spec_excerpt_config();
+            cfg.client_ids = serde_json::from_value(serde_json::Value::Array(entries)).unwrap();
+            PolicySnapshot::build(cfg, &[set("default")], &[])
+        };
+        // Labels are unique case-insensitively.
+        let err = with(vec![
+            serde_json::json!({ "id": "a", "label": "Anna" }),
+            serde_json::json!({ "id": "b", "label": "anna" }),
+        ])
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            PolicyError::InvalidConfig {
+                reason: ConfigReason::DuplicateClientLabel { .. }
+            }
+        ));
+        // Over-long label and control characters are rejected.
+        assert!(
+            with(vec![
+                serde_json::json!({ "id": "a", "label": "x".repeat(65) })
+            ])
+            .is_err()
+        );
+        assert!(with(vec![serde_json::json!({ "id": "a", "label": "bad\u{7}" })]).is_err());
+        // 64 characters is fine; blank labels mean no label.
+        assert!(
+            with(vec![
+                serde_json::json!({ "id": "a", "label": "x".repeat(64) })
+            ])
+            .is_ok()
+        );
+        assert!(
+            with(vec![
+                serde_json::json!({ "id": "a", "label": "  " }),
+                serde_json::json!({ "id": "b", "label": "" }),
+            ])
+            .is_ok()
+        );
+        // Malformed object entries fail to deserialize (missing id, unknown key).
+        assert!(
+            serde_json::from_value::<ClientIdEntry>(serde_json::json!({ "label": "x" })).is_err()
+        );
+        assert!(
+            serde_json::from_value::<ClientIdEntry>(
+                serde_json::json!({ "id": "a", "colour": "red" })
+            )
+            .is_err()
+        );
+        // Device reference over 128 characters is rejected.
+        assert!(
+            with(vec![
+                serde_json::json!({ "id": "a", "device": "d".repeat(129) })
+            ])
+            .is_err()
+        );
+        // Labelled entries count as registered Client IDs with a label map entry.
+        let snap = with(vec![
+            "plain".into(),
+            serde_json::json!({ "id": "tablet", "label": " Anna iPad " }),
+        ])
+        .unwrap();
+        assert_eq!(snap.client_ids.len(), 2);
+        assert_eq!(
+            snap.client_labels
+                .get(&ClientId::new("tablet").unwrap())
+                .map(|l| &**l),
+            Some("Anna iPad")
+        );
+    }
+
+    #[test]
+    fn client_id_view_pin_parses_in_mixed_entries_and_round_trips() {
+        let entries: Vec<ClientIdEntry> = serde_json::from_value(serde_json::json!([
+            "phone",
+            { "id": "tablet", "view": "unterwegs" },
+            { "id": "laptop", "label": "Laptop", "view": "unterwegs" }
+        ]))
+        .unwrap();
+        assert_eq!(entries[0].view(), None);
+        assert_eq!(entries[1].view().map(|v| v.as_str()), Some("unterwegs"));
+        // Unpinned objects serialise without a `view` key (old snapshots stay valid).
+        let plain = serde_json::to_value(ClientIdEntry::Detailed(ClientIdMeta {
+            id: ClientId::new("x").unwrap(),
+            label: None,
+            device: None,
+            view: None,
+        }))
+        .unwrap();
+        assert_eq!(plain, serde_json::json!({ "id": "x" }));
+        let back: ClientIdEntry = serde_json::from_value(serde_json::json!(entries[1])).unwrap();
+        assert_eq!(back, entries[1]);
     }
 }

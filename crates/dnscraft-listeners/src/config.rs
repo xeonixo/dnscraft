@@ -126,10 +126,30 @@ pub struct ListenerConfig {
     pub h3: bool,
     /// Optional TLS policy; absent = defaults. Rejected on plaintext protocols.
     pub tls_policy: Option<TlsPolicy>,
+    /// Nodes that bind this listener; empty means every node (cluster snapshot is
+    /// uniform; each node filters before apply).
+    #[serde(default)]
+    pub nodes: Vec<NodeId>,
     /// Cluster node that serves this listener, stamped onto every query.
     /// Set by [`crate::ListenerSet`] from its node identity; not read from config.
     #[serde(skip)]
     pub node_id: Option<NodeId>,
+}
+
+impl ListenerConfig {
+    /// Whether this listener should bind on `node_id`.
+    ///
+    /// Empty [`Self::nodes`] means every node. When the process has no node
+    /// identity (tests), all listeners apply.
+    pub fn applies_to_node(&self, node_id: Option<&NodeId>) -> bool {
+        if self.nodes.is_empty() {
+            return true;
+        }
+        match node_id {
+            Some(id) => self.nodes.iter().any(|n| n == id),
+            None => true,
+        }
+    }
 }
 
 /// Token-bucket rate: `N` tokens per second, burst capacity `2N` when parsed from `N/s`.
@@ -522,11 +542,45 @@ mod tests {
     }
 
     #[test]
+    fn applies_to_node_empty_means_all() {
+        let listener = ListenerConfig {
+            node_id: None,
+            nodes: Vec::new(),
+            id: ListenerId::new("lan").unwrap(),
+            protocol: Protocol::Udp53,
+            address: SocketAddr::from((Ipv4Addr::LOCALHOST, 53)),
+            exposure: Exposure::Local,
+            h3: false,
+            tls_policy: None,
+        };
+        assert!(listener.applies_to_node(None));
+        assert!(listener.applies_to_node(Some(&NodeId::new("garage").unwrap())));
+    }
+
+    #[test]
+    fn applies_to_node_respects_list() {
+        let listener = ListenerConfig {
+            node_id: None,
+            nodes: vec![NodeId::new("garage").unwrap()],
+            id: ListenerId::new("lan").unwrap(),
+            protocol: Protocol::Udp53,
+            address: SocketAddr::from((Ipv4Addr::LOCALHOST, 53)),
+            exposure: Exposure::Local,
+            h3: false,
+            tls_policy: None,
+        };
+        assert!(listener.applies_to_node(Some(&NodeId::new("garage").unwrap())));
+        assert!(!listener.applies_to_node(Some(&NodeId::new("office").unwrap())));
+        assert!(listener.applies_to_node(None));
+    }
+
+    #[test]
     fn config_round_trips_through_json() {
         let cfg = ListenersConfig {
             listeners: vec![
                 ListenerConfig {
                     node_id: None,
+                    nodes: vec![NodeId::new("garage").unwrap()],
                     id: ListenerId::new("lan-udp").unwrap(),
                     protocol: Protocol::Udp53,
                     address: SocketAddr::from((Ipv4Addr::UNSPECIFIED, 53)),
@@ -536,6 +590,7 @@ mod tests {
                 },
                 ListenerConfig {
                     node_id: None,
+                    nodes: Vec::new(),
                     id: ListenerId::new("public-doh").unwrap(),
                     protocol: Protocol::Doh,
                     address: SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 443),

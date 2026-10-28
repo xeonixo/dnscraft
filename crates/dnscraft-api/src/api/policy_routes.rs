@@ -16,8 +16,8 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use dnscraft_policy::{
-    ClientId, DEFAULT_RECORD_TTL, ViewId, ViewRecordConfig, format_rdata, parse_record_type,
-    record_type_text,
+    ClientId, DEFAULT_RECORD_TTL, ViewId, ViewRecordConfig, check_client_device,
+    check_client_label, format_rdata, parse_record_type, record_type_text,
 };
 use dnscraft_proto::{Name, RData, RecordType};
 use serde::{Deserialize, Serialize};
@@ -25,8 +25,8 @@ use serde_json::{Value, json};
 
 use crate::api::auth::Authenticated;
 use crate::api::config_routes::{
-    actor, array, array_mut, if_match, json_body, module_error, relay_config_family_write, service,
-    stored_snapshot, valid_id,
+    actor, array, array_mut, if_match, json_body, malformed_snapshot, module_error,
+    relay_config_family_write, service, stored_snapshot, valid_id,
 };
 use crate::api::response::success;
 use crate::error::ControlApiError;
@@ -61,6 +61,23 @@ pub(crate) struct RecordKey {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ClientIdBody {
     pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) label: Option<String>,
+    #[serde(default)]
+    pub(crate) device: Option<String>,
+    /// Pinned view (an existing view id), selected for this Client ID when no
+    /// subnet matches the source IP.
+    #[serde(default)]
+    pub(crate) view: Option<String>,
+}
+
+/// Requested change of `PUT /api/v1/policy/client-ids/{id}`. `None` leaves a
+/// field as it is, `Some(None)` clears it.
+#[derive(Default)]
+pub(crate) struct ClientIdPatch {
+    label: Option<Option<String>>,
+    device: Option<Option<String>>,
+    view: Option<Option<String>>,
 }
 
 /// `GET /api/v1/policy/records`.
@@ -140,12 +157,16 @@ pub(crate) async fn delete_record(
     .into_response())
 }
 
-/// `GET /api/v1/policy/client-ids` — the registry, in stored order.
+/// `GET /api/v1/policy/client-ids` — the registry, in stored order. Bare-string
+/// entries are shown as objects with `label` and `device` set to `null`.
 pub(crate) async fn list_client_ids(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     let snapshot = stored_snapshot(service(&state)?).await?;
-    let ids = array(&snapshot, "policy", "client_ids");
+    let ids: Vec<Value> = array(&snapshot, "policy", "client_ids")
+        .iter()
+        .filter_map(client_id_json)
+        .collect();
     Ok(success(json!({ "client_ids": ids })))
 }
 
@@ -170,14 +191,40 @@ pub(crate) async fn create_client_id(
     {
         return Ok(response.into_response());
     }
-    let id = body.id;
+    let id = body.id.clone();
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
-    register_client_id(&mut snapshot, id.clone())?;
+    register_client_id(&mut snapshot, body)?;
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
         .await?;
     Ok(success(json!({ "version": version, "client_id": id })).into_response())
+}
+
+/// `PUT /api/v1/policy/client-ids/{id}` — change the label and/or device of a
+/// registered Client ID. The id itself never changes.
+pub(crate) async fn put_client_id(
+    State(state): State<AppState>,
+    auth: Option<Extension<Authenticated>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let Json(body) = body.map_err(|rejection| invalid(&rejection.body_text()))?;
+    let patch = parse_client_patch(&body)?;
+    let path = format!("/api/v1/policy/client-ids/{id}");
+    if let Some(response) =
+        relay_config_family_write(&state, "PUT", &path, body, auth.clone(), &headers).await?
+    {
+        return Ok(response.into_response());
+    }
+    let service = service(&state)?;
+    let mut snapshot = stored_snapshot(service).await?;
+    let client_id = update_client_id(&mut snapshot, &id, patch)?;
+    let version = service
+        .replace(snapshot, &actor(auth), if_match(&headers))
+        .await?;
+    Ok(success(json!({ "version": version, "client_id": client_id })).into_response())
 }
 
 /// `DELETE /api/v1/policy/client-ids/{id}` — revoke a Client ID.
@@ -244,17 +291,242 @@ pub(crate) fn delete_policy_record(
     Ok(())
 }
 
-/// Registers a Client ID in `snapshot`.
-pub(crate) fn register_client_id(snapshot: &mut Value, id: String) -> Result<(), ControlApiError> {
-    if ClientId::new(&id).is_err() {
+/// Parts of one stored registry entry: a bare string or `{id, label?, device?}`.
+fn entry_parts(item: &Value) -> Option<(&str, Option<&str>, Option<&str>)> {
+    match item {
+        Value::String(id) => Some((id, None, None)),
+        Value::Object(object) => Some((
+            object.get("id")?.as_str()?,
+            object.get("label").and_then(Value::as_str),
+            object.get("device").and_then(Value::as_str),
+        )),
+        _ => None,
+    }
+}
+
+/// The pinned view of one stored entry, if it has one.
+fn entry_view(item: &Value) -> Option<&str> {
+    item.as_object()?.get("view")?.as_str()
+}
+
+/// API view of one stored entry: `{id, label, device, view}` with nulls for absent fields.
+fn client_id_json(item: &Value) -> Option<Value> {
+    let (id, label, device) = entry_parts(item)?;
+    Some(json!({
+        "id": id,
+        "label": label,
+        "device": device,
+        "view": entry_view(item),
+    }))
+}
+
+/// Stored form of an entry: a bare string when it has no metadata (so older
+/// snapshots stay byte-identical), otherwise the object form without null keys.
+fn stored_entry(id: &str, label: Option<&str>, device: Option<&str>, view: Option<&str>) -> Value {
+    if label.is_none() && device.is_none() && view.is_none() {
+        return Value::String(id.to_owned());
+    }
+    let mut object = json!({ "id": id });
+    if let Some(label) = label {
+        object["label"] = json!(label);
+    }
+    if let Some(device) = device {
+        object["device"] = json!(device);
+    }
+    if let Some(view) = view {
+        object["view"] = json!(view);
+    }
+    object
+}
+
+/// Whether `snapshot` defines a view with this id.
+fn view_exists(snapshot: &Value, view: &str) -> bool {
+    snapshot
+        .get("policy")
+        .and_then(|policy| policy.get("views"))
+        .and_then(Value::as_array)
+        .is_some_and(|views| {
+            views
+                .iter()
+                .any(|item| item.get("id").and_then(Value::as_str) == Some(view))
+        })
+}
+
+/// Trims an optional pinned-view id: blank becomes `None`; otherwise the view
+/// must exist in `snapshot`.
+fn clean_view(snapshot: &Value, text: Option<String>) -> Result<Option<String>, ControlApiError> {
+    let Some(view) = text
+        .map(|text| text.trim().to_owned())
+        .filter(|v| !v.is_empty())
+    else {
+        return Ok(None);
+    };
+    if !view_exists(snapshot, &view) {
+        return Err(invalid_field("view", "is not a defined view"));
+    }
+    Ok(Some(view))
+}
+
+/// Rejects deleting view `view` while Client IDs are pinned to it. The error
+/// names the pinned Client IDs.
+pub(crate) fn check_view_unpinned(snapshot: &Value, view: &str) -> Result<(), ControlApiError> {
+    let client_ids: Vec<String> = array(snapshot, "policy", "client_ids")
+        .iter()
+        .filter(|item| entry_view(item) == Some(view))
+        .filter_map(|item| entry_parts(item).map(|(id, _, _)| id.to_owned()))
+        .collect();
+    if client_ids.is_empty() {
+        return Ok(());
+    }
+    Err(ControlApiError::Module {
+        code: "policy.config.invalid",
+        params: Some(json!({
+            "reason": "view_in_use",
+            "view": view,
+            "client_ids": client_ids,
+        })),
+    })
+}
+
+/// A `policy.config.invalid` error whose `params` name the rejected field.
+fn invalid_field(field: &str, reason: &str) -> ControlApiError {
+    ControlApiError::Module {
+        code: "policy.config.invalid",
+        params: Some(json!({ "reason": format!("{field} {reason}"), "field": field })),
+    }
+}
+
+/// Trims an optional text field: blank becomes `None`, otherwise `check` runs.
+fn clean_meta(
+    text: Option<String>,
+    field: &str,
+    check: fn(&str) -> Result<(), &'static str>,
+) -> Result<Option<String>, ControlApiError> {
+    let Some(text) = text else {
+        return Ok(None);
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    check(trimmed).map_err(|reason| invalid_field(field, reason))?;
+    Ok(Some(trimmed.to_owned()))
+}
+
+/// Rejects `label` if another registered Client ID already uses it
+/// (case-insensitive).
+fn check_unique_label(items: &[Value], own_id: &str, label: &str) -> Result<(), ControlApiError> {
+    let wanted = label.to_lowercase();
+    let taken = items.iter().any(|item| {
+        entry_parts(item).is_some_and(|(id, other, _)| {
+            id != own_id && other.is_some_and(|other| other.to_lowercase() == wanted)
+        })
+    });
+    if taken {
+        return Err(invalid_field(
+            "label",
+            "is already used by another client id",
+        ));
+    }
+    Ok(())
+}
+
+/// Parses the `PUT` body: only `label`, `device` and `view` are accepted; each
+/// is a string or `null`, and an absent key means "leave unchanged".
+pub(crate) fn parse_client_patch(body: &Value) -> Result<ClientIdPatch, ControlApiError> {
+    let object = body
+        .as_object()
+        .ok_or_else(|| invalid("client id update must be a JSON object"))?;
+    if let Some(key) = object
+        .keys()
+        .find(|key| !matches!(key.as_str(), "label" | "device" | "view"))
+    {
+        return Err(invalid(&format!("unknown field {key}")));
+    }
+    let field = |name: &str| match object.get(name) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(text)) => Ok(Some(Some(text.clone()))),
+        Some(_) => Err(invalid(&format!("{name} must be a string or null"))),
+    };
+    Ok(ClientIdPatch {
+        label: field("label")?,
+        device: field("device")?,
+        view: field("view")?,
+    })
+}
+
+/// Registers a Client ID (with optional label, device and pinned view) in `snapshot`.
+pub(crate) fn register_client_id(
+    snapshot: &mut Value,
+    body: ClientIdBody,
+) -> Result<(), ControlApiError> {
+    if ClientId::new(&body.id).is_err() {
         return Err(invalid("client id must match [a-z0-9-]{1,63}"));
     }
+    let label = clean_meta(body.label, "label", check_client_label)?;
+    let device = clean_meta(body.device, "device", check_client_device)?;
+    let view = clean_view(snapshot, body.view)?;
     let ids = array_mut(snapshot, "policy", "client_ids")?;
-    if ids.iter().any(|item| item.as_str() == Some(id.as_str())) {
+    if ids
+        .iter()
+        .any(|item| entry_parts(item).is_some_and(|(id, _, _)| id == body.id))
+    {
         return Err(invalid("client id is already registered"));
     }
-    ids.push(Value::String(id));
+    if let Some(label) = &label {
+        check_unique_label(ids, &body.id, label)?;
+    }
+    ids.push(stored_entry(
+        &body.id,
+        label.as_deref(),
+        device.as_deref(),
+        view.as_deref(),
+    ));
     Ok(())
+}
+
+/// Changes the label, device and/or pinned view of registered Client ID `id`;
+/// returns its API view.
+pub(crate) fn update_client_id(
+    snapshot: &mut Value,
+    id: &str,
+    patch: ClientIdPatch,
+) -> Result<Value, ControlApiError> {
+    let new_view = match patch.view {
+        Some(value) => Some(clean_view(snapshot, value)?),
+        None => None,
+    };
+    let ids = array_mut(snapshot, "policy", "client_ids")?;
+    let index = ids
+        .iter()
+        .position(|item| entry_parts(item).is_some_and(|(entry, _, _)| entry == id))
+        .ok_or_else(|| ControlApiError::NotFound {
+            what: format!("client id {id}"),
+        })?;
+    let (_, current_label, current_device) =
+        entry_parts(&ids[index]).ok_or_else(malformed_snapshot)?;
+    let (current_label, current_device) = (
+        current_label.map(str::to_owned),
+        current_device.map(str::to_owned),
+    );
+    let label = match patch.label {
+        Some(value) => clean_meta(value, "label", check_client_label)?,
+        None => current_label,
+    };
+    let device = match patch.device {
+        Some(value) => clean_meta(value, "device", check_client_device)?,
+        None => current_device,
+    };
+    let view = match new_view {
+        Some(view) => view,
+        None => entry_view(&ids[index]).map(str::to_owned),
+    };
+    if let Some(label) = &label {
+        check_unique_label(ids, id, label)?;
+    }
+    ids[index] = stored_entry(id, label.as_deref(), device.as_deref(), view.as_deref());
+    client_id_json(&ids[index]).ok_or_else(malformed_snapshot)
 }
 
 /// Revokes a Client ID from `snapshot`.
@@ -262,7 +534,7 @@ pub(crate) fn revoke_client_id(snapshot: &mut Value, id: &str) -> Result<(), Con
     let ids = array_mut(snapshot, "policy", "client_ids")?;
     let index = ids
         .iter()
-        .position(|item| item.as_str() == Some(id))
+        .position(|item| entry_parts(item).is_some_and(|(entry, _, _)| entry == id))
         .ok_or_else(|| ControlApiError::NotFound {
             what: format!("client id {id}"),
         })?;

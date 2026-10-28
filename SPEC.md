@@ -32,7 +32,7 @@ Users: the network owner (single admin). Clients on the network are plain DNS co
 - Importing an existing AdGuard Home configuration (migration is a one-off manual task).
 - AdGuard "Safe Browsing" / "Parental Control" (they query an external AdGuard service;
   phishing/scam lists cover the need), DNSCrypt.
-- Per-device profiles: profiles are selected by subnet/IP range (or Client ID) only.
+- Per-device profiles: profiles are selected by subnet/IP range; a registered Client ID may be pinned to a view, which applies only to IPs no subnet matches (never overrides a matching subnet).
 - Docker API / socket access: containers behind bridge NAT appear as the Docker host anyway;
   manual names cover the need. May be revisited (via a read-only socket proxy) if `clients` shows real value.
 
@@ -51,7 +51,7 @@ Adopted from AdGuard Home and refined; each item belongs to the listed module sp
 | Per-client rate limit | listeners | Configurable queries/s per source IP, private ranges included |
 | Automatic list updates | filtering | Configurable interval; last update, rule count, and errors per list visible |
 | Config backup/export/import | control-api | One file restores the whole configuration (secrets excluded) |
-| Client ID via DoH/DoT | listeners, policy, web-ui | Device identified by DoT SNI (`<id>.dns.<domain>`) or DoH path (`/dns-query/<id>`); UI generates Apple `.mobileconfig` profiles (iOS/macOS) and Android "Private DNS" hostnames |
+| Client ID via DoH/DoT | listeners, policy, web-ui | Device identified by DoT SNI (`<id>.dns.<domain>`) or DoH path (`/dns-query/<id>`); a Client ID can carry a label and a device reference (shown as the client name in the query log when no directory client matches the IP); the web UI generates Apple `.mobileconfig` profiles (iOS/macOS, in the browser, no server call) and shows the Android "Private DNS" hostname |
 | Forward zones (conditional forwarding) | resolver, policy | Private zones and their reverse zones (e.g. a remote site over site-to-site VPN running its own, third-party resolver) are sent to configured DNS servers instead of being resolved recursively; optionally limited to certain profiles |
 | Blocked services (one-click) | filtering, web-ui | Service catalog (name, icon, rules, translated names) from AdGuard's HostlistsRegistry `services.json` + `services_i18n.json`, **downloaded at runtime** like a filter list (GPL-3.0 data, not bundled); toggle per profile |
 | Schedules | policy | Time windows per profile that switch filter sets/blocked services; off by default, low priority |
@@ -77,7 +77,7 @@ Adopted from AdGuard Home and refined; each item belongs to the listed module sp
 | Statistics dashboard | control-api, web-ui | Queries over time, blocked ratio, top domains, top blocked, top clients, DNSSEC outcomes, cache hit ratio, per node and aggregated |
 | Query log retention and anonymization | control-api | Default: everything visible; retention configurable (default **30 days**); optional IP truncation |
 | Roles | control-api, web-ui | `admin` (everything) and `viewer` (logs, statistics, read-only config), mapped from configurable Authentik groups |
-| Split-horizon views | policy | Per subnet/Client ID: own records (A, AAAA, CNAME, TXT, SRV, MX) **and** own filter set, blocked services, schedules, pause state |
+| Split-horizon views | policy | Per subnet (Client-ID pin for IPs no subnet matches): own records (A, AAAA, CNAME, TXT, SRV, MX) **and** own filter set, blocked services, schedules, pause state |
 | Manual client names | clients, web-ui | Names for single IPs or whole ranges (e.g. `198.51.100.0/24` = "Container host", `198.51.100.5` = "printer"); take precedence over UniFi names. Containers on macvlan are named automatically via UniFi |
 | DynDNS | tls | Keeps the public A/AAAA record of the DoH/DoT hostname at Cloudflare up to date; public IP from a configurable echo service (default: Cloudflare `cdn-cgi/trace`, as Cloudflare is already in use) |
 | Alerts | control-api, web-ui | Certificate expiry, failed list updates, node offline, DynDNS failures: shown in the web UI only (no push/e-mail for now) |

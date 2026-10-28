@@ -252,15 +252,17 @@ or secret token material. The `CertResolver` is passed to listeners as
 | GET | `/api/v1/policy/views` | admin | list views | – |
 | GET | `/api/v1/policy/views/{id}` | admin | single view | `control_api.not_found` |
 | PUT/POST | `/api/v1/policy/views/{id}` | admin | create/update view | `policy.config.invalid` etc. |
-| DELETE | `/api/v1/policy/views/{id}` | admin | delete view | `control_api.not_found` |
+| DELETE | `/api/v1/policy/views/{id}` | admin | delete view (rejected while Client IDs are pinned to it: `policy.config.invalid`, `reason: view_in_use`) | `control_api.not_found` |
 | GET/POST/PUT/DELETE | `/api/v1/policy/profiles/{id}` | admin | profile CRUD | `policy.config.unknown_filter_set` |
 | GET/POST/PUT/DELETE | `/api/v1/policy/pause` | admin | global/per-profile pause state | `policy.config.invalid` |
 | GET/POST/PUT/DELETE | `/api/v1/clients/manual` | admin | manual IP/CIDR entries | `clients.config.invalid` |
 | GET | `/api/v1/clients` | admin | client directory/list | – |
-| POST | `/api/v1/clients/sync` | admin | trigger UniFi sync | `clients.sync.*` |
+| POST | `/api/v1/clients/sync` | admin | trigger UniFi sync (sync_owner only) | `clients.sync.*`, `clients.sync.not_owner` |
+| GET | `/api/v1/clients/unifi` | admin | UniFi profiles + bindings + `has_api_key` (no secret material) | – |
+| PUT | `/api/v1/clients/unifi-profiles/{id}/api-key` | admin | write-only API key (`{ "api_key": "…" \| null }`; omit keep, null clear) | `clients.config.invalid`, `control_api.not_found` |
 | GET/POST/PUT/DELETE | `/api/v1/filter-sets` | admin | filter set configuration | `filtering.config.*` |
 | GET/POST/PUT/DELETE | `/api/v1/filter-lists` | admin | URL list management | `filtering.*` |
-| GET/POST/PUT/DELETE | `/api/v1/listeners` | admin | listener CRUD | `listeners.config.*` |
+| GET/POST/PUT/DELETE | `/api/v1/listeners` | admin | listener CRUD (`nodes[]` optional; empty = all nodes) | `listeners.config.*` |
 | GET/POST/PUT/DELETE | `/api/v1/tls` | admin | TLS config (including `acme`, `dyndns`, `dns_provider`, `notifications`) | `tls.config.*` |
 | GET | `/api/v1/tls/status` | viewer/admin | typed TLS status DTO (mode, fingerprint, expiry, chain, ARI, history, store health) | `control_api.not_ready` |
 | PUT | `/api/v1/tls/certificate` | admin | upload a PEM certificate + key (+ optional chain); switches to `tls_mode = manual`; returns `{ "mode": "manual" }` | `tls.cert.manual.invalid` |
@@ -673,9 +675,12 @@ Bootstrap values from TOML/environment are only used to initialise the first
 config generation if SQLite is empty (`ConfigService::seed_if_empty`). After that,
 the API and SQLite are the source of truth.
 
-UniFi settings and local-domain mode (GA26 decision) are edited through the
-`clients` section of `PUT /api/v1/config` (validated by the clients module); v1
-has no separate typed route for them.
+UniFi **profiles, bindings, and local-domain mode** are edited through the
+`clients` section of `PUT /api/v1/config` (validated by the clients module).
+API keys are **not** part of that section: they use
+`PUT /api/v1/clients/unifi-profiles/{id}/api-key` (kv `unifi.api_key.{id}`,
+write-only; `GET /api/v1/clients/unifi` reports `has_api_key` only). Legacy
+flat `clients.unifi` migrates to profile `default` on validate.
 
 ### Validation
 
@@ -1270,10 +1275,15 @@ snapshots; session defaults are 12 h absolute / 60 min idle.
 
 ## Open questions (non-TLS)
 
-1. **DoH/DoT Client-ID CRUD (resolved 2026-10-28).** The Client-ID registry is a
-   top-level `policy.client_ids` list served by `GET|POST /api/v1/policy/client-ids`
-   and `DELETE /api/v1/policy/client-ids/{id}` (see docs/API-REFERENCE.md). Rename is
-   delete plus create; a random suffix is supplied by the caller.
+1. **DoH/DoT Client-ID CRUD (resolved 2026-10-28, labels added with T1).** The
+   Client-ID registry is a top-level `policy.client_ids` list served by
+   `GET|POST /api/v1/policy/client-ids`, `PUT|DELETE /api/v1/policy/client-ids/{id}`
+   (see docs/API-REFERENCE.md). Each entry is a bare id string or
+   `{ "id", "label"?, "device"?, "view"? }`. `view` pins the Client ID to a view for
+   IPs no subnet matches (SPEC-policy.md, selection order; decided 2026-10-28). Rename is `PUT` of the label; the id itself is
+   fixed, so a new id still means delete plus create with a caller-supplied suffix.
+   Deleting a view with pinned Client IDs is `policy.config.invalid` with
+   `params.reason = "view_in_use"`, `params.view`, `params.client_ids`.
 2. **Cluster administration endpoints.** Defined in § Cluster contract:
    `/api/v1/cluster/join-tokens`, `/api/v1/cluster/nodes`,
    `/api/v1/cluster/nodes/{id}` and `/api/v1/cluster/writes/{request_id}`, with

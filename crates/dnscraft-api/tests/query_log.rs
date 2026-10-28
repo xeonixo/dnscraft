@@ -107,6 +107,7 @@ fn sample_event(time: SystemTime, index: usize) -> QueryEvent {
             profile_id: ProfileId::new("default").unwrap(),
             selection,
             client_id: None,
+            client_label: None,
             filter_set: SetId::new("default").unwrap(),
             steps,
             filter,
@@ -381,6 +382,103 @@ async fn query_log_events_are_enriched_with_client_data_and_ip_truncated() {
         .await
         .unwrap();
     assert_eq!(page.records.len(), 1);
+}
+
+/// A sample event from `source` carrying a Client ID and, when registered
+/// with a label, that label on the decision.
+fn client_id_event(
+    time: SystemTime,
+    source: Ipv4Addr,
+    client: &str,
+    label: Option<&str>,
+) -> QueryEvent {
+    let mut event = sample_event(time, 1);
+    event.source = IpAddr::V4(source);
+    let id = dnscraft_policy::ClientId::new(client).unwrap();
+    event.client_id = Some(id.clone());
+    event.decision.client_id = Some(id);
+    event.decision.client_label = label.map(Arc::from);
+    event
+}
+
+#[tokio::test]
+async fn query_log_shows_client_id_label_unless_a_directory_client_matches() {
+    let clock = Arc::new(ManualClock::new(base_time()));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    let log = QueryLog::new(db, dnscraft_api::QueryLogConfig::default(), "node-a")
+        .with_client_enricher(Arc::new(FakeClients));
+    log.insert_batch(vec![
+        // No directory match by source IP: the label is the name.
+        client_id_event(
+            at_secs(BASE_SECS - 3),
+            Ipv4Addr::new(192, 0, 2, 11),
+            "anna-phone",
+            Some("Anna's phone"),
+        ),
+        // Directory match by source IP wins over the label.
+        client_id_event(
+            at_secs(BASE_SECS - 2),
+            Ipv4Addr::new(192, 0, 2, 10),
+            "anna-phone",
+            Some("Anna's phone"),
+        ),
+        // Unregistered Client ID: no label, no name.
+        client_id_event(
+            at_secs(BASE_SECS - 1),
+            Ipv4Addr::new(192, 0, 2, 12),
+            "ghost",
+            None,
+        ),
+    ])
+    .await
+    .unwrap();
+
+    // The label is stored in `client_name`, so the name filter finds it.
+    let page = log
+        .list(&QueryLogFilter {
+            client_name_substr: Some("ANNA".to_owned()),
+            limit: 10,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 1);
+    let record = &page.records[0];
+    assert_eq!(record["client"]["display_name"], "Anna's phone");
+    assert_eq!(record["client"]["id"], "anna-phone");
+    assert_eq!(record["client"]["display_name"], "Anna's phone");
+    assert_eq!(record["client"]["source"], "client_id");
+    assert_eq!(record["client"]["macs"], serde_json::json!([]));
+    assert_eq!(record["client"]["vlan_id"], Value::Null);
+    assert_eq!(record["client"]["local_domain"], Value::Null);
+
+    let page = log
+        .list(&QueryLogFilter {
+            client_id: Some("anna-phone".to_owned()),
+            limit: 10,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 2);
+    let directory_hit = page
+        .records
+        .iter()
+        .find(|record| record["client"]["display_name"] == "iPhone")
+        .unwrap();
+    assert_eq!(directory_hit["client"]["display_name"], "iPhone");
+    assert_eq!(directory_hit["client"]["source"], "unifi");
+
+    let page = log
+        .list(&QueryLogFilter {
+            client_id: Some("ghost".to_owned()),
+            limit: 10,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records[0]["client_id"], "ghost");
+    assert_eq!(page.records[0]["client"], Value::Null);
 }
 
 #[tokio::test]

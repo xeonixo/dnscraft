@@ -8,8 +8,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dnscraft_api::{ClientEnricher, ClientView, ControlApiError, DirectoryClient, SyncSummary};
-use dnscraft_clients::{ClientEngine, ClientLookup, ClientSource};
+use dnscraft_api::{
+    ClientEnricher, ClientView, ControlApiError, DirectoryClient, DirectoryExport, SyncSummary,
+};
+use dnscraft_clients::{
+    ClientEngine, ClientLookup, ClientSource, Secret, networks_from_value, networks_to_value,
+    observations_from_value, observations_to_value,
+};
 use dnscraft_filtering::{
     Clock, FilterConfig, FilterEngine, FilterSetConfig, ListStore, SetId, StoreConfig,
 };
@@ -150,6 +155,62 @@ impl dnscraft_api::ClientDirectory for EngineDirectory {
                 client_count: report.client_count,
                 ip_conflicts: report.ip_conflicts,
             })
+        })
+    }
+
+    fn set_api_key(&self, key: Option<String>) {
+        self.engine
+            .set_api_key(key.map(|value| Secret::new(value)));
+    }
+
+    fn is_sync_owner(&self) -> bool {
+        self.engine.is_sync_owner()
+    }
+
+    fn directory_export(&self) -> Option<DirectoryExport> {
+        let profile_id = self.engine.bound_profile_id()?;
+        let (obs, nets, generation) = self.engine.export_unifi_directory();
+        Some(DirectoryExport {
+            profile_id,
+            generation,
+            observations: observations_to_value(&obs),
+            networks: networks_to_value(&nets),
+        })
+    }
+
+    fn apply_directory_push<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        profile_id: &'life1 str,
+        observations: serde_json::Value,
+        networks: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ControlApiError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        let profile_id = profile_id.to_owned();
+        Box::pin(async move {
+            let obs = observations_from_value(&observations).map_err(|message| {
+                ControlApiError::Module {
+                    code: "clients.config.invalid",
+                    params: Some(serde_json::json!({ "reason": message })),
+                }
+            })?;
+            let nets = networks_from_value(&networks).map_err(|message| {
+                ControlApiError::Module {
+                    code: "clients.config.invalid",
+                    params: Some(serde_json::json!({ "reason": message })),
+                }
+            })?;
+            self.engine
+                .apply_directory_push(&profile_id, obs, nets)
+                .await
+                .map_err(|error| ControlApiError::Module {
+                    code: error.code(),
+                    params: None,
+                })?;
+            Ok(())
         })
     }
 }

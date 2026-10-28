@@ -147,6 +147,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             classify,
             node_id,
         } = params;
+        let config = filter_listeners_for_node(config, node_id.as_ref());
 
         let certs = certs.unwrap_or_else(|| Arc::new(CertResolver::new()));
         let sni_gate = Arc::new(SniGate {
@@ -194,6 +195,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
     pub async fn apply_config(&self, cfg: ListenersConfig) -> Result<(), ListenersError> {
         let _apply = self.apply_lock.lock().await;
         cfg.validate()?;
+        let cfg = filter_listeners_for_node(cfg, self.node_id.as_ref());
 
         let (to_stop, to_start, limits, rebuild_admission, reserved) = {
             let mut inner = self
@@ -700,6 +702,16 @@ impl ClientIdRegistry for EmptyClientIds {
     }
 }
 
+/// Drops listeners whose `nodes` list excludes this process's node id.
+fn filter_listeners_for_node(
+    mut cfg: ListenersConfig,
+    node_id: Option<&NodeId>,
+) -> ListenersConfig {
+    cfg.listeners
+        .retain(|listener| listener.applies_to_node(node_id));
+    cfg
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -725,6 +737,7 @@ mod tests {
                 profile_id: ProfileId::new("default").unwrap(),
                 selection: SelectionCause::Default,
                 client_id: None,
+                client_label: None,
                 filter_set: SetId::new("default").unwrap(),
                 steps: Vec::new(),
                 filter: None,
@@ -745,6 +758,7 @@ mod tests {
         let cfg = ListenersConfig {
             listeners: vec![ListenerConfig {
                 node_id: None,
+                nodes: Vec::new(),
                 id: ListenerId::new("lan-dot").unwrap(),
                 protocol: Protocol::Dot,
                 address: SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),

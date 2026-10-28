@@ -126,6 +126,7 @@ async fn main() {
         let mut udp_join = tokio::spawn(serve_udp(UdpServeParams {
             listener: ListenerConfig {
                 node_id: None,
+                nodes: Vec::new(),
                 id: ListenerId::new("demo-udp").unwrap(),
                 protocol: Protocol::Udp53,
                 address: udp_bind,
@@ -158,6 +159,7 @@ async fn main() {
         let mut tcp_join = tokio::spawn(serve_tcp(TcpServeParams {
             listener: ListenerConfig {
                 node_id: None,
+                nodes: Vec::new(),
                 id: ListenerId::new("demo-tcp").unwrap(),
                 protocol: Protocol::Tcp53,
                 address: tcp_bind,

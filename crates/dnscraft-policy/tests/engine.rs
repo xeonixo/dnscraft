@@ -461,8 +461,11 @@ async fn client_id_registry_lists_configured_ids_and_follows_apply() {
     let h = Hierarchy::start().await.unwrap();
     let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
     let mut cfg = policy_config(vec![profile("default", None)]);
-    cfg.client_ids
-        .push(dnscraft_policy::ClientId::new("iphone-k7q2x9").unwrap());
+    cfg.client_ids.push(
+        dnscraft_policy::ClientId::new("iphone-k7q2x9")
+            .unwrap()
+            .into(),
+    );
     let engine =
         PolicyEngine::new(cfg, empty_filter(), resolver, Arc::new(NoClients), clock()).unwrap();
 
@@ -475,4 +478,92 @@ async fn client_id_registry_lists_configured_ids_and_follows_apply() {
         .await
         .unwrap();
     assert!(engine.registered_client_ids().is_empty());
+}
+
+#[tokio::test]
+async fn client_id_entries_accept_strings_and_objects_and_expose_labels() {
+    let h = Hierarchy::start().await.unwrap();
+    let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
+    let mut cfg = policy_config(vec![profile("default", None)]);
+    cfg.client_ids = serde_json::from_value(serde_json::json!([
+        "phone",
+        { "id": "tablet", "label": "  Anna's iPad  " },
+        { "id": "laptop", "device": "lan-laptop-1" }
+    ]))
+    .unwrap();
+    let engine =
+        PolicyEngine::new(cfg, empty_filter(), resolver, Arc::new(NoClients), clock()).unwrap();
+
+    let registered = engine.registered_client_ids();
+    let ids: Vec<&str> = registered.iter().map(|id| id.as_str()).collect();
+    assert_eq!(ids, ["phone", "tablet", "laptop"]);
+    let labels = engine.client_id_labels();
+    assert_eq!(labels.len(), 1);
+    assert_eq!(labels.get("tablet").map(|l| &**l), Some("Anna's iPad"));
+}
+
+#[tokio::test]
+async fn decision_record_carries_the_label_of_a_registered_client_id() {
+    let h = Hierarchy::start().await.unwrap();
+    let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
+    let mut cfg = policy_config(vec![profile("default", None)]);
+    cfg.client_ids = serde_json::from_value(serde_json::json!([
+        { "id": "tablet", "label": "Anna's iPad" },
+        "phone"
+    ]))
+    .unwrap();
+    let engine =
+        PolicyEngine::new(cfg, empty_filter(), resolver, Arc::new(NoClients), clock()).unwrap();
+
+    // ANY is answered without an upstream query.
+    let cases = [
+        (Some("tablet"), Some("Anna's iPad")),
+        (Some("phone"), None),
+        (Some("ghost"), None),
+        (None, None),
+    ];
+    for (client, expected) in cases {
+        let mut query = ctx("example.com.", RecordType::ANY, true);
+        query.client_id = client.map(|id| dnscraft_policy::ClientId::new(id).unwrap());
+        let answer = engine.handle(query).await.unwrap();
+        assert_eq!(
+            answer.record.client_label.as_deref(),
+            expected,
+            "{client:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn decision_record_reports_client_id_selection_cause() {
+    let h = Hierarchy::start().await.unwrap();
+    let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
+    let mut cfg = policy_config(vec![profile("default", None)]);
+    cfg.client_ids = serde_json::from_value(serde_json::json!([
+        { "id": "tablet", "view": "unterwegs" },
+        "phone"
+    ]))
+    .unwrap();
+    cfg.views.push(ViewConfig {
+        id: ViewId::new("unterwegs").unwrap(),
+        is_default: false,
+        subnets: Vec::new(),
+        nodes: Vec::new(),
+        profile: ProfileId::new("default").unwrap(),
+    });
+    let engine =
+        PolicyEngine::new(cfg, empty_filter(), resolver, Arc::new(NoClients), clock()).unwrap();
+
+    // ANY is answered without an upstream query. The source matches no subnet.
+    for (client, expected, view) in [
+        (Some("tablet"), SelectionCause::ClientId, "unterwegs"),
+        (Some("phone"), SelectionCause::Default, "default"),
+        (None, SelectionCause::Default, "default"),
+    ] {
+        let mut query = ctx("example.com.", RecordType::ANY, true);
+        query.client_id = client.map(|id| dnscraft_policy::ClientId::new(id).unwrap());
+        let answer = engine.handle(query).await.unwrap();
+        assert_eq!(answer.record.selection, expected, "{client:?}");
+        assert_eq!(answer.record.view_id.as_str(), view, "{client:?}");
+    }
 }

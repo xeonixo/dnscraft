@@ -27,7 +27,9 @@ use crate::tls::{TlsAdmin, TlsStatus, TlsStatusProvider};
 use dnscraft_common::clock::{Clock, SystemClock};
 
 use crate::cluster_write_relay::{ClusterWriteRelay, ClusterWriteRelayHandle};
-use dnscraft_cluster::{ClusterBroadcast, ClusterStore, OfflineWriteQueue, Role, WriteExecutor};
+use dnscraft_cluster::{
+    ClusterBroadcast, ClusterClient, ClusterStore, OfflineWriteQueue, Role, WriteExecutor,
+};
 use dnscraft_filtering::FilterEngine;
 use dnscraft_mcp::McpConfig;
 use dnscraft_policy::PolicyEngine;
@@ -52,6 +54,8 @@ pub struct AppState {
     cluster_store: Option<Arc<ClusterStore>>,
     cluster_status: Option<Arc<dyn ClusterStatusProvider>>,
     cluster_broadcast: Arc<Mutex<Option<ClusterBroadcast>>>,
+    /// Sub-node mTLS client used to uplink UniFi directories to the master.
+    cluster_uplink: Arc<Mutex<Option<Arc<ClusterClient>>>>,
     cluster_role: Arc<Mutex<Option<Role>>>,
     offline_writes: Option<Arc<OfflineWriteQueue>>,
     cluster_write_relay: ClusterWriteRelayHandle,
@@ -99,6 +103,7 @@ impl AppState {
             cluster_store: None,
             cluster_status: None,
             cluster_broadcast: Arc::new(Mutex::new(None)),
+            cluster_uplink: Arc::new(Mutex::new(None)),
             cluster_role: Arc::new(Mutex::new(None)),
             offline_writes: None,
             cluster_write_relay: Arc::new(Mutex::new(None)),
@@ -359,6 +364,21 @@ impl AppState {
     /// The master broadcast handle, if this node runs the master role.
     pub(crate) fn cluster_broadcast(&self) -> Option<ClusterBroadcast> {
         self.cluster_broadcast
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Attaches the sub-node cluster client for UniFi directory uplink.
+    pub(crate) fn attach_cluster_uplink(&self, client: Arc<ClusterClient>) {
+        *self
+            .cluster_uplink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(client);
+    }
+
+    pub(crate) fn cluster_uplink(&self) -> Option<Arc<ClusterClient>> {
+        self.cluster_uplink
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()

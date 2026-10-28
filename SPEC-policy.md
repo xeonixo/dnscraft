@@ -32,8 +32,9 @@ block responses.
    never appear here. DoH/DoT **Client ID** ≠ UniFi `ClientInfo`.
 5. Listeners supply `RequestContext` (source IP, protocol, Client ID from SNI
    or DoH path). Public Client-ID admission (unknown SNI → reject) is enforced
-   at TLS/listener layer ([SPEC-tls.md](SPEC-tls.md)); policy does **not** map
-   Client ID to a view/profile — selection is source-IP only, and the ID merely
+   at TLS/listener layer ([SPEC-tls.md](SPEC-tls.md)). Selection is source-IP
+   first; an admitted Client ID selects a view only through its registry pin,
+   and only for IPs no subnet matches (see Selection order). Otherwise the ID
    enriches the log.
 6. Coverage target ≥ 80 % lines (SPEC.md).
 
@@ -55,26 +56,52 @@ pub struct RequestContext {
 pub struct Selection {
     pub view_id: ViewId,
     pub profile_id: ProfileId,
-    pub matched_by: SelectionCause,  // Subnet(prefix) | Default
+    pub matched_by: SelectionCause,  // Subnet(prefix) | ClientId | Default
 }
 ```
 
 **Selection order (highest wins):**
 
 1. **Longest-prefix** match of `source_ip` against view subnet/CIDR ranges
-   (IPv4 and IPv6 separately).
-2. **Default view** (exactly one required).
+   (IPv4 and IPv6 separately), among views valid on the request's node.
+2. **Client-ID pin.** If the request carries an admitted Client ID that is
+   pinned to a view (`view` on its registry entry) and that view is valid on the
+   request's node, that view is selected (`SelectionCause::ClientId`). A pin
+   never beats a matching subnet; it only replaces the default for IPs that no
+   subnet recognises.
+3. **Default view** (exactly one required).
 
-Client IDs are **not** selection keys. A DoH/DoT/DoQ client is placed by its
-source IP exactly like a Do53 client; the Client ID only authenticates the
-client to the listener (public-source admission) and enriches the log. Unknown
-public Client IDs never reach policy (listener rejected them).
+A Client ID is a selection input only through its pin (step 2); it is never a
+subnet key. A DoH/DoT/DoQ client without a pin is placed by its source IP exactly
+like a Do53 client. The Client ID also authenticates the client to the listener
+(public-source admission). Unknown public Client IDs never reach policy (listener
+rejected them).
+
+**Client-ID registry entries.** `policy.client_ids` accepts two entry shapes:
+a bare string `"iphone-k7q2x9"` (the original form, still valid) or
+`{ "id": "iphone-k7q2x9", "label"?: "iPhone von Anna", "device"?: "<directory
+client id>", "view"?: "unterwegs" }` (unknown keys are rejected). `view` is the
+pin of step 2: a view id from `policy.views`, validated at build (unknown view →
+`policy.config.invalid`, `InvalidClientMeta` with field `view`). The registry
+(`registered_client_ids`) and the listener admission only see the ids; `client_id_labels()` returns the
+labels for the query log. Label: trimmed, 1 to 64 characters, unique
+case-insensitively. Device: trimmed, at most 128 characters, a display and log
+reference only, it never changes selection. Only `view` changes selection, and
+only as the pin of step 2.
+
+**Log name precedence:** the query log names a client as the directory client
+matching the source IP → the label of the registered Client ID on the request
+(`source: "client_id"`) → none. The label is read from the policy snapshot and
+carried on the decision record as `client_label`; unregistered Client IDs never get
+a label.
 
 **Node validity:** a view may carry `nodes` (empty = all nodes). On a node, only
 views whose `nodes` is empty or contains the node's `node_id` participate in
 selection; the others are treated as absent. The default view must be valid on
 every node (`policy.config.invalid` otherwise), so every node always has a
-reachable default.
+reachable default. The same rule applies to pins: a pin to a view that is not
+valid on the request's node is ignored, and the request falls back to the default
+view. A pin is stored and validated at build regardless of `nodes`.
 
 ### Views and profiles
 
@@ -382,6 +409,8 @@ ptr_prefixes = []
 local_nxdomain_suffixes = ["local", "lan", "internal"]
 # forward zones whose answers still get rebind protection (default: none)
 rebind_check_forward_zones = []
+# Client-ID registry. A pin (`view`) applies only to IPs that no subnet matches.
+client_ids = ["iphone-k7q2x9", { id = "ipad-m3p8", label = "iPad", view = "unterwegs" }]
 
 [[policy.views]]
 id = "lan"
@@ -419,7 +448,7 @@ rebind_exceptions = ["*.example.com"]
 
 ## Testing
 
-- Table tests: selection (longer prefix > shorter > default),
+- Table tests: selection (longer prefix > shorter > Client-ID pin > default),
   pipeline step order (local beats filter beats recursion), filter before
   SafeSearch (blocked original qname stays blocked; blocked safe host blocked
   after rewrite), unknown name under a local domain falls through while a known
@@ -444,7 +473,7 @@ rebind_exceptions = ["*.example.com"]
 
 ## Success Criteria
 
-1. Selection table tests match the LPM / default rules (Client IDs never change the selection).
+1. Selection table tests match the LPM / pin / default rules (a Client ID changes the selection only as a pin on an unmatched IP).
 2. Pipeline golden tests: local record and ClientDirectory answers never hit the
    resolver; blocked qnames never hit the resolver; CNAME chain block works.
 3. Rebind strips private answers except exceptions and forward-zone answers
@@ -500,6 +529,15 @@ Schedule time zones: ship UTC-only (current) or add a profile/timezone field lat
     `nas.lan` resolves one way in Gäste, another in VPN). The UI keeps names and
     zones separate: **Zonen** = selection scopes, **Namen** = shared records with
     per-zone overrides.
+15. **Review 2026-10-28 (owner), narrows review 13:** a device keeps its profile on
+    the road. A registered Client ID may be **pinned** to a view (`view` on its
+    `policy.client_ids` entry). Selection order becomes subnet (longest prefix,
+    views valid on the node) → Client-ID pin → default view. A Client ID still
+    never beats a matching subnet; it only replaces the default for IPs no subnet
+    recognises. A pin to a view not valid on the request's node is ignored (default
+    applies). Decision record `selection`: `{ "cause": "client_id" }` (no prefix).
+    The pin is a view pointer only; per-view record overrides keep "same rules,
+    different records" for the road view.
 13. **Review 2026-10-25 (Claude):** pipeline reordered to filter original qname →
     SafeSearch → filter rewritten host (block wins over SafeSearch); steps
     renumbered (rebind is now step 10). Only names `ClientDirectory` knows are

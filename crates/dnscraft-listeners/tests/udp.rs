@@ -135,6 +135,7 @@ async fn same_port_v4_and_v6_unspecified() {
     let join4 = tokio::spawn(serve_udp(UdpServeParams {
         listener: ListenerConfig {
             node_id: None,
+            nodes: Vec::new(),
             id: ListenerId::new("udp4").unwrap(),
             protocol: Protocol::Udp53,
             address: SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
@@ -156,6 +157,7 @@ async fn same_port_v4_and_v6_unspecified() {
     let join6 = tokio::spawn(serve_udp(UdpServeParams {
         listener: ListenerConfig {
             node_id: None,
+            nodes: Vec::new(),
             id: ListenerId::new("udp6").unwrap(),
             protocol: Protocol::Udp53,
             address: SocketAddr::from((Ipv6Addr::UNSPECIFIED, addr4.port())),

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use axum::Extension;
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::extract::rejection::JsonRejection;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
@@ -25,6 +25,7 @@ use crate::api::config_routes::{
 use crate::api::response::success;
 use crate::error::ControlApiError;
 use crate::server::AppState;
+use crate::unifi_secrets::{has_api_key, set_api_key};
 
 /// One entry of the synced client directory (UniFi or manual), in the public
 /// shape of `GET /api/v1/clients` (D5). Built by the binary's adapter.
@@ -65,6 +66,19 @@ pub struct SyncSummary {
     pub ip_conflicts: u64,
 }
 
+/// UniFi directory snapshot for cluster uplink / push.
+#[derive(Clone, Debug)]
+pub struct DirectoryExport {
+    /// Bound UniFi profile id.
+    pub profile_id: String,
+    /// Engine generation after the last successful sync.
+    pub generation: u64,
+    /// Serialised observations (clients cache wire shape).
+    pub observations: Value,
+    /// Serialised networks (clients cache wire shape).
+    pub networks: Value,
+}
+
 /// Read and sync access to the client directory (GA6). Implementations map
 /// engine failures to their stable `clients.*` codes; no secret material is
 /// ever returned.
@@ -74,6 +88,29 @@ pub trait ClientDirectory: Send + Sync {
     fn clients(&self) -> Vec<DirectoryClient>;
     /// Runs one sync now.
     async fn sync(&self) -> Result<SyncSummary, ControlApiError>;
+
+    /// Installs or clears the in-memory UniFi API key (`SecretPush` / local PUT).
+    fn set_api_key(&self, _key: Option<String>) {}
+
+    /// Applies a cluster `ClientsDirectoryPush` when bound and not sync_owner.
+    async fn apply_directory_push(
+        &self,
+        _profile_id: &str,
+        _observations: Value,
+        _networks: Value,
+    ) -> Result<(), ControlApiError> {
+        Ok(())
+    }
+
+    /// Cached UniFi directory for uplink after a successful owner sync.
+    fn directory_export(&self) -> Option<DirectoryExport> {
+        None
+    }
+
+    /// Whether this node is sync_owner of its bound UniFi profile.
+    fn is_sync_owner(&self) -> bool {
+        false
+    }
 }
 
 fn directory(state: &AppState) -> Option<&Arc<dyn ClientDirectory>> {
@@ -330,12 +367,209 @@ pub(crate) async fn sync_clients(
         ));
     };
     let report = dir.sync().await?;
+    publish_directory_after_sync(&state, dir.as_ref()).await;
     Ok(success(json!({
         "generation": report.generation,
         "rebuilt": report.rebuilt,
         "client_count": report.client_count,
         "ip_conflicts": report.ip_conflicts,
     })))
+}
+
+/// After a sync_owner sync: fan-out on the master, or uplink from a sub-node.
+async fn publish_directory_after_sync(state: &AppState, dir: &dyn ClientDirectory) {
+    if !dir.is_sync_owner() {
+        return;
+    }
+    let Some(export) = dir.directory_export() else {
+        return;
+    };
+    if let Some(broadcast) = state.cluster_broadcast() {
+        broadcast.push_clients_directory(
+            &export.profile_id,
+            export.generation,
+            &export.observations,
+            &export.networks,
+        );
+        return;
+    }
+    if let Some(client) = state.cluster_uplink()
+        && let Err(error) = client
+            .post_clients_directory(
+                &export.profile_id,
+                export.generation,
+                &export.observations,
+                &export.networks,
+            )
+            .await
+    {
+        tracing::warn!(error = %error, "clients directory uplink failed");
+    }
+}
+
+/// `GET /api/v1/clients/unifi` — profiles, bindings, and `has_api_key` (no secrets).
+pub(crate) async fn get_unifi(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let service = service(&state)?;
+    let snapshot = stored_snapshot(service).await?;
+    let clients = snapshot
+        .get("clients")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let profiles = clients
+        .get("unifi_profiles")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let bindings = clients
+        .get("unifi_bindings")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let db = state.db().ok_or_else(|| ControlApiError::NotReady {
+        module: "database".into(),
+    })?;
+    let mut enriched = Vec::with_capacity(profiles.len());
+    for profile in profiles {
+        let id = profile
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let mut row = profile;
+        if let Some(obj) = row.as_object_mut() {
+            obj.insert(
+                "has_api_key".into(),
+                Value::Bool(has_api_key(db, &id).await?),
+            );
+        }
+        enriched.push(row);
+    }
+    // Legacy flat unifi when profiles are empty.
+    if enriched.is_empty() {
+        if let Some(unifi) = clients.get("unifi").cloned() {
+            let mut row = unifi;
+            if let Some(obj) = row.as_object_mut() {
+                obj.insert("id".into(), json!("default"));
+                obj.insert(
+                    "has_api_key".into(),
+                    Value::Bool(has_api_key(db, "default").await?),
+                );
+            }
+            enriched.push(row);
+        }
+    }
+    Ok(success(json!({
+        "profiles": enriched,
+        "bindings": bindings,
+        "local_domain": clients.get("local_domain"),
+        "local_domain_mode": clients.get("local_domain_mode"),
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ApiKeyBody {
+    /// Write-only: omit to keep, `null` to clear, string to set.
+    #[serde(default)]
+    api_key: OptionalApiKey,
+}
+
+#[derive(Default)]
+enum OptionalApiKey {
+    #[default]
+    Absent,
+    Clear,
+    Set(String),
+}
+
+impl<'de> Deserialize<'de> for OptionalApiKey {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match Option::<String>::deserialize(deserializer)? {
+            None => Ok(Self::Clear),
+            Some(value) => Ok(Self::Set(value)),
+        }
+    }
+}
+
+/// `PUT /api/v1/clients/unifi-profiles/{id}/api-key` — write-only UniFi API key.
+pub(crate) async fn put_unifi_api_key(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Result<Json<ApiKeyBody>, JsonRejection>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let _ = service(&state)?;
+    if id.trim().is_empty() {
+        return Err(module_error(
+            "clients.config.invalid",
+            "profile id must not be empty",
+        ));
+    }
+    let Json(body) = match body {
+        Ok(v) => v,
+        Err(rejection) => return Err(ControlApiError::config(rejection.body_text())),
+    };
+    let db = state.db().ok_or_else(|| ControlApiError::NotReady {
+        module: "database".into(),
+    })?;
+    let (updated, has_key, push_key) = match body.api_key {
+        OptionalApiKey::Absent => {
+            return Ok(success(json!({ "id": id, "updated": false })));
+        }
+        OptionalApiKey::Clear => {
+            set_api_key(db, &id, None).await?;
+            if let Some(dir) = directory(&state) {
+                dir.set_api_key(None);
+            }
+            (true, false, None)
+        }
+        OptionalApiKey::Set(value) => {
+            set_api_key(db, &id, Some(value.as_str())).await?;
+            if let Some(dir) = directory(&state) {
+                dir.set_api_key(Some(value.clone()));
+            }
+            (true, true, Some(value))
+        }
+    };
+    push_unifi_secret_to_owner(&state, &id, push_key.as_deref()).await;
+    Ok(success(json!({
+        "id": id,
+        "updated": updated,
+        "has_api_key": has_key,
+    })))
+}
+
+/// Looks up `sync_owner` for `profile_id` and pushes the key over the cluster stream.
+async fn push_unifi_secret_to_owner(state: &AppState, profile_id: &str, api_key: Option<&str>) {
+    let Some(broadcast) = state.cluster_broadcast() else {
+        return;
+    };
+    let Ok(service) = service(state) else {
+        return;
+    };
+    let Ok(snapshot) = stored_snapshot(service).await else {
+        return;
+    };
+    let Some(owner) = snapshot
+        .get("clients")
+        .and_then(|c| c.get("unifi_profiles"))
+        .and_then(|p| p.as_array())
+        .and_then(|profiles| {
+            profiles.iter().find_map(|profile| {
+                (profile.get("id").and_then(|v| v.as_str()) == Some(profile_id))
+                    .then(|| {
+                        profile
+                            .get("sync_owner")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned)
+                    })
+                    .flatten()
+            })
+        })
+    else {
+        return;
+    };
+    broadcast.push_unifi_secret(&owner, profile_id, api_key);
 }
 
 /// Rejects an identity (`ip`/`cidr`) already used by another manual entry.

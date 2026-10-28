@@ -19,7 +19,8 @@ use super::auth::session_routes::{list_sessions, revoke_session};
 use super::auth::tokens::{create_token, delete_token, list_tokens};
 use super::auth::{auth_me, auth_middleware, logout, rbac_middleware};
 use super::clients_routes::{
-    create_manual, delete_manual, list_clients, list_manual, put_manual, sync_clients,
+    create_manual, delete_manual, get_unifi, list_clients, list_manual, put_manual,
+    put_unifi_api_key, sync_clients,
 };
 use super::cluster_endpoints::{get_write, list_nodes, mint_join_token, revoke_node};
 use super::config_routes::{
@@ -38,7 +39,8 @@ use super::mcp_endpoints::{
 };
 use super::notifications_routes::{get_notifications, post_notification_test, put_notifications};
 use super::policy_routes::{
-    create_client_id, delete_client_id, delete_record, list_client_ids, list_records, put_record,
+    create_client_id, delete_client_id, delete_record, list_client_ids, list_records,
+    put_client_id, put_record,
 };
 use super::query_log_routes::{get_query_log, list_query_log, stream_query_log};
 use super::rate_limit::rate_limit;
@@ -104,7 +106,10 @@ pub(crate) fn build_router(state: AppState) -> Router {
                 "/policy/client-ids",
                 get(list_client_ids).post(create_client_id),
             )
-            .route("/policy/client-ids/{id}", delete(delete_client_id))
+            .route(
+                "/policy/client-ids/{id}",
+                delete(delete_client_id).put(put_client_id),
+            )
             .route(
                 "/policy/views/{id}",
                 get(get_view)
@@ -135,6 +140,11 @@ pub(crate) fn build_router(state: AppState) -> Router {
             )
             .route("/clients", get(list_clients))
             .route("/clients/sync", post(sync_clients))
+            .route("/clients/unifi", get(get_unifi))
+            .route(
+                "/clients/unifi-profiles/{id}/api-key",
+                axum::routing::put(put_unifi_api_key),
+            )
             .route(
                 "/filter-sets",
                 get(list_filter_sets)
@@ -341,7 +351,14 @@ async fn not_found(req: Request) -> Response {
     let path = req.uri().path();
     // Nested `/api/v1` and `/mcp/v1` misses bubble to this fallback; keep those JSON.
     // Exact `/api` and `/mcp` too — avoid serving SPA HTML for truncated/misspelled API paths.
-    if path == "/api" || path == "/mcp" || path.starts_with("/api/") || path.starts_with("/mcp/") {
+    // DNS query paths never belong to the control plane, so they stay a JSON 404 as well.
+    if path == "/api"
+        || path == "/mcp"
+        || path.starts_with("/api/")
+        || path.starts_with("/mcp/")
+        || path == "/dns-query"
+        || path.starts_with("/dns-query/")
+    {
         return ControlApiError::NotFound {
             what: path.to_owned(),
         }

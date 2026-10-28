@@ -198,6 +198,23 @@ is the contract.
 - A sub-node that has never synced and has no config cannot answer DNS; it
   reports `control_api.not_ready` until the first snapshot is applied.
 
+### UniFi directory and secrets (clients module)
+
+Config snapshots carry UniFi **profiles and bindings** (no API keys). Runtime
+directory state and secrets use dedicated stream/uplink paths:
+
+- **`SecretPush`** (downstream, targeted): master sends
+  `{ type: "secret_push", profile_id, api_key }` only to that profile's
+  `sync_owner`. The sub-node stores it node-locally (kv); it never appears in
+  config exports or acks. Non-owners never receive the key.
+- **Directory uplink:** after a successful UniFi sync, the sync_owner
+  `POST`s `/cluster/v1/clients-directory` with
+  `{ profile_id, generation, clients: [...] }` (UniFi-sourced entries only).
+- **`ClientsDirectoryPush`** (downstream): master fans the snapshot out to every
+  connected node bound to that `profile_id`. Receivers replace only the UniFi
+  portion of their local `ClientLookup`; manuals stay from the config snapshot.
+- Solo / non-cluster: sync_owner == local node; no push or uplink required.
+
 ### Applying a synced config on a sub-node
 
 The sub-node calls control-api's **same atomic apply path** used by
@@ -217,9 +234,11 @@ The sub-node calls control-api's **same atomic apply path** used by
 separate path. Runtime-only state (pause/temporary allow) is not in a snapshot;
 it is broadcast separately (§ Writes from any node).
 
-The snapshot is uniform across nodes, but policy views may be **node-scoped**
-(a view's `nodes` list, see [SPEC-policy.md](SPEC-policy.md)). Each node filters
-views to those valid for its own `node_id` at apply time; the full snapshot is
+The snapshot is uniform across nodes, but policy views and DNS listeners may be
+**node-scoped** (a view's or listener's `nodes` list; see
+[SPEC-policy.md](SPEC-policy.md) and [SPEC-listeners.md](SPEC-listeners.md)).
+Each node filters entries to those valid for its own `node_id` at apply time;
+the full snapshot is
 still replicated so any node can adopt a view without a per-node diff.
 
 ### Conflicts

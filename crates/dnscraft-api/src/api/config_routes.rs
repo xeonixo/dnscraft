@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 
 use crate::api::auth::Authenticated;
 use crate::api::pagination::{Pagination, RawPagination};
+use crate::api::policy_routes::check_view_unpinned;
 use crate::api::response::{success, unix_rfc3339};
 use crate::cluster_write_relay::relay_config_write_if_sub_node;
 use crate::config_apply::ConfigActor;
@@ -193,7 +194,7 @@ pub(crate) fn valid_ip_or_cidr(value: &str) -> bool {
 }
 
 /// A stored snapshot that cannot be interpreted (never created by this code).
-fn malformed_snapshot() -> ControlApiError {
+pub(crate) fn malformed_snapshot() -> ControlApiError {
     ControlApiError::Internal {
         message: "stored config snapshot is malformed".to_owned(),
     }
@@ -479,6 +480,7 @@ pub(crate) async fn delete_view(
     }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
+    check_view_unpinned(&snapshot, &id)?;
     remove_by_id(array_mut(&mut snapshot, "policy", "views")?, &id).ok_or_else(|| {
         ControlApiError::NotFound {
             what: format!("view {id}"),

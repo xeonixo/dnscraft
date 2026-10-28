@@ -46,6 +46,7 @@ const LOGS_PATH: &str = "/cluster/v1/logs";
 const RELAY_PATH: &str = "/cluster/v1/writes";
 const RENEW_PATH: &str = "/cluster/v1/renew";
 const TLS_CERT_PATH: &str = "/cluster/v1/tls/certificate";
+const CLIENTS_DIRECTORY_PATH: &str = "/cluster/v1/clients-directory";
 const NDJSON: &str = "application/x-ndjson";
 
 /// A sub-node's HTTP/2 mTLS client for the master's cluster listener.
@@ -413,6 +414,35 @@ impl ClusterClient {
                     message: other.to_string(),
                 },
             })
+    }
+
+    /// Uploads a UniFi directory snapshot for the master to fan out.
+    pub async fn post_clients_directory(
+        &self,
+        profile_id: &str,
+        generation: u64,
+        observations: &serde_json::Value,
+        networks: &serde_json::Value,
+    ) -> Result<(), ClusterError> {
+        let body = serde_json::json!({
+            "profile_id": profile_id,
+            "generation": generation,
+            "observations": observations,
+            "networks": networks,
+        });
+        let bytes = serde_json::to_vec(&body).map_err(|error| ClusterError::Internal {
+            message: format!("encode clients-directory: {error}"),
+        })?;
+        let response = self
+            .http()
+            .post(format!("{}{CLIENTS_DIRECTORY_PATH}", self.base_url))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(bytes)
+            .send()
+            .await
+            .map_err(master_unavailable)?;
+        ensure_success(response).await?;
+        Ok(())
     }
 
     async fn post_ack(&self, applied_version: i64) -> Result<(), ClusterError> {

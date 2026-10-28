@@ -45,6 +45,33 @@ pub fn cache_path(data_dir: &Path) -> PathBuf {
     data_dir.join("clients").join("state.json")
 }
 
+/// Serialises UniFi observations to the on-disk / cluster wire shape.
+pub fn observations_to_value(obs: &[UnifiObservation]) -> serde_json::Value {
+    serde_json::to_value(obs.iter().map(DiskObs::from_obs).collect::<Vec<_>>())
+        .unwrap_or(serde_json::Value::Array(Vec::new()))
+}
+
+/// Serialises UniFi networks to the on-disk / cluster wire shape.
+pub fn networks_to_value(nets: &[NetworkInfo]) -> serde_json::Value {
+    serde_json::to_value(nets.iter().map(DiskNet::from_net).collect::<Vec<_>>())
+        .unwrap_or(serde_json::Value::Array(Vec::new()))
+}
+
+/// Deserialises UniFi observations from the cluster wire shape.
+pub fn observations_from_value(
+    value: &serde_json::Value,
+) -> Result<Vec<UnifiObservation>, String> {
+    let rows: Vec<DiskObs> =
+        serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+    rows.into_iter().map(DiskObs::into_obs).collect()
+}
+
+/// Deserialises UniFi networks from the cluster wire shape.
+pub fn networks_from_value(value: &serde_json::Value) -> Result<Vec<NetworkInfo>, String> {
+    let rows: Vec<DiskNet> = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+    rows.into_iter().map(DiskNet::into_net).collect()
+}
+
 /// Loads the cache. Corrupt / oversized / wrong-version → `Ok(None)` + warn.
 pub fn load(data_dir: &Path) -> io::Result<Option<CachePayload>> {
     let path = cache_path(data_dir);

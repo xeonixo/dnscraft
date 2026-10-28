@@ -1,132 +1,121 @@
-# Orchestration Plan — Next Round
+# Implementation Plan: Named Client IDs, device link, `.mobileconfig`
 
-> Cross-module coordination plan. Per-module task detail lives in the existing
-> `plan-<module>.md` / `todo-<module>.md` files; this file only fixes *which* work
-> streams run now, in what order, and where the review gates are.
-> Date: 2026-10-26. Authority: [progress.md](progress.md) "Current state".
+> Replaces the 2026-10-26 orchestration plan (all of its streams are archived or complete; a copy
+> is kept at `tasks/archive/plan-orchestration-2026-10-26.md`, and git has the history).
+> Authority for status of other modules: [progress.md](progress.md).
+> Task list: [todo.md](todo.md). Date: 2026-10-28. Status: **draft, needs owner review**.
 
-## Current state (from progress.md)
+## Overview
 
-| Module | State | Next |
-|---|---|---|
-| `resolver`, `filtering`, `clients`, `tls`, `policy` | complete | – |
-| `listeners` | N13 done; N14 (minimal binary) done but needs fix round | **N14 fix round → Checkpoint D** |
-| `control-api` | A3–A5 done | **Checkpoint B** (server-core review), then A6+ |
-| `mcp` | spec + plan + briefing ready, 0 tasks done | **Stage 1 (M0) → Checkpoint D0** |
-| `web-ui`, `cluster` | no spec yet | blocked — needs a SPEC task first |
+The `/doh-clients` screen today lists bare Client-ID strings. The owner wants to (1) treat a Client ID
+as a named device that can be tied to an entry in *Geräte*, (2) hand an iPhone a ready-made Apple
+configuration profile (`.mobileconfig`) that points it at the public DoH endpoint with its Client ID,
+and (3) possibly give that iPhone its own Netzbereich/profile even on mobile data.
 
-Working tree is clean at HEAD `3ddcfbb`.
+(1) and (2) fit the current architecture. (3) narrows an earlier owner decision (#13, zone selection is source-IP only). The owner answered D1 on
+2026-10-28: rules stay with the device on the road, only some records differ, so it is Phase 2.
+
+## What exists today (verified by reading the code and specs)
+
+- A Client ID is a string in the config snapshot `policy.client_ids` (`GET/POST/DELETE
+  /api/v1/policy/client-ids`, `crates/dnscraft-api/src/api/policy_routes.rs`). No label, no device,
+  no profile. Rename = delete + create.
+- Listeners only need "is this id registered?" (`PolicyClientIds` in `dnscraft-listeners/src/tls.rs`,
+  `ClientIdRegistry` in `dnscraft-tls`). Public DoH path `/dns-query/<id>`, DoT/DoQ SNI
+  `<id>.dns.<public_domain>`.
+- `RequestContext.client_id` reaches the policy pipeline and the decision record, but
+  `PolicySnapshot::select` ignores it: **view/zone selection is source-IP only** (longest-prefix
+  subnet → default view). That is owner decision #13 of `SPEC-policy.md` (2026-10-26): the Client ID
+  "only authenticates the client to the listener and enriches the log, never the chosen zone".
+- Consequence: an iPhone on mobile data (public IP, no matching Netzbereich) always gets the default
+  Netzbereich and its profile.
+- The query log stores `client_id` and `client_name`; `client_name` comes from the client directory
+  by IP, so a public DoH query has an id but usually no name.
+- `.mobileconfig` generation is promised by `SPEC.md` ("UI generates Apple `.mobileconfig` profiles")
+  and listed as an open question in `SPEC-web-ui.md`; nothing is implemented.
+- The public hostname is `tls.public_domain` (config, `GET /api/v1/tls`).
 
 ## Dependency graph
 
 ```
-resolver, filtering, clients, tls ─┐
-                                   ├─► policy ─► listeners ─► [N14 fixes → Checkpoint D]
-                                   └─► control-api ─► [Checkpoint B] ─► A6…A14 ─► Checkpoint F
-                                                                                     │
-                                              mcp ──► M0 ──► M1…M19 (read/write tools)│
-                                                                                     └─► M20…M27 (needs control-api F)
-web-ui, cluster ──► no spec, not scheduled
+D1 owner answer (done) ──────────────────────────────────► Phase 2
+        │
+T1 client_ids as objects (API + snapshot) ──┬─► T2 log attribution by label
+                                            ├─► T3 DoH-Clients page (cards, device link, copy URL)
+                                            │        └─► T4 .mobileconfig + Android hostname (client-side)
+                                            └─► T5 docs/spec updates
+Phase 2:  T6 spec change ─► T7 policy: subnet → pin → default ─► T8 API field `view` ─► T9 UI (editor, detail, zones, Namen overrides)
 ```
 
-Cross-module gates that order future work:
+## Architecture decisions
 
-- **mcp M1–M5** (reopen filtering/resolver/policy) wait on **D0** (owner approves `rmcp`).
-- **mcp M20–M27** wait on **control-api Checkpoint F**.
-- **control-api A6+** waits on **Checkpoint B** approval.
-- **web-ui / cluster** wait on their own SPEC (not yet written).
+1. **Keep the Client ID a registration, add metadata next to it.** `policy.client_ids` entries accept
+   either a string (today) or `{ "id", "label"?, "device"? }`. The registry used by listeners keeps
+   seeing plain ids. Old snapshots, rollbacks and cluster sync keep working because a string is still
+   valid.
+2. **Device link is a reference, not a copy.** `device` stores the directory client's stable id
+   (manual client name/IP or UniFi id as the clients crate exposes it). It only drives display and
+   the log label; it never changes policy. If the device disappears the link shows "unbekannt", not an
+   error.
+3. **Log label precedence for a request that has a Client ID:** directory name by IP (LAN) → Client-ID
+   label → bare id. No new log column; `client_name` is filled.
+4. **`.mobileconfig` is generated in the browser** (pure TS function + Blob download). It only needs
+   public data (public domain, Client ID, label), so no new endpoint, no secrets, no server state.
+   QR code and profile signing are out of scope for v1.
+5. **Phase 2 (decided direction, 2026-10-28): a Client ID is the fallback for an unrecognised IP.**
+   Owner intent: the device keeps its *filter rules* (profile) on the road, only *some local records*
+   (e.g. `nas.lan`) must differ there. The model already supports this:
+   - Selection order becomes **subnet match → Client-ID pin → default view**. At home the LAN IP
+     matches a Netzbereich as today; away (carrier IP, no match) the pin replaces the default view.
+     That also avoids the trap of a pin overriding the LAN view while the phone is at home.
+   - A pin points at a **view (Netzbereich)**, which already points at a profile. For "same rules,
+     different records" the owner creates a view such as "Unterwegs" with the **same profile** as the
+     home view and **per-view record overrides** (records are a global name space with
+     `overrides` keyed by view id, `SPEC-policy.md` review 14). No new concept.
+   - This reverses owner decision #13 only in part: the Client ID still never beats a matching
+     subnet; it only replaces the default for unmatched IPs.
 
-## Work streams this round (parallel, disjoint files)
+6. **DoH everywhere (owner, 2026-10-28):** the profile uses the same DoH URL at home and away; no
+   Wi-Fi exclusion by default (the SSID rule from T4 stays an optional field, off). Consequence: at home
+   the DoH request must still arrive with the device's **LAN source IP**, otherwise the home Netzbereich
+   cannot match. Mechanism: a local record `dns.<public_domain>` with a **per-view override** for the
+   home Netzbereich pointing at DNScraft's LAN IP (the iPhone resolves the DoH host name through the
+   DHCP-provided DNS at home, away through public DNS). Both paths use the existing records/overrides
+   model, no new concept. T4b adds a setup checklist and a check for exactly this.
 
-### Stream 1 — `listeners` N14 fix round (implementation agent)
-Authority: [briefing-n14-fixes.md](briefing-n14-fixes.md) · [todo-listeners.md](todo-listeners.md) N14.
-Fix **C1, C2, R1–R5, S1–S4** in `crates/dnscraft` (with `dnscraft-listeners`/`fuzz` in the test/clippy
-scope). Core acceptance conditions:
+## Task list
 
-- No `ManualClock` in production (`C1`); secrets never in `Debug`/`Serialize` (`C2`).
-- `deny_unknown_fields` + stable `dnscraft.*` error codes, fail-fast on bind failure (`R1–R3`).
-- Real end-to-end UDP test replacing the "unit-tested only" shortcut; untick the N14 boxes that are not
-  actually met (`R4`).
-- Don't claim unapproved deps; mark `toml` "pending owner approval" (`R5`, owner decision **D1**).
-- Async stdout writer → dedicated thread, dropped-event count; TLS `*_FILE` env vars; minimal `tracing`
-  (`S1–S4`).
-- N14 scope stays *minimal bootstrap* until the owner decides (**D2**).
+See [todo.md](todo.md) for the checklist with acceptance criteria. Phases:
 
-Files: `crates/dnscraft/**`, `crates/dnscraft-listeners/**`, `fuzz/`, `deploy/dnscraft.example.toml`,
-root `Cargo.toml`/`Cargo.lock` (own hunks only), `tasks/progress.md`.
+- **Phase 0 – Decision (no code):** D1 (answered, see below), D2 (naming/storage).
+- **Phase 1 – Named Client IDs and `.mobileconfig` (no policy change):** T1–T5.
+- **Checkpoint A.**
+- **Phase 2 – Client ID is the fallback Netzbereich for unrecognised IPs:** T6–T9.
+- **Checkpoint B.**
 
-**STOP: Checkpoint D** — independent security review (public exposure, amplification, admission, bans,
-resource caps, TLS) + owner approval. Then archive the module.
-
-### Stream 2 — `mcp` Stage 1, M0 (documentation agent — no repo code)
-Authority: [briefing-mcp-start.md](briefing-mcp-start.md) · [mcp-todo.md](archive/mcp-todo.md) M0.
-Produce the `rmcp` 3.7.0 dependency pack (crate list vs. current `Cargo.lock`, `cargo deny` result,
-`cargo tree` crypto checks), answer the SPEC-mcp "Unverified details" bullets with `file:line`, write
-`docs/adr/0006-mcp-rmcp-stateless.md` (Status: Proposed), fill the dependency table in
-[mcp-plan.md](archive/mcp-plan.md). Work in a throw-away crate **outside** the repo; no builds, no repo code.
-
-Files: `docs/adr/0006-mcp-rmcp-stateless.md`, `tasks/archive/mcp-plan.md` (table only), `tasks/progress.md`.
-
-**STOP: Checkpoint D0** — owner approves `rmcp` + transitive crates (or chooses fallback). This unblocks M1–M5.
-
-### Stream 3 — `control-api` Checkpoint B (orchestrator review — no implementation)
-Run the full-workspace DoD, then review the server core (A3 router/envelopes/pagination, A4 TLS bootstrap,
-A5 rate limiting): diff, `fmt`, `clippy --workspace --all-targets`, `cargo test --workspace`, `cargo deny`,
-crypto trees, and the A5 rate-limit claims. Outcome: approve → A6 starts; or send back a fix list.
-
-Files: none (review only). `tasks/progress.md` ticked on approval.
-
-## Parallelization rules (from cursor-next.md)
-
-- Each agent: own git worktree **or** explicit-path staging only (`git add -p`); never `git add -A` /
-  `commit -a` / `stash` / `checkout` of another stream's files.
-- Disjoint file ownership (see Stream files). Shared files (`tasks/progress.md`, root `Cargo.toml`,
-  `Cargo.lock`): re-read right before editing, stage own hunks only, add the Log entry at the top.
-- No new dependencies without an owner-approved message quoted in the commit; no `Cargo.lock` churn.
-- No `CARGO_TARGET_DIR` in `/tmp`; no `cargo clean`; wait if cargo blocks on the build lock.
-
-## Review protocol (orchestrator checks each agent's work afterward)
-
-Per the project workflow, before ticking any checkpoint I verify:
-
-1. `git log --oneline` shows one commit per finding/task with the required `Co-Authored-By` line.
-2. Gates actually green: `fmt --check`, `clippy --workspace --all-targets --locked -- -D warnings`,
-   `cargo test` (workspace or affected crates), `cargo deny check`, `cargo tree -i aws-lc-rs|aws-lc-sys|openssl-sys|native-tls` empty.
-3. Acceptance criteria genuinely met (not just ticked): for bug fixes, a regression test that fails
-   before the fix (mutation probe: revert → test fails → restore).
-4. Scope discipline (no other agent's files touched), no secrets in logs/`Debug`, no test helpers in prod.
-
-## Checkpoints
-
-| Stop | Who | Decision |
-|---|---|---|
-| **Checkpoint D** (listeners) | security auditor + owner | approve/return |
-| **Checkpoint D0** (mcp) | owner | approve `rmcp` or fallback |
-| **Checkpoint B** (control-api) | orchestrator | approve → A6+ |
-
-## Beyond this round (gated)
-
-- **mcp Stage 2 (M1–M5)** — after D0; additive changes in filtering/resolver/policy → Checkpoint P.
-- **control-api Phase 3 (A6–A9 auth) → Checkpoint C**, then A10–A14 → Checkpoint F.
-- **mcp Stage 3–5 (M6–M19)** — after P; read tools → R, write tools → W.
-- **mcp Phase 3 (M20–M27)** — after control-api Checkpoint F.
-- **web-ui / cluster** — need SPEC tasks (no spec yet); propose starting only after the owner asks.
-
-## Risks
+## Risks and mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Shared-file collision (`progress.md`, manifests) | Med | worktree per agent or explicit-path staging; orchestrator re-checks |
-| Agent ticks acceptance boxes it didn't prove (N14 already did this once) | High | review protocol §3: mutation probe + re-verify each box |
-| `toml` dep / N14 scope claimed as approved when they aren't | Med | owner decisions D1/D2 stay open; agent reports, doesn't decide |
-| rmcp findings contradict SPEC-mcp | Med | M0 is docs-only and STOPs at D0 before any rmcp code (M8 re-checks) |
+| Phase 2 partly reverses owner decision #13 | High | Narrow change (pin only replaces the default for unmatched IPs); T6 changes the spec first and needs owner approval before any code |
+| iOS rejects the profile: DoH needs a publicly trusted certificate | High | Show a warning on the page when `tls.mode` is `self_signed`; verify on a real iPhone at Checkpoint A (cannot be tested in the simulator of this repo) |
+| Unsigned `.mobileconfig` shows "not verified" on install | Medium | Document it in the UI; signing deferred |
+| Config schema change (string → object) breaks old snapshots, rollback or cluster sub-nodes | High | Keep strings valid, add a round-trip test with an old snapshot, test config rollback and cluster write relay |
+| Client ID in a profile on a device is effectively a bearer credential | Medium | Treat it like a token in the UI: copy buttons, no listing on public listeners, revoke path stays; mention in the profile page |
+| Label/hostile strings end up in plist XML | Medium | XML-escape and length-cap; unit test with `<`, `&`, RTL and 150-char labels |
+| Query log label lookup adds a hot-path cost | Low | Registry label map is a read-only snapshot (`Arc`), same lookup as admission |
+| DoH everywhere: hairpin NAT or missing split-horizon record makes the home request arrive from the router/WAN IP, so the home Netzbereich does not match | Medium | T4b checklist + "zuletzt zugeordnet über" indicator per Client ID; docs; optional SSID rule as fallback |
+| Overlap with an unrelated dirty working tree (UnifiPanel etc.) | Low | Tasks list files explicitly; do not touch `web/src/lib/settings/Unifi*` |
 
-## Open questions (for the owner)
+## Open questions (need the owner)
 
-1. **Model naming** — no `deepseek-v4-flash[1m]` agent type exists in this tooling (Agent `model` enum is
-   `sonnet|opus|haiku|fable`; the available execution agent is `general-purpose`). Plan: dispatch
-   `general-purpose` agents for Streams 1–2. If "deepseek-v4-flash[1m]" maps to a specific agent config,
-   name it and I'll use it.
-2. **D1** — approve the `toml` dependency (recommended) or reject.
-3. **D2** — N14 scope: full original text vs. minimal bootstrap + follow-up tasks (default until decided: minimal).
-4. **Dispatch now?** — confirm before I spawn the two agents (the /plan gate is human approval).
+1. **D1 (answered 2026-10-28, owner):** Rules must stay with the device on the road; only some
+   records differ. → Phase 2 stays, with the order subnet → Client-ID pin → default (see decision 5).
+   Still to confirm: is "pin only replaces the default for unmatched IPs" what the owner wants?
+2. **D2:** Is a Client ID label required or optional? Unique? (Proposal: optional, unique
+   case-insensitively, max 64 chars.)
+3. Should the Apple profile include on-demand rules for the home Wi-Fi (`SSIDMatch` → use the local
+   resolver instead of the public DoH endpoint)? Needs the SSID names as input. (Proposal: optional
+   field "Heim-WLAN (SSID)" in the download dialog.)
+4. Should `device` offer UniFi clients only, or also manual clients? (Proposal: all directory
+   clients.)

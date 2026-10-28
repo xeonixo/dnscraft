@@ -339,6 +339,9 @@ pub struct ListenerToml {
     /// Encrypted listeners only: TLS protocol / cipher policy.
     #[serde(default)]
     pub tls_policy: Option<TlsPolicyToml>,
+    /// Nodes that bind this listener; empty means every node.
+    #[serde(default)]
+    pub nodes: Vec<String>,
 }
 
 /// `[listeners.tls_policy]` block (encrypted listeners only).
@@ -420,6 +423,18 @@ impl Config {
                     ),
                 )
             })?;
+            let mut nodes = Vec::with_capacity(listener.nodes.len());
+            for node in &listener.nodes {
+                let node_id = NodeId::new(node).map_err(|_| {
+                    Error::config(
+                        "dnscraft.config.invalid_listener",
+                        format!("invalid node id `{node}` for listener `{}`", listener.id),
+                    )
+                })?;
+                if !nodes.contains(&node_id) {
+                    nodes.push(node_id);
+                }
+            }
             listeners.push(ListenerConfig {
                 id,
                 protocol,
@@ -427,6 +442,7 @@ impl Config {
                 exposure,
                 h3: listener.h3,
                 tls_policy: listener.tls_policy.clone().map(TlsPolicyToml::into_policy),
+                nodes,
                 node_id: None,
             });
         }

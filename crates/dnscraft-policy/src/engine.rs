@@ -99,6 +99,15 @@ impl PolicyEngine {
         Arc::clone(&self.snapshot().client_ids)
     }
 
+    /// Labels of the registered Client IDs that have one, keyed by Client ID.
+    ///
+    /// Read-only, same snapshot as [`Self::registered_client_ids`]; cheap `Arc` clone.
+    pub fn client_id_labels(
+        &self,
+    ) -> Arc<std::collections::HashMap<crate::ids::ClientId, Arc<str>>> {
+        Arc::clone(&self.snapshot().client_labels)
+    }
+
     /// Per-view / per-profile counters.
     pub fn stats(&self) -> PolicyStats {
         self.stats
@@ -176,6 +185,16 @@ impl PolicyEngine {
     /// ECS is never forwarded: policy calls the resolver with
     /// [`RequestFlags`] only (no client EDNS options).
     pub async fn handle(&self, ctx: RequestContext) -> Result<PolicyAnswer, PolicyError> {
+        let label = ctx
+            .client_id
+            .as_ref()
+            .and_then(|id| self.client_id_labels().get(id).cloned());
+        let mut answer = self.select_and_emit(ctx).await?;
+        answer.record.client_label = label;
+        Ok(answer)
+    }
+
+    async fn select_and_emit(&self, ctx: RequestContext) -> Result<PolicyAnswer, PolicyError> {
         let total_start = Instant::now();
         let snapshot = self.snapshot();
         let loggable = !ctx.test_query;

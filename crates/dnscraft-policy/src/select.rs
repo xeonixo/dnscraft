@@ -1,8 +1,9 @@
 //! View and profile selection for an incoming request.
 //!
-//! Order: longest-prefix subnet (views valid on this node) → default view.
-//! Client IDs are not selection keys. The hot path allocates neither `String`
-//! nor `Vec` (only `Arc` clones of the selected ids).
+//! Order: longest-prefix subnet (views valid on this node) → Client-ID pin
+//! (views valid on this node) → default view. A Client ID is a selection input
+//! only through its pin, and a pin never beats a matching subnet. The hot path
+//! allocates neither `String` nor `Vec` (only `Arc` clones of the selected ids).
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -23,6 +24,8 @@ pub enum SelectionCause {
         /// Prefix length in bits.
         prefix_len: u8,
     },
+    /// The request's admitted Client ID is pinned to the view, and no subnet matched.
+    ClientId,
     /// Catch-all default view.
     Default,
 }
@@ -44,7 +47,8 @@ impl PolicySnapshot {
     /// Selects the view and profile for `ctx`.
     ///
     /// Order: longest-prefix subnet among views valid on the request's node,
-    /// then the default view. Client IDs never select a view.
+    /// then the Client-ID pin (if the request's Client ID is pinned to a view
+    /// valid on the node), then the default view.
     ///
     /// Always succeeds when the snapshot was built successfully (a default
     /// view is guaranteed).
@@ -53,7 +57,21 @@ impl PolicySnapshot {
             return self.finish(view_idx, cause);
         }
 
+        if let Some(view_idx) = self.match_client_pin(ctx) {
+            return self.finish(view_idx, SelectionCause::ClientId);
+        }
+
         self.finish(self.default_view, SelectionCause::Default)
+    }
+
+    /// The pinned view of the request's Client ID, when that view is valid on
+    /// the request's node. A pin to a view not valid on the node is ignored.
+    fn match_client_pin(&self, ctx: &RequestContext) -> Option<ViewIdx> {
+        let client = ctx.client_id.as_ref()?;
+        let &view_idx = self.client_pins.get(client)?;
+        self.views[usize::from(view_idx)]
+            .valid_on(ctx.node_id.as_ref())
+            .then_some(view_idx)
     }
 
     fn finish(&self, view_idx: ViewIdx, matched_by: SelectionCause) -> Selection {

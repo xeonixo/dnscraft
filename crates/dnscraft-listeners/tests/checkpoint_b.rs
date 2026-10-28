@@ -136,6 +136,7 @@ async fn spawn_udp(
     let join = tokio::spawn(serve_udp(UdpServeParams {
         listener: ListenerConfig {
             node_id: None,
+            nodes: Vec::new(),
             id: ListenerId::new("e2e-udp").unwrap(),
             protocol: Protocol::Udp53,
             address: bind,
@@ -174,6 +175,7 @@ async fn spawn_tcp(
     let join = tokio::spawn(serve_tcp(TcpServeParams {
         listener: ListenerConfig {
             node_id: None,
+            nodes: Vec::new(),
             id: ListenerId::new("e2e-tcp").unwrap(),
             protocol: Protocol::Tcp53,
             address: bind,

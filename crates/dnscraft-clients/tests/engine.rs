@@ -18,7 +18,8 @@ static DATA_SEQ: AtomicU64 = AtomicU64::new(0);
 
 use dnscraft_clients::{
     ClientEngine, ClientId, ClientSource, ClientsConfig, DEFAULT_LOCAL_DOMAIN, MAX_CLIENT_COUNT,
-    ManualClock, ManualEntry, Secret, TlsMode, UnifiConfig, UnifiObservation, leaf_sha256,
+    ManualClock, ManualEntry, Secret, TlsMode, UnifiConfig, UnifiObservation, UnifiProfile,
+    leaf_sha256,
 };
 use mock_gateway::{CertKind, ClassicFixture, IntegrationFixture, MockGateway};
 use serde_json::{Value, json};
@@ -1128,4 +1129,35 @@ async fn drop_stops_background_task() {
     // assert the Weak is gone and advancing time does not resurrect it.
     assert!(weak.upgrade().is_none());
     let _ = attempts_ptr;
+}
+
+#[tokio::test]
+async fn non_owner_sync_returns_not_owner() {
+    let clock = Arc::new(ManualClock::new(start()));
+    let mut cfg = ClientsConfig::default();
+    cfg.unifi_profiles = vec![UnifiProfile {
+        id: "home".into(),
+        sync_owner: "master".into(),
+        connection: UnifiConfig {
+            enabled: true,
+            base_url: "https://192.0.2.1".into(),
+            site_id: None,
+            poll_interval: Duration::from_secs(60),
+            classic_clients: false,
+            tls: TlsMode::Insecure,
+        },
+    }];
+    cfg.unifi_bindings.insert("master".into(), "home".into());
+    cfg.unifi_bindings.insert("garage".into(), "home".into());
+    let eng = ClientEngine::new_with_secret_and_node(
+        cfg,
+        unique_data_dir(),
+        clock,
+        Some(Secret::new(API_KEY)),
+        "garage",
+    )
+    .unwrap();
+    let err = eng.sync_now().await.unwrap_err();
+    assert_eq!(err.code(), "clients.sync.not_owner");
+    assert!(!eng.is_sync_owner());
 }

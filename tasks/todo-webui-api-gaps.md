@@ -76,6 +76,11 @@
 - [ ] **GA-W5d** Add `resolver.*` upstream error codes to the stable-code catalogue for translation.
 - [ ] **GA-W5e** SPEC-web-ui: the pause path is `/filtering/pause`, not `/policy/pause`; no `/statistics` route
       exists (merged into the dashboard) — align the spec.
+- [ ] **GA-W5f** No requests-over-time endpoint: `stats/*` returns totals, top lists and the cache ratio, but no
+      time buckets (the rollup buckets in `stats.rs` are not routed). The dashboard therefore has no
+      "Anfragen im Zeitverlauf" chart (blocked highlighted). Proposal: `GET /api/v1/stats/timeseries` with the same
+      `from`/`to`/`node_id`/`profile_id` filters and a bucket size, returning `{bucket_start, total, blocked}` rows.
+      Then add an inline-SVG chart beside Antwortquellen with a table fallback. Overlaps with the sparkline part of GA-W5a.
 
 ## Found while building the query log (W6, 2026-10-28)
 

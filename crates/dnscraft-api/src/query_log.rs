@@ -1162,12 +1162,16 @@ fn prepare_row(
 ) -> Result<PreparedRow, ControlApiError> {
     let id = new_id()?;
     let (source_ip, truncated) = truncate_ip(event.source, config.ip_truncate);
-    let client = enricher.and_then(|enricher| enricher.by_ip(event.source));
     let client_id = event
         .client_id
         .as_ref()
         .or(event.decision.client_id.as_ref())
         .map(|id| id.as_str().to_owned());
+    let client = resolve_client(
+        enricher.and_then(|enricher| enricher.by_ip(event.source)),
+        client_id.as_deref(),
+        event.decision.client_label.as_deref(),
+    );
     let client_name = client.as_ref().map(|client| client.display_name.clone());
     let query_name = normalize_name(&event.query.name.to_string());
     let query_type = event.query.qtype.to_string();
@@ -1294,6 +1298,13 @@ pub(crate) fn decision_record_json(decision: &DecisionRecord) -> Json {
         "filter_set_id": decision.filter_set.as_str(),
         "selection": selection_json(decision.selection),
         "client_id": decision.client_id.as_ref().map(ToString::to_string),
+        "client": resolve_client(
+            None,
+            decision.client_id.as_ref().map(|id| id.as_str()),
+            decision.client_label.as_deref(),
+        )
+        .as_ref()
+        .map(client_json),
         "steps": decision.steps.iter().map(step_json).collect::<Vec<_>>(),
         "filter": decision.filter.as_ref().map(filter_json),
         "forward_zone": decision.forward_zone.as_ref().map(ToString::to_string),
@@ -1365,6 +1376,25 @@ fn block_mode_str(mode: BlockMode) -> &'static str {
     }
 }
 
+/// Picks the client shown for a record. A directory match by source IP wins;
+/// otherwise a registered Client ID with a label stands in for the client.
+/// Without either, there is no client.
+pub(crate) fn resolve_client(
+    directory: Option<ClientView>,
+    client_id: Option<&str>,
+    label: Option<&str>,
+) -> Option<ClientView> {
+    directory.or_else(|| {
+        let (id, label) = (client_id?, label?);
+        Some(ClientView {
+            id: id.to_owned(),
+            display_name: label.to_owned(),
+            source: "client_id".to_owned(),
+            ..ClientView::default()
+        })
+    })
+}
+
 fn client_json(client: &ClientView) -> Json {
     json!({
         "id": client.id,
@@ -1386,6 +1416,7 @@ fn selection_json(cause: SelectionCause) -> Json {
             "cause": "subnet",
             "prefix": format!("{network}/{prefix_len}"),
         }),
+        SelectionCause::ClientId => json!({ "cause": "client_id" }),
         SelectionCause::Default => json!({ "cause": "default" }),
     }
 }
@@ -1582,6 +1613,7 @@ mod tests {
                 profile_id: ProfileId::new("default").unwrap(),
                 selection: SelectionCause::Default,
                 client_id: None,
+                client_label: None,
                 filter_set: SetId::new("default").unwrap(),
                 steps: Vec::new(),
                 filter: None,
@@ -1650,5 +1682,50 @@ mod tests {
             .unwrap();
         log.insert_batch(vec![event("f", now)]).await.unwrap();
         assert_eq!(stored_seqs(&db).await, vec![1, 2, 3, 4]);
+    }
+
+    fn directory_client(name: &str) -> ClientView {
+        ClientView {
+            id: "dir-1".to_owned(),
+            display_name: name.to_owned(),
+            source: "manual".to_owned(),
+            ..ClientView::default()
+        }
+    }
+
+    #[test]
+    fn client_label_is_used_when_no_directory_match() {
+        let client = resolve_client(None, Some("anna-phone"), Some("Anna's iPhone")).unwrap();
+        assert_eq!(client.id, "anna-phone");
+        assert_eq!(client.display_name, "Anna's iPhone");
+        assert_eq!(client.source, "client_id");
+        assert!(client.macs.is_empty());
+        assert_eq!(client.vlan_id, None);
+        assert_eq!(client.local_domain, None);
+    }
+
+    #[test]
+    fn directory_name_wins_over_client_label() {
+        let client = resolve_client(
+            Some(directory_client("iPhone")),
+            Some("anna-phone"),
+            Some("Anna's iPhone"),
+        )
+        .unwrap();
+        assert_eq!(client.id, "dir-1");
+        assert_eq!(client.display_name, "iPhone");
+        assert_eq!(client.source, "manual");
+    }
+
+    #[test]
+    fn no_label_or_no_client_id_leaves_the_record_unchanged() {
+        assert_eq!(resolve_client(None, Some("anna-phone"), None), None);
+        assert_eq!(resolve_client(None, None, Some("Anna's iPhone")), None);
+        assert_eq!(resolve_client(None, None, None), None);
+        let directory = directory_client("iPhone");
+        assert_eq!(
+            resolve_client(Some(directory.clone()), None, None),
+            Some(directory)
+        );
     }
 }

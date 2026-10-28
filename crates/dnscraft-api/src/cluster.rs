@@ -54,8 +54,9 @@ use crate::api::config_routes::{
 use crate::api::filter_routes::{FilterListBody, FilterSetBody};
 use crate::api::listener_routes::ListenerBody;
 use crate::api::policy_routes::{
-    ClientIdBody, RecordBody, RecordKey, delete_policy_record, register_client_id,
-    revoke_client_id, upsert_policy_record,
+    ClientIdBody, RecordBody, RecordKey, check_view_unpinned, delete_policy_record,
+    parse_client_patch, register_client_id, revoke_client_id, update_client_id,
+    upsert_policy_record,
 };
 use crate::api::tls_routes::validate_tls;
 use crate::cluster_status::{ClusterStatus, ClusterStatusHandle};
@@ -137,38 +138,56 @@ impl ConfigApplier for SyncedConfigApplier {
 /// (`policy.config.invalid`) so every node keeps a reachable default. The rest
 /// of the snapshot is untouched.
 ///
-/// The policy crate's typed `ViewConfig` has no `nodes` field yet, so this is
-/// enforced on the JSON snapshot before apply; the unknown field is otherwise
-/// ignored (and silently applied to every node) by the policy engine.
+/// Filters node-scoped policy views and DNS listeners for `node_id`.
+///
+/// Empty / missing `nodes` means every node. Used by sub-node (and callers that
+/// want the same semantics) before leaf-order apply.
 pub fn node_scoped_views(snapshot: &Value, node_id: &str) -> Result<Value, ClusterError> {
+    node_scoped_snapshot(snapshot, node_id)
+}
+
+/// Filters node-scoped entries in a config snapshot for `node_id`.
+pub fn node_scoped_snapshot(snapshot: &Value, node_id: &str) -> Result<Value, ClusterError> {
     let mut snapshot = snapshot.clone();
-    let Some(views) = snapshot
+    if let Some(views) = snapshot
         .get_mut("policy")
         .and_then(|policy| policy.get_mut("views"))
         .and_then(Value::as_array_mut)
-    else {
-        return Ok(snapshot);
-    };
-    let mut default_removed = false;
-    views.retain(|view| {
-        let valid = match view.get("nodes") {
-            None | Some(Value::Null) => true,
-            Some(Value::Array(nodes)) => {
-                nodes.is_empty() || nodes.iter().any(|node| node.as_str() == Some(node_id))
+    {
+        let mut default_removed = false;
+        views.retain(|view| {
+            let valid = nodes_include(view.get("nodes"), node_id);
+            if !valid && view.get("is_default").and_then(Value::as_bool) == Some(true) {
+                default_removed = true;
             }
-            Some(_) => false,
-        };
-        if !valid && view.get("is_default").and_then(Value::as_bool) == Some(true) {
-            default_removed = true;
-        }
-        valid
-    });
-    if default_removed {
-        return Err(ClusterError::ConfigApply {
-            message: format!("policy.config.invalid: default view is not valid on node {node_id}"),
+            valid
         });
+        if default_removed {
+            return Err(ClusterError::ConfigApply {
+                message: format!(
+                    "policy.config.invalid: default view is not valid on node {node_id}"
+                ),
+            });
+        }
+    }
+    if let Some(listeners) = snapshot
+        .get_mut("listeners")
+        .and_then(|section| section.get_mut("listeners"))
+        .and_then(Value::as_array_mut)
+    {
+        listeners.retain(|listener| nodes_include(listener.get("nodes"), node_id));
     }
     Ok(snapshot)
+}
+
+fn nodes_include(nodes: Option<&Value>, node_id: &str) -> bool {
+    match nodes {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(nodes)) => {
+            nodes.is_empty() || nodes.iter().any(|node| node.as_str() == Some(node_id))
+        }
+        Some(_) => false,
+    }
 }
 
 /// Sub-node applier: installs a pushed certificate through the hot-reload path.
@@ -703,6 +722,7 @@ impl ConfigWriteExecutor {
                 }
                 "DELETE" => {
                     let mut snapshot = stored_snapshot(&self.service).await?;
+                    check_view_unpinned(&snapshot, &id)?;
                     remove_by_id(array_mut(&mut snapshot, "policy", "views")?, &id).ok_or_else(
                         || ControlApiError::NotFound {
                             what: format!("view {id}"),
@@ -778,10 +798,11 @@ impl ConfigWriteExecutor {
                 "POST" => {
                     let body = parse_body::<ClientIdBody>(body, "policy.config.invalid")?;
                     let mut snapshot = stored_snapshot(&self.service).await?;
-                    register_client_id(&mut snapshot, body.id.clone())?;
+                    let id = body.id.clone();
+                    register_client_id(&mut snapshot, body)?;
                     let version = self.service.replace(snapshot, actor, if_match).await?;
                     Ok(json!({
-                        "data": { "version": version, "client_id": body.id }
+                        "data": { "version": version, "client_id": id }
                     }))
                 }
                 _ => Err(method_not_allowed(method, path)),
@@ -789,6 +810,15 @@ impl ConfigWriteExecutor {
         }
         if let Some(id) = sub_path(path, "/api/v1/policy/client-ids/") {
             return match method {
+                "PUT" => {
+                    let patch = parse_client_patch(&body)?;
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    let client_id = update_client_id(&mut snapshot, &id, patch)?;
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({
+                        "data": { "version": version, "client_id": client_id }
+                    }))
+                }
                 "DELETE" => {
                     let mut snapshot = stored_snapshot(&self.service).await?;
                     revoke_client_id(&mut snapshot, &id)?;
@@ -1485,6 +1515,7 @@ impl ClusterRuntime {
             clock.clone(),
             config.timing.clone(),
         )?);
+        state.attach_cluster_uplink(Arc::clone(&client));
 
         let applier = Arc::new(
             SyncedConfigApplier::new(Arc::clone(&service), config.node_id.clone())
@@ -1859,6 +1890,34 @@ async fn run_sub_node_loop(
                             client.apply_runtime_command(&command, runtime_applier.as_ref()).await
                         {
                             tracing::warn!(error = %error, "cluster runtime command failed");
+                        }
+                    }
+                    Ok(StreamRecord::SecretPush(push)) => {
+                        if let Some(db) = state.db()
+                            && let Err(error) = crate::unifi_secrets::set_api_key(
+                                db,
+                                &push.profile_id,
+                                push.api_key.as_deref(),
+                            )
+                            .await
+                        {
+                            tracing::warn!(error = %error, "cluster secret_push kv store failed");
+                        }
+                        if let Some(dir) = state.client_directory() {
+                            dir.set_api_key(push.api_key.clone());
+                        }
+                    }
+                    Ok(StreamRecord::ClientsDirectoryPush(push)) => {
+                        if let Some(dir) = state.client_directory()
+                            && let Err(error) = dir
+                                .apply_directory_push(
+                                    &push.profile_id,
+                                    push.observations,
+                                    push.networks,
+                                )
+                                .await
+                        {
+                            tracing::warn!(error = %error, "cluster clients_directory_push failed");
                         }
                     }
                     Ok(StreamRecord::Error { error }) => {
