@@ -2,6 +2,19 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — control-api wave 2: GA16, GA22, GM6 (partial)
+
+- **Done:** GA16 stats overview (`source` raw/rollup, `active_clients`, `query_log_dropped` via
+  `QueryLog::with_sink`, `filter_hits` by list/reason/top rules); GM6 API side (`StatsScope` and
+  `*_scoped` methods, REST `profile_id`); GA22 (`config.apply` for unmapped module failures,
+  `query_log.dropped` error variant removed). Commits fbf3200, 445d840, b76dc51, 8ac9464.
+- **Verified:** `dnscraft-api` full test suite and clippy green in an isolated HEAD export (the shared
+  tree was blocked by parallel policy/listeners edits at the time).
+- **Open:** GM6 MCP call sites (`mcp_backend.rs`, not this agent's); `QueryLog::with_sink` wiring in
+  `crates/dnscraft`; GA15, GA27 (needs `fuzz/Cargo.lock` change, owner OK), WX2, WP1 master alert,
+  WP2, WP3, WP5 (needs an engine catalog provider in AppState), GF2 (in `dnscraft-filtering`), GX audit.
+- **WX7:** owner decisions recorded in SPEC-control-api.md (1f9b7ba); implementation not started.
+
 ## 2026-10-28 — control-api spec-gap audit (GA1–GA29) + web-ui backends
 
 - **Done (code):** GA6a/b (`ClientDirectory` adapter, `POST /clients/sync` report), GA8 (per-principal

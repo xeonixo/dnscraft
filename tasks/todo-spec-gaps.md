@@ -90,8 +90,10 @@ approval before Phase 0 code.
 
 ## Clients (`SPEC-clients.md` ↔ `crates/dnscraft-clients`)
 
-- [ ] **GC1** 🔴 [owner] No `ClientLookup` → `ClientDirectory` adapter; policy/MCP/query-log never
+- [x] **GC1** 🔴 [owner] No `ClientLookup` → `ClientDirectory` adapter; policy/MCP/query-log never
       get clients. *(policy/src/directory.rs:12-27; api clients_routes.rs:3-5,130-137)* — belongs to G0.
+      *Done 2026-10-28:* `EngineClients` (policy directory + query-log enricher) and `EngineDirectory`
+      (control-api/MCP `ClientDirectory`) in `crates/dnscraft/src/engine.rs`; verified by `boots_every_engine_and_serves_the_control_api`.
 - [x] **GC2** 🟠 [code] `UnifiConfig::default()` is `TlsMode::Insecure`; skip-verify must be
       opt-in, not the default. *(config.rs:101-113, 229-240)*
 - [x] **GC3** 🟠 [code] With UniFi disabled, startup still merges cached observations/networks.
@@ -155,8 +157,10 @@ approval before Phase 0 code.
 - [x] **GL1** 🔴 [code] DoH `h3=true` bind failure hangs startup/reload: the TCP+UDP wrapper
       `join!` waits forever on the surviving QUIC listener; reverse case ignores the h3 failure.
       *(set.rs:380-421, 462-484)*
-- [ ] **GL2** 🔴 [owner] `listeners_public.enabled` not expressible — assembler derives it from any
+- [x] **GL2** 🔴 [owner] `listeners_public.enabled` not expressible — assembler derives it from any
       `exposure="public"` entry. *(crates/dnscraft/src/config.rs:328-348)* — belongs to G0.
+      *Done 2026-10-28:* `listeners_config` passes `[listeners_public]` through as written (AS2b); the listener
+      config rejects a public listener while `enabled = false`; test `public_listener_requires_public_gate`.
 - [x] **GL3** 🟠 [code] `max_inflight_per_listener` enforced only on Do53 UDP. *(only udp.rs:138)*
 - [x] **GL4** 🟠 [code] Shutdown drains only UDP; TCP/DoT/DoH/DoQ abort in-flight queries. *(conn.rs:227-305, doh.rs:190-196, doq.rs:198-205)*
 - [x] **GL5** 🟠 [code] Malformed DoH never records a ban strike. *(bans.rs:11-18; only doq.rs uses it)*
@@ -179,7 +183,8 @@ approval before Phase 0 code.
 - [x] **GA3** 🔴 [code] `DELETE /api/v1/auth/tokens/{id}` missing; `revoke` lacks owner check. *(router.rs; tokens.rs:294-308)*
 - [x] **GA4** 🔴 [code] `GET /api/v1/audit` missing (`Db::audit_list` + `AuditRead` exist but unwired). *(storage/audit.rs:118-125; error.rs:154-159)*
 - [ ] **GA5** 🔴 [owner] `Apply*` traits have no production impl → `PUT /config` persists but applies nothing. *(modules.rs:49-60)* — belongs to G0.
-- [ ] **GA6** 🟠 [code] `GET /api/v1/clients` hardcodes `[]`; `POST /clients/sync` always `not_configured`. *(clients_routes.rs:129-138, 230-242)* — API side done: `ClientDirectory` trait + `AppState::with_clients`; **open for the assembler (GA6c, `crates/dnscraft`): implement the trait over `ClientEngine` and call `with_clients`.**
+- [x] **GA6** 🟠 [code] `GET /api/v1/clients` hardcodes `[]`; `POST /clients/sync` always `not_configured`. *(clients_routes.rs:129-138, 230-242)* — API side done: `ClientDirectory` trait + `AppState::with_clients`; **open for the assembler (GA6c, `crates/dnscraft`): implement the trait over `ClientEngine` and call `with_clients`.**
+      *Done 2026-10-28 (GA6c):* `EngineDirectory` implements the trait over `ClientEngine`; `control_api.rs` calls `with_clients`. Open detail: `last_seen` is `null` (dnscraft-api's RFC 3339 helper is crate-private).
 - [x] **GA7** 🟠 [code] Idempotency-Key not read or stored anywhere. *(grep Idempotency → 0)*
 - [x] **GA8** 🟠 [code] Rate limit keyed only by source IP, not per principal. *(rate_limit.rs:1-9, 242-293)*
 - [x] **GA9** 🟠 [code] `/mcp/v1` requests don't count against the auth bucket. *(rate_limit.rs:256-264)*
@@ -189,20 +194,22 @@ approval before Phase 0 code.
 - [x] **GA13** 🟠 [code] OIDC login success/failure not audited; token create/revoke and logout not audited. *(oidc.rs:297-488, tokens.rs:326-367, auth/mod.rs:296-315)*
 - [x] **GA14** 🟠 [code] `GET /status` returns only TLS fields (no node/module/version). *(router.rs:235-250)*
 - [ ] **GA15** 🟠 [code] Runtime-editable keys (OIDC/accounts/retention/rollups) not exposed via `/config`. *(config_apply.rs:33-44)*
-- [ ] **GA16** 🟠 [code] `stats/overview` omits filter-hit by list/rule, `query_log.dropped`, active clients; stats read only raw log, not rollups (1-year dashboards → 30 days). *(stats.rs:113-140, stats_routes.rs:85-126)*
+- [x] **GA16** 🟠 [code] `stats/overview` omits filter-hit by list/rule, `query_log.dropped`, active clients; stats read only raw log, not rollups (1-year dashboards → 30 days). *(stats.rs:113-140, stats_routes.rs:85-126)*
+  *Done 2026-10-28 (commit fbf3200, docs 8ac9464):* `source` raw/rollup, `active_clients`, `query_log_dropped` (needs `QueryLog::with_sink` in the assembler, see report), `filter_hits`.
 - [x] **GA17** 🟠 [code] SQLite query-log read errors map to `control_api.internal`, not `query_log.read`. *(query_log.rs:419-423, 467-494)*
 - [x] **GA18** 🟠 [code] `paused_until` stored as versioned filter-set config (spec: runtime-only). *(config_apply.rs:47-56, filter_routes.rs:44-63)*
 - [x] **GA19** 🟠 [code] `status.mode` can never report `manual` after upload. *(tls.rs:226-235, 272-326, 736-741)*
 - [x] **GA20** 🟡 [code] Token/version timestamps as unix ints, not RFC 3339. *(tokens.rs:356-365, config_routes.rs:216-219)*
 - [x] **GA21** 🟡 [spec] Config persisted-after-apply vs spec's persist-then-mark-failed. *(config_apply.rs:9-12, 462-473)*
-- [ ] **GA22** 🟡 [code] Dead codes: `config.apply`, `query_log.dropped`, `audit.read`, `auth.unknown_token`. *(error.rs, response.rs)*
+- [x] **GA22** 🟡 [code] Dead codes: `config.apply`, `query_log.dropped`, `audit.read`, `auth.unknown_token`. *(error.rs, response.rs)* *Done 2026-10-28 (b76dc51): `audit.read` and `auth.unknown_token` are already wired; unmapped module apply failures now become `config.apply`; `query_log.dropped` variant removed (counter is `query_log_dropped` in the overview).*
 - [x] **GA23** 🟡 [code] `protocol`/`status` filter values not validated as enums. *(query_log_routes.rs:59-76)*
 - [x] **GA24** 🟡 [spec] `filter.reason` stores provenance, not the documented `"adblock"`-style reason. *(query_log.rs:824-838)*
 - [x] **GA25** 🟡 [code] Manual cert upload accepts private-key material. *(tls_routes.rs:348-377)*
 - [x] **GA26** 🟡 [code] UniFi settings / local-domain mode have no typed route. *(clients_routes.rs)*
 - [ ] **GA27** 🟡 [code] No control-api fuzz target. *(fuzz/fuzz_targets/)*
 - [x] **GA28** 🟡 [code] No bootstrap-to-SQLite config seeding path. *(config.rs:192-227; config_apply.rs:845-853)*
-- [ ] **GA29** 🟡 [code] `/readyz` reports ready with no module producers. *(server.rs:289-324)* — API side done: `Readiness::expect_module` keeps `/readyz` at 503 until each registered module calls `set_ready`; **open for the assembler (`crates/dnscraft`, G0): register and report each module.**
+- [x] **GA29** 🟡 [code] `/readyz` reports ready with no module producers. *(server.rs:289-324)* — API side done: `Readiness::expect_module` keeps `/readyz` at 503 until each registered module calls `set_ready`; **open for the assembler (`crates/dnscraft`, G0): register and report each module.**
+      *Done 2026-10-28:* `control_api.rs::report_readiness` registers resolver, filtering, clients, policy, listeners (and tls when configured) and reports each from the live engine; a listener bind failure reports `listeners` not ready.
 
 ## MCP (`SPEC-mcp.md` ↔ `crates/dnscraft-mcp` + `dnscraft-api` mcp files)
 
@@ -212,14 +219,15 @@ approval before Phase 0 code.
 - [x] **GM2** 🔴 [owner] MCP service not mountable in production (`with_mcp_backend` dead,
       `McpBackendInner` crate-private). *(api/server.rs:150-159, api/router.rs:180-185)* — belongs to G0.
       *Done 2026-10-28:* Closed by AS11 (`control_api.rs` attaches the backend and mounts `/mcp/v1`) — verified 2026-10-28.
-- [ ] **GM3** 🔴 [code] `list_clients` always returns empty in the real backend. *(api/mcp_backend.rs:1298-1307)*
-      *Open 2026-10-28:* needs the client directory in the backend (`ClientEngine` handle passed to `mcp_backend_inner` from `crates/dnscraft/src/control_api.rs`, i.e. AS5/GC1). Not started; cross-crate signature change, asked for owner/assembler go-ahead.
-- [ ] **GM4** 🟠 [code] `get_status` returns empty listeners/filtering/TLS; `resolver.primed`
+- [x] **GM3** 🔴 [code] `list_clients` always returns empty in the real backend. *(api/mcp_backend.rs:1298-1307)*
+      *Done 2026-10-28:* `mcp_backend_inner` takes the client directory; `list_clients` filters (source, name), pages (offset/limit, `has_more`). Smoke test `boots_every_engine_and_serves_the_control_api`.
+- [x] **GM4** 🟠 [code] `get_status` returns empty listeners/filtering/TLS; `resolver.primed`
       approximated as `cache_size > 0`. *(api/mcp_backend.rs:1309-1344)*
-      *Open 2026-10-28:* filtering counts and TLS `cert_expiry` now real (2026-10-28). Still open: `listeners` (no listener-status handle in the backend) and `resolver.primed` / `cache_size` (no resolver handle; `resolver_cache_size` is never written). Needs the same backend wiring as GM3.
+      *Done 2026-10-28:* listeners come from a weak listener-set status closure, `resolver.primed` from `priming_status()` and `cache_size` from `stats().cache_entries` (`mcp_backend_inner` takes the resolver handle). Filtering and TLS were real already.
 - [x] **GM5** 🟠 [code] `explain_block.block_mode` always empty. *(api/mcp_backend.rs:811-822)*
       *Done 2026-10-28:* Block mode read from the set snapshot (`mcp_backend.rs` explain).
 - [ ] **GM6** 🟠 [code] `get_stats` ignores `profile_id`. *(api/mcp_backend.rs:1229-1298)*
+  *API side done 2026-10-28 (445d840): `StatsScope` + `*_scoped` methods in `stats.rs`, REST `profile_id`. Still open in `mcp_backend.rs` (not owned by this agent): `get_stats` must call `stats_overview_scoped` / `top_clients_scoped` / `top_blocked_domains_scoped` / `cache_stats_scoped` with `StatsScope { profile_id: params.profile_id.as_deref(), .. }`.*
       *Open 2026-10-28:* needs a `profile_id` filter in `dnscraft-api/src/stats.rs` (overview, top clients, top blocked, cache, and rollups). Touches the shared stats module and `stats_routes.rs`, so not done in this MCP pass.
 - [x] **GM7** 🟠 [code] `list_mcp_rules` lists expired pauses; pauses branch ignores pagination. *(api/mcp_backend.rs:870-877; filtering/engine.rs:480-495)*
       *Done 2026-10-28:* Pauses drop expired entries and paginate (`mcp_backend.rs` list_mcp_rules); test `list_mcp_pauses_omit_an_expired_pause`.
