@@ -421,7 +421,8 @@ impl QueryLog {
                     .map_err(db_err)?;
                 rows.collect::<Result<Vec<String>, _>>().map_err(db_err)
             })
-            .await?;
+            .await
+            .map_err(read_error)?;
 
         let has_more = fetched.len() > limit as usize;
         let mut records = Vec::with_capacity(fetched.len().min(limit as usize));
@@ -492,7 +493,8 @@ impl QueryLog {
                 .optional()
                 .map_err(db_err)
             })
-            .await?;
+            .await
+            .map_err(read_error)?;
         match raw {
             None => Ok(None),
             Some(raw) => {
@@ -1351,6 +1353,14 @@ pub(crate) fn new_id() -> Result<String, ControlApiError> {
     ))
 }
 
+/// Maps a storage failure on a query-log read to `control_api.query_log.read`
+/// (GA17), not the generic internal error.
+fn read_error(error: ControlApiError) -> ControlApiError {
+    ControlApiError::QueryLogRead {
+        message: error.to_string(),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -1358,6 +1368,14 @@ mod tests {
 
     use super::*;
     use dnscraft_common::clock::ManualClock;
+
+    #[test]
+    fn storage_failures_on_reads_use_the_query_log_read_code() {
+        let storage = ControlApiError::Internal {
+            message: "disk I/O error".to_owned(),
+        };
+        assert_eq!(read_error(storage).code(), "control_api.query_log.read");
+    }
     use dnscraft_filtering::SetId;
     use dnscraft_policy::{
         DecisionTimings, DnsProtocol, ListenerId, ProfileId, SelectionCause, ViewId,

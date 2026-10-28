@@ -190,7 +190,7 @@ approval before Phase 0 code.
 - [ ] **GA14** 🟠 [code] `GET /status` returns only TLS fields (no node/module/version). *(router.rs:235-250)*
 - [ ] **GA15** 🟠 [code] Runtime-editable keys (OIDC/accounts/retention/rollups) not exposed via `/config`. *(config_apply.rs:33-44)*
 - [ ] **GA16** 🟠 [code] `stats/overview` omits filter-hit by list/rule, `query_log.dropped`, active clients; stats read only raw log, not rollups (1-year dashboards → 30 days). *(stats.rs:113-140, stats_routes.rs:85-126)*
-- [ ] **GA17** 🟠 [code] SQLite query-log read errors map to `control_api.internal`, not `query_log.read`. *(query_log.rs:419-423, 467-494)*
+- [x] **GA17** 🟠 [code] SQLite query-log read errors map to `control_api.internal`, not `query_log.read`. *(query_log.rs:419-423, 467-494)*
 - [ ] **GA18** 🟠 [code] `paused_until` stored as versioned filter-set config (spec: runtime-only). *(config_apply.rs:47-56, filter_routes.rs:44-63)*
 - [ ] **GA19** 🟠 [code] `status.mode` can never report `manual` after upload. *(tls.rs:226-235, 272-326, 736-741)*
 - [ ] **GA20** 🟡 [code] Token/version timestamps as unix ints, not RFC 3339. *(tokens.rs:356-365, config_routes.rs:216-219)*
