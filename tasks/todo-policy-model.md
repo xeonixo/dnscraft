@@ -43,8 +43,6 @@
 - [x] After Phase 1: `cargo test -p dnscraft-listeners` green (minus 7 known macOS failures);
       admission matrix unchanged.
 - [x] After Phase 2: view/records/registry CRUD round-trips (`tests/policy_records_http.rs`).
-      Open: no test yet that a rejected record leaves the stored version unchanged (apply rollback).
+      Rejected record leaves the stored version unchanged: smoke `rejected_policy_record_keeps_the_stored_version`.
 - [ ] After Phase 3: workspace gates green; smoke config boots with source-IP selection.
-      Open at this commit: `crates/dnscraft/tests/smoke.rs` (other agent, WIP) and
-      `mcp_backend_read::get_stats_profile_filter_scopes_every_block` (WIP) are red; the
-      smoke boot with a `node_id`/source-IP config is not yet written.
+      Smoke boot with `node_id` + source-IP view: `node_id_and_source_ip_view_select_the_local_answer`.

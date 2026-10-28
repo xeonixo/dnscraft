@@ -8,7 +8,6 @@
 //! key. Every write goes through the same config-apply path as `PUT /config`.
 
 use std::collections::BTreeMap;
-use std::net::{Ipv4Addr, Ipv6Addr};
 
 use axum::Extension;
 use axum::Json;
@@ -16,7 +15,10 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
-use dnscraft_policy::{ClientId, DEFAULT_RECORD_TTL, ViewId, ViewRecordConfig};
+use dnscraft_policy::{
+    ClientId, DEFAULT_RECORD_TTL, ViewId, ViewRecordConfig, format_rdata, parse_record_type,
+    record_type_text,
+};
 use dnscraft_proto::{Name, RData, RecordType};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -225,104 +227,22 @@ fn owner_name(text: &str) -> Result<Name, ControlApiError> {
 
 /// The record types accepted for local records (SPEC-policy.md).
 fn parse_rtype(text: &str) -> Result<RecordType, ControlApiError> {
-    match text.to_ascii_uppercase().as_str() {
-        "A" => Ok(RecordType::A),
-        "AAAA" => Ok(RecordType::AAAA),
-        "CNAME" => Ok(RecordType::CNAME),
-        "TXT" => Ok(RecordType::TXT),
-        "SRV" => Ok(RecordType::SRV),
-        "MX" => Ok(RecordType::MX),
-        "PTR" => Ok(RecordType::PTR),
-        _ => Err(invalid("unsupported record type")),
-    }
+    parse_record_type(text).ok_or_else(|| invalid("unsupported record type"))
 }
 
 /// Presentation text of the record type.
 fn rtype_text(rtype: RecordType) -> &'static str {
-    match rtype {
-        RecordType::A => "A",
-        RecordType::AAAA => "AAAA",
-        RecordType::CNAME => "CNAME",
-        RecordType::TXT => "TXT",
-        RecordType::SRV => "SRV",
-        RecordType::MX => "MX",
-        RecordType::PTR => "PTR",
-        _ => "UNKNOWN",
-    }
+    record_type_text(rtype)
 }
 
 /// Parses presentation text into record data of type `rtype`.
 fn parse_rdata(rtype: RecordType, text: &str) -> Result<RData, ControlApiError> {
-    let text = text.trim();
-    let fields: Vec<&str> = text.split_whitespace().collect();
-    let number = |field: &str| -> Result<u16, ControlApiError> {
-        field
-            .parse::<u16>()
-            .map_err(|_| invalid(&format!("invalid number `{field}`")))
-    };
-    let name = |field: &str| -> Result<Name, ControlApiError> { owner_name(field) };
-    match rtype {
-        RecordType::A => text
-            .parse::<Ipv4Addr>()
-            .map(RData::A)
-            .map_err(|_| invalid("invalid IPv4 address")),
-        RecordType::AAAA => text
-            .parse::<Ipv6Addr>()
-            .map(RData::AAAA)
-            .map_err(|_| invalid("invalid IPv6 address")),
-        RecordType::CNAME => Ok(RData::CNAME(name(text)?)),
-        RecordType::PTR => Ok(RData::PTR(name(text)?)),
-        RecordType::TXT => {
-            if text.is_empty() || text.len() > 255 {
-                return Err(invalid("TXT value must be 1 to 255 bytes"));
-            }
-            Ok(RData::TXT(vec![Box::from(text.as_bytes())]))
-        }
-        RecordType::MX => match fields.as_slice() {
-            [preference, exchange] => Ok(RData::MX {
-                preference: number(preference)?,
-                exchange: name(exchange)?,
-            }),
-            _ => Err(invalid("MX value must be `<preference> <exchange>`")),
-        },
-        RecordType::SRV => match fields.as_slice() {
-            [priority, weight, port, target] => Ok(RData::SRV {
-                priority: number(priority)?,
-                weight: number(weight)?,
-                port: number(port)?,
-                target: name(target)?,
-            }),
-            _ => Err(invalid(
-                "SRV value must be `<priority> <weight> <port> <target>`",
-            )),
-        },
-        _ => Err(invalid("unsupported record type")),
-    }
+    dnscraft_policy::parse_rdata(rtype, text).map_err(|reason| invalid(&reason))
 }
 
 /// Presentation text of record data (inverse of [`parse_rdata`]).
 fn rdata_text(rdata: &RData) -> String {
-    match rdata {
-        RData::A(addr) => addr.to_string(),
-        RData::AAAA(addr) => addr.to_string(),
-        RData::CNAME(name) | RData::PTR(name) => name.to_string(),
-        RData::MX {
-            preference,
-            exchange,
-        } => format!("{preference} {exchange}"),
-        RData::SRV {
-            priority,
-            weight,
-            port,
-            target,
-        } => format!("{priority} {weight} {port} {target}"),
-        RData::TXT(strings) => strings
-            .iter()
-            .map(|s| String::from_utf8_lossy(s).into_owned())
-            .collect::<Vec<_>>()
-            .join(""),
-        _ => String::new(),
-    }
+    format_rdata(rdata)
 }
 
 /// Stored records that decode as policy records (malformed entries are skipped).

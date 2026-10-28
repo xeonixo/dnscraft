@@ -358,3 +358,158 @@ async fn put_config_round_trips_and_applies_live() {
     assert_eq!(ConfigStore::new(db).current().await.unwrap(), Some(2));
     let _ = std::fs::remove_dir_all(&data_dir);
 }
+
+/// Policy TOML for the node-validity smoke tests: one local record with a
+/// `lan` override, a `lan` view valid only on `node-a` (loopback subnet), and
+/// the default view. `dns_port` is the UDP listener port.
+fn node_policy_toml(data_dir: &Path, port: u16, dns_port: u16, node: &str) -> String {
+    let base = config_toml(data_dir, port, "paperless").replace(
+        "address = \"127.0.0.1:0\"",
+        &format!("address = \"127.0.0.1:{dns_port}\""),
+    );
+    format!(
+        r#"node_id = "{node}"
+{base}
+[filtering]
+lists = []
+update_interval = "1d"
+max_list_size_mb = 16
+
+[[filtering.sets]]
+id = "default"
+name = "Default"
+lists = []
+custom_rules = ""
+services = []
+block_mode = "Refused"
+mcp_rules = []
+
+[policy]
+default_rebind = true
+ptr_prefixes = []
+local_nxdomain_suffixes = ["local", "lan", "internal"]
+rebind_check_forward_zones = []
+
+[[policy.profiles]]
+id = "default"
+filter_set = "default"
+suppress_aaaa = false
+firefox_canary = false
+icloud_private_relay = false
+rebind_exceptions = []
+forward_zones = []
+schedules = []
+safesearch = {{ enabled = false, providers = [], youtube_mode = "Strict" }}
+
+[[policy.views]]
+id = "lan"
+is_default = false
+subnets = ["127.0.0.0/8"]
+nodes = ["node-a"]
+profile = "default"
+
+[[policy.views]]
+id = "default"
+is_default = true
+subnets = []
+profile = "default"
+
+[[policy.records]]
+name = "nas.lan.example.com"
+type = "A"
+rdata = "192.0.2.10"
+overrides = {{ lan = "192.0.2.50" }}
+"#
+    )
+}
+
+/// Sends one A query for `name` to the local UDP listener and returns the
+/// IPv4 addresses found in the answer section.
+fn udp_a_answers(dns_port: u16, name: &str) -> Vec<[u8; 4]> {
+    let mut query = vec![0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+    for label in name.trim_end_matches('.').split('.') {
+        query.push(u8::try_from(label.len()).unwrap());
+        query.extend_from_slice(label.as_bytes());
+    }
+    query.extend_from_slice(&[0, 0, 1, 0, 1]);
+    let socket = std::net::UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    socket.send_to(&query, ("127.0.0.1", dns_port)).unwrap();
+    let mut buf = [0u8; 512];
+    let (len, _) = socket.recv_from(&mut buf).expect("DNS answer");
+    let reply = &buf[..len];
+    // Answer RRs are 12-byte fixed parts after the question; scan for
+    // A rdata of length 4 following the 0x0004 rdlength field.
+    reply
+        .windows(6)
+        .filter(|w| w[0] == 0 && w[1] == 4)
+        .map(|w| [w[2], w[3], w[4], w[5]])
+        .filter(|addr| addr[0] == 192 && addr[1] == 0 && addr[2] == 2)
+        .collect()
+}
+
+/// `node_id` reaches the listeners and the view `nodes` gate selection: the
+/// `lan` view answers only on `node-a`; on `node-b` the default view answers.
+#[tokio::test(flavor = "multi_thread")]
+async fn node_id_and_source_ip_view_select_the_local_answer() {
+    for (node, expected) in [("node-a", [192, 0, 2, 50]), ("node-b", [192, 0, 2, 10])] {
+        let data_dir = temp_dir(&format!("node-{node}"));
+        let port = free_port();
+        let dns_port = free_port();
+        let app = boot(&node_policy_toml(&data_dir, port, dns_port, node)).await;
+        wait_for_api(port);
+
+        let answers = udp_a_answers(dns_port, "nas.lan.example.com");
+        assert_eq!(answers, vec![expected], "node {node}");
+
+        app.shutdown(Duration::from_secs(1)).await;
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+}
+
+/// A record the policy build rejects (an override for an unknown view) is not
+/// stored: the config version and the record list stay as they were.
+#[tokio::test(flavor = "multi_thread")]
+async fn rejected_policy_record_keeps_the_stored_version() {
+    let data_dir = temp_dir("reject");
+    let port = free_port();
+    let app = boot(&config_toml(&data_dir, port, "paperless")).await;
+    wait_for_api(port);
+    let admin = token(&data_dir, Scope::Admin).await;
+
+    let (status, body) = get(port, "/api/v1/config", &admin);
+    assert_eq!(status, 200, "get config: {body}");
+    let before = body["data"]["version"].clone();
+
+    let rejected = json!({
+        "name": "nas.lan.example.com",
+        "type": "A",
+        "rdata": "192.0.2.10",
+        "overrides": { "nowhere": "192.0.2.50" },
+    });
+    let (status, body) = http(
+        port,
+        "PUT",
+        "/api/v1/policy/records",
+        &[
+            ("Authorization", format!("Bearer {admin}")),
+            ("Content-Type", "application/json".to_owned()),
+        ],
+        &rejected.to_string(),
+    );
+    assert_eq!(status, 400, "record rejected by the policy build: {body}");
+    assert!(body.contains("policy.config.invalid"), "{body}");
+
+    let (status, body) = get(port, "/api/v1/config", &admin);
+    assert_eq!(status, 200, "get config: {body}");
+    assert_eq!(body["data"]["version"], before, "version unchanged: {body}");
+
+    let (status, body) = get(port, "/api/v1/policy/records", &admin);
+    assert_eq!(status, 200, "records: {body}");
+    assert_eq!(body["data"]["records"], json!([]), "nothing stored: {body}");
+
+    app.shutdown(Duration::from_secs(1)).await;
+    let _ = std::fs::remove_dir_all(&data_dir);
+}

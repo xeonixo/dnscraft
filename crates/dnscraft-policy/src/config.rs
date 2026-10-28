@@ -12,6 +12,7 @@ use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{ClientId, ListenerId, NodeId, ProfileId, ViewId};
+use crate::rdata_text::{format_rdata, parse_rdata, record_type_text};
 
 /// Default TTL for view local records when the config omits one.
 pub const DEFAULT_RECORD_TTL: u32 = 60;
@@ -92,22 +93,83 @@ pub struct RequestContext {
 }
 
 /// One local resource record in the global name space.
+///
+/// Serialized as presentation text (`name`, `type`, `ttl`, `rdata`,
+/// `overrides`), e.g. `rdata = "192.0.2.10"` with `type = "A"`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RecordWire", into = "RecordWire")]
 pub struct ViewRecordConfig {
     /// Owner name (exact; wildcards are rejected at build time).
-    #[serde(with = "name_serde")]
     pub name: Name,
-    /// TTL in seconds. [`DEFAULT_RECORD_TTL`] when unset by the UI.
+    /// TTL in seconds. [`DEFAULT_RECORD_TTL`] when omitted.
     pub ttl: u32,
-    /// Default record data for every view; the wire type is derived from the variant.
-    ///
-    /// Only A, AAAA, CNAME, TXT, SRV, MX and PTR are accepted.
-    #[serde(with = "rdata_serde")]
+    /// Default record data for every view. Only A, AAAA, CNAME, TXT, SRV, MX
+    /// and PTR are accepted.
     pub rdata: RData,
     /// Per-view replacement data, keyed by view id. A view without an entry
     /// uses [`Self::rdata`].
-    #[serde(default, with = "override_map")]
     pub overrides: BTreeMap<ViewId, RData>,
+}
+
+/// Presentation-text wire form of [`ViewRecordConfig`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordWire {
+    name: String,
+    #[serde(rename = "type")]
+    rtype: String,
+    #[serde(default = "default_record_ttl")]
+    ttl: u32,
+    rdata: String,
+    #[serde(default)]
+    overrides: BTreeMap<String, String>,
+}
+
+fn default_record_ttl() -> u32 {
+    DEFAULT_RECORD_TTL
+}
+
+impl TryFrom<RecordWire> for ViewRecordConfig {
+    type Error = String;
+
+    fn try_from(wire: RecordWire) -> Result<Self, Self::Error> {
+        let name = Name::from_ascii(&wire.name)
+            .map_err(|err| format!("record `{}`: invalid owner name: {err}", wire.name))?;
+        let rtype = crate::rdata_text::parse_record_type(&wire.rtype)
+            .ok_or_else(|| format!("record `{}`: unsupported type `{}`", wire.name, wire.rtype))?;
+        let rdata = parse_rdata(rtype, &wire.rdata)
+            .map_err(|err| format!("record `{}` ({}): {err}", wire.name, wire.rtype))?;
+        let mut overrides = BTreeMap::new();
+        for (view, text) in wire.overrides {
+            let id = ViewId::new(&view)
+                .map_err(|err| format!("record `{}`: override view `{view}`: {err}", wire.name))?;
+            let value = parse_rdata(rtype, &text)
+                .map_err(|err| format!("record `{}` override `{view}`: {err}", wire.name))?;
+            overrides.insert(id, value);
+        }
+        Ok(Self {
+            name,
+            ttl: wire.ttl,
+            rdata,
+            overrides,
+        })
+    }
+}
+
+impl From<ViewRecordConfig> for RecordWire {
+    fn from(record: ViewRecordConfig) -> Self {
+        Self {
+            name: record.name.to_string(),
+            rtype: record_type_text(record.rtype()).to_owned(),
+            ttl: record.ttl,
+            rdata: format_rdata(&record.rdata),
+            overrides: record
+                .overrides
+                .iter()
+                .map(|(view, rdata)| (view.to_string(), format_rdata(rdata)))
+                .collect(),
+        }
+    }
 }
 
 impl ViewRecordConfig {
@@ -291,40 +353,6 @@ impl Default for PolicyConfig {
     }
 }
 
-/// Serde adapter for [`ViewRecordConfig::overrides`]: a map of view id to
-/// record data, each value in the same wire form as [`ViewRecordConfig::rdata`].
-mod override_map {
-    use std::collections::BTreeMap;
-
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    use super::{RData, ViewId, rdata_serde};
-
-    #[derive(Serialize, Deserialize)]
-    struct Wire(#[serde(with = "rdata_serde")] RData);
-
-    pub fn serialize<S: Serializer>(
-        value: &BTreeMap<ViewId, RData>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        serializer.collect_map(
-            value
-                .iter()
-                .map(|(view, rdata)| (view, Wire(rdata.clone()))),
-        )
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<BTreeMap<ViewId, RData>, D::Error> {
-        let wire = BTreeMap::<ViewId, Wire>::deserialize(deserializer)?;
-        Ok(wire
-            .into_iter()
-            .map(|(view, Wire(rdata))| (view, rdata))
-            .collect())
-    }
-}
-
 /// Serde adapter for `SetId` / `ForwardZoneId`: text on the wire, parsed back
 /// through `FromStr` so the id charset/length rules still apply on deserialize.
 /// Keeps this crate independent of serde support in the crates that define them.
@@ -406,57 +434,6 @@ mod serde_ids {
                 })
                 .transpose()
         }
-    }
-}
-
-/// Serde adapter for [`Name`]: presentation-format text on the wire.
-mod name_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    use super::Name;
-
-    pub fn serialize<S: Serializer>(value: &Name, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(value)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Name, D::Error> {
-        let text = String::deserialize(deserializer)?;
-        Name::from_ascii(&text).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Serde adapter for [`RData`].
-///
-/// `dnscraft-proto` exposes no RDATA presentation-format parser, so the value
-/// is stored as its uncompressed wire bytes plus the record type needed to
-/// decode them. This round-trips every `RData` variant losslessly.
-mod rdata_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    use super::{RData, RecordType};
-
-    #[derive(Serialize, Deserialize)]
-    struct Wire {
-        #[serde(rename = "type")]
-        rtype: u16,
-        data: Vec<u8>,
-    }
-
-    pub fn serialize<S: Serializer>(value: &RData, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut data = Vec::new();
-        value
-            .encode(&mut data, None)
-            .map_err(serde::ser::Error::custom)?;
-        Wire {
-            rtype: value.record_type().value(),
-            data,
-        }
-        .serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<RData, D::Error> {
-        let Wire { rtype, data } = Wire::deserialize(deserializer)?;
-        RData::decode(&data, RecordType(rtype), 0, data.len()).map_err(serde::de::Error::custom)
     }
 }
 
@@ -567,6 +544,32 @@ mod tests {
         assert!(json.contains("\"end\":\"15h\""), "{json}");
         let decoded: PolicyConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, cfg);
+    }
+
+    #[test]
+    fn record_config_reads_presentation_text() {
+        let value = serde_json::json!({
+            "name": "nas.lan.example.com",
+            "type": "A",
+            "rdata": "192.0.2.10",
+            "overrides": { "guests": "192.0.2.50" },
+        });
+        let rec: ViewRecordConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(rec.ttl, DEFAULT_RECORD_TTL);
+        assert_eq!(rec.rdata, RData::A(Ipv4Addr::new(192, 0, 2, 10)));
+        let guests = ViewId::new("guests").unwrap();
+        assert_eq!(
+            rec.overrides[&guests],
+            RData::A(Ipv4Addr::new(192, 0, 2, 50))
+        );
+
+        let bad =
+            serde_json::json!({ "name": "nas.lan.example.com", "type": "A", "rdata": "nope" });
+        let err = serde_json::from_value::<ViewRecordConfig>(bad).unwrap_err();
+        assert!(err.to_string().contains("invalid IPv4"), "{err}");
+
+        let unknown = serde_json::json!({ "name": "a.example.com", "type": "NS", "rdata": "x" });
+        assert!(serde_json::from_value::<ViewRecordConfig>(unknown).is_err());
     }
 
     #[test]

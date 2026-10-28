@@ -148,7 +148,7 @@ approval before Phase 0 code.
 - [x] **GP3** 🟠 [code] `nodes` / node validity not implemented (no `node_id` in
       `RequestContext`/`PolicySnapshot::build`). *(grep node → 0 hits)*
       Owner decision made 2026-10-27 → implement the revised spec. Plan: `plan-policy-model.md` · `todo-policy-model.md`.
-- [ ] **GP7** 🟡 [code] TOML bootstrap `[[policy.records]]` takes wire-form `rdata` (`{type, data:[bytes]}`) and map-of-wire `overrides`; SPEC-policy excerpt shows presentation text (`rdata = "192.0.2.10"`, `overrides = { "guests" = "192.0.2.50" }`). The API accepts presentation text. *(config.rs rdata_serde / override_map)* — owner: pick one form for TOML.
+- [x] **GP7** 🟡 [code] TOML bootstrap `[[policy.records]]` takes wire-form `rdata` (`{type, data:[bytes]}`) and map-of-wire `overrides`; SPEC-policy excerpt shows presentation text (`rdata = "192.0.2.10"`, `overrides = { "guests" = "192.0.2.50" }`). The API accepts presentation text. *(config.rs)* — resolved: SPEC form (presentation text, `type` field) is the only form; wire form dropped.
 - [x] **GP4** 🟠 [code] `DecisionTimings.filter_us` declared but never assigned (=0). *(decision.rs:150, engine.rs:204-459)*
 - [x] **GP5** 🟡 [code] RFC 6724 / ULA note exists only in specs, no operator/first-run docs. *(grep 6724 → specs only)*
 - [x] **GP6** 🟡 [code] `home.arpa` via resolver local zone has no policy-crate test. *(grep home.arpa → 0 in crate)*

@@ -18,6 +18,7 @@ mod ids;
 mod pause;
 mod pipeline;
 mod private;
+mod rdata_text;
 mod reverse;
 mod safesearch_table;
 mod schedule;
@@ -44,6 +45,7 @@ pub use error::{ConfigReason, IdError, PolicyError};
 pub use ids::{ClientId, ListenerId, NodeId, ProfileId, ViewId};
 pub use pause::{PauseScope, PauseUntil};
 pub use pipeline::{Draft, Flow, StepCtx, Synth, clear_ad};
+pub use rdata_text::{format_rdata, parse_rdata, parse_record_type, record_type_text};
 pub use schedule::{active_schedule, offset_in_week};
 pub use select::{Selection, SelectionCause};
 pub use snapshot::{
