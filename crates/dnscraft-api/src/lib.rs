@@ -39,6 +39,7 @@ pub use api::auth::{
     Requirement, Role, Scope, SessionStore, TokenPrincipal, TokenSnapshot, TokenStore,
     auth_middleware, authorize, rbac_middleware, requirement, secure_cookie, session_set_cookie,
 };
+pub use api::clients_routes::{ClientDirectory, DirectoryClient, SyncSummary};
 pub use api::rate_limit::{DEFAULT_MAX_TRACKED_SOURCES, RateLimiter};
 pub use audit::{Audit, ConfigChangeRecord};
 pub use cluster::{

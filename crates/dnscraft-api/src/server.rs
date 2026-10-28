@@ -12,6 +12,7 @@ use tower::ServiceExt as _;
 use tower::service_fn;
 
 use crate::api::auth::{AuthState, LocalAccountStore, OidcState};
+use crate::api::clients_routes::ClientDirectory;
 use crate::api::rate_limit::RateLimiter;
 use crate::cluster_status::ClusterStatusProvider;
 use crate::config::{ControlApiConfig, RateLimitConfig, is_internal_bind};
@@ -37,6 +38,7 @@ pub struct AppState {
     readiness: Arc<Readiness>,
     tls: Option<Arc<dyn TlsStatusProvider>>,
     tls_admin: Option<Arc<dyn TlsAdmin>>,
+    clients: Option<Arc<dyn ClientDirectory>>,
     rate_limiter: Arc<RateLimiter>,
     auth: Option<Arc<AuthState>>,
     local_login: Option<Arc<LocalAccountStore>>,
@@ -71,6 +73,7 @@ impl AppState {
             readiness: Arc::new(Readiness::default()),
             tls: None,
             tls_admin: None,
+            clients: None,
             rate_limiter: Arc::new(RateLimiter::new(
                 RateLimitConfig::default(),
                 Arc::new(SystemClock),
@@ -418,6 +421,17 @@ impl AppState {
     pub fn with_tls_admin(mut self, admin: Arc<dyn TlsAdmin>) -> Self {
         self.tls_admin = Some(admin);
         self
+    }
+
+    /// Attaches the client directory adapter over the UniFi client engine (GA6).
+    pub fn with_clients(mut self, directory: Arc<dyn ClientDirectory>) -> Self {
+        self.clients = Some(directory);
+        self
+    }
+
+    /// The client directory adapter, if one is attached.
+    pub(crate) fn client_directory(&self) -> Option<&Arc<dyn ClientDirectory>> {
+        self.clients.as_ref()
     }
 
     /// Attaches a caller-configured rate limiter (built from the validated

@@ -15,30 +15,30 @@
 
 ## Phase 1 — token list + revoke (GA2, GA3)
 
-- [ ] **GA2** `GET /api/v1/auth/tokens`: `list_tokens` handler over
+- [x] **GA2** `GET /api/v1/auth/tokens`: `list_tokens` handler over
       `TokenStore::snapshot_entries()` → array of
       `{id, name, scope, actor_id, created_at, expires_at}` (D2, never plaintext);
       register `get(list_tokens)`. Tests: admin lists; viewer `403`; response contains
       no plaintext token.
-- [ ] **GA3** `DELETE /api/v1/auth/tokens/{id}`: `delete_token` handler over
+- [x] **GA3** `DELETE /api/v1/auth/tokens/{id}`: `delete_token` handler over
       `TokenStore::revoke(id)` (D3); register `delete(delete_token)`. Tests: admin
       revokes → `200` + token stops authenticating; unknown id → `404
       auth.unknown_token`; viewer → `403`.
 
 ## Phase 2 — audit list (GA4)
 
-- [ ] **GA4** `GET /api/v1/audit`: `list_audit` handler over `Db::audit_list(limit,
+- [x] **GA4** `GET /api/v1/audit`: `list_audit` handler over `Db::audit_list(limit,
       offset)` with defaulted + capped `limit`/`offset` (D4); register `get(list_audit)`.
       Tests: admin lists newest-first; viewer `403` (D4); redacted rows (no secret
       material); read failure maps to `control_api.audit.read` (GA22).
 
 ## Phase 3 — clients directory + sync (GA6)
 
-- [ ] **GA6a** `AppState::with_clients(Arc<ClientEngine>)` + accessor; `list_clients`
+- [x] **GA6a** `AppState::with_clients(Arc<ClientEngine>)` + accessor; `list_clients`
       returns `engine.lookup().clients()` mapped to the D5 DTO (falls back to the
       current manual-only/empty shape when no engine is wired). Tests: empty
       directory, manual-only, mixed UniFi+manual.
-- [ ] **GA6b** `sync_clients` calls `engine.sync_now()` → `SyncReport`, mapping
+- [x] **GA6b** `sync_clients` calls `engine.sync_now()` → `SyncReport`, mapping
       errors to `clients.*` codes; keeps `clients.sync.not_configured` when no engine.
       Tests: sync success + report, sync error mapping, no engine → `not_configured`.
 - [ ] **GA6c** Binary wiring: the assembler hands the built `ClientEngine` to
