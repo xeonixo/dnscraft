@@ -354,6 +354,18 @@ impl FilterEngine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Unix seconds of the last successful `services.json` download (from the
+    /// cache metadata), or `None` when no catalog is cached.
+    pub fn services_updated_at(&self) -> Option<u64> {
+        let inner = self.inner.as_ref()?;
+        inner
+            .store
+            .read_services_meta(crate::services::SERVICES_STEM)
+            .ok()
+            .flatten()?
+            .last_success
+    }
+
     /// Runs one immediate update round of every enabled list.
     ///
     /// This fetches directly (exactly once per list) and does not wake the

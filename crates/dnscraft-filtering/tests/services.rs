@@ -313,6 +313,20 @@ async fn engine_loads_cached_catalog_offline() {
     ));
 }
 
+#[tokio::test]
+async fn services_updated_at_reports_the_cached_download_time() {
+    let dir = TempDir::new("updated-at");
+    let clock = Arc::new(ManualClock::new(t0()));
+    let store =
+        ListStore::open_with(dir.path(), StoreConfig::default(), Arc::clone(&clock) as _).unwrap();
+    let cfg = FilterConfig::default();
+    let eng =
+        FilterEngine::open_without_scheduler(cfg, store.clone(), Arc::clone(&clock) as _).unwrap();
+    assert_eq!(eng.services_updated_at(), None, "no catalog cached yet");
+    seed_services_cache(&store, SERVICES_STEM, FIXTURE_SERVICES).unwrap();
+    assert!(eng.services_updated_at().is_some());
+}
+
 #[test]
 fn no_catalog_means_unavailable() {
     let dir = TempDir::new("none");
