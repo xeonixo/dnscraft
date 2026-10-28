@@ -29,6 +29,7 @@ use super::Authenticated;
 use super::hex;
 use super::roles::Scope;
 use crate::Secret;
+use crate::api::response::unix_rfc3339;
 use crate::audit::sha256_hex;
 use crate::error::ControlApiError;
 use crate::server::AppState;
@@ -414,8 +415,8 @@ pub(crate) async fn create_token(
         "name": created.name(),
         "scope": created.scope().as_str(),
         "actor_id": created.actor_id(),
-        "created_at": created.created_at(),
-        "expires_at": created.expires_at(),
+        "created_at": unix_rfc3339(created.created_at()),
+        "expires_at": created.expires_at().map(unix_rfc3339),
         "token": created.plaintext().expose(),
         "warnings": warnings,
     }))
@@ -439,8 +440,8 @@ pub(crate) async fn list_tokens(
                 "name": entry.name,
                 "scope": entry.scope,
                 "actor_id": entry.actor_id,
-                "created_at": entry.created_at,
-                "expires_at": entry.expires_at,
+                "created_at": unix_rfc3339(entry.created_at),
+                "expires_at": entry.expires_at.map(unix_rfc3339),
             })
         })
         .collect();

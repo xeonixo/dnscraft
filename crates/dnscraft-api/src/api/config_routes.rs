@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 
 use crate::api::auth::Authenticated;
 use crate::api::pagination::{Pagination, RawPagination};
-use crate::api::response::success;
+use crate::api::response::{success, unix_rfc3339};
 use crate::config_apply::ConfigActor;
 use crate::config_apply::ConfigService;
 use crate::error::ControlApiError;
@@ -257,7 +257,9 @@ pub(crate) async fn list_versions(
     rows.truncate(page.limit as usize);
     let versions: Vec<Value> = rows
         .into_iter()
-        .map(|(version, created_at)| json!({ "version": version, "created_at": created_at }))
+        .map(|(version, created_at)| {
+            json!({ "version": version, "created_at": unix_rfc3339(created_at) })
+        })
         .collect();
     Ok(success(json!({
         "current_version": current_version,

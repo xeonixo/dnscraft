@@ -9,7 +9,7 @@ use axum::response::IntoResponse;
 use serde_json::json;
 
 use crate::api::pagination::{Pagination, RawPagination};
-use crate::api::response::success;
+use crate::api::response::{success, unix_rfc3339};
 use crate::error::ControlApiError;
 use crate::server::AppState;
 
@@ -36,7 +36,7 @@ pub(crate) async fn list_audit(
         .map(|record| {
             json!({
                 "id": record.id,
-                "time": record.time,
+                "time": unix_rfc3339(record.time),
                 "node_id": record.node_id,
                 "actor_id": record.actor_id,
                 "actor_type": record.actor_type,

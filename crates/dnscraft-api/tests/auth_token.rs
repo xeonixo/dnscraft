@@ -595,8 +595,15 @@ async fn admin_lists_tokens_without_plaintext_and_viewer_is_denied() {
         assert_eq!(row["name"], created.name());
         assert_eq!(row["scope"], created.scope().as_str());
         assert_eq!(row["actor_id"], created.actor_id());
-        assert_eq!(row["created_at"], json!(created.created_at()));
-        assert_eq!(row["expires_at"], json!(created.expires_at()));
+        // Timestamps are RFC 3339 strings (GA20), not Unix integers.
+        let fmt = |t: i64| {
+            time::OffsetDateTime::from_unix_timestamp(t)
+                .unwrap()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap()
+        };
+        assert_eq!(row["created_at"], json!(fmt(created.created_at())));
+        assert_eq!(row["expires_at"], json!(created.expires_at().map(fmt)));
     }
 
     // No plaintext token ever appears in the list response.

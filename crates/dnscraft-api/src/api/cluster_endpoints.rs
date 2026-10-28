@@ -18,13 +18,11 @@ use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
 
 use dnscraft_cluster::ClusterStore;
 
 use crate::api::config_routes::json_body;
-use crate::api::response::success;
+use crate::api::response::{success, unix_rfc3339 as rfc3339};
 use crate::error::ControlApiError;
 use crate::server::AppState;
 
@@ -44,12 +42,6 @@ fn store(state: &AppState) -> Result<&Arc<ClusterStore>, ControlApiError> {
 }
 
 /// Unix seconds as an RFC 3339 UTC timestamp.
-fn rfc3339(unix: i64) -> String {
-    OffsetDateTime::from_unix_timestamp(unix)
-        .unwrap_or(OffsetDateTime::UNIX_EPOCH)
-        .format(&Rfc3339)
-        .unwrap_or_default()
-}
 
 /// `POST /api/v1/cluster/join-tokens` — mint a one-time token for `node_id`.
 ///

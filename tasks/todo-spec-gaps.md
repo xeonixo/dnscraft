@@ -193,7 +193,7 @@ approval before Phase 0 code.
 - [x] **GA17** 🟠 [code] SQLite query-log read errors map to `control_api.internal`, not `query_log.read`. *(query_log.rs:419-423, 467-494)*
 - [x] **GA18** 🟠 [code] `paused_until` stored as versioned filter-set config (spec: runtime-only). *(config_apply.rs:47-56, filter_routes.rs:44-63)*
 - [x] **GA19** 🟠 [code] `status.mode` can never report `manual` after upload. *(tls.rs:226-235, 272-326, 736-741)*
-- [ ] **GA20** 🟡 [code] Token/version timestamps as unix ints, not RFC 3339. *(tokens.rs:356-365, config_routes.rs:216-219)*
+- [x] **GA20** 🟡 [code] Token/version timestamps as unix ints, not RFC 3339. *(tokens.rs:356-365, config_routes.rs:216-219)*
 - [ ] **GA21** 🟡 [spec] Config persisted-after-apply vs spec's persist-then-mark-failed. *(config_apply.rs:9-12, 462-473)*
 - [ ] **GA22** 🟡 [code] Dead codes: `config.apply`, `query_log.dropped`, `audit.read`, `auth.unknown_token`. *(error.rs, response.rs)*
 - [ ] **GA23** 🟡 [code] `protocol`/`status` filter values not validated as enums. *(query_log_routes.rs:59-76)*

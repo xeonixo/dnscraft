@@ -185,3 +185,12 @@ mod tests {
         assert_eq!(body_of(res).await, json!({ "data": "ok" }));
     }
 }
+
+/// Formats Unix seconds as an RFC 3339 UTC timestamp (SPEC-control-api
+/// § General rules). Out-of-range values render as the epoch.
+pub(crate) fn unix_rfc3339(unix: i64) -> String {
+    time::OffsetDateTime::from_unix_timestamp(unix)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+}
