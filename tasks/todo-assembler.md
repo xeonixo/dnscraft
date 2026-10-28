@@ -52,6 +52,12 @@
 
 - [x] **AS12** Replace the stdout sink with `QueryLogSink` (SQLite retention/rollups), keeping the
       JSON-lines stdout writer as an optional debug flag. Closes the query-log half of G0.
+- [x] **AS14** Cluster wiring: `[cluster]` in the binary `Config`, `ClusterRuntime` started from control-api assembly
+      (master: registry, status, TLS CSR signer; sub-node: offline queue, enrollment from env), clean shutdown.
+      Tests: `tests/cluster.rs`. Open: sub-node HTTP write relay not mounted in the API routes.
+- [x] **AS15** Binary version on `/status` via additive `AppState::with_version`.
+- [x] **AS16** Blocked-services catalog adapter, `with_db` + backup dir, hourly `run_backup_if_due`.
+      `with_update_api_url` skipped (no mirror key in config). Smoke covers `/api/v1/backups` and `/filtering/services`.
 - [ ] **AS13** Delivery (gated on owner Q7): Dockerfile variants, compose, `HEALTHCHECK`, multi-arch
       `linux/amd64`/`linux/arm64`, musl static build. Closes the delivery findings.
 

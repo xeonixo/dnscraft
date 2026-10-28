@@ -2,6 +2,24 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — assembler wave 3: cluster wiring, backups, services catalog (AS14–AS17)
+
+- **Done (AS14):** `[cluster]` is parsed into the binary `Config` (`deny_unknown_fields` kept) and validated before any
+  listener binds. Master or sub-node starts `ClusterRuntime` inside control-api assembly, before the MCP backend, so the
+  broadcast handle is shared. Master attaches the registry, status and TLS CSR signer (`attach_tls_engine`, CF10). Sub-node
+  gets an offline-write queue on `cluster.db`. `App::shutdown` stops the cluster first. Enrollment reads
+  `DNSCRAFT_CLUSTER_JOIN_TOKEN[_FILE]` and `DNSCRAFT_CLUSTER_MASTER_CERT_FILE` (the pinned master PEM, not a fingerprint).
+- **Fixed:** a sub-node no longer seeds its store from TOML; a seeded v1 made the master's v1 a no-op on apply.
+- **Done (AS15):** `AppState::with_version` (dnscraft-api, additive); `/status` reports the binary version.
+- **Done (AS16):** `ServiceCatalogProvider` adapter over `FilterEngine` (`available: false` until a catalog is cached);
+  `with_db` attached (the binary never did, so `/api/v1/backups` was unmounted); hourly `run_backup_if_due` task, aborted on
+  shutdown. `with_update_api_url` skipped: no mirror key in config.
+- **Tests:** `tests/cluster.rs` (master + sub-node enroll on loopback, master snapshot reaches sub, master write reaches sub);
+  `tests/smoke.rs` covers `/api/v1/backups` and `/api/v1/filtering/services`; `cluster_settings` unit test.
+- **Open:** sub-node HTTP config write is not relayed (only the offline replay path exists in the API routes);
+  SPEC says pin the master fingerprint, the code pins a PEM. Clippy `-D warnings` on dnscraft-api blocked by another
+  agent's `notifications_routes.rs:198` (unnecessary closure), not touched here.
+
 ## 2026-10-28 — cluster CF10: TLS CSR signing (dnscraft-tls)
 
 - **Done:** `dnscraft_tls::sign_csr` (free fn) and `TlsEngine::sign_csr`: an ACME DNS-01 order finalized with the

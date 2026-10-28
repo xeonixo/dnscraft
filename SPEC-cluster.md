@@ -285,12 +285,12 @@ sub-node obtains its own TLS certificate for the same names.
   and the one it holds expires on its own schedule.
 - **Cost:** one ACME order per node per renewal (ACME rate limits apply; the
   fleet size bounds the number of orders).
-- **Not yet available:** the `TlsCsrSigner` implementation. `dnscraft-tls`
-  generates the key inside `finish_dns01_order` and has no path that finalizes
-  with an external CSR, so a master without a signer answers
-  `cluster.internal` (`no TLS certificate signer is attached`). The TLS module
-  must add that path (SPEC-tls.md) before the feature is live. Until then no
-  node receives a certificate from the cluster.
+- **Implemented:** the master's `TlsCsrSigner` is `TlsEngineCsrSigner`
+  (`dnscraft-api`), which finalizes the order through
+  `dnscraft_tls::TlsEngine::sign_csr` (SPEC-tls.md § Signing a node CSR). The
+  assembler attaches it on the master when `[tls]` is configured. Without a
+  signer a master answers `cluster.internal` (`no TLS certificate signer is
+  attached`), so a master without `[tls]` gives no node a certificate.
 - Rejected alternatives: keeping the shared key and rotating on revoke (every
   node still holds the wildcard key and rotation costs an order per revocation);
   letting each sub-node order its own certificate (gives every node DNS
@@ -657,6 +657,11 @@ code (same rule as the disabled MCP listener).
 
 Node-local bootstrap only. These keys are **never** part of the replicated
 snapshot. Secrets come from the environment / `*_FILE`, never from this file.
+The assembler reads the enrollment material from the environment, used only
+when a sub-node has no identity yet: `DNSCRAFT_CLUSTER_JOIN_TOKEN` or
+`DNSCRAFT_CLUSTER_JOIN_TOKEN_FILE` (one of the two), and
+`DNSCRAFT_CLUSTER_MASTER_CERT_FILE`, the PEM of the master's certificate, pinned
+for first enrollment. Relative `cluster.tls` paths resolve under `data_dir`.
 
 ```toml
 [cluster]

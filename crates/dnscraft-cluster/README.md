@@ -77,7 +77,7 @@ Traits implemented by the caller:
 |---|---|---|
 | `ConfigApplier` | control-api (CL15) | apply a full snapshot atomically; rollback on failure |
 | `CertInstaller` | tls/assembler | install a node's own chain with its local key without restart; never order ACME while a master is known |
-| `TlsCsrSigner` | tls/assembler (master) | sign a node's CSR through an ACME order; not yet implemented by `dnscraft-tls` (SPEC-cluster § TLS certificate distribution) |
+| `TlsCsrSigner` | control-api (master) | sign a node's CSR through an ACME order; `TlsEngineCsrSigner` wraps `dnscraft_tls::TlsEngine::sign_csr` (SPEC-cluster § TLS certificate distribution) |
 | `AuthSnapshotApplier` | control-api | apply the replicated token/session epoch |
 | `WriteExecutor` | control-api | re-check RBAC, run the canonical write handler, audit with `node_id` |
 | `RuntimeCommandApplier` | control-api | apply pause/resume and temporary allow locally |
