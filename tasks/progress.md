@@ -2,6 +2,14 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — control-api: GF2, sub-node config relay, master-pin spec
+
+- **GF2:** `apply_filter_config` maps `filter_list.fetch_failed` / `filter_list.too_large` on config
+  apply; production and test filtering appliers use it (`tests/filter_apply_errors.rs`).
+- **Cluster:** sub-node `PUT /api/v1/config` live-relays to the master (`cluster_write_relay`);
+  test `sub_node_put_config_is_relayed_to_the_master`.
+- **Spec:** SPEC-cluster documents PEM bootstrap pin via `DNSCRAFT_CLUSTER_MASTER_CERT_FILE`.
+
 ## 2026-10-28 — api: wire policy records + client-ids routes (router fix)
 
 - **Fixed:** `build_router` mounts `/policy/records` and `/policy/client-ids` (handlers/tests from cfcbbed were unwired). Commit `5e8e355`.

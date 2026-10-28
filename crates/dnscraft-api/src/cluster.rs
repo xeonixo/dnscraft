@@ -1453,6 +1453,10 @@ impl ClusterRuntime {
             }
         });
         let replay_executor = Arc::new(ClientWriteExecutor::new(Arc::clone(&client)));
+        state.attach_cluster_write_relay(
+            Arc::clone(&replay_executor) as Arc<dyn WriteExecutor>,
+            config.node_id.clone(),
+        );
         let replay_lock = Arc::new(tokio::sync::Mutex::new(()));
         let log_streamer = state.query_log_arc().map(|log| {
             Arc::new(LogStreamer::new(

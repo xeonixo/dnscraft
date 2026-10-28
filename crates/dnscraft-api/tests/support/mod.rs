@@ -21,7 +21,9 @@ use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tower::ServiceExt as _;
 
-use dnscraft_api::{ApplyFiltering, Clock as ApiClock, ControlApiError, ModuleFuture};
+use dnscraft_api::{
+    ApplyFiltering, Clock as ApiClock, ControlApiError, ModuleFuture, apply_filter_config,
+};
 use dnscraft_filtering::{
     BlockMode, Clock as FilterClock, DomainName, FilterConfig, FilterSetConfig, ListConfig, ListId,
     ListSourceSpec, McpRule, McpRuleId, SetId,
@@ -199,13 +201,7 @@ impl ApplyFiltering for FilterApplier {
     fn apply<'a>(&'a self, config: &'a Value) -> ModuleFuture<'a> {
         Box::pin(async move {
             let parsed = filter_config_from_json(config)?;
-            self.engine
-                .apply_config(parsed)
-                .await
-                .map(|_| ())
-                .map_err(|err| ControlApiError::Internal {
-                    message: format!("filter apply: {err}"),
-                })
+            apply_filter_config(&self.engine, parsed).await
         })
     }
 }

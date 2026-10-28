@@ -26,7 +26,8 @@ use crate::storage::Db;
 use crate::tls::{TlsAdmin, TlsStatus, TlsStatusProvider};
 use dnscraft_common::clock::{Clock, SystemClock};
 
-use dnscraft_cluster::{ClusterBroadcast, ClusterStore, OfflineWriteQueue, Role};
+use crate::cluster_write_relay::{ClusterWriteRelay, ClusterWriteRelayHandle};
+use dnscraft_cluster::{ClusterBroadcast, ClusterStore, OfflineWriteQueue, Role, WriteExecutor};
 use dnscraft_filtering::FilterEngine;
 use dnscraft_mcp::McpConfig;
 use dnscraft_policy::PolicyEngine;
@@ -53,6 +54,7 @@ pub struct AppState {
     cluster_broadcast: Arc<Mutex<Option<ClusterBroadcast>>>,
     cluster_role: Arc<Mutex<Option<Role>>>,
     offline_writes: Option<Arc<OfflineWriteQueue>>,
+    cluster_write_relay: ClusterWriteRelayHandle,
     mcp_backend: Option<Arc<McpBackendInner>>,
     mcp_config: McpConfig,
     oidc_issuer: Option<String>,
@@ -99,6 +101,7 @@ impl AppState {
             cluster_broadcast: Arc::new(Mutex::new(None)),
             cluster_role: Arc::new(Mutex::new(None)),
             offline_writes: None,
+            cluster_write_relay: Arc::new(Mutex::new(None)),
             mcp_backend: None,
             mcp_config: McpConfig::default(),
             oidc_issuer: None,
@@ -384,6 +387,27 @@ impl AppState {
     /// A cloneable offline-write-queue handle for the cluster runtime.
     pub(crate) fn offline_write_queue_arc(&self) -> Option<Arc<OfflineWriteQueue>> {
         self.offline_writes.clone()
+    }
+
+    /// Installs the sub-node live write relay (called from [`ClusterRuntime`]).
+    pub(crate) fn attach_cluster_write_relay(
+        &self,
+        executor: Arc<dyn WriteExecutor>,
+        node_id: impl Into<String>,
+    ) {
+        *self
+            .cluster_write_relay
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(ClusterWriteRelay::new(executor, node_id));
+    }
+
+    /// The sub-node write relay, when this process runs as `sub_node`.
+    pub(crate) fn cluster_write_relay(&self) -> Option<ClusterWriteRelay> {
+        self.cluster_write_relay
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Attaches the MCP backend inner handle (engines, stores, status providers).

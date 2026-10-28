@@ -13,7 +13,7 @@ use std::sync::{Arc, Weak};
 
 use dnscraft_api::{
     ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyTls, ControlApiError,
-    ModuleAppliers, ModuleFuture,
+    ModuleAppliers, ModuleFuture, apply_filter_config,
 };
 use dnscraft_clients::{ClientEngine, ClientsConfig};
 use dnscraft_filtering::{FilterConfig, FilterEngine};
@@ -62,11 +62,7 @@ impl ApplyFiltering for FilteringApplier {
     fn apply<'a>(&'a self, config: &'a Value) -> ModuleFuture<'a> {
         Box::pin(async move {
             let parsed = parse::<FilterConfig>(config, FILTERING_INVALID)?;
-            self.engine
-                .apply_config(parsed)
-                .await
-                .map(|_| ())
-                .map_err(|error| module_error(error.code(), error.to_string()))
+            apply_filter_config(&self.engine, parsed).await
         })
     }
 }

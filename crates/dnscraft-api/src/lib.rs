@@ -20,9 +20,11 @@ mod api;
 mod audit;
 mod cluster;
 mod cluster_status;
+mod cluster_write_relay;
 mod config;
 mod config_apply;
 mod error;
+mod filter_apply;
 mod mcp_backend;
 mod modules;
 mod notifications;
@@ -63,6 +65,7 @@ pub use dnscraft_cluster::{ClusterStore, OfflineWriteQueue};
 pub use dnscraft_common::clock::{Clock, ManualClock, SystemClock};
 pub use dnscraft_common::secret::Secret;
 pub use error::ControlApiError;
+pub use filter_apply::{apply_filter_config, filter_error};
 pub use mcp_backend::{McpBackendInner, mcp_backend_inner};
 #[doc(hidden)]
 pub use mcp_backend::{

@@ -120,9 +120,9 @@ Join procedure:
    connection is rejected unless the client certificate chains to the cluster CA
    **and** its fingerprint is registered and not revoked.
 5. Bootstrap trust for step 3 (decided, see § Decisions): the sub-node pins the
-   master's certificate fingerprint in bootstrap config before it has the
-   cluster CA, then switches to the cluster CA after enrollment; the self-signed
-   bootstrap certificate of control-api must not be accepted silently.
+   master's leaf certificate (PEM in `DNSCRAFT_CLUSTER_MASTER_CERT_FILE`) before
+   it has the cluster CA, then switches to the cluster CA after enrollment; the
+   self-signed bootstrap certificate of control-api must not be accepted silently.
 
 **Renewal (implemented).** A sub-node renews its node certificate over the
 established mTLS channel once two thirds of its lifetime have passed (the
@@ -805,8 +805,11 @@ provisional "Required control-api additions" list that stood here.
 
 1. **Node discovery & bootstrap trust** — static `master_url` + a one-time,
    `node_id`-bound join token. Bootstrap trust pins the master's certificate
-   SHA-256 fingerprint in the sub-node's bootstrap config; after enrollment the
-   sub-node switches to the cluster CA. No automatic discovery in v1.
+   before enrollment: the operator supplies the master leaf PEM via
+   `DNSCRAFT_CLUSTER_MASTER_CERT_FILE` (or `_FILE`); the sub-node derives the
+   SHA-256 fingerprint from that PEM and accepts only that leaf on the enroll
+   connection (equivalent to a fingerprint pin). After enrollment the sub-node
+   switches to the cluster CA. No automatic discovery in v1.
 2. **Transport authentication** — per-node mTLS certificates under a dedicated
    cluster CA (not a shared secret).
 3. **Master failover** — no election/quorum/auto-promotion in v1 (single master,

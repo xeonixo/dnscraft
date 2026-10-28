@@ -67,9 +67,12 @@ approval before Phase 0 code.
 
 - [x] **GF1** 🟠 [code] `max_list_size_mb` key has no counterpart; the 64 MiB cap lives only in
       `StoreConfig.max_body_bytes`, unreachable via `FilterConfig`. Plumb it through. *(set.rs:92-99, store.rs:62)*
-- [~] **GF2** 🟠 [code] `filter_list.fetch_failed` / `filter_list.too_large` error codes don't
+- [x] **GF2** 🟠 [code] `filter_list.fetch_failed` / `filter_list.too_large` error codes don't
       exist (only `filter_fetch.*` / `filter_store.*`); params differ from SPEC.md. Add codes +
-      map in control-api. *(fetch.rs:116-128, store.rs:103-110)*
+      map in control-api. *(fetch.rs:116-128, store.rs:103-110)* *Done 2026-10-28:*
+      `apply_filter_config` in `dnscraft-api` refreshes lists after apply and forwards list-level
+      codes/params; production `FilteringApplier` and test `FilterApplier` use it. Tests:
+      `tests/filter_apply_errors.rs`.
 - [x] **GF3** 🟠 [code] `$client`/`$ctag` modifiers reject the whole rule instead of ignoring the
       modifier (rule still applies) with a warning. *(modifiers.rs:290-294)*
 - [x] **GF4** 🟠 [code] `list_status()` omits last HTTP status and skip breakdown by reason.

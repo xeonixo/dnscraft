@@ -24,6 +24,7 @@ use serde_json::{Value, json};
 use crate::api::auth::Authenticated;
 use crate::api::pagination::{Pagination, RawPagination};
 use crate::api::response::{success, unix_rfc3339};
+use crate::cluster_write_relay::relay_config_write_if_sub_node;
 use crate::config_apply::ConfigActor;
 use crate::config_apply::ConfigService;
 use crate::error::ControlApiError;
@@ -197,10 +198,25 @@ pub(crate) async fn put_config(
     let Json(body) = body.map_err(|rejection| ControlApiError::ConfigInvalid {
         reason: rejection.body_text(),
     })?;
+    let config_actor = actor(auth.clone());
+    let auth_ref = auth.as_ref().map(|Extension(auth)| auth);
+    if let Some(response) = relay_config_write_if_sub_node(
+        &state,
+        "PUT",
+        "/api/v1/config",
+        body.clone(),
+        &config_actor,
+        auth_ref,
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
     let version = service(&state)?
-        .replace(body, &actor(auth), if_match(&headers))
+        .replace(body, &config_actor, if_match(&headers))
         .await?;
-    Ok(success(json!({ "version": version })))
+    Ok(success(json!({ "version": version })).into_response())
 }
 
 /// `POST /api/v1/config/validate` — dry run of `PUT /api/v1/config`.

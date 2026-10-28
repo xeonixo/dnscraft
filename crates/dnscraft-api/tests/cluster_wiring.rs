@@ -641,6 +641,120 @@ async fn runtime_master_publishes_and_sub_node_converges_end_to_end() {
     master.shutdown().await;
 }
 
+#[tokio::test]
+async fn sub_node_put_config_is_relayed_to_the_master() {
+    use tower::ServiceExt as _;
+
+    let master_dir = TempDir::new("relay-master");
+    let node_dir = TempDir::new("relay-node");
+    let clock = Arc::new(ClusterClock::new(SystemTime::now()));
+
+    let (master_service, _) = service("master", ModuleAppliers::default()).await;
+    let master_status = Arc::new(ClusterStatusHandle::new());
+    let master_state = AppState::new()
+        .with_config_service(Arc::clone(&master_service))
+        .with_cluster_status(master_status.clone());
+    let mut master_options = ClusterRuntimeOptions::new(master_dir.path());
+    master_options.clock = clock.clone();
+    master_options.status = master_status;
+    let master = ClusterRuntime::start(
+        master_config(master_dir.path()),
+        &master_state,
+        master_options,
+    )
+    .await
+    .unwrap();
+
+    let url = format!("https://{}", master.listen_addr().unwrap());
+    let server_cert = master.server_cert_pem().unwrap().to_owned();
+    let token = master
+        .cluster_store()
+        .unwrap()
+        .mint_join_token("node-b")
+        .await
+        .unwrap();
+
+    let (node_service, _) = service("node-b", ModuleAppliers::default()).await;
+    let node_status = Arc::new(ClusterStatusHandle::new());
+    let node_state = AppState::new()
+        .with_config_service(Arc::clone(&node_service))
+        .with_cluster_status(node_status.clone());
+    let mut node_options = ClusterRuntimeOptions::new(node_dir.path());
+    node_options.clock = clock;
+    node_options.status = node_status.clone();
+    node_options.join_token = Some(Secret::new(token.expose()));
+    node_options.master_cert_pem = Some(server_cert);
+    let node = ClusterRuntime::start(
+        sub_node_config(node_dir.path(), &url),
+        &node_state,
+        node_options,
+    )
+    .await
+    .unwrap();
+
+    for _ in 0..20_000 {
+        if node_status
+            .status()
+            .is_some_and(|status| status.master_reachable)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        node_status
+            .status()
+            .is_some_and(|status| status.master_reachable),
+        "sub-node never connected"
+    );
+
+    let seed = master_service
+        .replace(snapshot("seed"), &ConfigActor::local(), None)
+        .await
+        .unwrap();
+    let sync = master.config_sync().unwrap();
+    for _ in 0..20_000 {
+        if node_service.current().await.unwrap().0 == Some(seed) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(node_service.current().await.unwrap().0, Some(seed));
+
+    let body = snapshot("relayed");
+    let request = axum::http::Request::builder()
+        .method("PUT")
+        .uri("/api/v1/config")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            40_000,
+        ))))
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap();
+    let response = node_state.router().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+    for _ in 0..20_000 {
+        if master_service.current().await.unwrap().0 == Some(seed + 1)
+            && node_service.current().await.unwrap().0 == Some(seed + 1)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(master_service.current().await.unwrap().0, Some(seed + 1));
+    assert_eq!(node_service.current().await.unwrap().0, Some(seed + 1));
+    assert_eq!(
+        node_service.current().await.unwrap().1.unwrap()["filtering"]["marker"],
+        "relayed"
+    );
+    assert_eq!(sync.node_lag("node-b").unwrap().lag, 0);
+
+    node.shutdown().await;
+    master.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // Auth snapshot apply
 // ---------------------------------------------------------------------------
