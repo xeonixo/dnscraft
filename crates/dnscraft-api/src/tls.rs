@@ -400,6 +400,10 @@ impl EngineStatusProvider {
             let (mode, fingerprint) = self.listener_mode();
             let status =
                 TlsStatus::from_engine(&self.engine.status_async().await, mode, fingerprint);
+            let status = TlsStatus {
+                mode: effective_mode(status.mode, status.source),
+                ..status
+            };
             *self
                 .cached
                 .write()
@@ -427,13 +431,22 @@ impl TlsStatusProvider for EngineStatusProvider {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let (mode, fingerprint) = self.listener_mode();
-        status.mode = mode;
+        status.mode = effective_mode(mode, status.source);
         status.fingerprint = fingerprint;
         status
     }
 
     fn status_async(&self) -> TlsStatusFuture<'_> {
         self.refresh()
+    }
+}
+
+/// The reported mode: the listener serves an ACME-or-manual leaf alike, so an
+/// engine-side `manual` source (an operator upload, GA19) decides the label.
+fn effective_mode(listener: TlsMode, source: CertSource) -> TlsMode {
+    match (listener, source) {
+        (TlsMode::Acme, CertSource::Manual) => TlsMode::Manual,
+        (mode, _) => mode,
     }
 }
 
@@ -1051,6 +1064,22 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), ControlApiError> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    #[test]
+    fn manual_source_reports_manual_mode_over_an_acme_leaf() {
+        assert_eq!(
+            effective_mode(TlsMode::Acme, CertSource::Manual),
+            TlsMode::Manual
+        );
+        assert_eq!(
+            effective_mode(TlsMode::Acme, CertSource::Acme),
+            TlsMode::Acme
+        );
+        assert_eq!(
+            effective_mode(TlsMode::SelfSigned, CertSource::Acme),
+            TlsMode::SelfSigned
+        );
+    }
+
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, SystemTime};

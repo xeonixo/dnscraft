@@ -42,8 +42,6 @@ pub(crate) struct FilterSetBody {
     services: Vec<String>,
     #[serde(default)]
     block_mode: Option<Value>,
-    #[serde(default)]
-    paused_until: Option<String>,
     /// Omitted means "carry the stored rules over"; `[]` deletes them.
     #[serde(default)]
     mcp_rules: Option<Vec<Value>>,
@@ -78,7 +76,6 @@ impl FilterSetBody {
             "custom_rules": self.custom_rules,
             "services": self.services,
             "block_mode": self.block_mode.unwrap_or_else(|| json!("refused")),
-            "paused_until": self.paused_until,
         });
         // Omission must survive as an absent key so the mcp_rules merge treats
         // it as "carry over"; an explicit list is stored verbatim.

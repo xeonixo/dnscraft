@@ -43,14 +43,14 @@ const TOP_LEVEL_KEYS: [&str; 6] = [
 const REQUIRED_SECTIONS: [&str; 5] = ["filtering", "clients", "policy", "listeners", "tls"];
 
 /// Fields accepted inside one `filtering.sets[]` entry.
-const FILTER_SET_KEYS: [&str; 8] = [
+/// A set's pause is runtime state (SPEC-mcp § pauses), never a config field.
+const FILTER_SET_KEYS: [&str; 7] = [
     "id",
     "name",
     "lists",
     "custom_rules",
     "services",
     "block_mode",
-    "paused_until",
     "mcp_rules",
 ];
 

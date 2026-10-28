@@ -316,6 +316,17 @@ async fn invalid_config_returns_stable_code_and_calls_no_module() {
 }
 
 #[tokio::test]
+async fn filter_set_pause_is_runtime_state_not_config() {
+    // GA18: `paused_until` is no longer a versioned set field.
+    let h = harness().await;
+    let mut body = snapshot("v1");
+    body["filtering"]["sets"] = json!([{ "id": "default", "paused_until": null }]);
+    let err = h.service.replace(body, &actor(), None).await.unwrap_err();
+    assert_eq!(err.code(), "control_api.config.invalid");
+    assert!(entries(&h.log).is_empty());
+}
+
+#[tokio::test]
 async fn module_validation_error_calls_no_module_and_keeps_code() {
     let h = harness().await;
     h.policy_reject.store(true, Ordering::SeqCst);
