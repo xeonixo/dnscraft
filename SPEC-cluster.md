@@ -278,9 +278,11 @@ for **config-mutating** writes that carry both an `Idempotency-Key` and an
   `503 cluster.offline_write_queue_full`.
 - Durability: the queue is a SQLite table in the node's data directory with one
   row per request (`request_id`, `idempotency_key`, `if_match`, method, path,
-  body, actor, `enqueued_at`, `state`, `attempts`). The enqueue commits before
-  the 202 is returned, so a crash after 202 does not lose the write. The queue
-  survives restarts.
+  body, actor, `enqueued_at`, `state`, `attempts`, `expires_at`, `result_status`).
+  `expires_at` is the deadline returned in the 202; `result_status` is the HTTP
+  status of the master's answer on replay. The enqueue commits before the 202 is
+  returned, so a crash after 202 does not lose the write. The queue survives
+  restarts.
 - Replay on reconnect, strict FIFO:
   - each request is sent with its original `Idempotency-Key` and `If-Match`;
   - 2xx → mark `applied`, ack, continue;
@@ -293,9 +295,9 @@ for **config-mutating** writes that carry both an `Idempotency-Key` and an
     dropped with `cluster.offline_write_expired`.
 - The master deduplicates by `Idempotency-Key`, so a replay after an ambiguous
   ack is safe; the queue is effectively exactly-once for keyed requests.
-- Conflict/expiry reporting needs a read surface (`GET /api/v1/cluster/writes/{request_id}`
-  or the node status) — see SPEC-control-api.md § Cluster contract; until it exists,
-  queued state appears only as counters in `GET /api/v1/status`.
+- Conflict/expiry reporting: `GET /api/v1/cluster/writes/{request_id}` returns the
+  state, deadline and replay status (SPEC-control-api.md § Cluster contract); the
+  node status also carries the queue counters.
 
 ### Runtime-only and non-repeatable writes
 
@@ -421,6 +423,9 @@ logs are aggregated on the master only; sub-nodes keep a short local buffer
 
 ### Channel
 
+- Connection cap: the master accepts at most 128 concurrent cluster connections
+  and allows 10 s for each mTLS handshake; excess connections wait in the kernel
+  backlog. There is no per-node connection cap and no heartbeat/enroll rate limit yet.
 - mTLS with a dedicated cluster CA; TLS 1.3, ring-only. The CA private key exists
   only on the master, mode `0600`, and is never in the config export, audit log,
   backups, or error messages.
