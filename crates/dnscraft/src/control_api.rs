@@ -9,17 +9,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dnscraft_api::{
-    AppState, Audit, AuthState, ConfigService, ControlApiTls, Db, EngineStatusProvider,
-    EngineTlsAdmin, LocalAccountStore, OidcState, QueryLog, Readiness, SessionStore, SystemClock,
-    TlsStatusProvider, TokenStore, mcp_backend_inner,
+    AppState, Audit, AuthState, ClusterRuntime, ClusterRuntimeOptions, ClusterStore, ConfigService,
+    ControlApiTls, Db, EngineStatusProvider, EngineTlsAdmin, LocalAccountStore, OfflineWriteQueue,
+    OidcState, QueryLog, Readiness, ServiceCatalogProvider, SessionStore, SystemClock,
+    TlsStatusProvider, TokenStore, mcp_backend_inner, run_backup_if_due,
 };
+use dnscraft_cluster::{ClusterConfig, Role};
+use dnscraft_filtering::{FilterEngine, ServiceCatalog};
 use dnscraft_listeners::ListenerSet;
 use dnscraft_policy::PolicyEngine;
 use dnscraft_tls::CertResolver;
 use tokio::task::JoinHandle;
 
 use crate::engine::{EngineDirectory, Engines};
-use crate::{CONFIG_NODE_ID, Config, Error};
+use crate::{CLUSTER_DB_FILE, CONFIG_NODE_ID, Config, Enrollment, Error};
 
 /// How long [`start`] waits after spawning `serve` to catch an immediate
 /// startup failure (invalid config, bind error, TLS setup).
@@ -28,12 +31,20 @@ use crate::{CONFIG_NODE_ID, Config, Error};
 /// the grace window and only a failure returns early.
 const STARTUP_GRACE: Duration = Duration::from_millis(50);
 
+/// How often the scheduled backup check runs. `run_backup_if_due` itself
+/// enforces the 24 h interval, so this only bounds the delay.
+const BACKUP_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
 /// The running control-api HTTP listener.
 pub(crate) struct ControlApi {
     /// The `serve` task; aborted on [`crate::App::shutdown`]. `None` when the
     /// task already finished during startup (its output was consumed while
     /// detecting the failure).
     pub task: Option<JoinHandle<Result<(), Error>>>,
+    /// The cluster runtime when `[cluster]` enables a role.
+    pub cluster: Option<ClusterRuntime>,
+    /// The hourly scheduled-backup check (aborted on shutdown).
+    pub backup: JoinHandle<()>,
 }
 
 /// Assembles the control-api state and starts serving.
@@ -47,6 +58,8 @@ pub(crate) struct ControlApi {
 /// MCP transport validates browser origins against the real public host.
 /// `set` is the running listener set: its status feeds `/readyz` (GA29) and
 /// `get_status` (GM4), and is held weakly so shutdown can still consume it.
+/// `cluster` (validated `[cluster]`, `None` when standalone) starts before the
+/// listener serves, so the admin routes are mounted from the first request.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start(
     config: &mut Config,
@@ -57,8 +70,13 @@ pub(crate) async fn start(
     query_log: &Arc<QueryLog>,
     config_service: Arc<ConfigService>,
     acme: Option<Arc<CertResolver>>,
+    cluster: Option<&ClusterConfig>,
+    enrollment: &Enrollment,
 ) -> Result<ControlApi, Error> {
     let api_config = config.control_api.clone();
+    // The cluster certificate installer writes into the resolver the DNS
+    // listeners use; keep a handle before the TLS branch below consumes `acme`.
+    let cluster_resolver = acme.clone();
     api_config.validate().map_err(|error| {
         Error::startup(
             "dnscraft.startup.control_api",
@@ -147,7 +165,13 @@ pub(crate) async fn start(
         .with_resolver(Arc::clone(&engines.resolver))
         .with_auth(auth_state)
         .with_query_log(Arc::clone(query_log))
-        .with_mcp_config(mcp_config.clone());
+        .with_mcp_config(mcp_config.clone())
+        .with_version(env!("CARGO_PKG_VERSION"))
+        .with_db(db.clone())
+        .with_backup_dir(data_dir.join("backups"))
+        .with_service_catalog(Arc::new(EngineServices {
+            engine: Arc::clone(&engines.filtering),
+        }));
     if auth_config.local_login_enabled {
         state = state.with_local_login(local_accounts);
     }
@@ -169,6 +193,26 @@ pub(crate) async fn start(
     });
     state = state.with_clients(directory.clone());
     report_readiness(state.readiness(), engines, set);
+
+    // Cluster role: the master's listener, registry and TLS signer, or the
+    // sub-node's reconnect loop. Started before the MCP backend so the MCP
+    // write tools share the master's broadcast handle.
+    let cluster_runtime = match cluster {
+        Some(cluster) => {
+            let (next, runtime) = start_cluster(
+                cluster,
+                enrollment,
+                state,
+                engines,
+                cluster_resolver,
+                data_dir,
+            )
+            .await?;
+            state = next;
+            Some(runtime)
+        }
+        None => None,
+    };
 
     // AS11: mount `/mcp/v1` when enabled, wiring the AS12 query log so the
     // log and stats tools read the live SQLite pipeline.
@@ -199,6 +243,18 @@ pub(crate) async fn start(
             oidc_issuer,
         ));
     }
+
+    // Scheduled backups run from the same state the API serves.
+    let backup_state = state.clone();
+    let backup = tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(BACKUP_CHECK_INTERVAL);
+        loop {
+            ticker.tick().await;
+            if let Err(error) = run_backup_if_due(&backup_state).await {
+                tracing::warn!(code = error.code(), "scheduled backup failed");
+            }
+        }
+    });
 
     let serve_config = config.control_api.clone();
     let mut task = tokio::spawn(async move {
@@ -233,9 +289,81 @@ pub(crate) async fn start(
         }
         // Polling the handle to completion consumed its output; there is
         // nothing left to abort at shutdown.
-        return Ok(ControlApi { task: None });
+        return Ok(ControlApi {
+            task: None,
+            cluster: cluster_runtime,
+            backup,
+        });
     }
-    Ok(ControlApi { task: Some(task) })
+    Ok(ControlApi {
+        task: Some(task),
+        cluster: cluster_runtime,
+        backup,
+    })
+}
+
+/// Blocked-services catalog for `GET /api/v1/filtering/services`, read live
+/// from the filtering engine (`available: false` while none is cached).
+struct EngineServices {
+    engine: Arc<FilterEngine>,
+}
+
+impl ServiceCatalogProvider for EngineServices {
+    fn catalog(&self) -> Option<Arc<ServiceCatalog>> {
+        self.engine.services()
+    }
+
+    fn updated_at(&self) -> Option<u64> {
+        self.engine.services_updated_at()
+    }
+}
+
+/// Starts the `[cluster]` role and attaches its handles to `state`.
+///
+/// A sub-node gets its offline-write queue first (the runtime reads it while
+/// starting). The master exposes its registry, status and, when `[tls]` is
+/// configured, a CSR signer backed by the TLS engine.
+async fn start_cluster(
+    cluster: &ClusterConfig,
+    enrollment: &Enrollment,
+    mut state: AppState,
+    engines: &Engines,
+    tls_resolver: Option<Arc<CertResolver>>,
+    data_dir: &Path,
+) -> Result<(AppState, ClusterRuntime), Error> {
+    if cluster.role == Role::SubNode && cluster.offline_writes.enabled {
+        let store = ClusterStore::open(
+            &data_dir.join(CLUSTER_DB_FILE),
+            Arc::new(SystemClock),
+            cluster.join.token_ttl,
+        )
+        .await
+        .map_err(|error| {
+            Error::startup(
+                "dnscraft.startup.cluster",
+                format!("cluster store: {error}"),
+            )
+        })?;
+        let queue = OfflineWriteQueue::new(store, cluster.offline_writes.clone());
+        state = state.with_offline_write_queue(Arc::new(queue));
+    }
+
+    let mut options = ClusterRuntimeOptions::new(data_dir);
+    options.tls_resolver = tls_resolver;
+    options.join_token = enrollment.join_token.clone();
+    options.master_cert_pem = enrollment.master_cert_pem.clone();
+    let runtime = ClusterRuntime::start(cluster.clone(), &state, options)
+        .await
+        .map_err(|error| Error::startup("dnscraft.startup.cluster", format!("cluster: {error}")))?;
+
+    if let Some(store) = runtime.cluster_store() {
+        state = state.with_cluster_store(Arc::new(store));
+    }
+    state = state.with_cluster_status(runtime.status_handle());
+    if let Some(engine) = engines.tls.as_ref() {
+        runtime.attach_tls_engine(Arc::clone(engine));
+    }
+    Ok((state, runtime))
 }
 
 /// GA29: registers each module producer and reports it from the live engine.

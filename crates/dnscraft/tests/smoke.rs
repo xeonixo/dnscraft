@@ -275,6 +275,15 @@ async fn boots_every_engine_and_serves_the_control_api() {
     assert_eq!(status, 200, "tools/list: {body}");
     assert!(body.contains("list_clients"), "tools/list: {body}");
 
+    // Backups are mounted with the assembler's backup directory.
+    let (status, body) = get(port, "/api/v1/backups", &admin);
+    assert_eq!(status, 200, "backups: {body}");
+
+    // No blocked-services catalog is cached offline, so it reports unavailable.
+    let (status, services) = get(port, "/api/v1/filtering/services", &admin);
+    assert_eq!(status, 200, "services: {services}");
+    assert_eq!(services["data"]["available"], false, "services: {services}");
+
     app.shutdown(Duration::from_secs(1)).await;
     let _ = std::fs::remove_dir_all(&data_dir);
 }

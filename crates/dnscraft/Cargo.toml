@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 dnscraft-api = { path = "../dnscraft-api" }
+dnscraft-cluster = { path = "../dnscraft-cluster" }
 dnscraft-clients = { path = "../dnscraft-clients" }
 dnscraft-listeners = { path = "../dnscraft-listeners" }
 dnscraft-policy = { path = "../dnscraft-policy" }

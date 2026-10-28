@@ -9,6 +9,7 @@ use serde::Deserialize;
 use dnscraft_api::ControlApiConfig;
 pub use dnscraft_api::IpTruncate;
 use dnscraft_clients::ClientsConfig;
+use dnscraft_cluster::ClusterConfig;
 use dnscraft_filtering::FilterConfig;
 use dnscraft_listeners::{
     DdrConfig, Exposure, Limits, ListenerConfig, ListenersConfig, Protocol, PublicConfig, TlsPolicy,
@@ -140,6 +141,69 @@ fn resolve_one(
     }
 }
 
+/// Environment variable holding the one-time join token for sub-node enrollment.
+pub const CLUSTER_JOIN_TOKEN_ENV: &str = "DNSCRAFT_CLUSTER_JOIN_TOKEN";
+/// Environment variable holding the path to a file with the join token.
+pub const CLUSTER_JOIN_TOKEN_FILE_ENV: &str = "DNSCRAFT_CLUSTER_JOIN_TOKEN_FILE";
+/// Environment variable holding the path to the master's pinned certificate (PEM).
+pub const CLUSTER_MASTER_CERT_FILE_ENV: &str = "DNSCRAFT_CLUSTER_MASTER_CERT_FILE";
+
+/// Sub-node enrollment material. Secrets come from the environment only, never
+/// from the TOML file.
+#[derive(Debug, Default)]
+pub struct Enrollment {
+    /// One-time join token minted on the master for this node's `node_id`.
+    pub join_token: Option<Secret>,
+    /// Pinned master certificate (PEM), used only for the first enrollment.
+    pub master_cert_pem: Option<String>,
+}
+
+/// Reads the enrollment material from the environment.
+///
+/// The join token has one source: `DNSCRAFT_CLUSTER_JOIN_TOKEN` or the
+/// `*_FILE` path (both set is an error). Unset variables yield `None`; a
+/// sub-node that already has an identity on disk never needs them.
+pub fn enrollment_from_env() -> Result<Enrollment, Error> {
+    let env_value = |name: &str| env::var(name).ok().map(|v| v.trim().to_owned());
+    let token = env_value(CLUSTER_JOIN_TOKEN_ENV).filter(|v| !v.is_empty());
+    let token_file = env_value(CLUSTER_JOIN_TOKEN_FILE_ENV).filter(|v| !v.is_empty());
+    let join_token = match (token, token_file) {
+        (Some(_), Some(_)) => {
+            return Err(Error::config(
+                "dnscraft.config.cluster_env",
+                format!(
+                    "set only one of {CLUSTER_JOIN_TOKEN_ENV} or {CLUSTER_JOIN_TOKEN_FILE_ENV}"
+                ),
+            ));
+        }
+        (Some(token), None) => Some(Secret::new(token)),
+        (None, Some(path)) => Some(Secret::new(
+            read_env_file(CLUSTER_JOIN_TOKEN_FILE_ENV, &path)?
+                .trim()
+                .to_owned(),
+        )),
+        (None, None) => None,
+    };
+    let master_cert_pem = match env_value(CLUSTER_MASTER_CERT_FILE_ENV).filter(|v| !v.is_empty()) {
+        Some(path) => Some(read_env_file(CLUSTER_MASTER_CERT_FILE_ENV, &path)?),
+        None => None,
+    };
+    Ok(Enrollment {
+        join_token,
+        master_cert_pem,
+    })
+}
+
+/// Reads one secret or certificate file named by an environment variable.
+fn read_env_file(env_name: &str, path: &str) -> Result<String, Error> {
+    std::fs::read_to_string(path).map_err(|e| {
+        Error::config(
+            "dnscraft.config.cluster_env",
+            format!("read {env_name} `{path}`: {e}"),
+        )
+    })
+}
+
 /// Whether the key file's permissions are too open (group/other readable).
 #[cfg(unix)]
 fn key_file_permissions_warning(path: &str) -> Option<String> {
@@ -211,6 +275,10 @@ pub struct Config {
     /// Control API settings (`[control_api]`).
     #[serde(default)]
     pub control_api: ControlApiConfig,
+    /// Cluster role and node-local bootstrap settings (`[cluster]`). Absent or
+    /// `role = "standalone"` keeps the cluster idle.
+    #[serde(default)]
+    pub cluster: Option<ClusterConfig>,
 }
 
 /// Query-log settings (`[log]`).

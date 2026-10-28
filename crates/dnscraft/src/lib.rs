@@ -13,19 +13,22 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dnscraft_api::{Audit, ConfigService, ConfigStore, Db, QueryLog};
+use dnscraft_api::{Audit, ClusterRuntime, ConfigService, ConfigStore, Db, QueryLog};
+use dnscraft_cluster::{ClusterConfig, Role};
 use dnscraft_listeners::{
     ChannelSink, Clock, ListenerSet, ListenersConfig, ListenersStatus, QueryEventSink, SystemClock,
 };
 use dnscraft_policy::PolicyEngine;
 use dnscraft_tls::CertResolver;
 use serde_json::Value;
+use std::path::Path;
 use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
 
 pub use config::{
-    Config, IpTruncate, ListenerToml, LogConfig, LogSettings, TLS_CERT_ENV, TLS_CERT_FILE_ENV,
-    TLS_KEY_ENV, TLS_KEY_FILE_ENV, TlsSecrets, tls_secrets_from_env,
+    CLUSTER_JOIN_TOKEN_ENV, CLUSTER_JOIN_TOKEN_FILE_ENV, CLUSTER_MASTER_CERT_FILE_ENV, Config,
+    Enrollment, IpTruncate, ListenerToml, LogConfig, LogSettings, TLS_CERT_ENV, TLS_CERT_FILE_ENV,
+    TLS_KEY_ENV, TLS_KEY_FILE_ENV, TlsSecrets, enrollment_from_env, tls_secrets_from_env,
 };
 pub use engine::{Engines, build_engine};
 
@@ -38,6 +41,9 @@ const CONFIG_NODE_ID: &str = "local";
 const QUERY_LOG_CHANNEL_CAPACITY: usize = 4096;
 /// Capacity of the opt-in stdout JSON-lines debug channel.
 const STDOUT_LOG_CHANNEL_CAPACITY: usize = 1024;
+/// Cluster registry and offline-write queue file under `data_dir` (same name
+/// the cluster runtime uses for the master registry).
+const CLUSTER_DB_FILE: &str = "cluster.db";
 
 /// Top-level startup/runtime error; every error maps to exit code 2.
 ///
@@ -151,6 +157,10 @@ pub struct App {
     /// Control-api HTTP listener task (aborted on shutdown); `None` when it
     /// stopped during startup and the DNS listeners keep serving.
     api: Option<JoinHandle<Result<(), Error>>>,
+    /// The `[cluster]` role (master or sub-node); `None` when standalone.
+    cluster: Option<ClusterRuntime>,
+    /// Hourly scheduled-backup check task; aborted on shutdown.
+    backup: JoinHandle<()>,
 }
 
 impl App {
@@ -169,8 +179,19 @@ impl App {
         &self.engines
     }
 
+    /// The cluster runtime, when `[cluster]` enables a master or sub-node role.
+    pub fn cluster(&self) -> Option<&ClusterRuntime> {
+        self.cluster.as_ref()
+    }
+
     /// Gracefully stops listeners and drains both event consumers.
     pub async fn shutdown(self, grace: Duration) {
+        // Stop the cluster first so no relayed write or log batch is in flight
+        // while the local stores close.
+        if let Some(cluster) = self.cluster {
+            cluster.shutdown().await;
+        }
+        self.backup.abort();
         if let Some(set) = Arc::into_inner(self.set) {
             set.shutdown(grace).await;
         } else {
@@ -211,11 +232,23 @@ impl App {
 /// Production passes [`dnscraft_filtering::SystemClock`]; tests inject a manual
 /// clock.
 pub async fn build(
+    config: Config,
+    clock: Arc<dyn dnscraft_filtering::Clock>,
+) -> Result<App, Error> {
+    build_with_enrollment(config, clock, enrollment_from_env()?).await
+}
+
+/// Like [`build`], with the sub-node enrollment material passed in instead of
+/// read from the environment (embedding and tests).
+pub async fn build_with_enrollment(
     mut config: Config,
     clock: Arc<dyn dnscraft_filtering::Clock>,
+    enrollment: Enrollment,
 ) -> Result<App, Error> {
     let listeners = config.listeners_config()?;
     let log = config.log_settings()?;
+    // Validate `[cluster]` before any listener binds.
+    let cluster = cluster_settings(&config, &engine::engine_data_dir(&config))?;
     let engines = engine::build_engines(&config, clock).await?;
 
     // AS9: SQLite config store under `data_dir`, seeded from the TOML config on
@@ -334,7 +367,12 @@ pub async fn build(
         modules,
         CONFIG_NODE_ID,
     ));
-    seed_config_store(&config_service, snapshot).await?;
+    // A sub-node takes its configuration from the master's first snapshot, so
+    // it never seeds from TOML: a seeded v1 would make the master's v1 a no-op
+    // on apply (`apply_synced_config` skips the version it already holds).
+    if cluster.as_ref().map(|c| c.role) != Some(Role::SubNode) {
+        seed_config_store(&config_service, snapshot).await?;
+    }
 
     // AS10/AS11: serve the control-api (and mount `/mcp/v1` when enabled)
     // alongside the DNS listeners.
@@ -347,6 +385,8 @@ pub async fn build(
         &query_log,
         Arc::clone(&config_service),
         api_acme,
+        cluster.as_ref(),
+        &enrollment,
     )
     .await?;
 
@@ -358,7 +398,39 @@ pub async fn build(
         engines,
         config_service,
         api: control_api.task,
+        cluster: control_api.cluster,
+        backup: control_api.backup,
     })
+}
+
+/// Validates `[cluster]` and resolves its certificate paths.
+///
+/// Returns `None` when the cluster is absent or standalone. Relative cluster
+/// TLS paths (the SPEC defaults are `data/cluster/...`) resolve under
+/// `data_dir`, so the CA and node key land in the node's data directory.
+fn cluster_settings(config: &Config, data_dir: &Path) -> Result<Option<ClusterConfig>, Error> {
+    let Some(mut cluster) = config.cluster.clone() else {
+        return Ok(None);
+    };
+    cluster.validate().map_err(|error| {
+        Error::config(
+            "dnscraft.config.invalid_cluster",
+            format!("[cluster]: {error}"),
+        )
+    })?;
+    if cluster.role == Role::Standalone {
+        return Ok(None);
+    }
+    for path in [
+        &mut cluster.tls.ca_cert,
+        &mut cluster.tls.node_cert,
+        &mut cluster.tls.node_key,
+    ] {
+        if path.is_relative() {
+            *path = data_dir.join(&*path);
+        }
+    }
+    Ok(Some(cluster))
 }
 
 /// The five-section JSON snapshot seeded into an empty config store.
@@ -516,6 +588,9 @@ mod tests {
             Error::startup("dnscraft.startup.control_api", "x"),
             Error::startup("dnscraft.startup.control_api_tls", "x"),
             Error::startup("dnscraft.startup.control_api_auth", "x"),
+            Error::startup("dnscraft.startup.cluster", "x"),
+            Error::config("dnscraft.config.invalid_cluster", "x"),
+            Error::config("dnscraft.config.cluster_env", "x"),
             Error::tls("dnscraft.tls.install", "x"),
         ];
         let mut codes: Vec<&str> = errors.iter().map(Error::code).collect();
@@ -593,6 +668,34 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+    /// `[cluster]` is idle when absent or standalone; a sub-node's default
+    /// relative TLS paths resolve under the data directory; a role mismatch
+    /// fails with its stable code before any listener binds.
+    #[test]
+    fn cluster_settings_resolve_relative_paths_and_reject_mismatches() {
+        let data_dir = Path::new("/var/lib/dnscraft");
+        let parse = |cluster: &str| -> Config {
+            toml::from_str(&format!("public_domain = \"example.com\"\n{cluster}\n")).unwrap()
+        };
+
+        let config = Config::default();
+        assert!(cluster_settings(&config, data_dir).unwrap().is_none());
+        let standalone = parse("[cluster]\nrole = \"standalone\"\n");
+        assert!(cluster_settings(&standalone, data_dir).unwrap().is_none());
+
+        let sub = parse(
+            "[cluster]\nrole = \"sub_node\"\nnode_id = \"sub-a\"\nmaster_url = \"https://master.example.com:8443\"\n",
+        );
+        let cluster = cluster_settings(&sub, data_dir).unwrap().unwrap();
+        assert_eq!(cluster.tls.ca_cert, data_dir.join("data/cluster/ca.pem"));
+        assert_eq!(cluster.tls.node_key, data_dir.join("data/cluster/node.key"));
+
+        // A master without `[cluster.listen]` fails validation.
+        let master = parse("[cluster]\nrole = \"master\"\nnode_id = \"master-a\"\n");
+        let err = cluster_settings(&master, data_dir).unwrap_err();
+        assert_eq!(err.code(), "dnscraft.config.invalid_cluster");
     }
 
     #[test]

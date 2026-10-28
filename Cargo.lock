@@ -777,6 +777,7 @@ version = "0.1.0"
 dependencies = [
  "dnscraft-api",
  "dnscraft-clients",
+ "dnscraft-cluster",
  "dnscraft-filtering",
  "dnscraft-listeners",
  "dnscraft-policy",
