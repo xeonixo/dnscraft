@@ -15,6 +15,7 @@ dnscraft-policy = { path = "../crates/dnscraft-policy" }
 dnscraft-listeners = { path = "../crates/dnscraft-listeners" }
 dnscraft-mcp = { path = "../crates/dnscraft-mcp" }
 dnscraft-cluster = { path = "../crates/dnscraft-cluster" }
+dnscraft-api = { path = "../crates/dnscraft-api" }
 serde_json = "1.0.154"
 http = "1.5.0"
 tokio = { version = "1.54.1", features = ["rt"] }
@@ -92,6 +93,13 @@ bench = false
 [[bin]]
 name = "cluster_config"
 path = "fuzz_targets/cluster_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "control_api_config"
+path = "fuzz_targets/control_api_config.rs"
 test = false
 doc = false
 bench = false
