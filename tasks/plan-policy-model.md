@@ -55,7 +55,6 @@
   `PolicyClientIds` abstraction already isolates this; keep `EmptyClientIds` as the no-config
   default (public encrypted listeners then reject every Client ID).
 
-## Blocked on
+## Status
 
-- The in-flight policy agent (`GP4/GP5/GP6`) also edits `dnscraft-policy`; start GP1–GP3
-  only after it lands, or in a separate worktree.
+- Implemented 2026-10-28 (see progress.md). GP4–GP6 had already landed before this round.
