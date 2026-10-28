@@ -63,7 +63,7 @@ invalid credential → `401 control_api.auth.unauthenticated`.
 
 | Method | Path | Summary |
 |---|---|---|
-| GET | `/api/v1/status` | TLS mode (`self_signed`/`acme`), leaf fingerprint, and `warnings` (`control_api.tls.self_signed` while self-signed). TLS fields omitted in reverse-proxy mode. |
+| GET | `/api/v1/status` | Build `version`, `ready` and `modules_not_ready` (names), TLS mode (`self_signed`/`acme`/`manual`), leaf fingerprint, and `warnings` (`control_api.tls.self_signed` while self-signed). TLS fields omitted in reverse-proxy mode. |
 
 ### Config (admin)
 
@@ -71,7 +71,8 @@ invalid credential → `401 control_api.auth.unauthenticated`.
 |---|---|---|
 | GET | `/api/v1/config` | Current `version` + stored snapshot (secrets redacted). |
 | PUT | `/api/v1/config` | Validate + atomic replace of the whole config. `mcp_rules` are carried over when omitted, `[]` deletes them, an unknown field is `control_api.config.invalid`. Returns the new `version`. |
-| GET | `/api/v1/config/versions` | Previous versions, newest first, paginated. |
+| POST | `/api/v1/config/validate` | Dry run of `PUT /config`: returns `valid`, `errors`, `diff`; HTTP 200 even when invalid. No version bump, no audit row. |
+| GET | `/api/v1/config/versions` | Previous versions, newest first, paginated (`created_at` is RFC 3339). |
 | POST | `/api/v1/config/versions/{version}/rollback` | Restore a stored version. `control_api.config.unknown_version` if absent. |
 
 ### Policy (admin)
@@ -89,14 +90,14 @@ invalid credential → `401 control_api.auth.unauthenticated`.
 |---|---|---|
 | GET | `/api/v1/clients/manual` | Manual IP/CIDR/domain entries. |
 | POST / PUT / DELETE | `/api/v1/clients/manual` | Add / create-or-replace / delete (body `{ "name": … }`) a manual entry. |
-| GET | `/api/v1/clients` | Manual entries + the synced directory (empty until a `ClientEngine` adapter is wired). |
-| POST | `/api/v1/clients/sync` | Trigger a UniFi sync. `clients.sync.*` on failure. |
+| GET | `/api/v1/clients` | Manual entries + the synced directory (`id`, `name`, `dns_label`, `local_domain`, `source`, `ips`, `macs`, `vlan`, `online`, `last_seen`). The directory is empty until the binary wires a `ClientDirectory` adapter. |
+| POST | `/api/v1/clients/sync` | Trigger a UniFi sync; returns `generation`, `rebuilt`, `client_count`, `ip_conflicts`. `clients.sync.not_configured` without an adapter. |
 
 ### Filtering (admin)
 
 | Method | Path | Summary |
 |---|---|---|
-| GET / POST / PUT / DELETE | `/api/v1/filter-sets` | Filter-set CRUD (`id`, `name`, `lists`, `custom_rules`, `services`, `block_mode`, `paused_until`, `mcp_rules`). |
+| GET / POST / PUT / DELETE | `/api/v1/filter-sets` | Filter-set CRUD (`id`, `name`, `lists`, `custom_rules`, `services`, `block_mode`, `mcp_rules`). Pauses are runtime state, not a field here. |
 | GET / POST / PUT / DELETE | `/api/v1/filter-lists` | Filter-list CRUD (URL list sources). Local `file` sources are path-traversal-guarded (`filtering.list_source_path_not_safe`). |
 
 ### Listeners (admin)
@@ -119,6 +120,7 @@ invalid credential → `401 control_api.auth.unauthenticated`.
 | GET | `/api/v1/query-log/{id}` | One record with the full decision record ("why blocked?"). |
 | GET | `/api/v1/query-log/export.ndjson` | NDJSON stream of the current filter. |
 | GET | `/api/v1/query-log/export.csv` | CSV export of the current filter. |
+| GET | `/api/v1/query-log/{id}` | One record ("why blocked?"). |
 
 Query-log query parameters: `from`, `to`, `client_id`, `client_name_substr`,
 `domain`, `domain_substr`, `protocol`, `view_id`, `profile_id`, `status`,
@@ -133,17 +135,43 @@ Malformed values → `control_api.query_log.invalid`.
 | GET | `/api/v1/stats/top_clients` | Top clients by queries/blocked. |
 | GET | `/api/v1/stats/top_domains` | Top domains. |
 | GET | `/api/v1/stats/cache` | Cache hit ratio. |
+| GET | `/api/v1/stats/domains/{name}?days=7\|30` | One domain over the raw query log: `counts`, `first_seen`/`last_seen` (retention bounded), `daily`, `top_clients` (max 10), `last_decision`. `control_api.not_found` when unseen, `control_api.stats.invalid_domain` for a bad name or `days`. |
 
 Stats query parameters: `from`, `to`, `limit`, `by`.
+
+### Resolver (viewer/admin read, admin write)
+
+| Method | Path | Role | Summary |
+|---|---|---|---|
+| GET | `/api/v1/resolver/upstreams` | viewer/admin | Passive upstream health (`up`/`degraded`/`down`/`unknown`) over a 5 min window. |
+| POST | `/api/v1/resolver/cache/flush` | admin | Flush the whole cache (`{}`) or one domain and its subtree (`{"domain": "…"}`). Audited; returns `evicted`. |
+
+### Alerts (viewer/admin)
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/api/v1/alerts` | Active alerts: `active_count` and `items` (`id`, `severity`, `module`, `params`, `target_route`). Sources: TLS (revoked, expired, expiring, DynDNS stale), failed filter-list updates, sub-node without master. |
 
 ### Auth
 
 | Method | Path | Role | Summary |
 |---|---|---|---|
 | POST | `/api/v1/auth/tokens` | admin | Create a bearer token (`viewer`/`admin`/`mcp:read`/`mcp:write`); plaintext shown once, hash stored. |
-| POST | `/api/v1/auth/local/login` | public | Break-glass login with a provisioned local account. `control_api.auth.locked` on lockout. |
+| GET | `/api/v1/auth/tokens` | admin | List tokens (`id`, `name`, `scope`, `actor_id`, RFC 3339 `created_at`/`expires_at`); never the plaintext. |
+| DELETE | `/api/v1/auth/tokens/{id}` | admin | Revoke a token; `control_api.auth.unknown_token` (404) if absent. Audited. |
+| POST | `/api/v1/auth/local/login` | public | Break-glass login with a provisioned local account. `control_api.auth.locked` on lockout, per account and per source IP. |
+| POST | `/api/v1/auth/logout` | viewer/admin | Ends the cookie session. Audited. |
+| GET | `/api/v1/auth/me` | viewer/admin | Current principal: `role`, `actor_id`, `actor_type`, `csrf_token` (cookie sessions). |
+| GET | `/api/v1/auth/sessions` | viewer/admin | Live sessions: own by default, `scope=all` for admins. Rows carry `id` (not the cookie), `client_label`, truncated `ip`, `created_at`, `last_seen`, `expires_at`, `current`. |
+| DELETE | `/api/v1/auth/sessions/{id}` | viewer/admin (own), admin (any) | Revoke a session. `control_api.auth.session_current` (409) for the current one, `control_api.auth.unknown_session` (404) for an unseen or foreign id. Audited. |
 | GET | `/api/v1/auth/oidc/authorize-url` | public | PKCE S256 + nonce authorization URL. |
-| GET | `/api/v1/auth/oidc/callback` | public | Code exchange → cookie session. |
+| GET | `/api/v1/auth/oidc/callback` | public | Code exchange → cookie session. `auth.oidc.login` audit row on success and failure. |
+
+### Audit (admin)
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/api/v1/audit` | Newest first, `limit`/`offset`; secrets masked; `time` is RFC 3339. |
 
 ## REST endpoints — planned, not yet mounted
 
@@ -151,11 +179,11 @@ These are in the spec but not in `router.rs` yet; do not call them.
 
 | Method | Path | Role |
 |---|---|---|
-| GET / POST | `/api/v1/auth/tokens` | admin (list; POST is implemented) |
-| DELETE | `/api/v1/auth/tokens/{id}` | admin (revoke) |
-| POST | `/api/v1/auth/logout` | viewer/admin |
-| GET | `/api/v1/auth/me` | viewer/admin |
-| GET | `/api/v1/audit` | viewer/admin |
+| GET | `/api/v1/update/check` | viewer/admin (WP2, not built) |
+| GET / PUT | `/api/v1/backups`, `/api/v1/backups/settings` | admin (WP3, not built) |
+| GET / PUT | `/api/v1/filtering/services` | viewer/admin, admin (WP5, needs the service catalog) |
+| GET / PUT | `/api/v1/notifications`, POST `/api/v1/notifications/test` | viewer/admin, admin (WX7, owner decisions open) |
+| GET | `/api/v1/query-log/stream` | viewer/admin, SSE (WX2, not built) |
 
 The MCP-phase REST endpoints (`/api/v1/filtering/explain-block`,
 `/api/v1/policy/test-query`, `/api/v1/filtering/temporary-allows`,
