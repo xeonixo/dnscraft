@@ -32,6 +32,16 @@ Resume point for interrupted sessions. Newest entry first.
 - GC1 is not in this crate: the `ClientDirectory` adapter already exists in `crates/dnscraft/src/engine.rs`
   (`EngineClients`). Gates: fmt, clippy `-D warnings`, `cargo test -p dnscraft-clients -p dnscraft-tls` green.
 
+## 2026-10-28 — mcp: spec-gap audit GM1–GM17
+
+- GM1/GM2/GM11 were already closed by the assembler (AS0, AS11); the dead empty origins block in `server.rs` is gone.
+- Fixed (code): GM5 block mode, GM7 expired pauses + pagination, GM8 forwarded `filter_build.*`/`filter_name.*` domain codes, GM10 disabled `/mcp/v1` is 404 before auth, GM12 query-log read code, GM13 list id, GM14 TXT/SOA/SRV rendering, GM15 REST reason in audit, GM17 canonicaliser trims.
+- GM9: `mcp.tool_calls` is a structured tracing event (no metrics exporter exists yet).
+- GM4 partly fixed (filtering counts, TLS expiry). GM3, GM4 (listeners, resolver) and GM6 stay open: they need backend wiring (clients, resolver, listeners) or a `profile_id` filter in the shared stats module.
+- GM16 resolved as spec: SPEC-mcp.md documents the mcp-owned per-token buckets.
+- Test fixes: stale `paused_until` removed from the shared API test seed (GA18), family-check test enables MCP, expectations moved to forwarded codes.
+- Gates: `cargo test -p dnscraft-mcp` and `cargo test -p dnscraft-api` green; `cargo fmt` clean; clippy clean for dnscraft-mcp.
+
 ## 2026-10-27 — cluster: LOW/Info hardening from the security review
 
 - **A — relay exactly-once.** `ConfigWriteExecutor` now caches the relay response under

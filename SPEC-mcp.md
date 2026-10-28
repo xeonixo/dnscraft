@@ -24,7 +24,7 @@ Expose DNScraft's query log, configuration, and real-time DNS testing capabiliti
 - Not implementing OAuth-based MCP client authorization (internal-only, static bearer tokens).
 - Not supporting MCP resources or prompts in v1 (tools only).
 - Not exposing secrets, private keys, or full configuration snapshots (viewer sees read-only status, admin cannot retrieve token material).
-- Not rate-limited separately from `control-api` (same per-token limits apply).
+- Not a separate rate-limit policy: the MCP crate keeps its own per-token buckets with the same default rates as `control-api` (see § Limits and defaults); `control-api` still counts `/mcp/v1` requests in its own buckets.
 
 ## Architecture
 
@@ -152,7 +152,7 @@ Handshake-based revisions (with `initialize` and session management) are **2025-
   - **Per-token concurrent in-flight request cap:** `control_api.mcp.max_concurrent_requests_per_token` (default **5**). Exceeding returns HTTP 429 with `control_api.rate_limited`.
   - **Per-request deadline:** `control_api.mcp.request_timeout` (default **60 s**); requests exceeding it are cancelled.
   - **Request body cap:** `control_api.mcp.max_request_body_size` (default **1 MiB**, same as control-api); exceeding returns HTTP 413 with `control_api.payload_too_large`.
-  - **Global rate limiter:** shared with control-api (SPEC-control-api.md § General rules).
+  - **Per-token rate buckets:** the mcp crate keeps read, write and failed-auth token buckets (`read_per_second` 100, `write_per_second` 20, `auth_per_second` 10, `max_tracked_tokens` 10000; LRU-bounded). The control-api limiter (SPEC-control-api.md § General rules) also applies to `/mcp/v1`.
 - **Protocol version validation per request:** Each request's `MCP-Protocol-Version` header is checked. Unsupported version → HTTP 400 + `UnsupportedProtocolVersionError` (JSON-RPC error with supported versions in `data.supportedVersions`). No session-level negotiation.
 
 ### Legacy session mode (optional)
@@ -996,7 +996,7 @@ If this content is returned to an AI assistant as freeform prose (e.g. "The doma
 - **Mandatory expiry on allows and pauses:** `allow_temporarily` and `pause_filter_set` require a `duration` from a fixed three-value set; the configured maximum can only lower that set and is itself capped at 1 hour. No permanent allows, no `until_resumed`.
 - **Structured input only:** `add_rule` takes structured `{ domain, include_subdomains }`, not raw rule text. No `$dnsrewrite`, no wildcards, no single-label names. Domain syntax validated and canonicalised by the filtering crate.
 - **Hard caps:** `max_temporary_allow_duration`, `max_pause_duration` (both ≤ 1 h), `max_custom_rules_per_set` (default 100 MCP-created block rules per set), `max_block_rule_lifetime` (default 30 days).
-- **Rate limits:** Per-token rate limits (shared with `control-api`) prevent a compromised assistant from flooding write requests.
+- **Rate limits:** Per-token buckets (mcp crate, same defaults as `control-api`) prevent a compromised assistant from flooding write requests.
 - **Human confirmation via `destructiveHint`:** MCP clients that support `destructiveHint` show a confirmation dialog. The user sees the exact domain and duration before it is executed.
 - **Audit trail:** Every write is audited with the token ID, timestamp, and arguments (sanitized).
 
@@ -1260,7 +1260,8 @@ All codes are unique (tested in error-code uniqueness tests) and locale-neutral.
 | `max_custom_rules_per_set` | 100 | 10 | 1000 | `add_rule` validation (non-expired rules) |
 | `max_block_rule_lifetime` | 30 d | 1 d | 365 d | Assigned to every MCP-created block rule at creation |
 | Result size per tool call | 50 default (100 for `list_clients`, `list_mcp_rules`), 500 max | – | 500 | Pagination `limit` |
-| Per-token rate limits | Same as control-api | – | – | `control-api` rate limiter |
+| `read_per_second` / `write_per_second` / `auth_per_second` | 100 / 20 / 10 per second | 1 | 10 000 | mcp per-token buckets (same defaults as `control-api`) |
+| `max_tracked_tokens` | 10 000 | 1 | 1 000 000 | LRU bound on tracked token/source buckets |
 
 The two duration maxima are upper-bounded by 1 hour. They can only **lower** the fixed three-value set that the input schema exposes; they cannot add `PT4H` or any value outside `PT5M`/`PT15M`/`PT1H`. A configuration value above 1 hour or below 5 minutes is rejected at startup.
 
@@ -1294,6 +1295,10 @@ max_temporary_allow_duration = "1h"          # <= 1h; can only lower the fixed P
 max_pause_duration = "1h"                    # <= 1h; can only lower the fixed PT5M/PT15M/PT1H set
 max_custom_rules_per_set = 100
 max_block_rule_lifetime = "30d"              # assigned to every MCP-created block rule
+read_per_second = 100                        # Per-token read bucket (requests/s)
+write_per_second = 20                        # Per-token write bucket (requests/s)
+auth_per_second = 10                         # Failed-auth bucket per source (attempts/s)
+max_tracked_tokens = 10000                   # LRU bound on tracked buckets
 protected_domains = []                       # Additional domains beyond the auto-derived list
 ```
 
