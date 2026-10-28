@@ -755,6 +755,118 @@ async fn sub_node_put_config_is_relayed_to_the_master() {
     master.shutdown().await;
 }
 
+#[tokio::test]
+async fn sub_node_rollback_is_relayed_to_the_master() {
+    use tower::ServiceExt as _;
+
+    let master_dir = TempDir::new("relay-rollback-master");
+    let node_dir = TempDir::new("relay-rollback-node");
+    let clock = Arc::new(ClusterClock::new(SystemTime::now()));
+
+    let (master_service, _) = service("master", ModuleAppliers::default()).await;
+    let master_status = Arc::new(ClusterStatusHandle::new());
+    let master_state = AppState::new()
+        .with_config_service(Arc::clone(&master_service))
+        .with_cluster_status(master_status.clone());
+    let mut master_options = ClusterRuntimeOptions::new(master_dir.path());
+    master_options.clock = clock.clone();
+    master_options.status = master_status;
+    let master = ClusterRuntime::start(
+        master_config(master_dir.path()),
+        &master_state,
+        master_options,
+    )
+    .await
+    .unwrap();
+
+    let url = format!("https://{}", master.listen_addr().unwrap());
+    let server_cert = master.server_cert_pem().unwrap().to_owned();
+    let token = master
+        .cluster_store()
+        .unwrap()
+        .mint_join_token("node-b")
+        .await
+        .unwrap();
+
+    let (node_service, _) = service("node-b", ModuleAppliers::default()).await;
+    let node_status = Arc::new(ClusterStatusHandle::new());
+    let node_state = AppState::new()
+        .with_config_service(Arc::clone(&node_service))
+        .with_cluster_status(node_status.clone());
+    let mut node_options = ClusterRuntimeOptions::new(node_dir.path());
+    node_options.clock = clock;
+    node_options.status = node_status.clone();
+    node_options.join_token = Some(Secret::new(token.expose()));
+    node_options.master_cert_pem = Some(server_cert);
+    let node = ClusterRuntime::start(
+        sub_node_config(node_dir.path(), &url),
+        &node_state,
+        node_options,
+    )
+    .await
+    .unwrap();
+
+    for _ in 0..20_000 {
+        if node_status
+            .status()
+            .is_some_and(|status| status.master_reachable)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    let v1 = master_service
+        .replace(snapshot("keep"), &ConfigActor::local(), None)
+        .await
+        .unwrap();
+    let v2 = master_service
+        .replace(snapshot("discard"), &ConfigActor::local(), None)
+        .await
+        .unwrap();
+    assert_eq!(v2, v1 + 1);
+
+    for _ in 0..20_000 {
+        if node_service.current().await.unwrap().0 == Some(v2) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(node_service.current().await.unwrap().0, Some(v2));
+
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/config/versions/{v1}/rollback"))
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            40_001,
+        ))))
+        .body(axum::body::Body::from("{}"))
+        .unwrap();
+    let response = node_state.router().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+    let expected = v2 + 1;
+    for _ in 0..20_000 {
+        if master_service.current().await.unwrap().0 == Some(expected)
+            && node_service.current().await.unwrap().0 == Some(expected)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(master_service.current().await.unwrap().0, Some(expected));
+    assert_eq!(node_service.current().await.unwrap().0, Some(expected));
+    assert_eq!(
+        master_service.current().await.unwrap().1.unwrap()["filtering"]["marker"],
+        "keep"
+    );
+
+    node.shutdown().await;
+    master.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // Auth snapshot apply
 // ---------------------------------------------------------------------------

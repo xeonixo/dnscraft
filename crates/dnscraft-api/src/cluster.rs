@@ -53,6 +53,10 @@ use crate::api::config_routes::{
 };
 use crate::api::filter_routes::{FilterListBody, FilterSetBody};
 use crate::api::listener_routes::ListenerBody;
+use crate::api::policy_routes::{
+    ClientIdBody, RecordBody, RecordKey, delete_policy_record, register_client_id,
+    revoke_client_id, upsert_policy_record,
+};
 use crate::api::tls_routes::validate_tls;
 use crate::cluster_status::{ClusterStatus, ClusterStatusHandle};
 use crate::config_apply::{ConfigActor, ConfigService};
@@ -704,6 +708,61 @@ impl ConfigWriteExecutor {
                             what: format!("profile {id}"),
                         },
                     )?;
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({
+                        "data": { "version": version, "deleted": true, "id": id }
+                    }))
+                }
+                _ => Err(method_not_allowed(method, path)),
+            };
+        }
+        if path == "/api/v1/policy/records" {
+            return match method {
+                "POST" | "PUT" => {
+                    let body = parse_body::<RecordBody>(body, "policy.config.invalid")?;
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    let record = upsert_policy_record(&mut snapshot, body)?;
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({ "data": { "version": version, "record": record } }))
+                }
+                "DELETE" => {
+                    let key = parse_body::<RecordKey>(body, "policy.config.invalid")?;
+                    let name = key.name.clone();
+                    let rtype = key.rtype.clone();
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    delete_policy_record(&mut snapshot, key)?;
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({
+                        "data": {
+                            "version": version,
+                            "deleted": true,
+                            "name": name,
+                            "type": rtype,
+                        }
+                    }))
+                }
+                _ => Err(method_not_allowed(method, path)),
+            };
+        }
+        if path == "/api/v1/policy/client-ids" {
+            return match method {
+                "POST" => {
+                    let body = parse_body::<ClientIdBody>(body, "policy.config.invalid")?;
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    register_client_id(&mut snapshot, body.id.clone())?;
+                    let version = self.service.replace(snapshot, actor, if_match).await?;
+                    Ok(json!({
+                        "data": { "version": version, "client_id": body.id }
+                    }))
+                }
+                _ => Err(method_not_allowed(method, path)),
+            };
+        }
+        if let Some(id) = sub_path(path, "/api/v1/policy/client-ids/") {
+            return match method {
+                "DELETE" => {
+                    let mut snapshot = stored_snapshot(&self.service).await?;
+                    revoke_client_id(&mut snapshot, &id)?;
                     let version = self.service.replace(snapshot, actor, if_match).await?;
                     Ok(json!({
                         "data": { "version": version, "deleted": true, "id": id }

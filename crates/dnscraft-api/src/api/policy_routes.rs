@@ -20,19 +20,20 @@ use dnscraft_policy::{
     record_type_text,
 };
 use dnscraft_proto::{Name, RData, RecordType};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::api::auth::Authenticated;
 use crate::api::config_routes::{
-    actor, array, array_mut, if_match, json_body, module_error, service, stored_snapshot, valid_id,
+    actor, array, array_mut, if_match, json_body, module_error, relay_config_family_write, service,
+    stored_snapshot, valid_id,
 };
 use crate::api::response::success;
 use crate::error::ControlApiError;
 use crate::server::AppState;
 
 /// Body of `POST|PUT /api/v1/policy/records`: one record (name + type).
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RecordBody {
     name: String,
@@ -47,19 +48,19 @@ pub(crate) struct RecordBody {
 }
 
 /// Body of `DELETE /api/v1/policy/records`: the record key.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RecordKey {
-    name: String,
+    pub(crate) name: String,
     #[serde(rename = "type")]
-    rtype: String,
+    pub(crate) rtype: String,
 }
 
 /// Body of `POST /api/v1/policy/client-ids`.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ClientIdBody {
-    id: String,
+    pub(crate) id: String,
 }
 
 /// `GET /api/v1/policy/records`.
@@ -78,21 +79,27 @@ pub(crate) async fn put_record(
     headers: HeaderMap,
     body: Result<Json<RecordBody>, JsonRejection>,
 ) -> Result<impl IntoResponse, ControlApiError> {
-    let record = build_record(json_body(body, "policy.config.invalid")?)?;
+    let body = json_body(body, "policy.config.invalid")?;
+    let relay_body = serde_json::to_value(&body).map_err(|err| invalid(&err.to_string()))?;
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "PUT",
+        "/api/v1/policy/records",
+        relay_body,
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
-    let stored = serde_json::to_value(&record).map_err(|err| invalid(&err.to_string()))?;
-    let items = array_mut(&mut snapshot, "policy", "records")?;
-    match items.iter().position(|item| same_key(item, &record)) {
-        Some(index) => items[index] = stored,
-        None => items.push(stored),
-    }
+    let record = upsert_policy_record(&mut snapshot, body)?;
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
         .await?;
-    Ok(success(
-        json!({ "version": version, "record": record_json(&record) }),
-    ))
+    Ok(success(json!({ "version": version, "record": record })).into_response())
 }
 
 /// `DELETE /api/v1/policy/records` — remove the record `(name, type)`.
@@ -103,30 +110,34 @@ pub(crate) async fn delete_record(
     body: Result<Json<RecordKey>, JsonRejection>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     let Json(key) = body.map_err(|rejection| invalid(&rejection.body_text()))?;
-    let name = owner_name(&key.name)?;
-    let rtype = parse_rtype(&key.rtype)?;
+    let relay_body = serde_json::to_value(&key).map_err(|err| invalid(&err.to_string()))?;
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "DELETE",
+        "/api/v1/policy/records",
+        relay_body,
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
+    let name = key.name.clone();
+    let rtype = key.rtype.clone();
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
-    let items = array_mut(&mut snapshot, "policy", "records")?;
-    let index = items
-        .iter()
-        .position(|item| {
-            serde_json::from_value::<ViewRecordConfig>(item.clone())
-                .is_ok_and(|rec| rec.name == name && rec.rtype() == rtype)
-        })
-        .ok_or_else(|| ControlApiError::NotFound {
-            what: format!("record {} {}", key.name, key.rtype),
-        })?;
-    items.remove(index);
+    delete_policy_record(&mut snapshot, key)?;
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
         .await?;
     Ok(success(json!({
         "version": version,
         "deleted": true,
-        "name": key.name,
-        "type": key.rtype,
-    })))
+        "name": name,
+        "type": rtype,
+    }))
+    .into_response())
 }
 
 /// `GET /api/v1/policy/client-ids` — the registry, in stored order.
@@ -145,21 +156,28 @@ pub(crate) async fn create_client_id(
     headers: HeaderMap,
     body: Result<Json<ClientIdBody>, JsonRejection>,
 ) -> Result<impl IntoResponse, ControlApiError> {
-    let id = json_body(body, "policy.config.invalid")?.id;
-    if ClientId::new(&id).is_err() {
-        return Err(invalid("client id must match [a-z0-9-]{1,63}"));
+    let body = json_body(body, "policy.config.invalid")?;
+    let relay_body = serde_json::to_value(&body).map_err(|err| invalid(&err.to_string()))?;
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "POST",
+        "/api/v1/policy/client-ids",
+        relay_body,
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
     }
+    let id = body.id;
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
-    let ids = array_mut(&mut snapshot, "policy", "client_ids")?;
-    if ids.iter().any(|item| item.as_str() == Some(id.as_str())) {
-        return Err(invalid("client id is already registered"));
-    }
-    ids.push(Value::String(id.clone()));
+    register_client_id(&mut snapshot, id.clone())?;
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
         .await?;
-    Ok(success(json!({ "version": version, "client_id": id })))
+    Ok(success(json!({ "version": version, "client_id": id })).into_response())
 }
 
 /// `DELETE /api/v1/policy/client-ids/{id}` — revoke a Client ID.
@@ -169,27 +187,87 @@ pub(crate) async fn delete_client_id(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ControlApiError> {
+    let path = format!("/api/v1/policy/client-ids/{id}");
+    if let Some(response) =
+        relay_config_family_write(&state, "DELETE", &path, json!({}), auth.clone(), &headers)
+            .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
-    let ids = array_mut(&mut snapshot, "policy", "client_ids")?;
-    let index = ids
-        .iter()
-        .position(|item| item.as_str() == Some(id.as_str()))
-        .ok_or_else(|| ControlApiError::NotFound {
-            what: format!("client id {id}"),
-        })?;
-    ids.remove(index);
+    revoke_client_id(&mut snapshot, &id)?;
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
         .await?;
-    Ok(success(
-        json!({ "version": version, "deleted": true, "id": id }),
-    ))
+    Ok(success(json!({ "version": version, "deleted": true, "id": id })).into_response())
 }
 
 /// A `policy.config.invalid` error with `reason`.
 fn invalid(reason: &str) -> ControlApiError {
     module_error("policy.config.invalid", reason)
+}
+
+/// Inserts or replaces one local record in `snapshot`.
+pub(crate) fn upsert_policy_record(
+    snapshot: &mut Value,
+    body: RecordBody,
+) -> Result<Value, ControlApiError> {
+    let record = build_record(body)?;
+    let stored = serde_json::to_value(&record).map_err(|err| invalid(&err.to_string()))?;
+    let items = array_mut(snapshot, "policy", "records")?;
+    match items.iter().position(|item| same_key(item, &record)) {
+        Some(index) => items[index] = stored,
+        None => items.push(stored),
+    }
+    Ok(record_json(&record))
+}
+
+/// Removes one local record from `snapshot`.
+pub(crate) fn delete_policy_record(
+    snapshot: &mut Value,
+    key: RecordKey,
+) -> Result<(), ControlApiError> {
+    let name = owner_name(&key.name)?;
+    let rtype = parse_rtype(&key.rtype)?;
+    let items = array_mut(snapshot, "policy", "records")?;
+    let index = items
+        .iter()
+        .position(|item| {
+            serde_json::from_value::<ViewRecordConfig>(item.clone())
+                .is_ok_and(|rec| rec.name == name && rec.rtype() == rtype)
+        })
+        .ok_or_else(|| ControlApiError::NotFound {
+            what: format!("record {} {}", key.name, key.rtype),
+        })?;
+    items.remove(index);
+    Ok(())
+}
+
+/// Registers a Client ID in `snapshot`.
+pub(crate) fn register_client_id(snapshot: &mut Value, id: String) -> Result<(), ControlApiError> {
+    if ClientId::new(&id).is_err() {
+        return Err(invalid("client id must match [a-z0-9-]{1,63}"));
+    }
+    let ids = array_mut(snapshot, "policy", "client_ids")?;
+    if ids.iter().any(|item| item.as_str() == Some(id.as_str())) {
+        return Err(invalid("client id is already registered"));
+    }
+    ids.push(Value::String(id));
+    Ok(())
+}
+
+/// Revokes a Client ID from `snapshot`.
+pub(crate) fn revoke_client_id(snapshot: &mut Value, id: &str) -> Result<(), ControlApiError> {
+    let ids = array_mut(snapshot, "policy", "client_ids")?;
+    let index = ids
+        .iter()
+        .position(|item| item.as_str() == Some(id))
+        .ok_or_else(|| ControlApiError::NotFound {
+            what: format!("client id {id}"),
+        })?;
+    ids.remove(index);
+    Ok(())
 }
 
 /// Validates a record body and converts it to the policy model.

@@ -54,7 +54,8 @@
       JSON-lines stdout writer as an optional debug flag. Closes the query-log half of G0.
 - [x] **AS14** Cluster wiring: `[cluster]` in the binary `Config`, `ClusterRuntime` started from control-api assembly
       (master: registry, status, TLS CSR signer; sub-node: offline queue, enrollment from env), clean shutdown.
-      Tests: `tests/cluster.rs`. Open: sub-node HTTP write relay not mounted in the API routes.
+      Tests: `tests/cluster.rs`. Sub-node HTTP config-family writes relay via `relay_config_family_write`
+      (rollback, module CRUD, policy records/client-ids); `/policy/pause` stays local-only on sub-nodes.
 - [x] **AS15** Binary version on `/status` via additive `AppState::with_version`.
 - [x] **AS16** Blocked-services catalog adapter, `with_db` + backup dir, hourly `run_backup_if_due`.
       `with_update_api_url` skipped (no mirror key in config). Smoke covers `/api/v1/backups` and `/filtering/services`.

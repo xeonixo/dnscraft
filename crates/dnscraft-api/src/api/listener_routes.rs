@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 
 use crate::api::auth::Authenticated;
 use crate::api::config_routes::{
-    IdBody, actor, array, array_mut, if_match, json_body, module_error, remove_by_id, service,
-    stored_snapshot, upsert_by_id, valid_id,
+    IdBody, actor, array, array_mut, if_match, json_body, module_error, relay_config_family_write,
+    remove_by_id, service, stored_snapshot, upsert_by_id, valid_id,
 };
 use crate::api::response::success;
 use crate::error::ControlApiError;
@@ -107,6 +107,18 @@ pub(crate) async fn put_listener(
 ) -> Result<impl IntoResponse, ControlApiError> {
     let listener = json_body(body, "listeners.config.invalid")?.into_json()?;
     let id = listener["id"].as_str().unwrap_or_default().to_owned();
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "PUT",
+        "/api/v1/listeners",
+        listener.clone(),
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     let replaced = upsert_by_id(
@@ -121,7 +133,8 @@ pub(crate) async fn put_listener(
         "version": version,
         "listener": listener,
         "created": !replaced,
-    })))
+    }))
+    .into_response())
 }
 
 /// `DELETE /api/v1/listeners` — body `{ "id": "..." }`.
@@ -132,6 +145,18 @@ pub(crate) async fn delete_listener(
     body: Result<Json<IdBody>, JsonRejection>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     let body = json_body(body, "listeners.config.invalid")?;
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "DELETE",
+        "/api/v1/listeners",
+        json!({ "id": body.id }),
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     remove_by_id(
@@ -144,7 +169,5 @@ pub(crate) async fn delete_listener(
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
         .await?;
-    Ok(success(
-        json!({ "version": version, "deleted": true, "id": body.id }),
-    ))
+    Ok(success(json!({ "version": version, "deleted": true, "id": body.id })).into_response())
 }

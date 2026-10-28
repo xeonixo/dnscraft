@@ -24,7 +24,7 @@ use serde_json::{Map, Value, json};
 use crate::Secret;
 use crate::api::auth::Authenticated;
 use crate::api::config_routes::{
-    actor, if_match, json_body, module_error, service, stored_snapshot,
+    actor, if_match, json_body, module_error, relay_config_family_write, service, stored_snapshot,
 };
 use crate::api::response::success;
 use crate::config_apply::ConfigActor;
@@ -200,6 +200,18 @@ pub(crate) async fn put_tls(
 ) -> Result<impl IntoResponse, ControlApiError> {
     let tls = json_body(body, "tls.config.invalid")?;
     validate_tls(&tls)?;
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "PUT",
+        "/api/v1/tls",
+        tls.clone(),
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     let section = snapshot
@@ -212,7 +224,7 @@ pub(crate) async fn put_tls(
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
         .await?;
-    Ok(success(json!({ "version": version, "tls": tls })))
+    Ok(success(json!({ "version": version, "tls": tls })).into_response())
 }
 
 /// `DELETE /api/v1/tls` — clear the TLS config section.
@@ -221,6 +233,18 @@ pub(crate) async fn delete_tls(
     auth: Option<Extension<Authenticated>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ControlApiError> {
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "DELETE",
+        "/api/v1/tls",
+        json!({}),
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     let section = snapshot
@@ -234,7 +258,7 @@ pub(crate) async fn delete_tls(
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
         .await?;
-    Ok(success(json!({ "version": version, "deleted": removed })))
+    Ok(success(json!({ "version": version, "deleted": removed })).into_response())
 }
 
 // ---------------------------------------------------------------------------

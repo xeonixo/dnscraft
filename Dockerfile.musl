@@ -13,7 +13,7 @@ FROM rust:${RUST_VERSION}-alpine AS builder
 RUN apk add --no-cache musl-dev
 
 WORKDIR /build
-COPY Cargo.toml Cargo.lock deny.toml ./
+COPY Cargo.toml Cargo.lock deny.toml rust-toolchain.toml ./
 COPY crates ./crates
 
 ARG TARGETARCH

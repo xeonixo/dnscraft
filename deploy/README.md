@@ -20,7 +20,7 @@ Data persists in the `dnscraft-data` volume (`data_dir = /var/lib/dnscraft`).
 
 | File | Runtime | Notes |
 |------|---------|--------|
-| [`Dockerfile`](../Dockerfile) | Debian bookworm-slim (glibc) | **Default.** Includes `curl` for `HEALTHCHECK` on `/healthz` (control-api `127.0.0.1:8080`). |
+| [`Dockerfile`](../Dockerfile) | Debian bookworm-slim (glibc) | **Default.** Includes `curl` for `HEALTHCHECK` on `/healthz` (loopback inside the container). |
 | [`Dockerfile.musl`](../Dockerfile.musl) | `scratch` + static musl binary | Smaller attack surface; no shell/curl — mount config and use compose/Kubernetes HTTP probes. |
 
 ### Why glibc is the default
@@ -114,6 +114,13 @@ bootstrap is for operator-provided certificates.
 | 5300 | UDP/TCP | Plain DNS (documentation listeners on `0.0.0.0`) |
 | 8080 | TCP | Control API (`/healthz`, `/readyz`, REST, optional MCP) |
 
+The docker sample binds the control API on `0.0.0.0:8080` so published port
+mappings (`8080:8080`) reach the process. That exposes the REST/MCP surface on
+every container interface — put a reverse proxy or firewall in front in
+production, and prefer TLS + auth. Local dev without Docker uses
+[`dnscraft.example.toml`](dnscraft.example.toml) (loopback listeners only; no
+`[control_api]` section — binary defaults apply).
+
 Public encrypted listeners (`192.0.2.0/24`, `example.com`) stay commented in
 [`dnscraft.example.toml`](dnscraft.example.toml); enable them only with real
 certs and domains you control.
@@ -121,8 +128,8 @@ certs and domains you control.
 ## Health checks
 
 - **Glibc image:** `HEALTHCHECK` in `Dockerfile` and compose call
-  `http://127.0.0.1:8080/healthz` (control-api binds loopback inside the
-  container; publish `8080` for host access).
+  `http://127.0.0.1:8080/healthz` from inside the container (works whether the
+  API binds loopback or `0.0.0.0`). Publish `8080:8080` for host access.
 - **Musl/scratch:** use compose/Kubernetes HTTP probes against a published
   `8080:8080` mapping, or run the glibc image when you need an in-container
   probe.

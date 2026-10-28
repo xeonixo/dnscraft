@@ -16,7 +16,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::http::header::IF_MATCH;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -52,6 +52,30 @@ pub(crate) fn service(state: &AppState) -> Result<&ConfigService, ControlApiErro
 /// Parses an `If-Match` header value, if present and representable as UTF-8.
 pub(crate) fn if_match(headers: &HeaderMap) -> Option<&str> {
     headers.get(IF_MATCH).and_then(|value| value.to_str().ok())
+}
+
+/// Forwards a versioned config-family write to the cluster master on sub-nodes.
+///
+/// Returns `Some(response)` when the request was relayed or queued; `None` on
+/// master/standalone so the handler can apply locally.
+pub(crate) async fn relay_config_family_write(
+    state: &AppState,
+    method: &str,
+    path: &str,
+    body: Value,
+    auth: Option<Extension<Authenticated>>,
+    headers: &HeaderMap,
+) -> Result<Option<Response>, ControlApiError> {
+    relay_config_write_if_sub_node(
+        state,
+        method,
+        path,
+        body,
+        &actor(auth.clone()),
+        auth.as_ref().map(|Extension(auth)| auth),
+        headers,
+    )
+    .await
 }
 
 /// Body carrying a single resource id (`{ "id": "..." }`).
@@ -198,15 +222,12 @@ pub(crate) async fn put_config(
     let Json(body) = body.map_err(|rejection| ControlApiError::ConfigInvalid {
         reason: rejection.body_text(),
     })?;
-    let config_actor = actor(auth.clone());
-    let auth_ref = auth.as_ref().map(|Extension(auth)| auth);
-    if let Some(response) = relay_config_write_if_sub_node(
+    if let Some(response) = relay_config_family_write(
         &state,
         "PUT",
         "/api/v1/config",
         body.clone(),
-        &config_actor,
-        auth_ref,
+        auth.clone(),
         &headers,
     )
     .await?
@@ -214,7 +235,7 @@ pub(crate) async fn put_config(
         return Ok(response.into_response());
     }
     let version = service(&state)?
-        .replace(body, &config_actor, if_match(&headers))
+        .replace(body, &actor(auth), if_match(&headers))
         .await?;
     Ok(success(json!({ "version": version })).into_response())
 }
@@ -295,13 +316,26 @@ pub(crate) async fn rollback(
     let target = version
         .parse::<u64>()
         .map_err(|_| ControlApiError::ConfigUnknownVersion { version: 0 })?;
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "POST",
+        &format!("/api/v1/config/versions/{target}/rollback"),
+        json!({}),
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
     let outcome = service(&state)?
         .rollback(target, &actor(auth), if_match(&headers))
         .await?;
     Ok(success(json!({
         "version": outcome.version,
         "restored_from": outcome.restored_from,
-    })))
+    }))
+    .into_response())
 }
 
 /// Maps a read failure to the documented `control_api.config.read` code.
@@ -409,6 +443,13 @@ pub(crate) async fn put_view(
     body: Result<Json<ViewBody>, JsonRejection>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     let view = json_body(body, "policy.config.invalid")?.into_json(&id)?;
+    let path = format!("/api/v1/policy/views/{id}");
+    if let Some(response) =
+        relay_config_family_write(&state, "PUT", &path, view.clone(), auth.clone(), &headers)
+            .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     upsert_by_id(
@@ -419,7 +460,7 @@ pub(crate) async fn put_view(
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
         .await?;
-    Ok(success(json!({ "version": version, "view": view })))
+    Ok(success(json!({ "version": version, "view": view })).into_response())
 }
 
 /// `DELETE /api/v1/policy/views/{id}`.
@@ -429,6 +470,13 @@ pub(crate) async fn delete_view(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ControlApiError> {
+    let path = format!("/api/v1/policy/views/{id}");
+    if let Some(response) =
+        relay_config_family_write(&state, "DELETE", &path, json!({}), auth.clone(), &headers)
+            .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     remove_by_id(array_mut(&mut snapshot, "policy", "views")?, &id).ok_or_else(|| {
@@ -439,9 +487,7 @@ pub(crate) async fn delete_view(
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
         .await?;
-    Ok(success(
-        json!({ "version": version, "deleted": true, "id": id }),
-    ))
+    Ok(success(json!({ "version": version, "deleted": true, "id": id })).into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -548,6 +594,19 @@ pub(crate) async fn put_profile(
     body: Result<Json<ProfileBody>, JsonRejection>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     let profile = json_body(body, "policy.config.invalid")?.into_json(&id)?;
+    let path = format!("/api/v1/policy/profiles/{id}");
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "PUT",
+        &path,
+        profile.clone(),
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     upsert_by_id(
@@ -558,7 +617,7 @@ pub(crate) async fn put_profile(
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
         .await?;
-    Ok(success(json!({ "version": version, "profile": profile })))
+    Ok(success(json!({ "version": version, "profile": profile })).into_response())
 }
 
 /// `DELETE /api/v1/policy/profiles/{id}`.
@@ -568,6 +627,13 @@ pub(crate) async fn delete_profile(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ControlApiError> {
+    let path = format!("/api/v1/policy/profiles/{id}");
+    if let Some(response) =
+        relay_config_family_write(&state, "DELETE", &path, json!({}), auth.clone(), &headers)
+            .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     remove_by_id(array_mut(&mut snapshot, "policy", "profiles")?, &id).ok_or_else(|| {
@@ -578,9 +644,7 @@ pub(crate) async fn delete_profile(
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
         .await?;
-    Ok(success(
-        json!({ "version": version, "deleted": true, "id": id }),
-    ))
+    Ok(success(json!({ "version": version, "deleted": true, "id": id })).into_response())
 }
 
 // ---------------------------------------------------------------------------

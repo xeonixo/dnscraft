@@ -19,8 +19,8 @@ use serde_json::{Value, json};
 
 use crate::api::auth::Authenticated;
 use crate::api::config_routes::{
-    IdBody, actor, array, array_mut, if_match, json_body, module_error, remove_by_id, service,
-    stored_snapshot, upsert_by_id, valid_id,
+    IdBody, actor, array, array_mut, if_match, json_body, module_error, relay_config_family_write,
+    remove_by_id, service, stored_snapshot, upsert_by_id, valid_id,
 };
 use crate::api::response::{success, unix_rfc3339};
 use crate::config_apply::{list_source_path_is_safe, list_source_url_is_safe};
@@ -119,6 +119,18 @@ pub(crate) async fn put_filter_set(
 ) -> Result<impl IntoResponse, ControlApiError> {
     let set = json_body(body, "filtering.config.invalid")?.into_json()?;
     let id = set["id"].as_str().unwrap_or_default().to_owned();
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "PUT",
+        "/api/v1/filter-sets",
+        set.clone(),
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     let replaced = upsert_by_id(
@@ -133,7 +145,8 @@ pub(crate) async fn put_filter_set(
         "version": version,
         "filter_set": set,
         "created": !replaced,
-    })))
+    }))
+    .into_response())
 }
 
 /// `DELETE /api/v1/filter-sets` — body `{ "id": "..." }`.
@@ -144,6 +157,18 @@ pub(crate) async fn delete_filter_set(
     body: Result<Json<IdBody>, JsonRejection>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     let body = json_body(body, "filtering.config.invalid")?;
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "DELETE",
+        "/api/v1/filter-sets",
+        json!({ "id": body.id }),
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     remove_by_id(array_mut(&mut snapshot, "filtering", "sets")?, &body.id).ok_or_else(|| {
@@ -154,9 +179,7 @@ pub(crate) async fn delete_filter_set(
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
         .await?;
-    Ok(success(
-        json!({ "version": version, "deleted": true, "id": body.id }),
-    ))
+    Ok(success(json!({ "version": version, "deleted": true, "id": body.id })).into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +272,18 @@ pub(crate) async fn put_filter_list(
 ) -> Result<impl IntoResponse, ControlApiError> {
     let list = json_body(body, "filtering.config.invalid")?.into_json()?;
     let id = list["id"].as_str().unwrap_or_default().to_owned();
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "PUT",
+        "/api/v1/filter-lists",
+        list.clone(),
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     let replaced = upsert_by_id(
@@ -263,7 +298,8 @@ pub(crate) async fn put_filter_list(
         "version": version,
         "filter_list": list,
         "created": !replaced,
-    })))
+    }))
+    .into_response())
 }
 
 /// `DELETE /api/v1/filter-lists` — body `{ "id": "..." }`.
@@ -274,6 +310,18 @@ pub(crate) async fn delete_filter_list(
     body: Result<Json<IdBody>, JsonRejection>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     let body = json_body(body, "filtering.config.invalid")?;
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "DELETE",
+        "/api/v1/filter-lists",
+        json!({ "id": body.id }),
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     remove_by_id(array_mut(&mut snapshot, "filtering", "lists")?, &body.id).ok_or_else(|| {
@@ -284,9 +332,7 @@ pub(crate) async fn delete_filter_list(
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
         .await?;
-    Ok(success(
-        json!({ "version": version, "deleted": true, "id": body.id }),
-    ))
+    Ok(success(json!({ "version": version, "deleted": true, "id": body.id })).into_response())
 }
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,13 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-10-28 — AS13 follow-up + sub-node config relay (assembler/api)
+
+- **Docker:** `deploy/dnscraft.docker.toml` binds control API on `0.0.0.0:8080` (host port maps work); `Dockerfile`/`Dockerfile.musl` copy `rust-toolchain.toml`; `deploy/README.md` documents exposure + production hardening.
+- **Cluster:** sub-node HTTP handlers call shared `relay_config_family_write` for versioned config mutations (rollback, filter sets/lists, listeners, TLS, clients/manual, policy views/profiles/records/client-ids); **`/policy/pause` stays local** (runtime-oriented). Master executor dispatches policy records + client-ids.
+- **Test:** `sub_node_rollback_is_relayed_to_the_master` in `cluster_wiring`.
+- **Gates:** `cargo fmt/clippy/test -p dnscraft-api --locked` green. `docker build` not run (Colima socket absent).
+
 ## 2026-10-28 — control-api: GF2, sub-node config relay, master-pin spec
 
 - **GF2:** `apply_filter_config` maps `filter_list.fetch_failed` / `filter_list.too_large` on config

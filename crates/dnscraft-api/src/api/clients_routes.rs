@@ -19,8 +19,8 @@ use serde_json::{Value, json};
 
 use crate::api::auth::Authenticated;
 use crate::api::config_routes::{
-    actor, array, array_mut, if_match, json_body, module_error, service, stored_snapshot,
-    valid_ip_or_cidr,
+    actor, array, array_mut, if_match, json_body, module_error, relay_config_family_write, service,
+    stored_snapshot, valid_ip_or_cidr,
 };
 use crate::api::response::success;
 use crate::error::ControlApiError;
@@ -195,6 +195,18 @@ pub(crate) async fn create_manual(
     body: Result<Json<ManualEntryBody>, JsonRejection>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     let entry = json_body(body, "clients.config.invalid")?.into_json()?;
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "POST",
+        "/api/v1/clients/manual",
+        entry.clone(),
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     let entries = array_mut(&mut snapshot, "clients", "manual")?;
@@ -213,7 +225,7 @@ pub(crate) async fn create_manual(
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
         .await?;
-    Ok(success(json!({ "version": version, "entry": entry })))
+    Ok(success(json!({ "version": version, "entry": entry })).into_response())
 }
 
 /// `PUT /api/v1/clients/manual` — create or replace an entry by name.
@@ -224,6 +236,18 @@ pub(crate) async fn put_manual(
     body: Result<Json<ManualEntryBody>, JsonRejection>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     let entry = json_body(body, "clients.config.invalid")?.into_json()?;
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "PUT",
+        "/api/v1/clients/manual",
+        entry.clone(),
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     let entries = array_mut(&mut snapshot, "clients", "manual")?;
@@ -246,7 +270,8 @@ pub(crate) async fn put_manual(
         "version": version,
         "entry": entry,
         "created": !replaced,
-    })))
+    }))
+    .into_response())
 }
 
 /// `DELETE /api/v1/clients/manual` — body `{ "name": "..." }`.
@@ -257,6 +282,18 @@ pub(crate) async fn delete_manual(
     body: Result<Json<NameBody>, JsonRejection>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     let body = json_body(body, "clients.config.invalid")?;
+    if let Some(response) = relay_config_family_write(
+        &state,
+        "DELETE",
+        "/api/v1/clients/manual",
+        json!({ "name": body.name }),
+        auth.clone(),
+        &headers,
+    )
+    .await?
+    {
+        return Ok(response.into_response());
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     let entries = array_mut(&mut snapshot, "clients", "manual")?;
@@ -274,7 +311,8 @@ pub(crate) async fn delete_manual(
         "version": version,
         "deleted": true,
         "name": body.name,
-    })))
+    }))
+    .into_response())
 }
 
 /// `POST /api/v1/clients/sync` — trigger a UniFi sync and report its outcome.

@@ -11,7 +11,7 @@ ARG RUST_VERSION=1.88
 FROM rust:${RUST_VERSION}-bookworm AS builder
 WORKDIR /build
 
-COPY Cargo.toml Cargo.lock deny.toml ./
+COPY Cargo.toml Cargo.lock deny.toml rust-toolchain.toml ./
 COPY crates ./crates
 
 RUN cargo build --release -p dnscraft --locked
