@@ -345,6 +345,57 @@ async fn dropping_last_engine_handle_ends_scheduler() {
     .expect("engine leaked: scheduler keeps it alive");
 }
 
+#[tokio::test]
+async fn failing_rounds_retry_with_backoff_before_the_interval() {
+    let dir = TempDir::new("backoff");
+    let clock = Arc::new(ManualClock::new(t0()));
+    let store = store_in(&dir, &clock);
+    let server = TestServer::start(vec![
+        (
+            "/services.json",
+            Route {
+                status: 500,
+                ..Route::ok("")
+            },
+        ),
+        ("/services_i18n.json", Route::ok("{}")),
+    ])
+    .await;
+    let cfg = config(vec![], vec![set_with("default", &[])], 3600);
+    let eng = FilterEngine::new(cfg, store, clock.clone()).unwrap();
+    eng.set_services_urls(services_urls(&server)).unwrap();
+    // Let the scheduler task park on its first (one interval) wait.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let fetches = || {
+        server
+            .requests()
+            .iter()
+            .filter(|r| r.path == "/services.json")
+            .count()
+    };
+    let settle = |n: usize| async move {
+        for _ in 0..500 {
+            if fetches() >= n {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // The next delay is computed after the round finishes; let it settle
+        // before the test moves the clock again.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(fetches(), n, "unexpected number of update rounds");
+    };
+    // Regular round after one interval (jitter is at most 10 %).
+    clock.advance(Duration::from_secs(4000));
+    settle(1).await;
+    // A failed round retries after 5 min, far earlier than the 1 h interval.
+    clock.advance(Duration::from_secs(360));
+    settle(2).await;
+    // The second consecutive failure doubles the retry delay to 10 min.
+    clock.advance(Duration::from_secs(720));
+    settle(3).await;
+}
+
 // ---- 6. update_now ------------------------------------------------------------
 
 #[tokio::test]

@@ -13,9 +13,29 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use crate::clock::{self, Clock};
-use crate::engine::{FilterEngine, ListSelection};
+use crate::engine::{FilterEngine, ListSelection, ListStatus};
 use crate::set::DEFAULT_UPDATE_INTERVAL;
 use dnscraft_common::config::jittered;
+
+/// Delay before the first retry after a failed update round. Each further
+/// consecutive failure doubles it, up to the regular update interval.
+pub(crate) const RETRY_BASE: Duration = Duration::from_secs(5 * 60);
+
+/// Delay before the next round, given the number of consecutive failed rounds
+/// (`0` means the last round was clean and the regular `interval` applies).
+pub(crate) fn next_round_delay(interval: Duration, failures: u32) -> Duration {
+    if failures == 0 {
+        return interval;
+    }
+    let factor = 2u32.saturating_pow((failures - 1).min(16));
+    RETRY_BASE.saturating_mul(factor).min(interval)
+}
+
+/// A round failed when any list reported an error or the services catalog
+/// is currently in error (fetch, validation or cache).
+fn round_failed(engine: &FilterEngine, statuses: &[ListStatus]) -> bool {
+    statuses.iter().any(|s| s.error_code.is_some()) || engine.services_last_error().is_some()
+}
 
 /// Runs `update_lists(All)` on a jittered interval until [`UpdateScheduler::stop`],
 /// the scheduler is dropped, or the engine is gone.
@@ -92,6 +112,7 @@ async fn run_loop(
 ) {
     // First scheduled wait happens after one interval; callers that need an
     // immediate refresh use `update_lists` / `update_now` themselves.
+    let mut failures: u32 = 0;
     loop {
         if stop.load(Ordering::SeqCst) {
             return;
@@ -104,7 +125,8 @@ async fn run_loop(
         } else {
             interval
         };
-        let wait = jittered(base, clock.now()).max(Duration::from_secs(1));
+        let wait =
+            jittered(next_round_delay(base, failures), clock.now()).max(Duration::from_secs(1));
         let deadline = clock.now() + wait;
         clock::wait_until(clock.as_ref(), deadline, tick.as_ref()).await;
         if stop.load(Ordering::SeqCst) {
@@ -113,6 +135,29 @@ async fn run_loop(
         let Some(eng) = engine.upgrade() else {
             return;
         };
-        let _ = eng.update_lists(ListSelection::All).await;
+        let statuses = eng.update_lists(ListSelection::All).await;
+        failures = if round_failed(&eng, &statuses) {
+            failures.saturating_add(1)
+        } else {
+            0
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_delay_doubles_and_is_capped_by_the_interval() {
+        let day = Duration::from_secs(24 * 3600);
+        assert_eq!(next_round_delay(day, 0), day);
+        assert_eq!(next_round_delay(day, 1), Duration::from_secs(300));
+        assert_eq!(next_round_delay(day, 2), Duration::from_secs(600));
+        assert_eq!(next_round_delay(day, 3), Duration::from_secs(1200));
+        assert_eq!(next_round_delay(day, 200), day);
+        let hour = Duration::from_secs(3600);
+        assert_eq!(next_round_delay(hour, 2), Duration::from_secs(600));
+        assert_eq!(next_round_delay(hour, 9), hour);
     }
 }
