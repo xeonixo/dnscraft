@@ -835,58 +835,6 @@ impl HttpBody for ChannelBody {
     }
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn csv_escape_quotes_only_when_needed() {
-        assert_eq!(csv_escape("plain"), "plain");
-        assert_eq!(csv_escape("a,b"), "\"a,b\"");
-        assert_eq!(csv_escape("a\"b"), "\"a\"\"b\"");
-        assert_eq!(csv_escape("a\nb"), "\"a\nb\"");
-    }
-
-    #[test]
-    fn csv_escape_neutralises_formula_injection() {
-        for field in [
-            "=1+1",
-            "+cmd|' /C calc'!A0",
-            "-2+3",
-            "@SUM(A1)",
-            "\t=HYPERLINK(\"http://example.net\")",
-        ] {
-            let escaped = csv_escape(field);
-            assert!(
-                !escaped.starts_with(&['=', '+', '-', '@', '\t'][..]),
-                "{field:?} escaped to {escaped:?}"
-            );
-        }
-        assert_eq!(csv_escape("=1+1"), "'=1+1");
-        assert_eq!(csv_escape("+1+1"), "'+1+1");
-    }
-
-    #[test]
-    fn json_field_reads_nested_scalars() {
-        let record = serde_json::json!({
-            "client": { "display_name": "iPhone" },
-            "client_id": null,
-            "answer_size": 184,
-        });
-        assert_eq!(json_field(&record, &["client", "display_name"]), "iPhone");
-        assert_eq!(json_field(&record, &["client_id"]), "");
-        assert_eq!(json_field(&record, &["missing"]), "");
-        assert_eq!(json_field(&record, &["answer_size"]), "184");
-    }
-
-    #[test]
-    fn ratio_is_zero_for_an_empty_denominator() {
-        assert_eq!(ratio(0, 0), 0.0);
-        assert_eq!(ratio(1, 4), 0.25);
-    }
-}
-
 /// Microseconds per day, for the query log's `time` column.
 const MICROS_PER_DAY: i64 = 86_400_000_000;
 /// Clients listed per domain (WX5).
@@ -1015,4 +963,56 @@ fn format_day(day: i64) -> String {
     time::OffsetDateTime::from_unix_timestamp(day.saturating_mul(86_400))
         .map(|t| t.date().to_string())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn csv_escape_quotes_only_when_needed() {
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("a,b"), "\"a,b\"");
+        assert_eq!(csv_escape("a\"b"), "\"a\"\"b\"");
+        assert_eq!(csv_escape("a\nb"), "\"a\nb\"");
+    }
+
+    #[test]
+    fn csv_escape_neutralises_formula_injection() {
+        for field in [
+            "=1+1",
+            "+cmd|' /C calc'!A0",
+            "-2+3",
+            "@SUM(A1)",
+            "\t=HYPERLINK(\"http://example.net\")",
+        ] {
+            let escaped = csv_escape(field);
+            assert!(
+                !escaped.starts_with(&['=', '+', '-', '@', '\t'][..]),
+                "{field:?} escaped to {escaped:?}"
+            );
+        }
+        assert_eq!(csv_escape("=1+1"), "'=1+1");
+        assert_eq!(csv_escape("+1+1"), "'+1+1");
+    }
+
+    #[test]
+    fn json_field_reads_nested_scalars() {
+        let record = serde_json::json!({
+            "client": { "display_name": "iPhone" },
+            "client_id": null,
+            "answer_size": 184,
+        });
+        assert_eq!(json_field(&record, &["client", "display_name"]), "iPhone");
+        assert_eq!(json_field(&record, &["client_id"]), "");
+        assert_eq!(json_field(&record, &["missing"]), "");
+        assert_eq!(json_field(&record, &["answer_size"]), "184");
+    }
+
+    #[test]
+    fn ratio_is_zero_for_an_empty_denominator() {
+        assert_eq!(ratio(0, 0), 0.0);
+        assert_eq!(ratio(1, 4), 0.25);
+    }
 }
