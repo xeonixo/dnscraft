@@ -292,7 +292,7 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
 async fn status(State(state): State<AppState>) -> impl IntoResponse {
     let mut body = serde_json::Map::new();
     // Build version and module readiness (GA14). Only non-secret state.
-    body.insert("version".to_owned(), json!(env!("CARGO_PKG_VERSION")));
+    body.insert("version".to_owned(), json!(state.version()));
     let not_ready = state.readiness().not_ready_modules();
     body.insert("ready".to_owned(), json!(not_ready.is_empty()));
     body.insert("modules_not_ready".to_owned(), json!(not_ready));

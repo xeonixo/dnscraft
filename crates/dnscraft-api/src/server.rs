@@ -65,6 +65,8 @@ pub struct AppState {
     backup_dir: Option<PathBuf>,
     service_catalog: Option<Arc<dyn ServiceCatalogProvider>>,
     webhook_trust_roots: Vec<Vec<u8>>,
+    /// Build version reported by `GET /api/v1/status`.
+    version: String,
 }
 
 impl Default for AppState {
@@ -109,6 +111,7 @@ impl AppState {
             backup_dir: None,
             service_catalog: None,
             webhook_trust_roots: Vec::new(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
         }
     }
 
@@ -155,6 +158,18 @@ impl AppState {
 
     pub(crate) fn service_catalog(&self) -> Option<&Arc<dyn ServiceCatalogProvider>> {
         self.service_catalog.as_ref()
+    }
+
+    /// Sets the build version reported by `GET /api/v1/status`. Defaults to
+    /// this crate's version; the binary passes its own.
+    pub fn with_version(mut self, version: impl Into<String>) -> Self {
+        self.version = version.into();
+        self
+    }
+
+    /// The build version reported by `GET /api/v1/status`.
+    pub(crate) fn version(&self) -> &str {
+        &self.version
     }
 
     /// Overrides the GitHub latest-release endpoint (tests and mirrors).
