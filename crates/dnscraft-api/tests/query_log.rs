@@ -112,6 +112,7 @@ fn sample_event(time: SystemTime, index: usize) -> QueryEvent {
             selection,
             client_id: None,
             client_label: None,
+            client_device: None,
             filter_set: SetId::new("default").unwrap(),
             steps,
             filter,
@@ -530,6 +531,61 @@ fn client_id_event(
     event.decision.client_id = Some(id);
     event.decision.client_label = label.map(Arc::from);
     event
+}
+
+/// A directory with one manually added device, `dev-1`.
+struct DeviceClients;
+
+impl ClientEnricher for DeviceClients {
+    fn by_ip(&self, ip: IpAddr) -> Option<ClientView> {
+        (ip == IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50))).then(|| ClientView {
+            id: "dev-1".to_owned(),
+            display_name: "Phone".to_owned(),
+            source: "manual".to_owned(),
+            ..ClientView::default()
+        })
+    }
+}
+
+/// `device_id` of the single stored row for `domain`.
+async fn device_id_for(log: &QueryLog, domain: &str) -> Value {
+    let page = log
+        .list(&QueryLogFilter {
+            domain: Some(domain.to_owned()),
+            limit: 10,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 1);
+    page.records[0]["device_id"].clone()
+}
+
+#[tokio::test]
+async fn query_log_rows_carry_the_directory_device_id() {
+    let clock = Arc::new(ManualClock::new(base_time()));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    let log = QueryLog::new(db, dnscraft_api::QueryLogConfig::default(), "node-a")
+        .with_client_enricher(Arc::new(DeviceClients));
+
+    // (a) LAN source matching a directory client: device is the directory id.
+    let mut lan = sample_event(at_secs(BASE_SECS - 3), 11);
+    lan.source = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50));
+    // (b) DoH query with no directory match: device is the registered client's id.
+    let mut doh = client_id_event(
+        at_secs(BASE_SECS - 2),
+        Ipv4Addr::new(192, 0, 2, 60),
+        "doh-cid",
+        Some("Phone DoH"),
+    );
+    doh.decision.client_device = Some(Arc::from("dev-1"));
+    // (d) neither: no device, so grouping falls back to the other keys.
+    let plain = sample_event(at_secs(BASE_SECS - 1), 13);
+    log.insert_batch(vec![lan, doh, plain]).await.unwrap();
+
+    assert_eq!(device_id_for(&log, "host11.example.com").await, "dev-1");
+    assert_eq!(device_id_for(&log, "host1.example.com").await, "dev-1");
+    assert_eq!(device_id_for(&log, "host13.example.com").await, Value::Null);
 }
 
 #[tokio::test]

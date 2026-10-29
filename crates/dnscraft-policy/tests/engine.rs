@@ -535,6 +535,38 @@ async fn decision_record_carries_the_label_of_a_registered_client_id() {
 }
 
 #[tokio::test]
+async fn decision_record_carries_the_device_of_a_registered_client_id() {
+    let h = Hierarchy::start().await.unwrap();
+    let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());
+    let mut cfg = policy_config(vec![profile("default", None)]);
+    cfg.client_ids = serde_json::from_value(serde_json::json!([
+        { "id": "tablet", "label": "Anna's iPad", "device": "lan-tablet-1" },
+        { "id": "phone" }
+    ]))
+    .unwrap();
+    let engine =
+        PolicyEngine::new(cfg, empty_filter(), resolver, Arc::new(NoClients), clock()).unwrap();
+
+    // ANY is answered without an upstream query.
+    let cases = [
+        (Some("tablet"), Some("lan-tablet-1")),
+        (Some("phone"), None),
+        (Some("ghost"), None),
+        (None, None),
+    ];
+    for (client, expected) in cases {
+        let mut query = ctx("example.com.", RecordType::ANY, true);
+        query.client_id = client.map(|id| dnscraft_policy::ClientId::new(id).unwrap());
+        let answer = engine.handle(query).await.unwrap();
+        assert_eq!(
+            answer.record.client_device.as_deref(),
+            expected,
+            "{client:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn decision_record_reports_client_id_selection_cause() {
     let h = Hierarchy::start().await.unwrap();
     let resolver = Arc::new(Resolver::new(config_for(&h)).await.unwrap());

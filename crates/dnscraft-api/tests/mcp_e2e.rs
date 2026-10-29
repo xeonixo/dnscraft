@@ -978,6 +978,7 @@ fn sample_event(seconds: u64) -> QueryEvent {
             selection,
             client_id: None,
             client_label: None,
+            client_device: None,
             filter_set: SetId::new("default").unwrap(),
             steps: vec![
                 DecisionStep::Selected { cause: selection },

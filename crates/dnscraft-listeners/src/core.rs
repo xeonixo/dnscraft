@@ -410,6 +410,7 @@ fn listener_error_decision(rcode: Rcode) -> DecisionRecord {
         selection: SelectionCause::Default,
         client_id: None,
         client_label: None,
+        client_device: None,
         filter_set: DEFAULT_SET.clone(),
         steps: Vec::new(),
         filter: None,

@@ -108,6 +108,15 @@ impl PolicyEngine {
         Arc::clone(&self.snapshot().client_labels)
     }
 
+    /// Directory client ids of the registered Client IDs that name one, keyed by Client ID.
+    ///
+    /// Read-only, same snapshot as [`Self::registered_client_ids`]; cheap `Arc` clone.
+    pub fn client_id_devices(
+        &self,
+    ) -> Arc<std::collections::HashMap<crate::ids::ClientId, Arc<str>>> {
+        Arc::clone(&self.snapshot().client_devices)
+    }
+
     /// Per-view / per-profile counters.
     pub fn stats(&self) -> PolicyStats {
         self.stats
@@ -189,8 +198,13 @@ impl PolicyEngine {
             .client_id
             .as_ref()
             .and_then(|id| self.client_id_labels().get(id).cloned());
+        let device = ctx
+            .client_id
+            .as_ref()
+            .and_then(|id| self.client_id_devices().get(id).cloned());
         let mut answer = self.select_and_emit(ctx).await?;
         answer.record.client_label = label;
+        answer.record.client_device = device;
         Ok(answer)
     }
 

@@ -491,10 +491,10 @@ impl QueryLog {
                              id, time, node_id, source_ip, query_name, listener_id,
                              protocol, source_ip_truncated, client_id, client_name,
                              query_type, query_class, view_id, profile_id, status,
-                             answer_source, rcode, record, seq
+                             answer_source, rcode, record, seq, device_id
                          ) VALUES (
                              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+                             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
                          )",
                         )
                         .map_err(db_err)?;
@@ -521,6 +521,7 @@ impl QueryLog {
                             row.rcode,
                             row.record,
                             seq,
+                            row.device_id,
                         ])
                         .map_err(db_err)?;
                     }
@@ -828,15 +829,21 @@ impl QueryLog {
                         }
                         continue;
                     }
+                    // Replicated rows keep the device key the sub-node stored in the record.
+                    let device_id = row
+                        .record
+                        .get("device_id")
+                        .and_then(Json::as_str)
+                        .map(str::to_owned);
                     tx.execute(
                         "INSERT INTO query_log (
                              id, time, node_id, source_ip, query_name, listener_id,
                              protocol, source_ip_truncated, client_id, client_name,
                              query_type, query_class, view_id, profile_id, status,
-                             answer_source, rcode, record, seq
+                             answer_source, rcode, record, seq, device_id
                          ) VALUES (
                              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+                             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
                          ) ON CONFLICT DO NOTHING",
                         params![
                             row.id,
@@ -858,6 +865,7 @@ impl QueryLog {
                             row.rcode,
                             row.record.to_string(),
                             seq,
+                            device_id,
                         ],
                     )
                     .map_err(db_err)?;
@@ -1129,6 +1137,14 @@ impl RemoteRow {
         {
             return Err(invalid("remote log client_name is too long"));
         }
+        if self
+            .record
+            .get("device_id")
+            .and_then(Json::as_str)
+            .is_some_and(|value| value.len() > MAX_REMOTE_LABEL)
+        {
+            return Err(invalid("remote log device_id is too long"));
+        }
         if !matches!(
             self.protocol.as_str(),
             "udp53" | "tcp53" | "dot" | "doh" | "doq"
@@ -1166,6 +1182,7 @@ struct PreparedRow {
     source_ip_truncated: bool,
     client_id: Option<String>,
     client_name: Option<String>,
+    device_id: Option<String>,
     query_type: String,
     query_class: String,
     view_id: String,
@@ -1189,8 +1206,18 @@ fn prepare_row(
         .as_ref()
         .or(event.decision.client_id.as_ref())
         .map(|id| id.as_str().to_owned());
+    let directory = enricher.and_then(|enricher| enricher.by_ip(event.source));
+    // The directory client id is the stable device key; a registered DoH Client ID
+    // carries the same id in `client_device`.
+    let device_id = directory
+        .as_ref()
+        .filter(|client| {
+            matches!(client.source.as_str(), "unifi" | "manual") && !client.id.is_empty()
+        })
+        .map(|client| client.id.clone())
+        .or_else(|| event.decision.client_device.as_deref().map(str::to_owned));
     let client = resolve_client(
-        enricher.and_then(|enricher| enricher.by_ip(event.source)),
+        directory,
         client_id.as_deref(),
         event.decision.client_label.as_deref(),
     );
@@ -1244,6 +1271,9 @@ fn prepare_row(
             .map(|answer| json!({ "type": answer.rtype, "data": answer.data, "ttl": answer.ttl }))
             .collect();
     }
+    if let Some(device_id) = &device_id {
+        record["device_id"] = json!(device_id);
+    }
     let record = record.to_string();
     Ok(PreparedRow {
         id,
@@ -1256,6 +1286,7 @@ fn prepare_row(
         source_ip_truncated: truncated,
         client_id,
         client_name,
+        device_id,
         query_type,
         query_class,
         view_id: decision.view_id.as_str().to_owned(),
@@ -1645,6 +1676,7 @@ mod tests {
                 selection: SelectionCause::Default,
                 client_id: None,
                 client_label: None,
+                client_device: None,
                 filter_set: SetId::new("default").unwrap(),
                 steps: Vec::new(),
                 filter: None,

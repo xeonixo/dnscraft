@@ -170,6 +170,9 @@ pub struct DecisionRecord {
     /// Label of the registered Client ID, when it has one. The query log shows it
     /// when no client-directory entry matches the source IP.
     pub client_label: Option<Arc<str>>,
+    /// Directory client id the registered Client ID points at, when it names one.
+    /// Display/log reference only; never changes selection.
+    pub client_device: Option<Arc<str>>,
     /// Effective filter set for this query (profile default or active schedule).
     pub filter_set: dnscraft_filtering::SetId,
     /// Ordered pipeline breadcrumbs.

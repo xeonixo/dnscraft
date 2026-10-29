@@ -103,6 +103,7 @@ fn event(
             selection,
             client_id: None,
             client_label: None,
+            client_device: None,
             filter_set: SetId::new("default").unwrap(),
             steps,
             filter,
@@ -326,6 +327,14 @@ struct NamedClients;
 
 impl ClientEnricher for NamedClients {
     fn by_ip(&self, ip: IpAddr) -> Option<ClientView> {
+        if ip == IpAddr::V4(Ipv4Addr::new(192, 0, 2, 40)) {
+            return Some(ClientView {
+                id: "dev-1".to_owned(),
+                display_name: "Phone".to_owned(),
+                source: "manual".to_owned(),
+                ..ClientView::default()
+            });
+        }
         (ip == IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20))).then(|| ClientView {
             id: String::new(),
             display_name: "Living room TV".to_owned(),
@@ -383,11 +392,38 @@ async fn top_clients_group_by_id_then_name_then_address() {
     );
     bare.source = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 30));
 
+    // A device seen twice: over the LAN (directory id `dev-1`, source
+    // 192.0.2.40) and over DoH (registered to `dev-1`, other client id and label).
+    let mut lan_device = event(
+        BASE_SECS - 3,
+        "phone.example.com",
+        RecordType::A,
+        false,
+        true,
+        DnssecStatus::Secure,
+        None,
+    );
+    lan_device.source = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 40));
+    let mut doh_device = event(
+        BASE_SECS - 2,
+        "doh.example.com",
+        RecordType::A,
+        false,
+        true,
+        DnssecStatus::Secure,
+        Some("phone-doh-cid"),
+    );
+    doh_device.source = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 70));
+    doh_device.decision.client_label = Some(Arc::from("Phone DoH"));
+    doh_device.decision.client_device = Some(Arc::from("dev-1"));
+
     log.insert_batch(vec![
         with_id(BASE_SECS - 2),
         with_id(BASE_SECS - 1),
         named,
         bare,
+        lan_device,
+        doh_device,
     ])
     .await
     .unwrap();
@@ -416,6 +452,7 @@ async fn top_clients_group_by_id_then_name_then_address() {
     assert_eq!(
         clients,
         vec![
+            ("dev-1", "Phone DoH", 2),
             ("iphone-k7q2x9", "", 2),
             ("", "Living room TV", 1),
             ("192.0.2.30", "", 1),

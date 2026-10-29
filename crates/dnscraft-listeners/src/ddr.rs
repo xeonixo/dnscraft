@@ -189,6 +189,7 @@ pub fn ddr_decision_record(rcode: Rcode) -> DecisionRecord {
         selection: SelectionCause::Default,
         client_id: None,
         client_label: None,
+        client_device: None,
         filter_set: DDR_SET.clone(),
         steps: Vec::new(),
         filter: None,

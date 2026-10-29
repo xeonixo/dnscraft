@@ -139,6 +139,7 @@ mod tests {
                 selection: SelectionCause::Default,
                 client_id: None,
                 client_label: None,
+                client_device: None,
                 filter_set: SetId::new("default").unwrap(),
                 steps: Vec::new(),
                 filter: None,

@@ -202,6 +202,10 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     // The raw user agent is never stored.
     "ALTER TABLE sessions ADD COLUMN ip TEXT;
      ALTER TABLE sessions ADD COLUMN client_label TEXT;",
+    // v10: stable device key per query-log row (the directory client id). Old
+    // rows keep NULL and fall back to client id / name / address when grouped.
+    "ALTER TABLE query_log ADD COLUMN device_id TEXT;
+     CREATE INDEX IF NOT EXISTS query_log_device_idx ON query_log(device_id);",
 ];
 
 /// Applies every migration newer than the recorded version, then records it.
@@ -234,10 +238,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn device_id_migration_adds_column_and_index() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 10);
+
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(query_log)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(columns.iter().any(|name| name == "device_id"));
+
+        let index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'query_log_device_idx'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
+    }
+
+    #[test]
     fn audit_log_rejects_update_and_delete_after_v2() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 9);
+        assert_eq!(schema_version(&conn).unwrap(), 10);
 
         conn.execute(
             "INSERT INTO audit_log (

@@ -117,6 +117,8 @@ pub struct PolicySnapshot {
     pub(crate) client_ids: Arc<[ClientId]>,
     /// Labels of registered Client IDs that have one (read-only view for the log).
     pub(crate) client_labels: Arc<HashMap<ClientId, Arc<str>>>,
+    /// Directory client ids of registered Client IDs that name one (display/log only).
+    pub(crate) client_devices: Arc<HashMap<ClientId, Arc<str>>>,
     /// Client-ID pins: registered Client ID → pinned view (consulted after the subnet match).
     pub(crate) client_pins: Arc<HashMap<ClientId, ViewIdx>>,
     /// IPv4 subnet tables keyed by prefix length.
@@ -186,6 +188,7 @@ impl PolicySnapshot {
         let mut registry: HashSet<ClientId> = HashSet::new();
         let mut client_id_list: Vec<ClientId> = Vec::with_capacity(config.client_ids.len());
         let mut client_labels: HashMap<ClientId, Arc<str>> = HashMap::new();
+        let mut client_devices: HashMap<ClientId, Arc<str>> = HashMap::new();
         let mut label_keys: HashSet<String> = HashSet::new();
         for entry in &config.client_ids {
             let client_id = entry.id();
@@ -222,6 +225,7 @@ impl PolicySnapshot {
                         reason,
                     },
                 })?;
+                client_devices.insert(client_id.clone(), Arc::from(device));
             }
         }
         let known_views: HashSet<ViewId> = config.views.iter().map(|v| v.id.clone()).collect();
@@ -345,6 +349,7 @@ impl PolicySnapshot {
             default_view,
             client_ids: Arc::from(client_id_list),
             client_labels: Arc::new(client_labels),
+            client_devices: Arc::new(client_devices),
             client_pins: Arc::new(client_pins),
             v4,
             v6,
