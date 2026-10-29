@@ -206,9 +206,10 @@ pub(crate) struct RemoveRuleBody {
 
 /// Protected domains derived from `snapshot` plus the owner's additions.
 fn protected_for(state: &AppState, snapshot: &Value) -> Result<ProtectedDomains, ControlApiError> {
+    let issuer = state.oidc_issuer();
     derive_protected(
         Some(snapshot),
-        state.oidc_issuer(),
+        issuer.as_deref(),
         state.mcp_config().protected_domains.iter().cloned(),
     )
 }

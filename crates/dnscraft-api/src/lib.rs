@@ -29,6 +29,8 @@ mod filter_apply;
 mod mcp_backend;
 mod modules;
 mod notifications;
+mod oidc_runtime;
+mod oidc_secrets;
 mod protected_list;
 mod query_log;
 mod server;
@@ -92,11 +94,20 @@ pub use stats::{
 };
 pub use storage::{AuditRecord, ConfigStore, Db};
 pub use system::run_backup_if_due;
+pub use oidc_runtime::OidcRuntime;
 pub use unifi_secrets::get_api_key;
 
 /// Loads a UI-stored Cloudflare API token from the config database, if any.
 pub async fn cloudflare_token_from_db(db: &Db) -> Result<Option<String>, ControlApiError> {
     cloudflare_secrets::get_api_token(db).await
+}
+
+/// Environment / `*_FILE` name for the OIDC client secret.
+pub const OIDC_CLIENT_SECRET_ENV: &str = "DNSCRAFT_OIDC_CLIENT_SECRET";
+
+/// Loads `DNSCRAFT_OIDC_CLIENT_SECRET` / `*_FILE` when present.
+pub fn oidc_client_secret_from_env() -> Option<Secret> {
+    dnscraft_common::secret::read_secret(OIDC_CLIENT_SECRET_ENV).ok()
 }
 pub use tls::{
     AriStatus, CertSource, ControlApiTls, EngineStatusProvider, EngineTlsAdmin, IssueOutcome,

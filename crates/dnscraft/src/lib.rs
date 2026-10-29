@@ -395,7 +395,23 @@ pub async fn build_with_enrollment(
         }
     }
 
-    let modules = apply::appliers(&engines, &set, &query_log, &db, node_id.as_str());
+    let mut oidc_runtime = dnscraft_api::OidcRuntime::new(
+        config.control_api.auth.clone(),
+        db.clone(),
+        Arc::new(dnscraft_api::SystemClock),
+    );
+    if let Some(secret) = dnscraft_api::oidc_client_secret_from_env() {
+        oidc_runtime.set_bootstrap_secret(secret);
+    }
+    let oidc_runtime = Arc::new(oidc_runtime);
+    let modules = apply::appliers(
+        &engines,
+        &set,
+        &query_log,
+        &db,
+        node_id.as_str(),
+        Some(Arc::clone(&oidc_runtime)),
+    );
     let config_service = Arc::new(ConfigService::new(
         store,
         Audit::new(db.clone()),
@@ -423,6 +439,7 @@ pub async fn build_with_enrollment(
         api_acme,
         cluster.as_ref(),
         &enrollment,
+        Arc::clone(&oidc_runtime),
     )
     .await?;
 

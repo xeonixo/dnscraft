@@ -522,6 +522,19 @@ async fn callback(router: &Router, code: &str, state: &str) -> (StatusCode, Head
     send(router.clone(), req).await
 }
 
+fn assert_login_redirect(status: StatusCode, headers: &HeaderMap, body: &Value) {
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    let location = headers
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(location, "/dashboard", "successful OIDC login redirects to SPA");
+    assert!(
+        headers.get(header::SET_COOKIE).is_some(),
+        "successful OIDC login must mint a session cookie"
+    );
+}
+
 async fn login(harness: &Harness) -> (StatusCode, HeaderMap, Value) {
     let (url, state) = authorize_url(&harness.router).await;
     let code = fetch_authorize_code(&url).await;
@@ -583,9 +596,13 @@ async fn forced_login(
     callback(&harness.router, "forced-code", &state).await
 }
 
-fn assert_oidc_rejection(status: StatusCode, headers: &HeaderMap, body: &Value) {
-    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
-    assert_eq!(body["error"]["code"], "control_api.auth.oidc");
+fn assert_oidc_rejection(status: StatusCode, headers: &HeaderMap, _body: &Value) {
+    assert_eq!(status, StatusCode::FOUND, "browser callback redirects on failure");
+    let location = headers
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(location, "/login?oidc=error");
     assert!(
         headers.get(header::SET_COOKIE).is_none(),
         "a rejected OIDC login must not mint a session"
@@ -600,18 +617,12 @@ async fn admin_group_claim_maps_to_admin_and_mints_a_cookie_session() {
     harness.provider.set_groups(&[ADMIN_GROUP, "other-group"]);
 
     let (status, headers, body) = login(&harness).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["data"]["actor_id"], "user-1");
-    assert_eq!(body["data"]["role"], "admin");
-    let csrf = body["data"]["csrf_token"].as_str().unwrap();
-    assert!(!csrf.is_empty());
+    assert_login_redirect(status, &headers, &body);
 
     let cookie = session_cookie(&headers);
     let principal = harness.sessions.validate(&cookie).await.unwrap();
     assert_eq!(principal.actor_id, "user-1");
     assert_eq!(principal.role, Role::Admin);
-
-    assert!(!body.to_string().contains(CLIENT_SECRET));
 }
 
 #[tokio::test]
@@ -620,9 +631,7 @@ async fn missing_admin_group_claim_maps_to_viewer() {
     harness.provider.set_groups(&["some-other-group"]);
 
     let (status, headers, body) = login(&harness).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["data"]["actor_id"], "user-1");
-    assert_eq!(body["data"]["role"], "viewer");
+    assert_login_redirect(status, &headers, &body);
 
     let cookie = session_cookie(&headers);
     let principal = harness.sessions.validate(&cookie).await.unwrap();
@@ -656,6 +665,10 @@ async fn authorize_url_uses_discovery_pkce_s256_nonce_and_state() {
     let nonce = query_value(&url, "nonce").expect("nonce");
     assert!(!nonce.is_empty());
     assert_eq!(query_value(&url, "state").as_deref(), Some(state.as_str()));
+    let scope = query_value(&url, "scope").unwrap_or_default();
+    assert!(scope.contains("openid"), "scope={scope}");
+    assert!(scope.contains("profile"), "Authentik groups need profile: {scope}");
+    assert!(scope.contains("email"), "scope={scope}");
 
     // Every login gets a fresh state and nonce.
     let (second_url, second_state) = authorize_url(&harness.router).await;
@@ -692,8 +705,7 @@ async fn token_expired_just_inside_the_configured_skew_is_accepted() {
         spec.exp = BASE - 10;
     })
     .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(headers.get(header::SET_COOKIE).is_some());
+    assert_login_redirect(status, &headers, &body);
 }
 
 #[tokio::test]
@@ -825,8 +837,8 @@ async fn state_and_code_are_single_use() {
 
     let (url, state) = authorize_url(&harness.router).await;
     let code = fetch_authorize_code(&url).await;
-    let (status, _, body) = callback(&harness.router, &code, &state).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, headers, body) = callback(&harness.router, &code, &state).await;
+    assert_login_redirect(status, &headers, &body);
 
     // Replaying the same state (and code) must fail: the pending entry was
     // removed before the token exchange.
@@ -850,8 +862,8 @@ async fn authorization_code_is_single_use_at_the_provider() {
     let (url, state) = authorize_url(&harness.router).await;
     let code = fetch_authorize_code(&url).await;
 
-    let (status, _, body) = callback(&harness.router, &code, &state).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, headers, body) = callback(&harness.router, &code, &state).await;
+    assert_login_redirect(status, &headers, &body);
 
     // Reuse the consumed code with a fresh state: the mock token endpoint
     // rejects it, so login fails.

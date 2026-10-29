@@ -258,8 +258,10 @@ binary must call `run_backup_if_due` periodically; it runs at most once per 24 h
 | GET | `/api/v1/auth/me` | viewer/admin | Current principal: `role`, `actor_id`, `actor_type`, `csrf_token` (cookie sessions). |
 | GET | `/api/v1/auth/sessions` | viewer/admin | Live sessions: own by default, `scope=all` for admins. Rows carry `id` (not the cookie), `client_label`, truncated `ip`, `created_at`, `last_seen`, `expires_at`, `current`. |
 | DELETE | `/api/v1/auth/sessions/{id}` | viewer/admin (own), admin (any) | Revoke a session. `control_api.auth.session_current` (409) for the current one, `control_api.auth.unknown_session` (404) for an unseen or foreign id. Audited. |
-| GET | `/api/v1/auth/oidc/authorize-url` | public | PKCE S256 + nonce authorization URL. |
-| GET | `/api/v1/auth/oidc/callback` | public | Code exchange → cookie session. `auth.oidc.login` audit row on success and failure. |
+| GET | `/api/v1/auth/oidc/status` | public (admin sees more) | `{ enabled }` for the login page; admins also get issuer/client_id/groups/`has_client_secret` (never the secret). |
+| GET | `/api/v1/auth/oidc/authorize-url` | public | PKCE S256 + nonce authorization URL. Optional `return_to` (same-origin path). Requests `openid profile email` for Authentik group claims. |
+| GET | `/api/v1/auth/oidc/callback` | public | Code exchange → session cookie → `302` to SPA `return_to` (default `/dashboard`). Failures redirect to `/login?oidc=error`. |
+| PUT | `/api/v1/auth/oidc/client-secret` | admin | Write-only client secret (`null` clears). Stored in kv; live OIDC state rebuilds without restart. |
 
 ### Audit (admin)
 

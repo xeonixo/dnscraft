@@ -302,7 +302,14 @@ async fn control_api_settings_accept_only_the_documented_runtime_keys() {
 
     let mut config = base.clone();
     config["control_api_settings"] = json!({
-        "oidc": {"admin_group": "ops", "token_skew_seconds": 60},
+        "oidc": {
+            "enabled": true,
+            "issuer": "https://auth.example.net/application/o/dnscraft/",
+            "client_id": "dnscraft",
+            "admin_group": "ops",
+            "groups_claim": "groups",
+            "token_skew_seconds": 60,
+        },
         "query_log": {"retention_days": 90, "ip_truncate": "none"},
     });
     let (status, body) = call(&h.state, Method::PUT, "/api/v1/config", Some(config)).await;
@@ -311,4 +318,9 @@ async fn control_api_settings_accept_only_the_documented_runtime_keys() {
     let query_log = &body["data"]["config"]["control_api_settings"]["query_log"];
     assert_eq!(query_log["retention_days"], 90);
     assert_eq!(query_log["ip_truncate"], "none");
+    let oidc = &body["data"]["config"]["control_api_settings"]["oidc"];
+    assert_eq!(oidc["enabled"], true);
+    assert_eq!(oidc["issuer"], "https://auth.example.net/application/o/dnscraft/");
+    assert_eq!(oidc["client_id"], "dnscraft");
+    assert!(oidc.get("client_secret").is_none());
 }
