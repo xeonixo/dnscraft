@@ -43,5 +43,6 @@ pub use result::{tool_error, tool_ok};
 pub use sanitize::{CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_REASON, CAP_RULE_TEXT, sanitize};
 pub use tools::parse_mcp_tool_input;
 pub use transport::{
-    McpTransport, RequestLimits, RequestRejection, build as service, validate_mcp_request,
+    McpTransport, RequestLimits, RequestRejection, build as service,
+    build_with_clock as service_with_clock, validate_mcp_request,
 };

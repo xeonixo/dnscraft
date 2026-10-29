@@ -7,8 +7,10 @@ mod support;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Once};
+use std::time::SystemTime;
 
 use axum::Router;
+use dnscraft_common::clock::{Clock, ManualClock};
 use dnscraft_mcp::{BackendError, McpConfig, TokenInfo, TokenScope};
 use serde_json::{Value, json};
 
@@ -34,8 +36,13 @@ async fn spawn(config: McpConfig) -> TestServer {
         scope: TokenScope::McpWrite,
         actor_id: "actor".into(),
     }));
-    let router =
-        Router::new().nest_service("/mcp/v1", dnscraft_mcp::service(backend.clone(), config));
+    // Freeze time so a 1/s bucket cannot refill between consecutive requests on
+    // a slow CI runner (wall-clock SystemClock made these tests flake).
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(SystemTime::UNIX_EPOCH));
+    let router = Router::new().nest_service(
+        "/mcp/v1",
+        dnscraft_mcp::service_with_clock(backend.clone(), config, clock),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move {
