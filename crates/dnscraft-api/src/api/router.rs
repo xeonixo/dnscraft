@@ -55,7 +55,10 @@ use super::stats_routes::{
     export_csv, export_ndjson, stats_cache, stats_domain, stats_overview, stats_top_clients,
     stats_top_domains,
 };
-use super::system_routes::{get_backups, get_update_check, put_backup_settings};
+use super::system_routes::{
+    delete_web_ban, get_backups, get_update_check, get_web_access, get_web_bans,
+    put_backup_settings, put_web_access,
+};
 use super::tls_routes::{
     delete_tls, get_tls, get_tls_account, get_tls_audit, get_tls_certificate, get_tls_order,
     get_tls_records, get_tls_status, put_cloudflare_token, put_tls, put_tls_certificate,
@@ -215,6 +218,15 @@ pub(crate) fn build_router(state: AppState) -> Router {
         api = api
             .route("/backups", get(get_backups))
             .route("/backups/settings", put(put_backup_settings));
+    }
+    // Admin-only (RBAC maps the path): the public-access opt-in is stored in the config snapshot.
+    if state.config_service().is_some() {
+        api = api.route("/web-access", get(get_web_access).put(put_web_access));
+    }
+    if state.web_bans().is_some() {
+        api = api
+            .route("/web-bans", get(get_web_bans))
+            .route("/web-bans/{ip}", delete(delete_web_ban));
     }
     // Viewer-readable; answers `enabled: false` without any outbound call.
     api = api.route("/update/check", get(get_update_check));

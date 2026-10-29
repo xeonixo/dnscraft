@@ -7,6 +7,7 @@ use hyper::body::Incoming;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 /// Response body of a [`WebHandler`].
@@ -22,16 +23,32 @@ pub type WebHandler = Arc<dyn Fn(SocketAddr, Request<Incoming>) -> WebFuture + S
 ///
 /// The control API is built after the listeners start, so the slot is filled once it is ready.
 /// While it is empty (or never filled) every non-DoH path answers `404`, as before.
+///
+/// `public` additionally lets non-private sources reach the handler on a public-exposure listener;
+/// it is off by default and can be flipped at runtime.
 #[derive(Default)]
-pub struct WebSlot(OnceLock<WebHandler>);
+pub struct WebSlot {
+    handler: OnceLock<WebHandler>,
+    public: AtomicBool,
+}
 
 impl WebSlot {
     /// Installs the handler; returns `false` when one is already installed.
     pub fn set(&self, handler: WebHandler) -> bool {
-        self.0.set(handler).is_ok()
+        self.handler.set(handler).is_ok()
+    }
+
+    /// Allows (or stops allowing) public sources to reach the handler; takes effect immediately.
+    pub fn set_public(&self, enabled: bool) {
+        self.public.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Whether public sources may reach the handler.
+    pub fn public(&self) -> bool {
+        self.public.load(Ordering::Relaxed)
     }
 
     pub(crate) fn get(&self) -> Option<&WebHandler> {
-        self.0.get()
+        self.handler.get()
     }
 }

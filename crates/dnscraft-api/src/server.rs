@@ -74,6 +74,7 @@ pub struct AppState {
     update_api_url: String,
     update_cache: Arc<tokio::sync::Mutex<crate::system::UpdateCache>>,
     backup_dir: Option<PathBuf>,
+    web_bans: Option<Arc<dyn crate::WebBans>>,
     service_catalog: Option<Arc<dyn ServiceCatalogProvider>>,
     webhook_trust_roots: Vec<Vec<u8>>,
     /// Build version reported by `GET /api/v1/status`.
@@ -124,6 +125,7 @@ impl AppState {
             update_api_url: crate::system::DEFAULT_RELEASE_API.to_owned(),
             update_cache: Arc::new(tokio::sync::Mutex::new(None)),
             backup_dir: None,
+            web_bans: None,
             service_catalog: None,
             webhook_trust_roots: Vec::new(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -210,6 +212,16 @@ impl AppState {
 
     pub(crate) fn webhook_trust_roots(&self) -> &[Vec<u8>] {
         &self.webhook_trust_roots
+    }
+
+    /// Attaches the ban table behind `/api/v1/web-bans` (list and unban).
+    pub fn with_web_bans(mut self, bans: Arc<dyn crate::WebBans>) -> Self {
+        self.web_bans = Some(bans);
+        self
+    }
+
+    pub(crate) fn web_bans(&self) -> Option<&Arc<dyn crate::WebBans>> {
+        self.web_bans.as_ref()
     }
 
     /// Sets the backup directory (the binary passes `<data_dir>/backups`).

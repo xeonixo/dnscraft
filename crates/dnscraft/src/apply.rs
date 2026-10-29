@@ -269,6 +269,7 @@ pub(crate) fn appliers(
         filtering_engine: Some(Arc::clone(&engines.filtering)),
         query_log: Some(Arc::clone(query_log)),
         oidc,
+        web: Some(listeners.web_slot()),
     }
 }
 

@@ -23,6 +23,7 @@ use crate::server::AppState;
 use crate::system::{
     BACKUP_RETENTION_MAX, BackupSettings, SETTINGS_SECTION, backup_files, backup_settings,
     cached_latest_release, is_newer, last_backup, next_run_at, unix_now, update_check_enabled,
+    web_access_public,
 };
 
 /// Version of the running binary, as reported by the update check.
@@ -100,6 +101,94 @@ pub(crate) async fn get_backups(
         "last_run": last,
         "next_run": next_run,
     })))
+}
+
+/// Body of `PUT /api/v1/web-access`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WebAccessBody {
+    public_enabled: bool,
+}
+
+/// `GET /api/v1/web-access` — whether public sources may reach the web UI (admin).
+pub(crate) async fn get_web_access(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let snapshot = stored_snapshot(service(&state)?).await?;
+    Ok(success(
+        json!({ "public_enabled": web_access_public(&snapshot) }),
+    ))
+}
+
+/// `PUT /api/v1/web-access` — opt in or out of public web access (admin). Applied live.
+pub(crate) async fn put_web_access(
+    State(state): State<AppState>,
+    auth: Option<Extension<Authenticated>>,
+    headers: HeaderMap,
+    body: Result<Json<WebAccessBody>, JsonRejection>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let body = json_body(body, "control_api.web_access.invalid")?;
+    let service = service(&state)?;
+    let mut snapshot = stored_snapshot(service).await?;
+    snapshot
+        .as_object_mut()
+        .ok_or_else(|| ControlApiError::Internal {
+            message: "stored config is not an object".to_owned(),
+        })?
+        .entry(SETTINGS_SECTION)
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| ControlApiError::Internal {
+            message: "control_api_settings is not an object".to_owned(),
+        })?
+        .insert(
+            "web_access".to_owned(),
+            json!({ "public_enabled": body.public_enabled }),
+        );
+    let version = service
+        .replace(snapshot, &actor(auth), if_match(&headers))
+        .await?;
+    Ok(success(json!({
+        "version": version,
+        "public_enabled": body.public_enabled,
+    })))
+}
+
+/// `GET /api/v1/web-bans` — sources currently banned, soonest expiry first (admin).
+pub(crate) async fn get_web_bans(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let bans = state.web_bans().ok_or_else(|| ControlApiError::NotFound {
+        what: "ban table".to_owned(),
+    })?;
+    let mut list = bans.banned();
+    list.sort_by_key(|b| b.until_unix);
+    let items: Vec<Value> = list
+        .iter()
+        .map(|b| json!({ "ip": b.ip.to_string(), "until": unix_rfc3339(b.until_unix) }))
+        .collect();
+    Ok(success(json!({ "items": items })))
+}
+
+/// `DELETE /api/v1/web-bans/{ip}` — lifts a ban (admin).
+pub(crate) async fn delete_web_ban(
+    State(state): State<AppState>,
+    axum::extract::Path(ip): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let bans = state.web_bans().ok_or_else(|| ControlApiError::NotFound {
+        what: "ban table".to_owned(),
+    })?;
+    let ip: std::net::IpAddr = ip.parse().map_err(|_| ControlApiError::Module {
+        code: "control_api.web_bans.invalid",
+        params: Some(json!({ "reason": "not an IP address" })),
+    })?;
+    if !bans.unban(ip) {
+        return Err(ControlApiError::NotFound {
+            what: "ban".to_owned(),
+        });
+    }
+    tracing::info!(%ip, "web ban lifted");
+    Ok(success(json!({ "ip": ip.to_string() })))
 }
 
 /// Body of `PUT /api/v1/backups/settings`.

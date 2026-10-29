@@ -212,7 +212,12 @@ pub fn requirement(method: &Method, path: &str) -> Requirement {
         return Requirement::ApiAdmin;
     }
     // Backup status exposes the backup directory path: admin-only, even for reads.
-    if path == "/api/v1/backups" || path.starts_with("/api/v1/backups/") {
+    if path == "/api/v1/web-access"
+        || path == "/api/v1/web-bans"
+        || path.starts_with("/api/v1/web-bans/")
+        || path == "/api/v1/backups"
+        || path.starts_with("/api/v1/backups/")
+    {
         return Requirement::ApiAdmin;
     }
     if is_config_path(path) {

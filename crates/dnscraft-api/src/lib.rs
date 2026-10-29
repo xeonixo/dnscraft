@@ -95,6 +95,7 @@ pub use stats::{
 };
 pub use storage::{AuditRecord, ConfigStore, Db};
 pub use system::run_backup_if_due;
+pub use system::{BannedSource, WebBans};
 pub use unifi_secrets::get_api_key;
 
 /// Loads a UI-stored Cloudflare API token from the config database, if any.

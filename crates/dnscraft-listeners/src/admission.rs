@@ -198,6 +198,16 @@ impl Admission {
         self.bans.is_banned(source, now)
     }
 
+    /// Currently banned sources with their ban expiry.
+    pub fn banned_sources(&self, now: SystemTime) -> Vec<(IpAddr, SystemTime)> {
+        self.bans.banned(now)
+    }
+
+    /// Lifts the ban on `source`; `true` when it was banned.
+    pub fn unban(&mut self, source: IpAddr, now: SystemTime) -> bool {
+        self.bans.unban(source.to_canonical(), now)
+    }
+
     /// Records a ban strike for a public source (no-op for private sources).
     pub fn strike(&mut self, source: IpAddr, reason: StrikeReason, now: SystemTime) {
         let source = source.to_canonical();

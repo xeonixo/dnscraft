@@ -37,6 +37,9 @@ values.
   `mcp` will reuse.
 - Audit log for every mutating action.
 - Internal-only binding; this module is never reached from a public DNS listener.
+  Exception (opt-in, default off): with public web access enabled, a public-exposure shared DoH
+  listener also hands non-`/dns-query` paths from public sources to this router (no own public
+  socket is ever opened). See `tasks/todo-public-web.md`.
 
 ### Non-goals
 
