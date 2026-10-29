@@ -41,6 +41,8 @@ export interface QueryAnswer {
 
 export interface QueryRecord {
 	id: string;
+	/** Directory device key (UniFi/manual client, or the device a DoH Client ID is linked to). */
+	device_id?: string | null;
 	node_id: string;
 	listener_id: string;
 	protocol: Protocol;

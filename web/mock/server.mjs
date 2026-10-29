@@ -176,6 +176,7 @@ export function parseQuery(params) {
 		node_id: params.get('node_id') || null,
 		client_id: params.get('client_id') || null,
 		client_name_substr: params.get('client_name_substr') || null,
+		device_id: params.get('device_id') || null,
 		domain: params.get('domain') || null,
 		domain_substr: params.get('domain_substr') || null,
 		protocol,
@@ -203,6 +204,7 @@ export function selectRecords(filter) {
 		if (filter.to !== null && time > filter.to) return false;
 		if (filter.node_id && record.node_id !== filter.node_id) return false;
 		if (filter.client_id && record.client_id !== filter.client_id) return false;
+		if (filter.device_id && record.device_id !== filter.device_id) return false;
 		if (clientNeedle && !(record.client?.display_name ?? '').toLowerCase().includes(clientNeedle)) {
 			return false;
 		}
@@ -301,6 +303,7 @@ function emptyFilter() {
 		node_id: null,
 		client_id: null,
 		client_name_substr: null,
+		device_id: null,
 		domain: null,
 		domain_substr: null,
 		protocol: null,
@@ -1455,8 +1458,7 @@ async function route(request, response, options) {
 			if (!PUBLIC_RECORD_TYPES.has(recordType)) {
 				throw new ApiFailure(400, 'control_api.config.invalid', { reason: 'unsupported_type' });
 			}
-			const ttl =
-				typeof body.ttl === 'number' && Number.isFinite(body.ttl) ? Number(body.ttl) : 1;
+			const ttl = typeof body.ttl === 'number' && Number.isFinite(body.ttl) ? Number(body.ttl) : 1;
 			const row = {
 				id: `cf-rec-${++options.runtime.domainZoneRecordSerial}`,
 				name,
@@ -1743,7 +1745,10 @@ async function route(request, response, options) {
 		const nodeId = decodeURIComponent(clusterPut[1]);
 		const body = await readJsonBody(request);
 		const display_name = String(body.display_name ?? '').trim() || null;
-		const hostname = String(body.hostname ?? '').trim().toLowerCase() || null;
+		const hostname =
+			String(body.hostname ?? '')
+				.trim()
+				.toLowerCase() || null;
 		if (hostname && !/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(hostname)) {
 			throw new ApiFailure(400, 'cluster.role.invalid');
 		}

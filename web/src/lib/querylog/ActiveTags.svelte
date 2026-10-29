@@ -34,6 +34,8 @@
 				return m.querylog_client_id();
 			case 'client_name_substr':
 				return m.querylog_client_name();
+			case 'device_id':
+				return m.querylog_device_id();
 			case 'node_id':
 				return m.querylog_node_id();
 			case 'view_id':
@@ -75,6 +77,8 @@
 				return draft.client_id;
 			case 'client_name_substr':
 				return draft.client_name_substr;
+			case 'device_id':
+				return draft.device_id;
 			case 'node_id':
 				return draft.node_id;
 			case 'view_id':

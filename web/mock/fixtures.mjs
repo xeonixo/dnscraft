@@ -1026,6 +1026,7 @@ function buildRecord(rng, index, timeMs, sets, profiles) {
 		source_ip: sourceIp,
 		source_ip_truncated: truncated,
 		client_id: client.id,
+		...(client.id === null ? {} : { device_id: `dir-${client.id}` }),
 		client:
 			client.id === null
 				? null

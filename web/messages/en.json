@@ -223,6 +223,7 @@
 	"querylog_domain_exact": "Domain (exact)",
 	"querylog_domain_contains": "Domain contains",
 	"querylog_client_id": "Client ID",
+	"querylog_device_id": "Device (ID)",
 	"querylog_client_name": "Client name contains",
 	"querylog_node_id": "Node ID",
 	"querylog_protocol": "Protocol",

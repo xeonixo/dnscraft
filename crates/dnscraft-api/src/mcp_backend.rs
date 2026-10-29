@@ -1354,6 +1354,7 @@ impl McpBackend for ControlMcpBackend {
             node_id: None,
             client_id: non_empty(params.client_id),
             client_name_substr: non_empty(params.client_name_substr),
+            device_id: None,
             domain: non_empty(params.domain),
             domain_substr: non_empty(params.domain_substr),
             protocol: non_empty(params.protocol),

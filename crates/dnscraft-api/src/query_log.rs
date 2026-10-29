@@ -131,6 +131,8 @@ pub struct QueryLogFilter {
     pub client_id: Option<String>,
     /// Case-insensitive substring of the client display name.
     pub client_name_substr: Option<String>,
+    /// Exact directory device key; matches UniFi/manual clients and DoH Client IDs linked to them.
+    pub device_id: Option<String>,
     /// Exact normalized owner name (no trailing dot).
     pub domain: Option<String>,
     /// Case-insensitive substring of the owner name.
@@ -1018,6 +1020,10 @@ fn filter_clause(filter: &QueryLogFilter) -> (String, Vec<Value>) {
     if let Some(client_id) = &filter.client_id {
         sql.push_str(" AND client_id = ?");
         values.push(Value::Text(client_id.clone()));
+    }
+    if let Some(device_id) = &filter.device_id {
+        sql.push_str(" AND device_id = ?");
+        values.push(Value::Text(device_id.clone()));
     }
     if let Some(needle) = &filter.client_name_substr {
         sql.push_str(" AND LOWER(client_name) LIKE ? ESCAPE '\\'");

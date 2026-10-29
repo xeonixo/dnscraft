@@ -314,7 +314,7 @@
 			rows={loaded.queries}
 			compact={density === 'compact'}
 			{technical}
-			clientSearch={(id) => toSearchParams({ ...draft, client_id: id, offset: '' }).toString()}
+			clientSearch={(filter) => toSearchParams({ ...draft, ...filter, offset: '' }).toString()}
 		/>
 	{:else}
 		<QueryCards rows={loaded.queries} />

@@ -30,8 +30,8 @@
 		compact: boolean;
 		/** Protocol, answer code and latency columns; off by default. */
 		technical: boolean;
-		/** Query string that filters the list by a client id; without it the name is plain text. */
-		clientSearch?: (clientId: string) => string;
+		/** Query string that filters the list by one client; without it the name is plain text. */
+		clientSearch?: (filter: { client_id: string } | { device_id: string }) => string;
 	}
 
 	let { rows, compact, technical, clientSearch }: Props = $props();
@@ -117,10 +117,16 @@
 					</td>
 					<td class="client">
 						<span class="cname">
-							{#if clientSearch && record.client_id}
+							{#if clientSearch && (record.device_id || record.client_id)}
 								<a
 									class="client-link"
-									href={resolve(`/query-log?${clientSearch(record.client_id)}`)}
+									href={resolve(
+										`/query-log?${clientSearch(
+											record.device_id
+												? { device_id: record.device_id }
+												: { client_id: record.client_id! },
+										)}`,
+									)}
 									title={neutralize(clientName)}
 									aria-label={m.querylog_filter_by_client({ client: neutralize(clientName) })}
 									>{displayText(clientName, 32).text}</a

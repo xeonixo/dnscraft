@@ -586,6 +586,17 @@ async fn query_log_rows_carry_the_directory_device_id() {
     assert_eq!(device_id_for(&log, "host11.example.com").await, "dev-1");
     assert_eq!(device_id_for(&log, "host1.example.com").await, "dev-1");
     assert_eq!(device_id_for(&log, "host13.example.com").await, Value::Null);
+
+    // The device filter returns the LAN query and the linked DoH query together.
+    let page = log
+        .list(&QueryLogFilter {
+            device_id: Some("dev-1".to_owned()),
+            limit: 10,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 2);
 }
 
 #[tokio::test]
