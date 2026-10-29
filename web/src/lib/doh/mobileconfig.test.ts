@@ -386,6 +386,18 @@ describe('node hosts', () => {
 		expect(r.xml).not.toContain('https://dns.example.com/');
 	});
 
+	it('names each server entry after its host so the iOS picker stays readable', () => {
+		const r = buildMobileConfig({
+			...base,
+			label: 'Annas iPhone',
+			hosts: ['ns1.dns.example.com', 'ns2.dns.example.com'],
+		});
+		if (!r.ok) throw new Error('expected ok');
+		expect(r.xml).toContain('<string>DNScraft – ns1.dns.example.com</string>');
+		expect(r.xml).toContain('<string>DNScraft – ns2.dns.example.com</string>');
+		expect(r.xml).toContain('<string>DNScraft – Annas iPhone</string>');
+	});
+
 	it('rejects an invalid host', () => {
 		expect(buildMobileConfig({ ...base, hosts: ['bad host'] })).toEqual({
 			ok: false,

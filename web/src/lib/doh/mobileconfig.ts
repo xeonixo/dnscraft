@@ -230,7 +230,7 @@ ${serverAddresses}\t\t\t\t<key>ServerURL</key>
 
 	const payload = (host: string | null): string => {
 		const contentId = host === null ? contentIdentifier : `${contentIdentifier}.${host}`;
-		const payloadName = hosts.length > 1 ? xml(`DNScraft – ${name} (${host})`) : displayName;
+		const payloadName = hosts.length > 1 ? xml(`DNScraft – ${host}`) : displayName;
 		return `\t\t<dict>
 \t\t\t<key>PayloadType</key>
 \t\t\t<string>com.apple.dnsSettings.managed</string>
