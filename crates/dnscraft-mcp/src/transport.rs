@@ -43,7 +43,7 @@ use crate::config::McpConfig;
 use crate::rate_limit::{BucketClass, TokenRateLimiter};
 use crate::tools::McpServer;
 use crate::tools::write;
-use dnscraft_common::clock::SystemClock;
+use dnscraft_common::clock::{Clock, SystemClock};
 
 const VERSION_HEADER: &str = "MCP-Protocol-Version";
 const ORIGIN_HEADER: &str = "Origin";
@@ -525,6 +525,19 @@ fn unsupported_version(requested: Option<&str>, supported: &[String]) -> Respons
 /// conformance rules in this module (instead of returning rmcp's type directly,
 /// as SPEC-mcp.md's sketch says).
 pub fn build(backend: std::sync::Arc<dyn McpBackend>, config: McpConfig) -> McpTransport {
+    build_with_clock(backend, config, Arc::new(SystemClock))
+}
+
+/// Like [`build`], but with an injectable clock for the per-token rate limiter.
+///
+/// Production mounts use [`build`] (wall clock). Integration tests pass a
+/// `ManualClock` so refill never races the wall clock between consecutive
+/// requests on a slow runner.
+pub fn build_with_clock(
+    backend: std::sync::Arc<dyn McpBackend>,
+    config: McpConfig,
+    clock: Arc<dyn Clock>,
+) -> McpTransport {
     let server_config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(config.legacy_session_mode)
         .with_json_response(true)
@@ -544,7 +557,7 @@ pub fn build(backend: std::sync::Arc<dyn McpBackend>, config: McpConfig) -> McpT
         std::sync::Arc::new(LocalSessionManager::default()),
         server_config,
     );
-    let rate_limiter = TokenRateLimiter::new(&config, Arc::new(SystemClock));
+    let rate_limiter = TokenRateLimiter::new(&config, clock);
     McpTransport::new(inner, transport_backend, config, rate_limiter)
 }
 
