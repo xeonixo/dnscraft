@@ -340,6 +340,12 @@ pub(crate) async fn resolve_iterative(
         });
         scrub_authority(&mut outcome, &cur, negative, wildcard, &mut sig_cap);
         outcome.message.answers = links;
+        // After a CNAME restart the message still carries the last target's
+        // question; clients drop answers whose question differs from theirs.
+        for q in &mut outcome.message.questions {
+            q.name = name.clone();
+            q.qtype = qtype;
+        }
         outcome.message.additionals.clear();
         outcome.sig_cap = sig_cap;
         return Ok((outcome, status));

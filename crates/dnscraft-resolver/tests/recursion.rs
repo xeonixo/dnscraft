@@ -363,6 +363,8 @@ async fn follows_cross_zone_cname() {
             RData::A(Ipv4Addr::new(192, 0, 2, 88))
         ]
     );
+    // The question stays the client's, not the CNAME target's.
+    assert_eq!(ans.message.questions[0].name, n("x.example.test."));
     // The target was resolved by a new resolution reaching other.test.
     assert!(names(&h, "other.test.").contains(&("www.other.test.".to_owned(), RecordType::A)));
 }
