@@ -626,6 +626,13 @@
 		{/if}
 	</div>
 
+	{#if isAdmin && domainZonesReady && !hasCloudflareToken}
+		<p class="token-banner" role="status">
+			{m.names_token_banner()}
+			<a class="cta-link inline" href={resolve('/tls')}>{m.names_token_banner_cta()}</a>
+		</p>
+	{/if}
+
 	{#if result.kind === 'loading'}
 		<p class="state">{m.state_loading()}</p>
 	{:else if result.kind === 'unavailable'}
@@ -746,11 +753,12 @@
 				{:else if !isAdmin && publicLookup.kind === 'absent'}
 					<p class="hint muted">{m.names_public_absent()}</p>
 				{:else}
-					<p class="hint" id="rec-public-hint">{m.names_public_hint()}</p>
 					{#if publicLookup.kind === 'absent'}
-						<p class="hint muted">{m.names_public_absent()}</p>
+						<p class="hint muted" id="rec-public-hint">{m.names_public_absent()}</p>
+					{:else}
+						<p class="hint muted" id="rec-public-hint">{m.names_public_hint()}</p>
 					{/if}
-					<label class="field-label" for="rec-public">{m.names_field_public()}</label>
+					<label class="sr-only" for="rec-public">{m.names_field_public()}</label>
 					<input
 						id="rec-public"
 						class="field mono"
@@ -781,17 +789,8 @@
 			{:else}
 				{#if publicLookup.kind === 'loading'}
 					<p class="hint muted">{m.names_public_loading()}</p>
-				{:else if publicLookup.kind === 'token_missing'}
-					<p class="hint">{m.names_public_token_missing()}</p>
-					<a class="cta-link" href={resolve('/tls')}>{m.names_public_token_cta()}</a>
-				{:else if publicLookup.kind === 'unavailable'}
-					<p class="hint muted">{m.names_public_unavailable()}</p>
-				{:else if publicLookup.kind === 'internal'}
-					<p class="hint muted">{m.names_public_internal()}</p>
-				{:else if publicLookup.kind === 'error'}
-					<p class="hint muted">{m.names_public_error()}</p>
 				{/if}
-				<label class="field-label" for="rec-rdata">{m.names_field_rdata()}</label>
+				<label class="sr-only" for="rec-rdata">{m.names_field_rdata()}</label>
 				<input
 					id="rec-rdata"
 					class="field mono"
@@ -800,6 +799,18 @@
 					aria-invalid={rdataError ? 'true' : undefined}
 				/>
 				{#if rdataError}<p class="error-text" role="alert">{rdataError}</p>{/if}
+				{#if publicLookup.kind === 'token_missing'}
+					<p class="hint muted">
+						{m.names_public_token_missing()}
+						<a class="cta-link inline" href={resolve('/tls')}>{m.names_public_token_cta()}</a>
+					</p>
+				{:else if publicLookup.kind === 'unavailable'}
+					<p class="hint muted">{m.names_public_unavailable()}</p>
+				{:else if publicLookup.kind === 'internal'}
+					<p class="hint muted">{m.names_public_internal()}</p>
+				{:else if publicLookup.kind === 'error'}
+					<p class="hint muted">{m.names_public_error()}</p>
+				{/if}
 			{/if}
 		</section>
 
@@ -993,8 +1004,17 @@
 		color: var(--label-2);
 		font-size: 0.9375rem;
 	}
-	.error-text {
+	.token-banner {
 		margin: 0;
+		padding: 0.625rem 0.75rem;
+		border: 1px solid var(--separator);
+		border-radius: var(--r-ctl);
+		background: var(--surface-2);
+		font-size: 0.8125rem;
+		color: var(--label-2);
+	}
+	.error-text {
+		margin: 0.375rem 0 0;
 		font-size: 0.8125rem;
 		color: var(--danger);
 	}
@@ -1040,12 +1060,15 @@
 		min-width: 0;
 	}
 	.hint {
-		margin: 0 0 0.5rem;
+		margin: 0.375rem 0 0;
 		font-size: 0.8125rem;
 		color: var(--label-3);
 	}
 	.hint.muted {
-		margin-bottom: 0.25rem;
+		color: var(--label-3);
+	}
+	#rec-overrides-hint {
+		margin: 0 0 0.5rem;
 	}
 	.state,
 	.empty {
@@ -1165,11 +1188,13 @@
 		min-width: 0;
 	}
 	.sheet-section {
-		margin-top: 0.5rem;
+		margin-top: 1rem;
+		padding-top: 0.875rem;
+		border-top: 1px solid var(--separator);
 	}
 	.section-label {
 		display: block;
-		margin: 0.875rem 0 0.25rem;
+		margin: 0 0 0.5rem;
 		font-size: 0.8125rem;
 		font-weight: 600;
 		color: var(--label);
@@ -1199,16 +1224,24 @@
 		font-weight: 600;
 		text-decoration: none;
 	}
+	.cta-link.inline {
+		display: inline;
+		margin: 0;
+		font-weight: 600;
+	}
 	.cta-link:hover {
 		text-decoration: underline;
 	}
 	.override-list {
 		list-style: none;
 		margin: 0;
-		padding: 0;
+		padding: 0.375rem;
 		display: flex;
 		flex-direction: column;
 		gap: 0.375rem;
+		border: 1px solid var(--separator);
+		border-radius: var(--r-ctl);
+		background: var(--surface-2);
 	}
 	.override-row {
 		display: grid;
