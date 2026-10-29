@@ -1049,3 +1049,187 @@ async fn on_issued_hook_runs_after_successful_issuance() {
     let names = seen.lock().unwrap().clone();
     assert!(names.contains(&"dns.example.com".to_owned()));
 }
+
+// ---------------------------------------------------------------------------
+// Cluster: ACME only on the master, certificate pushed to sub-nodes
+// ---------------------------------------------------------------------------
+
+/// Cert + key PEM for `names`, valid until `year`.
+fn cert_pem(names: &[&str], year: i32) -> (String, String) {
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+    let mut params =
+        rcgen::CertificateParams::new(names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>())
+            .unwrap();
+    params.not_after = rcgen::date_time_ymd(year, 1, 1);
+    let cert = params.self_signed(&key).unwrap();
+    (cert.pem(), key.serialize_pem())
+}
+
+const NAMES: [&str; 2] = ["dns.example.com", "*.dns.example.com"];
+
+fn sub_engine(data: &std::path::Path, acme: Arc<FakeAcmeDirectory>) -> TlsEngine {
+    TlsEngine::open_with_role(
+        base_cfg(),
+        data,
+        clock(),
+        EngineDeps {
+            allow_http_for_tests: true,
+            acme,
+            cloudflare_base_url: Some("http://127.0.0.1:1".into()),
+            echo: EchoClient::unbound().unwrap(),
+            token: Secret::new(TOKEN),
+        },
+        true,
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn sub_node_with_bootstrap_acme_enabled_orders_nothing_from_the_first_instant() {
+    let data = temp_dir("sub-bootstrap-acme");
+    let acme = Arc::new(FakeAcmeDirectory::new());
+    // `base_cfg` has acme.enabled = true and the store is empty: a master
+    // would order immediately. No set_node_context call anywhere.
+    let engine = sub_engine(&data, acme.clone());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(acme.replaces_log().is_empty(), "no order at startup");
+
+    engine.apply_config(base_cfg()).await.unwrap();
+    assert!(engine.renew_now().await.is_err());
+    assert!(engine.rotate_key().await.is_err());
+    assert!(engine.sign_csr("csr").await.is_err());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(acme.replaces_log().is_empty(), "no order afterwards either");
+    assert!(!engine.resolver().has_cert());
+    assert!(!data.join("tls/account.json").exists(), "no ACME account");
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+async fn pushed_certificate_is_validated_persisted_and_survives_a_restart() {
+    let data = temp_dir("push-install");
+    let engine = sub_engine(&data, Arc::new(FakeAcmeDirectory::new()));
+    let (chain, key) = cert_pem(&NAMES, 2060);
+    assert!(
+        engine
+            .install_cluster_certificate(&chain, &Secret::new(key.clone()))
+            .await
+            .unwrap()
+    );
+    assert!(engine.resolver().has_cert());
+    assert!(engine.status_async().await.not_after.is_some());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(data.join("tls/key.pem"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    // The same certificate again, and an older one: ignored, not an error.
+    assert!(
+        !engine
+            .install_cluster_certificate(&chain, &Secret::new(key))
+            .await
+            .unwrap()
+    );
+    let (old_chain, old_key) = cert_pem(&NAMES, 2040);
+    assert!(
+        !engine
+            .install_cluster_certificate(&old_chain, &Secret::new(old_key))
+            .await
+            .unwrap()
+    );
+    // A newer one replaces it.
+    let (new_chain, new_key) = cert_pem(&NAMES, 2080);
+    assert!(
+        engine
+            .install_cluster_certificate(&new_chain, &Secret::new(new_key))
+            .await
+            .unwrap()
+    );
+    drop(engine);
+
+    let reopened = sub_engine(&data, Arc::new(FakeAcmeDirectory::new()));
+    assert!(reopened.resolver().has_cert(), "restart keeps the push");
+    let leaf = reopened.resolver().leaf_der().unwrap();
+    use rustls_pki_types::{CertificateDer, pem::PemObject};
+    let want = CertificateDer::from_pem_slice(new_chain.as_bytes()).unwrap();
+    assert_eq!(leaf, want.as_ref());
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+async fn invalid_pushed_certificates_are_rejected_without_leaking_the_key() {
+    let data = temp_dir("push-invalid");
+    let engine = sub_engine(&data, Arc::new(FakeAcmeDirectory::new()));
+    let (chain, _key) = cert_pem(&NAMES, 2060);
+    let (_other_chain, other_key) = cert_pem(&NAMES, 2060);
+    let (wrong_names, wrong_names_key) = cert_pem(&["dns.other.org", "*.dns.other.org"], 2060);
+    let (partial, partial_key) = cert_pem(&["dns.example.com"], 2060);
+
+    let cases = [
+        (chain.as_str(), other_key.as_str()),
+        (wrong_names.as_str(), wrong_names_key.as_str()),
+        (partial.as_str(), partial_key.as_str()),
+        ("not pem", "not pem"),
+    ];
+    for (chain, key) in cases {
+        let err = engine
+            .install_cluster_certificate(chain, &Secret::new(key))
+            .await
+            .unwrap_err();
+        let text = format!("{err} {err:?}");
+        assert!(!text.contains("PRIVATE KEY"), "{text}");
+        assert!(!text.contains(key.trim()) || key == "not pem", "{text}");
+    }
+    assert!(!engine.resolver().has_cert());
+    assert!(!data.join("tls/cert.pem").exists());
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+async fn cluster_certificate_is_internal_and_never_in_export_or_status() {
+    let data = temp_dir("cluster-export");
+    let (chain, key) = self_signed();
+    CertStore::open(&data)
+        .unwrap()
+        .save(&chain, &key, &CertMeta::default())
+        .unwrap();
+    let engine = TlsEngine::open_with(
+        base_cfg(),
+        &data,
+        clock(),
+        EngineDeps {
+            allow_http_for_tests: true,
+            acme: Arc::new(FakeAcmeDirectory::new()),
+            cloudflare_base_url: Some("http://127.0.0.1:1".into()),
+            echo: EchoClient::unbound().unwrap(),
+            token: Secret::new(TOKEN),
+        },
+    )
+    .unwrap();
+    let (pushed_chain, pushed_key) = engine.cluster_certificate().unwrap().expect("cert");
+    assert!(pushed_key.expose().contains("PRIVATE KEY"));
+    assert_eq!(pushed_chain.as_bytes(), chain.as_slice());
+
+    let exported = engine.export_cert().unwrap();
+    assert!(!exported.contains("PRIVATE KEY"));
+    let status = format!("{:?}", engine.status_async().await);
+    let key_body: String = pushed_key
+        .expose()
+        .lines()
+        .filter(|l| !l.starts_with("-----"))
+        .collect();
+    assert!(!status.contains("PRIVATE KEY") && !status.contains(&key_body));
+    let _ = fs::remove_dir_all(&data);
+}
+
+#[tokio::test]
+async fn cluster_certificate_is_none_without_a_stored_certificate() {
+    let data = temp_dir("cluster-export-none");
+    let engine = sub_engine(&data, Arc::new(FakeAcmeDirectory::new()));
+    assert!(engine.cluster_certificate().unwrap().is_none());
+    let _ = fs::remove_dir_all(&data);
+}

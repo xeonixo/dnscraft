@@ -144,6 +144,34 @@ impl fmt::Debug for CloudflareTokenPush {
     }
 }
 
+/// Capability: the node accepts [`TlsCertificatePush`] records.
+pub const CAP_TLS_CERTIFICATE: &str = "tls_certificate";
+
+/// Master → sub-node TLS certificate (`tls_certificate_push`).
+///
+/// The master is the only node that talks to ACME; it hands the same chain and
+/// private key to its sub-nodes over the authenticated mTLS channel. The key
+/// never appears in Debug output, logs, status or audit.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct TlsCertificatePush {
+    /// Cluster protocol version.
+    pub protocol: u32,
+    /// Leaf + intermediates, PEM.
+    pub chain_pem: String,
+    /// Private key, PEM.
+    pub key_pem: String,
+}
+
+impl fmt::Debug for TlsCertificatePush {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TlsCertificatePush")
+            .field("protocol", &self.protocol)
+            .field("chain_pem_len", &self.chain_pem.len())
+            .field("key_pem", &"<redacted>")
+            .finish()
+    }
+}
+
 /// Master → sub-node full-snapshot push (`config_push`).
 ///
 /// `snapshot` is opaque. Its `Debug` representation is redacted so a stray
@@ -313,6 +341,8 @@ pub enum StreamRecord {
     SecretPush(SecretPush),
     /// Cloudflare API token for DynDNS nodes (capability-gated).
     CloudflareTokenPush(CloudflareTokenPush),
+    /// The master's TLS certificate and key (capability-gated).
+    TlsCertificatePush(TlsCertificatePush),
     /// UniFi directory snapshot for nodes bound to a profile.
     ClientsDirectoryPush(ClientsDirectoryPush),
     /// Terminal stream error.
@@ -629,6 +659,37 @@ impl ConfigSync {
         queued
     }
 
+    /// Sends the certificate to `node_id` if it advertised
+    /// [`CAP_TLS_CERTIFICATE`]. Returns whether a record was queued.
+    pub(crate) fn send_tls_certificate(
+        &self,
+        node_id: &str,
+        chain_pem: &str,
+        key_pem: &str,
+    ) -> bool {
+        let state = self.lock();
+        let Some(node) = state.nodes.get(node_id) else {
+            return false;
+        };
+        node.capabilities.iter().any(|c| c == CAP_TLS_CERTIFICATE)
+            && node
+                .tx
+                .try_send(StreamRecord::TlsCertificatePush(TlsCertificatePush {
+                    protocol: crate::PROTOCOL_VERSION,
+                    chain_pem: chain_pem.to_owned(),
+                    key_pem: key_pem.to_owned(),
+                }))
+                .is_ok()
+    }
+
+    /// [`Self::send_tls_certificate`] to every connected capable node.
+    pub(crate) fn broadcast_tls_certificate(&self, chain_pem: &str, key_pem: &str) -> usize {
+        let ids: Vec<String> = self.lock().nodes.keys().cloned().collect();
+        ids.iter()
+            .filter(|id| self.send_tls_certificate(id, chain_pem, key_pem))
+            .count()
+    }
+
     fn lock(&self) -> MutexGuard<'_, SyncState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -898,6 +959,22 @@ mod tests {
     }
 
     #[test]
+    fn tls_certificate_push_debug_redacts_the_key_and_round_trips() {
+        let record = StreamRecord::TlsCertificatePush(TlsCertificatePush {
+            protocol: crate::PROTOCOL_VERSION,
+            chain_pem: "CHAIN".to_owned(),
+            key_pem: "-----BEGIN PRIVATE KEY-----secret-key-body".to_owned(),
+        });
+        let rendered = format!("{record:?}");
+        assert!(!rendered.contains("secret-key-body"));
+        assert!(!rendered.contains("PRIVATE KEY"));
+        assert!(rendered.contains("<redacted>"));
+        let line = serde_json::to_string(&record).unwrap();
+        assert!(line.starts_with(r#"{"type":"tls_certificate_push""#));
+        assert_eq!(serde_json::from_str::<StreamRecord>(&line).unwrap(), record);
+    }
+
+    #[test]
     fn old_hello_without_capabilities_parses_and_new_one_omits_empty() {
         let old = r#"{"type":"hello","protocol":1,"node_id":"n"}"#;
         match serde_json::from_str::<StreamRecord>(old).unwrap() {
@@ -916,6 +993,27 @@ mod tests {
                 .unwrap()
                 .contains("capabilities")
         );
+    }
+
+    #[tokio::test]
+    async fn tls_certificate_goes_only_to_capable_nodes() {
+        let clock = Arc::new(dnscraft_common::clock::ManualClock::new(
+            SystemTime::UNIX_EPOCH,
+        ));
+        let (_shutdown, rx) = watch::channel(false);
+        let sync = ConfigSync::start(clock, rx);
+        let (old_tx, mut old_rx) = mpsc::channel(8);
+        let (new_tx, mut new_rx) = mpsc::channel(8);
+        sync.register("old", None, Vec::new(), old_tx);
+        sync.register("new", None, vec![CAP_TLS_CERTIFICATE.to_owned()], new_tx);
+        assert!(!sync.send_tls_certificate("old", "c", "k"));
+        assert!(!sync.send_tls_certificate("gone", "c", "k"));
+        assert_eq!(sync.broadcast_tls_certificate("c", "k"), 1);
+        assert!(old_rx.try_recv().is_err());
+        assert!(matches!(
+            new_rx.try_recv(),
+            Ok(StreamRecord::TlsCertificatePush(TlsCertificatePush { .. }))
+        ));
     }
 
     #[tokio::test]

@@ -293,44 +293,62 @@ write.
 
 ### TLS certificate distribution
 
-**Decided (owner, wave 2): per-node CSR relay (option B). The shared wildcard
-private key is never sent to a node.** The master is the only ACME client; a
-sub-node obtains its own TLS certificate for the same names.
+**Decided (owner, supersedes the earlier "private key never leaves the master"
+/ per-node CSR relay rule): ACME runs ONLY on the master, and the master
+synchronises the SAME certificate (chain + private key) to its sub-nodes over
+the already authenticated mTLS cluster channel.** Reason: the per-node CSR relay
+made the master order a *new* Let's Encrypt certificate for every sub-node
+request and every sub-node restart, which exhausted the Let's Encrypt limit
+(5 certificates per 168 h for the same identifier set). The private key
+therefore *does* leave the master, deliberately, to authenticated cluster
+members only.
 
-- After a successful master renewal the master sends `TlsRenewed { names }`
-  (`tls_renewed` record) over the mTLS stream. It carries names only, never key
-  material.
-- On that notice a sub-node generates a fresh ECDSA P-256 key locally, builds a
-  CSR for `names`, and posts `TlsCsrRequest { protocol, csr_pem }` to
-  `POST /cluster/v1/tls/certificate`. The request is authenticated by the node
-  certificate, so a revoked node is refused (`cluster.node.revoked`).
-- The master passes the CSR to its `TlsCsrSigner`, which finalizes an ACME order
-  with that CSR and returns the chain (`TlsCsrResponse { chain_pem }`). The
-  signer checks that the CSR names only the names the master may issue for. The
-  key stays on the node; the master never receives it.
-- The sub-node installs the chain with its local key through the `tls` module's
-  hot-reload path (`CertInstaller`). The request runs in the background, so
-  config pushes on the stream are not held up.
-- Revocation needs no key rotation: a revoked node cannot request certificates,
-  and the one it holds expires on its own schedule.
-- **Cost:** one ACME order per node per renewal (ACME rate limits apply; the
-  fleet size bounds the number of orders).
-- **Implemented:** the master's `TlsCsrSigner` is `TlsEngineCsrSigner`
-  (`dnscraft-api`), which finalizes the order through
-  `dnscraft_tls::TlsEngine::sign_csr` (SPEC-tls.md § Signing a node CSR). The
-  assembler attaches it on the master when `[tls]` is configured. Without a
-  signer a master answers `cluster.internal` (`no TLS certificate signer is
-  attached`), so a master without `[tls]` gives no node a certificate.
-- Rejected alternatives: keeping the shared key and rotating on revoke (every
-  node still holds the wildcard key and rotation costs an order per revocation);
-  letting each sub-node order its own certificate (gives every node DNS
-  credentials and breaks "sub-nodes never order ACME certificates").
+- **Wire format:** `StreamRecord::TlsCertificatePush { protocol, chain_pem,
+  key_pem }` (`type: "tls_certificate_push"`). Its `Debug` redacts the key; the
+  key is never logged, never in status/audit/export, and never part of a config
+  snapshot.
+- **Capability gate:** a sub-node that can install it lists `tls_certificate`
+  in its stream `Hello.capabilities` (only when it has a TLS engine), exactly
+  like `cloudflare_token`. The master never sends the record to a node that did
+  not advertise it (an older node would drop the stream on an unknown record).
+- **When:** (a) right after a capable sub-node connects, (b) after every
+  successful issuance/renewal on the master (the TLS engine's `on_issued`
+  hook), to every connected capable sub-node. Nothing is sent when the master
+  has no (or a revoked) certificate. Best-effort, no retry: a node that was
+  offline gets the current certificate on reconnect.
+- **Sub-node receive:** the TLS engine validates before touching anything: the
+  PEM chain parses, the key matches the leaf, the leaf covers
+  `dns.<public_domain>` and `*.dns.<public_domain>`, and its `notAfter` is
+  newer than the installed certificate (an equal or older push is ignored, so
+  reconnects are idempotent and a push cannot downgrade). Then it is persisted
+  in the engine's store (`tls/`, mode `0600`, the same files a master has, so a
+  restart keeps it) and hot-installed into the live `CertResolver` (no restart),
+  and the engine status is refreshed. An invalid push is rejected with a logged
+  warning (stable code, never the key) and changes nothing.
+- **Master export:** the key is read through an internal engine method
+  (`TlsEngine::cluster_certificate`) that no API, status or export route
+  reaches; `export_cert` and the TLS status never contain it.
+- **No CSR relay:** the master never starts an ACME order because a sub-node
+  asked. `POST /cluster/v1/tls/certificate` is not wired in production and
+  answers `cluster.internal` ("certificate relay disabled; certificates are
+  pushed"). The `tls_renewed` notice is no longer sent; `TlsCsrSigner`,
+  `CertInstaller` and `ClusterClient::request_tls_certificate` remain in
+  `dnscraft-cluster` only as unreachable transport types.
+- **Sub-nodes never order, from the first instant:** the TLS engine is
+  constructed with the sub-node role (`TlsEngine::open_for_role`), so ACME is
+  disabled before the renew scheduler exists. A bootstrap `[tls.acme]
+  enabled = true` on a sub-node, `apply_config`, `renew_now`, `rotate_key` and
+  `sign_csr` therefore never open an order or an ACME account.
+- **Trade-off:** any cluster member now holds the public certificate's private
+  key, so a compromised sub-node can impersonate the DoH/DoT endpoint until the
+  certificate is replaced. Revoking a node (`disconnect`) stops further pushes
+  but cannot recall the key; the certificate must then be rotated on the master
+  (a new key is pushed to the remaining nodes).
 - Only the master obtains/renews ACME certificates (SPEC-tls.md). Key material is
   never logged, exported, or written to audit.
-- While a sub-node knows a master exists (`cluster_master_present` state) it
-  never starts an ACME order. If the master is unreachable, the sub-node keeps
-  the last certificate; if that certificate expires, encrypted listeners fail
-  and status reports a warning. Certificate/key are stored mode `0600`.
+- If the master is unreachable, the sub-node keeps the last certificate; if that
+  certificate expires, encrypted listeners fail and status reports a warning.
+  Certificate/key are stored mode `0600`.
 
 ## Writes from any node
 
@@ -636,8 +654,9 @@ clock (ADR-0005) and loopback listeners only.
      outage shorter than the buffer backfills with zero duplicates.
    - Runtime command broadcast: pause on the master reaches every node; a
      command issued offline is rejected.
-   - TLS cert push installs on sub-nodes; a sub-node with an expired cert
-     reports a warning and does not start an ACME order.
+   - TLS cert push installs on sub-nodes (validated, persisted, hot-reloaded;
+     mismatching key/names or an older certificate are rejected); a sub-node
+     never starts an ACME order, even with `acme.enabled = true` at bootstrap.
 5. **No wall-clock waits** for heartbeats, timeouts, retention or token expiry:
    advance `ManualClock`/`SystemClock` test doubles. A test that needs
    "eventually" uses the existing `wait_until` helper.

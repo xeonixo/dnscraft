@@ -75,9 +75,6 @@ pub(crate) async fn start(
     oidc_runtime: Arc<OidcRuntime>,
 ) -> Result<ControlApi, Error> {
     let api_config = config.control_api.clone();
-    // The cluster certificate installer writes into the resolver the DNS
-    // listeners use; keep a handle before the TLS branch below consumes `acme`.
-    let cluster_resolver = acme.clone();
     api_config.validate().map_err(|error| {
         Error::startup(
             "dnscraft.startup.control_api",
@@ -209,15 +206,8 @@ pub(crate) async fn start(
     // write tools share the master's broadcast handle.
     let cluster_runtime = match cluster {
         Some(cluster) => {
-            let (next, runtime) = start_cluster(
-                cluster,
-                enrollment,
-                state,
-                engines,
-                cluster_resolver,
-                data_dir,
-            )
-            .await?;
+            let (next, runtime) =
+                start_cluster(cluster, enrollment, state, engines, data_dir).await?;
             state = next;
             Some(runtime)
         }
@@ -357,13 +347,12 @@ impl ServiceCatalogProvider for EngineServices {
 ///
 /// A sub-node gets its offline-write queue first (the runtime reads it while
 /// starting). The master exposes its registry, status and, when `[tls]` is
-/// configured, a CSR signer backed by the TLS engine.
+/// configured, its TLS engine (the master pushes the certificate to sub-nodes).
 async fn start_cluster(
     cluster: &ClusterConfig,
     enrollment: &Enrollment,
     mut state: AppState,
     engines: &Engines,
-    tls_resolver: Option<Arc<CertResolver>>,
     data_dir: &Path,
 ) -> Result<(AppState, ClusterRuntime), Error> {
     if cluster.role == Role::SubNode && cluster.offline_writes.enabled {
@@ -384,10 +373,7 @@ async fn start_cluster(
     }
 
     let mut options = ClusterRuntimeOptions::new(data_dir);
-    options.tls_resolver = tls_resolver;
-    if let Some(engine) = engines.tls.as_ref() {
-        (options.tls_names, options.tls_renew_before) = engine.cert_request_params().await;
-    }
+    options.tls_engine = engines.tls.clone();
     options.join_token = enrollment.join_token.clone();
     options.master_cert_pem = enrollment.master_cert_pem.clone();
     let runtime = ClusterRuntime::start(cluster.clone(), &state, options)
@@ -398,9 +384,6 @@ async fn start_cluster(
         state = state.with_cluster_store(Arc::new(store));
     }
     state = state.with_cluster_status(runtime.status_handle());
-    if let Some(engine) = engines.tls.as_ref() {
-        runtime.attach_tls_engine(Arc::clone(engine));
-    }
     Ok((state, runtime))
 }
 

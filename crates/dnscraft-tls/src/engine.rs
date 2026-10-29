@@ -147,9 +147,22 @@ impl TlsEngine {
     /// Cloudflare are unreachable. Background tasks start on the current Tokio
     /// runtime.
     pub fn open(
+        config: TlsConfig,
+        data_dir: &Path,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self, TlsError> {
+        Self::open_for_role(config, data_dir, clock, false)
+    }
+
+    /// Like [`Self::open`], for a cluster role. With `sub_node` the engine
+    /// never orders ACME certificates, from the very first instant: the flag
+    /// is part of construction, so neither the renew scheduler nor a startup
+    /// renewal can race a later [`Self::set_node_context`].
+    pub fn open_for_role(
         mut config: TlsConfig,
         data_dir: &Path,
         clock: Arc<dyn Clock>,
+        sub_node: bool,
     ) -> Result<Self, TlsError> {
         config.validate()?;
         // Env / `*_FILE` when present; empty when the UI/kv will supply it later.
@@ -161,16 +174,28 @@ impl TlsEngine {
             token,
             allow_http_for_tests: false,
         };
-        Self::open_with(config, data_dir, clock, deps)
+        Self::open_with_role(config, data_dir, clock, deps, sub_node)
     }
 
     /// Like [`Self::open`] with injectable ACME, Cloudflare base URL, and echo.
     pub fn open_with(
-        mut config: TlsConfig,
+        config: TlsConfig,
         data_dir: &Path,
         clock: Arc<dyn Clock>,
         deps: EngineDeps,
     ) -> Result<Self, TlsError> {
+        Self::open_with_role(config, data_dir, clock, deps, false)
+    }
+
+    /// [`Self::open_with`] for a cluster role; see [`Self::open_for_role`].
+    pub fn open_with_role(
+        mut config: TlsConfig,
+        data_dir: &Path,
+        clock: Arc<dyn Clock>,
+        deps: EngineDeps,
+        sub_node: bool,
+    ) -> Result<Self, TlsError> {
+        let acme_allowed = !sub_node;
         let token_for_validate = deps.token.clone();
         config.validate_with_token_impl(|_| Ok(token_for_validate), deps.allow_http_for_tests)?;
 
@@ -253,7 +278,7 @@ impl TlsEngine {
         )?
         .with_zones(config.dns_provider.zones.clone());
 
-        let acme_enabled = Arc::new(AtomicBool::new(config.acme.enabled));
+        let acme_enabled = Arc::new(AtomicBool::new(config.acme.enabled && acme_allowed));
         let dyndns_enabled = Arc::new(AtomicBool::new(config.dyndns.enabled));
 
         let status = build_status(&config, &store, clock.as_ref(), None);
@@ -275,7 +300,7 @@ impl TlsEngine {
             dyndns_lock: Mutex::new(()),
             order_lock: Mutex::new(()),
             acme_enabled: Arc::clone(&acme_enabled),
-            acme_allowed: AtomicBool::new(true),
+            acme_allowed: AtomicBool::new(acme_allowed),
             on_issued: std::sync::RwLock::new(None),
             node_id: std::sync::RwLock::new(None),
             dyndns_enabled: Arc::clone(&dyndns_enabled),
@@ -675,6 +700,85 @@ impl TlsEngine {
     /// untouched. See [`crate::sign_csr`].
     pub async fn sign_csr(&self, csr_pem: &str) -> Result<String, TlsError> {
         self.inner.sign_csr(csr_pem).await
+    }
+
+    /// The stored certificate chain and private key, for the cluster master to
+    /// push to its sub-nodes over the mTLS channel.
+    ///
+    /// Internal: not reachable through any API, status or export route (see
+    /// [`Self::export_cert`], which never returns the key). `None` when no
+    /// certificate is stored or it is revoked. The caller must not log it.
+    pub fn cluster_certificate(&self) -> Result<Option<(String, Secret)>, TlsError> {
+        if state_revoked(&self.inner.store) {
+            return Ok(None);
+        }
+        let Some(loaded) = self.inner.store.load()? else {
+            return Ok(None);
+        };
+        let utf8 = |bytes: &[u8]| {
+            String::from_utf8(bytes.to_vec()).map_err(|_| TlsError::StoreCorrupt {
+                message: "certificate store is not UTF-8".into(),
+            })
+        };
+        Ok(Some((
+            utf8(&loaded.chain_pem)?,
+            Secret::new(utf8(loaded.key.as_bytes())?),
+        )))
+    }
+
+    /// Sub-node: installs the certificate pushed by the cluster master.
+    ///
+    /// Validated first: the chain parses, the key matches the leaf, the leaf
+    /// covers `dns.<public_domain>` and `*.dns.<public_domain>`. A certificate
+    /// that is not newer than the installed one is ignored (`Ok(false)`).
+    /// Otherwise it is persisted (`tls/`, 0600) and hot-installed (`Ok(true)`).
+    /// Errors never contain key material.
+    pub async fn install_cluster_certificate(
+        &self,
+        chain_pem: &str,
+        key_pem: &Secret,
+    ) -> Result<bool, TlsError> {
+        let invalid = |message: String| TlsError::CertManualInvalid { message };
+        let key_bytes = key_pem.expose().as_bytes();
+        certified_key_from_pem(chain_pem.as_bytes(), key_bytes).map_err(|m| {
+            invalid(format!(
+                "pushed certificate/key mismatch or invalid PEM: {m}"
+            ))
+        })?;
+        let info = parse_leaf_info(chain_pem.as_bytes())
+            .map_err(|m| invalid(format!("pushed leaf certificate: {m}")))?;
+        let domain = self.inner.config.read().await.public_domain.clone();
+        for name in crate::default_identifiers(&domain) {
+            if !info.identifiers.iter().any(|san| san_covers(san, &name)) {
+                return Err(invalid(format!("pushed certificate does not cover {name}")));
+            }
+        }
+        if let Ok(Some(current)) = self.inner.store.load()
+            && current.not_after >= info.not_after
+            && !state_revoked(&self.inner.store)
+        {
+            return Ok(false);
+        }
+        self.inner.store.save(
+            chain_pem.as_bytes(),
+            key_bytes,
+            &CertMeta {
+                source: CertSource::Acme,
+                ..CertMeta::default()
+            },
+        )?;
+        self.inner
+            .resolver
+            .install(chain_pem.as_bytes(), key_bytes)
+            .map_err(|e| invalid(format!("install: {e}")))?;
+        let mut state = self.inner.store.load_state();
+        state.last_error = None;
+        state.last_issue_unix = Some(unix_secs(self.inner.clock.now()));
+        state.revoked = false;
+        state.revoked_reason = None;
+        self.inner.store.save_state(&state)?;
+        self.inner.refresh_status().await;
+        Ok(true)
     }
 
     /// Forces a new certificate with a fresh private key.
@@ -1211,6 +1315,18 @@ impl EngineInner {
             next.next_dyndns_at = prev.next_dyndns_at.or(next.next_dyndns_at);
         }
         *self.status.write().await = next;
+    }
+}
+
+/// Whether certificate SAN `san` covers `name` (exact, or a one-label wildcard).
+fn san_covers(san: &str, name: &str) -> bool {
+    let (san, name) = (san.to_ascii_lowercase(), name.to_ascii_lowercase());
+    if san == name {
+        return true;
+    }
+    match (san.strip_prefix("*."), name.split_once('.')) {
+        (Some(rest), Some((label, tail))) => label != "*" && tail == rest,
+        _ => false,
     }
 }
 
