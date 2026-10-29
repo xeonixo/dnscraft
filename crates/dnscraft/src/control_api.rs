@@ -16,7 +16,7 @@ use dnscraft_api::{
 };
 use dnscraft_cluster::{ClusterConfig, Role};
 use dnscraft_filtering::{FilterEngine, ServiceCatalog};
-use dnscraft_listeners::ListenerSet;
+use dnscraft_listeners::{Exposure, ListenerSet, Protocol};
 use dnscraft_policy::PolicyEngine;
 use dnscraft_tls::CertResolver;
 use tokio::task::JoinHandle;
@@ -84,7 +84,7 @@ pub(crate) async fn start(
         )
     })?;
 
-    let shared_port = shared_listener_port(config, &api_config)?;
+    let shared_port = shared_listener_port(set, &api_config)?;
     let hostname = api_hostname(config);
     let mut mcp_config = api_config.mcp.clone();
     mcp_config.allowed_origins = api_origin(&api_config, shared_port, &hostname)
@@ -472,26 +472,25 @@ fn api_origin(
 }
 
 /// Port of the DoH listener the API shares (`control_api.shared_doh_listener`), `None` when the API
-/// binds its own port. The listener must exist, speak DoH and be local: the web UI is never routed
-/// on a public listener.
+/// binds its own port. The listener comes from the applied (stored) config, not the bootstrap TOML,
+/// and must be a local DoH listener: the web UI is never routed on a public listener. A sub-node
+/// receives its listeners from the master after start, so an unknown id only warns (port 443 assumed).
 fn shared_listener_port(
-    config: &Config,
+    set: &ListenerSet<PolicyEngine>,
     api: &dnscraft_api::ControlApiConfig,
 ) -> Result<Option<u16>, Error> {
     let Some(id) = api.shared_doh_listener.as_deref() else {
         return Ok(None);
     };
     let fail = |message: String| Error::startup("dnscraft.startup.control_api", message);
-    let listener = config
-        .listeners
-        .iter()
-        .find(|listener| listener.id == id)
-        .ok_or_else(|| {
-            fail(format!(
-                "control_api.shared_doh_listener: no listener `{id}`"
-            ))
-        })?;
-    if listener.protocol != "doh" || listener.exposure != "local" {
+    let Some(listener) = set.listener_config(id) else {
+        tracing::warn!(
+            listener = id,
+            "control_api.shared_doh_listener: listener not (yet) configured"
+        );
+        return Ok(Some(443));
+    };
+    if listener.protocol != Protocol::Doh || listener.exposure != Exposure::Local {
         return Err(fail(format!(
             "control_api.shared_doh_listener: `{id}` must be a local DoH listener"
         )));

@@ -848,7 +848,7 @@ port = 8080
 # node hostname (e.g. node1.dns.example.com), which the wildcard cert *.dns.<public_domain> already covers.
 tls = true
 # Optional: serve the web UI/API on a local DoH listener (same address and port, e.g. :443). Non-`/dns-query`
-# paths of private sources are handed to the API; public listeners/sources still get only `/dns-query/<id>`.
+# paths of private sources are handed to the API (on every local DoH listener of the node); public listeners/sources still get only `/dns-query/<id>`.
 # `bind`/`port` then open no socket; TLS is the listener's (the `tls` module certificate). HTTP/3 is not served.
 # shared_doh_listener = "local-doh"
 # Optional reverse-proxy mode: tls = false plus the proxy addresses allowed to set X-Forwarded-Proto/-For.

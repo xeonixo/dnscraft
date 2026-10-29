@@ -192,6 +192,19 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
         Ok(set)
     }
 
+    /// Effective configuration of a running listener (after the stored config was applied).
+    pub fn listener_config(&self, id: &str) -> Option<ListenerConfig> {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner
+            .running
+            .iter()
+            .find(|(listener_id, _)| listener_id.as_str() == id)
+            .map(|(_, running)| running.config.clone())
+    }
+
     /// Slot for the web UI / API handler served on local DoH listeners (empty → `404`).
     pub fn web_slot(&self) -> Arc<WebSlot> {
         Arc::clone(&self.web)
