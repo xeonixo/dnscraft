@@ -741,6 +741,21 @@ pub async fn prepare_router(
     Ok(state.router())
 }
 
+/// HTTP/2 carries the host in `:authority`, which hyper exposes only as the URI authority. The
+/// same-origin check and cookie handling read the `Host` header, so fill it in as HTTP/1.1 would.
+fn fill_host<B>(req: &mut Request<B>) {
+    if req.headers().contains_key(axum::http::header::HOST) {
+        return;
+    }
+    let host = req
+        .uri()
+        .authority()
+        .and_then(|authority| axum::http::HeaderValue::from_str(authority.as_str()).ok());
+    if let Some(host) = host {
+        req.headers_mut().insert(axum::http::header::HOST, host);
+    }
+}
+
 /// Response body of [`handle_request`].
 pub type SharedBody = http_body_util::combinators::UnsyncBoxBody<
     bytes::Bytes,
@@ -755,6 +770,7 @@ pub async fn handle_request(
     mut req: Request<Incoming>,
 ) -> axum::http::Response<SharedBody> {
     use http_body_util::BodyExt as _;
+    fill_host(&mut req);
     req.extensions_mut().insert(ConnectInfo(peer));
     match router.oneshot(req).await {
         Ok(response) => response.map(|body| body.map_err(Into::into).boxed_unsync()),
@@ -832,6 +848,28 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn fill_host_uses_the_http2_authority_only_when_host_is_missing() {
+        let mut h2 = Request::builder()
+            .uri("https://ns1.dns.example.com/api/v1/auth/login")
+            .body(())
+            .unwrap();
+        fill_host(&mut h2);
+        assert_eq!(h2.headers()["host"], "ns1.dns.example.com");
+
+        let mut h1 = Request::builder()
+            .uri("/api/v1/auth/login")
+            .header("host", "a.example.com")
+            .body(())
+            .unwrap();
+        fill_host(&mut h1);
+        assert_eq!(h1.headers()["host"], "a.example.com");
+
+        let mut bare = Request::builder().uri("/x").body(()).unwrap();
+        fill_host(&mut bare);
+        assert!(!bare.headers().contains_key("host"));
+    }
 
     #[test]
     fn ensure_internal_socket_accepts_internal_and_rejects_public() {

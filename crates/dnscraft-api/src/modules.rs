@@ -37,7 +37,10 @@ macro_rules! apply_trait {
 }
 
 apply_trait!(ApplyFiltering, "Applies the `filtering` config section.");
-apply_trait!(ApplyResolver, "Applies the `resolver` config section (forward zones).");
+apply_trait!(
+    ApplyResolver,
+    "Applies the `resolver` config section (forward zones)."
+);
 apply_trait!(ApplyClients, "Applies the `clients` config section.");
 apply_trait!(ApplyPolicy, "Applies the `policy` config section.");
 apply_trait!(ApplyListeners, "Applies the `listeners` config section.");

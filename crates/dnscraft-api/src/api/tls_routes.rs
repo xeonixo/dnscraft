@@ -88,14 +88,7 @@ pub(crate) fn validate_tls(value: &Value) -> Result<(), ControlApiError> {
         // Prefer snake_case; accept PascalCase / short aliases from older snapshots.
         let valid = matches!(
             key_type.as_str(),
-            Some(
-                "ecdsa_p256"
-                    | "ecdsa_p384"
-                    | "p256"
-                    | "p384"
-                    | "EcdsaP256"
-                    | "EcdsaP384"
-            )
+            Some("ecdsa_p256" | "ecdsa_p384" | "p256" | "p384" | "EcdsaP256" | "EcdsaP384")
         );
         if !valid {
             return Err(module_error(

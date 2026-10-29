@@ -28,8 +28,14 @@ use crate::modules::ModuleAppliers;
 use crate::storage::ConfigStore;
 
 /// The fixed leaf-first apply order.
-const APPLY_ORDER: [&str; 6] =
-    ["filtering", "resolver", "clients", "policy", "listeners", "tls"];
+const APPLY_ORDER: [&str; 6] = [
+    "filtering",
+    "resolver",
+    "clients",
+    "policy",
+    "listeners",
+    "tls",
+];
 
 /// Top-level sections a snapshot may contain. `resolver` is carried for
 /// cross-module validation only (forward-zone ids); it is not applied here.
