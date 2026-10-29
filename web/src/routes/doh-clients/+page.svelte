@@ -23,6 +23,7 @@
 		type PolicyRecord,
 		type PolicyView,
 	} from '$lib/api/policy';
+	import { listClusterNodes } from '$lib/api/cluster';
 	import { getTlsConfig } from '$lib/api/tls';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
@@ -90,6 +91,8 @@
 	let profileSsid = $state('');
 	let profileProtocol = $state<'https' | 'tls'>('https');
 	let profileServers = $state('');
+	let nodeHosts = $state<{ hostname: string; name: string }[]>([]);
+	let profileHosts = $state<string[]>([]);
 	let profileError = $state<MobileConfigError | null>(null);
 
 	let recordView = $state('');
@@ -172,6 +175,16 @@
 		listenerProtocols = listeners.kind === 'ok' ? listeners.data.map((row) => row.protocol) : null;
 		records = recs.kind === 'ok' ? recs.data : null;
 		views = vws.kind === 'ok' ? vws.data : null;
+	}
+
+	async function loadNodeHosts(): Promise<void> {
+		try {
+			nodeHosts = (await listClusterNodes())
+				.filter((node) => node.hostname && !node.revoked)
+				.map((node) => ({ hostname: node.hostname!, name: node.display_name || node.node_id }));
+		} catch {
+			nodeHosts = [];
+		}
 	}
 
 	async function loadClients(): Promise<void> {
@@ -297,6 +310,7 @@
 		profileSsid = '';
 		profileProtocol = 'https';
 		profileServers = '';
+		profileHosts = nodeHosts.map((node) => node.hostname);
 		profileError = null;
 		failure = null;
 		sheet = 'profile';
@@ -423,6 +437,7 @@
 			protocol: profileProtocol,
 			homeSsid: profileSsid,
 			serverAddresses: splitAddresses(profileServers),
+			hosts: profileHosts,
 		});
 		if (!built.ok) {
 			profileError = built.error;
@@ -455,6 +470,7 @@
 		if (isAdmin) {
 			void loadClients();
 			void loadSetup();
+			void loadNodeHosts();
 		}
 	});
 </script>
@@ -816,6 +832,19 @@
 				/>
 			</div>
 
+			{#if profileProtocol === 'https' && nodeHosts.length > 0}
+				<div class="field-row">
+					<span class="field-label">{m.doh_profile_nodes_label()}</span>
+					{#each nodeHosts as node (node.hostname)}
+						<label class="node-pick">
+							<input type="checkbox" value={node.hostname} bind:group={profileHosts} />
+							<span>{node.name} · <code>{node.hostname}</code></span>
+						</label>
+					{/each}
+					<p class="hint">{m.doh_profile_nodes_hint()}</p>
+				</div>
+			{/if}
+
 			<div class="field-row">
 				<label class="field-label" for="doh-servers">{m.doh_server_ips_label()}</label>
 				<textarea
@@ -1131,6 +1160,12 @@
 	.id-row .field {
 		flex: 1 1 auto;
 	}
+	.node-pick {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
 	.hint {
 		margin: var(--space-1) 0 0;
 		font-size: 0.8125rem;

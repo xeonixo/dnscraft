@@ -725,6 +725,8 @@
 	"doh_profile_protocol_label": "Protokoll",
 	"doh_protocol_https": "DoH (HTTPS)",
 	"doh_protocol_tls": "DoT (TLS)",
+	"doh_profile_nodes_label": "Nodes im Profil",
+	"doh_profile_nodes_hint": "Pro gewähltem Node entsteht ein eigener DNS-Eintrag im Profil; ohne Auswahl wird dns.<Domain> verwendet.",
 	"doh_server_ips_label": "Server-IP-Adressen (optional)",
 	"doh_server_ips_hint": "Hilft iOS, den Server zu finden. Bei Problemen mit dem Profil hier die öffentliche IP von DNScraft eintragen.",
 	"doh_profile_secret": "Die Datei enthält die Client-ID. Behandle sie wie ein Passwort und teile sie nicht.",

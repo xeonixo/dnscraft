@@ -20,6 +20,8 @@ export interface MobileConfigInput {
 	/** Optional bootstrap IPs of the DoH/DoT server (`ServerAddresses`); invalid entries are ignored. */
 	serverAddresses?: string[];
 	organization?: string;
+	/** DoH only: node host names (e.g. `ns1.dns.example.com`), one payload each; default `dns.<publicDomain>`. */
+	hosts?: string[];
 }
 
 const LABEL_MAX = 64;
@@ -179,11 +181,18 @@ ${addresses.map((address) => `\t\t\t\t\t<string>${xml(address)}</string>`).join(
 	const payloadIdentifier = `app.dnscraft.dns.${clientId}`;
 	const contentIdentifier = `${payloadIdentifier}.payload`;
 	const displayName = xml(`DNScraft – ${name}`);
+	const hosts =
+		protocol === 'tls' || !input.hosts?.length
+			? [null]
+			: [...new Set(input.hosts.map((host) => host.trim().toLowerCase()))];
+	if (hosts.some((host) => host !== null && !HOSTNAME.test(host))) {
+		return { ok: false, error: 'invalid_domain' };
+	}
 	const description = xml(
 		"Sends this device's DNS queries to DNScraft over encrypted DNS. Installing again replaces this profile.",
 	);
 
-	const dnsSettings =
+	const dnsSettings = (host: string | null): string =>
 		protocol === 'tls'
 			? `\t\t\t<key>DNSSettings</key>
 \t\t\t<dict>
@@ -197,7 +206,7 @@ ${serverAddresses}\t\t\t\t<key>ServerName</key>
 \t\t\t\t<key>DNSProtocol</key>
 \t\t\t\t<string>HTTPS</string>
 ${serverAddresses}\t\t\t\t<key>ServerURL</key>
-\t\t\t\t<string>${xml(`https://${dohHost(domain.value)}/dns-query/${encodeURIComponent(clientId)}`)}</string>
+\t\t\t\t<string>${xml(`https://${host ?? dohHost(domain.value)}/dns-query/${encodeURIComponent(clientId)}`)}</string>
 \t\t\t</dict>`;
 
 	const onDemandRules = ssid
@@ -219,26 +228,32 @@ ${serverAddresses}\t\t\t\t<key>ServerURL</key>
 `
 		: '';
 
+	const payload = (host: string | null): string => {
+		const contentId = host === null ? contentIdentifier : `${contentIdentifier}.${host}`;
+		const payloadName = hosts.length > 1 ? xml(`DNScraft – ${name} (${host})`) : displayName;
+		return `\t\t<dict>
+\t\t\t<key>PayloadType</key>
+\t\t\t<string>com.apple.dnsSettings.managed</string>
+\t\t\t<key>PayloadVersion</key>
+\t\t\t<integer>1</integer>
+\t\t\t<key>PayloadIdentifier</key>
+\t\t\t<string>${xml(contentId)}</string>
+\t\t\t<key>PayloadUUID</key>
+\t\t\t<string>${uuidFor(contentId)}</string>
+\t\t\t<key>PayloadDisplayName</key>
+\t\t\t<string>${payloadName}</string>
+${dnsSettings(host)}
+${onDemandRules}\t\t</dict>
+`;
+	};
+
 	const xmlText = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 \t<key>PayloadContent</key>
 \t<array>
-\t\t<dict>
-\t\t\t<key>PayloadType</key>
-\t\t\t<string>com.apple.dnsSettings.managed</string>
-\t\t\t<key>PayloadVersion</key>
-\t\t\t<integer>1</integer>
-\t\t\t<key>PayloadIdentifier</key>
-\t\t\t<string>${xml(contentIdentifier)}</string>
-\t\t\t<key>PayloadUUID</key>
-\t\t\t<string>${uuidFor(contentIdentifier)}</string>
-\t\t\t<key>PayloadDisplayName</key>
-\t\t\t<string>${displayName}</string>
-${dnsSettings}
-${onDemandRules}\t\t</dict>
-\t</array>
+${hosts.map(payload).join('')}\t</array>
 \t<key>PayloadDescription</key>
 \t<string>${description}</string>
 \t<key>PayloadDisplayName</key>
