@@ -269,6 +269,13 @@ fn txt_text() -> impl Strategy<Value = String> {
     "[!\"%-.0-\\[\\]-~]([ !\"%-.0-\\[\\]-~]{0,60}[!\"%-.0-\\[\\]-~])?"
 }
 
+fn not_ip_literal(name: &str) -> bool {
+    name.trim()
+        .trim_end_matches('.')
+        .parse::<std::net::IpAddr>()
+        .is_err()
+}
+
 fn rewrite() -> impl Strategy<Value = RewriteSpec> {
     prop_oneof![
         Just(RewriteSpec::Refused),
@@ -277,7 +284,11 @@ fn rewrite() -> impl Strategy<Value = RewriteSpec> {
         Just(RewriteSpec::NoError),
         any::<[u8; 4]>().prop_map(|b| RewriteSpec::A(Ipv4Addr::from(b))),
         any::<[u16; 8]>().prop_map(|w| RewriteSpec::Aaaa(Ipv6Addr::from(w))),
-        domain_input().prop_map(RewriteSpec::Cname),
+        // CNAME targets share DomainName parsing with guided domains: bare IP
+        // literals are PatternNotAllowed (answer-IP rules, not CNAME hosts).
+        domain_input()
+            .prop_filter("CNAME not IP literal", |d| not_ip_literal(d))
+            .prop_map(RewriteSpec::Cname),
         txt_text().prop_map(RewriteSpec::Txt),
     ]
 }
@@ -294,13 +305,7 @@ fn any_spec() -> impl Strategy<Value = RuleSpec> {
     )
         // All-numeric labels can form an IP literal, which the builder
         // rejects on purpose (answer-IP rules are not guided-builder domains).
-        .prop_filter("IP literal", |(domain, ..)| {
-            domain
-                .trim()
-                .trim_end_matches('.')
-                .parse::<std::net::IpAddr>()
-                .is_err()
-        })
+        .prop_filter("IP literal", |(domain, ..)| not_ip_literal(domain))
         .prop_map(|(domain, allow, sub, important, types, neg, rw)| {
             let action = if allow {
                 RuleAction::Allow
