@@ -188,7 +188,7 @@ describe('policy screens', () => {
 		expect(row.innerHTML).not.toContain('<script>');
 	});
 
-	it('opens the names sheet with Öffentlich above Netzbereich deviations', async () => {
+	it('opens the names sheet with Antwort above Netzbereich deviations', async () => {
 		handlers['GET /api/v1/policy/records'] = () =>
 			ok({
 				records: [
@@ -205,14 +205,13 @@ describe('policy screens', () => {
 		render(NamesPage);
 		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10\b/ }));
 		const dialog = await screen.findByRole('dialog');
-		const publicHeading = within(dialog).getByText(m.names_field_public());
-		const overridesHeading = within(dialog).getByText(m.names_field_overrides());
+		const answerHeading = within(dialog).getByText(m.names_section_answer());
+		const overridesHeading = within(dialog).getByText(m.names_section_overrides());
 		expect(
-			publicHeading.compareDocumentPosition(overridesHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+			answerHeading.compareDocumentPosition(overridesHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
-		expect(await within(dialog).findByLabelText(m.names_public_value_label())).toHaveValue(
-			'203.0.113.10',
-		);
+		expect(await within(dialog).findByLabelText(m.names_field_public())).toHaveValue('203.0.113.10');
+		expect(within(dialog).queryByText(m.names_field_standard())).toBeNull();
 		expect(within(dialog).queryByRole('textbox', { name: /zone=wert|zone=value/i })).toBeNull();
 		expect(within(dialog).getByLabelText(m.names_overrides_view())).toHaveValue('lan');
 		expect(within(dialog).getByLabelText(m.names_overrides_value())).toHaveValue('192.0.2.9');
