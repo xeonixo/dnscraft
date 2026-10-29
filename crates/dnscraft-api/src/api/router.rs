@@ -22,7 +22,7 @@ use super::clients_routes::{
     create_manual, delete_manual, get_unifi, list_clients, list_manual, put_manual,
     put_unifi_api_key, sync_clients,
 };
-use super::cluster_endpoints::{get_write, list_nodes, mint_join_token, revoke_node};
+use super::cluster_endpoints::{get_write, list_nodes, mint_join_token, revoke_node, update_node};
 use super::config_routes::{
     delete_pause, delete_profile, delete_view, get_config, get_pause, get_profile, get_view,
     list_versions, list_views, put_config, put_pause, put_profile, put_view, rollback,
@@ -222,7 +222,10 @@ pub(crate) fn build_router(state: AppState) -> Router {
         api = api
             .route("/cluster/join-tokens", post(mint_join_token))
             .route("/cluster/nodes", get(list_nodes))
-            .route("/cluster/nodes/{node_id}", delete(revoke_node))
+            .route(
+                "/cluster/nodes/{node_id}",
+                delete(revoke_node).put(update_node),
+            )
             .route("/cluster/writes/{request_id}", get(get_write));
     }
     if state.auth_state().is_some() {

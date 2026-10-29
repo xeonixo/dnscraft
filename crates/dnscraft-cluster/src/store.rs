@@ -77,6 +77,13 @@ const MIGRATIONS: &[&str] = &[
     );",
     // v6: last observed peer address of an authenticated cluster connection.
     "ALTER TABLE cluster_nodes ADD COLUMN remote_addr TEXT;",
+    // v7: operator-chosen display name and public host name per node. Kept apart
+    // from cluster_nodes so the master's own (unregistered) row can carry them too.
+    "CREATE TABLE IF NOT EXISTS node_meta (
+        node_id       TEXT PRIMARY KEY,
+        display_name  TEXT,
+        hostname      TEXT
+    );",
 ];
 
 /// One registered cluster node.
@@ -411,6 +418,49 @@ impl ClusterStore {
                 .map_err(db_err)?;
             let rows = statement.query_map([], node_from_row).map_err(db_err)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+        })
+        .await
+    }
+
+    /// Display name and host name per node id (both optional).
+    pub async fn node_meta(
+        &self,
+    ) -> Result<std::collections::HashMap<String, (Option<String>, Option<String>)>, ClusterError>
+    {
+        self.with_conn(|conn| {
+            let mut statement = conn
+                .prepare("SELECT node_id, display_name, hostname FROM node_meta")
+                .map_err(db_err)?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))
+                .map_err(db_err)?;
+            rows.collect::<Result<_, _>>().map_err(db_err)
+        })
+        .await
+    }
+
+    /// Replaces the display name and host name of `node_id`; `None` clears a value.
+    /// The id is the node's identity and never changes.
+    pub async fn set_node_meta(
+        &self,
+        node_id: &str,
+        display_name: Option<&str>,
+        hostname: Option<&str>,
+    ) -> Result<(), ClusterError> {
+        validate_node_id(node_id)?;
+        let (node_id, display_name, hostname) = (
+            node_id.to_owned(),
+            display_name.map(str::to_owned),
+            hostname.map(str::to_owned),
+        );
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO node_meta (node_id, display_name, hostname) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(node_id) DO UPDATE SET display_name = ?2, hostname = ?3",
+                params![node_id, display_name, hostname],
+            )
+            .map_err(db_err)?;
+            Ok(())
         })
         .await
     }
@@ -978,6 +1028,22 @@ mod tests {
 
         drop(reopened);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn node_meta_roundtrip_and_clear() {
+        let store = store(clock()).await;
+        store
+            .set_node_meta("dns1", Some("Berlin"), Some("ns1.dns.example.com"))
+            .await
+            .unwrap();
+        let meta = store.node_meta().await.unwrap();
+        assert_eq!(
+            meta["dns1"],
+            (Some("Berlin".into()), Some("ns1.dns.example.com".into()))
+        );
+        store.set_node_meta("dns1", None, None).await.unwrap();
+        assert_eq!(store.node_meta().await.unwrap()["dns1"], (None, None));
     }
 
     #[tokio::test]

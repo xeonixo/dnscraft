@@ -10,6 +10,7 @@
 		listClusterNodes,
 		mintJoinToken,
 		revokeClusterNode,
+		updateClusterNode,
 		type ClusterNode,
 	} from '$lib/api/cluster';
 	import { failureOf, settle, type Result } from '$lib/api/result';
@@ -20,6 +21,7 @@
 	import { getLocale } from '$lib/i18n/locale';
 	import { m } from '$lib/paraglide/messages';
 
+	const HOST_EXAMPLE = 'ns1.dns.example.com';
 	const isAdmin = $derived(auth.role === 'admin');
 	const locale = getLocale();
 
@@ -38,6 +40,11 @@
 	let joinExpires = $state<string | null>(null);
 	let detail = $state<ClusterNode | null>(null);
 	let revokeTarget = $state<ClusterNode | null>(null);
+	let editTarget = $state<ClusterNode | null>(null);
+	let editName = $state('');
+	let editHost = $state('');
+	const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
+	const hostInvalid = $derived(editHost.trim() !== '' && !HOST_RE.test(editHost.trim()));
 	let busy = $state(false);
 	let failure = $state<{ code: string; params: Record<string, unknown> } | null>(null);
 
@@ -80,6 +87,28 @@
 		}
 	}
 
+	function openEdit(node: ClusterNode): void {
+		editTarget = node;
+		editName = node.display_name ?? '';
+		editHost = node.hostname ?? '';
+		failure = null;
+	}
+
+	async function saveEdit(): Promise<void> {
+		if (!editTarget) return;
+		busy = true;
+		failure = null;
+		try {
+			await updateClusterNode(editTarget.node_id, { display_name: editName, hostname: editHost });
+			editTarget = null;
+			await load();
+		} catch (cause) {
+			failure = failureOf(cause);
+		} finally {
+			busy = false;
+		}
+	}
+
 	async function confirmRevoke(): Promise<void> {
 		if (!revokeTarget) return;
 		busy = true;
@@ -102,7 +131,7 @@
 
 <p class="lead">{m.cluster_lead()}</p>
 
-{#if failure}
+{#if failure && !editTarget}
 	<div class="notice">
 		<ErrorNotice code={failure.code} params={failure.params} />
 	</div>
@@ -135,10 +164,11 @@
 	<GroupedList header={m.cluster_nodes_group()}>
 		{#each nodeRows as { node, lag } (node.node_id)}
 			<GroupedRow
-				label={displayText(node.node_id).text}
-				detail={node.revoked
-					? `${nodeRoleLabel(node.role)} · ${m.cluster_revoked()}`
-					: `${nodeRoleLabel(node.role)} · ${nodeStatusLabel(node, lag, locale)} · ${nodeMeta(node)}`}
+				label={displayText(node.display_name || node.node_id).text}
+				detail={(node.display_name ? `${displayText(node.node_id).text} · ` : '') +
+					(node.revoked
+						? `${nodeRoleLabel(node.role)} · ${m.cluster_revoked()}`
+						: `${nodeRoleLabel(node.role)} · ${nodeStatusLabel(node, lag, locale)} · ${nodeMeta(node)}`)}
 			>
 				{#snippet leading()}
 					{@const verdict = nodeVerdict(node, lag)}
@@ -209,6 +239,15 @@
 				detail={displayText(detail.node_id).text}
 				detailMono
 			/>
+			<GroupedRow
+				label={m.cluster_field_display_name()}
+				detail={detail.display_name || m.cluster_value_unknown()}
+			/>
+			<GroupedRow
+				label={m.cluster_field_hostname()}
+				detail={detail.hostname || m.cluster_value_unknown()}
+				detailMono
+			/>
 			<GroupedRow label={m.cluster_field_role()} detail={nodeRoleLabel(detail.role)} />
 			<GroupedRow
 				label={m.cluster_field_status()}
@@ -249,7 +288,47 @@
 			/>
 		</GroupedList>
 		<div class="actions">
+			{#if isAdmin && !detail.revoked}
+				<Button
+					onclick={() => {
+						if (detail) openEdit(detail);
+						detail = null;
+					}}>{m.cluster_edit()}</Button
+				>
+			{/if}
 			<Button onclick={() => (detail = null)}>{m.action_close()}</Button>
+		</div>
+	</Sheet>
+{/if}
+
+{#if editTarget}
+	<Sheet open={true} title={m.cluster_edit_title()} onclose={() => (editTarget = null)}>
+		<p class="hint">{m.cluster_edit_id({ id: displayText(editTarget.node_id).text })}</p>
+		<label class="field-label" for="edit-name">{m.cluster_field_display_name()}</label>
+		<input id="edit-name" class="field" maxlength="64" bind:value={editName} />
+		<label class="field-label" for="edit-host">{m.cluster_field_hostname()}</label>
+		<input
+			id="edit-host"
+			class="field mono"
+			placeholder={HOST_EXAMPLE}
+			autocapitalize="off"
+			spellcheck="false"
+			aria-invalid={hostInvalid}
+			bind:value={editHost}
+		/>
+		<p class="hint" class:invalid={hostInvalid}>
+			{hostInvalid ? m.cluster_edit_host_invalid() : m.cluster_edit_hint()}
+		</p>
+		{#if failure}
+			<div class="notice">
+				<ErrorNotice code={failure.code} params={failure.params} />
+			</div>
+		{/if}
+		<div class="actions">
+			<Button onclick={() => (editTarget = null)}>{m.action_cancel()}</Button>
+			<Button variant="primary" disabled={busy || hostInvalid} onclick={saveEdit}
+				>{m.action_save()}</Button
+			>
 		</div>
 	</Sheet>
 {/if}
@@ -306,8 +385,16 @@
 		font-size: 0.84375rem;
 	}
 
+	.hint.invalid {
+		color: var(--danger);
+	}
+
 	.notice {
 		margin: 0.75rem 0;
+	}
+
+	.hint + .field-label {
+		margin-top: 0.75rem;
 	}
 
 	.field-label {

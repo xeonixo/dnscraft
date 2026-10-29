@@ -1201,5 +1201,12 @@
 	"filter_lists_source_required": "Enter a source.",
 	"filter_lists_source_invalid": "The source must be an http:// or https:// address or a file path.",
 	"test_query_ip_invalid": "Enter a valid IP address.",
-	"cluster_node_meta_local": "Config v{version} · this node"
+	"cluster_node_meta_local": "Config v{version} · this node",
+	"cluster_edit": "Rename",
+	"cluster_edit_title": "Rename node",
+	"cluster_edit_id": "Node ID {id} stays the same; it is the node's identity in the cluster.",
+	"cluster_edit_hint": "Leave a field empty to clear it. The host name is the public DNS name of this node.",
+	"cluster_field_display_name": "Name",
+	"cluster_field_hostname": "Host name",
+	"cluster_edit_host_invalid": "Enter a valid host name, e.g. ns1.dns.example.com."
 }

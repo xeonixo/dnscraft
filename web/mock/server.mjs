@@ -1452,6 +1452,21 @@ async function route(request, response, options) {
 		return sendData(response, { version, tls: body });
 	}
 
+	const clusterPut = /^\/api\/v1\/cluster\/nodes\/([^/]+)$/.exec(path);
+	if (request.method === 'PUT' && clusterPut) {
+		const nodeId = decodeURIComponent(clusterPut[1]);
+		const body = await readJsonBody(request);
+		const display_name = String(body.display_name ?? '').trim() || null;
+		const hostname = String(body.hostname ?? '').trim().toLowerCase() || null;
+		if (hostname && !/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(hostname)) {
+			throw new ApiFailure(400, 'cluster.role.invalid');
+		}
+		options.runtime.clusterNodes = options.runtime.clusterNodes.map((node) =>
+			node.node_id === nodeId ? { ...node, display_name, hostname } : node,
+		);
+		return sendData(response, { node_id: nodeId, display_name, hostname });
+	}
+
 	const clusterDelete = /^\/api\/v1\/cluster\/nodes\/([^/]+)$/.exec(path);
 	if (request.method === 'DELETE' && clusterDelete) {
 		const nodeId = decodeURIComponent(clusterDelete[1]);

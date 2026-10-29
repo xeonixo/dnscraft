@@ -1,4 +1,4 @@
-import { del, get, post } from './client';
+import { del, get, post, put } from './client';
 
 /** One row from `GET /api/v1/cluster/nodes` (the envelope `data` is the array). */
 export interface ClusterNode {
@@ -17,6 +17,10 @@ export interface ClusterNode {
 	remote_addr?: string | null;
 	/** Cluster link: `"mtls"` for peers; `null` for the local row. */
 	transport?: string | null;
+	/** Operator-chosen name; the node id stays the identity. */
+	display_name?: string | null;
+	/** Public host name (DNS name), e.g. `ns1.dns.example.com`. */
+	hostname?: string | null;
 }
 
 export interface JoinTokenResult {
@@ -34,3 +38,10 @@ export const mintJoinToken = (node_id: string): Promise<JoinTokenResult> =>
 
 export const revokeClusterNode = (nodeId: string): Promise<{ node_id: string; revoked: boolean }> =>
 	del(`/cluster/nodes/${encodeURIComponent(nodeId)}`);
+
+/** Replaces display name and host name; an empty string clears one. */
+export const updateClusterNode = (
+	nodeId: string,
+	body: { display_name: string; hostname: string },
+): Promise<{ node_id: string; display_name: string | null; hostname: string | null }> =>
+	put(`/cluster/nodes/${encodeURIComponent(nodeId)}`, { body });
