@@ -234,7 +234,7 @@ fn interface_ipv6(interfaces: &[String]) -> Option<Ipv6Addr> {
     #[cfg(target_os = "linux")]
     {
         let text = std::fs::read_to_string("/proc/net/if_inet6").ok()?;
-        return parse_if_inet6(&text, interfaces);
+        parse_if_inet6(&text, interfaces)
     }
     #[cfg(not(target_os = "linux"))]
     {
