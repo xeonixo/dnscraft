@@ -289,13 +289,15 @@ pub(crate) async fn build_engines(
     let tls = if config.tls.public_domain.trim().is_empty() {
         None
     } else {
-        let engine = TlsEngine::open(config.tls.clone(), &data_dir, clock)
-            .map_err(|e| Error::startup("dnscraft.startup.tls", format!("tls: {e}")))?;
-        // A sub-node gets its certificate from the master and never orders one.
+        // A sub-node gets its certificate pushed by the master and never
+        // orders one: the role is part of construction, so not even the
+        // startup renewal can race a later `set_node_context`.
         let sub_node = config
             .cluster
             .as_ref()
             .is_some_and(|c| matches!(c.role, dnscraft_cluster::Role::SubNode));
+        let engine = TlsEngine::open_for_role(config.tls.clone(), &data_dir, clock, sub_node)
+            .map_err(|e| Error::startup("dnscraft.startup.tls", format!("tls: {e}")))?;
         engine.set_node_context(Some(node_id.as_str().to_owned()), !sub_node);
         Some(Arc::new(engine))
     };

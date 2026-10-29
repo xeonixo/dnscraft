@@ -55,7 +55,7 @@ pub use api::rate_limit::{DEFAULT_MAX_TRACKED_SOURCES, RateLimiter};
 pub use audit::{Audit, ConfigChangeRecord};
 pub use cluster::{
     ClusterRuntime, ClusterRuntimeOptions, ConfigWriteExecutor, QueryLogIngest, QueryLogOutbox,
-    StateAuthApplier, StateRuntimeApplier, SyncedConfigApplier, TlsCertInstaller, backfill_logs,
+    StateAuthApplier, StateRuntimeApplier, SyncedConfigApplier, backfill_logs,
     node_scoped_snapshot, node_scoped_views,
 };
 pub use cluster_status::{ClusterStatus, ClusterStatusHandle, ClusterStatusProvider};

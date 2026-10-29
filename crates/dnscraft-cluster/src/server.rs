@@ -59,8 +59,8 @@ use crate::quota::QuotaLimiter;
 use crate::relay::{RuntimeCommand, WriteExecutor, WriteRelay};
 use crate::store::ClusterStore;
 use crate::sync::{
-    AuthSnapshotPush, CAP_CLOUDFLARE_TOKEN, ClientsDirectoryPush, ConfigAck, ConfigSync, Hello,
-    SecretPush, StreamError, StreamRecord, TlsRenewed,
+    AuthSnapshotPush, CAP_CLOUDFLARE_TOKEN, CAP_TLS_CERTIFICATE, ClientsDirectoryPush, ConfigAck,
+    ConfigSync, Hello, SecretPush, StreamError, StreamRecord, TlsRenewed,
 };
 
 /// Request header carrying the sub-node's cluster protocol version.
@@ -139,6 +139,14 @@ pub trait AuthSnapshotSource: Send + Sync {
 pub trait CloudflareTokenSource: Send + Sync {
     /// The token for `node_id`, if it is entitled to one.
     async fn token_for(&self, node_id: &str) -> Option<String>;
+}
+
+/// Master hook that yields the TLS certificate (chain PEM, private key PEM)
+/// pushed to a connecting sub-node. `None` when the master has none.
+#[async_trait::async_trait]
+pub trait TlsCertificateSource: Send + Sync {
+    /// The current `(chain_pem, key_pem)`, if any. Callers must not log it.
+    async fn certificate(&self) -> Option<(String, String)>;
 }
 
 /// Bootstrap configuration for the master's cluster listener.
@@ -237,6 +245,14 @@ impl ClusterBroadcast {
             }));
     }
 
+    /// Pushes the TLS certificate (chain + key) to every connected node that
+    /// advertised [`CAP_TLS_CERTIFICATE`]; older nodes never receive it.
+    /// Returns how many nodes it was queued for.
+    pub fn push_tls_certificate(&self, chain_pem: &str, key_pem: &str) -> usize {
+        self.config_sync
+            .broadcast_tls_certificate(chain_pem, key_pem)
+    }
+
     /// Broadcasts an auth snapshot to every connected node.
     ///
     /// Best-effort: a full per-node queue drops the push, and offline nodes
@@ -322,6 +338,7 @@ pub struct ClusterServer {
     config_apply_timeout: Duration,
     tls_signer: Arc<OnceLock<Arc<dyn TlsCsrSigner>>>,
     cloudflare_source: Arc<OnceLock<Arc<dyn CloudflareTokenSource>>>,
+    tls_source: Arc<OnceLock<Arc<dyn TlsCertificateSource>>>,
     shutdown: watch::Sender<bool>,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -381,6 +398,7 @@ impl ClusterServer {
         let tls_signer: Arc<OnceLock<Arc<dyn TlsCsrSigner>>> = Arc::new(OnceLock::new());
         let cloudflare_source: Arc<OnceLock<Arc<dyn CloudflareTokenSource>>> =
             Arc::new(OnceLock::new());
+        let tls_source: Arc<OnceLock<Arc<dyn TlsCertificateSource>>> = Arc::new(OnceLock::new());
 
         let state = Arc::new(ServerState {
             ca,
@@ -390,6 +408,7 @@ impl ClusterServer {
             config_apply_timeout,
             tls_signer: Arc::clone(&tls_signer),
             cloudflare_source: Arc::clone(&cloudflare_source),
+            tls_source: Arc::clone(&tls_source),
             config_sync: Arc::clone(&config_sync),
             quotas: QuotaLimiter::new(config.quota),
             write_executor,
@@ -481,6 +500,7 @@ impl ClusterServer {
             config_apply_timeout,
             tls_signer,
             cloudflare_source,
+            tls_source,
             shutdown,
             handle: Some(handle),
         })
@@ -547,8 +567,11 @@ impl ClusterServer {
         self.broadcast_handle().notify_tls_renewed(names);
     }
 
-    /// Attaches the master's TLS certificate signer. Until one is attached,
-    /// `POST /cluster/v1/tls/certificate` answers `cluster.internal`.
+    /// Attaches a CSR signer for `POST /cluster/v1/tls/certificate`.
+    ///
+    /// Production wiring never calls this: the master only pushes its own
+    /// certificate (see [`TlsCertificateSource`]) and never orders one because
+    /// a sub-node asked, so the endpoint answers `cluster.internal`.
     pub fn attach_tls_signer(&self, signer: Arc<dyn TlsCsrSigner>) {
         // A second attach keeps the first signer; the runtime attaches once.
         let _ = self.tls_signer.set(signer);
@@ -557,6 +580,13 @@ impl ClusterServer {
     /// Attaches the source consulted when a capable node (re)connects.
     pub fn attach_cloudflare_source(&self, source: Arc<dyn CloudflareTokenSource>) {
         let _ = self.cloudflare_source.set(source);
+    }
+
+    /// Attaches the source of the certificate sent to a capable sub-node when
+    /// it (re)connects. Later renewals go through
+    /// [`ClusterBroadcast::push_tls_certificate`].
+    pub fn attach_tls_source(&self, source: Arc<dyn TlsCertificateSource>) {
+        let _ = self.tls_source.set(source);
     }
 
     /// Broadcasts an encrypted auth snapshot to every connected node.
@@ -593,6 +623,7 @@ struct ServerState {
     config_apply_timeout: Duration,
     tls_signer: Arc<OnceLock<Arc<dyn TlsCsrSigner>>>,
     cloudflare_source: Arc<OnceLock<Arc<dyn CloudflareTokenSource>>>,
+    tls_source: Arc<OnceLock<Arc<dyn TlsCertificateSource>>>,
     config_sync: Arc<ConfigSync>,
     quotas: QuotaLimiter,
     write_executor: Arc<dyn WriteExecutor>,
@@ -890,6 +921,7 @@ async fn stream(
         .map(|hello| hello.capabilities.clone())
         .unwrap_or_default();
     let wants_cloudflare = capabilities.iter().any(|c| c == CAP_CLOUDFLARE_TOKEN);
+    let wants_tls = capabilities.iter().any(|c| c == CAP_TLS_CERTIFICATE);
     let (records, mut record_rx) = mpsc::channel::<StreamRecord>(8);
     // Backfill cursor: the sub-node resumes logging from this + 1.
     let master_highest_log_seq = state
@@ -926,6 +958,14 @@ async fn stream(
         state
             .config_sync
             .send_cloudflare_token(&auth.0, Some(&token));
+    }
+    if wants_tls
+        && let Some(source) = state.tls_source.get()
+        && let Some((chain_pem, key_pem)) = source.certificate().await
+    {
+        state
+            .config_sync
+            .send_tls_certificate(&auth.0, &chain_pem, &key_pem);
     }
 
     let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(8);
@@ -1133,7 +1173,7 @@ async fn tls_certificate(
     }
     let Some(signer) = state.tls_signer.get() else {
         return error_response(&ClusterError::Internal {
-            message: "no TLS certificate signer is attached on this master".to_owned(),
+            message: "certificate relay disabled; certificates are pushed".to_owned(),
         });
     };
     match signer.sign(&auth.0, &request.csr_pem).await {

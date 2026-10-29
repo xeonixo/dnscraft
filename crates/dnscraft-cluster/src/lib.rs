@@ -73,15 +73,15 @@ pub use relay::{
 };
 pub use server::{
     AuthSnapshotSource, CloudflareTokenSource, ClusterBroadcast, ClusterServer,
-    ClusterServerConfig, HeartbeatRequest, HeartbeatResponse, StatusWarning, TlsCsrRequest,
-    TlsCsrResponse, TlsCsrSigner,
+    ClusterServerConfig, HeartbeatRequest, HeartbeatResponse, StatusWarning, TlsCertificateSource,
+    TlsCsrRequest, TlsCsrResponse, TlsCsrSigner,
 };
 pub use store::{ClusterNode, ClusterStore, MintedJoinToken};
 pub use sync::{
-    AuthSnapshotApplier, AuthSnapshotPush, CAP_CLOUDFLARE_TOKEN, CertInstaller,
-    ClientsDirectoryPush, CloudflareTokenPush, ConfigAck, ConfigApplier, ConfigPush, ConfigSync,
-    Hello, NodeLag, SecretPush, StreamError, StreamRecord, TlsRenewed, canonical_snapshot_bytes,
-    snapshot_digest,
+    AuthSnapshotApplier, AuthSnapshotPush, CAP_CLOUDFLARE_TOKEN, CAP_TLS_CERTIFICATE,
+    CertInstaller, ClientsDirectoryPush, CloudflareTokenPush, ConfigAck, ConfigApplier, ConfigPush,
+    ConfigSync, Hello, NodeLag, SecretPush, StreamError, StreamRecord, TlsCertificatePush,
+    TlsRenewed, canonical_snapshot_bytes, snapshot_digest,
 };
 
 /// Lowercase hex SHA-256 of `bytes` (used for fingerprints and token hashes).

@@ -1,7 +1,7 @@
 //! CL6/CL15: control-api ↔ cluster wiring.
 //!
 //! Covers the trait implementations (config apply/rollback, auth snapshot,
-//! runtime command, cert install, relay RBAC, log outbox/ingest), the master
+//! runtime command, TLS certificate push, relay RBAC, log outbox/ingest), the master
 //! publish hook, a real loopback master + sub-node convergence, the status
 //! fields, and node-scoped policy views. No wall-clock sleeps and no outbound
 //! network: loopback `127.0.0.1:0` only.
@@ -22,11 +22,11 @@ use dnscraft_api::{
     ClusterStatusHandle, ConfigActor, ConfigService, ConfigStore, ConfigWriteExecutor,
     ControlApiError, Db, LocalAccountStore, ManualClock as ApiClock, ModuleAppliers, ModuleFuture,
     OidcState, QueryLog, QueryLogIngest, QueryLogOutbox, SessionStore, StateAuthApplier,
-    StateRuntimeApplier, SyncedConfigApplier, TlsCertInstaller, TokenStore,
+    StateRuntimeApplier, SyncedConfigApplier, TokenStore,
     mcp_backend_for_test_writes_with_broadcast, node_scoped_snapshot, node_scoped_views,
 };
 use dnscraft_cluster::{
-    AuthSnapshotApplier, CertInstaller, ClusterCa, ClusterClient, ClusterConfig, ClusterServer,
+    AuthSnapshotApplier, ClusterCa, ClusterClient, ClusterConfig, ClusterServer,
     ClusterServerConfig, ClusterStore, ConfigApplier, JoinConfig, ListenConfig, LogConfig,
     LogIngest, LogOutbox, LogRecord, LogStreamer, NodeIdentity, OfflineWriteQueue,
     OfflineWritesConfig, PendingNodeIdentity, QuotaConfig, RelayResponse, RelayedActor, Role,
@@ -36,6 +36,9 @@ use dnscraft_common::clock::ManualClock as ClusterClock;
 use dnscraft_common::secret::Secret;
 use dnscraft_mcp::McpConfig;
 use dnscraft_mcp::dto::{PauseDuration, PauseParams};
+
+#[path = "../../dnscraft-tls/tests/support/mock_cloudflare.rs"]
+mod mock_cloudflare;
 
 const NOW: u64 = 1_700_000_000;
 const TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
@@ -1063,30 +1066,6 @@ async fn runtime_applier_pauses_resumes_and_temporarily_allows() {
         .await
         .unwrap_err();
     assert_eq!(error.code(), "cluster.runtime_command.failed");
-}
-
-// ---------------------------------------------------------------------------
-// Cert install
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn cert_installer_installs_a_pushed_chain_without_restart() {
-    let dir = TempDir::new("cert");
-    let resolver = Arc::new(dnscraft_tls::CertResolver::new());
-    let store = dnscraft_tls::CertStore::open(dir.path()).unwrap();
-    let installer = TlsCertInstaller::new(Arc::clone(&resolver), store);
-
-    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
-    let params = rcgen::CertificateParams::new(vec!["cert.example.com".to_owned()]).unwrap();
-    let cert = params.self_signed(&key).unwrap();
-    let expected_leaf = cert.der().as_ref().to_vec();
-
-    installer
-        .install(&cert.pem(), &Secret::new(key.serialize_pem()))
-        .await
-        .unwrap();
-    assert!(resolver.has_cert());
-    assert_eq!(resolver.leaf_der().unwrap(), expected_leaf);
 }
 
 // ---------------------------------------------------------------------------
@@ -2690,39 +2669,184 @@ async fn master_rejects_remote_log_rows_with_invalid_fields_before_inserting() {
     );
 }
 
-/// Signs a node's CSR with the master's cluster CA (ACME stand-in).
-struct CaSigner {
-    ca_dir: PathBuf,
+// ---------------------------------------------------------------------------
+// TLS certificate push (master -> sub-nodes): ACME only on the master
+// ---------------------------------------------------------------------------
+
+const TLS_NAMES: [&str; 2] = ["dns.example.com", "*.dns.example.com"];
+
+/// Cert + key PEM for `names`, valid until `year`.
+fn cert_pem(names: &[&str], year: i32) -> (String, String) {
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+    let mut params =
+        rcgen::CertificateParams::new(names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>())
+            .unwrap();
+    params.not_after = rcgen::date_time_ymd(year, 1, 1);
+    (params.self_signed(&key).unwrap().pem(), key.serialize_pem())
 }
 
-#[async_trait]
-impl dnscraft_cluster::TlsCsrSigner for CaSigner {
-    async fn sign(
-        &self,
-        _node_id: &str,
-        csr_pem: &str,
-    ) -> Result<String, dnscraft_cluster::ClusterError> {
-        let ca_pem = std::fs::read_to_string(self.ca_dir.join("ca.pem")).unwrap();
-        let ca_key =
-            rcgen::KeyPair::from_pem(&std::fs::read_to_string(self.ca_dir.join("ca.key")).unwrap())
-                .unwrap();
-        let issuer = rcgen::Issuer::from_ca_cert_pem(&ca_pem, ca_key).unwrap();
-        let csr = rcgen::CertificateSigningRequestParams::from_pem(csr_pem).unwrap();
-        Ok(csr
-            .params
-            .signed_by(&csr.public_key, &issuer)
-            .unwrap()
-            .pem())
+fn leaf_of(chain_pem: &str) -> Vec<u8> {
+    use rustls_pki_types::{CertificateDer, pem::PemObject};
+    CertificateDer::from_pem_slice(chain_pem.as_bytes())
+        .unwrap()
+        .as_ref()
+        .to_vec()
+}
+
+fn tls_config() -> dnscraft_tls::TlsConfig {
+    dnscraft_tls::TlsConfig {
+        public_domain: "example.com".into(),
+        key_type: dnscraft_tls::KeyType::EcdsaP256,
+        renew_before: Duration::from_secs(24 * 3600),
+        acme: dnscraft_tls::AcmeConfig {
+            // Enabled on the sub-node too (bootstrap config): it must still
+            // never order.
+            enabled: true,
+            directory: dnscraft_tls::AcmeDirectoryKind::Staging,
+            email: "admin@example.com".into(),
+            propagation_timeout: Duration::from_secs(30),
+            propagation_poll: Duration::from_secs(5),
+            account: dnscraft_tls::AcmeAccountConfig {
+                tos_agreed: true,
+                ..Default::default()
+            },
+        },
+        dyndns: dnscraft_tls::DynDnsConfig {
+            enabled: false,
+            hostname: "node1.dns.example.com".into(),
+            reserved_labels: vec!["node1".into()],
+            ..Default::default()
+        },
+        ..Default::default()
     }
 }
 
-#[tokio::test]
-async fn sub_node_requests_a_certificate_on_connect_when_it_has_none() {
-    let master_dir = TempDir::new("cert-conn-master");
-    let node_dir = TempDir::new("cert-conn-node");
+fn tls_clock() -> Arc<dnscraft_tls::ManualClock> {
+    Arc::new(dnscraft_tls::ManualClock::new(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(3_000_000),
+    ))
+}
+
+fn tls_deps(
+    cloudflare: Option<String>,
+    acme: Arc<dnscraft_tls::FakeAcmeDirectory>,
+) -> dnscraft_tls::EngineDeps {
+    dnscraft_tls::EngineDeps {
+        allow_http_for_tests: true,
+        acme,
+        cloudflare_base_url: Some(cloudflare.unwrap_or_else(|| "http://127.0.0.1:1".into())),
+        echo: dnscraft_tls::EchoClient::unbound().unwrap(),
+        token: Secret::new("tls-test-token"),
+    }
+}
+
+/// Mock Cloudflare plus an authoritative TXT answerer, enough for a fake
+/// DNS-01 order to finish.
+async fn mock_cloudflare_with_ns() -> mock_cloudflare::MockCloudflare {
+    use dnscraft_proto::{Class, Message, RData, Record};
+    let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let ns = sock.local_addr().unwrap();
+    let mock = mock_cloudflare::MockCloudflare::start(
+        "tls-test-token",
+        mock_cloudflare::MockZone {
+            id: "zone-example".into(),
+            name: "example.com".into(),
+            status: "active".into(),
+            name_servers: vec![ns.to_string()],
+        },
+    )
+    .await;
+    let mock_ns = mock.clone();
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 2048];
+        loop {
+            let Ok((n, peer)) = sock.recv_from(&mut buf).await else {
+                return;
+            };
+            let Ok(req) = Message::decode(&buf[..n]) else {
+                continue;
+            };
+            let mut resp = Message::response_to(&req);
+            resp.header.aa = true;
+            let values = mock_ns
+                .txt_contents("_acme-challenge.dns.example.com")
+                .await;
+            if let Some(q) = req.questions.first() {
+                for v in values {
+                    resp.answers.push(Record::new(
+                        q.name.clone(),
+                        Class::IN,
+                        120,
+                        RData::TXT(vec![v.into_bytes().into()]),
+                    ));
+                }
+            }
+            if let Ok(wire) = resp.encode() {
+                let _ = sock.send_to(&wire, peer).await;
+            }
+        }
+    });
+    mock
+}
+
+struct TlsCluster {
+    master: ClusterRuntime,
+    node: ClusterRuntime,
+    master_service: Arc<ConfigService>,
+    node_status: Arc<ClusterStatusHandle>,
+    master_engine: Arc<dnscraft_tls::TlsEngine>,
+    node_engine: Arc<dnscraft_tls::TlsEngine>,
+    master_acme: Arc<dnscraft_tls::FakeAcmeDirectory>,
+    node_acme: Arc<dnscraft_tls::FakeAcmeDirectory>,
+    seed: (String, String),
+    node_dir: PathBuf,
+    _cloudflare: mock_cloudflare::MockCloudflare,
+    _dirs: (TempDir, TempDir),
+}
+
+/// A loopback master (real engine, seeded with a stored certificate) and a
+/// sub-node (real engine in the sub-node role, ACME enabled in its bootstrap
+/// config). `node_capable = false` leaves the engine out of the cluster
+/// runtime, like a node that does not advertise `tls_certificate`.
+async fn tls_cluster(label: &str, node_capable: bool) -> TlsCluster {
+    let master_dir = TempDir::new(&format!("{label}-master"));
+    let node_dir = TempDir::new(&format!("{label}-node"));
     let clock = Arc::new(ClusterClock::new(SystemTime::now()));
+    let cloudflare = mock_cloudflare_with_ns().await;
+
+    // Master engine: a valid stored certificate, so no startup order happens.
+    let seed = cert_pem(&TLS_NAMES, 2060);
+    dnscraft_tls::CertStore::open(master_dir.path())
+        .unwrap()
+        .save(seed.0.as_bytes(), seed.1.as_bytes(), &Default::default())
+        .unwrap();
+    let master_acme = Arc::new(dnscraft_tls::FakeAcmeDirectory::new());
+    let master_engine = Arc::new(
+        dnscraft_tls::TlsEngine::open_with(
+            tls_config(),
+            master_dir.path(),
+            tls_clock(),
+            tls_deps(Some(cloudflare.base_url()), master_acme.clone()),
+        )
+        .unwrap(),
+    );
+    let node_acme = Arc::new(dnscraft_tls::FakeAcmeDirectory::new());
+    let node_engine = Arc::new(
+        dnscraft_tls::TlsEngine::open_with_role(
+            tls_config(),
+            node_dir.path(),
+            tls_clock(),
+            tls_deps(None, node_acme.clone()),
+            true,
+        )
+        .unwrap(),
+    );
 
     let (master_service, _) = service("master", ModuleAppliers::default()).await;
+    master_service
+        .replace(snapshot("tls"), &ConfigActor::local(), None)
+        .await
+        .unwrap();
     let master_status = Arc::new(ClusterStatusHandle::new());
     let master_state = AppState::new()
         .with_config_service(Arc::clone(&master_service))
@@ -2730,6 +2854,7 @@ async fn sub_node_requests_a_certificate_on_connect_when_it_has_none() {
     let mut master_options = ClusterRuntimeOptions::new(master_dir.path());
     master_options.clock = clock.clone();
     master_options.status = master_status;
+    master_options.tls_engine = Some(Arc::clone(&master_engine));
     let master = ClusterRuntime::start(
         master_config(master_dir.path()),
         &master_state,
@@ -2737,9 +2862,6 @@ async fn sub_node_requests_a_certificate_on_connect_when_it_has_none() {
     )
     .await
     .unwrap();
-    master.attach_tls_signer(Arc::new(CaSigner {
-        ca_dir: master_dir.path().to_owned(),
-    }));
 
     let url = format!("https://{}", master.listen_addr().unwrap());
     let token = master
@@ -2748,21 +2870,19 @@ async fn sub_node_requests_a_certificate_on_connect_when_it_has_none() {
         .mint_join_token("node-b")
         .await
         .unwrap();
-
     let (node_service, _) = service("node-b", ModuleAppliers::default()).await;
     let node_status = Arc::new(ClusterStatusHandle::new());
     let node_state = AppState::new()
         .with_config_service(Arc::clone(&node_service))
         .with_cluster_status(node_status.clone());
-    let resolver = Arc::new(dnscraft_tls::CertResolver::new());
     let mut node_options = ClusterRuntimeOptions::new(node_dir.path());
     node_options.clock = clock;
-    node_options.status = node_status;
+    node_options.status = node_status.clone();
     node_options.join_token = Some(Secret::new(token.expose()));
     node_options.master_cert_pem = Some(master.server_cert_pem().unwrap().to_owned());
-    node_options.tls_resolver = Some(Arc::clone(&resolver));
-    node_options.tls_names = vec!["dns.example.com".into(), "*.dns.example.com".into()];
-    assert!(!resolver.has_cert());
+    if node_capable {
+        node_options.tls_engine = Some(Arc::clone(&node_engine));
+    }
     let node = ClusterRuntime::start(
         sub_node_config(node_dir.path(), &url),
         &node_state,
@@ -2770,17 +2890,147 @@ async fn sub_node_requests_a_certificate_on_connect_when_it_has_none() {
     )
     .await
     .unwrap();
-
-    for _ in 0..200_000 {
-        if resolver.has_cert() {
-            break;
-        }
-        tokio::task::yield_now().await;
+    TlsCluster {
+        master,
+        node,
+        master_service,
+        node_status,
+        master_engine,
+        node_engine,
+        master_acme,
+        node_acme,
+        seed,
+        node_dir: node_dir.path().to_owned(),
+        _cloudflare: cloudflare,
+        _dirs: (master_dir, node_dir),
     }
-    assert!(resolver.has_cert(), "no certificate requested on connect");
+}
 
-    node.shutdown().await;
-    master.shutdown().await;
+impl TlsCluster {
+    /// Waits until the sub-node serves exactly `leaf`.
+    async fn node_serves(&self, leaf: &[u8]) {
+        for _ in 0..200_000 {
+            if self.node_engine.resolver().leaf_der().as_deref() == Some(leaf) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("sub-node never served the expected certificate");
+    }
+
+    /// Publishes a new config version and waits until the node applied it:
+    /// everything the master queued before it has been processed by then.
+    async fn barrier(&self, version: i64) {
+        self.master_service
+            .replace(
+                snapshot(&format!("barrier-{version}")),
+                &ConfigActor::local(),
+                None,
+            )
+            .await
+            .unwrap();
+        for _ in 0..200_000 {
+            if self.node_status.status().and_then(|s| s.applied_version) == Some(version) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("node did not converge to version {version}");
+    }
+
+    async fn shutdown(self) {
+        self.node.shutdown().await;
+        self.master.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn master_pushes_its_certificate_on_connect_and_after_every_renewal() {
+    let c = tls_cluster("tls-push", true).await;
+
+    // On connect the sub-node gets the master's stored certificate, installed
+    // live and persisted for a restart.
+    c.node_serves(&leaf_of(&c.seed.0)).await;
+    let stored = std::fs::read_to_string(c.node_dir.join("tls/cert.pem")).unwrap();
+    assert_eq!(leaf_of(&stored), leaf_of(&c.seed.0));
+    let key = std::fs::read_to_string(c.node_dir.join("tls/key.pem")).unwrap();
+    assert_eq!(key, c.seed.1);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(c.node_dir.join("tls/key.pem"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    assert!(
+        c.master_acme.replaces_log().is_empty(),
+        "a connecting sub-node must not make the master order"
+    );
+
+    // A renewal on the master pushes the new certificate to the sub-node.
+    c.master_engine.renew_now().await.expect("master renewal");
+    assert_eq!(c.master_acme.replaces_log().len(), 1, "exactly one order");
+    let renewed = c.master_engine.resolver().leaf_der().unwrap();
+    assert_ne!(renewed, leaf_of(&c.seed.0));
+    c.node_serves(&renewed).await;
+
+    // Zero ACME orders / account on the sub-node, and the key is nowhere in
+    // its status.
+    assert!(c.node_acme.replaces_log().is_empty());
+    assert!(!c.node_dir.join("tls/account.json").exists());
+    let status = format!("{:?}", c.node_engine.status_async().await);
+    assert!(!status.contains("PRIVATE KEY"));
+    assert!(
+        !c.master_engine
+            .export_cert()
+            .unwrap()
+            .contains("PRIVATE KEY")
+    );
+    c.shutdown().await;
+}
+
+#[tokio::test]
+async fn invalid_or_older_pushes_are_rejected_and_the_sub_node_keeps_its_certificate() {
+    let c = tls_cluster("tls-reject", true).await;
+    c.node_serves(&leaf_of(&c.seed.0)).await;
+    let broadcast = c.master.broadcast_handle().unwrap();
+
+    let (good_chain, _) = cert_pem(&TLS_NAMES, 2080);
+    let (_, other_key) = cert_pem(&TLS_NAMES, 2080);
+    let (wrong_names, wrong_names_key) = cert_pem(&["dns.other.org", "*.dns.other.org"], 2090);
+    let (older, older_key) = cert_pem(&TLS_NAMES, 2040);
+    // Wrong key for the chain, wrong names, older than the installed one.
+    assert_eq!(broadcast.push_tls_certificate(&good_chain, &other_key), 1);
+    assert_eq!(
+        broadcast.push_tls_certificate(&wrong_names, &wrong_names_key),
+        1
+    );
+    assert_eq!(broadcast.push_tls_certificate(&older, &older_key), 1);
+    c.barrier(2).await;
+    assert_eq!(
+        c.node_engine.resolver().leaf_der().unwrap(),
+        leaf_of(&c.seed.0),
+        "none of the rejected pushes replaced the certificate"
+    );
+    let stored = std::fs::read_to_string(c.node_dir.join("tls/cert.pem")).unwrap();
+    assert_eq!(leaf_of(&stored), leaf_of(&c.seed.0));
+    assert!(c.node_acme.replaces_log().is_empty());
+    c.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_node_without_the_capability_gets_no_certificate_and_orders_nothing() {
+    let c = tls_cluster("tls-oldnode", false).await;
+    c.barrier(2).await;
+    let broadcast = c.master.broadcast_handle().unwrap();
+    assert_eq!(broadcast.push_tls_certificate("chain", "key"), 0);
+    c.master_engine.renew_now().await.expect("master renewal");
+    c.barrier(3).await;
+    assert!(!c.node_engine.resolver().has_cert());
+    assert!(c.node_acme.replaces_log().is_empty());
+    c.shutdown().await;
 }
 
 // ---------------------------------------------------------------------------

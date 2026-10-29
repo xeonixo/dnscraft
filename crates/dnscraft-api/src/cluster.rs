@@ -7,8 +7,10 @@
 //! - [`SyncedConfigApplier`] — applies a pushed snapshot through
 //!   [`ConfigService::apply_synced_config`](crate::ConfigService::apply_synced_config),
 //!   filtering node-scoped policy views first.
-//! - [`TlsCertInstaller`] — installs a node's own certificate (requested with
-//!   a node-local key) through the TLS hot-reload resolver and store.
+//! - TLS: only the master talks to ACME. It pushes the same certificate
+//!   (chain + key) to every sub-node over the mTLS channel
+//!   (`tls_certificate_push`); a sub-node validates and installs it through
+//!   the TLS engine. No CSR relay, no order on a sub-node's behalf.
 //! - [`StateAuthApplier`] — replaces local auth state with a pushed
 //!   [`AuthSnapshot`](crate::AuthSnapshot).
 //! - [`StateRuntimeApplier`] — applies a volatile runtime command to the local
@@ -36,15 +38,15 @@ use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 
 use dnscraft_cluster::{
-    ActorValidator, AuthSnapshotApplier, AuthSnapshotSource, Backfill, CertInstaller,
-    ClusterBroadcast, ClusterCa, ClusterClient, ClusterConfig, ClusterError, ClusterServer,
-    ClusterServerConfig, ClusterStore, ConfigApplier, ConfigSync, LogIngest, LogOutbox, LogRecord,
-    LogStreamer, NodeIdentity, OfflineWriteQueue, PendingNodeIdentity, RelayResponse, RelayedActor,
-    Role, RuntimeCommandApplier, StreamRecord, TlsCsrSigner, TlsPaths, WriteExecutor, WriteRelay,
+    ActorValidator, AuthSnapshotApplier, AuthSnapshotSource, Backfill, ClusterBroadcast, ClusterCa,
+    ClusterClient, ClusterConfig, ClusterError, ClusterServer, ClusterServerConfig, ClusterStore,
+    ConfigApplier, ConfigSync, LogIngest, LogOutbox, LogRecord, LogStreamer, NodeIdentity,
+    OfflineWriteQueue, PendingNodeIdentity, RelayResponse, RelayedActor, Role,
+    RuntimeCommandApplier, StreamRecord, TlsCertificateSource, TlsPaths, WriteExecutor, WriteRelay,
 };
 use dnscraft_common::clock::{Clock, add_duration, wait_until};
 use dnscraft_common::secret::Secret;
-use dnscraft_tls::{CertResolver, CertStore, TlsEngine};
+use dnscraft_tls::TlsEngine;
 
 use crate::api::auth::{AuthSnapshot, AuthState, Scope, authorize, requirement};
 use crate::api::clients_routes::{ManualEntryBody, name as manual_name, reject_conflict};
@@ -239,132 +241,49 @@ fn nodes_include(nodes: Option<&Value>, node_id: &str) -> bool {
     }
 }
 
-/// Sub-node applier: installs a pushed certificate through the hot-reload path.
-pub struct TlsCertInstaller {
-    resolver: Arc<CertResolver>,
-    store: CertStore,
-}
-
-impl TlsCertInstaller {
-    /// Wraps the live resolver and its on-disk store.
-    pub fn new(resolver: Arc<CertResolver>, store: CertStore) -> Self {
-        Self { resolver, store }
-    }
-}
+/// Master source of the certificate pushed to capable sub-nodes (connect time).
+///
+/// The master is the only node that talks to ACME; sub-nodes get the same
+/// chain and key over the mTLS channel. Nothing is ordered on a sub-node's
+/// behalf.
+struct EngineCertSource(Arc<TlsEngine>);
 
 #[async_trait]
-impl CertInstaller for TlsCertInstaller {
-    async fn install(&self, chain_pem: &str, private_key: &Secret) -> Result<(), ClusterError> {
-        self.resolver
-            .import(
-                &self.store,
-                chain_pem.as_bytes(),
-                private_key.expose().as_bytes(),
-            )
-            .map_err(|error| ClusterError::CertPushFailed {
-                message: error.to_string(),
-            })
+impl TlsCertificateSource for EngineCertSource {
+    async fn certificate(&self) -> Option<(String, String)> {
+        engine_certificate(&self.0)
     }
 }
 
-/// Minimum spacing between on-connect certificate requests.
-const CERT_REQUEST_MIN_INTERVAL: Duration = Duration::from_secs(60);
-
-/// Sub-node: requests a certificate from the master on (re)connect when none
-/// is installed or the current one expires within `renew_before`.
-pub struct CertRequester {
-    installer: Arc<dyn CertInstaller>,
-    resolver: Arc<CertResolver>,
-    store: CertStore,
-    names: Vec<String>,
-    renew_before: Duration,
-    last_attempt: Mutex<Option<std::time::Instant>>,
-}
-
-impl CertRequester {
-    /// Builds a requester; `names` empty makes [`Self::ensure`] a no-op.
-    pub fn new(
-        installer: Arc<dyn CertInstaller>,
-        resolver: Arc<CertResolver>,
-        store: CertStore,
-        names: Vec<String>,
-        renew_before: Duration,
-    ) -> Self {
-        Self {
-            installer,
-            resolver,
-            store,
-            names,
-            renew_before,
-            last_attempt: Mutex::new(None),
-        }
-    }
-
-    fn needed(&self, now: SystemTime) -> bool {
-        if !self.resolver.has_cert() {
-            return true;
-        }
-        match self.store.load() {
-            Ok(Some(cert)) => cert
-                .not_after
-                .duration_since(now)
-                .map_or(true, |left| left < self.renew_before),
-            _ => false,
-        }
-    }
-
-    /// Requests a certificate when needed, at most once per 60 s. Failures are
-    /// logged; the next reconnect retries.
-    pub async fn ensure(&self, client: &ClusterClient, now: SystemTime) {
-        if self.names.is_empty() || !self.needed(now) {
-            return;
-        }
-        {
-            let mut last = self
-                .last_attempt
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if last.is_some_and(|at| at.elapsed() < CERT_REQUEST_MIN_INTERVAL) {
-                return;
-            }
-            *last = Some(std::time::Instant::now());
-        }
-        if let Err(error) = client
-            .request_tls_certificate(&self.names, self.installer.as_ref())
-            .await
-        {
-            tracing::warn!(error = %error, "cluster TLS certificate request on connect failed");
-        }
-    }
-}
-
-/// Master signer: finalizes a sub-node's CSR through the TLS engine's ACME
-/// account. The node's key stays on the node.
-pub struct TlsEngineCsrSigner {
-    engine: Arc<TlsEngine>,
-}
-
-impl TlsEngineCsrSigner {
-    /// Wraps the master's TLS engine.
-    pub fn new(engine: Arc<TlsEngine>) -> Self {
-        Self { engine }
-    }
-}
-
-#[async_trait]
-impl TlsCsrSigner for TlsEngineCsrSigner {
-    async fn sign(&self, _node_id: &str, csr_pem: &str) -> Result<String, ClusterError> {
-        self.engine.sign_csr(csr_pem).await.map_err(|error| {
-            // The sub-node only sees `cluster.internal`; keep the reason on the master.
+/// The engine's current `(chain, key)` for a push; a read failure is logged
+/// (without key material) and treated as "no certificate".
+fn engine_certificate(engine: &TlsEngine) -> Option<(String, String)> {
+    match engine.cluster_certificate() {
+        Ok(cert) => cert.map(|(chain, key)| (chain, key.expose().to_owned())),
+        Err(error) => {
             tracing::warn!(
                 code = error.code(),
-                node = _node_id,
-                "sub-node certificate request failed: {error}"
+                "cluster certificate unavailable for push"
             );
-            ClusterError::Internal {
-                message: format!("TLS certificate request failed ({})", error.code()),
-            }
-        })
+            None
+        }
+    }
+}
+
+/// Sub-node: validates and installs a pushed certificate into the live
+/// resolver and the engine's store. A rejected push is logged without the key.
+async fn apply_pushed_certificate(engine: &TlsEngine, push: dnscraft_cluster::TlsCertificatePush) {
+    let key = Secret::new(push.key_pem);
+    match engine
+        .install_cluster_certificate(&push.chain_pem, &key)
+        .await
+    {
+        Ok(true) => tracing::info!("installed TLS certificate pushed by the cluster master"),
+        Ok(false) => tracing::debug!("pushed TLS certificate is not newer; ignored"),
+        Err(error) => tracing::warn!(
+            code = error.code(),
+            "pushed TLS certificate rejected: {error}"
+        ),
     }
 }
 
@@ -1272,6 +1191,19 @@ impl WriteExecutor for ClientWriteExecutor {
     }
 }
 
+fn attach_engine_to_server(server: &ClusterServer, engine: Arc<TlsEngine>) {
+    server.attach_tls_source(Arc::new(EngineCertSource(Arc::clone(&engine))));
+    let broadcast = server.broadcast_handle();
+    let hook_engine = Arc::clone(&engine);
+    // After every successful issuance push the new certificate (no names:
+    // sub-nodes validate against their own configuration).
+    engine.set_on_issued(Arc::new(move |_names| {
+        if let Some((chain, key)) = engine_certificate(&hook_engine) {
+            broadcast.push_tls_certificate(&chain, &key);
+        }
+    }));
+}
+
 /// Options for [`ClusterRuntime::start`].
 pub struct ClusterRuntimeOptions {
     /// Node data directory (cluster CA, registry, offline queue, TLS store).
@@ -1286,13 +1218,10 @@ pub struct ClusterRuntimeOptions {
     pub join_token: Option<Secret>,
     /// Pinned master certificate (PEM) used only for first enrollment.
     pub master_cert_pem: Option<String>,
-    /// Live TLS resolver a pushed certificate is installed into.
-    pub tls_resolver: Option<Arc<CertResolver>>,
-    /// Names a sub-node requests its certificate for on (re)connect. Empty
-    /// disables the on-connect request.
-    pub tls_names: Vec<String>,
-    /// Request a new certificate when the current one expires within this.
-    pub tls_renew_before: Duration,
+    /// The node's TLS engine. Master: its certificate is pushed to sub-nodes.
+    /// Sub-node: a pushed certificate is installed into it (and the node
+    /// advertises the `tls_certificate` capability only when it is set).
+    pub tls_engine: Option<Arc<TlsEngine>>,
 }
 
 impl ClusterRuntimeOptions {
@@ -1305,9 +1234,7 @@ impl ClusterRuntimeOptions {
             server_name: None,
             join_token: None,
             master_cert_pem: None,
-            tls_resolver: None,
-            tls_names: Vec::new(),
-            tls_renew_before: Duration::from_secs(30 * 24 * 3600),
+            tls_engine: None,
         }
     }
 }
@@ -1428,21 +1355,13 @@ impl ClusterRuntime {
         self.server.as_ref().map(ClusterServer::broadcast_handle)
     }
 
-    /// Attaches the master's TLS certificate signer, backed by `engine`, so a
-    /// node's CSR is finalized through ACME. No-op unless this is the master.
+    /// Master: pushes `engine`'s certificate to capable sub-nodes when they
+    /// connect and after every successful issuance. No-op unless this is the
+    /// master ([`ClusterRuntime::start`] already does this for
+    /// [`ClusterRuntimeOptions::tls_engine`]).
     pub fn attach_tls_engine(&self, engine: Arc<TlsEngine>) {
         if let Some(server) = &self.server {
-            // After every successful issuance tell the sub-nodes to fetch it.
-            let broadcast = server.broadcast_handle();
-            engine.set_on_issued(Arc::new(move |names| broadcast.notify_tls_renewed(names)));
-            server.attach_tls_signer(Arc::new(TlsEngineCsrSigner::new(engine)));
-        }
-    }
-
-    /// Attaches a custom CSR signer. No-op unless this is the master.
-    pub fn attach_tls_signer(&self, signer: Arc<dyn dnscraft_cluster::TlsCsrSigner>) {
-        if let Some(server) = &self.server {
-            server.attach_tls_signer(signer);
+            attach_engine_to_server(server, engine);
         }
     }
 
@@ -1526,6 +1445,9 @@ impl ClusterRuntime {
         server.attach_cloudflare_source(Arc::new(crate::cloudflare_secrets::StateTokenSource(
             state.clone(),
         )));
+        if let Some(engine) = &options.tls_engine {
+            attach_engine_to_server(&server, Arc::clone(engine));
+        }
 
         let (version, snapshot) = service.current().await?;
         self.status.set(ClusterStatus {
@@ -1659,12 +1581,15 @@ impl ClusterRuntime {
             Ok(identity) => identity,
             Err(_) => enroll_identity(config, options).await?,
         };
-        let client = Arc::new(ClusterClient::new_with_timing(
-            &master_url,
-            &identity,
-            clock.clone(),
-            config.timing.clone(),
-        )?);
+        let client = Arc::new(
+            ClusterClient::new_with_timing(
+                &master_url,
+                &identity,
+                clock.clone(),
+                config.timing.clone(),
+            )?
+            .with_tls_certificate(options.tls_engine.is_some()),
+        );
         state.attach_cluster_uplink(Arc::clone(&client));
 
         let applier = Arc::new(
@@ -1675,28 +1600,7 @@ impl ClusterRuntime {
         let auth_applier: Option<Arc<dyn AuthSnapshotApplier>> = auth_state
             .clone()
             .map(|auth| Arc::new(StateAuthApplier::new(auth)) as Arc<dyn AuthSnapshotApplier>);
-        let mut cert_requester: Option<Arc<CertRequester>> = None;
-        let cert_installer: Option<Arc<dyn CertInstaller>> = match (
-            options.tls_resolver.clone(),
-            CertStore::open(&options.data_dir),
-        ) {
-            (Some(resolver), Ok(store)) => {
-                let installer: Arc<dyn CertInstaller> =
-                    Arc::new(TlsCertInstaller::new(Arc::clone(&resolver), store));
-                // A second handle on the same directory, read-only use.
-                if let Ok(read_store) = CertStore::open(&options.data_dir) {
-                    cert_requester = Some(Arc::new(CertRequester::new(
-                        Arc::clone(&installer),
-                        resolver,
-                        read_store,
-                        options.tls_names.clone(),
-                        options.tls_renew_before,
-                    )));
-                }
-                Some(installer)
-            }
-            _ => None,
-        };
+        let tls_engine = options.tls_engine.clone();
         let runtime_applier = Arc::new(StateRuntimeApplier::new(state.clone()));
 
         let (version, _) = service.current().await?;
@@ -1797,8 +1701,7 @@ impl ClusterRuntime {
                 connection_client,
                 applier,
                 auth_applier,
-                cert_installer,
-                cert_requester,
+                tls_engine,
                 runtime_applier,
                 connection_streamer,
                 status,
@@ -1917,8 +1820,7 @@ async fn run_sub_node_loop(
     client: Arc<ClusterClient>,
     applier: Arc<SyncedConfigApplier>,
     auth_applier: Option<Arc<dyn AuthSnapshotApplier>>,
-    cert_installer: Option<Arc<dyn CertInstaller>>,
-    cert_requester: Option<Arc<CertRequester>>,
+    tls_engine: Option<Arc<TlsEngine>>,
     runtime_applier: Arc<StateRuntimeApplier>,
     log_streamer: Option<Arc<LogStreamer>>,
     status: Arc<ClusterStatusHandle>,
@@ -1980,13 +1882,6 @@ async fn run_sub_node_loop(
             tracing::info!("reconnected to the cluster master");
         } else {
             tracing::info!("connected to the cluster master");
-        }
-        if let Some(requester) = &cert_requester {
-            // Background: the master's signing may take a while.
-            let requester = Arc::clone(requester);
-            let client = Arc::clone(&client);
-            let now = clock.now();
-            tokio::spawn(async move { requester.ensure(&client, now).await });
         }
 
         // Resume the query-log outbox from the master's cursor. A master
@@ -2057,24 +1952,9 @@ async fn run_sub_node_loop(
                             }
                         }
                     }
-                    Ok(StreamRecord::TlsRenewed(notice)) => match &cert_installer {
-                        Some(installer) => {
-                            // A node requests its own certificate: the key is made
-                            // here and never leaves the node. Run it in the
-                            // background, since the master's signing may take a
-                            // while and must not stall config pushes.
-                            let client = Arc::clone(&client);
-                            let installer = Arc::clone(installer);
-                            tokio::spawn(async move {
-                                if let Err(error) = client
-                                    .request_tls_certificate(&notice.names, installer.as_ref())
-                                    .await
-                                {
-                                    tracing::warn!(error = %error, "cluster TLS certificate request failed");
-                                }
-                            });
-                        }
-                        None => tracing::warn!("cluster TLS renewal notice ignored: no TLS resolver wired"),
+                    Ok(StreamRecord::TlsCertificatePush(push)) => match &tls_engine {
+                        Some(engine) => apply_pushed_certificate(engine, push).await,
+                        None => tracing::warn!("cluster TLS certificate ignored: no TLS engine wired"),
                     },
                     Ok(StreamRecord::AuthSnapshotPush(push)) => {
                         match &auth_applier {

@@ -458,6 +458,65 @@ async fn tls_certificate_request_without_a_signer_is_refused() {
     master.server.shutdown().await;
 }
 
+struct FixedCert;
+
+#[async_trait]
+impl dnscraft_cluster::TlsCertificateSource for FixedCert {
+    async fn certificate(&self) -> Option<(String, String)> {
+        Some(("CHAIN".to_owned(), "KEY".to_owned()))
+    }
+}
+
+#[tokio::test]
+async fn certificate_is_pushed_on_connect_and_on_renewal_to_capable_nodes_only() {
+    let master = start_master("tls-push").await;
+    master.server.attach_tls_source(Arc::new(FixedCert));
+    let identity = enroll_node(&master, "node-a").await;
+    let capable = ClusterClient::new(&master.url, &identity, master.clock.clone())
+        .unwrap()
+        .with_tls_certificate(true);
+    let old_identity = enroll_node(&master, "node-old").await;
+    let old = ClusterClient::new(&master.url, &old_identity, master.clock.clone()).unwrap();
+
+    let mut stream = capable.open_stream().await.unwrap();
+    let mut old_stream = old.open_stream().await.unwrap();
+    // The old node must see no certificate record, only its hello/config flow.
+    let mut saw_push = false;
+    for _ in 0..4 {
+        if let StreamRecord::TlsCertificatePush(push) = stream.next_record().await.unwrap() {
+            assert_eq!(
+                (push.chain_pem.as_str(), push.key_pem.as_str()),
+                ("CHAIN", "KEY")
+            );
+            saw_push = true;
+            break;
+        }
+    }
+    assert!(saw_push, "connect-time push missing");
+
+    // A renewal pushes again, again only to the capable node.
+    let broadcast = master.server.broadcast_handle();
+    assert_eq!(broadcast.push_tls_certificate("CHAIN2", "KEY2"), 1);
+    loop {
+        if let StreamRecord::TlsCertificatePush(push) = stream.next_record().await.unwrap() {
+            assert_eq!(push.chain_pem, "CHAIN2");
+            break;
+        }
+    }
+    master.server.broadcast_runtime_command("probe", &json!({}));
+    loop {
+        let record = old_stream.next_record().await.unwrap();
+        assert!(!matches!(record, StreamRecord::TlsCertificatePush(_)));
+        if matches!(record, StreamRecord::RuntimeCommand(_)) {
+            break;
+        }
+    }
+
+    drop(stream);
+    drop(old_stream);
+    master.server.shutdown().await;
+}
+
 #[tokio::test]
 async fn revoked_node_cannot_request_a_tls_certificate() {
     let master = start_master("tls-revoked").await;

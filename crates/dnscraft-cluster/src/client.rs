@@ -57,6 +57,8 @@ pub struct ClusterClient {
     node_id: String,
     clock: Arc<dyn Clock>,
     timing: TimingConfig,
+    /// Advertise [`crate::sync::CAP_TLS_CERTIFICATE`] in the stream hello.
+    tls_certificate: bool,
 }
 
 impl ClusterClient {
@@ -90,7 +92,17 @@ impl ClusterClient {
             node_id,
             clock,
             timing,
+            tls_certificate: false,
         })
+    }
+
+    /// Advertises that this node can install a pushed TLS certificate. Set it
+    /// only when a TLS engine is wired; the master sends the certificate only
+    /// to nodes that advertise it.
+    #[must_use]
+    pub fn with_tls_certificate(mut self, accepts: bool) -> Self {
+        self.tls_certificate = accepts;
+        self
     }
 
     /// The `node_id` carried by this node's certificate.
@@ -201,7 +213,13 @@ impl ClusterClient {
             node_id: self.node_id.clone(),
             last_applied_version,
             last_acked_log_seq,
-            capabilities: vec![crate::sync::CAP_CLOUDFLARE_TOKEN.to_owned()],
+            capabilities: {
+                let mut caps = vec![crate::sync::CAP_CLOUDFLARE_TOKEN.to_owned()];
+                if self.tls_certificate {
+                    caps.push(crate::sync::CAP_TLS_CERTIFICATE.to_owned());
+                }
+                caps
+            },
         });
         let body = serde_json::to_vec(&hello).map_err(|error| ClusterError::Internal {
             message: format!("encode stream hello: {error}"),
