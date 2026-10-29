@@ -818,10 +818,7 @@ fn map_acme_account(e: instant_acme::Error) -> TlsError {
 
 fn map_acme_order(e: instant_acme::Error, retry_after: Option<std::time::Duration>) -> TlsError {
     if is_rate_limited(&e) {
-        return TlsError::AcmeRateLimited {
-            message: e.to_string(),
-            retry_after,
-        };
+        return rate_limited(&e, retry_after);
     }
     TlsError::AcmeOrder {
         message: e.to_string(),
@@ -833,13 +830,20 @@ fn map_acme_challenge(
     retry_after: Option<std::time::Duration>,
 ) -> TlsError {
     if is_rate_limited(&e) {
-        return TlsError::AcmeRateLimited {
-            message: e.to_string(),
-            retry_after,
-        };
+        return rate_limited(&e, retry_after);
     }
     TlsError::AcmeChallenge {
         message: e.to_string(),
+    }
+}
+
+/// Prefers the `Retry-After` header; falls back to the timestamp in the detail.
+fn rate_limited(e: &instant_acme::Error, retry_after: Option<std::time::Duration>) -> TlsError {
+    let message = e.to_string();
+    let retry_after = retry_after.or_else(|| crate::error::parse_retry_after_message(&message));
+    TlsError::AcmeRateLimited {
+        message,
+        retry_after,
     }
 }
 
@@ -914,6 +918,8 @@ pub enum FakeAcmeFail {
     Challenge,
     /// Fail at finalize / certificate mint.
     Finalize,
+    /// Reject the order with a one-hour rate limit (counted in `replaces_log`).
+    RateLimited,
 }
 
 #[doc(hidden)]
@@ -1002,6 +1008,12 @@ impl FakeAcmeDirectory {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(replaces.map(str::to_owned));
+        if self.fail_at == Some(FakeAcmeFail::RateLimited) {
+            return Err(TlsError::AcmeRateLimited {
+                message: "fake rate limit".into(),
+                retry_after: Some(std::time::Duration::from_secs(3600)),
+            });
+        }
         if self.fail_at == Some(FakeAcmeFail::AlreadyReplaced) && replaces.is_some() {
             return Err(TlsError::AcmeOrder {
                 message: "urn:ietf:params:acme:error:alreadyReplaced".into(),

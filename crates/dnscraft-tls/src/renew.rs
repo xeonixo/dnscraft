@@ -24,6 +24,8 @@ use crate::store::CertStore;
 
 /// Cap for exponential renew backoff (6 hours).
 pub const BACKOFF_CAP: Duration = Duration::from_secs(6 * 3600);
+/// Upper bound for a CA-supplied retry hint (7 days, one rate-limit window).
+const RETRY_AFTER_MAX: Duration = Duration::from_secs(7 * 24 * 3600);
 /// Initial backoff before the first retry.
 pub const BACKOFF_BASE: Duration = Duration::from_secs(30);
 
@@ -143,15 +145,16 @@ pub fn backoff_delay_with_rng(
     let high = capped
         .saturating_add(jitter_span)
         .min(BACKOFF_CAP.as_secs());
-    let mut secs = if low >= high {
+    let secs = if low >= high {
         capped
     } else {
         rng.random_range(low..=high)
-    };
-    if let Some(ra) = retry_after {
-        secs = secs.max(ra.as_secs());
     }
-    Duration::from_secs(secs.min(BACKOFF_CAP.as_secs()))
+    .min(BACKOFF_CAP.as_secs());
+    // The CA's own hint is not capped (Let's Encrypt limits reset after days),
+    // only sanity-bounded.
+    let hint = retry_after.map_or(0, |ra| ra.as_secs().min(RETRY_AFTER_MAX.as_secs()));
+    Duration::from_secs(secs.max(hint))
 }
 
 /// Whether a renew failure should be retried with backoff.

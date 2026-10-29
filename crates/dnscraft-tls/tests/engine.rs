@@ -1233,3 +1233,69 @@ async fn cluster_certificate_is_none_without_a_stored_certificate() {
     assert!(engine.cluster_certificate().unwrap().is_none());
     let _ = fs::remove_dir_all(&data);
 }
+
+#[tokio::test]
+async fn rate_limit_blocks_new_orders_and_config_saves_do_not_order() {
+    let data = temp_dir("rate-limit");
+    let (mock, _ns) = mock_cf_with_ns().await;
+    let mut cfg = base_cfg();
+    cfg.dyndns.enabled = false;
+    let acme = Arc::new(FakeAcmeDirectory::failing(
+        dnscraft_tls::FakeAcmeFail::RateLimited,
+    ));
+    let engine = TlsEngine::open_with(
+        cfg.clone(),
+        &data,
+        clock(),
+        EngineDeps {
+            allow_http_for_tests: true,
+            acme: acme.clone(),
+            cloudflare_base_url: Some(mock.base_url()),
+            echo: EchoClient::unbound().unwrap(),
+            token: Secret::new(TOKEN),
+        },
+    )
+    .unwrap();
+
+    let first = engine.renew_now().await.expect_err("rate limited");
+    assert_eq!(first.code(), "tls.acme.rate_limited");
+    let orders = acme.replaces_log().len();
+
+    // Manual retries inside the limit never reach the CA.
+    let again = engine.renew_now().await.expect_err("still limited");
+    assert_eq!(again.code(), "tls.acme.rate_limited");
+    assert_eq!(acme.replaces_log().len(), orders);
+
+    // Saving the config must not trigger an order either.
+    let mut changed = cfg;
+    changed.renew_before += Duration::from_secs(3600);
+    engine.apply_config(changed).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(acme.replaces_log().len(), orders);
+
+    // A restart remembers the limit and does not ask the CA again.
+    drop(engine);
+    let acme2 = Arc::new(FakeAcmeDirectory::new());
+    let engine = TlsEngine::open_with(
+        base_cfg(),
+        &data,
+        clock(),
+        EngineDeps {
+            allow_http_for_tests: true,
+            acme: acme2.clone(),
+            cloudflare_base_url: Some(mock.base_url()),
+            echo: EchoClient::unbound().unwrap(),
+            token: Secret::new(TOKEN),
+        },
+    )
+    .unwrap();
+    let err = engine
+        .renew_now()
+        .await
+        .expect_err("limit survives restart");
+    assert_eq!(err.code(), "tls.acme.rate_limited");
+    assert!(acme2.replaces_log().is_empty());
+
+    drop(engine);
+    let _ = fs::remove_dir_all(&data);
+}

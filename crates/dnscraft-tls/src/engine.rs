@@ -283,6 +283,7 @@ impl TlsEngine {
 
         let status = build_status(&config, &store, clock.as_ref(), None);
 
+        let rate_limit = persisted_rate_limit(&store, clock.now());
         let inner = Arc::new(EngineInner {
             clock: Arc::clone(&clock),
             store,
@@ -295,7 +296,7 @@ impl TlsEngine {
             cloudflare_base_url: deps.cloudflare_base_url,
             status: RwLock::new(status),
             ari_window: RwLock::new(None),
-            rate_limit: RwLock::new(RateLimitStatus::default()),
+            rate_limit: RwLock::new(rate_limit),
             issue_flight: Mutex::new(None),
             dyndns_lock: Mutex::new(()),
             order_lock: Mutex::new(()),
@@ -486,7 +487,10 @@ impl TlsEngine {
         if domain_changed && acme_on {
             info!(old = %old_domain, "public_domain changed; renewing");
             let _ = self.renew_now().await;
-        } else if let Some(r) = &self.renew {
+        } else if let (true, Some(r)) = (acme_on && !acme_was_on, &self.renew) {
+            // A kick forces an order (it skips the schedule and any backoff),
+            // so only ACME being switched on may kick; other config changes
+            // would otherwise hit the CA on every save.
             r.kick();
         }
         Ok(())
@@ -1172,16 +1176,26 @@ impl EngineInner {
             Err(TlsError::config("ACME is disabled"))
         } else {
             let _order = self.order_lock.lock().await;
-            let cf = self.cloudflare.read().await.clone();
-            issue(
-                self.acme.as_ref(),
-                &cf,
-                &self.store,
-                self.resolver.as_ref(),
-                &cfg,
-                self.clock.as_ref(),
-            )
-            .await
+            let now = self.clock.now();
+            let blocked = self.rate_limit.read().await.retry_at.filter(|at| *at > now);
+            if let Some(at) = blocked {
+                // Do not ask the CA again while its rate limit is known to be active.
+                Err(TlsError::AcmeRateLimited {
+                    message: "CA rate limit still active; not retrying yet".into(),
+                    retry_after: at.duration_since(now).ok(),
+                })
+            } else {
+                let cf = self.cloudflare.read().await.clone();
+                issue(
+                    self.acme.as_ref(),
+                    &cf,
+                    &self.store,
+                    self.resolver.as_ref(),
+                    &cfg,
+                    self.clock.as_ref(),
+                )
+                .await
+            }
         };
 
         let _ = tx.send(result.clone());
@@ -1207,7 +1221,9 @@ impl EngineInner {
             counter.fetch_add(1, Ordering::Relaxed);
         }
 
-        *self.rate_limit.write().await = rate_limit_after(&result, self.clock.now());
+        let limit = rate_limit_after(&result, self.clock.now());
+        persist_rate_limit(&self.store, &limit);
+        *self.rate_limit.write().await = limit;
 
         // Refresh ARI so ScheduleFn does not immediately re-fire after a kick
         // that arrived during this renew.
@@ -1346,6 +1362,36 @@ fn rate_limit_after(result: &Result<(), TlsError>, now: SystemTime) -> RateLimit
             retry_at: e.retry_after().map(|delay| now + delay),
         },
         _ => RateLimitStatus::default(),
+    }
+}
+
+/// Rate-limit state saved by a previous run, if it is still in force.
+fn persisted_rate_limit(store: &CertStore, now: SystemTime) -> RateLimitStatus {
+    let until = store
+        .load_state()
+        .rate_limited_until_unix
+        .and_then(|s| u64::try_from(s).ok())
+        .map(|s| SystemTime::UNIX_EPOCH + Duration::from_secs(s))
+        .filter(|at| *at > now);
+    RateLimitStatus {
+        limited: until.is_some(),
+        retry_after: until.and_then(|at| at.duration_since(now).ok()),
+        retry_at: until,
+    }
+}
+
+/// Saves (or clears) the rate-limit deadline in `state.json`; best effort.
+fn persist_rate_limit(store: &CertStore, limit: &RateLimitStatus) {
+    let until = limit.retry_at.and_then(|at| {
+        let secs = at.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs();
+        i64::try_from(secs).ok()
+    });
+    let mut state = store.load_state();
+    if state.rate_limited_until_unix != until {
+        state.rate_limited_until_unix = until;
+        if let Err(e) = store.save_state(&state) {
+            warn!(code = e.code(), "could not persist rate-limit state: {e}");
+        }
     }
 }
 

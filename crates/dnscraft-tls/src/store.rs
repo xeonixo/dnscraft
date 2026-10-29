@@ -85,6 +85,10 @@ pub struct IssueState {
     /// Bounded (last [`HISTORY_LIMIT`]) issue/renew history, oldest first.
     #[serde(default)]
     pub history: Vec<IssueRecord>,
+    /// Unix seconds until which the CA's rate limit blocks new orders, so a
+    /// restart does not ask again.
+    #[serde(default)]
+    pub rate_limited_until_unix: Option<i64>,
     /// `true` when the stored certificate was revoked locally.
     #[serde(default)]
     pub revoked: bool,

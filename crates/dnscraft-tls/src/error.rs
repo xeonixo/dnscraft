@@ -332,6 +332,22 @@ const IMF_FIXDATE: &[time::format_description::BorrowedFormatItem<'static>] = ti
     "[weekday repr:short], [day] [month repr:short] [year] [hour]:[minute]:[second] GMT"
 );
 
+/// `2026-10-30 06:32:15` as Let's Encrypt writes it in rate-limit details.
+const ACME_RETRY_STAMP: &[time::format_description::BorrowedFormatItem<'static>] =
+    time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
+
+/// Delay until the `retry after <UTC timestamp>` named in an ACME rate-limit
+/// message, for when the CA sent no `Retry-After` header.
+pub(crate) fn parse_retry_after_message(msg: &str) -> Option<Duration> {
+    let (_, rest) = msg.split_once("retry after ")?;
+    let stamp = rest.get(..19)?;
+    let then = time::PrimitiveDateTime::parse(stamp, &ACME_RETRY_STAMP)
+        .ok()?
+        .assume_utc();
+    let secs = (then - time::OffsetDateTime::now_utc()).whole_seconds();
+    Some(Duration::from_secs(secs.max(0) as u64))
+}
+
 /// Parses an HTTP `Retry-After` header (RFC 9110 §10.2.3).
 ///
 /// Accepts delta-seconds and HTTP-date as IMF-fixdate. Past dates yield a zero
@@ -362,6 +378,18 @@ pub fn parse_retry_after_header(value: &str) -> Option<Duration> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_after_message_parses_le_timestamp() {
+        let d = parse_retry_after_message(
+            "too many certificates, retry after 2999-01-01 00:00:00 UTC: see https://x",
+        )
+        .unwrap();
+        assert!(d.as_secs() > 365 * 86400);
+        let past = parse_retry_after_message("retry after 2000-01-01 00:00:00 UTC").unwrap();
+        assert_eq!(past, Duration::ZERO);
+        assert_eq!(parse_retry_after_message("no hint here"), None);
+    }
 
     #[test]
     fn codes_are_unique_and_well_formed() {

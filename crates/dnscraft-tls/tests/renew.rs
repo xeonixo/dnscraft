@@ -109,6 +109,12 @@ fn backoff_honours_retry_after() {
     let d = backoff_delay_with_rng(0, Some(Duration::from_secs(3600)), &mut rng);
     assert!(d.as_secs() >= 3600);
     assert!(d <= BACKOFF_CAP);
+    let long = backoff_delay_with_rng(0, Some(Duration::from_secs(10 * 3600)), &mut rng);
+    assert_eq!(
+        long,
+        Duration::from_secs(10 * 3600),
+        "hint is not capped at 6h"
+    );
 }
 
 #[test]
