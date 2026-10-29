@@ -446,6 +446,18 @@ fn finish_response(args: FinishArgs<'_>) -> Option<HandleWireResult> {
         resp.encode_with_limit(meta.size_limit).ok()?
     };
 
+    if loggable {
+        tracing::debug!(
+            client = %source,
+            protocol = ?meta.protocol,
+            question = %question.name,
+            qtype = %question.qtype,
+            rcode = %resp.rcode(),
+            answers = ?resp.answers.iter().map(|r| format!("{} {} {:?}", r.name, r.ttl, r.rdata)).collect::<Vec<_>>(),
+            "answer to client"
+        );
+    }
+
     let event = make_event(
         meta,
         source,
