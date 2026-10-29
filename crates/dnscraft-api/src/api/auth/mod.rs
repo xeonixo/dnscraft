@@ -8,7 +8,7 @@
 //! from cookie sessions; requests with no credentials pass through untouched so
 //! A7 owns the final `401`/role decisions.
 
-mod csrf;
+pub(crate) mod csrf;
 pub(crate) mod local;
 pub(crate) mod oidc;
 pub(crate) mod roles;
@@ -16,6 +16,7 @@ pub(crate) mod session_routes;
 mod sessions;
 pub(crate) mod tokens;
 
+pub(crate) use csrf::{csrf_matches, csrf_token_for};
 pub use local::{LocalAccountSnapshot, LocalAccountStore};
 pub use oidc::{OidcSettings, OidcState};
 pub use roles::{

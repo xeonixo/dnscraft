@@ -42,6 +42,7 @@ use super::mcp_endpoints::{
     remove_custom_rule, resume_filter_set, test_query,
 };
 use super::notifications_routes::{get_notifications, post_notification_test, put_notifications};
+use super::oauth;
 use super::policy_routes::{
     create_client_id, delete_client_id, delete_record, list_client_ids, list_records,
     put_client_id, put_record,
@@ -287,11 +288,18 @@ pub(crate) fn build_router(state: AppState) -> Router {
 
     // Mount MCP when the backend is wired and MCP is enabled. When disabled the
     // not_found fallback returns 404 control_api.not_found (no MCP-specific code).
+    let mut oauth_enabled = false;
     if let Some(inner) = state.mcp_backend_inner().cloned() {
         let mcp_config = state.mcp_config().clone();
         if mcp_config.enabled {
             let backend = Arc::new(ControlMcpBackend::new(inner));
             router = router.nest_service("/mcp/v1", dnscraft_mcp::service(backend, mcp_config));
+            // OAuth sign-in for MCP clients; only the master issues credentials.
+            if state.auth_state().is_some() && !state.is_cluster_sub_node() {
+                oauth_enabled = true;
+                let oauth_routes = oauth::routes(state.clone());
+                router = router.merge(oauth_routes);
+            }
         }
     }
 
@@ -306,6 +314,14 @@ pub(crate) fn build_router(state: AppState) -> Router {
         router = router.layer(middleware::from_fn_with_state(
             auth.sessions().clone(),
             auth_middleware,
+        ));
+    }
+
+    if oauth_enabled {
+        // Outside RBAC so its 401 also carries the OAuth discovery hint.
+        router = router.layer(middleware::from_fn_with_state(
+            state.clone(),
+            oauth::www_authenticate,
         ));
     }
 

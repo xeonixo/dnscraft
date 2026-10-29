@@ -21,7 +21,7 @@ Expose DNScraft's query log, configuration, and real-time DNS testing capabiliti
 ### Non-goals
 
 - Not a replacement for the web UI or a general-purpose DNS management interface.
-- Not implementing OAuth-based MCP client authorization (internal-only, static bearer tokens).
+- OAuth for MCP clients is a thin sign-in layer, not a general authorization server: see § OAuth sign-in. Static bearer tokens stay supported.
 - Not supporting MCP resources or prompts in v1 (tools only).
 - Not exposing secrets, private keys, or full configuration snapshots (viewer sees read-only status, admin cannot retrieve token material).
 - Not a separate rate-limit policy: the MCP crate keeps its own per-token buckets with the same default rates as `control-api` (see § Limits and defaults); `control-api` still counts `/mcp/v1` requests in its own buckets.
@@ -156,12 +156,22 @@ Handshake-based revisions (with `initialize` and session management) are **2025-
   - **Per-token rate buckets:** the mcp crate keeps read, write and failed-auth token buckets (`read_per_second` 100, `write_per_second` 20, `auth_per_second` 10, `max_tracked_tokens` 10000; LRU-bounded). The control-api limiter (SPEC-control-api.md § General rules) also applies to `/mcp/v1`.
 - **Protocol version validation per request:** Each request's `MCP-Protocol-Version` header is checked. Unsupported version → HTTP 400 + `UnsupportedProtocolVersionError` (JSON-RPC error with supported versions in `data.supportedVersions`). No session-level negotiation.
 
+### OAuth sign-in (Claude connector)
+
+DNScraft serves a minimal OAuth 2.1 authorization server (`crates/dnscraft-api/src/api/oauth.rs`) so a client can sign in through the owner's browser session (OIDC or break-glass, admin role required) instead of a pasted token:
+
+- Discovery: `/.well-known/oauth-protected-resource[/mcp/v1]`, `/.well-known/oauth-authorization-server`; a 401 on `/mcp/v1` carries `WWW-Authenticate: Bearer resource_metadata=...`.
+- `POST /oauth/register`: stateless DCR, redirect URIs limited to `claude.ai`/`claude.com` callbacks and loopback.
+- `/oauth/authorize`: PKCE `S256` mandatory, consent page with CSRF token, audited as `oauth.authorize`.
+- `POST /oauth/token`: `authorization_code` only; issues a normal `mcp:write` token, 30 days, no refresh token.
+- Public base URL: first `allowed_origins` entry, else `Host`. Mounted only when MCP is enabled and the node is not a cluster sub-node.
+
 ### Legacy session mode (optional)
 
 Clients implementing the 2025-11-25 or earlier handshake-based protocol expect an `initialize` → SSE session flow. The server can optionally support these legacy clients via:
 
 - Config: `control_api.mcp.legacy_session_mode` (default **false**, mapped to rmcp's `with_legacy_session_mode`).
-- When `true`: rmcp serves legacy handshake clients alongside 2026-07-28 stateless requests, at the cost of increased attack surface (session state, SSE idle timeouts, `max_sessions_per_token` limits on in-memory session objects).
+- When `true`: `MCP-Protocol-Version` becomes optional (handshake clients omit it on `initialize`); rmcp serves legacy handshake clients alongside 2026-07-28 stateless requests, at the cost of increased attack surface (session state, SSE idle timeouts, `max_sessions_per_token` limits on in-memory session objects).
 - When `false`: only stateless 2026-07-28 requests are accepted; legacy clients receive `UnsupportedProtocolVersionError`.
 
 **Recommendation:** Default to `false`. Legacy session mode reintroduces session-state denial-of-service vectors (idle session accumulation, memory usage per session) and the `max_sessions_per_token`/`session_idle_timeout` configuration that the stateless protocol eliminates. This is the only reason for the default; it does not depend on any claim about client support. **Client compatibility with 2026-07-28 is unverified.** Whether the clients the owner uses (Claude Desktop, Cline, Continue or others) speak 2026-07-28 must be checked by the owner against the specific client versions they deploy; if a client cannot, the owner can enable legacy session mode explicitly. This is an **owner decision** (see Open Questions).

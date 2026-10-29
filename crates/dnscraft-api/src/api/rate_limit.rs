@@ -261,7 +261,7 @@ pub(crate) fn client_source(state: &AppState, peer: IpAddr, headers: &HeaderMap)
 /// Classifies a request into its rate-limit bucket: auth paths use the auth
 /// bucket regardless of method, GET/HEAD are reads, everything else is a write.
 pub(crate) fn classify(method: &Method, path: &str) -> BucketClass {
-    if path.starts_with("/api/v1/auth") {
+    if path.starts_with("/api/v1/auth") || path.starts_with("/oauth/") {
         BucketClass::Auth
     } else if method == Method::GET || method == Method::HEAD {
         BucketClass::Read
