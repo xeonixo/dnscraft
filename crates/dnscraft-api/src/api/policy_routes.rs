@@ -42,7 +42,8 @@ pub(crate) struct RecordBody {
     #[serde(default)]
     ttl: Option<u32>,
     rdata: String,
-    /// Per-view replacement values, keyed by view id.
+    /// Per-view replacement values, keyed by view id. An empty string means
+    /// no answer for this type in that view (NODATA).
     #[serde(default)]
     overrides: BTreeMap<String, String>,
 }
@@ -553,7 +554,13 @@ fn build_record(body: RecordBody) -> Result<ViewRecordConfig, ControlApiError> {
             return Err(invalid(&format!("invalid override view id `{view}`")));
         }
         let view_id = ViewId::new(view).map_err(|_| invalid("invalid override view id"))?;
-        overrides.insert(view_id, parse_rdata(rtype, text)?);
+        // Empty string = suppress this type in the view (not inherit).
+        let value = if text.is_empty() {
+            None
+        } else {
+            Some(parse_rdata(rtype, text)?)
+        };
+        overrides.insert(view_id, value);
     }
     Ok(ViewRecordConfig {
         name,
@@ -614,7 +621,12 @@ fn record_json(record: &ViewRecordConfig) -> Value {
     let overrides: BTreeMap<String, String> = record
         .overrides
         .iter()
-        .map(|(view, rdata)| (view.to_string(), rdata_text(rdata)))
+        .map(|(view, rdata)| {
+            (
+                view.to_string(),
+                rdata.as_ref().map_or_else(String::new, rdata_text),
+            )
+        })
         .collect();
     json!({
         "name": record.name.to_string(),

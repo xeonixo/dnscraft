@@ -108,8 +108,9 @@ pub struct ViewRecordConfig {
     /// and PTR are accepted.
     pub rdata: RData,
     /// Per-view replacement data, keyed by view id. A view without an entry
-    /// uses [`Self::rdata`].
-    pub overrides: BTreeMap<ViewId, RData>,
+    /// uses [`Self::rdata`]. `None` means no answer for this type in that
+    /// view (NODATA when the name is otherwise known).
+    pub overrides: BTreeMap<ViewId, Option<RData>>,
 }
 
 /// Presentation-text wire form of [`ViewRecordConfig`].
@@ -144,8 +145,15 @@ impl TryFrom<RecordWire> for ViewRecordConfig {
         for (view, text) in wire.overrides {
             let id = ViewId::new(&view)
                 .map_err(|err| format!("record `{}`: override view `{view}`: {err}", wire.name))?;
-            let value = parse_rdata(rtype, &text)
-                .map_err(|err| format!("record `{}` override `{view}`: {err}", wire.name))?;
+            // Empty string = no answer for this type in the view (not "inherit").
+            let value =
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(parse_rdata(rtype, &text).map_err(|err| {
+                        format!("record `{}` override `{view}`: {err}", wire.name)
+                    })?)
+                };
             overrides.insert(id, value);
         }
         Ok(Self {
@@ -167,16 +175,29 @@ impl From<ViewRecordConfig> for RecordWire {
             overrides: record
                 .overrides
                 .iter()
-                .map(|(view, rdata)| (view.to_string(), format_rdata(rdata)))
+                .map(|(view, rdata)| {
+                    (
+                        view.to_string(),
+                        rdata.as_ref().map_or_else(String::new, format_rdata),
+                    )
+                })
                 .collect(),
         }
     }
 }
 
 impl ViewRecordConfig {
-    /// Record data this record has in `view` (the override, else the default).
-    pub fn rdata_for(&self, view: &ViewId) -> &RData {
-        self.overrides.get(view).unwrap_or(&self.rdata)
+    /// Record data this record has in `view`.
+    ///
+    /// - missing override → [`Some`] of the default [`Self::rdata`]
+    /// - override with data → [`Some`] of that data
+    /// - override with empty / [`None`] → [`None`] (suppress / NODATA)
+    pub fn rdata_for(&self, view: &ViewId) -> Option<&RData> {
+        match self.overrides.get(view) {
+            Some(None) => None,
+            Some(Some(rdata)) => Some(rdata),
+            None => Some(&self.rdata),
+        }
     }
 }
 
@@ -624,7 +645,7 @@ mod tests {
                     rdata: RData::A(Ipv4Addr::new(192, 0, 2, 10)),
                     overrides: BTreeMap::from([(
                         ViewId::new("lan").unwrap(),
-                        RData::A(Ipv4Addr::new(192, 0, 2, 50)),
+                        Some(RData::A(Ipv4Addr::new(192, 0, 2, 50))),
                     )]),
                 },
                 ViewRecordConfig {
@@ -684,7 +705,21 @@ mod tests {
         let guests = ViewId::new("guests").unwrap();
         assert_eq!(
             rec.overrides[&guests],
-            RData::A(Ipv4Addr::new(192, 0, 2, 50))
+            Some(RData::A(Ipv4Addr::new(192, 0, 2, 50)))
+        );
+
+        let nodata = serde_json::json!({
+            "name": "nas.lan.example.com",
+            "type": "AAAA",
+            "rdata": "2001:db8::10",
+            "overrides": { "guests": "" },
+        });
+        let rec: ViewRecordConfig = serde_json::from_value(nodata).unwrap();
+        assert_eq!(rec.overrides[&guests], None);
+        assert!(rec.rdata_for(&guests).is_none());
+        assert_eq!(
+            serde_json::to_value(&rec).unwrap()["overrides"]["guests"],
+            ""
         );
 
         let bad =

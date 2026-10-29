@@ -180,6 +180,33 @@ async fn records_upsert_list_and_delete_by_name_and_type() {
 }
 
 #[tokio::test]
+async fn records_round_trip_empty_override_as_no_answer() {
+    let h = harness().await;
+    seed_policy(&h.state).await;
+
+    let (status, response) = put(
+        &h.state,
+        "/api/v1/policy/records",
+        json!({
+            "name": "nas.lan.example.com",
+            "type": "AAAA",
+            "rdata": "2001:db8::10",
+            "overrides": { "guests": "" },
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["data"]["record"]["overrides"]["guests"], "");
+
+    let (status, response) = get(&h.state, "/api/v1/policy/records").await;
+    assert_eq!(status, StatusCode::OK);
+    let records = response["data"]["records"].as_array().unwrap();
+    assert_eq!(records.len(), 1, "{response}");
+    assert_eq!(records[0]["type"], "AAAA");
+    assert_eq!(records[0]["overrides"]["guests"], "");
+}
+
+#[tokio::test]
 async fn records_reject_bad_types_and_values() {
     let h = harness().await;
     seed_policy(&h.state).await;

@@ -72,8 +72,8 @@
 		recordId: null,
 	});
 
-	/** One editable deviation row (Netzbereich → value). Empty value = inherit default. */
-	type OverrideRow = { key: number; view: string; value: string };
+	/** One editable deviation row. `noAnswer` → empty override string (NODATA). */
+	type OverrideRow = { key: number; view: string; value: string; noAnswer: boolean };
 	let overrideRows = $state<OverrideRow[]>([]);
 	let nextOverrideKey = 0;
 
@@ -437,16 +437,25 @@
 			key: nextOverrideKey++,
 			view,
 			value,
+			noAnswer: value === '',
 		}));
 	}
 
-	/** Absent or blank value = inherit default (same as a missing key today). */
+	/**
+	 * Missing key = inherit. Empty string = no answer (NODATA). Non-empty = replacement.
+	 * Rows without a view, or with neither value nor noAnswer, are dropped (inherit).
+	 */
 	function overridesFromRows(list: OverrideRow[]): Record<string, string> {
 		const map: Record<string, string> = {};
 		for (const row of list) {
 			const view = row.view.trim();
+			if (view === '') continue;
+			if (row.noAnswer) {
+				map[view] = '';
+				continue;
+			}
 			const value = row.value.trim();
-			if (view === '' || value === '') continue;
+			if (value === '') continue;
 			map[view] = value;
 		}
 		return map;
@@ -465,7 +474,10 @@
 		const taken = new SvelteSet(overrideRows.map((row) => row.view));
 		const next = views.find((view) => !taken.has(view.id));
 		if (!next) return;
-		overrideRows = [...overrideRows, { key: nextOverrideKey++, view: next.id, value: '' }];
+		overrideRows = [
+			...overrideRows,
+			{ key: nextOverrideKey++, view: next.id, value: '', noAnswer: false },
+		];
 	}
 
 	function removeOverrideRow(key: number): void {
@@ -844,10 +856,18 @@
 								id="ov-value-{row.key}"
 								class="field mono"
 								bind:value={overrideRows[i].value}
-								placeholder={inheritPlaceholder}
+								placeholder={row.noAnswer ? m.names_overrides_no_answer() : inheritPlaceholder}
 								autocomplete="off"
-								disabled={!isAdmin}
+								disabled={!isAdmin || row.noAnswer}
 							/>
+							<div class="no-answer-row">
+								<span class="no-answer-label">{m.names_overrides_no_answer()}</span>
+								<Switch
+									bind:checked={overrideRows[i].noAnswer}
+									disabled={!isAdmin}
+									aria-label={m.names_overrides_no_answer()}
+								/>
+							</div>
 							{#if isAdmin}
 								<button
 									type="button"
@@ -1245,9 +1265,29 @@
 	}
 	.override-row {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto auto;
 		gap: 0.375rem;
 		align-items: center;
+	}
+	@media (max-width: 36rem) {
+		.override-row {
+			grid-template-columns: minmax(0, 1fr) auto;
+		}
+		.override-row .field.mono {
+			grid-column: 1 / -1;
+		}
+	}
+	.no-answer-row {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.375rem;
+		min-height: 2.75rem;
+		cursor: pointer;
+	}
+	.no-answer-label {
+		font-size: 0.75rem;
+		color: var(--label-2);
+		white-space: nowrap;
 	}
 	.remove-override {
 		display: inline-flex;
