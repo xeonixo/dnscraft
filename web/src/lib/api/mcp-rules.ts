@@ -60,3 +60,27 @@ export const removeMcpRule = (domain: string, filterSetId = 'default'): Promise<
 
 export const resumeFilterSet = (filterSetId = 'default'): Promise<{ filter_set_id: string }> =>
 	post('/filtering/resume', { body: { filter_set_id: filterSetId } });
+
+/** An exception an assistant proposed over MCP; it only counts once the owner confirms it. */
+export interface McpProposal {
+	id: string;
+	filter_set_id: string;
+	domain: string;
+	include_subdomains: boolean;
+	reason: string;
+	rule_text: string | null;
+	created_at: string | null;
+	expires_at: string | null;
+}
+
+export const listMcpProposals = async (): Promise<McpProposal[]> =>
+	(await get<{ proposals: McpProposal[] }>('/filtering/mcp-proposals')).proposals;
+
+/** Adds the allow line to the filter set's custom rules and drops the proposal. */
+export const confirmMcpProposal = (
+	id: string,
+): Promise<{ rule_text: string; filter_set_id: string }> =>
+	post(`/filtering/mcp-proposals/${encodeURIComponent(id)}/confirm`);
+
+export const rejectMcpProposal = (id: string): Promise<unknown> =>
+	post(`/filtering/mcp-proposals/${encodeURIComponent(id)}/reject`);

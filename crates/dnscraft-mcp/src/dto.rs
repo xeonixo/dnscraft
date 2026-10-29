@@ -712,6 +712,34 @@ pub struct AddRuleResult {
     pub config_version: Option<u64>,
 }
 
+/// Input for `propose_exception`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProposeExceptionParams {
+    /// Canonical domain.
+    pub domain: String,
+    /// Whether subdomains are covered.
+    pub include_subdomains: bool,
+    /// Filter set the owner would add the exception to; the backend resolves the default.
+    pub filter_set_id: Option<String>,
+    /// MCP token that made the proposal; stored with it for attribution.
+    pub token_id: String,
+    /// Sanitized reason from the assistant, shown to the owner.
+    pub reason: String,
+}
+
+/// Result of `propose_exception`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProposeExceptionResult {
+    /// Server-assigned proposal id.
+    pub proposal_id: String,
+    /// Filter set the proposal belongs to.
+    pub filter_set_id: String,
+    /// Server-set RFC 3339 creation timestamp.
+    pub created_at: String,
+    /// Server-set RFC 3339 expiry timestamp; the proposal lapses unconfirmed.
+    pub expires_at: String,
+}
+
 /// Input for `remove_rule`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveRuleParams {

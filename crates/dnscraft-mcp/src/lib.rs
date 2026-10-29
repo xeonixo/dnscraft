@@ -31,11 +31,12 @@ pub use dto::{
     ClientListParams, ClientListResult, DecisionFilter, DecisionStep, DecisionTimings,
     DnssecCounts, ExplainBlockResult, ExplainReason, FilteringStatus, ListRulesParams,
     ListRulesResult, ListenerStatus, McpRuleInfo, NodeStatus, PauseDuration, PauseInfo,
-    PauseResult, QType, QueryClient, QueryDetail, QueryLogEntry, QueryLogFilter, QueryLogResult,
-    QueryLogSearch, QueryName, QueryTimings, RemoveRuleParams, RemoveRuleResult, ResolverStatus,
-    ResumeResult, Selection, StatsParams, StatsPeriod, StatsResult, SynthesizedAnswer,
-    TempAllowInfo, TempAllowParams, TempAllowResult, TestQueryFilter, TestQueryParams,
-    TestQueryResult, TlsStatus, TokenInfo, TokenScope, TopClient, TopDomain, VlanInfo,
+    PauseResult, ProposeExceptionParams, ProposeExceptionResult, QType, QueryClient, QueryDetail,
+    QueryLogEntry, QueryLogFilter, QueryLogResult, QueryLogSearch, QueryName, QueryTimings,
+    RemoveRuleParams, RemoveRuleResult, ResolverStatus, ResumeResult, Selection, StatsParams,
+    StatsPeriod, StatsResult, SynthesizedAnswer, TempAllowInfo, TempAllowParams, TempAllowResult,
+    TestQueryFilter, TestQueryParams, TestQueryResult, TlsStatus, TokenInfo, TokenScope, TopClient,
+    TopDomain, VlanInfo,
 };
 pub use error::McpError;
 pub use protected::ProtectedDomains;

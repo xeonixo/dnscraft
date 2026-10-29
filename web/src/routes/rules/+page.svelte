@@ -11,9 +11,13 @@
 	import { ApiError } from '$lib/api/client';
 	import { listFilterSets, type FilterSet } from '$lib/api/filtering';
 	import {
+		confirmMcpProposal,
 		listAllMcpRules,
+		listMcpProposals,
+		rejectMcpProposal,
 		removeMcpRule,
 		resumeFilterSet,
+		type McpProposal,
 		type McpRuleKind,
 		type McpRuleRow,
 	} from '$lib/api/mcp-rules';
@@ -54,6 +58,8 @@
 		entries: RuleEntry[];
 		allows: ActiveRow[];
 		pauses: ActiveRow[];
+		/** Exceptions an assistant proposed; they wait for the owner. */
+		proposals: McpProposal[];
 		/** The node does not serve MCP-managed rules (the reads answered 404). */
 		mcpUnavailable: boolean;
 	}
@@ -110,8 +116,18 @@
 		}
 	}
 
+	/** A node without the proposals endpoint (404) simply has none. */
+	async function readProposals(): Promise<McpProposal[]> {
+		try {
+			return await listMcpProposals();
+		} catch (cause) {
+			if (cause instanceof ApiError && cause.status === 404) return [];
+			throw cause;
+		}
+	}
+
 	async function loadModel(): Promise<Model> {
-		const sets = await listFilterSets();
+		const [sets, proposals] = await Promise.all([listFilterSets(), readProposals()]);
 		const now = new Date();
 		const perSet = await Promise.all(
 			sets.map(async (set) => {
@@ -162,6 +178,7 @@
 			entries: buildRuleEntries(sets, mcpBySet),
 			allows,
 			pauses,
+			proposals,
 			mcpUnavailable,
 		};
 	}
@@ -205,6 +222,49 @@
 		]
 			.filter((part) => part !== '')
 			.join(' · ');
+	}
+
+	function proposalDetailOf(proposal: McpProposal): string {
+		const setName = model?.sets.find((set) => set.id === proposal.filter_set_id)?.name;
+		const expires = proposal.expires_at ? Date.parse(proposal.expires_at) : Number.NaN;
+		return [
+			m.rules_set_line({ set: displayText(setName || proposal.filter_set_id, 60).text }),
+			scopeOf(proposal.include_subdomains),
+			proposal.reason
+				? m.rules_proposal_reason({ reason: displayText(proposal.reason, 200).text })
+				: '',
+			Number.isNaN(expires)
+				? ''
+				: m.rules_expires_in({ when: formatRelativeTime(new Date(expires), new Date(), locale) }),
+		]
+			.filter((part) => part !== '')
+			.join(' · ');
+	}
+
+	async function decide(proposal: McpProposal, confirm: boolean): Promise<void> {
+		busy = true;
+		pageFailure = null;
+		notice = null;
+		try {
+			if (confirm) {
+				const done = await confirmMcpProposal(proposal.id);
+				const setName = model?.sets.find((set) => set.id === done.filter_set_id)?.name;
+				notice = m.rules_proposal_done({
+					rule: displayText(done.rule_text, 120).text,
+					set: displayText(setName || done.filter_set_id, 60).text,
+				});
+			} else {
+				await rejectMcpProposal(proposal.id);
+				notice = m.rules_proposal_rejected();
+			}
+			await load();
+		} catch (cause) {
+			pageFailure = failureOf(cause);
+			// The proposal may be gone (expired or decided elsewhere): show the real list.
+			await load();
+		} finally {
+			busy = false;
+		}
 	}
 
 	function pausedDetailOf(row: ActiveRow): string {
@@ -370,6 +430,43 @@
 	{:else if model}
 		{#if model.mcpUnavailable}
 			<p class="meta">{m.rules_mcp_unavailable()}</p>
+		{/if}
+
+		{#if model.proposals.length > 0}
+			<section class="block" aria-labelledby="rules-proposals-head">
+				<h2 id="rules-proposals-head" class="section-head">{m.rules_proposals_heading()}</h2>
+				<p class="meta">{m.rules_proposals_intro()}</p>
+				<ul class="rule-list">
+					{#each model.proposals as proposal (proposal.id)}
+						<li class="rule-row static proposal">
+							<span class="rule-main">
+								<span class="rule-domain mono">{displayText(proposal.domain).text}</span>
+								<span class="rule-detail">{proposalDetailOf(proposal)}</span>
+							</span>
+							{#if isAdmin}
+								<span class="proposal-actions">
+									<button
+										type="button"
+										class="text-action"
+										disabled={busy}
+										onclick={() => void decide(proposal, true)}
+									>
+										{m.rules_proposal_allow()}
+									</button>
+									<button
+										type="button"
+										class="danger-text"
+										disabled={busy}
+										onclick={() => void decide(proposal, false)}
+									>
+										{m.rules_proposal_reject()}
+									</button>
+								</span>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			</section>
 		{/if}
 
 		{#if model.allows.length > 0 || model.pauses.length > 0}
@@ -730,6 +827,17 @@
 	}
 	.text-action {
 		color: var(--accent);
+	}
+	.proposal {
+		flex-wrap: wrap;
+	}
+	.proposal .rule-main {
+		flex-basis: 14rem;
+	}
+	.proposal-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
 	}
 	.danger-text {
 		color: var(--danger);

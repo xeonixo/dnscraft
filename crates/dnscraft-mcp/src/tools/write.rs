@@ -22,8 +22,8 @@ use serde_json::{Value, json};
 
 use super::{McpServer, parse_arguments, schema, token_from};
 use crate::dto::{
-    AddRuleParams, AuditEntry, AuditResult, PauseDuration, PauseParams, RemoveRuleParams,
-    TempAllowParams, TokenInfo, TokenScope,
+    AddRuleParams, AuditEntry, AuditResult, PauseDuration, PauseParams, ProposeExceptionParams,
+    RemoveRuleParams, TempAllowParams, TokenInfo, TokenScope,
 };
 use crate::error::McpError;
 use crate::result::{tool_error, tool_ok};
@@ -37,6 +37,9 @@ const ALLOW_DESCRIPTION: &str = "Temporarily allow a domain that is currently bl
 /// Static description for `add_rule`.
 const ADD_RULE_DESCRIPTION: &str = "Add a custom block rule to a filter set. The rule is built from structured input; no raw AdGuard syntax is accepted via MCP. Requires mcp:write scope and write_tools_enabled. The client will ask you to confirm. This affects every client using this filter set.";
 
+/// Static description for `propose_exception`.
+const PROPOSE_DESCRIPTION: &str = "Propose a permanent exception (allow) for a domain that a list blocks wrongly. This changes nothing by itself: the owner must confirm the proposal in the DNScraft web UI, and it lapses after 7 days if they do not. Use it after allow_temporarily when the same domain keeps being needed. Requires mcp:write scope and write_tools_enabled.";
+
 /// Static description for `remove_rule`.
 const REMOVE_RULE_DESCRIPTION: &str = "Remove a custom block rule that was previously added via MCP. Only rules created via MCP can be removed; web UI rules and downloaded list rules cannot. Requires mcp:write scope.";
 
@@ -46,15 +49,16 @@ const PAUSE_DESCRIPTION: &str = "Pause filtering for a filter set for a short du
 /// Static description for `resume_filter_set`.
 const RESUME_DESCRIPTION: &str = "Resume filtering for a paused filter set. Requires mcp:write scope and write_tools_enabled. The client will ask you to confirm this action. Resuming a set that is not paused is a no-op.";
 
-const WRITE_TOOL_NAMES: [&str; 5] = [
+const WRITE_TOOL_NAMES: [&str; 6] = [
     "allow_temporarily",
     "add_rule",
+    "propose_exception",
     "remove_rule",
     "pause_filter_set",
     "resume_filter_set",
 ];
 
-/// Whether `name` is one of the five write tools.
+/// Whether `name` is one of the six write tools.
 pub fn is_write_tool(name: &str) -> bool {
     WRITE_TOOL_NAMES.contains(&name)
 }
@@ -75,6 +79,10 @@ pub(crate) fn validate_arguments(name: &str, arguments: Option<JsonObject>) -> b
             let _ = sanitize_reason(args.reason.as_deref());
             validate_domain(&args.domain).is_ok()
         }),
+        "propose_exception" => parse_arguments::<AddRuleArgs>(arguments).is_ok_and(|args| {
+            let _ = sanitize_reason(args.reason.as_deref());
+            validate_domain(&args.domain).is_ok()
+        }),
         "remove_rule" => parse_arguments::<RemoveRuleArgs>(arguments)
             .is_ok_and(|args| validate_domain(&args.domain).is_ok()),
         "pause_filter_set" => parse_arguments::<PauseArgs>(arguments).is_ok(),
@@ -88,6 +96,7 @@ pub fn tool_definitions() -> Vec<Tool> {
     vec![
         allow_definition(),
         add_rule_definition(),
+        propose_definition(),
         remove_rule_definition(),
         pause_definition(),
         resume_definition(),
@@ -161,6 +170,38 @@ fn add_rule_definition() -> Tool {
         })),
     )
     .with_annotations(ToolAnnotations::new().destructive(true).idempotent(false))
+}
+
+fn propose_definition() -> Tool {
+    Tool::new(
+        "propose_exception",
+        PROPOSE_DESCRIPTION,
+        schema(json!({
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "description": "Domain name to except (validated and canonicalised; no wildcards, IP addresses or single-label names)"
+                },
+                "include_subdomains": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Cover all subdomains; keep this false unless the whole zone is needed"
+                },
+                "filter_set_id": {
+                    "type": "string",
+                    "description": "Filter set ID (default set if omitted)"
+                },
+                "reason": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "description": "Why the exception is needed; shown to the owner (sanitized before storage)"
+                }
+            },
+            "required": ["domain"]
+        })),
+    )
+    .with_annotations(ToolAnnotations::new().destructive(false).idempotent(true))
 }
 
 fn remove_rule_definition() -> Tool {
@@ -245,6 +286,7 @@ pub(crate) async fn call(
     match name {
         "allow_temporarily" => allow_temporarily(arguments, server, &token).await,
         "add_rule" => add_rule(arguments, server, &token).await,
+        "propose_exception" => propose_exception(arguments, server, &token).await,
         "remove_rule" => remove_rule(arguments, server, &token).await,
         "pause_filter_set" => pause_filter_set(arguments, server, &token).await,
         "resume_filter_set" => resume_filter_set(arguments, server, &token).await,
@@ -458,6 +500,70 @@ async fn add_rule(
         Err(error) => {
             // The backend audits every add_rule failure, including ones it
             // rejects before mutating; forwarding the error is enough here.
+            let code = error.code().to_owned();
+            let params = error.params().unwrap_or_else(|| json!({}));
+            tool_error(&code, params)
+        }
+    }
+}
+
+async fn propose_exception(
+    arguments: Option<JsonObject>,
+    server: &McpServer,
+    token: &TokenInfo,
+) -> CallToolResult {
+    let args = match parse_arguments::<AddRuleArgs>(arguments) {
+        Ok(args) => args,
+        Err(error) => return error,
+    };
+    let domain = match validate_domain(&args.domain) {
+        Ok(domain) => domain,
+        Err(error) => return error,
+    };
+    // A proposal covers one name unless the assistant asks for the zone.
+    let include_subdomains = args.include_subdomains.unwrap_or(false);
+    let reason = sanitize_reason(args.reason.as_deref());
+    let filter_set_id = args.filter_set_id.clone();
+
+    if let Err(error) = protected_violation(server, &domain, include_subdomains) {
+        let after = rule_failure_after(
+            &domain,
+            include_subdomains,
+            filter_set_id.as_deref(),
+            &reason,
+        );
+        let _ = record(
+            server,
+            token,
+            "mcp.propose_exception",
+            None,
+            Some(after),
+            AuditResult::Error,
+            Some(error.code()),
+        )
+        .await;
+        return tool_error(error.code(), error.params().unwrap_or_else(|| json!({})));
+    }
+
+    let params = ProposeExceptionParams {
+        domain: domain.clone(),
+        include_subdomains,
+        filter_set_id,
+        token_id: token.token_id.clone(),
+        reason,
+    };
+    match server.backend.propose_exception(params).await {
+        // The backend commits the proposal and its audit entry together.
+        Ok(result) => tool_ok(json!({
+            "status": "pending_owner_confirmation",
+            "proposal_id": sanitize(&result.proposal_id, CAP_LIST_ID),
+            "filter_set_id": sanitize(&result.filter_set_id, CAP_LIST_ID),
+            "domain": sanitize(&domain, CAP_DOMAIN),
+            "include_subdomains": include_subdomains,
+            "created_at": sanitize(&result.created_at, CAP_CLIENT_NAME),
+            "expires_at": sanitize(&result.expires_at, CAP_CLIENT_NAME),
+        })),
+        Err(error) => {
             let code = error.code().to_owned();
             let params = error.params().unwrap_or_else(|| json!({}));
             tool_error(&code, params)

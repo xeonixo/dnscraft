@@ -2,7 +2,7 @@
 
 Every API function DNScraft exposes, in one place. Covers the two surfaces the
 control plane offers: the **REST control API** (`/api/v1`, implemented in
-`crates/dnscraft-api`) and the **MCP tool API** (13 tools implemented in
+`crates/dnscraft-api`) and the **MCP tool API** (14 tools implemented in
 `crates/dnscraft-mcp`, mounted under `/mcp/v1` when
 `[control_api.mcp] enabled = true`).
 
@@ -314,7 +314,7 @@ are **not** part of the implemented surface.
 
 ## MCP tools
 
-The `dnscraft-mcp` crate implements all 13 tools and exposes a stateless
+The `dnscraft-mcp` crate implements all 14 tools and exposes a stateless
 `service()` meant to be mounted by `control-api` under `/mcp/v1`. The mount is
 not wired yet (`dnscraft-api` has no `dnscraft-mcp` dependency); it lands in
 Phase 3 (M20–M27). Tools use the same tokens/roles/audit as the REST API;

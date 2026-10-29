@@ -15,9 +15,9 @@ use serde_json::Value;
 use crate::dto::{
     AddRuleParams, AddRuleResult, AuditEntry, ClientListParams, ClientListResult,
     ExplainBlockResult, ListRulesParams, ListRulesResult, McpRuleInfo, NodeStatus, PauseParams,
-    PauseResult, QType, QueryDetail, QueryLogResult, QueryLogSearch, RemoveRuleParams,
-    RemoveRuleResult, ResumeResult, StatsParams, StatsResult, TempAllowParams, TempAllowResult,
-    TestQueryParams, TestQueryResult, TokenInfo,
+    PauseResult, ProposeExceptionParams, ProposeExceptionResult, QType, QueryDetail,
+    QueryLogResult, QueryLogSearch, RemoveRuleParams, RemoveRuleResult, ResumeResult, StatsParams,
+    StatsResult, TempAllowParams, TempAllowResult, TestQueryParams, TestQueryResult, TokenInfo,
 };
 
 /// An error returned by an [`McpBackend`] implementation.
@@ -127,6 +127,13 @@ pub trait McpBackend: Send + Sync {
 
     /// Create an MCP-managed block rule.
     async fn add_custom_rule(&self, params: AddRuleParams) -> Result<AddRuleResult, BackendError>;
+
+    /// Record a proposal for a permanent exception. It has no effect on
+    /// filtering until the owner confirms it in the web UI.
+    async fn propose_exception(
+        &self,
+        params: ProposeExceptionParams,
+    ) -> Result<ProposeExceptionResult, BackendError>;
 
     /// Look up one MCP-created rule by canonical domain and filter set.
     ///

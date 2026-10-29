@@ -823,7 +823,7 @@ async fn flow4_scope_matrix_across_families() {
     // mcp:read may use both MCP tool classes that are reads.
     let (status, body) = h.mcp_method(Some(h.read_token()), "tools/list").await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["result"]["tools"].as_array().map(Vec::len), Some(13));
+    assert_eq!(body["result"]["tools"].as_array().map(Vec::len), Some(14));
     assert!(h.rules(h.read_token()).await.is_empty());
 
     // mcp:read may not call a write tool.

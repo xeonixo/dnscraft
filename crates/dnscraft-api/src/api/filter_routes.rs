@@ -49,6 +49,11 @@ pub(crate) struct FilterSetBody {
     /// Omitted means "carry the stored rules over"; `[]` deletes them.
     #[serde(default)]
     mcp_rules: Option<Vec<Value>>,
+    /// Accepted so a read set can be written back; proposals are only ever
+    /// changed through the confirm and reject endpoints, so this is dropped.
+    #[serde(default)]
+    #[allow(dead_code)]
+    mcp_proposals: Option<Vec<Value>>,
 }
 
 impl FilterSetBody {

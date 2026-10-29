@@ -888,6 +888,167 @@ pub(crate) fn add_rule_to_snapshot(
     Ok(())
 }
 
+/// How long a proposed exception waits for the owner.
+pub(crate) const PROPOSAL_LIFETIME: Duration = Duration::from_secs(7 * 24 * 3600);
+/// Pending proposals per filter set; bounds what an assistant can queue.
+const PROPOSAL_CAP: usize = 20;
+
+/// Whether `proposal` is for exactly this name and subdomain flag.
+fn same_proposal(proposal: &Value, domain: &str, include_subdomains: bool) -> bool {
+    proposal.get("domain").and_then(Value::as_str) == Some(domain)
+        && proposal.get("include_subdomains").and_then(Value::as_bool) == Some(include_subdomains)
+}
+
+/// The pending proposal for this name in a filter set, if any.
+pub(crate) fn find_proposal(
+    snapshot: &Value,
+    set: &SetId,
+    domain: &DomainName,
+    include_subdomains: bool,
+    now: SystemTime,
+) -> Option<Value> {
+    snapshot
+        .get("filtering")?
+        .get("sets")?
+        .as_array()?
+        .iter()
+        .find(|s| s.get("id").and_then(Value::as_str) == Some(set.as_str()))?
+        .get("mcp_proposals")?
+        .as_array()?
+        .iter()
+        .find(|p| active_rule(p, now) && same_proposal(p, domain.as_str(), include_subdomains))
+        .cloned()
+}
+
+/// Appends a pending exception proposal to a filter set in `snapshot`.
+///
+/// Returns `false` without a change when the same name is already pending, so
+/// repeating a proposal is harmless. Expired proposals are pruned first; the
+/// cap counts only live ones.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn add_proposal_to_snapshot(
+    snapshot: &mut Value,
+    set: &SetId,
+    domain: &DomainName,
+    include_subdomains: bool,
+    reason: &str,
+    proposal_id: &str,
+    created_secs: i64,
+    expires_secs: i64,
+    token_id: &str,
+    now: SystemTime,
+) -> Result<bool, ControlApiError> {
+    let set_value = set_mut(snapshot, set.as_str()).ok_or_else(|| unknown_set(set.as_str()))?;
+    let proposals = set_value
+        .as_object_mut()
+        .ok_or_else(|| ControlApiError::Internal {
+            message: "filter set is not an object".to_owned(),
+        })?
+        .entry("mcp_proposals")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| ControlApiError::Internal {
+            message: "mcp_proposals is not an array".to_owned(),
+        })?;
+    proposals.retain(|p| active_rule(p, now));
+    if proposals
+        .iter()
+        .any(|p| same_proposal(p, domain.as_str(), include_subdomains))
+    {
+        return Ok(false);
+    }
+    if proposals.len() >= PROPOSAL_CAP {
+        return Err(mcp_error(
+            "mcp.rule_limit_exceeded",
+            json!({ "filter_set_id": set.as_str(), "max": PROPOSAL_CAP }),
+        ));
+    }
+    proposals.push(json!({
+        "id": proposal_id,
+        "domain": domain.as_str(),
+        "include_subdomains": include_subdomains,
+        "reason": reason,
+        "created_at": created_secs,
+        "expires_at": expires_secs,
+        "token_id": token_id,
+    }));
+    Ok(true)
+}
+
+/// Removes the live proposal `id` from whichever filter set holds it.
+///
+/// Returns the set id and the stored proposal; an unknown or expired id is
+/// `control_api.not_found`.
+pub(crate) fn take_proposal(
+    snapshot: &mut Value,
+    id: &str,
+    now: SystemTime,
+) -> Result<(String, Value), ControlApiError> {
+    let sets = snapshot
+        .get_mut("filtering")
+        .and_then(|f| f.get_mut("sets"))
+        .and_then(Value::as_array_mut);
+    for set in sets.into_iter().flatten() {
+        let set_id = set
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let Some(proposals) = set.get_mut("mcp_proposals").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        if let Some(pos) = proposals
+            .iter()
+            .position(|p| p.get("id").and_then(Value::as_str) == Some(id) && active_rule(p, now))
+        {
+            return Ok((set_id, proposals.remove(pos)));
+        }
+    }
+    Err(ControlApiError::NotFound {
+        what: "mcp proposal".to_owned(),
+    })
+}
+
+/// The allow rule text a confirmed proposal adds to the set's custom rules.
+pub(crate) fn exception_rule_text(
+    domain: &str,
+    include_subdomains: bool,
+) -> Result<String, ControlApiError> {
+    let spec = RuleSpec {
+        action: RuleAction::Allow,
+        domain: domain.to_owned(),
+        include_subdomains,
+        record_types: RecordTypeSel::default(),
+        important: false,
+        rewrite: None,
+    }
+    .normalized()
+    .map_err(build_error)?;
+    build_rule(&spec).map_err(build_error)
+}
+
+/// Appends `rule_text` as its own line to a set's custom rules, once.
+pub(crate) fn append_custom_rule(
+    snapshot: &mut Value,
+    set: &str,
+    rule_text: &str,
+) -> Result<(), ControlApiError> {
+    let rules = set_mut(snapshot, set)
+        .and_then(|s| s.get_mut("custom_rules"))
+        .ok_or_else(|| unknown_set(set))?;
+    let current = rules.as_str().unwrap_or_default();
+    if current.lines().any(|line| line.trim() == rule_text) {
+        return Ok(());
+    }
+    let sep = if current.is_empty() || current.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    *rules = Value::String(format!("{current}{sep}{rule_text}\n"));
+    Ok(())
+}
+
 /// Removes every stored MCP rule for `domain` from a filter set.
 ///
 /// Returns whether anything was removed. Each matched rule is checked against
@@ -1817,6 +1978,118 @@ impl McpBackend for ControlMcpBackend {
             created_at: rfc3339(now),
             expires_at: rfc3339(expires_at),
             config_version: Some(version),
+        })
+    }
+
+    async fn propose_exception(
+        &self,
+        params: dnscraft_mcp::dto::ProposeExceptionParams,
+    ) -> Result<dnscraft_mcp::dto::ProposeExceptionResult, BackendError> {
+        let service = self.config_service()?;
+        let actor = ConfigActor::new(params.token_id.clone(), "token");
+        let failure_after = json!({
+            "domain": params.domain.clone(),
+            "include_subdomains": params.include_subdomains,
+            "filter_set_id": params.filter_set_id.clone(),
+            "reason": params.reason.clone(),
+        });
+        let prepared = parse_set(params.filter_set_id.as_deref())
+            .and_then(|set| canonical_allow_domain(&params.domain).map(|domain| (set, domain)));
+        let (set, domain) = match prepared {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                service
+                    .record_action(
+                        &actor,
+                        "mcp.propose_exception",
+                        None,
+                        Some(&failure_after),
+                        Some(err.code()),
+                    )
+                    .await;
+                return Err(backend_error(err));
+            }
+        };
+        let now = self.inner.clock.now();
+        let expires_at = now + PROPOSAL_LIFETIME;
+        let created_secs = dnscraft_common::clock::unix_seconds(now);
+        let expires_secs = dnscraft_common::clock::unix_seconds(expires_at);
+        let proposal_id = crate::query_log::new_id().map_err(backend_error)?;
+        let include = params.include_subdomains;
+        let issuer = self.inner.oidc_issuer.clone();
+        let extra = self.inner.mcp_config.protected_domains.clone();
+        let (set_for_mutation, domain_for_mutation) = (set.clone(), domain.clone());
+        let (id_for_mutation, reason, token_id) = (
+            proposal_id.clone(),
+            params.reason.clone(),
+            params.token_id.clone(),
+        );
+        let after = json!({
+            "proposal_id": proposal_id,
+            "domain": domain.as_str(),
+            "include_subdomains": include,
+            "filter_set_id": set.as_str(),
+            "reason": params.reason,
+            "created_at": rfc3339(now),
+            "expires_at": rfc3339(expires_at),
+        });
+
+        let version = service
+            .mutate_audited(
+                &actor,
+                "mcp.propose_exception",
+                Some(failure_after),
+                move |snapshot| {
+                    let protected = protected_for(Some(snapshot), issuer.as_deref(), extra)?;
+                    reject_protected(&protected, domain_for_mutation.as_str(), include)?;
+                    let added = add_proposal_to_snapshot(
+                        snapshot,
+                        &set_for_mutation,
+                        &domain_for_mutation,
+                        include,
+                        &reason,
+                        &id_for_mutation,
+                        created_secs,
+                        expires_secs,
+                        &token_id,
+                        now,
+                    )?;
+                    Ok(added.then_some(MutationAudit {
+                        before: None,
+                        after,
+                    }))
+                },
+            )
+            .await
+            .map_err(backend_error)?;
+        if version.is_some() {
+            return Ok(dnscraft_mcp::dto::ProposeExceptionResult {
+                proposal_id,
+                filter_set_id: set.as_str().to_owned(),
+                created_at: rfc3339(now),
+                expires_at: rfc3339(expires_at),
+            });
+        }
+        // The same name was already pending: report that proposal.
+        let existing = self
+            .current_snapshot()
+            .await?
+            .and_then(|snapshot| find_proposal(&snapshot, &set, &domain, include, now))
+            .ok_or_else(|| BackendError::Internal {
+                message: "pending proposal vanished".into(),
+            })?;
+        let time = |key: &str| {
+            existing
+                .get(key)
+                .and_then(stored_time)
+                .map(rfc3339)
+                .unwrap_or_default()
+        };
+        Ok(dnscraft_mcp::dto::ProposeExceptionResult {
+            proposal_id: json_str(&existing, "id"),
+            filter_set_id: set.as_str().to_owned(),
+            created_at: time("created_at"),
+            expires_at: time("expires_at"),
         })
     }
 

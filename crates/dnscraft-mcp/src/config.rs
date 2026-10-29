@@ -69,7 +69,7 @@ pub const MAX_TRACKED_TOKENS: usize = 1_000_000;
 pub struct McpConfig {
     /// Whether the MCP endpoint is mounted. Off by default.
     pub enabled: bool,
-    /// Independent gate for the five write tools.
+    /// Independent gate for the six write tools.
     pub write_tools_enabled: bool,
     /// Serve legacy (pre-2026-07-28) handshake clients alongside stateless
     /// requests.

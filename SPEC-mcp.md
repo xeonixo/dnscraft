@@ -12,7 +12,7 @@ Expose DNScraft's query log, configuration, and real-time DNS testing capabiliti
 - MCP server implementation over **Streamable HTTP**, revision **2026-07-28**, on the internal API listener only.
 - Single endpoint `/mcp/v1` (POST only; GET/DELETE → 405); every JSON-RPC message is its own stateless POST.
 - Read tools (viewer role, `mcp:read` scope): search query log, retrieve single query with full decision record, explain why a domain was blocked, dry-run test query, statistics, client list, node status, list MCP-managed rules and active temporary allows/pauses (8 tools).
-- Write tools (admin role, `mcp:write` scope): temporary allow with mandatory expiry, add/remove structured block rules, pause/resume filter sets (5 tools).
+- Write tools (admin role, `mcp:write` scope): temporary allow with mandatory expiry, add/remove structured block rules, propose a permanent exception for the owner to confirm, pause/resume filter sets (6 tools).
 - Separate token scopes (`mcp:read`, `mcp:write`) valid only on MCP endpoints; normal API tokens rejected on MCP unless explicitly scoped.
 - Server-side write-tools gate: `control_api.mcp.write_tools_enabled` (default false) independent of token scope; with it off, write tools are not listed.
 - Prompt-injection defenses: query-log content (domain names, client names, list names) returned strictly as structured data with length caps and sanitization (all control characters including `\t`, `\n`, `\r` neutralized); assistant-supplied `reason` fields sanitized before audit; write tools marked `destructiveHint` for client confirmation.
@@ -208,7 +208,7 @@ Justification: Tools are sufficient for the "search, explain, act" workflow. Res
 
 Each tool is a JSON-RPC method under the `tools/call` request. Input is validated against the tool's `inputSchema` (JSON Schema draft 2020-12); successful output is MCP `content` (array of `text` or `resource` content items). Every tool returns structured JSON in a `text` content item, never freeform prose built from log data. Tool-level errors additionally set `isError: true` and carry the error in `structuredContent` (one shape, defined below).
 
-**Tool count:** 13 tools total: **8 read tools** (viewer, `mcp:read` scope), **5 write tools** (admin, `mcp:write` scope).
+**Tool count:** 14 tools total: **8 read tools** (viewer, `mcp:read` scope), **6 write tools** (admin, `mcp:write` scope).
 
 ### Common patterns
 
@@ -753,6 +753,23 @@ All write tools require `mcp:write` scope on the bearer token **and** `control_a
 
 ---
 
+#### `propose_exception`
+
+**Description:** "Propose a permanent exception (allow) for a domain that a list blocks wrongly. This changes nothing by itself: the owner must confirm the proposal in the DNScraft web UI, and it lapses after 7 days if they do not. Use it after allow_temporarily when the same domain keeps being needed."
+
+**Input:** `domain` (required), `include_subdomains` (default **false**; the proposal covers one name unless the assistant asks for the zone), `filter_set_id` (default set), `reason` (≤ 200 characters, sanitized). Annotations: `destructiveHint: false`, `idempotentHint: true`.
+
+**Output:** `status: "pending_owner_confirmation"`, `proposal_id`, `filter_set_id`, `domain`, `include_subdomains`, `created_at`, `expires_at`.
+
+**Why this does not weaken the "no permanent allows via MCP" rule:** the tool only *records a request*. A proposal has no effect on filtering. The only path from a proposal to an exception is the owner's confirmation over the REST API with an admin session (`POST /api/v1/filtering/mcp-proposals/{id}/confirm`, SPEC-control-api.md); an MCP token cannot call it, so a compromised or injected assistant cannot create the allow itself. Confirming adds one allow line (`@@||domain^`, built by `filtering::build_rule`) to the set's custom rules and removes the proposal in one config version.
+
+**Rules:**
+- Canonicalisation and rejection as for `allow_temporarily` (`mcp.invalid_input`, `mcp.domain_too_broad` for single-label names) and the same bidirectional protected-domain check (`mcp.protected_domain`).
+- Stored per filter set in `mcp_proposals[]` (`id`, `domain`, `include_subdomains`, `reason`, `created_at`, `expires_at`, `token_id`); carried over by `PUT /api/v1/config` like `mcp_rules`.
+- Lifetime is fixed at 7 days (not configurable, not client-chosen). At most 20 live proposals per filter set (`mcp.rule_limit_exceeded`); expired ones are dropped when the next proposal is stored.
+- The same name and subdomain flag proposed again returns the pending proposal and stores no new version.
+- Audit: `mcp.propose_exception` (actor = MCP token), and later `mcp.confirm_exception` / `mcp.reject_exception` (actor = the owner).
+
 #### `remove_rule`
 
 **Description:** "Remove a custom block rule that was previously added via MCP. Only rules created via MCP can be removed; web UI rules and downloaded list rules cannot. Requires mcp:write scope."
@@ -891,7 +908,7 @@ The selected write tools cover the MCP acceptance scenario from SPEC.md: tempora
 - **Authorization:** `Authorization: Bearer <token>` header on every POST request to `/mcp/v1`.
 - **Token type:** Tokens issued via `POST /api/v1/auth/tokens` (SPEC-control-api.md § Auth) with **new scopes** `mcp:read` or `mcp:write`.
 - **Endpoint scope isolation:** `mcp:read` and `mcp:write` tokens are valid **only** on MCP endpoints (`/mcp/v1`); they are rejected on `/api/v1/*` with HTTP 403 and `control_api.auth.invalid_scope`. Conversely, tokens with normal API scopes (`viewer`, `admin`) are rejected on MCP endpoints with the same code. This ensures MCP access is opt-in, traceable in audit logs, and revocable independently of API access.
-- **Role mapping:** `mcp:read` → 8 read tools. `mcp:write` → 13 tools total (8 read + 5 write). A `mcp:read` token calling a write tool receives a tool result with `isError: true` and `structuredContent.error.code: "control_api.auth.insufficient_scope"`.
+- **Role mapping:** `mcp:read` → 8 read tools. `mcp:write` → 14 tools total (8 read + 6 write). A `mcp:read` token calling a write tool receives a tool result with `isError: true` and `structuredContent.error.code: "control_api.auth.insufficient_scope"`.
 - **Token creation UI/API:** The control-api token-creation endpoint and web UI must support creating tokens with `mcp:read` or `mcp:write` scope (marked as **required control-api addition** below). The UI should explain: "MCP tokens are for AI assistants (e.g. Claude Desktop) and work only on the MCP endpoint, not the regular API."
 - **Audit label:** Audit entries for MCP tool calls include `actor_type: "token"`, `actor_id: <token_id>`, and optionally `client_name` / `client_version` from the MCP client's `server/discover` or `tools/call` request metadata (if provided).
 
@@ -1317,7 +1334,7 @@ No separate bind/port; MCP path lives under `/mcp/v1` on the existing `control_a
 
 ## Success Criteria
 
-1. All 13 tools (`search_query_log`, `get_query`, `explain_block`, `test_query`, `get_stats`, `list_clients`, `get_status`, `list_mcp_rules`, `allow_temporarily`, `add_rule`, `remove_rule`, `pause_filter_set`, `resume_filter_set`) respond with valid JSON matching their output shape. `tools/list` returns 8 read tools, and 13 tools when `write_tools_enabled = true`.
+1. All 14 tools (`search_query_log`, `get_query`, `explain_block`, `test_query`, `get_stats`, `list_clients`, `get_status`, `list_mcp_rules`, `allow_temporarily`, `add_rule`, `propose_exception`, `remove_rule`, `pause_filter_set`, `resume_filter_set`) respond with valid JSON matching their output shape. `tools/list` returns 8 read tools, and 14 tools when `write_tools_enabled = true`.
 
 2. Scope model: `mcp:read` token calling any of the 5 write tools → tool result `isError: true` with `structuredContent.error.code = "control_api.auth.insufficient_scope"`; `mcp:write` succeeds. A `viewer`/`admin` token on `/mcp/v1` → HTTP 403 `control_api.auth.invalid_scope`; an `mcp:*` token on `/api/v1` → HTTP 403 `control_api.auth.invalid_scope`; missing/invalid token → HTTP 401 `control_api.auth.unauthenticated`.
 

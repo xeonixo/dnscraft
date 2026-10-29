@@ -1381,6 +1381,8 @@ async function route(request, response, options) {
 				next_offset: null,
 			});
 		}
+		case 'GET /api/v1/filtering/mcp-proposals':
+			return sendData(response, { proposals: options.runtime.mcpProposals });
 		case 'POST /api/v1/filtering/resume':
 			options.runtime.pauseUntil = null;
 			return sendData(response, { filter_set_id: 'default' });
@@ -1782,6 +1784,23 @@ async function route(request, response, options) {
 		return sendData(response, { node_id: nodeId, display_name, hostname });
 	}
 
+	const proposalDecision = /^\/api\/v1\/filtering\/mcp-proposals\/([^/]+)\/(confirm|reject)$/.exec(
+		path,
+	);
+	if (request.method === 'POST' && proposalDecision) {
+		const id = decodeURIComponent(proposalDecision[1]);
+		const found = options.runtime.mcpProposals.find((proposal) => proposal.id === id);
+		if (!found) throw new ApiFailure(404, 'control_api.not_found', { what: 'mcp proposal' });
+		options.runtime.mcpProposals = options.runtime.mcpProposals.filter(
+			(proposal) => proposal.id !== id,
+		);
+		return sendData(response, {
+			decision: proposalDecision[2] === 'confirm' ? 'confirmed' : 'rejected',
+			proposal_id: id,
+			filter_set_id: found.filter_set_id,
+			rule_text: found.rule_text,
+		});
+	}
 	const clusterDelete = /^\/api\/v1\/cluster\/nodes\/([^/]+)$/.exec(path);
 	if (request.method === 'DELETE' && clusterDelete) {
 		const nodeId = decodeURIComponent(clusterDelete[1]);
@@ -1923,6 +1942,28 @@ function createRuntimeState() {
 		domainZoneRecordSerial: 100,
 		// One pause running at start (filter set `kids`, 12 minutes), so the Regeln page has one to show.
 		pauseUntil: new Date(Date.now() + 12 * 60_000).toISOString(),
+		mcpProposals: [
+			{
+				id: 'prop-1',
+				filter_set_id: 'default',
+				domain: 'cdn.tinypass.com',
+				include_subdomains: false,
+				reason: 'Needed to load the article paywall on lvz.de',
+				rule_text: '@@|cdn.tinypass.com^',
+				created_at: new Date(Date.now() - 20 * 60_000).toISOString(),
+				expires_at: new Date(Date.now() + 7 * 24 * 3600_000).toISOString(),
+			},
+			{
+				id: 'prop-2',
+				filter_set_id: 'default',
+				domain: 'piano.io',
+				include_subdomains: true,
+				reason: '',
+				rule_text: '@@||piano.io^',
+				created_at: new Date(Date.now() - 3600_000).toISOString(),
+				expires_at: new Date(Date.now() + 6 * 24 * 3600_000).toISOString(),
+			},
+		],
 		pauseSet: 'kids',
 	};
 }

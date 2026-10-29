@@ -22,7 +22,7 @@ cluster and an embedded web UI are part of the same binary.
 - **TLS** — ACME DNS-01 (Cloudflare), cert store, DynDNS
 - **Control plane** — REST `/api/v1`, OIDC + break-glass login, API tokens,
   audit log, backups
-- **MCP** — 13 tools for AI assistants on `/mcp/v1` (opt-in; same RBAC family)
+- **MCP** — 14 tools for AI assistants on `/mcp/v1` (opt-in; same RBAC family)
 - **Cluster** — master + sub-nodes, config sync, write relay, log aggregation
 - **Web UI** — SvelteKit SPA (en/de), embeddable into the binary (`web-ui` feature)
 
@@ -115,7 +115,7 @@ shares sockets with public DoH/DoT/DoQ listeners.
 | [`dnscraft-policy`](crates/dnscraft-policy/README.md) | Views/profiles and query pipeline |
 | [`dnscraft-listeners`](crates/dnscraft-listeners/README.md) | Do53 / DoT / DoH / DoQ |
 | [`dnscraft-api`](crates/dnscraft-api/README.md) | REST, auth, query log, stats, MCP/cluster wiring |
-| [`dnscraft-mcp`](crates/dnscraft-mcp/README.md) | MCP protocol + 13 tools |
+| [`dnscraft-mcp`](crates/dnscraft-mcp/README.md) | MCP protocol + 14 tools |
 | [`dnscraft-cluster`](crates/dnscraft-cluster/README.md) | Master/sub-node protocol |
 | [`web/`](web/README.md) | SvelteKit SPA |
 

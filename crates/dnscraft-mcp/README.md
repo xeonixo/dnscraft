@@ -17,7 +17,7 @@ control-api
    │  implements McpBackend (all I/O: log, policy, filtering, audit)
    ▼
 dnscraft-mcp
-   ├── tools/       13 tool definitions + handlers (read and write)
+   ├── tools/       14 tool definitions + handlers (read and write)
    ├── transport     pure request pre-checks + rmcp Streamable HTTP wrapper
    ├── auth         bearer-token extraction and scope checks
    ├── protected    protected-domain matching
@@ -41,7 +41,7 @@ write-tools gate. The dependency decision is recorded in
 
 ## Tools
 
-All 13 tools are listed when `write_tools_enabled = true`; with the gate off,
+All 14 tools are listed when `write_tools_enabled = true`; with the gate off,
 `tools/list` returns only the eight read tools and every write tool call fails
 with `mcp.write_tools_disabled`. Rows are in the order returned by `tools/list`
 (alphabetical).
@@ -57,6 +57,7 @@ with `mcp.write_tools_disabled`. Rows are in the order returned by `tools/list`
 | `list_clients` | `mcp:read` | List known clients with names, addresses, VLANs and source. |
 | `list_mcp_rules` | `mcp:read` | List MCP-created rules, active temporary allows or active pauses for a filter set. |
 | `pause_filter_set` | `mcp:write` | Pause filtering for a filter set for a fixed short duration. |
+| `propose_exception` | `mcp:write` | Propose a permanent exception for a wrongly blocked domain; it takes effect only after the owner confirms it in the web UI. |
 | `remove_rule` | `mcp:write` | Remove a custom block rule that was previously created via MCP. |
 | `resume_filter_set` | `mcp:write` | Resume filtering for a paused filter set. |
 | `search_query_log` | `mcp:read` | Search the query log by time, client, domain, protocol, view or outcome. |
@@ -179,7 +180,7 @@ document.
    ```
 
    Expect `200 OK` with `application/json` and a `result.tools` array of eight
-   read tools (13 with the write gate on).
+   read tools (14 with the write gate on).
 
 3. Call `get_status` (not run):
 

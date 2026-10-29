@@ -19,8 +19,8 @@ use dnscraft_api::{
 };
 use dnscraft_filtering::{Clock as FilterClock, DomainName, FilterEngine, SetId, Verdict};
 use dnscraft_mcp::dto::{
-    AddRuleParams, AuditEntry, AuditResult, PauseDuration, PauseParams, RemoveRuleParams,
-    TempAllowParams, TokenScope,
+    AddRuleParams, AuditEntry, AuditResult, PauseDuration, PauseParams, ProposeExceptionParams,
+    RemoveRuleParams, TempAllowParams, TokenScope,
 };
 use dnscraft_mcp::{BackendError, McpBackend, McpConfig};
 
@@ -1118,4 +1118,115 @@ async fn audit_failure_after_a_runtime_mutation_surfaces_as_mcp_audit_failed() {
         1,
         "a runtime allow creates no config version"
     );
+}
+
+fn propose_params(domain: &str, include_subdomains: bool) -> ProposeExceptionParams {
+    ProposeExceptionParams {
+        domain: domain.to_owned(),
+        include_subdomains,
+        filter_set_id: None,
+        token_id: "tok-propose".to_owned(),
+        reason: "needed for the article page".to_owned(),
+    }
+}
+
+async fn current_proposals(h: &Harness) -> Vec<Value> {
+    let (_, snapshot) = h.service.current().await.expect("current config");
+    snapshot.expect("stored snapshot")["filtering"]["sets"][0]["mcp_proposals"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn propose_exception_stores_a_pending_proposal_without_changing_filtering() {
+    let h = harness_with(McpConfig::default(), Some("dns.example.net"), None, true).await;
+    assert!(blocked(&h.engine, "ads.example.com", NOW + 1));
+
+    let first = h
+        .backend
+        .propose_exception(propose_params("Ads.Example.COM.", false))
+        .await
+        .expect("propose");
+    assert_eq!(first.filter_set_id, "default");
+    assert_eq!(first.created_at, rfc3339(NOW));
+    assert_eq!(first.expires_at, rfc3339(NOW + 7 * DAY));
+
+    let stored = current_proposals(&h).await;
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0]["id"], first.proposal_id);
+    assert_eq!(stored[0]["domain"], "ads.example.com");
+    assert_eq!(stored[0]["include_subdomains"], false);
+    assert_eq!(stored[0]["token_id"], "tok-propose");
+    assert_eq!(stored[0]["expires_at"], NOW + 7 * DAY);
+    assert!(
+        blocked(&h.engine, "ads.example.com", NOW + 1),
+        "a proposal changes nothing until the owner confirms it"
+    );
+    let version = current_version(&h).await;
+
+    // The same name again reports the pending proposal and stores no version.
+    let again = h
+        .backend
+        .propose_exception(propose_params("ads.example.com", false))
+        .await
+        .expect("repeat");
+    assert_eq!(again.proposal_id, first.proposal_id);
+    assert_eq!(current_version(&h).await, version);
+    assert_eq!(current_proposals(&h).await.len(), 1);
+
+    // The subdomain flag makes it a different proposal.
+    let zone = h
+        .backend
+        .propose_exception(propose_params("ads.example.com", true))
+        .await
+        .expect("zone");
+    assert_ne!(zone.proposal_id, first.proposal_id);
+
+    for domain in ["example.net", "dns.example.net"] {
+        let err = h
+            .backend
+            .propose_exception(propose_params(domain, true))
+            .await
+            .expect_err("protected");
+        assert_eq!(err.code(), "mcp.protected_domain", "{domain}");
+    }
+    assert_eq!(
+        h.backend
+            .propose_exception(propose_params("com", false))
+            .await
+            .expect_err("tld")
+            .code(),
+        "mcp.domain_too_broad"
+    );
+    assert!(
+        audits(&h)
+            .await
+            .iter()
+            .any(|row| row.action == "mcp.propose_exception")
+    );
+}
+
+#[tokio::test]
+async fn propose_exception_is_capped_per_set_and_expired_proposals_free_a_slot() {
+    let h = harness().await;
+    for i in 0..20 {
+        h.backend
+            .propose_exception(propose_params(&format!("p{i}.example.com"), false))
+            .await
+            .expect("within cap");
+    }
+    let err = h
+        .backend
+        .propose_exception(propose_params("one-more.example.com", false))
+        .await
+        .expect_err("cap");
+    assert_eq!(err.code(), "mcp.rule_limit_exceeded");
+
+    h.clock.advance(Duration::from_secs(7 * DAY + 1));
+    h.backend
+        .propose_exception(propose_params("one-more.example.com", false))
+        .await
+        .expect("expired proposals are pruned");
+    assert_eq!(current_proposals(&h).await.len(), 1);
 }

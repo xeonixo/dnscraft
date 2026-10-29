@@ -446,6 +446,15 @@ mod tests {
             requirement(&Method::POST, "/api/v1/filtering/custom-rules"),
             Requirement::ApiAdmin
         );
+        // Proposals are listed by viewers but decided by admins only.
+        assert_eq!(
+            requirement(&Method::GET, "/api/v1/filtering/mcp-proposals"),
+            Requirement::Api
+        );
+        assert_eq!(
+            requirement(&Method::POST, "/api/v1/filtering/mcp-proposals/p1/confirm"),
+            Requirement::ApiAdmin
+        );
         // Configuration-family routes are admin-only for reads too.
         for path in [
             "/api/v1/config",

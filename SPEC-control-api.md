@@ -338,6 +338,10 @@ maxima can only lower that set (SPEC-mcp.md § Limits and defaults).
 | POST | `/api/v1/filtering/pause` | admin | `{ "filter_set_id": "default", "duration": "PT5M\|PT15M\|PT1H" }` | `{ "data": { "filter_set_id": "default", "paused_until": "..." } }` | `policy.config.unknown_filter_set`, `mcp.invalid_input`, `mcp.duration_exceeds_maximum` |
 | POST | `/api/v1/filtering/resume` | admin | `{ "filter_set_id": "default" }` | `{ "data": { "filter_set_id": "default", "resumed": true } }` | `policy.config.unknown_filter_set` |
 
+| GET | `/api/v1/filtering/mcp-proposals` | viewer/admin | none | `{ "data": { "proposals": [ { "id": "...", "filter_set_id": "default", "domain": "cdn.example.com", "include_subdomains": false, "reason": "...", "token_id": "...", "rule_text": "@@\|cdn.example.com^", "created_at": "...", "expires_at": "..." } ] } }` (live proposals of all sets) | none |
+| POST | `/api/v1/filtering/mcp-proposals/{id}/confirm` | admin (not MCP tokens) | none | `{ "data": { "decision": "confirmed", "proposal_id": "...", "filter_set_id": "default", "domain": "...", "include_subdomains": false, "rule_text": "@@\|...^", "config_version": 7 } }`; appends the allow line to the set's `custom_rules` and removes the proposal in one config version; audit `mcp.confirm_exception` | `control_api.not_found` (unknown or expired id) |
+| POST | `/api/v1/filtering/mcp-proposals/{id}/reject` | admin (not MCP tokens) | none | as `confirm` with `"decision": "rejected"` and no `rule_text`; audit `mcp.reject_exception` | `control_api.not_found` |
+
 `temporary-allows` and `pause`/`resume` change runtime filtering state;
 `custom-rules` add/remove are config mutations (new config version plus audit
 entry; see § MCP-managed filter rules). The `mcp.*` codes in the table are

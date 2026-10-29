@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime};
 use axum::Json;
 use axum::extract::Extension;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -27,9 +27,10 @@ use crate::api::response::success;
 use crate::config_apply::MutationAudit;
 use crate::error::ControlApiError;
 use crate::mcp_backend::{
-    self, add_rule_to_snapshot, canonical_allow_domain, canonical_block_rule, duration_error,
-    engine_error, parse_set, protected_for as derive_protected, reject_protected,
-    remove_rule_from_snapshot, rfc3339, stored_time,
+    self, add_rule_to_snapshot, append_custom_rule, canonical_allow_domain, canonical_block_rule,
+    duration_error, engine_error, exception_rule_text, parse_set,
+    protected_for as derive_protected, reject_protected, remove_rule_from_snapshot, rfc3339,
+    stored_time, take_proposal,
 };
 use crate::query_log::new_id;
 use crate::server::AppState;
@@ -175,6 +176,127 @@ pub(crate) async fn list_mcp_rules(
         _ => data["rules"] = json!(result.rules),
     }
     Ok(success(data))
+}
+
+// ---------------------------------------------------------------------------
+// Exception proposals (made through MCP, decided by the owner)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/v1/filtering/mcp-proposals`: live proposals of every filter set.
+pub(crate) async fn list_mcp_proposals(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let snapshot = stored_snapshot(service(&state)?).await?;
+    let now = state.clock().now();
+    let mut proposals = Vec::new();
+    let sets = snapshot
+        .get("filtering")
+        .and_then(|f| f.get("sets"))
+        .and_then(Value::as_array);
+    for set in sets.into_iter().flatten() {
+        let set_id = set.get("id").and_then(Value::as_str).unwrap_or_default();
+        let stored = set.get("mcp_proposals").and_then(Value::as_array);
+        for p in stored.into_iter().flatten() {
+            if !mcp_backend::active_rule(p, now) {
+                continue;
+            }
+            let text = |key: &str| p.get(key).and_then(Value::as_str).unwrap_or_default();
+            let include = p
+                .get("include_subdomains")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let time = |key: &str| p.get(key).and_then(stored_time).map(rfc3339);
+            proposals.push(json!({
+                "id": text("id"),
+                "filter_set_id": set_id,
+                "domain": text("domain"),
+                "include_subdomains": include,
+                "reason": text("reason"),
+                "token_id": text("token_id"),
+                "rule_text": exception_rule_text(text("domain"), include).ok(),
+                "created_at": time("created_at"),
+                "expires_at": time("expires_at"),
+            }));
+        }
+    }
+    Ok(success(json!({ "proposals": proposals })))
+}
+
+/// `POST /api/v1/filtering/mcp-proposals/{id}/confirm`: the owner accepts the
+/// exception. It becomes an allow line in the set's custom rules and the
+/// proposal is removed, in one config version.
+pub(crate) async fn confirm_mcp_proposal(
+    State(state): State<AppState>,
+    auth: Option<Extension<Authenticated>>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    Ok(success(
+        decide_proposal(&state, actor(auth), id, true).await?,
+    ))
+}
+
+/// `POST /api/v1/filtering/mcp-proposals/{id}/reject`: the owner declines.
+pub(crate) async fn reject_mcp_proposal(
+    State(state): State<AppState>,
+    auth: Option<Extension<Authenticated>>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    Ok(success(
+        decide_proposal(&state, actor(auth), id, false).await?,
+    ))
+}
+
+async fn decide_proposal(
+    state: &AppState,
+    actor: crate::config_apply::ConfigActor,
+    id: String,
+    confirm: bool,
+) -> Result<Value, ControlApiError> {
+    let now = state.clock().now();
+    let action = if confirm {
+        "mcp.confirm_exception"
+    } else {
+        "mcp.reject_exception"
+    };
+    let decided = std::sync::Arc::new(std::sync::Mutex::new(Value::Null));
+    let slot = std::sync::Arc::clone(&decided);
+    let proposal_id = id.clone();
+    let version = service(state)?
+        .mutate_audited(&actor, action, None, move |snapshot| {
+            let (set_id, proposal) = take_proposal(snapshot, &proposal_id, now)?;
+            let domain = proposal
+                .get("domain")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let include = proposal
+                .get("include_subdomains")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let mut after = json!({
+                "proposal_id": proposal_id,
+                "filter_set_id": set_id,
+                "domain": domain,
+                "include_subdomains": include,
+            });
+            if confirm {
+                let rule_text = exception_rule_text(domain, include)?;
+                append_custom_rule(snapshot, &set_id, &rule_text)?;
+                after["rule_text"] = json!(rule_text);
+            }
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = after.clone();
+            Ok(Some(MutationAudit {
+                before: Some(proposal),
+                after,
+            }))
+        })
+        .await?
+        .ok_or_else(|| ControlApiError::Internal {
+            message: "proposal decision made no change".to_owned(),
+        })?;
+    let mut data = decided.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    data["decision"] = json!(if confirm { "confirmed" } else { "rejected" });
+    data["config_version"] = json!(version);
+    Ok(data)
 }
 
 // ---------------------------------------------------------------------------

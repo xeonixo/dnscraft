@@ -113,6 +113,7 @@ function defaultHandlers(): Record<string, Handler> {
 			}),
 		'DELETE /api/v1/filtering/custom-rules': () => ok({ removed: true }),
 		'POST /api/v1/filtering/resume': () => ok({ filter_set_id: 'kids', resumed: true }),
+		'GET /api/v1/filtering/mcp-proposals': () => ok({ proposals: [] }),
 	};
 }
 
@@ -369,5 +370,76 @@ describe('Regeln page: viewer', () => {
 		await user.click(await screen.findByText('exact.example'));
 		expect(screen.queryByRole('dialog')).toBeNull();
 		expect(screen.queryByRole('button', { name: m.rules_add() })).toBeNull();
+	});
+});
+
+describe('Regeln page: proposals', () => {
+	const proposal = {
+		id: 'p1',
+		filter_set_id: 'default',
+		domain: 'cdn.tinypass.com',
+		include_subdomains: false,
+		reason: 'Needed for the article page',
+		rule_text: '@@|cdn.tinypass.com^',
+		created_at: '2026-10-29T18:00:00Z',
+		expires_at: minutesFromNow(6 * 24 * 60),
+	};
+
+	it('shows nothing when no assistant proposed anything, and survives a node without the endpoint', async () => {
+		serve({ 'GET /api/v1/filtering/mcp-proposals': () => json(404, { error: { code: 'x' } }) });
+		render(RulesPage);
+		await screen.findByRole('button', { name: /^ads\.example / });
+		expect(screen.queryByText(m.rules_proposals_heading())).toBeNull();
+	});
+
+	it('lists a proposal with its reason and confirms it as a permanent exception', async () => {
+		serve({
+			'GET /api/v1/filtering/mcp-proposals': () => ok({ proposals: [proposal] }),
+			'POST /api/v1/filtering/mcp-proposals/p1/confirm': () =>
+				ok({ decision: 'confirmed', filter_set_id: 'default', rule_text: proposal.rule_text }),
+		});
+		const user = userEvent.setup();
+		render(RulesPage);
+		expect(await screen.findByText(m.rules_proposals_heading())).toBeInTheDocument();
+		expect(screen.getByText('cdn.tinypass.com')).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				/Begründung: Needed for the article page|Reason: Needed for the article page/,
+			),
+		).toBeInTheDocument();
+
+		await user.click(screen.getByRole('button', { name: m.rules_proposal_allow() }));
+		await waitFor(() =>
+			expect(
+				fetchMock.mock.calls.some(
+					([url, init]) =>
+						String(url).endsWith('/mcp-proposals/p1/confirm') && init?.method === 'POST',
+				),
+			).toBe(true),
+		);
+		expect(
+			await screen.findByText(m.rules_proposal_done({ rule: proposal.rule_text, set: 'Standard' })),
+		).toBeInTheDocument();
+	});
+
+	it('rejects a proposal without adding a rule', async () => {
+		serve({
+			'GET /api/v1/filtering/mcp-proposals': () => ok({ proposals: [proposal] }),
+			'POST /api/v1/filtering/mcp-proposals/p1/reject': () => ok({ decision: 'rejected' }),
+		});
+		const user = userEvent.setup();
+		render(RulesPage);
+		await user.click(await screen.findByRole('button', { name: m.rules_proposal_reject() }));
+		expect(await screen.findByText(m.rules_proposal_rejected())).toBeInTheDocument();
+		expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
+	});
+
+	it('shows the proposals to a viewer without the decision buttons', async () => {
+		setPrincipal({ role: 'viewer', actorId: 'v', actorType: 'user', csrfToken: 'tok' });
+		serve({ 'GET /api/v1/filtering/mcp-proposals': () => ok({ proposals: [proposal] }) });
+		render(RulesPage);
+		expect(await screen.findByText('cdn.tinypass.com')).toBeInTheDocument();
+		expect(screen.queryByRole('button', { name: m.rules_proposal_allow() })).toBeNull();
+		expect(screen.queryByRole('button', { name: m.rules_proposal_reject() })).toBeNull();
 	});
 });

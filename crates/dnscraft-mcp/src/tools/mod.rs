@@ -5,7 +5,7 @@
 //! the shared handle.
 //!
 //! Listing and dispatch are overridden here because the catalog is
-//! gate-aware: `write_tools_enabled = false` hides the five write tools and a
+//! gate-aware: `write_tools_enabled = false` hides the six write tools and a
 //! dispatched write tool is denied before it can touch the backend. All tools
 //! are defined statically and dispatched manually so input failures stay tool
 //! results rather than JSON-RPC errors.
@@ -57,8 +57,8 @@ impl McpServer {
         }
     }
 
-    /// All 13 tools: the macro-registered `get_status`, the seven static read
-    /// tools and the five write tools.
+    /// All 14 tools: the macro-registered `get_status`, the seven static read
+    /// tools and the six write tools.
     fn catalog(&self) -> Vec<Tool> {
         let mut tools = Self::tool_router().list_all();
         tools.extend(read::tool_definitions());
@@ -85,7 +85,7 @@ pub(crate) fn parse_arguments<T: DeserializeOwned>(
 
 /// Parse and validate one tool's raw JSON input without performing I/O.
 ///
-/// This is the fuzzing entry point (M26). `tool` is one of the 13 catalog
+/// This is the fuzzing entry point (M26). `tool` is one of the 14 catalog
 /// names and `json` is the raw `arguments` object. It runs the same
 /// `serde_json` decode with `deny_unknown_fields` and the same per-tool value
 /// checks as dispatch. Backend, scope, write-gate and protected-domain checks

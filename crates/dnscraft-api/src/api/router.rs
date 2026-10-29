@@ -38,8 +38,9 @@ use super::filter_routes::{
 };
 use super::listener_routes::{delete_listener, list_listeners, put_listener};
 use super::mcp_endpoints::{
-    add_custom_rule, allow_temporarily, explain_block, list_mcp_rules, pause_filter_set,
-    remove_custom_rule, resume_filter_set, test_query,
+    add_custom_rule, allow_temporarily, confirm_mcp_proposal, explain_block, list_mcp_proposals,
+    list_mcp_rules, pause_filter_set, reject_mcp_proposal, remove_custom_rule, resume_filter_set,
+    test_query,
 };
 use super::notifications_routes::{get_notifications, post_notification_test, put_notifications};
 use super::oauth;
@@ -76,6 +77,15 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/status", get(status))
         .route("/filtering/explain-block", post(explain_block))
         .route("/filtering/mcp-rules", get(list_mcp_rules))
+        .route("/filtering/mcp-proposals", get(list_mcp_proposals))
+        .route(
+            "/filtering/mcp-proposals/{id}/confirm",
+            post(confirm_mcp_proposal),
+        )
+        .route(
+            "/filtering/mcp-proposals/{id}/reject",
+            post(reject_mcp_proposal),
+        )
         .route(
             "/notifications",
             get(get_notifications).put(put_notifications),

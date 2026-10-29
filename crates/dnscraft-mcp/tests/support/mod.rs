@@ -14,9 +14,10 @@ use dnscraft_mcp::backend::{BackendError, McpBackend};
 use dnscraft_mcp::dto::{
     AddRuleParams, AddRuleResult, AuditEntry, ClientInfo, ClientListParams, ClientListResult,
     ExplainBlockResult, ListRulesParams, ListRulesResult, McpRuleInfo, NodeStatus, PauseInfo,
-    PauseParams, PauseResult, QType, QueryDetail, QueryLogEntry, QueryLogResult, QueryLogSearch,
-    RemoveRuleParams, RemoveRuleResult, ResumeResult, StatsParams, StatsResult, TempAllowInfo,
-    TempAllowParams, TempAllowResult, TestQueryParams, TestQueryResult, TokenInfo, TokenScope,
+    PauseParams, PauseResult, ProposeExceptionParams, ProposeExceptionResult, QType, QueryDetail,
+    QueryLogEntry, QueryLogResult, QueryLogSearch, RemoveRuleParams, RemoveRuleResult,
+    ResumeResult, StatsParams, StatsResult, TempAllowInfo, TempAllowParams, TempAllowResult,
+    TestQueryParams, TestQueryResult, TokenInfo, TokenScope,
 };
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -609,6 +610,13 @@ impl McpBackend for MockBackend {
         slot(&self.add_result)
             .clone()
             .unwrap_or_else(|| Ok(AddRuleResult::default()))
+    }
+
+    async fn propose_exception(
+        &self,
+        _params: ProposeExceptionParams,
+    ) -> Result<ProposeExceptionResult, BackendError> {
+        Ok(ProposeExceptionResult::default())
     }
 
     async fn find_mcp_rule(

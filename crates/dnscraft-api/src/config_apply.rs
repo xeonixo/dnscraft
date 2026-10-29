@@ -57,7 +57,7 @@ const REQUIRED_SECTIONS: [&str; 5] = ["filtering", "clients", "policy", "listene
 
 /// Fields accepted inside one `filtering.sets[]` entry.
 /// A set's pause is runtime state (SPEC-mcp § pauses), never a config field.
-const FILTER_SET_KEYS: [&str; 7] = [
+const FILTER_SET_KEYS: [&str; 8] = [
     "id",
     "name",
     "lists",
@@ -65,6 +65,18 @@ const FILTER_SET_KEYS: [&str; 7] = [
     "services",
     "block_mode",
     "mcp_rules",
+    "mcp_proposals",
+];
+
+/// Fields accepted inside one `mcp_proposals[]` entry.
+const MCP_PROPOSAL_KEYS: [&str; 7] = [
+    "id",
+    "domain",
+    "include_subdomains",
+    "reason",
+    "created_at",
+    "expires_at",
+    "token_id",
 ];
 
 /// Fields accepted inside one `mcp_rules[]` entry.
@@ -1533,35 +1545,42 @@ fn merge_set_rules(
     set: &mut Map<String, Value>,
     stored_sets: Option<&Vec<Value>>,
 ) -> Result<(), ControlApiError> {
-    match set.get("mcp_rules") {
-        None => {
-            let id = set.get("id").and_then(Value::as_str);
-            let carried = stored_sets
-                .and_then(|sets| {
-                    sets.iter()
-                        .find(|stored| stored.get("id").and_then(Value::as_str) == id)
-                })
-                .and_then(|stored| stored.get("mcp_rules"))
-                .cloned()
-                .unwrap_or_else(|| Value::Array(Vec::new()));
-            set.insert("mcp_rules".to_owned(), carried);
-        }
-        Some(Value::Array(rules)) => {
-            for rule in rules {
-                let Value::Object(rule) = rule else {
-                    return Err(config_invalid("each `mcp_rules` entry must be an object"));
-                };
-                for key in rule.keys() {
-                    if !MCP_RULE_KEYS.contains(&key.as_str()) {
+    for (field, allowed) in [
+        ("mcp_rules", &MCP_RULE_KEYS[..]),
+        ("mcp_proposals", &MCP_PROPOSAL_KEYS[..]),
+    ] {
+        match set.get(field) {
+            None => {
+                let id = set.get("id").and_then(Value::as_str);
+                let carried = stored_sets
+                    .and_then(|sets| {
+                        sets.iter()
+                            .find(|stored| stored.get("id").and_then(Value::as_str) == id)
+                    })
+                    .and_then(|stored| stored.get(field))
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(Vec::new()));
+                set.insert(field.to_owned(), carried);
+            }
+            Some(Value::Array(entries)) => {
+                for entry in entries {
+                    let Value::Object(entry) = entry else {
                         return Err(config_invalid(format!(
-                            "unknown field `{key}` in `mcp_rules`"
+                            "each `{field}` entry must be an object"
                         )));
+                    };
+                    for key in entry.keys() {
+                        if !allowed.contains(&key.as_str()) {
+                            return Err(config_invalid(format!(
+                                "unknown field `{key}` in `{field}`"
+                            )));
+                        }
                     }
                 }
             }
-        }
-        Some(_) => {
-            return Err(config_invalid("`mcp_rules` must be an array"));
+            Some(_) => {
+                return Err(config_invalid(format!("`{field}` must be an array")));
+            }
         }
     }
     Ok(())
