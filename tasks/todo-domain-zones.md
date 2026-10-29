@@ -21,7 +21,7 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
 
 ## Phase 1: Local overrides + CF read
 
-- [ ] **T0** Netzbereich-Overrides-UI (ersetzt Freitext)
+- [x] **T0** Netzbereich-Overrides-UI (ersetzt Freitext)
   - **Description:** Im Namen-Sheet: statt `zone=wert`-Textarea eine Liste
     „Abweichungen“ — Netzbereich wählen + Wert. Leer/fehlend = erbt öffentlich /
     lokalen Default. Views aus `GET /policy/views`.
