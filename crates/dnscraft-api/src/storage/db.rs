@@ -2,9 +2,10 @@
 
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, TryLockError};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 use super::db_err;
 use super::migrations::{migrate, schema_version};
@@ -21,14 +22,21 @@ use dnscraft_common::clock::unix_seconds;
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
+    /// Read-only connections (WAL readers run beside the writer); empty for in-memory databases.
+    readers: Arc<Vec<Mutex<Connection>>>,
+    next_reader: Arc<AtomicUsize>,
     clock: Arc<dyn Clock>,
 }
+
+/// Read-only connections kept next to the writer, so dashboard queries neither queue behind each
+/// other nor block the query-log writer.
+const READ_CONNECTIONS: usize = 3;
 
 impl Db {
     /// Opens (and migrates) a database file at `path`.
     pub async fn open(path: &Path, clock: Arc<dyn Clock>) -> Result<Self, ControlApiError> {
         let path = path.to_owned();
-        let conn = tokio::task::spawn_blocking(move || -> Result<Connection, ControlApiError> {
+        let (conn, readers) = tokio::task::spawn_blocking(move || -> Result<_, ControlApiError> {
             let existed = path.exists();
             prepare_path(&path).map_err(io_err)?;
             if !existed {
@@ -42,12 +50,26 @@ impl Db {
             apply_pragmas(&mut conn, true)?;
             tighten_sidecars(&path).map_err(io_err)?;
             migrate(&mut conn)?;
-            Ok(conn)
+            let mut readers = Vec::with_capacity(READ_CONNECTIONS);
+            for _ in 0..READ_CONNECTIONS {
+                let reader = Connection::open_with_flags(
+                    &path,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )
+                .map_err(db_err)?;
+                reader
+                    .execute_batch("PRAGMA busy_timeout = 5000; PRAGMA query_only = ON;")
+                    .map_err(db_err)?;
+                readers.push(Mutex::new(reader));
+            }
+            Ok((conn, readers))
         })
         .await
         .map_err(join_err)??;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            readers: Arc::new(readers),
+            next_reader: Arc::new(AtomicUsize::new(0)),
             clock,
         })
     }
@@ -64,6 +86,8 @@ impl Db {
         .map_err(join_err)??;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            readers: Arc::new(Vec::new()),
+            next_reader: Arc::new(AtomicUsize::new(0)),
             clock,
         })
     }
@@ -211,6 +235,38 @@ impl Db {
         let conn = Arc::clone(&self.conn);
         tokio::task::spawn_blocking(move || {
             let mut guard = match conn.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            f(&mut guard)
+        })
+        .await
+        .map_err(join_err)?
+    }
+
+    /// Runs a read-only `f` on a free reader connection (WAL: concurrent with the writer and with
+    /// other readers). In-memory databases have no readers and use the shared connection.
+    pub(crate) async fn with_read_conn<T, F>(&self, f: F) -> Result<T, ControlApiError>
+    where
+        F: FnOnce(&mut Connection) -> Result<T, ControlApiError> + Send + 'static,
+        T: Send + 'static,
+    {
+        if self.readers.is_empty() {
+            return self.with_conn(f).await;
+        }
+        let readers = Arc::clone(&self.readers);
+        let start = self.next_reader.fetch_add(1, Ordering::Relaxed);
+        tokio::task::spawn_blocking(move || {
+            let count = readers.len();
+            for offset in 0..count {
+                match readers[(start + offset) % count].try_lock() {
+                    Ok(mut guard) => return f(&mut guard),
+                    Err(TryLockError::Poisoned(poisoned)) => return f(&mut poisoned.into_inner()),
+                    Err(TryLockError::WouldBlock) => {}
+                }
+            }
+            // All busy: wait for the one this call was assigned.
+            let mut guard = match readers[start % count].lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => poisoned.into_inner(),
             };

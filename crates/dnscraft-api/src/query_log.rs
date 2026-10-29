@@ -325,7 +325,7 @@ impl QueryLog {
         let (clause, clause_values) = filter_clause(filter);
         let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
         self.db
-            .with_conn(move |conn| {
+            .with_read_conn(move |conn| {
                 let placeholders = vec!["?"; ids.len()].join(",");
                 let sql = format!(
                     "SELECT record FROM query_log WHERE id IN ({placeholders}){clause}
@@ -590,7 +590,7 @@ impl QueryLog {
 
         let fetched = self
             .db
-            .with_conn(move |conn| {
+            .with_read_conn(move |conn| {
                 let mut stmt = conn.prepare(&sql).map_err(db_err)?;
                 let rows = stmt
                     .query_map(params_from_iter(values), |row| row.get::<_, String>(0))
@@ -639,7 +639,7 @@ impl QueryLog {
         values.push(Value::Integer(after_rowid));
         values.push(Value::Integer(i64::from(page.max(1))));
         self.db
-            .with_conn(move |conn| {
+            .with_read_conn(move |conn| {
                 let mut stmt = conn.prepare(&sql).map_err(db_err)?;
                 let rows = stmt
                     .query_map(params_from_iter(values), |row| {
@@ -659,7 +659,7 @@ impl QueryLog {
         let id = id.to_owned();
         let raw = self
             .db
-            .with_conn(move |conn| {
+            .with_read_conn(move |conn| {
                 use rusqlite::OptionalExtension as _;
                 conn.query_row(
                     "SELECT record FROM query_log WHERE id = ?1",

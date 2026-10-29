@@ -356,7 +356,7 @@ impl QueryLog {
              FROM {table} ORDER BY {bucket}, node_id, profile_id, protocol, answer_source"
         );
         self.db()
-            .with_conn(move |conn| {
+            .with_read_conn(move |conn| {
                 let mut stmt = conn.prepare(&sql).map_err(db_err)?;
                 let rows = stmt
                     .query_map([], |row| {
@@ -420,39 +420,22 @@ impl QueryLog {
         if from < raw_horizon {
             return rollup_overview(db, from, to, scope, dropped, stream_dropped).await;
         }
-        let (total, allowed, blocked) = db
-            .with_conn({
-                let scope = scope.clone();
-                move |conn| {
-                    conn.query_row(
-                        "SELECT COUNT(*),
-                                COALESCE(SUM(CASE WHEN status = 'allowed' THEN 1 ELSE 0 END), 0),
-                                COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
-                         FROM query_log
-                         WHERE time >= ?1 AND time <= ?2
-                           AND (?3 IS NULL OR node_id = ?3)
-                           AND (?4 IS NULL OR profile_id = ?4)",
-                        params![from, to, scope.node_id, scope.profile_id],
-                        |row| {
-                            Ok((
-                                row.get::<_, i64>(0)?,
-                                row.get::<_, i64>(1)?,
-                                row.get::<_, i64>(2)?,
-                            ))
-                        },
-                    )
-                    .map_err(db_err)
-                }
-            })
-            .await?;
-        let by_protocol = counts_by(db, "protocol", from, to, &scope).await?;
-        let by_view = counts_by(db, "view_id", from, to, &scope).await?;
-        let by_profile = counts_by(db, "profile_id", from, to, &scope).await?;
-        let by_answer_source = counts_by(db, "answer_source", from, to, &scope).await?;
-        let by_rcode = counts_by(db, "rcode", from, to, &scope).await?;
-        let dnssec = counts_by(db, "json_extract(record, '$.dnssec')", from, to, &scope).await?;
+        let counts = raw_counts(db, from, to, &scope).await?;
+        let RawCounts {
+            total,
+            allowed,
+            blocked,
+            by_protocol,
+            by_view,
+            by_profile,
+            by_answer_source,
+            by_rcode,
+            dnssec,
+            by_list,
+            by_reason,
+        } = counts;
         let active_clients = db
-            .with_conn({
+            .with_read_conn({
                 let scope = scope.clone();
                 move |conn| {
                     conn.query_row(
@@ -467,7 +450,7 @@ impl QueryLog {
                 }
             })
             .await?;
-        let filter_hits = filter_hits(db, from, to, &scope).await?;
+        let filter_hits = filter_hits(db, from, to, &scope, by_list, by_reason).await?;
         Ok(StatsOverview {
             source: "raw",
             from: format_micros(from),
@@ -527,7 +510,7 @@ impl QueryLog {
             TopBy::Blocked => "blocked DESC, queries DESC, client_id ASC",
         };
         let clients = db
-            .with_conn(move |conn| {
+            .with_read_conn(move |conn| {
                 let sql = format!(
                     "SELECT client_id,
                             COALESCE(client_name, ''),
@@ -645,7 +628,7 @@ impl QueryLog {
         let scope = Scope::from(scope);
         let limit = i64::from(limit.clamp(1, TOP_DOMAINS_MAX));
         let domains = db
-            .with_conn(move |conn| {
+            .with_read_conn(move |conn| {
                 // `order` is always one of the constants passed above.
                 let sql = format!(
                     "SELECT query_name,
@@ -711,7 +694,7 @@ impl QueryLog {
         let (from, to) = resolve_window(db, from_us, to_us)?;
         let scope = Scope::from(scope);
         let (hits, misses) = db
-            .with_conn(move |conn| {
+            .with_read_conn(move |conn| {
                 conn.query_row(
                     "SELECT
                          COALESCE(SUM(CASE WHEN json_extract(step.value, '$.source') = 'cache'
@@ -789,26 +772,12 @@ async fn filter_hits(
     from: i64,
     to: i64,
     scope: &Scope,
+    by_list: BTreeMap<String, i64>,
+    by_reason: BTreeMap<String, i64>,
 ) -> Result<FilterHits, ControlApiError> {
-    let by_list = counts_by(
-        db,
-        "json_extract(record, '$.filter.list_id')",
-        from,
-        to,
-        scope,
-    )
-    .await?;
-    let by_reason = counts_by(
-        db,
-        "json_extract(record, '$.filter.reason')",
-        from,
-        to,
-        scope,
-    )
-    .await?;
     let scope = scope.clone();
     let top_rules = db
-        .with_conn(move |conn| {
+        .with_read_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT json_extract(record, '$.filter.rule_text') AS rule, COUNT(*) AS hits
@@ -842,11 +811,6 @@ async fn filter_hits(
             rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
         })
         .await?;
-    // Unfiltered rows group under the empty key; they are not filter hits.
-    let mut by_list = by_list;
-    by_list.remove("");
-    let mut by_reason = by_reason;
-    by_reason.remove("");
     let total = by_reason.values().sum();
     Ok(FilterHits {
         total,
@@ -854,6 +818,117 @@ async fn filter_hits(
         by_reason,
         top_rules,
     })
+}
+
+/// Raw-window counts for the overview, gathered in one pass over the log.
+///
+/// Rows are wide (the `record` JSON), so every separate `GROUP BY` re-reads the whole window; one
+/// grouped scan answers all breakdowns. `json_extract` takes several paths at once so the JSON is
+/// parsed once per row.
+struct RawCounts {
+    total: i64,
+    allowed: i64,
+    blocked: i64,
+    by_protocol: BTreeMap<String, i64>,
+    by_view: BTreeMap<String, i64>,
+    by_profile: BTreeMap<String, i64>,
+    by_answer_source: BTreeMap<String, i64>,
+    by_rcode: BTreeMap<String, i64>,
+    dnssec: BTreeMap<String, i64>,
+    /// Filter hits by list id (unfiltered rows excluded).
+    by_list: BTreeMap<String, i64>,
+    /// Filter hits by rule provenance (unfiltered rows excluded).
+    by_reason: BTreeMap<String, i64>,
+}
+
+async fn raw_counts(
+    db: &Db,
+    from: i64,
+    to: i64,
+    scope: &Scope,
+) -> Result<RawCounts, ControlApiError> {
+    let scope = scope.clone();
+    db.with_read_conn(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT protocol, view_id, profile_id, answer_source, rcode, status,
+                        json_extract(record, '$.dnssec', '$.filter.list_id', '$.filter.reason'),
+                        COUNT(*)
+                 FROM query_log
+                 WHERE time >= ?1 AND time <= ?2
+                   AND (?3 IS NULL OR node_id = ?3)
+                   AND (?4 IS NULL OR profile_id = ?4)
+                 GROUP BY 1, 2, 3, 4, 5, 6, 7",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![from, to, scope.node_id, scope.profile_id], |row| {
+                Ok((
+                    [
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ],
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            })
+            .map_err(db_err)?;
+        let mut out = RawCounts {
+            total: 0,
+            allowed: 0,
+            blocked: 0,
+            by_protocol: BTreeMap::new(),
+            by_view: BTreeMap::new(),
+            by_profile: BTreeMap::new(),
+            by_answer_source: BTreeMap::new(),
+            by_rcode: BTreeMap::new(),
+            dnssec: BTreeMap::new(),
+            by_list: BTreeMap::new(),
+            by_reason: BTreeMap::new(),
+        };
+        for row in rows {
+            let ([protocol, view, profile, answer_source, rcode, status], json, count) =
+                row.map_err(db_err)?;
+            out.total += count;
+            match status.as_str() {
+                "allowed" => out.allowed += count,
+                "blocked" => out.blocked += count,
+                _ => {}
+            }
+            // `[dnssec, filter.list_id, filter.reason]`, each `null` when absent.
+            let paths: Vec<Json> = json
+                .as_deref()
+                .and_then(|text| serde_json::from_str(text).ok())
+                .unwrap_or_default();
+            let text_at = |index: usize| {
+                paths
+                    .get(index)
+                    .and_then(Json::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            *out.by_protocol.entry(protocol).or_default() += count;
+            *out.by_view.entry(view).or_default() += count;
+            *out.by_profile.entry(profile).or_default() += count;
+            *out.by_answer_source.entry(answer_source).or_default() += count;
+            *out.by_rcode.entry(rcode).or_default() += count;
+            *out.dnssec.entry(text_at(0)).or_default() += count;
+            for (map, key) in [
+                (&mut out.by_list, text_at(1)),
+                (&mut out.by_reason, text_at(2)),
+            ] {
+                if !key.is_empty() {
+                    *map.entry(key).or_default() += count;
+                }
+            }
+        }
+        Ok(out)
+    })
+    .await
 }
 
 /// Overview answered from the daily rollups (see [`StatsOverview`]).
@@ -868,7 +943,7 @@ async fn rollup_overview(
     let from_day = from.div_euclid(MICROS_PER_DAY);
     let to_day = to.div_euclid(MICROS_PER_DAY);
     let (total, blocked) = db
-        .with_conn({
+        .with_read_conn({
             let scope = scope.clone();
             move |conn| {
                 conn.query_row(
@@ -919,7 +994,7 @@ async fn rollup_counts_by(
     scope: &Scope,
 ) -> Result<BTreeMap<String, i64>, ControlApiError> {
     let scope = scope.clone();
-    db.with_conn(move |conn| {
+    db.with_read_conn(move |conn| {
         // `expr` is always a constant from this module, never user input.
         let sql = format!(
             "SELECT {expr}, COALESCE(SUM(query_count), 0) FROM stats_daily
@@ -933,39 +1008,6 @@ async fn rollup_counts_by(
                 params![from_day, to_day, scope.node_id, scope.profile_id],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
             )
-            .map_err(db_err)?;
-        let mut counts = BTreeMap::new();
-        for row in rows {
-            let (key, count) = row.map_err(db_err)?;
-            counts.insert(key, count);
-        }
-        Ok(counts)
-    })
-    .await
-}
-
-/// Counts rows in `[from, to]` grouped by the fixed SQL expression `expr`.
-async fn counts_by(
-    db: &Db,
-    expr: &'static str,
-    from: i64,
-    to: i64,
-    scope: &Scope,
-) -> Result<BTreeMap<String, i64>, ControlApiError> {
-    let scope = scope.clone();
-    db.with_conn(move |conn| {
-        // `expr` is always a constant from this module, never user input.
-        let sql = format!(
-            "SELECT COALESCE({expr}, ''), COUNT(*) FROM query_log
-             WHERE time >= ?1 AND time <= ?2
-               AND (?3 IS NULL OR node_id = ?3)
-               AND (?4 IS NULL OR profile_id = ?4) GROUP BY 1"
-        );
-        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let rows = stmt
-            .query_map(params![from, to, scope.node_id, scope.profile_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })
             .map_err(db_err)?;
         let mut counts = BTreeMap::new();
         for row in rows {
@@ -1193,7 +1235,7 @@ impl QueryLog {
         let name = domain.to_owned();
         let now_us = db.now_unix().saturating_mul(1_000_000);
         let from = now_us.saturating_sub(i64::from(days) * MICROS_PER_DAY);
-        db.with_conn(move |conn| {
+        db.with_read_conn(move |conn| {
             use rusqlite::OptionalExtension as _;
             let (first, last): (Option<i64>, Option<i64>) = conn
                 .query_row(
