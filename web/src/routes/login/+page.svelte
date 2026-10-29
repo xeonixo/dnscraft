@@ -171,7 +171,7 @@
 	.logo {
 		display: block;
 		margin: 0 auto;
-		filter: drop-shadow(0 4px 12px rgb(0 0 0 / 0.18));
+		filter: drop-shadow(0 4px 12px var(--shadow-color, transparent));
 	}
 
 	.intro h1 {

@@ -32,6 +32,13 @@ export interface FilterHit {
 	important: boolean;
 }
 
+/** One resolved record of the answer. `data` is the rdata text; it may be empty (e.g. a bare CNAME). */
+export interface QueryAnswer {
+	type: string;
+	data: string;
+	ttl: number;
+}
+
 export interface QueryRecord {
 	id: string;
 	node_id: string;
@@ -54,6 +61,8 @@ export interface QueryRecord {
 	forward_zone: string | null;
 	rcode: string;
 	answer_size: number;
+	/** Absent when the query has no answers (blocked queries, errors). Read it through `answersOf`. */
+	answers?: QueryAnswer[];
 	timings: { select_us: number; filter_us: number; resolve_us: number; total_us: number };
 	time: string;
 }
@@ -77,6 +86,26 @@ export interface TempAllowResult {
 	created_at: string;
 	expires_at: string;
 	filter_set_id: string;
+}
+
+/**
+ * The answers of a record, tolerant of older nodes and malformed entries: a missing or non-array
+ * `answers` reads as none, and an entry without a string `type` is dropped.
+ */
+export function answersOf(record: { answers?: unknown }): QueryAnswer[] {
+	if (!Array.isArray(record.answers)) return [];
+	const answers: QueryAnswer[] = [];
+	for (const entry of record.answers as unknown[]) {
+		if (typeof entry !== 'object' || entry === null) continue;
+		const { type, data, ttl } = entry as Record<string, unknown>;
+		if (typeof type !== 'string') continue;
+		answers.push({
+			type,
+			data: typeof data === 'string' ? data : '',
+			ttl: typeof ttl === 'number' && Number.isFinite(ttl) ? ttl : 0,
+		});
+	}
+	return answers;
 }
 
 /** `GET /api/v1/query-log` with the canonical parameters from `toSearchParams`. */

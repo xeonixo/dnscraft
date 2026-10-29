@@ -2,11 +2,12 @@
 	import { resolve } from '$app/paths';
 	import Value from './Value.svelte';
 	import StatusMark from './StatusMark.svelte';
-	import type { QueryRecord } from '$lib/api/query-log';
+	import { answersOf, type QueryRecord } from '$lib/api/query-log';
 	import { unicodeName } from './domain-display';
 	import { displayText, neutralize } from '$lib/safe-text';
 	import {
 		answerLabel,
+		answerSummary,
 		dnssecLabel,
 		microsToMilliseconds,
 		provenanceLabel,
@@ -80,6 +81,7 @@
 				{@const style = statusStyle(status)}
 				{@const unicode = unicodeName(record.query.name)}
 				{@const clientName = record.client?.display_name ?? record.client_id ?? record.source_ip}
+				{@const answers = answerSummary(answersOf(record))}
 				{#if i === 0 || day(record.time) !== day(rows[i - 1].time)}
 					<tr class="day">
 						<th scope="colgroup" colspan={columnCount}>{day(record.time)}</th>
@@ -109,6 +111,9 @@
 									><Value value={record.query.name} mono /></span
 								>{/if}</span
 						>
+						{#if answers !== ''}
+							<span class="sub answers mono">{displayText(answers, 80).text}</span>
+						{/if}
 					</td>
 					<td class="client">
 						<span class="cname">
@@ -125,10 +130,8 @@
 							{/if}
 						</span>
 						<span class="sub mono"
-							><Value value={record.source_ip} mono /> · {record.protocol}{#if record.node_id} · <Value
-									value={record.node_id}
-									mono
-								/>{/if}</span
+							><Value value={record.source_ip} mono /> · {record.protocol}{#if record.node_id}
+								· <Value value={record.node_id} mono />{/if}</span
 						>
 					</td>
 					<td>
@@ -301,6 +304,13 @@
 	}
 
 	/* Query type as a muted tag on the domain's line. */
+	/* The resolved answer under the query type, one line; the full set is on the detail page. */
+	.answers {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
 	.alias::before {
 		content: '\00a0·\00a0';
 	}

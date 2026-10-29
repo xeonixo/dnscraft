@@ -561,7 +561,9 @@ describe('always-on live stream', () => {
 
 		es.emit(
 			'row',
-			JSON.stringify(record('live-1', { query: { name: 'live.ads.example', type: 'A', class: 'IN' } })),
+			JSON.stringify(
+				record('live-1', { query: { name: 'live.ads.example', type: 'A', class: 'IN' } }),
+			),
 		);
 		expect(await screen.findByText('live.ads.example')).toBeInTheDocument();
 	});
@@ -620,5 +622,59 @@ describe('untrusted record values', () => {
 
 		expect(await screen.findByText('bücher.example')).toBeInTheDocument();
 		expect(screen.getByText('xn--bcher-kva.example')).toBeInTheDocument();
+	});
+});
+
+describe('resolved answers in the rows', () => {
+	const threeA: QueryRecord['answers'] = [
+		{ type: 'A', data: '192.0.2.1', ttl: 60 },
+		{ type: 'A', data: '192.0.2.2', ttl: 60 },
+		{ type: 'A', data: '192.0.2.3', ttl: 60 },
+	];
+	const allowed = { filter: null, rcode: 'NOERROR' } as const;
+
+	it('shows up to two values and a count for the rest on a card', async () => {
+		serve({
+			'/api/v1/query-log': () =>
+				pageOf([record('a', { ...allowed, answers: threeA }), record('b', allowed)]),
+		});
+		const { container } = render(Page);
+
+		await waitFor(() => expect(container.querySelectorAll('.card')).toHaveLength(2));
+		const cards = container.querySelectorAll('.card');
+		expect(cards[0]?.querySelector('.answers')?.textContent).toBe('192.0.2.1, 192.0.2.2 +1');
+		expect(cards[1]?.querySelector('.answers')).toBeNull();
+	});
+
+	it('shows the same summary under the domain in the table', async () => {
+		setWide(true);
+		serve({
+			'/api/v1/query-log': () =>
+				pageOf([
+					record('a', {
+						...allowed,
+						query: { name: 'cname.example.com', type: 'A', class: 'IN' },
+						answers: [
+							{ type: 'CNAME', data: '', ttl: 300 },
+							{ type: 'A', data: '192.0.2.9', ttl: 300 },
+						],
+					}),
+					record('b', allowed),
+				]),
+		});
+		const { container } = render(Page);
+
+		expect(await screen.findByText('cname.example.com')).toBeInTheDocument();
+		const answers = container.querySelectorAll('table .answers');
+		expect(answers).toHaveLength(1);
+		expect(answers[0]?.textContent).toBe('CNAME, 192.0.2.9');
+	});
+
+	it('renders nothing extra for a blocked row without answers', async () => {
+		serve({ '/api/v1/query-log': () => pageOf([record('a')]) });
+		const { container } = render(Page);
+
+		await screen.findByText('ads.example.com');
+		expect(container.querySelector('.answers')).toBeNull();
 	});
 });

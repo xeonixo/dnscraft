@@ -4,12 +4,12 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import StatusMark from './StatusMark.svelte';
 	import Value from './Value.svelte';
-	import type { QueryRecord } from '$lib/api/query-log';
+	import { answersOf, type QueryRecord } from '$lib/api/query-log';
 	import { unicodeName } from './domain-display';
 	import { displayText, neutralize } from '$lib/safe-text';
 	import { formatDateTime } from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
-	import { statusOf, statusStyle } from './view';
+	import { answerSummary, statusOf, statusStyle } from './view';
 	import { m } from '$lib/paraglide/messages';
 
 	interface Props {
@@ -24,19 +24,24 @@
 	{#each rows as record (record.id)}
 		{@const style = statusStyle(statusOf(record))}
 		{@const unicode = unicodeName(record.query.name)}
+		{@const answers = answerSummary(answersOf(record))}
 		<a class="card" href={resolve('/query-log/[id]', { id: record.id })}>
 			<span class="top">
 				<StatusMark icon={style.icon} tone={style.tone} label={style.label} />
 				<span class="time mono">{formatDateTime(new Date(record.time), locale)}</span>
 			</span>
 			<span class="domain mono"><Value value={unicode} mono /></span>
+			{#if answers !== ''}
+				<span class="answers mono">{displayText(answers, 80).text}</span>
+			{/if}
 			<span class="meta">
 				<span class="client"
 					>{displayText(record.client?.display_name ?? record.client_id ?? record.source_ip, 32)
 						.text}</span
 				>
 				<span class="mono"
-					>{record.query.type} · {record.protocol}{#if record.node_id} · {record.node_id}{/if}</span
+					>{record.query.type} · {record.protocol}{#if record.node_id}
+						· {record.node_id}{/if}</span
 				>
 			</span>
 			<span class="chev" aria-hidden="true"><Icon name="chevron-right" size="1rem" /></span>
@@ -83,6 +88,16 @@
 	}
 
 	/* Client on the left, type and protocol right-aligned under the time, so both edges line up. */
+	/* Resolved answer on one line under the domain; the full set is on the detail page. */
+	.answers {
+		min-width: 0;
+		overflow: hidden;
+		font-size: 0.8125rem;
+		color: var(--label-2);
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
 	.meta {
 		display: flex;
 		align-items: baseline;

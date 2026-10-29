@@ -1203,7 +1203,7 @@ fn prepare_row(
     let answer_source = answer_origin_str(event.decision.answer_source);
     let rcode = event.rcode.to_string();
     let decision = &event.decision;
-    let record = json!({
+    let mut record = json!({
         "id": id,
         "node_id": node_id,
         "listener_id": event.listener_id.as_str(),
@@ -1235,8 +1235,16 @@ fn prepare_row(
             "total_us": decision.timings.total_us,
         },
         "time": format_rfc3339_micros(event.time),
-    })
-    .to_string();
+    });
+    // Omitted when empty (blocked / failed answers): keeps the stored row small.
+    if !event.answers.is_empty() {
+        record["answers"] = event
+            .answers
+            .iter()
+            .map(|answer| json!({ "type": answer.rtype, "data": answer.data, "ttl": answer.ttl }))
+            .collect();
+    }
+    let record = record.to_string();
     Ok(PreparedRow {
         id,
         time_us: system_time_micros(event.time),
@@ -1629,6 +1637,7 @@ mod tests {
             },
             rcode: Rcode::NOERROR,
             answer_size: 100,
+            answers: Vec::new(),
             duration: Duration::from_millis(1),
             decision: DecisionRecord {
                 view_id: ViewId::new("lan").unwrap(),

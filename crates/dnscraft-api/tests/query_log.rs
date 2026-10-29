@@ -18,7 +18,9 @@ use dnscraft_api::{
     QueryLogPage,
 };
 use dnscraft_filtering::{BlockMode, ListId, Reason, RuleSource, SetId};
-use dnscraft_listeners::{ManualClock as ListenerClock, QueryEvent, QueryEventSink, emit_event};
+use dnscraft_listeners::{
+    AnswerRecord, ManualClock as ListenerClock, QueryEvent, QueryEventSink, emit_event,
+};
 use dnscraft_policy::{
     AnswerOrigin, DecisionRecord, DecisionStep, DecisionTimings, DnsProtocol, FilterHit,
     ListenerId, ProfileId, SelectionCause, ViewId,
@@ -102,6 +104,7 @@ fn sample_event(time: SystemTime, index: usize) -> QueryEvent {
         },
         rcode,
         answer_size: 100 + index,
+        answers: Vec::new(),
         duration: Duration::from_millis(1),
         decision: DecisionRecord {
             view_id: ViewId::new("lan").unwrap(),
@@ -420,6 +423,44 @@ async fn insert_and_read_source(log: &QueryLog, index: usize) -> (String, bool) 
         record["source_ip"].as_str().unwrap().to_owned(),
         record["source_ip_truncated"].as_bool().unwrap(),
     )
+}
+
+#[tokio::test]
+async fn query_log_row_carries_answers_only_when_present() {
+    let (log, _clock) = harness(dnscraft_api::QueryLogConfig::default()).await;
+    let mut with_answers = sample_event(at_secs(BASE_SECS - 2), 1);
+    with_answers.answers = vec![AnswerRecord {
+        rtype: "A".into(),
+        data: "192.0.2.1".into(),
+        ttl: 300,
+    }];
+    let without_answers = sample_event(at_secs(BASE_SECS - 3), 2);
+    log.insert_batch(vec![with_answers, without_answers])
+        .await
+        .unwrap();
+
+    let read = |index: usize| {
+        let log = &log;
+        async move {
+            let page = log
+                .list(&QueryLogFilter {
+                    domain: Some(format!("host{index}.example.com")),
+                    limit: 10,
+                    ..default_filter()
+                })
+                .await
+                .unwrap();
+            page.records[0].clone()
+        }
+    };
+
+    let record = read(1).await;
+    assert_eq!(record["answers"][0]["type"], "A");
+    assert_eq!(record["answers"][0]["data"], "192.0.2.1");
+    assert_eq!(record["answers"][0]["ttl"], 300);
+
+    let record = read(2).await;
+    assert!(record.get("answers").is_none(), "no answers key: {record}");
 }
 
 #[tokio::test]

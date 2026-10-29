@@ -124,6 +124,7 @@ impl Spec {
             },
             rcode,
             answer_size: 100,
+            answers: Vec::new(),
             duration: Duration::from_millis(1),
             decision: DecisionRecord {
                 view_id: ViewId::new("lan").unwrap(),

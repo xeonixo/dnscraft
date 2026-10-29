@@ -469,6 +469,7 @@ async fn runtime_full_sink_never_blocks_and_test_query_silent() {
             },
             rcode: Rcode::NOERROR,
             answer_size: 1,
+            answers: Vec::new(),
             duration: Duration::from_millis(1),
             decision: DecisionRecord {
                 view_id: ViewId::new("default").unwrap(),

@@ -62,8 +62,9 @@ pub use config::{
 };
 pub use conn::FramedStats;
 pub use core::{
-    HandleWireResult, QueryEvent, QueryMeta, error_event_from_wire, error_reply_from_wire,
-    error_result_from_wire, handle_wire,
+    AnswerRecord, HandleWireResult, MAX_LOGGED_ANSWERS, QueryEvent, QueryMeta,
+    error_event_from_wire, error_reply_from_wire, error_result_from_wire, handle_wire,
+    summarize_answers,
 };
 pub use ddr::{
     DDR_QNAME, DDR_TTL, DOH_PATH, DdrEndpoint, DdrEndpoints, ddr_decision_record, is_ddr_qname,

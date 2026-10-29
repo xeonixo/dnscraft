@@ -1095,6 +1095,34 @@ function markRoaming(records, clientIds) {
 	}
 }
 
+/**
+ * Resolved answers for allowed A and AAAA queries that got an answer (NOERROR). A share of them
+ * starts with a CNAME to a CDN edge. Blocked and failed queries get no `answers` key, as on the node.
+ * Own seeded stream, run after generation, so the records above stay the same.
+ */
+function addAnswers(records) {
+	const rng = mulberry32(SEED ^ 0xa45e);
+	const v4 = () => `${pick(rng, ['192.0.2', '198.51.100', '203.0.113'])}.${between(rng, 1, 254)}`;
+	const v6 = () =>
+		`2001:db8:${between(rng, 0, 0xffff).toString(16)}::${between(rng, 1, 0xffff).toString(16)}`;
+	for (const record of records) {
+		const { type, name } = record.query;
+		if (record.filter?.block_mode || record.rcode !== 'NOERROR') continue;
+		if (type !== 'A' && type !== 'AAAA') continue;
+		const answers = [];
+		if (rng() < 0.2) {
+			answers.push({ type: 'CNAME', data: `edge-${randomLabel(rng)}.cdn-edge.example`, ttl: 300 });
+		}
+		const count = rng() < 0.7 ? 1 : between(rng, 2, 4);
+		const ttl = pick(rng, [60, 300, 300, 3600]);
+		for (let i = 0; i < count; i++) {
+			answers.push({ type, data: type === 'A' ? v4() : v6(), ttl });
+		}
+		record.answers = answers;
+	}
+	return records;
+}
+
 /** The generated rows, newest first, built once per process. */
 function generateRecords(config) {
 	const rng = mulberry32(SEED);
@@ -1107,7 +1135,7 @@ function generateRecords(config) {
 	ages.sort((a, b) => a - b);
 	const records = ages.map((age, index) => buildRecord(rng, index, NOW_MS - age, sets, profiles));
 	markRoaming(records, config.policy.client_ids);
-	return records;
+	return addAnswers(records);
 }
 
 /**

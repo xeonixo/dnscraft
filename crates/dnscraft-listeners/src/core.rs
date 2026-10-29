@@ -9,7 +9,7 @@ use dnscraft_policy::{
     AnswerOrigin, ClientFlags, ClientId, DecisionRecord, DecisionTimings, DnsProtocol, ListenerId,
     NodeId, ProfileId, RequestContext, SelectionCause, ViewId,
 };
-use dnscraft_proto::{Class, Header, Message, Opcode, Question, Rcode};
+use dnscraft_proto::{Class, Header, Message, Opcode, Question, RData, Rcode, Record};
 use dnscraft_resolver::Query;
 
 /// Placeholder ids for listener-generated (pre-policy) decision records.
@@ -55,6 +55,78 @@ pub struct QueryMeta {
     pub ddr: Option<Arc<RwLock<DdrEndpoints>>>,
 }
 
+/// Most answer records kept per logged query.
+pub const MAX_LOGGED_ANSWERS: usize = 16;
+
+/// Longest `data` text kept per logged answer record (bytes).
+const MAX_ANSWER_DATA: usize = 120;
+
+/// One answer record in compact, loggable form (type, readable data, TTL).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnswerRecord {
+    /// Record type mnemonic (`A`, `CNAME`, …).
+    pub rtype: String,
+    /// Readable record data; empty for types without a compact form.
+    pub data: String,
+    /// Time to live in seconds.
+    pub ttl: u32,
+}
+
+/// Summarizes the answer section for the query log: at most [`MAX_LOGGED_ANSWERS`] records, data
+/// text capped at [`MAX_ANSWER_DATA`] bytes, DNSSEC records (`RRSIG`, `NSEC*`) left out.
+pub fn summarize_answers(records: &[Record]) -> Vec<AnswerRecord> {
+    records
+        .iter()
+        .filter(|record| {
+            !matches!(
+                record.rdata,
+                RData::RRSIG { .. } | RData::NSEC { .. } | RData::NSEC3 { .. }
+            )
+        })
+        .take(MAX_LOGGED_ANSWERS)
+        .map(|record| {
+            let mut data = match &record.rdata {
+                RData::A(ip) => ip.to_string(),
+                RData::AAAA(ip) => ip.to_string(),
+                RData::NS(name) | RData::CNAME(name) | RData::DNAME(name) | RData::PTR(name) => {
+                    name.to_string()
+                }
+                RData::MX {
+                    preference,
+                    exchange,
+                } => format!("{preference} {exchange}"),
+                RData::TXT(parts) => parts
+                    .iter()
+                    .map(|part| String::from_utf8_lossy(part))
+                    .collect::<Vec<_>>()
+                    .join(""),
+                RData::SRV {
+                    priority,
+                    weight,
+                    port,
+                    target,
+                } => format!("{priority} {weight} {port} {target}"),
+                RData::SVCB(svcb) | RData::HTTPS(svcb) => {
+                    format!("{} {}", svcb.priority, svcb.target)
+                }
+                _ => String::new(),
+            };
+            if data.len() > MAX_ANSWER_DATA {
+                let mut end = MAX_ANSWER_DATA;
+                while !data.is_char_boundary(end) {
+                    end -= 1;
+                }
+                data.truncate(end);
+            }
+            AnswerRecord {
+                rtype: record.rtype().to_string(),
+                data,
+                ttl: record.ttl,
+            }
+        })
+        .collect()
+}
+
 /// Structured query-log fields produced when the handler ran.
 #[derive(Clone, Debug)]
 pub struct QueryEvent {
@@ -74,6 +146,8 @@ pub struct QueryEvent {
     pub rcode: Rcode,
     /// Encoded answer size in octets.
     pub answer_size: usize,
+    /// Compact answer records (empty when none, or for listener-generated replies).
+    pub answers: Vec<AnswerRecord>,
     /// Wall time spent in `handle_wire` (including the handler).
     pub duration: Duration,
     /// Policy decision record.
@@ -321,6 +395,7 @@ fn make_event(
         },
         rcode,
         answer_size,
+        answers: Vec::new(),
         duration,
         decision,
         loggable,
@@ -458,7 +533,7 @@ fn finish_response(args: FinishArgs<'_>) -> Option<HandleWireResult> {
         );
     }
 
-    let event = make_event(
+    let mut event = make_event(
         meta,
         source,
         question,
@@ -469,6 +544,9 @@ fn finish_response(args: FinishArgs<'_>) -> Option<HandleWireResult> {
         loggable,
     );
 
+    if loggable {
+        event.answers = summarize_answers(&resp.answers);
+    }
     Some(HandleWireResult {
         bytes,
         event: Some(event),
@@ -555,4 +633,118 @@ pub fn error_result_from_wire(
         bytes: reply,
         event,
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod summarize_answers_tests {
+    use std::net::Ipv4Addr;
+
+    use dnscraft_proto::{Class, Name, RData, Record, RecordType, TypeBitmap};
+
+    use super::*;
+
+    fn rec(owner: &str, ttl: u32, rdata: RData) -> Record {
+        Record::new(Name::from_ascii(owner).unwrap(), Class::IN, ttl, rdata)
+    }
+
+    #[test]
+    fn maps_a_cname_and_txt_records() {
+        let records = vec![
+            rec("a.example.com.", 300, RData::A(Ipv4Addr::new(192, 0, 2, 1))),
+            rec(
+                "www.example.com.",
+                60,
+                RData::CNAME(Name::from_ascii("target.example.com.").unwrap()),
+            ),
+            rec(
+                "txt.example.com.",
+                120,
+                RData::TXT(vec![Box::from(&b"hello"[..]), Box::from(&b"world"[..])]),
+            ),
+        ];
+        assert_eq!(
+            summarize_answers(&records),
+            vec![
+                AnswerRecord {
+                    rtype: "A".into(),
+                    data: "192.0.2.1".into(),
+                    ttl: 300,
+                },
+                AnswerRecord {
+                    rtype: "CNAME".into(),
+                    data: "target.example.com.".into(),
+                    ttl: 60,
+                },
+                AnswerRecord {
+                    rtype: "TXT".into(),
+                    data: "helloworld".into(),
+                    ttl: 120,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_dnssec_records() {
+        let records = vec![
+            rec("a.example.com.", 300, RData::A(Ipv4Addr::new(192, 0, 2, 1))),
+            rec(
+                "a.example.com.",
+                300,
+                RData::RRSIG {
+                    type_covered: RecordType::A,
+                    algorithm: 13,
+                    labels: 3,
+                    original_ttl: 300,
+                    expiration: 0,
+                    inception: 0,
+                    key_tag: 1,
+                    signer_name: Name::from_ascii("example.com.").unwrap(),
+                    signature: Box::from(&[0u8; 4][..]),
+                },
+            ),
+            rec(
+                "a.example.com.",
+                300,
+                RData::NSEC {
+                    next_domain: Name::from_ascii("b.example.com.").unwrap(),
+                    types: TypeBitmap::new([RecordType::A]),
+                },
+            ),
+        ];
+        let summary = summarize_answers(&records);
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].rtype, "A");
+    }
+
+    #[test]
+    fn caps_at_max_logged_answers() {
+        let records: Vec<Record> = (0..20u8)
+            .map(|i| rec("a.example.com.", 300, RData::A(Ipv4Addr::new(192, 0, 2, i))))
+            .collect();
+        let summary = summarize_answers(&records);
+        assert_eq!(summary.len(), MAX_LOGGED_ANSWERS);
+        assert_eq!(summary[0].data, "192.0.2.0");
+        assert_eq!(summary[MAX_LOGGED_ANSWERS - 1].data, "192.0.2.15");
+    }
+
+    #[test]
+    fn truncates_long_txt_on_char_boundary() {
+        // 119 ASCII bytes then a 2-byte `é` (bytes 119..121): a cut at 120 would split it.
+        let mut first = "a".repeat(119);
+        first.push('é');
+        let records = vec![rec(
+            "txt.example.com.",
+            60,
+            RData::TXT(vec![
+                Box::from(first.as_bytes()),
+                Box::from("b".repeat(200).as_bytes()),
+            ]),
+        )];
+        let summary = summarize_answers(&records);
+        assert_eq!(summary.len(), 1);
+        assert!(summary[0].data.len() <= MAX_ANSWER_DATA);
+        assert_eq!(summary[0].data, "a".repeat(119));
+    }
 }

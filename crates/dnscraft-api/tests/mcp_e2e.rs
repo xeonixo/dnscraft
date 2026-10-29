@@ -970,6 +970,7 @@ fn sample_event(seconds: u64) -> QueryEvent {
         },
         rcode: Rcode::NOERROR,
         answer_size: 128,
+        answers: Vec::new(),
         duration: Duration::from_millis(1),
         decision: DecisionRecord {
             view_id: ViewId::new("default").unwrap(),

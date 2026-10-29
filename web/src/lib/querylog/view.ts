@@ -1,5 +1,5 @@
 import type { IconName, StatusTone } from '$lib/components/icons';
-import type { DecisionStep, QueryRecord } from '$lib/api/query-log';
+import type { DecisionStep, QueryAnswer, QueryRecord } from '$lib/api/query-log';
 import { answerSourceLabel } from '$lib/dashboard/view';
 import { m } from '$lib/paraglide/messages';
 
@@ -51,6 +51,18 @@ export function provenanceLabel(reason: string): string {
 		default:
 			return reason;
 	}
+}
+
+/**
+ * One line for a list row: the first two answer values joined by ", ", then "+N" for the rest.
+ * An answer without data shows its type instead. Empty for no answers.
+ */
+export function answerSummary(answers: QueryAnswer[]): string {
+	const labels = answers.map((answer) => (answer.data === '' ? answer.type : answer.data));
+	const head = labels.slice(0, 2).join(', ');
+	return labels.length > 2
+		? `${head} ${m.query_log_answers_more({ count: String(labels.length - 2) })}`
+		: head;
 }
 
 export function dnssecLabel(value: string | null): string {

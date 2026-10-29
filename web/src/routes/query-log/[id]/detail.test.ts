@@ -443,3 +443,42 @@ describe('rule sheet', () => {
 		expect(within(dialog).getByText(m.querylog_rule_no_sets())).toBeInTheDocument();
 	});
 });
+
+describe('resolved answers', () => {
+	it('lists each answer with its type, data and TTL', async () => {
+		serve({
+			'GET /api/v1/query-log/q1': () =>
+				ok(
+					record({
+						filter: null,
+						rcode: 'NOERROR',
+						answer_source: 'resolver',
+						answers: [
+							{ type: 'CNAME', data: 'edge.cdn.example', ttl: 300 },
+							{ type: 'A', data: '192.0.2.1', ttl: 60 },
+						],
+					}),
+				),
+		});
+		render(Page);
+
+		const title = await screen.findByRole('heading', { name: m.query_log_answers_title() });
+		const section = title.closest('section');
+		expect(section).not.toBeNull();
+		const rows = section!.querySelectorAll('.answer');
+		expect(rows).toHaveLength(2);
+		expect(rows[0]).toHaveTextContent('CNAME');
+		expect(rows[0]).toHaveTextContent('edge.cdn.example');
+		expect(rows[0]).toHaveTextContent(m.query_log_answer_ttl({ ttl: '300' }));
+		expect(rows[1]).toHaveTextContent('192.0.2.1');
+		expect(rows[1]).toHaveTextContent(m.query_log_answer_ttl({ ttl: '60' }));
+	});
+
+	it('shows no answers section when the record has none', async () => {
+		serve({ 'GET /api/v1/query-log/q1': () => ok(record()) });
+		render(Page);
+
+		await screen.findByText('||ads.example.com^');
+		expect(screen.queryByRole('heading', { name: m.query_log_answers_title() })).toBeNull();
+	});
+});

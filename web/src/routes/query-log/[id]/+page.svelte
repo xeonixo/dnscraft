@@ -8,7 +8,7 @@
 	import ResultNotice from '$lib/components/ResultNotice.svelte';
 	import { announce } from '$lib/live.svelte';
 	import { auth } from '$lib/auth/state.svelte';
-	import { getQueryRecord, type QueryRecord } from '$lib/api/query-log';
+	import { answersOf, getQueryRecord, type QueryRecord } from '$lib/api/query-log';
 	import { settle, type Result } from '$lib/api/result';
 	import DecisionSteps from '$lib/querylog/DecisionSteps.svelte';
 	import FieldRow from '$lib/querylog/FieldRow.svelte';
@@ -26,7 +26,7 @@
 		statusOf,
 		statusStyle,
 	} from '$lib/querylog/view';
-	import { formatDateTime, formatMilliseconds } from '$lib/format';
+	import { formatDateTime, formatMilliseconds, formatNumber } from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
 	import { m } from '$lib/paraglide/messages';
 	import { displayText, FULL_LIMIT } from '$lib/safe-text';
@@ -103,6 +103,7 @@
 
 {#if result.kind === 'ok'}
 	{@const record = result.data}
+	{@const answers = answersOf(record)}
 	{@const style = statusStyle(statusOf(record))}
 	{@const unicode = unicodeName(record.query.name)}
 	{@const device = record.client?.display_name ?? record.client_id ?? record.source_ip}
@@ -154,6 +155,22 @@
 							label={m.querylog_row_important()}
 							value={record.filter.important ? m.querylog_yes() : m.querylog_no()}
 						/>
+					</GroupedList>
+				{/if}
+
+				{#if answers.length > 0}
+					<GroupedList header={m.query_log_answers_title()}>
+						{#each answers as answer}
+							<div class="answer">
+								<span class="type">{answer.type}</span>
+								<div class="data">
+									<Value value={answer.data} mono />
+								</div>
+								<span class="ttl">
+									{m.query_log_answer_ttl({ ttl: formatNumber(answer.ttl, locale) })}
+								</span>
+							</div>
+						{/each}
 					</GroupedList>
 				{/if}
 			</div>
@@ -356,6 +373,36 @@
 		font-size: 0.875rem;
 		color: var(--label-2);
 		overflow-wrap: anywhere;
+	}
+
+	/* One answer per row: type, rdata, TTL. Wraps on narrow screens, the rdata gets the free width. */
+	.answer {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 0.25rem 0.75rem;
+		min-height: 2.75rem;
+		padding: 0.625rem 1rem;
+		color: var(--label);
+	}
+
+	.type {
+		min-width: 4.5rem;
+		font-family: var(--font-mono);
+		font-size: 0.875rem;
+		color: var(--label-2);
+	}
+
+	.data {
+		flex: 1 1 12rem;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+
+	.ttl {
+		font-size: 0.8125rem;
+		color: var(--label-2);
+		font-variant-numeric: tabular-nums;
 	}
 
 	.link {

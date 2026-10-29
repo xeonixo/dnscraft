@@ -131,6 +131,7 @@ mod tests {
             },
             rcode: Rcode::NOERROR,
             answer_size: 42,
+            answers: Vec::new(),
             duration: Duration::from_millis(1),
             decision: DecisionRecord {
                 view_id: ViewId::new("default").unwrap(),
