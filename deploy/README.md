@@ -26,6 +26,19 @@ Data persists in the `dnscraft-data` volume (`data_dir = /var/lib/dnscraft`).
 | [`Dockerfile`](../Dockerfile) | Debian bookworm-slim (glibc) | **Default.** Includes `curl` for `HEALTHCHECK` on `/healthz` (loopback inside the container). |
 | [`Dockerfile.musl`](../Dockerfile.musl) | `scratch` + static musl binary | Smaller attack surface; no shell/curl — mount config and use compose/Kubernetes HTTP probes. |
 
+### Releases
+
+Pushing a tag `vX.Y.Z` (must equal the `dnscraft` crate version) runs
+[`release.yml`](../.github/workflows/release.yml): it builds the glibc image for
+`linux/amd64` + `linux/arm64` (each on a native runner, in parallel), pushes it to `ghcr.io/xeonixo/dnscraft`
+(`X.Y.Z`, `X.Y`, `latest`) and creates a GitHub Release.
+
+```bash
+# bump version in crates/*/Cargo.toml, commit, then:
+git tag v0.1.0 && git push origin v0.1.0
+docker pull ghcr.io/xeonixo/dnscraft:0.1.0
+```
+
 ### Why glibc is the default
 
 The workspace targets glibc Linux in CI. A musl static build needs the Alpine

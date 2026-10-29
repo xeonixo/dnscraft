@@ -173,9 +173,7 @@ function parseZonesPage(data: unknown): DomainZonesPage {
 		has_cloudflare_token: data.has_cloudflare_token === true,
 	};
 	if (Array.isArray(data.discoverable)) {
-		page.discoverable = data.discoverable
-			.map(parseZone)
-			.filter((z): z is DomainZone => z !== null);
+		page.discoverable = data.discoverable.map(parseZone).filter((z): z is DomainZone => z !== null);
 	}
 	return page;
 }
@@ -220,6 +218,42 @@ export const listDomainZoneRecords = (
 		parseRecordsPage,
 	);
 };
+
+/** Hard cap on pages per zone (50 × 100 records) so a bad `total_pages` cannot loop forever. */
+export const MAX_ZONE_RECORD_PAGES = 50;
+
+/**
+ * Every record of an attached zone, paginated. Stops at `total_pages`, an empty page or the cap
+ * (records past the cap are not loaded).
+ */
+export async function listAllDomainZoneRecords(zoneId: string): Promise<DomainZoneRecord[]> {
+	const records: DomainZoneRecord[] = [];
+	for (let page = 1; page <= MAX_ZONE_RECORD_PAGES; page++) {
+		const result = await listDomainZoneRecords(zoneId, { page, per_page: 100 });
+		records.push(...result.records);
+		if (result.records.length === 0 || page >= result.total_pages) break;
+	}
+	return records;
+}
+
+/** Cloudflare TTL 1 means "Auto". */
+export const CF_TTL_AUTO = 1;
+
+/** TTL for display: Cloudflare TTL 1 shows the localized `autoLabel`, other values as seconds. */
+export function ttlLabel(ttl: number, autoLabel: string): string {
+	return ttl === CF_TTL_AUTO ? autoLabel : String(ttl);
+}
+
+/**
+ * Parse a TTL field: `auto` (or the localized label) and `1` both mean Cloudflare Auto (1),
+ * digits are seconds, anything else is null.
+ */
+export function parseTtlInput(text: string, autoLabel: string): number | null {
+	const value = text.trim().toLowerCase();
+	if (value === 'auto' || value === autoLabel.trim().toLowerCase()) return CF_TTL_AUTO;
+	if (!/^\d+$/.test(value)) return null;
+	return Number(value);
+}
 
 function requireRecord(data: unknown): DomainZoneRecord {
 	const record = parseRecord(data);

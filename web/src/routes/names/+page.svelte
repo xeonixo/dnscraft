@@ -14,16 +14,21 @@
 		detachDomainZone,
 		findMatchingRecord,
 		isInventoryDnsName,
+		listAllDomainZoneRecords,
 		listDomainZoneRecords,
 		listDomainZones,
 		normalizeDnsName,
+		parseTtlInput,
 		PUBLIC_RECORD_TYPES,
+		CF_TTL_AUTO,
+		ttlLabel,
 		supportsProxied,
 		upsertPublicRecord,
 		zoneForName,
 		type DomainZone,
 		type DomainZoneRecord,
 	} from '$lib/api/domain-zones';
+	import { zoneOfName } from '$lib/names-zones';
 	import {
 		deleteRecord,
 		listRecords,
@@ -65,7 +70,12 @@
 	let formPublicContent = $state('');
 	let formPublicProxied = $state(false);
 	/** Snapshot of public fields when the lookup finished — detects Öffentlich dirty. */
-	let publicBaseline = $state<{ content: string; proxied: boolean; ttl: string; recordId: string | null }>({
+	let publicBaseline = $state<{
+		content: string;
+		proxied: boolean;
+		ttl: string;
+		recordId: string | null;
+	}>({
 		content: '',
 		proxied: false,
 		ttl: '60',
@@ -93,31 +103,107 @@
 	const recordsByZone = new SvelteMap<string, DomainZoneRecord[]>();
 	/** name+type keys known to have a public CF match (list badge). */
 	let publicKeys = new SvelteSet<string>();
+	/** Zone filter from `?zone=` (empty = all zones). */
+	let zoneKey = $state('');
+	let cloudflareLoading = $state(false);
+	let cloudflareFailed = $state(false);
 
 	let discoverableZones = $state<DomainZone[]>([]);
 	let zonesDiscoverReady = $state(false);
 
 	const rows = $derived(result.kind === 'ok' ? result.data : []);
 
-	/** One card per owner; A/AAAA for the same name stay together. */
+	type NameRow = {
+		key: string;
+		owner: string;
+		type: string;
+		/** Zone apex, or a derived local zone (`.lan`, `10.20.172.in-addr.arpa`). */
+		zone: string;
+		ttl: number;
+		rdata: string;
+		local: PolicyRecord | null;
+		/** Cloudflare-only record (no local record with the same owner and type). */
+		cf: DomainZoneRecord | null;
+	};
+
+	/** Local records plus the Cloudflare-only records of every loaded attached zone. */
+	const allRows = $derived.by(() => {
+		const out: NameRow[] = [];
+		const seen = new SvelteSet<string>();
+		for (const record of rows) {
+			const key = recordKey(record.name, record.type);
+			seen.add(key);
+			out.push({
+				key,
+				owner: record.name,
+				type: record.type,
+				zone: zoneOfName(attachedZones, record.name).name,
+				ttl: record.ttl,
+				rdata: record.rdata,
+				local: record,
+				cf: null,
+			});
+		}
+		for (const zone of attachedZones) {
+			const cfRecords = zone.id ? recordsByZone.get(zone.id) : undefined;
+			if (!cfRecords) continue;
+			for (const cf of cfRecords) {
+				if (zoneForName(attachedZones, cf.name)?.id !== zone.id) continue;
+				const key = recordKey(cf.name, cf.record_type);
+				if (seen.has(key)) continue;
+				seen.add(key);
+				out.push({
+					key,
+					owner: cf.name.replace(/\.+$/, ''),
+					type: cf.record_type.toUpperCase(),
+					zone: normalizeDnsName(zone.name),
+					ttl: cf.ttl,
+					rdata: cf.content,
+					local: null,
+					cf,
+				});
+			}
+		}
+		return out;
+	});
+
+	/** Attached zones (always) plus derived local zones, alphabetical. Counts are rows in the zone. */
+	const zoneChips = $derived.by(() => {
+		const byName = new SvelteMap<string, { name: string; attached: boolean; count: number }>();
+		for (const zone of attachedZones) {
+			const name = normalizeDnsName(zone.name);
+			byName.set(name, { name, attached: true, count: 0 });
+		}
+		for (const row of allRows) {
+			const chip = byName.get(row.zone) ?? { name: row.zone, attached: false, count: 0 };
+			chip.count += 1;
+			byName.set(row.zone, chip);
+		}
+		return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+	});
+
+	const activeZone = $derived(zoneChips.some((chip) => chip.name === zoneKey) ? zoneKey : '');
+
+	/** One card per owner (sorted); A/AAAA for the same name stay together. */
 	const groups = $derived.by(() => {
 		const needle = query.trim().toLowerCase();
-		const filtered = needle
-			? rows.filter((record) => {
-					const hay = `${record.name} ${record.type} ${record.rdata}`.toLowerCase();
-					return hay.includes(needle);
-				})
-			: rows;
-		const byName = new SvelteMap<string, PolicyRecord[]>();
-		for (const record of filtered) {
-			const list = byName.get(record.name) ?? [];
-			list.push(record);
-			byName.set(record.name, list);
+		const byOwner = new SvelteMap<string, { name: string; records: NameRow[] }>();
+		for (const row of allRows) {
+			if (activeZone !== '' && row.zone !== activeZone) continue;
+			if (needle && !`${row.owner} ${row.type} ${row.rdata}`.toLowerCase().includes(needle)) {
+				continue;
+			}
+			const owner = normalizeDnsName(row.owner);
+			const group = byOwner.get(owner) ?? { name: row.owner, records: [] };
+			group.records.push(row);
+			byOwner.set(owner, group);
 		}
-		return [...byName.entries()].map(([name, records]) => ({
-			name,
-			records: [...records].sort((a, b) => a.type.localeCompare(b.type)),
-		}));
+		return [...byOwner.entries()]
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(([, group]) => ({
+				name: group.name,
+				records: group.records.sort((a, b) => a.type.localeCompare(b.type)),
+			}));
 	});
 
 	const canAddOverride = $derived(
@@ -130,8 +216,7 @@
 
 	/** Attached zone + supported type: Öffentlich is the single answer field. */
 	const showPublicAnswer = $derived(
-		publicTypeSupported &&
-			(publicLookup.kind === 'found' || publicLookup.kind === 'absent'),
+		publicTypeSupported && (publicLookup.kind === 'found' || publicLookup.kind === 'absent'),
 	);
 
 	const publicEditable = $derived(isAdmin && showPublicAnswer);
@@ -140,12 +225,10 @@
 		publicEditable &&
 			(formPublicContent.trim() !== publicBaseline.content ||
 				formPublicProxied !== publicBaseline.proxied ||
-				formTtl !== publicBaseline.ttl),
+				ttlWrite(formTtl) !== ttlWrite(publicBaseline.ttl)),
 	);
 
-	const showPublicClearHint = $derived(
-		publicEditable && publicBaseline.recordId !== null,
-	);
+	const showPublicClearHint = $derived(publicEditable && publicBaseline.recordId !== null);
 
 	const showProxiedWarn = $derived(
 		publicEditable &&
@@ -158,7 +241,8 @@
 	);
 
 	const inheritPlaceholder = $derived(
-		publicLookup.kind === 'found' || (publicLookup.kind === 'absent' && formPublicContent.trim() !== '')
+		publicLookup.kind === 'found' ||
+			(publicLookup.kind === 'absent' && formPublicContent.trim() !== '')
 			? m.names_overrides_inherit_public()
 			: m.names_overrides_inherit_standard(),
 	);
@@ -170,11 +254,7 @@
 	);
 
 	const sheetTitle = $derived(
-		!isAdmin && editing
-			? m.names_view_title()
-			: editing
-				? m.names_edit_title()
-				: m.names_add_title(),
+		!isAdmin ? m.names_view_title() : editing ? m.names_edit_title() : m.names_add_title(),
 	);
 
 	const attachCandidates = $derived.by(() => {
@@ -193,6 +273,7 @@
 			}
 			domainZonesReady = true;
 			recordsByZone.clear();
+			await loadCloudflareRecords();
 			await refreshPublicBadges(rows);
 		} else if (zonesResult.kind === 'unavailable') {
 			attachedZones = [];
@@ -268,11 +349,11 @@
 		if (record) {
 			formPublicContent = record.content;
 			formPublicProxied = record.proxied;
-			formTtl = String(record.ttl);
+			formTtl = ttlFieldFor(record.ttl);
 			publicBaseline = {
 				content: record.content,
 				proxied: record.proxied,
-				ttl: String(record.ttl),
+				ttl: ttlFieldFor(record.ttl),
 				recordId: record.id,
 			};
 		} else {
@@ -287,15 +368,41 @@
 		}
 	}
 
+	/** All records of a zone (cached); with `nameSubstr`, one search page for the sheet lookup. */
 	async function recordsForZone(zoneId: string, nameSubstr?: string): Promise<DomainZoneRecord[]> {
-		const cached = recordsByZone.get(zoneId);
-		if (cached && nameSubstr == null) return cached;
+		if (nameSubstr == null) {
+			const cached = recordsByZone.get(zoneId);
+			if (cached) return cached;
+			const all = await listAllDomainZoneRecords(zoneId);
+			recordsByZone.set(zoneId, all);
+			return all;
+		}
 		const page = await listDomainZoneRecords(zoneId, {
 			per_page: 100,
 			name_substr: nameSubstr,
 		});
-		if (nameSubstr == null) recordsByZone.set(zoneId, page.records);
 		return page.records;
+	}
+
+	/** Loads every record of every attached zone that is not cached yet. */
+	async function loadCloudflareRecords(): Promise<void> {
+		if (!hasCloudflareToken) return;
+		const ids = attachedZones
+			.map((zone) => zone.id)
+			.filter((id): id is string => id !== null && !recordsByZone.has(id));
+		if (ids.length === 0) return;
+		cloudflareLoading = true;
+		cloudflareFailed = false;
+		await Promise.all(
+			ids.map(async (id) => {
+				try {
+					await recordsForZone(id);
+				} catch {
+					cloudflareFailed = true;
+				}
+			}),
+		);
+		cloudflareLoading = false;
 	}
 
 	function recordKey(name: string, type: string): string {
@@ -375,7 +482,10 @@
 				publicLookup = { kind: 'token_missing' };
 				return;
 			}
-			if (cause instanceof ApiError && (cause.status === 404 || cause.code === 'control_api.not_ready')) {
+			if (
+				cause instanceof ApiError &&
+				(cause.status === 404 || cause.code === 'control_api.not_ready')
+			) {
 				publicLookup = { kind: 'unavailable' };
 				return;
 			}
@@ -391,6 +501,7 @@
 		result = records;
 		if (vws.kind === 'ok') views = vws.data;
 		if (records.kind === 'ok' && domainZonesReady) {
+			await loadCloudflareRecords();
 			await refreshPublicBadges(records.data);
 		}
 	}
@@ -421,8 +532,15 @@
 			publicEditable && formPublicContent.trim() !== ''
 				? formPublicContent.trim()
 				: formRdata.trim();
-		const required = !(publicEditable && formPublicContent.trim() === '' && publicBaseline.recordId);
-		return validateRdata(data, required || formRdata.trim() !== '' || formPublicContent.trim() !== '');
+		const required = !(
+			publicEditable &&
+			formPublicContent.trim() === '' &&
+			publicBaseline.recordId
+		);
+		return validateRdata(
+			data,
+			required || formRdata.trim() !== '' || formPublicContent.trim() !== '',
+		);
 	});
 
 	const publicContentError = $derived.by(() => {
@@ -523,6 +641,59 @@
 		void refreshPublicLookup();
 	}
 
+	/** TTL as shown in the editor: Cloudflare Auto (1) reads as the localized label. */
+	function ttlFieldFor(ttl: number): string {
+		return ttlLabel(ttl, m.names_ttl_auto());
+	}
+
+	/** TTL sent to Cloudflare; Auto stays 1. */
+	function ttlWrite(text: string): number {
+		return parseTtlInput(text, m.names_ttl_auto()) ?? 60;
+	}
+
+	/** Local records need real seconds: Auto mirrors as 60. */
+	function localTtl(text: string): number {
+		const ttl = ttlWrite(text);
+		return ttl === CF_TTL_AUTO ? 60 : ttl;
+	}
+
+	/** Cloudflare-only record: the editor opens as a create flow; viewers get the read-only sheet. */
+	function openPublicOnly(record: DomainZoneRecord): void {
+		editing = null;
+		formName = record.name.replace(/\.+$/, '');
+		formType = record.record_type.toUpperCase();
+		formTtl = ttlFieldFor(record.ttl);
+		formRdata = record.content;
+		formPublicContent = '';
+		formPublicProxied = false;
+		publicBaseline = { content: '', proxied: false, ttl: formTtl, recordId: null };
+		overrideRows = [];
+		confirmDelete = false;
+		failure = null;
+		submitted = false;
+		publicLookup = { kind: 'idle' };
+		sheetOpen = true;
+		void refreshPublicLookup();
+	}
+
+	function openRow(row: NameRow): void {
+		if (row.local) openEdit(row.local);
+		else if (row.cf) openPublicOnly(row.cf);
+	}
+
+	/** Only types the editor knows can be opened; other Cloudflare-only types stay read-only. */
+	function canOpen(row: NameRow): boolean {
+		return row.local !== null || (row.cf !== null && RECORD_TYPES.includes(row.type));
+	}
+
+	function setZone(key: string): void {
+		zoneKey = key;
+		const url = new URL(window.location.href);
+		if (key) url.searchParams.set('zone', key);
+		else url.searchParams.delete('zone');
+		window.history.replaceState(window.history.state, '', url);
+	}
+
 	function closeSheet(): void {
 		sheetOpen = false;
 		confirmDelete = false;
@@ -573,7 +744,7 @@
 									name: formName.trim(),
 									record_type: formType,
 									content: publicBaseline.content,
-									ttl: Number(publicBaseline.ttl) || 60,
+									ttl: ttlWrite(publicBaseline.ttl),
 									proxied: publicBaseline.proxied,
 								}
 							: null;
@@ -581,7 +752,7 @@
 					name: formName.trim().replace(/\.+$/, ''),
 					type: formType,
 					content: publicContent,
-					ttl: Number(formTtl) || 60,
+					ttl: ttlWrite(formTtl),
 					proxied: supportsProxied(formType) ? formPublicProxied : false,
 				});
 				recordsByZone.delete(zone.id);
@@ -590,7 +761,7 @@
 			await saveRecord({
 				name: formName.trim(),
 				type: formType,
-				ttl: Number(formTtl) || 60,
+				ttl: localTtl(formTtl),
 				rdata,
 				overrides,
 			});
@@ -621,6 +792,8 @@
 	}
 
 	onMount(() => {
+		zoneKey = new URLSearchParams(window.location.search).get('zone') ?? '';
+		zoneKey = new URLSearchParams(window.location.search).get('zone') ?? '';
 		void Promise.all([load(), loadDomainZones()]);
 	});
 </script>
@@ -662,11 +835,67 @@
 			autocomplete="off"
 		/>
 
+		{#if zoneChips.length > 0}
+			<div class="zone-chips" role="group" aria-label={m.names_zones_filter()}>
+				<button
+					type="button"
+					class="zone-chip"
+					aria-pressed={activeZone === ''}
+					onclick={() => setZone('')}
+				>
+					<span>{m.names_zone_all()}</span>
+					<span class="chip-count">{allRows.length}</span>
+				</button>
+				{#each zoneChips as chip (chip.name)}
+					<button
+						type="button"
+						class="zone-chip"
+						aria-pressed={activeZone === chip.name}
+						onclick={() => setZone(chip.name)}
+					>
+						<span class="mono">{displayText(chip.name, 80).text}</span>
+						<span class="zone-kind" class:cf={chip.attached}
+							>{chip.attached ? m.names_zone_cloudflare() : m.names_zone_local()}</span
+						>
+						<span class="chip-count">{chip.count}</span>
+					</button>
+				{/each}
+			</div>
+		{/if}
+		{#if cloudflareLoading}
+			<p class="hint muted" role="status">{m.names_cf_loading()}</p>
+		{/if}
+		{#if cloudflareFailed}
+			<p class="hint muted" role="status">{m.names_cf_failed()}</p>
+		{/if}
 		{#if groups.length === 0}
 			<section class="empty">
 				<p>{query.trim() ? m.names_search_empty() : m.state_empty()}</p>
 			</section>
 		{:else}
+			{#snippet rowBody(row: NameRow)}
+				<span class="type">{row.type}</span>
+				<span class="rdata mono">{row.rdata}</span>
+				<span class="meta">
+					{#if row.local}
+						{m.names_ttl_short({ ttl: row.ttl })}{#if hasPublic(row.local)}
+							{' · '}{m.names_public_badge()}{/if}{#if overrideCount(row.local) > 0}
+							{' · '}{overrideCount(row.local) === 1
+								? m.names_overrides_badge_one({ count: '1' })
+								: m.names_overrides_badge_other({ count: String(overrideCount(row.local)) })}{/if}
+					{:else}
+						{m.names_public_only()} · {m.names_ttl_short({
+							ttl: ttlFieldFor(row.ttl),
+						})}{#if row.cf?.proxied}
+							{' · '}{m.names_public_proxied()}{/if}
+					{/if}
+				</span>
+				{#if canOpen(row)}
+					<span class="chevron" aria-hidden="true">
+						<Icon name="chevron-right" size="1rem" />
+					</span>
+				{/if}
+			{/snippet}
 			{#each groups as group (group.name)}
 				<section class="owner">
 					<header class="owner-head">
@@ -678,27 +907,16 @@
 						>
 					</header>
 					<GroupedList>
-						{#each group.records as record (record.name + record.type)}
-							<button
-								type="button"
-								class="rec-row"
-								onclick={() => openEdit(record)}
-							>
-								<span class="type">{record.type}</span>
-								<span class="rdata mono">{record.rdata}</span>
-								<span class="meta">
-									{m.names_ttl_short({ ttl: record.ttl })}{#if hasPublic(record)}
-										· {m.names_public_badge()}{/if}{#if overrideCount(record) > 0}
-										· {overrideCount(record) === 1
-											? m.names_overrides_badge_one({ count: '1' })
-											: m.names_overrides_badge_other({
-													count: String(overrideCount(record)),
-												})}{/if}
-								</span>
-								<span class="chevron" aria-hidden="true">
-									<Icon name="chevron-right" size="1rem" />
-								</span>
-							</button>
+						{#each group.records as row (row.key)}
+							{#if canOpen(row)}
+								<button type="button" class="rec-row" onclick={() => openRow(row)}>
+									{@render rowBody(row)}
+								</button>
+							{:else}
+								<div class="rec-row rec-row-static">
+									{@render rowBody(row)}
+								</div>
+							{/if}
 						{/each}
 					</GroupedList>
 				</section>
@@ -744,7 +962,7 @@
 					id="rec-ttl"
 					class="field"
 					bind:value={formTtl}
-					inputmode="numeric"
+					autocomplete="off"
 					disabled={!isAdmin}
 				/>
 			</div>
@@ -759,8 +977,10 @@
 						{displayText(publicLookup.record.content, 200).text}
 					</p>
 					<p class="hint muted">
-						{m.names_ttl_short({ ttl: publicLookup.record.ttl })}{#if publicLookup.record.proxied}
-							· {m.names_public_proxied()}{/if}
+						{m.names_ttl_short({
+							ttl: ttlFieldFor(publicLookup.record.ttl),
+						})}{#if publicLookup.record.proxied}
+							{' · '}{m.names_public_proxied()}{/if}
 					</p>
 				{:else if !isAdmin && publicLookup.kind === 'absent'}
 					<p class="hint muted">{m.names_public_absent()}</p>
@@ -929,7 +1149,12 @@
 {/if}
 
 {#if zonesSheetOpen}
-	<Sheet open={zonesSheetOpen} title={m.names_zones_title()} onclose={closeZonesSheet} centeredOnWide>
+	<Sheet
+		open={zonesSheetOpen}
+		title={m.names_zones_title()}
+		onclose={closeZonesSheet}
+		centeredOnWide
+	>
 		<p class="hint">{m.names_zones_lead()}</p>
 		{#if !hasCloudflareToken}
 			<p class="hint">{m.names_zones_token_missing()}</p>
@@ -949,7 +1174,7 @@
 								<span class="hint muted">
 									{zone.source === 'public_domain'
 										? m.names_zones_public_domain()
-										: zone.status ?? ''}
+										: (zone.status ?? '')}
 								</span>
 							</div>
 							{#if zone.source !== 'public_domain'}
@@ -975,10 +1200,8 @@
 								<span class="mono">{displayText(zone.name, 80).text}</span>
 								<span class="hint muted">{zone.status ?? ''}</span>
 							</div>
-							<Button
-								variant="primary"
-								disabled={zonesBusy}
-								onclick={() => void attachZone(zone)}>{m.names_zones_attach()}</Button
+							<Button variant="primary" disabled={zonesBusy} onclick={() => void attachZone(zone)}
+								>{m.names_zones_attach()}</Button
 							>
 						</li>
 					{/each}
@@ -1141,6 +1364,49 @@
 		font: inherit;
 		text-align: start;
 		cursor: pointer;
+	}
+	.zone-chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.375rem;
+	}
+	.zone-chip {
+		display: inline-flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.375rem;
+		min-height: 2.25rem;
+		padding: 0.25rem 0.75rem;
+		border: 1px solid var(--separator);
+		border-radius: var(--r-ctl);
+		background: var(--surface);
+		color: var(--label);
+		font: inherit;
+		font-size: 0.8125rem;
+		cursor: pointer;
+	}
+	.zone-chip[aria-pressed='true'] {
+		border-color: var(--accent);
+		background: var(--surface-2);
+		color: var(--accent);
+		font-weight: 600;
+	}
+	.zone-kind {
+		font-size: 0.6875rem;
+		color: var(--label-3);
+	}
+	.zone-kind.cf {
+		color: var(--accent);
+	}
+	.chip-count {
+		font-size: 0.75rem;
+		color: var(--label-3);
+		font-variant-numeric: tabular-nums;
+	}
+	.rec-row-static,
+	.rec-row.rec-row-static:hover {
+		cursor: default;
+		background: transparent;
 	}
 	.rec-row:first-child {
 		border-top: none;

@@ -8,7 +8,7 @@
 
 ARG RUST_VERSION=1.88
 
-FROM node:22-bookworm-slim AS web
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web
 WORKDIR /web
 RUN corepack enable && corepack prepare pnpm@9 --activate
 COPY web .
