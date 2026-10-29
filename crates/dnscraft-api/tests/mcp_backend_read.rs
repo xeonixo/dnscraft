@@ -7,7 +7,10 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use dnscraft_api::{Db, ManualClock, QueryLog, QueryLogConfig, mcp_backend_for_test};
+use dnscraft_api::{
+    ClientEnricher, ClientView, Db, ManualClock, QueryLog, QueryLogConfig, StatsScope, TopBy,
+    mcp_backend_for_test,
+};
 use dnscraft_filtering::{BlockMode, ListId, Reason, RuleSource, SetId};
 use dnscraft_listeners::QueryEvent;
 use dnscraft_mcp::backend::McpBackend;
@@ -293,12 +296,21 @@ async fn get_stats_aggregates_the_window() {
             count: 2,
         }
     );
+    // Rows without a client id are grouped by source address: the two
+    // blocked queries from 192.0.2.10 form their own device, apart from the
+    // two queries the iPhone sent with its id.
     assert_eq!(
         stats.top_clients,
-        vec![TopClient {
-            client_name: String::new(),
-            queries: 2,
-        }]
+        vec![
+            TopClient {
+                client_name: String::new(),
+                queries: 2,
+            },
+            TopClient {
+                client_name: String::new(),
+                queries: 2,
+            },
+        ]
     );
     // One cache hit and one recursion among the allowed records.
     assert!((stats.cache_hit_ratio - 0.5).abs() < f64::EPSILON);
@@ -307,6 +319,108 @@ async fn get_stats_aggregates_the_window() {
     assert_eq!(stats.dnssec.insecure, 0);
     assert!(!stats.period.from.is_empty());
     assert!(!stats.period.to.is_empty());
+}
+
+/// Directory with one named device at 192.0.2.20 and no client id.
+struct NamedClients;
+
+impl ClientEnricher for NamedClients {
+    fn by_ip(&self, ip: IpAddr) -> Option<ClientView> {
+        (ip == IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20))).then(|| ClientView {
+            id: String::new(),
+            display_name: "Living room TV".to_owned(),
+            source: "unifi".to_owned(),
+            macs: Vec::new(),
+            vlan_id: None,
+            vlan_name: None,
+            local_domain: None,
+        })
+    }
+}
+
+/// `top_clients` identifies a device by client id, then directory name, then
+/// source address. The MCP DTO drops `client_id`, so this reads the query log
+/// directly.
+#[tokio::test]
+async fn top_clients_group_by_id_then_name_then_address() {
+    let clock = Arc::new(ManualClock::new(at_secs(BASE_SECS)));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    let log = QueryLog::new(db, QueryLogConfig::default(), "node-a")
+        .with_client_enricher(Arc::new(NamedClients));
+
+    // (a) client id, source 192.0.2.10.
+    let with_id = |secs| {
+        event(
+            secs,
+            "ok.example.com",
+            RecordType::A,
+            false,
+            true,
+            DnssecStatus::Secure,
+            Some("iphone-k7q2x9"),
+        )
+    };
+    // (b) no client id, named by the directory, source 192.0.2.20.
+    let mut named = event(
+        BASE_SECS - 1,
+        "tv.example.com",
+        RecordType::A,
+        false,
+        true,
+        DnssecStatus::Secure,
+        None,
+    );
+    named.source = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20));
+    // (c) neither id nor name, source 192.0.2.30.
+    let mut bare = event(
+        BASE_SECS - 1,
+        "ads.example.com",
+        RecordType::A,
+        true,
+        false,
+        DnssecStatus::Bogus,
+        None,
+    );
+    bare.source = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 30));
+
+    log.insert_batch(vec![
+        with_id(BASE_SECS - 2),
+        with_id(BASE_SECS - 1),
+        named,
+        bare,
+    ])
+    .await
+    .unwrap();
+
+    let stats = log
+        .top_clients_scoped(
+            Some((BASE_SECS as i64 - 10) * 1_000_000),
+            Some((BASE_SECS as i64 + 10) * 1_000_000),
+            StatsScope::default(),
+            10,
+            TopBy::Queries,
+        )
+        .await
+        .unwrap();
+    let clients: Vec<(&str, &str, i64)> = stats
+        .clients
+        .iter()
+        .map(|client| {
+            (
+                client.client_id.as_str(),
+                client.client_name.as_str(),
+                client.queries,
+            )
+        })
+        .collect();
+    assert_eq!(
+        clients,
+        vec![
+            ("iphone-k7q2x9", "", 2),
+            ("", "Living room TV", 1),
+            ("192.0.2.30", "", 1),
+        ]
+    );
 }
 
 /// GM6: `profile_id` scopes every stats block. The fixture records all use

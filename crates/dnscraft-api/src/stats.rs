@@ -439,8 +439,9 @@ impl QueryLog {
                 let scope = scope.clone();
                 move |conn| {
                     conn.query_row(
-                        "SELECT COUNT(DISTINCT client_id) FROM query_log
-                         WHERE time >= ?1 AND time <= ?2 AND client_id IS NOT NULL
+                        "SELECT COUNT(DISTINCT COALESCE(client_id, client_name)) FROM query_log
+                         WHERE time >= ?1 AND time <= ?2
+                           AND COALESCE(client_id, client_name) IS NOT NULL
                            AND (?3 IS NULL OR node_id = ?3)
                            AND (?4 IS NULL OR profile_id = ?4)",
                         params![from, to, scope.node_id, scope.profile_id],
@@ -474,8 +475,8 @@ impl QueryLog {
 
     /// Top clients by query or blocked count for `[from_us, to_us]`.
     ///
-    /// `limit` is clamped to `1..=TOP_CLIENTS_MAX`. Rows without a client id
-    /// are excluded (they are not attributable to a client).
+    /// `limit` is clamped to `1..=TOP_CLIENTS_MAX`. A device is its client id, else its directory
+    /// name, else its source address.
     pub async fn top_clients(
         &self,
         from_us: Option<i64>,
@@ -506,22 +507,25 @@ impl QueryLog {
         let scope = Scope::from(scope);
         let limit = i64::from(limit.clamp(1, TOP_CLIENTS_MAX));
         let order = match by {
-            TopBy::Queries => "queries DESC, client_id ASC",
-            TopBy::Blocked => "blocked DESC, queries DESC, client_id ASC",
+            TopBy::Queries => "queries DESC, cid ASC",
+            TopBy::Blocked => "blocked DESC, queries DESC, cid ASC",
         };
         let clients = db
             .with_read_conn(move |conn| {
                 let sql = format!(
-                    "SELECT client_id,
-                            COALESCE(client_name, ''),
+                    // A device is its client id, else its directory name, else its source address
+                    // (LAN clients carry no client id). `cid` is the id, or the address when the
+                    // row has neither id nor name.
+                    "SELECT COALESCE(client_id, CASE WHEN client_name IS NULL THEN source_ip ELSE '' END) AS cid,
+                            COALESCE(MAX(client_name), ''),
                             COUNT(*) AS queries,
                             COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
                                 AS blocked
                      FROM query_log
-                     WHERE time >= ?1 AND time <= ?2 AND client_id IS NOT NULL
+                     WHERE time >= ?1 AND time <= ?2
                        AND (?4 IS NULL OR node_id = ?4)
                        AND (?5 IS NULL OR profile_id = ?5)
-                     GROUP BY client_id, client_name
+                     GROUP BY COALESCE(client_id, client_name, source_ip)
                      ORDER BY {order}
                      LIMIT ?3"
                 );
