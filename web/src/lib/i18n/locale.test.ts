@@ -58,35 +58,19 @@ describe('setLocale', () => {
 		paraglide.setLocale.mockClear();
 	});
 
-	it('persists the choice under dnscraft_locale and switches the locale', () => {
-		const store = new Map<string, string>();
-		vi.stubGlobal('localStorage', {
-			setItem: (k: string, v: string) => store.set(k, v),
-			getItem: (k: string) => store.get(k) ?? null,
-		});
-
+	it('hands the choice to Paraglide, which stores it and reloads', () => {
 		setLocale('de');
 
 		expect(LOCALE_STORAGE_KEY).toBe('dnscraft_locale');
-		expect(store.get('dnscraft_locale')).toBe('de');
 		expect(paraglide.setLocale).toHaveBeenCalledWith('de');
 	});
 
-	it('still switches the locale when storage throws', () => {
-		vi.stubGlobal('localStorage', {
-			setItem: () => {
-				throw new DOMException('blocked', 'SecurityError');
-			},
+	it('does not throw when Paraglide cannot store the choice', () => {
+		paraglide.setLocale.mockImplementationOnce(() => {
+			throw new DOMException('blocked', 'SecurityError');
 		});
 
 		expect(() => setLocale('de')).not.toThrow();
 		expect(paraglide.setLocale).toHaveBeenCalledWith('de');
-	});
-
-	it('still switches the locale when localStorage is absent', () => {
-		vi.stubGlobal('localStorage', undefined);
-
-		expect(() => setLocale('en')).not.toThrow();
-		expect(paraglide.setLocale).toHaveBeenCalledWith('en');
 	});
 });

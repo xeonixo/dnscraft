@@ -7,13 +7,11 @@
 	import Button from '$lib/components/Button.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
-	import Segmented from '$lib/components/Segmented.svelte';
 	import { takeReturnTo, auth } from '$lib/auth/state.svelte';
 	import { loadMe, loginLocal } from '$lib/auth/store.svelte';
 	import LocaleSwitcher from '$lib/i18n/LocaleSwitcher.svelte';
 	import { CLIENT_NETWORK } from '$lib/api/error-codes';
 	import { m } from '$lib/paraglide/messages';
-	import { setTheme, theme, type ThemeChoice } from '$lib/theme';
 
 	interface Failure {
 		code: string;
@@ -32,12 +30,6 @@
 	const retrySeconds = $derived(
 		typeof localFailure?.params.retry_after === 'number' ? localFailure.params.retry_after : null,
 	);
-
-	const themeOptions: { value: ThemeChoice; label: string }[] = [
-		{ value: 'system', label: m.theme_system() },
-		{ value: 'light', label: m.theme_light() },
-		{ value: 'dark', label: m.theme_dark() },
-	];
 
 	function failureOf(error: unknown): Failure {
 		if (error instanceof ApiError) return { code: error.code, params: error.params };
@@ -89,21 +81,11 @@
 
 <main class="login">
 	<header class="intro">
-		<h1>{m.login_title()}</h1>
-		<p>{m.login_lead()}</p>
+		<img class="logo" src="/favicon.svg" alt="" width="72" height="72" />
+		<h1>{m.app_name()}</h1>
 	</header>
 
-	<div class="prefs">
-		<LocaleSwitcher />
-		<Segmented
-			options={themeOptions}
-			value={$theme}
-			label={m.theme_group_label()}
-			onchange={(choice) => setTheme(choice)}
-		/>
-	</div>
-
-	<GroupedList header={m.login_oidc_section()}>
+	<GroupedList>
 		<div class="row full">
 			<Button variant="primary" onclick={signInWithOidc} disabled={submitting}>
 				{m.login_oidc_button()}
@@ -116,7 +98,9 @@
 		{/if}
 	</GroupedList>
 
-	<GroupedList header={m.login_local_section()} footer={m.login_local_footer()}>
+	<hr />
+
+	<GroupedList>
 		<form class="row form" onsubmit={signIn}>
 			{#if lockedOut}
 				<div class="lockout" role="alert">
@@ -160,6 +144,10 @@
 			</Button>
 		</form>
 	</GroupedList>
+
+	<div class="prefs">
+		<LocaleSwitcher />
+	</div>
 </main>
 
 <style>
@@ -176,25 +164,35 @@
 		justify-content: center;
 	}
 
+	.intro {
+		text-align: center;
+	}
+
+	.logo {
+		display: block;
+		margin: 0 auto;
+		filter: drop-shadow(0 4px 12px rgb(0 0 0 / 0.18));
+	}
+
 	.intro h1 {
-		margin: 0 0 var(--space-2);
-		font-size: 1.75rem;
+		margin: var(--space-3) 0 0;
+		font-size: 1.5rem;
 		font-weight: 700;
 		letter-spacing: -0.02em;
 		color: var(--label);
 	}
 
-	.intro p {
-		margin: 0;
-		color: var(--label-2);
+	.prefs {
+		position: absolute;
+		top: var(--space-4);
+		right: var(--space-4);
 	}
 
-	.prefs {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-3);
+	hr {
+		width: 100%;
+		margin: 0;
+		border: 0;
+		border-top: 1px solid var(--separator);
 	}
 
 	.row {

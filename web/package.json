@@ -17,7 +17,7 @@
 		"test": "vitest run && node --test mock/server.test.mjs mock/no-html.test.mjs",
 		"pretest": "node scripts/gen-inlang.mjs",
 		"postbuild": "node scripts/gen-sw.mjs && node scripts/gen-csp-hashes.mjs",
-		"prebuild": "node scripts/gen-inlang.mjs && node scripts/gen-pwa-icons.mjs",
+		"prebuild": "node scripts/gen-inlang.mjs",
 		"test:e2e": "playwright test"
 	},
 	"devDependencies": {

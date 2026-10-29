@@ -90,7 +90,7 @@ describe('login page', () => {
 		expect(
 			await screen.findByText(m.error_control_api_auth_insufficient_scope({ required: payload })),
 		).toBeInTheDocument();
-		expect(document.querySelector('img')).toBeNull();
+		expect(document.querySelector('img[src="x"]')).toBeNull();
 		expect(document.querySelector('[onerror]')).toBeNull();
 	});
 

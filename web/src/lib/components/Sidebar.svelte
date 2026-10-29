@@ -56,8 +56,7 @@
 		}
 		if (cluster.role === 'sub_node') {
 			const base = m.sidebar_node_sub();
-			nodeLabel =
-				cluster.lag > 0 ? `${base} · ${m.sidebar_node_lag({ lag: cluster.lag })}` : base;
+			nodeLabel = cluster.lag > 0 ? `${base} · ${m.sidebar_node_lag({ lag: cluster.lag })}` : base;
 			nodeDot = cluster.lag > 0 ? 'degraded' : 'ok';
 			return;
 		}
@@ -108,7 +107,7 @@
 
 <aside {id} class="sidebar" class:open>
 	<div class="brand">
-		<span class="mark"><Icon name="globe" size="0.9375rem" strokeWidth={2} /></span>
+		<img class="mark" src="/favicon.svg" alt="" width="26" height="26" />
 		<span>{m.app_name()}</span>
 	</div>
 
@@ -198,14 +197,9 @@
 	}
 
 	.mark {
-		display: grid;
 		flex: 0 0 auto;
-		place-items: center;
 		width: 1.625rem;
 		height: 1.625rem;
-		border-radius: 0.4375rem;
-		background: var(--accent-solid);
-		color: var(--on-accent);
 	}
 
 	.sections {

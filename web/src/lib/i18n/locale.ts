@@ -16,16 +16,16 @@ export function getLocale(): Locale {
 }
 
 /**
- * Stores the explicit choice, then switches the locale (Paraglide reloads the document).
- * Storage can be unavailable (private window, blocked site data); the switch still happens.
+ * Switches the locale. Paraglide stores the choice under `LOCALE_STORAGE_KEY` and reloads the document;
+ * the store must not happen before this call, or Paraglide sees the locale as unchanged and skips the reload.
+ * Storage can be unavailable (private window, blocked site data): the choice then is not persisted.
  */
 export function setLocale(locale: Locale): void {
 	try {
-		globalThis.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+		setParaglideLocale(locale);
 	} catch {
 		// Not persisted: the choice lasts only until the next load.
 	}
-	setParaglideLocale(locale);
 }
 
 /**
