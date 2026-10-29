@@ -141,6 +141,22 @@ string `"<id>"`, so snapshots written before labels existed stay unchanged.
 |---|---|---|
 | GET / PUT / POST / DELETE | `/api/v1/tls` | TLS config singleton (`public_domain`, `extra_sans`, `key_type`, `renew_before`, `expiry_warn`, `acme`, `cloudflare`, `dyndns`). Cloudflare API token is supplied out-of-band, never via this route. |
 
+### Domain-Zonen (viewer/admin reads)
+
+Split-DNS Namen public side: attached Cloudflare zones and their DNS records.
+Uses the shared TLS Cloudflare token (`PUT /api/v1/tls/cloudflare-token`); the
+token is never returned. Without a TLS engine → `control_api.not_ready`.
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/api/v1/domain-zones` | Attached zones (`public_domain` + `dns_provider.zones`) plus `has_cloudflare_token`. Optional `?discover=1` (admin only) adds `discoverable` from Cloudflare `list_zones`. Discover without a token → `tls.secret.missing` (UI CTA). |
+| GET | `/api/v1/domain-zones/{zone_id}/records` | Paginated records for an attached zone. Query: `page` (default 1), `per_page` (default 50, max 100), `name_substr`. Missing token → `tls.secret.missing`; unknown/unattached `zone_id` → `control_api.not_found`. |
+
+Attached zone object: `id?`, `name`, `status?`, `name_servers`, `source`
+(`public_domain` \| `dns_provider`). Record object: `id`, `name`, `record_type`,
+`content`, `ttl`, `proxied`. Records response also echoes `page`, `per_page`,
+`total_count`, `total_pages`.
+
 ### Query log (viewer/admin)
 
 | Method | Path | Summary |

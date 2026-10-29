@@ -58,7 +58,7 @@ pub use dyndns::{
     dyndns_interval, dyndns_interval_with_rng, dyndns_names, dyndns_once, parse_trace_ip,
     record_inventory,
 };
-pub use engine::{EngineDeps, EngineInner, TlsEngine};
+pub use engine::{AttachedDomainZone, EngineDeps, EngineInner, TlsEngine};
 pub use error::{TlsError, parse_retry_after_header};
 pub use issue::{issue, sign_csr};
 pub use pem_util::{KeyPem, fingerprint_sha256};

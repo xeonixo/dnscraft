@@ -277,6 +277,8 @@ or secret token material. The `CertResolver` is passed to listeners as
 | GET | `/api/v1/tls/account` | admin | ACME account status (EAB, ToS, rollover) | `tls.acme.account.*` |
 | GET | `/api/v1/tls/order` | admin | current ACME order / progress | `tls.acme.order_pending` |
 | GET | `/api/v1/tls/audit` | admin | DynDNS audit trail (bounded) | – |
+| GET | `/api/v1/domain-zones` | viewer/admin | attached Domain-Zonen (`public_domain` + `dns_provider.zones`) + `has_cloudflare_token`; `?discover=1` (admin) adds Cloudflare-visible `discoverable` | `tls.secret.missing`, `control_api.auth.insufficient_scope`, `control_api.not_ready` |
+| GET | `/api/v1/domain-zones/{zone_id}/records` | viewer/admin | paginated DNS records (`page`, `per_page`, `name_substr`) for an attached zone | `tls.secret.missing`, `control_api.not_found`, `tls.cloudflare.*`, `control_api.not_ready` |
 | GET | `/api/v1/cluster/nodes` | admin | list sub-nodes + status (role, reachability, applied version, lag) | `cluster.node.*` |
 | POST | `/api/v1/cluster/join-tokens` | admin | mint one-time join token bound to `node_id`, TTL default 15 min | `cluster.join.*` |
 | DELETE | `/api/v1/cluster/nodes/{id}` | admin | revoke/remove node | `cluster.node.revoked` |

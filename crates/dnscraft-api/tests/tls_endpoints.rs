@@ -172,6 +172,42 @@ impl TlsAdmin for FakeAdmin {
             }
         })
     }
+
+    fn has_cloudflare_token(&self) -> TlsValueFuture<'_> {
+        self.value(
+            "has_cloudflare_token",
+            json!({ "has_cloudflare_token": false }),
+        )
+    }
+
+    fn attached_domain_zones(&self) -> TlsValueFuture<'_> {
+        self.value("attached_domain_zones", json!({ "zones": [] }))
+    }
+
+    fn discover_domain_zones(&self) -> TlsValueFuture<'_> {
+        self.value("discover_domain_zones", json!({ "zones": [] }))
+    }
+
+    fn domain_zone_records(
+        &self,
+        zone_id: &str,
+        page: u32,
+        per_page: u32,
+        name_substr: Option<String>,
+    ) -> TlsValueFuture<'_> {
+        self.value(
+            "domain_zone_records",
+            json!({
+                "records": [],
+                "page": page,
+                "per_page": per_page,
+                "total_count": 0,
+                "total_pages": 0,
+                "zone_id": zone_id,
+                "name_substr": name_substr,
+            }),
+        )
+    }
 }
 
 struct Harness {

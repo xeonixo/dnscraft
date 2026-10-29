@@ -49,20 +49,20 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
   - **Files likely touched:** `crates/dnscraft-tls/src/cloudflare.rs`, tls tests/mocks
   - **Estimated scope:** M
 
-- [ ] **T2** Control-API read routes for Domain-Zonen
+- [x] **T2** Control-API read routes for Domain-Zonen
   - **Description:** Expose admin/viewer GETs that proxy Cloudflare through the TLS
     engine’s client. Surface attached zones (public_domain + `dns_provider.zones`) and
     optionally discoverable zones. No secrets in responses; missing token → stable
     error code the UI can map to a CTA.
   - **Acceptance criteria:**
-    - [ ] `GET /api/v1/domain-zones` returns attached zones (+ `has_cloudflare_token`,
+    - [x] `GET /api/v1/domain-zones` returns attached zones (+ `has_cloudflare_token`,
           discoverable list or separate `?discover=1` for admin).
-    - [ ] `GET /api/v1/domain-zones/{zone_id}/records` returns paginated records;
+    - [x] `GET /api/v1/domain-zones/{zone_id}/records` returns paginated records;
           unknown/unattached zone → `control_api.not_found` or documented CF error.
-    - [ ] Viewer allowed to read; no real Cloudflare contacted in tests (loopback mock).
+    - [x] Viewer allowed to read; no real Cloudflare contacted in tests (loopback mock).
   - **Verification:**
-    - [ ] `cargo test -p dnscraft-api --locked` (new http tests)
-    - [ ] `docs/API-REFERENCE.md` + `SPEC-control-api.md` draft rows
+    - [x] `cargo test -p dnscraft-api --locked` (new http tests)
+    - [x] `docs/API-REFERENCE.md` + `SPEC-control-api.md` draft rows
   - **Dependencies:** T1
   - **Files likely touched:** `crates/dnscraft-api/src/api/router.rs`, new route module,
     `tls` engine access, tests, docs

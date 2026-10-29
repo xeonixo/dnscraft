@@ -494,6 +494,20 @@ pub trait TlsAdmin: Send + Sync {
     fn dyndns_audit(&self) -> TlsValueFuture<'_>;
     /// Installs or clears the Cloudflare API token in the live engine.
     fn set_cloudflare_token(&self, token: Option<Secret>) -> TlsActionFuture<'_>;
+    /// Whether the live engine holds a non-empty Cloudflare API token.
+    fn has_cloudflare_token(&self) -> TlsValueFuture<'_>;
+    /// Attached Domain-Zonen (`public_domain` + `dns_provider.zones`).
+    fn attached_domain_zones(&self) -> TlsValueFuture<'_>;
+    /// Zones visible to the Cloudflare token (discover inventory).
+    fn discover_domain_zones(&self) -> TlsValueFuture<'_>;
+    /// Paginated DNS records for an attached Cloudflare `zone_id`.
+    fn domain_zone_records(
+        &self,
+        zone_id: &str,
+        page: u32,
+        per_page: u32,
+        name_substr: Option<String>,
+    ) -> TlsValueFuture<'_>;
 }
 
 /// [`TlsAdmin`] over the real engine.
@@ -684,6 +698,97 @@ impl TlsAdmin for EngineTlsAdmin {
                 .set_cloudflare_token(secret)
                 .await
                 .map_err(|error| ControlApiError::from_tls(&error))
+        })
+    }
+
+    fn has_cloudflare_token(&self) -> TlsValueFuture<'_> {
+        Box::pin(async move {
+            Ok(json!({
+                "has_cloudflare_token": self.engine.has_cloudflare_token().await,
+            }))
+        })
+    }
+
+    fn attached_domain_zones(&self) -> TlsValueFuture<'_> {
+        Box::pin(async move {
+            let zones = self
+                .engine
+                .attached_domain_zones()
+                .await
+                .map_err(|error| ControlApiError::from_tls(&error))?;
+            Ok(json!({ "zones": zones }))
+        })
+    }
+
+    fn discover_domain_zones(&self) -> TlsValueFuture<'_> {
+        Box::pin(async move {
+            let zones = self
+                .engine
+                .discover_domain_zones()
+                .await
+                .map_err(|error| ControlApiError::from_tls(&error))?;
+            Ok(json!({
+                "zones": zones
+                    .into_iter()
+                    .map(|zone| json!({
+                        "id": zone.id,
+                        "name": zone.name,
+                        "status": zone.status,
+                        "name_servers": zone.name_servers,
+                    }))
+                    .collect::<Vec<_>>(),
+            }))
+        })
+    }
+
+    fn domain_zone_records(
+        &self,
+        zone_id: &str,
+        page: u32,
+        per_page: u32,
+        name_substr: Option<String>,
+    ) -> TlsValueFuture<'_> {
+        let zone_id = zone_id.to_owned();
+        Box::pin(async move {
+            let page = self
+                .engine
+                .list_domain_zone_records(
+                    &zone_id,
+                    &dnscraft_tls::ListZoneRecordsQuery {
+                        page,
+                        per_page,
+                        name_substr,
+                    },
+                )
+                .await
+                .map_err(|error| match error {
+                    dnscraft_tls::TlsError::CloudflareZone { message }
+                        if message.contains("not attached") =>
+                    {
+                        ControlApiError::NotFound {
+                            what: format!("domain zone {zone_id}"),
+                        }
+                    }
+                    other => ControlApiError::from_tls(&other),
+                })?;
+            Ok(json!({
+                "records": page
+                    .records
+                    .into_iter()
+                    .map(|record| json!({
+                        "id": record.id,
+                        "name": record.name,
+                        "record_type": record.record_type,
+                        "content": record.content,
+                        "ttl": record.ttl,
+                        "proxied": record.proxied,
+                    }))
+                    .collect::<Vec<_>>(),
+                "page": page.page,
+                "per_page": page.per_page,
+                "total_count": page.total_count,
+                "total_pages": page.total_pages,
+            }))
         })
     }
 }
