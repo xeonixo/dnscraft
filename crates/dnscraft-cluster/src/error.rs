@@ -32,6 +32,12 @@ pub enum ClusterError {
         /// The revoked node.
         node_id: String,
     },
+    /// The node is still active and cannot be removed.
+    #[error("cluster node {node_id} is not revoked")]
+    NodeNotRevoked {
+        /// The active node.
+        node_id: String,
+    },
     /// `node_id` is already registered.
     #[error("cluster node {node_id} has already joined")]
     NodeAlreadyJoined {
@@ -135,6 +141,7 @@ impl ClusterError {
             Self::MasterConflict => "cluster.master_conflict",
             Self::NodeUnknown { .. } => "cluster.node.unknown",
             Self::NodeRevoked { .. } => "cluster.node.revoked",
+            Self::NodeNotRevoked { .. } => "cluster.node.not_revoked",
             Self::NodeAlreadyJoined { .. } => "cluster.node.already_joined",
             Self::JoinTokenInvalid => "cluster.join.token_invalid",
             Self::JoinTokenExpired => "cluster.join.token_expired",
@@ -175,6 +182,9 @@ mod tests {
                 node_id: "node-a".into(),
             },
             ClusterError::NodeRevoked {
+                node_id: "node-a".into(),
+            },
+            ClusterError::NodeNotRevoked {
                 node_id: "node-a".into(),
             },
             ClusterError::NodeAlreadyJoined {
@@ -249,6 +259,7 @@ mod tests {
             "cluster.master_conflict",
             "cluster.node.unknown",
             "cluster.node.revoked",
+            "cluster.node.not_revoked",
             "cluster.node.already_joined",
             "cluster.join.token_invalid",
             "cluster.join.token_expired",

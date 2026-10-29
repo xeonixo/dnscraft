@@ -1802,6 +1802,12 @@ async function route(request, response, options) {
 		if (options.runtime.tokens.length === before) {
 			throw new ApiFailure(404, 'control_api.auth.unknown_token');
 		}
+		if (url.searchParams.get('remove') === 'true') {
+			options.runtime.clusterNodes = options.runtime.clusterNodes.filter(
+				(node) => node.node_id !== nodeId,
+			);
+			return sendData(response, { node_id: nodeId, removed: true });
+		}
 		return sendData(response, { id, revoked: true });
 	}
 

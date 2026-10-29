@@ -39,6 +39,10 @@ export const mintJoinToken = (node_id: string): Promise<JoinTokenResult> =>
 export const revokeClusterNode = (nodeId: string): Promise<{ node_id: string; revoked: boolean }> =>
 	del(`/cluster/nodes/${encodeURIComponent(nodeId)}`);
 
+/** Deletes an already revoked node; the API refuses an active one. */
+export const removeClusterNode = (nodeId: string): Promise<{ node_id: string; removed: boolean }> =>
+	del(`/cluster/nodes/${encodeURIComponent(nodeId)}?remove=true`);
+
 /** Replaces display name and host name; an empty string clears one. */
 export const updateClusterNode = (
 	nodeId: string,

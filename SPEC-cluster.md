@@ -679,6 +679,7 @@ control-api. Codes owned by other modules are forwarded unchanged (for example
 | `cluster.master_conflict` | A node reports an applied version the master never published (heartbeat warning). Master-wins still applies on its next `Hello`; the connection is not refused. A second master is not detectable in v1 (no master-to-master protocol) |
 | `cluster.node.unknown` | `node_id`/certificate fingerprint not registered on the master |
 | `cluster.node.revoked` | Revoked node identity; connection refused (`403` for API calls) |
+| `cluster.node.not_revoked` | Removal requested for a node that is still active; `409` |
 | `cluster.node.already_joined` | `node_id` is registered and not revoked. A revoked `node_id` may be re-issued a join token; the join replaces the old entry and drops its superseded certificates |
 | `cluster.join.token_invalid` | Join token unknown, already used, or bound to another `node_id` |
 | `cluster.join.token_expired` | Join token past its TTL |

@@ -10,6 +10,7 @@
 		listClusterNodes,
 		mintJoinToken,
 		revokeClusterNode,
+		removeClusterNode,
 		updateClusterNode,
 		type ClusterNode,
 	} from '$lib/api/cluster';
@@ -40,6 +41,7 @@
 	let joinExpires = $state<string | null>(null);
 	let detail = $state<ClusterNode | null>(null);
 	let revokeTarget = $state<ClusterNode | null>(null);
+	let removeTarget = $state<ClusterNode | null>(null);
 	let editTarget = $state<ClusterNode | null>(null);
 	let editName = $state('');
 	let editHost = $state('');
@@ -116,6 +118,21 @@
 		try {
 			await revokeClusterNode(revokeTarget.node_id);
 			revokeTarget = null;
+			await load();
+		} catch (cause) {
+			failure = failureOf(cause);
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function confirmRemove(): Promise<void> {
+		if (!removeTarget) return;
+		busy = true;
+		failure = null;
+		try {
+			await removeClusterNode(removeTarget.node_id);
+			removeTarget = null;
 			await load();
 		} catch (cause) {
 			failure = failureOf(cause);
@@ -296,7 +313,28 @@
 					}}>{m.cluster_edit()}</Button
 				>
 			{/if}
+			{#if isAdmin && detail.revoked && detail.role !== 'master' && detail.local !== true}
+				<Button
+					variant="danger"
+					onclick={() => {
+						removeTarget = detail;
+						detail = null;
+					}}>{m.cluster_remove()}</Button
+				>
+			{/if}
 			<Button onclick={() => (detail = null)}>{m.action_close()}</Button>
+		</div>
+	</Sheet>
+{/if}
+
+{#if removeTarget}
+	<Sheet open={true} title={m.cluster_remove_title()} onclose={() => (removeTarget = null)}>
+		<p class="hint">{m.cluster_remove_body({ id: displayText(removeTarget.node_id).text })}</p>
+		<div class="actions">
+			<Button onclick={() => (removeTarget = null)}>{m.action_cancel()}</Button>
+			<Button variant="danger" disabled={busy} onclick={confirmRemove}>
+				{m.cluster_remove()}
+			</Button>
 		</div>
 	</Sheet>
 {/if}

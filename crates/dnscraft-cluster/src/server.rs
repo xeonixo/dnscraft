@@ -1250,7 +1250,9 @@ fn error_response(error: &ClusterError) -> Response {
         | ClusterError::NodeRevoked { .. }
         | ClusterError::JoinTokenInvalid
         | ClusterError::JoinTokenExpired => StatusCode::FORBIDDEN,
-        ClusterError::NodeAlreadyJoined { .. } => StatusCode::CONFLICT,
+        ClusterError::NodeAlreadyJoined { .. } | ClusterError::NodeNotRevoked { .. } => {
+            StatusCode::CONFLICT
+        }
         ClusterError::ProtocolVersion
         | ClusterError::RoleInvalid { .. }
         | ClusterError::LogStreamInvalid { .. }
@@ -1264,7 +1266,7 @@ fn error_response(error: &ClusterError) -> Response {
         ClusterError::NodeUnknown { node_id } | ClusterError::NodeRevoked { node_id } => {
             body["error"]["params"] = json!({ "node_id": node_id });
         }
-        ClusterError::NodeAlreadyJoined { node_id } => {
+        ClusterError::NodeAlreadyJoined { node_id } | ClusterError::NodeNotRevoked { node_id } => {
             body["error"]["params"] = json!({ "node_id": node_id });
         }
         ClusterError::RoleInvalid { reason } | ClusterError::LogStreamInvalid { reason } => {

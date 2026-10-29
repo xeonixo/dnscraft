@@ -293,7 +293,7 @@ or secret token material. The `CertResolver` is passed to listeners as
 | DELETE | `/api/v1/domain-zones/attach/{apex}` | admin | detach apex from `dns_provider.zones` (does **not** delete the CF zone); refuses `public_domain` | `control_api.not_found`, `tls.config.invalid`, `control_api.not_ready` |
 | GET | `/api/v1/cluster/nodes` | admin | list sub-nodes + status (role, reachability, applied version, lag) | `cluster.node.*` |
 | POST | `/api/v1/cluster/join-tokens` | admin | mint one-time join token bound to `node_id`, TTL default 15 min | `cluster.join.*` |
-| DELETE | `/api/v1/cluster/nodes/{id}` | admin | revoke/remove node | `cluster.node.revoked` |
+| DELETE | `/api/v1/cluster/nodes/{id}` | admin | revoke node; with `?remove=true` delete an already revoked node (certificates, display data) and free its id | `cluster.node.revoked`, `cluster.node.not_revoked` |
 | GET | `/api/v1/query-log` | viewer/admin | query-log search / paginate | `control_api.query_log.*` |
 | GET | `/api/v1/query-log/{id}` | viewer/admin | single query-log record | `control_api.not_found` |
 | GET | `/api/v1/query-log/export.csv` | viewer/admin | CSV export of current filter | `control_api.query_log.export` |
@@ -808,7 +808,7 @@ served on the normal control-api listener, `admin` scope only.
 
 The join token is stored hashed (SHA-256); only the plaintext response is ever
 shown. `DELETE` revokes the node certificate, rejecting its next connection
-with `cluster.node.revoked`.
+with `cluster.node.revoked`. `DELETE …?remove=true` deletes a revoked node (`{ "node_id", "removed": true }`); an active node is refused with `cluster.node.not_revoked`.
 
 #### Transport routes (`/cluster/v1/*`, mTLS listener, cluster-internal)
 

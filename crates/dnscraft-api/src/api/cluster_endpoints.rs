@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -191,14 +191,27 @@ pub(crate) async fn update_node(
     ))
 }
 
+#[derive(Deserialize)]
+pub(crate) struct RemoveQuery {
+    #[serde(default)]
+    remove: bool,
+}
+
 /// `DELETE /api/v1/cluster/nodes/{node_id}` — revoke a node.
 ///
 /// Its next connection is rejected with `cluster.node.revoked`, and its
 /// currently open stream is dropped so it receives no further pushes.
+/// With `?remove=true` an already revoked node is deleted instead
+/// (`cluster.node.not_revoked` for an active one).
 pub(crate) async fn revoke_node(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
+    Query(query): Query<RemoveQuery>,
 ) -> Result<impl IntoResponse, ControlApiError> {
+    if query.remove {
+        store(&state)?.remove_revoked(&node_id).await?;
+        return Ok(success(json!({ "node_id": node_id, "removed": true })));
+    }
     store(&state)?.revoke(&node_id).await?;
     if let Some(broadcast) = state.cluster_broadcast() {
         broadcast.disconnect(&node_id);

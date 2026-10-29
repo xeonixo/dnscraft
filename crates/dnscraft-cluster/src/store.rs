@@ -543,6 +543,37 @@ impl ClusterStore {
         .await
     }
 
+    /// Deletes a revoked node with its superseded certificates and display
+    /// metadata. An active node is rejected.
+    pub async fn remove_revoked(&self, node_id: &str) -> Result<(), ClusterError> {
+        let node_id = node_id.to_owned();
+        self.with_conn(move |conn| {
+            let tx = conn.transaction().map_err(db_err)?;
+            let revoked: Option<bool> = tx
+                .query_row(
+                    "SELECT revoked FROM cluster_nodes WHERE node_id = ?1",
+                    params![node_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(db_err)?;
+            match revoked {
+                None => return Err(ClusterError::NodeUnknown { node_id }),
+                Some(false) => return Err(ClusterError::NodeNotRevoked { node_id }),
+                Some(true) => {}
+            }
+            for sql in [
+                "DELETE FROM cluster_superseded_certs WHERE node_id = ?1",
+                "DELETE FROM node_meta WHERE node_id = ?1",
+                "DELETE FROM cluster_nodes WHERE node_id = ?1",
+            ] {
+                tx.execute(sql, params![node_id]).map_err(db_err)?;
+            }
+            tx.commit().map_err(db_err)
+        })
+        .await
+    }
+
     /// Makes `new_fingerprint` the node's current certificate. The previous
     /// one is kept as superseded and stays accepted until it expires.
     ///
@@ -1020,6 +1051,24 @@ mod tests {
         assert_eq!(error.code(), "cluster.node.unknown");
         let error = store.mark_seen("node-missing", None).await.unwrap_err();
         assert_eq!(error.code(), "cluster.node.unknown");
+    }
+
+    #[tokio::test]
+    async fn only_revoked_nodes_can_be_removed() {
+        let store = store(clock()).await;
+        store.register_node("node-a", "aa").await.unwrap();
+        let error = store.remove_revoked("node-a").await.unwrap_err();
+        assert_eq!(error.code(), "cluster.node.not_revoked");
+        let error = store.remove_revoked("node-x").await.unwrap_err();
+        assert_eq!(error.code(), "cluster.node.unknown");
+        store
+            .set_node_meta("node-a", Some("A"), None)
+            .await
+            .unwrap();
+        store.revoke("node-a").await.unwrap();
+        store.remove_revoked("node-a").await.unwrap();
+        assert!(store.get_node("node-a").await.unwrap().is_none());
+        assert!(!store.node_meta().await.unwrap().contains_key("node-a"));
     }
 
     #[tokio::test]

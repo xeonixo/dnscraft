@@ -267,6 +267,31 @@ async fn revoke_marks_node_revoked() {
 }
 
 #[tokio::test]
+async fn remove_deletes_only_revoked_nodes() {
+    let h = harness(true, false).await;
+    let store = h.store.as_ref().unwrap();
+    store
+        .register_node("node-a", &"ab".repeat(32))
+        .await
+        .unwrap();
+    let url = "/api/v1/cluster/nodes/node-a?remove=true";
+
+    let (status, body) = send(&h, "DELETE", url, Some(&h.admin), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "cluster.node.not_revoked");
+    assert!(store.get_node("node-a").await.unwrap().is_some());
+
+    store.revoke("node-a").await.unwrap();
+    let (status, body) = send(&h, "DELETE", url, Some(&h.admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["data"],
+        json!({ "node_id": "node-a", "removed": true })
+    );
+    assert!(store.get_node("node-a").await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn token_minting_is_master_only() {
     let body = json!({ "name": "ci", "scope": "viewer" });
 
