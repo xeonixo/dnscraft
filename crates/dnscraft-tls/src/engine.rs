@@ -14,9 +14,10 @@ use crate::acme::{
 };
 use crate::clock::Clock;
 use crate::cloudflare::{
-    CLOUDFLARE_API_BASE, CloudflareClient, ListZoneRecordsQuery, ZoneInfo, ZoneRecordsPage,
+    CLOUDFLARE_API_BASE, CloudflareClient, DnsRecord, DnsRecordSpec, ListZoneRecordsQuery,
+    ZoneInfo, ZoneRecordsPage,
 };
-use crate::config::{DnsProviderKind, TlsConfig};
+use crate::config::{DnsProviderKind, TlsConfig, ZoneConfig};
 use crate::dyndns::{DynDnsResult, EchoClient, InventoryRecord, dyndns_interval, dyndns_pass};
 use crate::error::TlsError;
 use crate::issue::{issue, sign_csr};
@@ -55,6 +56,10 @@ fn apply_zone_info(zone: &mut AttachedDomainZone, info: ZoneInfo) {
     zone.name = info.name;
     zone.status = Some(info.status);
     zone.name_servers = info.name_servers;
+}
+
+fn normalise_apex(name: &str) -> Result<String, TlsError> {
+    dnscraft_common::config::normalise_domain(name).map_err(TlsError::config)
 }
 
 /// Injectable dependencies for [`TlsEngine::open_with`] (tests / custom ACME).
@@ -794,6 +799,161 @@ impl TlsEngine {
         query: &ListZoneRecordsQuery,
     ) -> Result<ZoneRecordsPage, TlsError> {
         let cloudflare = self.require_cloudflare_client().await?;
+        self.ensure_zone_attached(zone_id).await?;
+        cloudflare.list_zone_records(zone_id, query).await
+    }
+
+    /// Creates a DNS record on an attached zone. Holds the Cloudflare write guard.
+    pub async fn create_domain_zone_record(
+        &self,
+        zone_id: &str,
+        spec: &DnsRecordSpec,
+    ) -> Result<DnsRecord, TlsError> {
+        let cloudflare = self.require_cloudflare_client().await?;
+        self.ensure_zone_attached(zone_id).await?;
+        let _guard = cloudflare.write_guard().await;
+        cloudflare.create_record_in(zone_id, spec).await
+    }
+
+    /// Updates a DNS record on an attached zone. Holds the Cloudflare write guard.
+    pub async fn update_domain_zone_record(
+        &self,
+        zone_id: &str,
+        record_id: &str,
+        spec: &DnsRecordSpec,
+    ) -> Result<DnsRecord, TlsError> {
+        let cloudflare = self.require_cloudflare_client().await?;
+        self.ensure_zone_attached(zone_id).await?;
+        let _guard = cloudflare.write_guard().await;
+        cloudflare.update_record_in(zone_id, record_id, spec).await
+    }
+
+    /// Deletes a DNS record on an attached zone. Holds the Cloudflare write guard.
+    ///
+    /// Does not delete the Cloudflare zone itself.
+    pub async fn delete_domain_zone_record(
+        &self,
+        zone_id: &str,
+        record_id: &str,
+    ) -> Result<(), TlsError> {
+        let cloudflare = self.require_cloudflare_client().await?;
+        self.ensure_zone_attached(zone_id).await?;
+        let _guard = cloudflare.write_guard().await;
+        cloudflare.delete_record_in(zone_id, record_id).await
+    }
+
+    /// Attaches an apex to `dns_provider.zones` (config + live Cloudflare client).
+    ///
+    /// When `zone_id` is omitted, resolves it via Cloudflare `list_zones` by name.
+    /// Attaching `public_domain` is a no-op (already attached). Does not create a
+    /// Cloudflare zone.
+    pub async fn attach_domain_zone(
+        &self,
+        name: &str,
+        zone_id: Option<String>,
+    ) -> Result<AttachedDomainZone, TlsError> {
+        let name = normalise_apex(name)?;
+        let mut cfg = self.inner.config.read().await.clone();
+        if name.eq_ignore_ascii_case(&cfg.public_domain) {
+            let zones = self.attached_domain_zones().await?;
+            return zones
+                .into_iter()
+                .find(|z| z.source == "public_domain")
+                .ok_or_else(|| TlsError::ConfigInvalid {
+                    reason: "public_domain is not configured".into(),
+                });
+        }
+
+        let resolved_id = match zone_id {
+            Some(id) if !id.trim().is_empty() => Some(id.trim().to_owned()),
+            _ => {
+                let cloudflare = self.require_cloudflare_client().await?;
+                let found = cloudflare
+                    .list_zones()
+                    .await?
+                    .into_iter()
+                    .find(|z| z.name.eq_ignore_ascii_case(&name));
+                match found {
+                    Some(z) => Some(z.id),
+                    None => {
+                        return Err(TlsError::CloudflareZone {
+                            message: format!("no Cloudflare zone named {name}"),
+                        });
+                    }
+                }
+            }
+        };
+
+        if let Some(existing) = cfg
+            .dns_provider
+            .zones
+            .iter_mut()
+            .find(|z| z.name.eq_ignore_ascii_case(&name))
+        {
+            existing.zone_id = resolved_id.clone();
+            existing.name = name.clone();
+        } else {
+            cfg.dns_provider.zones.push(ZoneConfig {
+                name: name.clone(),
+                zone_id: resolved_id.clone(),
+            });
+        }
+
+        self.install_zones(cfg.dns_provider.zones.clone()).await;
+        *self.inner.config.write().await = cfg;
+
+        let zones = self.attached_domain_zones().await?;
+        zones
+            .into_iter()
+            .find(|z| z.name.eq_ignore_ascii_case(&name))
+            .ok_or_else(|| TlsError::ConfigInvalid {
+                reason: format!("attached zone {name} missing after attach"),
+            })
+    }
+
+    /// Detaches an apex from `dns_provider.zones`. Does **not** delete the
+    /// Cloudflare zone. Refuses to detach `public_domain`.
+    pub async fn detach_domain_zone(&self, apex: &str) -> Result<(), TlsError> {
+        let apex = normalise_apex(apex)?;
+        let mut cfg = self.inner.config.read().await.clone();
+        if apex.eq_ignore_ascii_case(&cfg.public_domain) {
+            return Err(TlsError::ConfigInvalid {
+                reason: "cannot detach public_domain; change tls.public_domain instead".into(),
+            });
+        }
+        let before = cfg.dns_provider.zones.len();
+        cfg.dns_provider
+            .zones
+            .retain(|z| !z.name.eq_ignore_ascii_case(&apex));
+        if cfg.dns_provider.zones.len() == before {
+            return Err(TlsError::CloudflareZone {
+                message: format!("zone {apex} is not attached"),
+            });
+        }
+        self.install_zones(cfg.dns_provider.zones.clone()).await;
+        *self.inner.config.write().await = cfg;
+        Ok(())
+    }
+
+    /// Current `dns_provider.zones` (for persisting attach/detach into config).
+    pub async fn domain_zone_configs(&self) -> Vec<ZoneConfig> {
+        self.inner.config.read().await.dns_provider.zones.clone()
+    }
+
+    /// Current `public_domain` (for seeding an empty stored tls section).
+    pub async fn public_domain(&self) -> String {
+        self.inner.config.read().await.public_domain.clone()
+    }
+
+    async fn install_zones(&self, zones: Vec<ZoneConfig>) {
+        let mut guard = self.inner.cloudflare.write().await;
+        let mut client = guard.clone();
+        client.set_zones(zones);
+        client.clear_zone_caches().await;
+        *guard = client;
+    }
+
+    async fn ensure_zone_attached(&self, zone_id: &str) -> Result<(), TlsError> {
         let attached = self.attached_domain_zones().await?;
         let attached = attached
             .iter()
@@ -803,7 +963,7 @@ impl TlsEngine {
                 message: format!("zone {zone_id} is not attached"),
             });
         }
-        cloudflare.list_zone_records(zone_id, query).await
+        Ok(())
     }
 
     async fn require_cloudflare_client(&self) -> Result<CloudflareClient, TlsError> {

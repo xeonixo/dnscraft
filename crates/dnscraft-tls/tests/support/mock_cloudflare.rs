@@ -114,6 +114,11 @@ impl MockCloudflare {
         self.state.lock().await.records.clone()
     }
 
+    /// Zones currently visible to the token.
+    pub async fn zones(&self) -> Vec<MockZone> {
+        self.state.lock().await.zones.clone()
+    }
+
     /// Appends another zone visible to the token (for inventory tests).
     pub async fn add_zone(&self, zone: MockZone) {
         self.state.lock().await.zones.push(zone);
@@ -422,8 +427,29 @@ fn handle(
                     else {
                         return fail_json(404, 81044, "Record not found");
                     };
+                    if let Some(n) = v["name"].as_str() {
+                        rec.name = n.to_owned();
+                    }
+                    if let Some(t) = v["type"].as_str() {
+                        rec.record_type = t.to_owned();
+                    }
                     if let Some(c) = v["content"].as_str() {
                         rec.content = c.to_owned();
+                    } else if let Some(target) = v.pointer("/data/target").and_then(|x| x.as_str())
+                    {
+                        let priority = v
+                            .pointer("/data/priority")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0);
+                        let weight = v
+                            .pointer("/data/weight")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0);
+                        let port = v
+                            .pointer("/data/port")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0);
+                        rec.content = format!("{priority} {weight} {port} {target}");
                     }
                     if let Some(t) = v["ttl"].as_u64() {
                         rec.ttl = t as u32;

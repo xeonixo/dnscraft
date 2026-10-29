@@ -508,6 +508,25 @@ pub trait TlsAdmin: Send + Sync {
         per_page: u32,
         name_substr: Option<String>,
     ) -> TlsValueFuture<'_>;
+    /// Creates a DNS record on an attached zone (holds Cloudflare write_guard).
+    fn create_domain_zone_record(&self, zone_id: &str, record: Value) -> TlsValueFuture<'_>;
+    /// Updates a DNS record on an attached zone (holds Cloudflare write_guard).
+    fn update_domain_zone_record(
+        &self,
+        zone_id: &str,
+        record_id: &str,
+        record: Value,
+    ) -> TlsValueFuture<'_>;
+    /// Deletes a DNS record on an attached zone (holds Cloudflare write_guard).
+    fn delete_domain_zone_record(&self, zone_id: &str, record_id: &str) -> TlsActionFuture<'_>;
+    /// Attaches an apex into `dns_provider.zones`.
+    fn attach_domain_zone(&self, name: &str, zone_id: Option<String>) -> TlsValueFuture<'_>;
+    /// Detaches an apex from `dns_provider.zones` (does not delete at Cloudflare).
+    fn detach_domain_zone(&self, apex: &str) -> TlsActionFuture<'_>;
+    /// Current `dns_provider.zones` for config persistence after attach/detach.
+    fn domain_zone_configs(&self) -> TlsValueFuture<'_>;
+    /// Live `public_domain` (seed empty stored tls when attaching).
+    fn public_domain(&self) -> TlsValueFuture<'_>;
 }
 
 /// [`TlsAdmin`] over the real engine.
@@ -761,28 +780,12 @@ impl TlsAdmin for EngineTlsAdmin {
                     },
                 )
                 .await
-                .map_err(|error| match error {
-                    dnscraft_tls::TlsError::CloudflareZone { message }
-                        if message.contains("not attached") =>
-                    {
-                        ControlApiError::NotFound {
-                            what: format!("domain zone {zone_id}"),
-                        }
-                    }
-                    other => ControlApiError::from_tls(&other),
-                })?;
+                .map_err(|error| map_domain_zone_error(&zone_id, error))?;
             Ok(json!({
                 "records": page
                     .records
                     .into_iter()
-                    .map(|record| json!({
-                        "id": record.id,
-                        "name": record.name,
-                        "record_type": record.record_type,
-                        "content": record.content,
-                        "ttl": record.ttl,
-                        "proxied": record.proxied,
-                    }))
+                    .map(dns_record_json)
                     .collect::<Vec<_>>(),
                 "page": page.page,
                 "per_page": page.per_page,
@@ -790,6 +793,202 @@ impl TlsAdmin for EngineTlsAdmin {
                 "total_pages": page.total_pages,
             }))
         })
+    }
+
+    fn create_domain_zone_record(&self, zone_id: &str, record: Value) -> TlsValueFuture<'_> {
+        let zone_id = zone_id.to_owned();
+        Box::pin(async move {
+            let spec = dns_record_spec_from_value(&record)?;
+            let created = self
+                .engine
+                .create_domain_zone_record(&zone_id, &spec)
+                .await
+                .map_err(|error| map_domain_zone_error(&zone_id, error))?;
+            Ok(dns_record_json(created))
+        })
+    }
+
+    fn update_domain_zone_record(
+        &self,
+        zone_id: &str,
+        record_id: &str,
+        record: Value,
+    ) -> TlsValueFuture<'_> {
+        let zone_id = zone_id.to_owned();
+        let record_id = record_id.to_owned();
+        Box::pin(async move {
+            let spec = dns_record_spec_from_value(&record)?;
+            let updated = self
+                .engine
+                .update_domain_zone_record(&zone_id, &record_id, &spec)
+                .await
+                .map_err(|error| map_domain_zone_error(&zone_id, error))?;
+            Ok(dns_record_json(updated))
+        })
+    }
+
+    fn delete_domain_zone_record(&self, zone_id: &str, record_id: &str) -> TlsActionFuture<'_> {
+        let zone_id = zone_id.to_owned();
+        let record_id = record_id.to_owned();
+        Box::pin(async move {
+            self.engine
+                .delete_domain_zone_record(&zone_id, &record_id)
+                .await
+                .map_err(|error| map_domain_zone_error(&zone_id, error))
+        })
+    }
+
+    fn attach_domain_zone(&self, name: &str, zone_id: Option<String>) -> TlsValueFuture<'_> {
+        let name = name.to_owned();
+        Box::pin(async move {
+            let zone = self
+                .engine
+                .attach_domain_zone(&name, zone_id)
+                .await
+                .map_err(|error| ControlApiError::from_tls(&error))?;
+            Ok(json!(zone))
+        })
+    }
+
+    fn detach_domain_zone(&self, apex: &str) -> TlsActionFuture<'_> {
+        let apex = apex.to_owned();
+        Box::pin(async move {
+            self.engine
+                .detach_domain_zone(&apex)
+                .await
+                .map_err(|error| match error {
+                    dnscraft_tls::TlsError::CloudflareZone { message }
+                        if message.contains("not attached") =>
+                    {
+                        ControlApiError::NotFound {
+                            what: format!("domain zone {apex}"),
+                        }
+                    }
+                    other => ControlApiError::from_tls(&other),
+                })
+        })
+    }
+
+    fn domain_zone_configs(&self) -> TlsValueFuture<'_> {
+        Box::pin(async move {
+            let zones = self.engine.domain_zone_configs().await;
+            Ok(json!({ "zones": zones }))
+        })
+    }
+
+    fn public_domain(&self) -> TlsValueFuture<'_> {
+        Box::pin(async move { Ok(json!({ "public_domain": self.engine.public_domain().await })) })
+    }
+}
+
+fn map_domain_zone_error(zone_id: &str, error: dnscraft_tls::TlsError) -> ControlApiError {
+    match error {
+        dnscraft_tls::TlsError::CloudflareZone { message } if message.contains("not attached") => {
+            ControlApiError::NotFound {
+                what: format!("domain zone {zone_id}"),
+            }
+        }
+        other => ControlApiError::from_tls(&other),
+    }
+}
+
+fn dns_record_json(record: dnscraft_tls::DnsRecord) -> Value {
+    json!({
+        "id": record.id,
+        "name": record.name,
+        "record_type": record.record_type,
+        "content": record.content,
+        "ttl": record.ttl,
+        "proxied": record.proxied,
+    })
+}
+
+fn dns_record_spec_from_value(
+    value: &Value,
+) -> Result<dnscraft_tls::DnsRecordSpec, ControlApiError> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| ControlApiError::config("record must be an object"))?;
+    let name = obj
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ControlApiError::config("name is required"))?;
+    let record_type = obj
+        .get("record_type")
+        .or_else(|| obj.get("type"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ControlApiError::config("type is required"))?;
+    let content = obj
+        .get("content")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ControlApiError::config("content is required"))?;
+    let ttl = match obj.get("ttl") {
+        None | Some(Value::Null) => dnscraft_tls::TTL_AUTO,
+        Some(Value::Number(n)) => {
+            let ttl = n
+                .as_u64()
+                .ok_or_else(|| ControlApiError::config("ttl must be a positive integer"))?;
+            u32::try_from(ttl).map_err(|_| ControlApiError::config("ttl out of range"))?
+        }
+        Some(_) => return Err(ControlApiError::config("ttl must be a number")),
+    };
+    if ttl != dnscraft_tls::TTL_AUTO && !(60..=86400).contains(&ttl) {
+        return Err(ControlApiError::config(
+            "ttl must be 1 (automatic) or between 60 and 86400",
+        ));
+    }
+    let proxied = match obj.get("proxied") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(v)) => *v,
+        Some(_) => return Err(ControlApiError::config("proxied must be a boolean")),
+    };
+    let priority = optional_u16(obj.get("priority"), "priority")?;
+    let weight = optional_u16(obj.get("weight"), "weight")?;
+    let port = optional_u16(obj.get("port"), "port")?;
+    let record_type = record_type.to_ascii_uppercase();
+    match record_type.as_str() {
+        "A" | "AAAA" | "CNAME" | "TXT" | "MX" | "SRV" => {}
+        other => {
+            return Err(ControlApiError::config(format!(
+                "unsupported record type {other}; allowed: A, AAAA, CNAME, TXT, MX, SRV"
+            )));
+        }
+    }
+    if matches!(record_type.as_str(), "MX" | "SRV" | "TXT") && proxied {
+        return Err(ControlApiError::config(format!(
+            "{record_type} records cannot be proxied"
+        )));
+    }
+    Ok(dnscraft_tls::DnsRecordSpec {
+        name: name.to_owned(),
+        record_type,
+        content: content.to_owned(),
+        ttl,
+        proxied,
+        priority,
+        weight,
+        port,
+    })
+}
+
+fn optional_u16(value: Option<&Value>, field: &str) -> Result<Option<u16>, ControlApiError> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => {
+            let n = n
+                .as_u64()
+                .ok_or_else(|| ControlApiError::config(format!("{field} must be an integer")))?;
+            u16::try_from(n)
+                .map(Some)
+                .map_err(|_| ControlApiError::config(format!("{field} out of range")))
+        }
+        Some(_) => Err(ControlApiError::config(format!("{field} must be a number"))),
     }
 }
 

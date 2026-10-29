@@ -88,19 +88,19 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
 
 ## Phase 2: Write path
 
-- [ ] **T4** Mutate records + attach/detach zones (API + client)
+- [x] **T4** Mutate records + attach/detach zones (API + client)
   - **Description:** Generic create/update/delete for v1 record types on an attached
     zone; attach/detach updates `dns_provider.zones` (and stays consistent with TLS).
     All mutations hold the Cloudflare write guard.
   - **Acceptance criteria:**
-    - [ ] `POST/PUT/DELETE …/domain-zones/{zone_id}/records` for A/AAAA/CNAME/TXT/MX/SRV
+    - [x] `POST/PUT/DELETE …/domain-zones/{zone_id}/records` for A/AAAA/CNAME/TXT/MX/SRV
           (content/ttl/proxied validation; CF errors mapped).
-    - [ ] `POST /domain-zones/attach` / `DELETE …/attach/{apex}` updates config; does not
+    - [x] `POST /domain-zones/attach` / `DELETE …/attach/{apex}` updates config; does not
           delete the Cloudflare zone.
-    - [ ] Concurrent ACME path still serialised via write_lock (test or documented guard).
+    - [x] Concurrent ACME path still serialised via write_lock (test or documented guard).
   - **Verification:**
-    - [ ] `cargo test -p dnscraft-tls -p dnscraft-api --locked`
-    - [ ] API reference + control-api spec updated
+    - [x] `cargo test -p dnscraft-tls -p dnscraft-api --locked`
+    - [x] API reference + control-api spec updated
   - **Dependencies:** T2, Checkpoint read path
   - **Files likely touched:** `cloudflare.rs`, domain-zones routes, `config_apply` /
     TLS put path, tests, docs

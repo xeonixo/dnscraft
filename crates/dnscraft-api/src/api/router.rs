@@ -28,7 +28,10 @@ use super::config_routes::{
     list_versions, list_views, put_config, put_pause, put_profile, put_view, rollback,
     validate_config,
 };
-use super::domain_zones_routes::{list_domain_zone_records, list_domain_zones};
+use super::domain_zones_routes::{
+    attach_domain_zone, create_domain_zone_record, delete_domain_zone_record, detach_domain_zone,
+    list_domain_zone_records, list_domain_zones, update_domain_zone_record,
+};
 use super::filter_routes::{
     delete_filter_list, delete_filter_set, list_filter_lists, list_filter_sets, list_services,
     put_filter_list, put_filter_set, put_service,
@@ -90,12 +93,17 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/resolver/cache/flush", post(flush_cache))
         // Active alerts (WP1): viewer and admin read.
         .route("/alerts", get(list_alerts))
-        // Domain-Zonen (Split-DNS Namen read path): viewer/admin GET; discover
-        // is admin-only inside the handler. Without a TLS engine → not_ready.
+        // Domain-Zonen (Split-DNS Namen): viewer/admin GET; discover and all
+        // writes are admin-only (RBAC + handler). Without a TLS engine → not_ready.
         .route("/domain-zones", get(list_domain_zones))
+        .route("/domain-zones/attach", post(attach_domain_zone))
+        .route("/domain-zones/attach/{apex}", delete(detach_domain_zone))
         .route(
             "/domain-zones/{zone_id}/records",
-            get(list_domain_zone_records),
+            get(list_domain_zone_records)
+                .post(create_domain_zone_record)
+                .put(update_domain_zone_record)
+                .delete(delete_domain_zone_record),
         );
     if state.config_service().is_some() {
         api = api

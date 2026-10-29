@@ -87,6 +87,55 @@ pub struct ZoneRecordsPage {
     pub total_pages: u32,
 }
 
+/// Create / update / upsert payload for a Cloudflare DNS record.
+///
+/// Supported types for Domain-Zonen: `A`, `AAAA`, `CNAME`, `TXT`, `MX`, `SRV`.
+/// MX may carry [`Self::priority`]; SRV may carry priority / weight / port
+/// (otherwise those fields are parsed from [`Self::content`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DnsRecordSpec {
+    /// Fully-qualified owner name.
+    pub name: String,
+    /// Record type (`A`, `AAAA`, `CNAME`, `TXT`, `MX`, `SRV`).
+    pub record_type: String,
+    /// RDATA presentation / Cloudflare `content` (exchange host for MX; for
+    /// SRV either the full `priority weight port target` form or just the target
+    /// when priority/weight/port are set separately).
+    pub content: String,
+    /// TTL in seconds (`1` = automatic).
+    pub ttl: u32,
+    /// Orange-cloud flag.
+    pub proxied: bool,
+    /// MX / SRV priority when not embedded in [`Self::content`].
+    pub priority: Option<u16>,
+    /// SRV weight when not embedded in [`Self::content`].
+    pub weight: Option<u16>,
+    /// SRV port when not embedded in [`Self::content`].
+    pub port: Option<u16>,
+}
+
+impl DnsRecordSpec {
+    /// Builds a simple address / CNAME / TXT style spec.
+    pub fn new(
+        name: impl Into<String>,
+        record_type: impl Into<String>,
+        content: impl Into<String>,
+        ttl: u32,
+        proxied: bool,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            record_type: record_type.into(),
+            content: content.into(),
+            ttl,
+            proxied,
+            priority: None,
+            weight: None,
+            port: None,
+        }
+    }
+}
+
 /// Cloudflare DNS client with a shared writer mutex.
 #[derive(Clone, Debug)]
 pub struct CloudflareClient {
@@ -347,6 +396,108 @@ impl CloudflareClient {
         Ok(())
     }
 
+    /// Replaces the additional-zone list (longest-suffix match) without dropping
+    /// the shared writer mutex. Callers should clear caches after attach/detach.
+    pub fn set_zones(&mut self, zones: Vec<ZoneConfig>) {
+        self.zones = zones;
+    }
+
+    /// Drops cached zone lookups so the next resolve hits Cloudflare again.
+    pub async fn clear_zone_caches(&self) {
+        *self.cached_zone.lock().await = None;
+        self.cached_zones.lock().await.clear();
+    }
+
+    /// Creates a DNS record in an explicit zone (always POST; never upsert).
+    ///
+    /// Callers that mutate records (ACME / DynDNS / Domain-Zonen) must hold
+    /// [`Self::write_guard`] across the whole sequence.
+    pub async fn create_record_in(
+        &self,
+        zone_id: &str,
+        spec: &DnsRecordSpec,
+    ) -> Result<DnsRecord, TlsError> {
+        let url = format!("{}/zones/{zone_id}/dns_records", self.base_url);
+        let body = record_body(spec)?;
+        let envelope: Envelope<ApiRecord> = self
+            .request(
+                self.http
+                    .post(&url)
+                    .header(CONTENT_TYPE, JSON)
+                    .body(body.to_string()),
+            )
+            .await?;
+        envelope
+            .result
+            .map(DnsRecord::from)
+            .ok_or_else(|| TlsError::cloudflare_http("create record: empty result"))
+    }
+
+    /// Updates a DNS record by id in an explicit zone (PUT).
+    pub async fn update_record_in(
+        &self,
+        zone_id: &str,
+        record_id: &str,
+        spec: &DnsRecordSpec,
+    ) -> Result<DnsRecord, TlsError> {
+        let url = format!("{}/zones/{zone_id}/dns_records/{record_id}", self.base_url);
+        let body = record_body(spec)?;
+        let envelope: Envelope<ApiRecord> = self
+            .request(
+                self.http
+                    .put(&url)
+                    .header(CONTENT_TYPE, JSON)
+                    .body(body.to_string()),
+            )
+            .await?;
+        envelope
+            .result
+            .map(DnsRecord::from)
+            .ok_or_else(|| TlsError::cloudflare_http("update record: empty result"))
+    }
+
+    /// Upserts a DNS record in an explicit zone by owner name + type.
+    ///
+    /// If a record of that type already exists at `name`, it is updated; otherwise
+    /// a new one is created. Used by Domain-Zonen and the ACME/DynDNS helpers.
+    pub async fn upsert_record_in(
+        &self,
+        zone_id: &str,
+        spec: &DnsRecordSpec,
+    ) -> Result<DnsRecord, TlsError> {
+        let existing = self
+            .list_records_in(zone_id, &spec.name, &spec.record_type)
+            .await?;
+        if let Some(prev) = existing.into_iter().next() {
+            if prev.content.eq_ignore_ascii_case(&spec.content)
+                && prev.proxied == spec.proxied
+                && prev.ttl == spec.ttl
+            {
+                return Ok(prev);
+            }
+            return self.update_record_in(zone_id, &prev.id, spec).await;
+        }
+        self.create_record_in(zone_id, spec).await
+    }
+
+    /// Lists records filtered by owner name and type in an explicit zone.
+    pub async fn list_records_in(
+        &self,
+        zone_id: &str,
+        name: &str,
+        record_type: &str,
+    ) -> Result<Vec<DnsRecord>, TlsError> {
+        let url = format!("{}/zones/{zone_id}/dns_records", self.base_url);
+        let url = url_with_query(&url, &[("name", name), ("type", record_type)])?;
+        let envelope: Envelope<Vec<ApiRecord>> = self.request(self.http.get(url)).await?;
+        Ok(envelope
+            .result
+            .unwrap_or_default()
+            .into_iter()
+            .map(DnsRecord::from)
+            .collect())
+    }
+
     /// Upserts an A or AAAA record with `proxied: false` and automatic TTL.
     ///
     /// If a record of that type already exists at `name`, it is updated (PUT);
@@ -398,57 +549,9 @@ impl CloudflareClient {
         content: &str,
         proxied: bool,
     ) -> Result<DnsRecord, TlsError> {
-        let existing = self.list_records(name, record_type).await?;
         let zone = self.zone_for_name(name).await?;
-        if let Some(prev) = existing.into_iter().next() {
-            if prev.content.eq_ignore_ascii_case(content) && prev.proxied == proxied {
-                return Ok(prev);
-            }
-            let url = format!(
-                "{}/zones/{}/dns_records/{}",
-                self.base_url, zone.id, prev.id
-            );
-            let body = json!({
-                "type": record_type,
-                "name": name,
-                "content": content,
-                "ttl": TTL_AUTO,
-                "proxied": proxied,
-            });
-            let envelope: Envelope<ApiRecord> = self
-                .request(
-                    self.http
-                        .put(&url)
-                        .header(CONTENT_TYPE, JSON)
-                        .body(body.to_string()),
-                )
-                .await?;
-            envelope
-                .result
-                .map(DnsRecord::from)
-                .ok_or_else(|| TlsError::cloudflare_http("upsert: empty result"))
-        } else {
-            let url = format!("{}/zones/{}/dns_records", self.base_url, zone.id);
-            let body = json!({
-                "type": record_type,
-                "name": name,
-                "content": content,
-                "ttl": TTL_AUTO,
-                "proxied": proxied,
-            });
-            let envelope: Envelope<ApiRecord> = self
-                .request(
-                    self.http
-                        .post(&url)
-                        .header(CONTENT_TYPE, JSON)
-                        .body(body.to_string()),
-                )
-                .await?;
-            envelope
-                .result
-                .map(DnsRecord::from)
-                .ok_or_else(|| TlsError::cloudflare_http("create record: empty result"))
-        }
+        let spec = DnsRecordSpec::new(name, record_type, content, TTL_AUTO, proxied);
+        self.upsert_record_in(&zone.id, &spec).await
     }
 
     async fn fetch_zone_by_name(&self, name: &str) -> Result<ZoneInfo, TlsError> {
@@ -566,6 +669,112 @@ fn pick_zone(zones: &[ZoneConfig], name: &str) -> Option<usize> {
 fn url_with_query(url: &str, params: &[(&str, &str)]) -> Result<reqwest::Url, TlsError> {
     reqwest::Url::parse_with_params(url, params)
         .map_err(|e| TlsError::cloudflare_http(format!("build request URL: {e}")))
+}
+
+/// Builds the Cloudflare create/update JSON body for `spec`.
+fn record_body(spec: &DnsRecordSpec) -> Result<serde_json::Value, TlsError> {
+    let record_type = spec.record_type.to_ascii_uppercase();
+    match record_type.as_str() {
+        "A" | "AAAA" | "CNAME" | "TXT" => Ok(json!({
+            "type": record_type,
+            "name": spec.name,
+            "content": spec.content,
+            "ttl": spec.ttl,
+            "proxied": spec.proxied,
+        })),
+        "MX" => {
+            let (priority, content) = match spec.priority {
+                Some(p) => (p, spec.content.clone()),
+                None => parse_mx_content(&spec.content)?,
+            };
+            Ok(json!({
+                "type": "MX",
+                "name": spec.name,
+                "content": content,
+                "priority": priority,
+                "ttl": spec.ttl,
+                "proxied": false,
+            }))
+        }
+        "SRV" => {
+            let (priority, weight, port, target) = match (spec.priority, spec.weight, spec.port) {
+                (Some(priority), Some(weight), Some(port)) => {
+                    (priority, weight, port, spec.content.clone())
+                }
+                _ => parse_srv_content(&spec.content)?,
+            };
+            Ok(json!({
+                "type": "SRV",
+                "name": spec.name,
+                "ttl": spec.ttl,
+                "content": format!("{priority} {weight} {port} {target}"),
+                "data": {
+                    "priority": priority,
+                    "weight": weight,
+                    "port": port,
+                    "target": target,
+                },
+            }))
+        }
+        other => Err(TlsError::cloudflare_http(format!(
+            "unsupported DNS record type {other}"
+        ))),
+    }
+}
+
+fn parse_mx_content(content: &str) -> Result<(u16, String), TlsError> {
+    let content = content.trim();
+    let mut parts = content.split_whitespace();
+    let priority = parts
+        .next()
+        .ok_or_else(|| TlsError::cloudflare_http("MX content requires priority and exchange"))?
+        .parse::<u16>()
+        .map_err(|_| TlsError::cloudflare_http("MX priority must be a number"))?;
+    let exchange = parts
+        .next()
+        .ok_or_else(|| TlsError::cloudflare_http("MX content requires an exchange hostname"))?;
+    if parts.next().is_some() {
+        return Err(TlsError::cloudflare_http(
+            "MX content must be `priority exchange`",
+        ));
+    }
+    Ok((priority, exchange.trim_end_matches('.').to_owned()))
+}
+
+fn parse_srv_content(content: &str) -> Result<(u16, u16, u16, String), TlsError> {
+    let content = content.trim();
+    let mut parts = content.split_whitespace();
+    let priority = parts
+        .next()
+        .ok_or_else(|| {
+            TlsError::cloudflare_http("SRV content requires priority weight port target")
+        })?
+        .parse::<u16>()
+        .map_err(|_| TlsError::cloudflare_http("SRV priority must be a number"))?;
+    let weight = parts
+        .next()
+        .ok_or_else(|| TlsError::cloudflare_http("SRV content requires weight"))?
+        .parse::<u16>()
+        .map_err(|_| TlsError::cloudflare_http("SRV weight must be a number"))?;
+    let port = parts
+        .next()
+        .ok_or_else(|| TlsError::cloudflare_http("SRV content requires port"))?
+        .parse::<u16>()
+        .map_err(|_| TlsError::cloudflare_http("SRV port must be a number"))?;
+    let target = parts
+        .next()
+        .ok_or_else(|| TlsError::cloudflare_http("SRV content requires target"))?;
+    if parts.next().is_some() {
+        return Err(TlsError::cloudflare_http(
+            "SRV content must be `priority weight port target`",
+        ));
+    }
+    Ok((
+        priority,
+        weight,
+        port,
+        target.trim_end_matches('.').to_owned(),
+    ))
 }
 
 /// Reads an HTTP body while enforcing `max`: rejects early on an oversized

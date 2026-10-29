@@ -208,6 +208,76 @@ impl TlsAdmin for FakeAdmin {
             }),
         )
     }
+
+    fn create_domain_zone_record(&self, zone_id: &str, record: Value) -> TlsValueFuture<'_> {
+        self.record(format!("create_domain_zone_record:{zone_id}"));
+        self.value(
+            "create_domain_zone_record",
+            json!({
+                "id": "rec-fake",
+                "name": record.get("name").cloned().unwrap_or(json!("")),
+                "record_type": record.get("type").or_else(|| record.get("record_type")).cloned().unwrap_or(json!("A")),
+                "content": record.get("content").cloned().unwrap_or(json!("")),
+                "ttl": record.get("ttl").cloned().unwrap_or(json!(1)),
+                "proxied": record.get("proxied").cloned().unwrap_or(json!(false)),
+            }),
+        )
+    }
+
+    fn update_domain_zone_record(
+        &self,
+        zone_id: &str,
+        record_id: &str,
+        record: Value,
+    ) -> TlsValueFuture<'_> {
+        self.record(format!("update_domain_zone_record:{zone_id}:{record_id}"));
+        self.value(
+            "update_domain_zone_record",
+            json!({
+                "id": record_id,
+                "name": record.get("name").cloned().unwrap_or(json!("")),
+                "record_type": record.get("type").or_else(|| record.get("record_type")).cloned().unwrap_or(json!("A")),
+                "content": record.get("content").cloned().unwrap_or(json!("")),
+                "ttl": record.get("ttl").cloned().unwrap_or(json!(1)),
+                "proxied": record.get("proxied").cloned().unwrap_or(json!(false)),
+            }),
+        )
+    }
+
+    fn delete_domain_zone_record(&self, zone_id: &str, record_id: &str) -> TlsActionFuture<'_> {
+        self.record(format!("delete_domain_zone_record:{zone_id}:{record_id}"));
+        self.action("delete_domain_zone_record")
+    }
+
+    fn attach_domain_zone(&self, name: &str, zone_id: Option<String>) -> TlsValueFuture<'_> {
+        self.record(format!(
+            "attach_domain_zone:{name}:{}",
+            zone_id.as_deref().unwrap_or("-")
+        ));
+        self.value(
+            "attach_domain_zone",
+            json!({
+                "id": zone_id,
+                "name": name,
+                "status": "active",
+                "name_servers": [],
+                "source": "dns_provider",
+            }),
+        )
+    }
+
+    fn detach_domain_zone(&self, apex: &str) -> TlsActionFuture<'_> {
+        self.record(format!("detach_domain_zone:{apex}"));
+        self.action("detach_domain_zone")
+    }
+
+    fn domain_zone_configs(&self) -> TlsValueFuture<'_> {
+        self.value("domain_zone_configs", json!({ "zones": [] }))
+    }
+
+    fn public_domain(&self) -> TlsValueFuture<'_> {
+        self.value("public_domain", json!({ "public_domain": "example.com" }))
+    }
 }
 
 struct Harness {

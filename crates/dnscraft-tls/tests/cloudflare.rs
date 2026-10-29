@@ -6,7 +6,8 @@
 mod mock_cloudflare;
 
 use dnscraft_tls::{
-    CloudflareClient, CloudflareConfig, ListZoneRecordsQuery, Secret, TTL_ACME_TXT, TlsError,
+    CloudflareClient, CloudflareConfig, DnsRecordSpec, ListZoneRecordsQuery, Secret, TTL_ACME_TXT,
+    TTL_AUTO, TlsError,
 };
 use mock_cloudflare::{MockCloudflare, MockRecord, MockZone, OversizeBody};
 
@@ -419,4 +420,77 @@ async fn oversized_content_length_rejected_before_reading_body() {
 #[tokio::test]
 async fn oversized_streamed_body_aborts_while_reading() {
     assert_body_cap_enforced_promptly(OversizeBody::Streamed).await;
+}
+
+#[tokio::test]
+async fn generic_create_update_delete_under_write_guard() {
+    let (mock, client) = mock_and_client().await;
+    let _guard = client.write_guard().await;
+
+    let created = client
+        .create_record_in(
+            ZONE_ID,
+            &DnsRecordSpec::new("www.example.com", "A", "203.0.113.50", 300, false),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.name, "www.example.com");
+    assert_eq!(created.content, "203.0.113.50");
+
+    let updated = client
+        .update_record_in(
+            ZONE_ID,
+            &created.id,
+            &DnsRecordSpec::new("www.example.com", "A", "203.0.113.51", 300, false),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.id, created.id);
+    assert_eq!(updated.content, "203.0.113.51");
+
+    let mx = client
+        .create_record_in(
+            ZONE_ID,
+            &DnsRecordSpec {
+                name: "example.com".into(),
+                record_type: "MX".into(),
+                content: "10 mail.example.com".into(),
+                ttl: TTL_AUTO,
+                proxied: false,
+                priority: None,
+                weight: None,
+                port: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(mx.record_type, "MX");
+    assert_eq!(mx.content, "mail.example.com");
+
+    client.delete_record_in(ZONE_ID, &created.id).await.unwrap();
+    let mem = mock.records().await;
+    assert!(mem.iter().all(|r| r.id != created.id));
+    assert!(mem.iter().any(|r| r.id == mx.id));
+}
+
+#[tokio::test]
+async fn upsert_record_in_is_idempotent() {
+    let (_mock, client) = mock_and_client().await;
+    let _guard = client.write_guard().await;
+    let spec = DnsRecordSpec::new("api.example.com", "AAAA", "2001:db8::1", TTL_AUTO, false);
+    let first = client.upsert_record_in(ZONE_ID, &spec).await.unwrap();
+    let second = client.upsert_record_in(ZONE_ID, &spec).await.unwrap();
+    assert_eq!(first.id, second.id);
+    assert_eq!(second.content, "2001:db8::1");
+}
+
+#[tokio::test]
+async fn set_zones_preserves_write_lock_arc() {
+    let (_mock, mut client) = mock_and_client().await;
+    let before = client.write_lock().clone();
+    client.set_zones(vec![dnscraft_tls::ZoneConfig {
+        name: "other.example".into(),
+        zone_id: Some("z-other".into()),
+    }]);
+    assert!(std::sync::Arc::ptr_eq(client.write_lock(), &before));
 }

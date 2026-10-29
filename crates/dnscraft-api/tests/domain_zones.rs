@@ -1,5 +1,5 @@
-//! `GET /api/v1/domain-zones` and `…/{zone_id}/records` against a loopback
-//! Cloudflare mock + real [`EngineTlsAdmin`].
+//! Domain-zones read + write path against a loopback Cloudflare mock + real
+//! [`EngineTlsAdmin`].
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -17,7 +17,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Method, Request, StatusCode, header};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
 use dnscraft_api::{
@@ -99,7 +99,6 @@ fn tls_cfg() -> TlsConfig {
 struct Harness {
     router: Router,
     tokens: TokenStore,
-    #[allow(dead_code)]
     mock: MockCloudflare,
     #[allow(dead_code)]
     data_dir: PathBuf,
@@ -203,6 +202,16 @@ async fn request(
     uri: &str,
     bearer: Option<&str>,
 ) -> (StatusCode, Value) {
+    request_json(router, method, uri, bearer, None).await
+}
+
+async fn request_json(
+    router: &Router,
+    method: Method,
+    uri: &str,
+    bearer: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
@@ -210,9 +219,13 @@ async fn request(
     if let Some(token) = bearer {
         builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
     }
+    let payload = match body {
+        Some(value) => Body::from(serde_json::to_vec(&value).unwrap()),
+        None => Body::empty(),
+    };
     let response = router
         .clone()
-        .oneshot(builder.body(Body::empty()).unwrap())
+        .oneshot(builder.body(payload).unwrap())
         .await
         .unwrap();
     let status = response.status();
@@ -418,4 +431,203 @@ async fn list_without_tls_admin_is_not_ready() {
     let (code, body) = request(&router, Method::GET, "/api/v1/domain-zones", Some(&viewer)).await;
     assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["error"]["code"], "control_api.not_ready");
+}
+
+#[tokio::test]
+async fn mutate_records_admin_only_and_crud_round_trip() {
+    let harness = harness(true).await;
+    let viewer = mint(&harness.tokens, Scope::Viewer).await;
+    let admin = mint(&harness.tokens, Scope::Admin).await;
+    let path = format!("/api/v1/domain-zones/{ZONE_ID}/records");
+
+    let (code, body) = request_json(
+        &harness.router,
+        Method::POST,
+        &path,
+        Some(&viewer),
+        Some(json!({
+            "name": "app.example.com",
+            "type": "A",
+            "content": "203.0.113.80",
+            "ttl": 300,
+        })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], "control_api.auth.insufficient_scope");
+
+    let (code, body) = request_json(
+        &harness.router,
+        Method::POST,
+        &path,
+        Some(&admin),
+        Some(json!({
+            "name": "app.example.com",
+            "type": "A",
+            "content": "203.0.113.80",
+            "ttl": 300,
+            "proxied": false,
+        })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    let record_id = body["data"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(body["data"]["content"], "203.0.113.80");
+
+    let (code, body) = request_json(
+        &harness.router,
+        Method::PUT,
+        &path,
+        Some(&admin),
+        Some(json!({
+            "id": record_id,
+            "name": "app.example.com",
+            "type": "A",
+            "content": "203.0.113.81",
+            "ttl": 300,
+        })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["content"], "203.0.113.81");
+
+    let (code, body) = request_json(
+        &harness.router,
+        Method::POST,
+        &path,
+        Some(&admin),
+        Some(json!({
+            "name": "example.com",
+            "type": "MX",
+            "content": "10 mail.example.com",
+        })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["record_type"], "MX");
+
+    let (code, body) = request_json(
+        &harness.router,
+        Method::DELETE,
+        &path,
+        Some(&admin),
+        Some(json!({ "id": record_id })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["deleted"], true);
+
+    let (code, body) = request_json(
+        &harness.router,
+        Method::POST,
+        &path,
+        Some(&admin),
+        Some(json!({
+            "name": "bad.example.com",
+            "type": "NS",
+            "content": "ns.example.com",
+        })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "control_api.config.invalid");
+
+    let mem = harness.mock.records().await;
+    assert!(mem.iter().all(|r| r.id != record_id));
+    assert!(harness.mock.zones().await.iter().any(|z| z.id == ZONE_ID));
+}
+
+#[tokio::test]
+async fn attach_and_detach_update_dns_provider_zones_without_deleting_cf_zone() {
+    let harness = harness(true).await;
+    let viewer = mint(&harness.tokens, Scope::Viewer).await;
+    let admin = mint(&harness.tokens, Scope::Admin).await;
+
+    let (code, body) = request_json(
+        &harness.router,
+        Method::POST,
+        "/api/v1/domain-zones/attach",
+        Some(&viewer),
+        Some(json!({
+            "name": "unattached.test",
+            "zone_id": "zone-unattached",
+        })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::FORBIDDEN, "{body}");
+
+    let (code, body) = request_json(
+        &harness.router,
+        Method::POST,
+        "/api/v1/domain-zones/attach",
+        Some(&admin),
+        Some(json!({
+            "name": "unattached.test",
+            "zone_id": "zone-unattached",
+        })),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["name"], "unattached.test");
+    assert_eq!(body["data"]["id"], "zone-unattached");
+    assert_eq!(body["data"]["source"], "dns_provider");
+
+    let (code, body) = request(
+        &harness.router,
+        Method::GET,
+        "/api/v1/domain-zones",
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    let zones = body["data"]["zones"].as_array().unwrap();
+    assert!(zones.iter().any(|z| z["id"] == "zone-unattached"));
+
+    let (code, body) = request(
+        &harness.router,
+        Method::GET,
+        "/api/v1/domain-zones/zone-unattached/records",
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+
+    let (code, body) = request(
+        &harness.router,
+        Method::DELETE,
+        "/api/v1/domain-zones/attach/unattached.test",
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["detached"], true);
+
+    let (code, body) = request(
+        &harness.router,
+        Method::GET,
+        "/api/v1/domain-zones/zone-unattached/records",
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(code, StatusCode::NOT_FOUND, "{body}");
+
+    // Detach must not delete the Cloudflare zone itself.
+    assert!(
+        harness
+            .mock
+            .zones()
+            .await
+            .iter()
+            .any(|z| z.id == "zone-unattached")
+    );
+
+    let (code, body) = request(
+        &harness.router,
+        Method::DELETE,
+        &format!("/api/v1/domain-zones/attach/{DOMAIN}"),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(code, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "tls.config.invalid");
 }

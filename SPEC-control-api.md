@@ -279,6 +279,11 @@ or secret token material. The `CertResolver` is passed to listeners as
 | GET | `/api/v1/tls/audit` | admin | DynDNS audit trail (bounded) | – |
 | GET | `/api/v1/domain-zones` | viewer/admin | attached Domain-Zonen (`public_domain` + `dns_provider.zones`) + `has_cloudflare_token`; `?discover=1` (admin) adds Cloudflare-visible `discoverable` | `tls.secret.missing`, `control_api.auth.insufficient_scope`, `control_api.not_ready` |
 | GET | `/api/v1/domain-zones/{zone_id}/records` | viewer/admin | paginated DNS records (`page`, `per_page`, `name_substr`) for an attached zone | `tls.secret.missing`, `control_api.not_found`, `tls.cloudflare.*`, `control_api.not_ready` |
+| POST | `/api/v1/domain-zones/{zone_id}/records` | admin | create DNS record (`A`/`AAAA`/`CNAME`/`TXT`/`MX`/`SRV`); holds CF `write_guard` | `tls.secret.missing`, `control_api.not_found`, `control_api.config.invalid`, `tls.cloudflare.*`, `control_api.not_ready` |
+| PUT | `/api/v1/domain-zones/{zone_id}/records` | admin | update DNS record by `id`; holds CF `write_guard` | `tls.secret.missing`, `control_api.not_found`, `control_api.config.invalid`, `tls.cloudflare.*`, `control_api.not_ready` |
+| DELETE | `/api/v1/domain-zones/{zone_id}/records` | admin | delete DNS record by `id` (does not delete the CF zone); holds CF `write_guard` | `tls.secret.missing`, `control_api.not_found`, `control_api.config.invalid`, `tls.cloudflare.*`, `control_api.not_ready` |
+| POST | `/api/v1/domain-zones/attach` | admin | attach apex into `dns_provider.zones` (`name`, optional `zone_id`); does not create a CF zone | `tls.secret.missing`, `tls.config.invalid`, `tls.cloudflare.zone`, `control_api.not_ready` |
+| DELETE | `/api/v1/domain-zones/attach/{apex}` | admin | detach apex from `dns_provider.zones` (does **not** delete the CF zone); refuses `public_domain` | `control_api.not_found`, `tls.config.invalid`, `control_api.not_ready` |
 | GET | `/api/v1/cluster/nodes` | admin | list sub-nodes + status (role, reachability, applied version, lag) | `cluster.node.*` |
 | POST | `/api/v1/cluster/join-tokens` | admin | mint one-time join token bound to `node_id`, TTL default 15 min | `cluster.join.*` |
 | DELETE | `/api/v1/cluster/nodes/{id}` | admin | revoke/remove node | `cluster.node.revoked` |
