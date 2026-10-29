@@ -262,6 +262,8 @@ ${hosts.map(payload).join('')}\t</array>
 \t<string>${xml(payloadIdentifier)}</string>
 \t<key>PayloadOrganization</key>
 \t<string>${xml(organization)}</string>
+\t<key>PayloadScope</key>
+\t<string>System</string>
 \t<key>PayloadType</key>
 \t<string>Configuration</string>
 \t<key>PayloadUUID</key>

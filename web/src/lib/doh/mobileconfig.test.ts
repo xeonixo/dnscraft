@@ -338,6 +338,8 @@ const GOLDEN_HTTPS = `<?xml version="1.0" encoding="UTF-8"?>
 	<string>app.dnscraft.dns.iphone-anna</string>
 	<key>PayloadOrganization</key>
 	<string>DNScraft</string>
+	<key>PayloadScope</key>
+	<string>System</string>
 	<key>PayloadType</key>
 	<string>Configuration</string>
 	<key>PayloadUUID</key>
@@ -389,5 +391,13 @@ describe('node hosts', () => {
 			ok: false,
 			error: 'invalid_domain',
 		});
+	});
+});
+
+describe('scope', () => {
+	it('is system scoped, which macOS requires for DNS settings', () => {
+		const r = buildMobileConfig({ publicDomain: 'example.com', clientId: 'abc' });
+		if (!r.ok) throw new Error('expected ok');
+		expect(r.xml).toContain('<key>PayloadScope</key>\n\t<string>System</string>');
 	});
 });
