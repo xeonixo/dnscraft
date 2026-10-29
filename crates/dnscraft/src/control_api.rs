@@ -192,6 +192,9 @@ pub(crate) async fn start(
         .with_version(env!("CARGO_PKG_VERSION"))
         .with_db(db.clone())
         .with_backup_dir(data_dir.join("backups"))
+        .with_web_bans(Arc::new(ListenerBans {
+            set: Arc::downgrade(set),
+        }))
         .with_service_catalog(Arc::new(EngineServices {
             engine: Arc::clone(&engines.filtering),
         }));
@@ -345,6 +348,33 @@ pub(crate) async fn start(
 
 /// Blocked-services catalog for `GET /api/v1/filtering/services`, read live
 /// from the filtering engine (`available: false` while none is cached).
+/// Lists and lifts the listener set's source bans for `/api/v1/web-bans`.
+struct ListenerBans {
+    set: std::sync::Weak<ListenerSet<PolicyEngine>>,
+}
+
+impl dnscraft_api::WebBans for ListenerBans {
+    fn banned(&self) -> Vec<dnscraft_api::BannedSource> {
+        let Some(set) = self.set.upgrade() else {
+            return Vec::new();
+        };
+        set.banned_sources()
+            .into_iter()
+            .filter_map(|(ip, until)| {
+                let secs = until.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+                Some(dnscraft_api::BannedSource {
+                    ip,
+                    until_unix: i64::try_from(secs).ok()?,
+                })
+            })
+            .collect()
+    }
+
+    fn unban(&self, ip: std::net::IpAddr) -> bool {
+        self.set.upgrade().is_some_and(|set| set.unban(ip))
+    }
+}
+
 struct EngineServices {
     engine: Arc<FilterEngine>,
 }

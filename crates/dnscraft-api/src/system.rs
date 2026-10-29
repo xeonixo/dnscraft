@@ -48,6 +48,32 @@ pub(crate) fn update_check_enabled(snapshot: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// One source currently banned by the shared strike table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BannedSource {
+    /// Banned address.
+    pub ip: std::net::IpAddr,
+    /// Unix seconds when the ban ends.
+    pub until_unix: i64,
+}
+
+/// Read and lift the listeners' source bans (implemented by the binary over the listener set).
+pub trait WebBans: Send + Sync {
+    /// Sources banned right now.
+    fn banned(&self) -> Vec<BannedSource>;
+    /// Lifts the ban on `ip`; `true` when it was banned.
+    fn unban(&self, ip: std::net::IpAddr) -> bool;
+}
+
+/// Whether public sources may reach the web UI/API on a public shared DoH listener
+/// (`control_api_settings.web_access.public_enabled`, default off).
+pub(crate) fn web_access_public(snapshot: &Value) -> bool {
+    snapshot
+        .pointer("/control_api_settings/web_access/public_enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// Backup settings as stored in the config snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BackupSettings {

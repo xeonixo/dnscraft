@@ -864,6 +864,7 @@ impl ConfigService {
             Ok(()) => {
                 self.apply_query_log_settings(snapshot);
                 self.apply_oidc_settings(snapshot).await;
+                self.apply_web_access_settings(snapshot);
                 return Ok(());
             }
             Err(failure) => failure,
@@ -907,6 +908,13 @@ impl ConfigService {
             .and_then(Value::as_str)
             .and_then(|name| IpTruncate::parse(name).ok());
         query_log.apply_settings(retention_days, ip_truncate);
+    }
+
+    /// Pushes `control_api_settings.web_access` into the listeners' web hand-off.
+    fn apply_web_access_settings(&self, snapshot: &Value) {
+        if let Some(web) = self.modules.web.as_ref() {
+            web.set_public(crate::system::web_access_public(snapshot));
+        }
     }
 
     /// Rebuilds the live OIDC relying party from `control_api_settings.oidc`.
@@ -1241,8 +1249,8 @@ pub const MCP_SETTING_KEYS: [&str; 3] = ["enabled", "write_tools_enabled", "lega
 
 /// Validates the non-secret runtime keys of `control_api_settings` (GA15).
 ///
-/// Accepted: `update_check` (bool), `backups` (`enabled`, `retention_count`),
-/// `query_log.retention_days` (1..=3650), `mcp` (boolean `enabled`,
+/// Accepted: `update_check` (bool), `web_access` (`public_enabled`), `backups` (`enabled`,
+/// `retention_count`), `query_log.retention_days` (1..=3650), `mcp` (boolean `enabled`,
 /// `write_tools_enabled`, `legacy_session_mode`) and `oidc` (`enabled`, `issuer`,
 /// `client_id`, `admin_group`, `groups_claim`, `token_skew_seconds` 5..=300).
 /// Secrets stay out of the snapshot (write-only `PUT /auth/oidc/client-secret`).
@@ -1256,6 +1264,15 @@ fn validate_control_api_settings(settings: &Value) -> Result<(), ControlApiError
                 if !value.is_boolean() {
                     return Err(config_invalid(
                         "control_api_settings.update_check must be a boolean",
+                    ));
+                }
+            }
+            "web_access" => {
+                if !value.as_object().is_some_and(|o| {
+                    o.len() == 1 && o.get("public_enabled").is_some_and(Value::is_boolean)
+                }) {
+                    return Err(config_invalid(
+                        "control_api_settings.web_access must be {\"public_enabled\": bool}",
                     ));
                 }
             }

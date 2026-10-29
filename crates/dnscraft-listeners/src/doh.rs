@@ -472,14 +472,53 @@ where
 {
     if let Some(web) = shared.web.get()
         && parse_doh_path(req.uri().path()) == DohPath::Other
-        && private_source(&shared, peer.ip())
+        && web_allowed(&shared, peer.ip())
     {
-        return web(peer, req).await;
+        let is_login = req.method() == Method::POST && req.uri().path() == WEB_LOGIN_PATH;
+        let response = web(peer, req).await;
+        // A failed sign-in or a forbidden request counts toward the shared ban (public sources
+        // only; `Admission::strike` ignores private ones). Plain 401s are not counted: the SPA
+        // probes `/auth/me` on every page load.
+        let status = response.status();
+        if status == StatusCode::FORBIDDEN
+            || (is_login
+                && matches!(
+                    status,
+                    StatusCode::UNAUTHORIZED | StatusCode::LOCKED | StatusCode::TOO_MANY_REQUESTS
+                ))
+        {
+            let now = shared.clock.now();
+            shared
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .strike(peer.ip(), StrikeReason::WebAuth, now);
+        }
+        return response;
     }
     handle_http(shared, peer.ip(), req).await.map(|body| {
         body.map_err(|never| -> Box<dyn std::error::Error + Send + Sync> { match never {} })
             .boxed_unsync()
     })
+}
+
+/// Path of the break-glass sign-in (failures count as web strikes).
+const WEB_LOGIN_PATH: &str = "/api/v1/auth/local/login";
+
+/// Whether `peer` may reach the web handler: private sources always; public sources only on a
+/// public listener while public web access is on and the source is not banned.
+fn web_allowed<H: ?Sized>(shared: &DohShared<H>, peer: IpAddr) -> bool {
+    if private_source(shared, peer) {
+        return true;
+    }
+    let now = shared.clock.now();
+    shared.web.public()
+        && shared.listener.exposure == Exposure::Public
+        && !shared
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_banned(peer, now)
 }
 
 /// `true` for a private TCP peer: the web UI is routed by source, never for public sources. On a

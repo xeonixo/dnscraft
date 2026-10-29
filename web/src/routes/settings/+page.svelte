@@ -9,6 +9,7 @@
 	import TokensPanel from '$lib/settings/TokensPanel.svelte';
 	import OidcPanel from '$lib/settings/OidcPanel.svelte';
 	import UnifiPanel from '$lib/settings/UnifiPanel.svelte';
+	import WebAccessPanel from '$lib/settings/WebAccessPanel.svelte';
 	import { getConfig } from '$lib/api/config';
 	import { getUpdateCheck, type UpdateCheck } from '$lib/api/system';
 	import { getStatus } from '$lib/api/stats';
@@ -215,6 +216,7 @@
 	{/if}
 </GroupedList>
 
+<WebAccessPanel {isAdmin} />
 <OidcPanel {isAdmin} />
 <UnifiPanel {isAdmin} />
 <TokensPanel {isAdmin} />

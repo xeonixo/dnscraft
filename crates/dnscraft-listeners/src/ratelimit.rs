@@ -85,6 +85,11 @@ impl<K: Eq + Hash + Clone, V> LruMap<K, V> {
         self.map.len()
     }
 
+    /// Iterates entries in arbitrary order without touching recency.
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.map.iter().map(|(k, (v, _))| (k, v))
+    }
+
     fn touch(&mut self) -> u64 {
         self.tick = self.tick.wrapping_add(1);
         self.tick

@@ -259,8 +259,8 @@ async fn local_records_cname_local_a_and_external() {
         .handle(ctx(src, "ext.example.com", RecordType::A))
         .await
         .unwrap();
-    assert_eq!(root_query_count(&h), 0);
-    assert_eq!(external.message.answers.len(), 1);
+    // The external target is resolved so stub clients get an address, not a bare CNAME.
+    assert!(root_query_count(&h) > 0);
     assert_eq!(external.message.answers[0].rtype(), RecordType::CNAME);
 }
 

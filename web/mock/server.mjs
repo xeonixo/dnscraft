@@ -327,6 +327,12 @@ function groupCounts(rows, keyOf) {
 	return [...groups.values()].sort((a, b) => b.queries - a.queries || a.id.localeCompare(b.id));
 }
 
+let webAccessPublic = false;
+let webBans = [
+	{ ip: '198.51.100.7', until: new Date(Date.now() + 40 * 60_000).toISOString() },
+	{ ip: '2001:db8::42', until: new Date(Date.now() + 3 * 3_600_000).toISOString() },
+];
+
 function readJsonBody(request) {
 	return new Promise((resolveBody, reject) => {
 		const chunks = [];
@@ -1258,6 +1264,15 @@ async function route(request, response, options) {
 				source: 'dns_provider',
 			});
 		}
+		case 'GET /api/v1/web-bans':
+			return sendData(response, { items: webBans });
+		case 'GET /api/v1/web-access':
+			return sendData(response, { public_enabled: webAccessPublic });
+		case 'PUT /api/v1/web-access': {
+			const body = await readJsonBody(request);
+			webAccessPublic = body.public_enabled === true;
+			return sendData(response, { version: 2, public_enabled: webAccessPublic });
+		}
 		case 'GET /api/v1/update/check':
 			return sendData(response, {
 				enabled: true,
@@ -1385,6 +1400,15 @@ async function route(request, response, options) {
 		}
 		default:
 			break;
+	}
+
+	const webBanLift = /^\/api\/v1\/web-bans\/([^/]+)$/.exec(path);
+	if (webBanLift && request.method === 'DELETE') {
+		const ip = decodeURIComponent(webBanLift[1]);
+		const before = webBans.length;
+		webBans = webBans.filter((ban) => ban.ip !== ip);
+		if (webBans.length === before) throw new ApiFailure(404, 'control_api.not_found');
+		return sendData(response, { ip });
 	}
 
 	const domainZoneAttach = /^\/api\/v1\/domain-zones\/attach\/([^/]+)$/.exec(path);

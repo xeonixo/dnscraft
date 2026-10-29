@@ -1,10 +1,11 @@
 //! [`ListenerSet`]: bind, reload, status, and graceful shutdown.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use dnscraft_policy::{ListenerId, NodeId, PolicyEngine};
 use dnscraft_tls::{CertResolver, ClientIdRegistry, ReservedLabels};
@@ -203,6 +204,24 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             .iter()
             .find(|(listener_id, _)| listener_id.as_str() == id)
             .map(|(_, running)| running.config.clone())
+    }
+
+    /// Sources currently banned (strikes from DNS or web), with their ban expiry.
+    pub fn banned_sources(&self) -> Vec<(IpAddr, SystemTime)> {
+        let now = self.clock.now();
+        self.admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .banned_sources(now)
+    }
+
+    /// Lifts the ban on `source`; `true` when it was banned.
+    pub fn unban(&self, source: IpAddr) -> bool {
+        let now = self.clock.now();
+        self.admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unban(source, now)
     }
 
     /// Slot for the web UI / API handler served on local DoH listeners (empty → `404`).

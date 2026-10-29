@@ -1116,6 +1116,78 @@ async fn public_listener_routes_the_web_handler_for_private_sources_only() {
 }
 
 #[tokio::test]
+async fn public_source_gets_web_handler_only_while_public_access_is_enabled() {
+    let web = web_slot();
+    let h = web_harness_for(Exposure::Public, web.clone(), true).await;
+    let (status, _, _) = doh_exchange_h1(h.addr, get_req("/")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    web.set_public(true);
+    let (status, _, body) = doh_exchange_h1(h.addr, get_req("/")).await;
+    assert_eq!((status, &body[..]), (StatusCode::OK, &b"web"[..]));
+    web.set_public(false);
+    let (status, _, _) = doh_exchange_h1(h.addr, get_req("/")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    h.stop().await;
+}
+
+/// Web handler that answers `status` for every request.
+fn web_slot_status(status: StatusCode) -> Arc<WebSlot> {
+    let slot = Arc::new(WebSlot::default());
+    assert!(slot.set(Arc::new(move |_peer, _req| {
+        Box::pin(async move {
+            let mut response = http::Response::new(
+                Full::new(Bytes::from_static(b"web"))
+                    .map_err(|n| match n {})
+                    .boxed_unsync(),
+            );
+            *response.status_mut() = status;
+            response
+        })
+    })));
+    slot.set_public(true);
+    slot
+}
+
+#[tokio::test]
+async fn failed_web_logins_from_a_public_source_ban_it_and_close_the_web_path() {
+    let web = web_slot_status(StatusCode::UNAUTHORIZED);
+    let h = web_harness_for(Exposure::Public, web, true).await;
+    let login = || post_req("/api/v1/auth/local/login", Bytes::new(), None);
+    for _ in 0..5 {
+        let (status, _, _) = doh_exchange_h1(h.addr, login()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    // Banned: the listener drops the connection (the helper panics on the reset), so the web
+    // handler is never reached again.
+    let addr = h.addr;
+    let banned = tokio::spawn(async move { doh_exchange_h1(addr, get_req("/")).await }).await;
+    assert!(banned.is_err(), "banned source must not get a response");
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn plain_401s_on_public_web_paths_do_not_ban() {
+    // The SPA probes `/auth/me` on every page load; a logged-out visitor gets 401 each time.
+    let web = web_slot_status(StatusCode::UNAUTHORIZED);
+    let h = web_harness_for(Exposure::Public, web, true).await;
+    for _ in 0..10 {
+        let (status, _, _) = doh_exchange_h1(h.addr, get_req("/api/v1/auth/me")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn public_flag_never_opens_a_local_listener() {
+    let web = web_slot();
+    web.set_public(true);
+    let h = web_harness_for(Exposure::Local, web, true).await;
+    let (status, _, _) = doh_exchange_h1(h.addr, get_req("/")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    h.stop().await;
+}
+
+#[tokio::test]
 async fn local_listener_never_routes_the_web_handler_for_public_sources() {
     let h = web_harness_for(Exposure::Local, web_slot(), true).await;
     let (status, _, body) = doh_exchange_h1(h.addr, get_req("/")).await;

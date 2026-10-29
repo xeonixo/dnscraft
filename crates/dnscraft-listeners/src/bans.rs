@@ -15,6 +15,8 @@ pub enum StrikeReason {
     TlsHandshake,
     /// Malformed DoH or DoQ framing.
     MalformedFraming,
+    /// Failed web sign-in or forbidden web request from a public source.
+    WebAuth,
 }
 
 #[derive(Clone, Debug)]
@@ -80,6 +82,21 @@ impl BanTable {
             }
             None => false,
         }
+    }
+
+    /// Sources banned at `now` with their ban expiry.
+    pub fn banned(&self, now: SystemTime) -> Vec<(IpAddr, SystemTime)> {
+        self.entries
+            .iter()
+            .filter_map(|(ip, e)| e.banned_until.filter(|u| now < *u).map(|u| (*ip, u)))
+            .collect()
+    }
+
+    /// Lifts a ban and forgets the source's strikes; `true` when it was banned.
+    pub fn unban(&mut self, source: IpAddr, now: SystemTime) -> bool {
+        let was = self.is_banned(source, now);
+        self.entries.take(&source);
+        was
     }
 
     /// Records a strike for a **public** source. May start a ban.

@@ -265,7 +265,7 @@ impl PolicyEngine {
         };
 
         // Step 1: view local records.
-        if let Flow::Answer(synth) = local_records::run(&ctx, step_ctx, &mut draft) {
+        if let Flow::Answer(synth) = local_records::run(&ctx, step_ctx, &mut draft).await {
             return Ok(self.finish_synth(
                 draft,
                 synth,
