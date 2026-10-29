@@ -46,3 +46,9 @@
 - [x] **GT2** `next_attempt_at` never populated; stale `order_status` on early errors (🟠)
 - [x] **GT3** `apply_config` re-uploads `config.manual`, reverting API uploads + clearing `revoked` (🟠)
 - [x] **GT4–GT12** `deactivated`, key rollover surface, `tls.dns.provider.zone`, stale rate-limit status, preflight when ACME off, ACME revoke when off, DynDNS echo handling, audit drop on partial write, metrics (🟡)
+
+---
+
+## Owner wish 2026-10-29 — web UI/API on the DoH port (:443)
+
+- [x] **Shared :443** (implemented 2026-10-29: `control_api.shared_doh_listener`, `ListenerSet::web_slot`, `dnscraft_api::{prepare_router, handle_request}`; HTTP/1.1 + HTTP/2 only, h3 stays DoH-only) — SPEC.md ("even if DoH shares port 443 on the same address") and SPEC-listeners § Admission imply a *local* DoH listener serves the UI/API on non-`/dns-query` paths over TLS (public listeners keep routing only `/dns-query/<id>`). Not implemented: `parse_doh_path` returns `DohPath::Other` → 404 on every listener, and control-api binds its own `bind:port` (a second bind on the same address:443 fails with EADDRINUSE). Needs: hand private-source `Other` requests on local DoH listeners to the control-api router (same `CertResolver`, same Host/Origin checks), keep public → 404, then let `control_api.port` default to the shared listener. Prod today: `control_api` on :80, `tls = false` (172.20.10.90/.91).

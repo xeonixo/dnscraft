@@ -44,6 +44,7 @@ mod status;
 mod tcp;
 mod tls;
 mod udp;
+mod web;
 
 pub use admission::{
     Admission, AdmitDecision, ClientIdState, SourceClass, SourceClassifier, default_classifier,
@@ -97,3 +98,4 @@ pub use tls::{
     quic_server_config, tcp_server_config, tls_acceptor, tls_handshake_timeout,
 };
 pub use udp::{CLASSIC_UDP_LIMIT, UdpServeParams, UdpStats, serve_udp, udp_size_limit};
+pub use web::{WebBody, WebFuture, WebHandler, WebSlot};

@@ -682,6 +682,32 @@ pub async fn serve(
                 message: format!("read local address of {addr}: {e}"),
             })?,
     )?;
+    let router = prepare_router(&config, state).await?;
+    if config.tls {
+        let server_config = tls.ok_or_else(|| ControlApiError::Internal {
+            message: "control-api TLS is enabled but no TLS server config was provided".to_owned(),
+        })?;
+        serve_tls(listener, router, server_config).await
+    } else {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .map_err(|e| ControlApiError::Internal {
+            message: format!("serve: {e}"),
+        })
+    }
+}
+
+/// Builds the API [`axum::Router`] from the validated config: rate limiter, OIDC issuer and the
+/// derived MCP protected list. Shared by [`serve`] and the shared-DoH-listener path
+/// ([`handle_request`]).
+pub async fn prepare_router(
+    config: &ControlApiConfig,
+    state: AppState,
+) -> Result<axum::Router, ControlApiError> {
+    config.validate()?;
     // Build the rate limiter from the validated config so the trusted-proxy
     // list is honoured without the binary having to wire it manually.
     let state = state.with_rate_limiter(Arc::new(RateLimiter::new(
@@ -712,21 +738,27 @@ pub async fn serve(
         snapshot.as_ref(),
         oidc_issuer.as_deref(),
     )?;
-    let router = state.router();
-    if config.tls {
-        let server_config = tls.ok_or_else(|| ControlApiError::Internal {
-            message: "control-api TLS is enabled but no TLS server config was provided".to_owned(),
-        })?;
-        serve_tls(listener, router, server_config).await
-    } else {
-        axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        .map_err(|e| ControlApiError::Internal {
-            message: format!("serve: {e}"),
-        })
+    Ok(state.router())
+}
+
+/// Response body of [`handle_request`].
+pub type SharedBody = http_body_util::combinators::UnsyncBoxBody<
+    bytes::Bytes,
+    Box<dyn std::error::Error + Send + Sync>,
+>;
+
+/// Serves one request on a connection owned by another listener (the shared DoH listener), with the
+/// trusted TCP peer injected for the rate limiter exactly as in direct TLS mode.
+pub async fn handle_request(
+    router: axum::Router,
+    peer: SocketAddr,
+    mut req: Request<Incoming>,
+) -> axum::http::Response<SharedBody> {
+    use http_body_util::BodyExt as _;
+    req.extensions_mut().insert(ConnectInfo(peer));
+    match router.oneshot(req).await {
+        Ok(response) => response.map(|body| body.map_err(Into::into).boxed_unsync()),
+        Err(never) => match never {},
     }
 }
 

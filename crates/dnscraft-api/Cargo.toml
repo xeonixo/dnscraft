@@ -30,6 +30,8 @@ dnscraft-resolver = { path = "../dnscraft-resolver" }
 dnscraft-tls = { path = "../dnscraft-tls" }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
 openidconnect = { workspace = true }
 rcgen = { workspace = true }
 reqwest = { workspace = true }

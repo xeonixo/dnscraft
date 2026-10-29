@@ -237,6 +237,10 @@ pub struct ControlApiConfig {
     pub port: u16,
     /// Serve direct TLS via the `tls` module `CertResolver` (with self-signed bootstrap).
     pub tls: bool,
+    /// Id of a local DoH listener that also serves the web UI and API (non-`/dns-query` paths, private
+    /// sources only), so both share its address and port (typically `:443`). When set, `bind`/`port`
+    /// open no socket and the listener's TLS (the `tls` module certificate) terminates the connection.
+    pub shared_doh_listener: Option<String>,
     /// Reverse-proxy addresses allowed to set forwarded headers (used when `tls == false`).
     pub trusted_proxies: Vec<IpAddr>,
     /// Authentication settings.
@@ -255,6 +259,7 @@ impl Default for ControlApiConfig {
             bind: DEFAULT_BIND,
             port: DEFAULT_PORT,
             tls: true,
+            shared_doh_listener: None,
             trusted_proxies: Vec::new(),
             auth: AuthConfig::default(),
             query_log: QueryLogConfig::default(),
@@ -566,6 +571,7 @@ mod tests {
             bind: "127.0.0.1".parse().unwrap(),
             port: 8443,
             tls: false,
+            shared_doh_listener: Some("local-doh".into()),
             trusted_proxies: vec![
                 "192.0.2.10".parse().unwrap(),
                 "2001:db8::1".parse().unwrap(),

@@ -41,6 +41,7 @@ use crate::tls::{
     ListenerCertResolver, SniGate, TlsStats, apply_tls_handshake_strike, is_handshake_timeout,
     tcp_server_config, tls_acceptor, tls_handshake_timeout,
 };
+use crate::web::{WebBody, WebSlot};
 
 /// Counters for one DoH listener.
 #[derive(Debug, Default)]
@@ -102,6 +103,8 @@ pub struct DohServeParams<H: ?Sized> {
     pub event_sink: Option<Arc<dyn QueryEventSink>>,
     /// UDP port for `Alt-Svc` when [`ListenerConfig::h3`] (0 = omit until set).
     pub alt_svc_port: Arc<AtomicU16>,
+    /// Serves non-DoH paths for private sources on a local listener (web UI / API); empty → `404`.
+    pub web: Arc<WebSlot>,
     /// Bound address (port 0 friendly).
     pub bound: oneshot::Sender<SocketAddr>,
     /// Set to `true` to stop accepting.
@@ -123,6 +126,8 @@ pub(crate) struct DohShared<H: ?Sized> {
     pub(crate) per_source: Mutex<HashMap<IpAddr, u32>>,
     pub(crate) event_sink: Option<Arc<dyn QueryEventSink>>,
     pub(crate) alt_svc_port: Arc<AtomicU16>,
+    /// Web UI / API hand-off (HTTP/1.1 and HTTP/2 only).
+    pub(crate) web: Arc<WebSlot>,
     /// Listener shutdown signal (graceful connection drain).
     pub(crate) shutdown: watch::Receiver<bool>,
 }
@@ -154,6 +159,7 @@ where
         sni_gate,
         event_sink,
         alt_svc_port,
+        web,
         bound,
         mut shutdown,
     } = params;
@@ -191,6 +197,7 @@ where
         per_source: Mutex::new(HashMap::new()),
         event_sink,
         alt_svc_port,
+        web,
         shutdown: shutdown.clone(),
     });
 
@@ -313,7 +320,6 @@ fn handle_accept<H>(
         let max_streams = shared.limits.max_queries_per_connection.max(1);
         let activity = Arc::new(ConnActivity::new(shared.clock.now()));
         let svc_shared = Arc::clone(&shared);
-        let peer_ip = peer.ip();
         let act = Arc::clone(&activity);
         let service = service_fn(move |req: Request<Incoming>| {
             let shared = Arc::clone(&svc_shared);
@@ -321,7 +327,7 @@ fn handle_accept<H>(
             let clock = Arc::clone(&svc_shared.clock);
             async move {
                 act.begin();
-                let resp = handle_http(shared, peer_ip, req).await;
+                let resp = route(shared, peer, req).await;
                 act.end(clock.as_ref());
                 Ok::<_, Infallible>(resp)
             }
@@ -450,6 +456,39 @@ pub(crate) fn release_per_source(per_source: &Mutex<HashMap<IpAddr, u32>>, sourc
             map.remove(&source);
         }
     }
+}
+
+/// Sends a non-DoH path from a private source on a local listener to the web handler (if any);
+/// everything else is DoH.
+async fn route<H>(
+    shared: Arc<DohShared<H>>,
+    peer: SocketAddr,
+    req: Request<Incoming>,
+) -> Response<WebBody>
+where
+    H: QueryHandler,
+{
+    if let Some(web) = shared.web.get()
+        && parse_doh_path(req.uri().path()) == DohPath::Other
+        && local_effective(&shared, peer.ip())
+    {
+        return web(peer, req).await;
+    }
+    handle_http(shared, peer.ip(), req).await.map(|body| {
+        body.map_err(|never| -> Box<dyn std::error::Error + Send + Sync> { match never {} })
+            .boxed_unsync()
+    })
+}
+
+/// `true` when the source gets local path rules: the web UI is never routed for public sources.
+fn local_effective<H: ?Sized>(shared: &DohShared<H>, peer: IpAddr) -> bool {
+    let class = shared
+        .admission
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .classify(peer);
+    shared.listener.exposure == Exposure::Local
+        && !public_client_id_required(Exposure::Local, class)
 }
 
 async fn handle_http<H>(

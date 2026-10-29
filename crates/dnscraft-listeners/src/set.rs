@@ -27,6 +27,7 @@ use crate::status::{ListenerStatus, ListenersStatus};
 use crate::tcp::{TcpServeParams, TcpStats, serve_tcp};
 use crate::tls::{PolicyClientIds, SniGate, TlsStats};
 use crate::udp::{UdpServeParams, UdpStats, serve_udp};
+use crate::web::WebSlot;
 
 /// Shared runtime for all configured listeners.
 pub struct ListenerSet<H: QueryHandler + ?Sized = PolicyEngine> {
@@ -37,6 +38,7 @@ pub struct ListenerSet<H: QueryHandler + ?Sized = PolicyEngine> {
     sink: Arc<dyn QueryEventSink>,
     admission: Arc<Mutex<Admission>>,
     ddr: Arc<RwLock<DdrEndpoints>>,
+    web: Arc<WebSlot>,
     public_domain: String,
     node_id: Option<NodeId>,
     inner: Mutex<Inner>,
@@ -173,6 +175,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             sink,
             admission,
             ddr,
+            web: Arc::default(),
             public_domain,
             node_id,
             inner: Mutex::new(Inner {
@@ -187,6 +190,11 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
         }
         set.refresh_ddr(&config);
         Ok(set)
+    }
+
+    /// Slot for the web UI / API handler served on local DoH listeners (empty → `404`).
+    pub fn web_slot(&self) -> Arc<WebSlot> {
+        Arc::clone(&self.web)
     }
 
     /// Rebinds only listeners whose [`ListenerConfig`] changed; unchanged keep sockets.
@@ -450,6 +458,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                         sni_gate: Arc::clone(&self.sni_gate),
                         event_sink: Some(Arc::clone(&self.sink)),
                         alt_svc_port: Arc::clone(&alt_svc_port),
+                        web: Arc::clone(&self.web),
                         bound: tcp_bound_tx,
                         shutdown: shutdown_rx,
                     }));
@@ -504,6 +513,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                         sni_gate: Arc::clone(&self.sni_gate),
                         event_sink: Some(Arc::clone(&self.sink)),
                         alt_svc_port,
+                        web: Arc::clone(&self.web),
                         bound: bound_tx,
                         shutdown: shutdown_rx,
                     }))

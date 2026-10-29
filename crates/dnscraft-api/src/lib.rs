@@ -84,7 +84,7 @@ pub use query_log::{
     ClientEnricher, ClientView, Order, OrderBy, QueryLog, QueryLogFilter, QueryLogPage,
     QueryLogSink,
 };
-pub use server::{AppState, Readiness, serve};
+pub use server::{AppState, Readiness, SharedBody, handle_request, prepare_router, serve};
 pub use stats::{
     CacheStats, FilterHits, ROLLUP_RETENTION_DAYS, RollupRow, RollupWindow, RuleHits,
     StatsOverview, StatsScope, TOP_CLIENTS_MAX, TOP_DOMAINS_MAX, TopBy, TopClient, TopClients,

@@ -154,6 +154,7 @@ where
         per_source: Mutex::new(HashMap::new()),
         event_sink,
         alt_svc_port,
+        web: Arc::default(),
         shutdown: shutdown.clone(),
     });
     let shared = Arc::new(DohH3Shared {

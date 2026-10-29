@@ -572,6 +572,7 @@ mod tests {
             bind: "10.1.2.3".parse().unwrap(),
             port: 9000,
             tls: false,
+            shared_doh_listener: Some("local-doh".into()),
             trusted_proxies: vec!["192.0.2.10".parse().unwrap()],
             auth: AuthConfig {
                 oidc_enabled: false,

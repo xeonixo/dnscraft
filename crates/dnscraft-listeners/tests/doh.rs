@@ -15,7 +15,7 @@ use bytes::Bytes;
 use dnscraft_listeners::{
     DNS_MESSAGE_TYPE, DohPath, DohServeParams, DohStats, DohWireError, Exposure, FakeHandler,
     Limits, ListenerConfig, MAX_DOH_PAYLOAD, PAD_BLOCK, PolicyClientIds, Protocol, PublicConfig,
-    QueryHandler, SniGate, SystemClock, TcpServeParams, TcpStats, TlsStats, cache_max_age,
+    QueryHandler, SniGate, SystemClock, TcpServeParams, TcpStats, TlsStats, WebSlot, cache_max_age,
     extract_wire, parse_doh_path, read_frame, serve_doh, serve_tcp, write_frame,
 };
 use dnscraft_policy::ListenerId;
@@ -146,6 +146,17 @@ impl DohHarness {
         certs: Arc<CertResolver>,
         handler: Arc<H>,
     ) -> Self {
+        Self::spawn_web(exposure, limits, gate, certs, handler, Arc::default()).await
+    }
+
+    async fn spawn_web<H: QueryHandler + 'static>(
+        exposure: Exposure,
+        limits: Limits,
+        gate: SniGate,
+        certs: Arc<CertResolver>,
+        handler: Arc<H>,
+        web: Arc<WebSlot>,
+    ) -> Self {
         let stats = Arc::new(DohStats::default());
         let tls_stats = Arc::new(TlsStats::default());
         let (bound_tx, bound_rx) = oneshot::channel();
@@ -171,6 +182,7 @@ impl DohHarness {
             sni_gate: Arc::new(gate),
             event_sink: None,
             alt_svc_port: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0)),
+            web,
             bound: bound_tx,
             shutdown: shutdown_rx,
         }));
@@ -1005,4 +1017,75 @@ async fn shutdown_drains_inflight_doh_request() {
         .expect("serve loop joins after drain")
         .unwrap()
         .unwrap();
+}
+
+/// Serves `web` for every request it receives.
+fn web_slot() -> Arc<WebSlot> {
+    let slot = Arc::new(WebSlot::default());
+    assert!(slot.set(Arc::new(|_peer, _req| {
+        Box::pin(async {
+            http::Response::new(
+                Full::new(Bytes::from_static(b"web"))
+                    .map_err(|n| match n {})
+                    .boxed_unsync(),
+            )
+        })
+    })));
+    slot
+}
+
+async fn web_harness(exposure: Exposure, web: Arc<WebSlot>) -> DohHarness {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+    let answer = fake_a_answer(Ipv4Addr::new(192, 0, 2, 44));
+    DohHarness::spawn_web(
+        exposure,
+        Limits::default(),
+        gate,
+        certs,
+        Arc::new(FakeHandler::new(answer)),
+        web,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn local_listener_hands_non_doh_paths_to_the_web_handler_over_h1_and_h2() {
+    let h = web_harness(Exposure::Local, web_slot()).await;
+    let (status, _, body) = doh_exchange_h1(h.addr, get_req("/")).await;
+    assert_eq!((status, &body[..]), (StatusCode::OK, &b"web"[..]));
+    let (status, _, body) = doh_exchange_h2(h.addr, get_req("/api/v1/overview")).await;
+    assert_eq!((status, &body[..]), (StatusCode::OK, &b"web"[..]));
+    // DoH paths stay DNS: a GET without `dns=` is a DoH error, never the web handler.
+    let (status, _, body) = doh_exchange_h1(h.addr, get_req("/dns-query")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_ne!(&body[..], b"web");
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn without_a_web_handler_non_doh_paths_stay_404() {
+    let h = web_harness(Exposure::Local, Arc::default()).await;
+    let (status, _, _) = doh_exchange_h1(h.addr, get_req("/")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn public_listener_never_routes_the_web_handler() {
+    let h = web_harness(Exposure::Public, web_slot()).await;
+    let (status, _, body) = doh_exchange_h1(h.addr, get_req("/")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_ne!(&body[..], b"web");
+    h.stop().await;
 }

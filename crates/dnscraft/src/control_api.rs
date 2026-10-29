@@ -84,9 +84,12 @@ pub(crate) async fn start(
         )
     })?;
 
+    let shared_port = shared_listener_port(config, &api_config)?;
     let hostname = api_hostname(config);
     let mut mcp_config = api_config.mcp.clone();
-    mcp_config.allowed_origins = api_origin(&api_config, &hostname).into_iter().collect();
+    mcp_config.allowed_origins = api_origin(&api_config, shared_port, &hostname)
+        .into_iter()
+        .collect();
     // `serve` rebuilds `AppState::mcp_config` from `config.mcp`, so persist the
     // derived origin there as well as giving the backend its own copy.
     config.control_api.mcp = mcp_config.clone();
@@ -266,6 +269,25 @@ pub(crate) async fn start(
     });
 
     let serve_config = config.control_api.clone();
+    if shared_port.is_some() {
+        // No own socket: the DoH listener hands non-DNS paths of private sources to this router.
+        let router = dnscraft_api::prepare_router(&serve_config, state)
+            .await
+            .map_err(|error| {
+                Error::startup(
+                    "dnscraft.startup.control_api",
+                    format!("control-api: {error}"),
+                )
+            })?;
+        set.web_slot().set(Arc::new(move |peer, req| {
+            Box::pin(dnscraft_api::handle_request(router.clone(), peer, req))
+        }));
+        return Ok(ControlApi {
+            task: None,
+            cluster: cluster_runtime,
+            backup,
+        });
+    }
     let mut task = tokio::spawn(async move {
         match dnscraft_api::serve(serve_config, state, tls_server_config).await {
             Ok(()) => Ok(()),
@@ -431,17 +453,50 @@ fn api_hostname(config: &Config) -> String {
 
 /// The browser origin the API listener is reached at, if it has a public name.
 ///
-/// Direct TLS on a non-443 port includes the port (an `Origin` header always
+/// `shared_port` is the port of the shared DoH listener, if the API rides on one. Direct TLS on a non-443 port includes the port (an `Origin` header always
 /// carries it); reverse-proxy mode is reached on the proxy's 443.
-fn api_origin(api: &dnscraft_api::ControlApiConfig, hostname: &str) -> Option<String> {
+fn api_origin(
+    api: &dnscraft_api::ControlApiConfig,
+    shared_port: Option<u16>,
+    hostname: &str,
+) -> Option<String> {
     if hostname.eq_ignore_ascii_case("localhost") {
         return None;
     }
-    Some(if api.tls && api.port != 443 {
-        format!("https://{hostname}:{}", api.port)
+    let port = shared_port.unwrap_or(api.port);
+    Some(if api.tls && port != 443 {
+        format!("https://{hostname}:{port}")
     } else {
         format!("https://{hostname}")
     })
+}
+
+/// Port of the DoH listener the API shares (`control_api.shared_doh_listener`), `None` when the API
+/// binds its own port. The listener must exist, speak DoH and be local: the web UI is never routed
+/// on a public listener.
+fn shared_listener_port(
+    config: &Config,
+    api: &dnscraft_api::ControlApiConfig,
+) -> Result<Option<u16>, Error> {
+    let Some(id) = api.shared_doh_listener.as_deref() else {
+        return Ok(None);
+    };
+    let fail = |message: String| Error::startup("dnscraft.startup.control_api", message);
+    let listener = config
+        .listeners
+        .iter()
+        .find(|listener| listener.id == id)
+        .ok_or_else(|| {
+            fail(format!(
+                "control_api.shared_doh_listener: no listener `{id}`"
+            ))
+        })?;
+    if listener.protocol != "doh" || listener.exposure != "local" {
+        return Err(fail(format!(
+            "control_api.shared_doh_listener: `{id}` must be a local DoH listener"
+        )));
+    }
+    Ok(Some(listener.address.port()))
 }
 
 /// Seeds the `break-glass` admin from `DNSCRAFT_ADMIN_PASSWORD_FILE` on a fresh
@@ -495,21 +550,37 @@ mod tests {
 
     #[test]
     fn origin_includes_the_direct_tls_port_but_not_the_proxy_443() {
-        let mut api = dnscraft_api::ControlApiConfig::default();
+        let mut api = dnscraft_api::ControlApiConfig {
+            port: 8080,
+            ..Default::default()
+        };
         assert_eq!(
-            api_origin(&api, "dns.example.com").as_deref(),
+            api_origin(&api, None, "dns.example.com").as_deref(),
             Some("https://dns.example.com:8080")
         );
         api.port = 443;
         assert_eq!(
-            api_origin(&api, "dns.example.com").as_deref(),
+            api_origin(&api, None, "dns.example.com").as_deref(),
             Some("https://dns.example.com")
         );
         api.tls = false;
         assert_eq!(
-            api_origin(&api, "dns.example.com").as_deref(),
+            api_origin(&api, None, "dns.example.com").as_deref(),
             Some("https://dns.example.com")
         );
-        assert_eq!(api_origin(&api, "localhost"), None);
+        assert_eq!(api_origin(&api, None, "localhost"), None);
+    }
+
+    #[test]
+    fn origin_uses_the_shared_listener_port() {
+        let api = dnscraft_api::ControlApiConfig::default();
+        assert_eq!(
+            api_origin(&api, Some(443), "dns.example.com").as_deref(),
+            Some("https://dns.example.com")
+        );
+        assert_eq!(
+            api_origin(&api, Some(8453), "dns.example.com").as_deref(),
+            Some("https://dns.example.com:8453")
+        );
     }
 }

@@ -99,6 +99,7 @@ impl DohH3Harness {
             sni_gate: Arc::clone(&gate),
             event_sink: None,
             alt_svc_port: Arc::clone(&alt_svc_port),
+            web: Arc::default(),
             bound: tcp_tx,
             shutdown: shutdown_rx.clone(),
         })));
