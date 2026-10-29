@@ -59,8 +59,8 @@ use crate::quota::QuotaLimiter;
 use crate::relay::{RuntimeCommand, WriteExecutor, WriteRelay};
 use crate::store::ClusterStore;
 use crate::sync::{
-    AuthSnapshotPush, ClientsDirectoryPush, ConfigAck, ConfigSync, Hello, SecretPush, StreamError,
-    StreamRecord, TlsRenewed,
+    AuthSnapshotPush, CAP_CLOUDFLARE_TOKEN, ClientsDirectoryPush, ConfigAck, ConfigSync, Hello,
+    SecretPush, StreamError, StreamRecord, TlsRenewed,
 };
 
 /// Request header carrying the sub-node's cluster protocol version.
@@ -130,6 +130,15 @@ pub struct TlsCsrResponse {
 pub trait AuthSnapshotSource: Send + Sync {
     /// Returns the serialized [`crate::AuthSnapshotPush`] payload.
     async fn snapshot(&self) -> Result<serde_json::Value, ClusterError>;
+}
+
+/// Master hook that yields the Cloudflare API token a connecting node should
+/// hold. `None` when the node must not get one (no enabled DynDNS profile for
+/// it, DynDNS off, or no token set).
+#[async_trait::async_trait]
+pub trait CloudflareTokenSource: Send + Sync {
+    /// The token for `node_id`, if it is entitled to one.
+    async fn token_for(&self, node_id: &str) -> Option<String>;
 }
 
 /// Bootstrap configuration for the master's cluster listener.
@@ -270,6 +279,15 @@ impl ClusterBroadcast {
         );
     }
 
+    /// Pushes (`Some`) or clears (`None`) the Cloudflare token on one node.
+    ///
+    /// Only nodes that advertised [`CAP_CLOUDFLARE_TOKEN`] get it (an older
+    /// node would drop the stream on the unknown record); a clear only reaches
+    /// nodes that were sent a token. Returns whether a record was queued.
+    pub fn push_cloudflare_token(&self, node_id: &str, token: Option<&str>) -> bool {
+        self.config_sync.send_cloudflare_token(node_id, token)
+    }
+
     /// Fans a UniFi directory snapshot to every connected node.
     ///
     /// Receivers ignore profiles they are not bound to.
@@ -303,6 +321,7 @@ pub struct ClusterServer {
     clock: Arc<dyn Clock>,
     config_apply_timeout: Duration,
     tls_signer: Arc<OnceLock<Arc<dyn TlsCsrSigner>>>,
+    cloudflare_source: Arc<OnceLock<Arc<dyn CloudflareTokenSource>>>,
     shutdown: watch::Sender<bool>,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -360,6 +379,8 @@ impl ClusterServer {
         let config_sync = ConfigSync::start(clock.clone(), shutdown_rx.clone());
         let config_apply_timeout = config.timing.config_apply_timeout;
         let tls_signer: Arc<OnceLock<Arc<dyn TlsCsrSigner>>> = Arc::new(OnceLock::new());
+        let cloudflare_source: Arc<OnceLock<Arc<dyn CloudflareTokenSource>>> =
+            Arc::new(OnceLock::new());
 
         let state = Arc::new(ServerState {
             ca,
@@ -368,6 +389,7 @@ impl ClusterServer {
             node_cert_ttl: config.node_cert_ttl,
             config_apply_timeout,
             tls_signer: Arc::clone(&tls_signer),
+            cloudflare_source: Arc::clone(&cloudflare_source),
             config_sync: Arc::clone(&config_sync),
             quotas: QuotaLimiter::new(config.quota),
             write_executor,
@@ -458,6 +480,7 @@ impl ClusterServer {
             clock,
             config_apply_timeout,
             tls_signer,
+            cloudflare_source,
             shutdown,
             handle: Some(handle),
         })
@@ -531,6 +554,11 @@ impl ClusterServer {
         let _ = self.tls_signer.set(signer);
     }
 
+    /// Attaches the source consulted when a capable node (re)connects.
+    pub fn attach_cloudflare_source(&self, source: Arc<dyn CloudflareTokenSource>) {
+        let _ = self.cloudflare_source.set(source);
+    }
+
     /// Broadcasts an encrypted auth snapshot to every connected node.
     ///
     /// Best-effort: offline nodes reconcile from the master's next snapshot.
@@ -564,6 +592,7 @@ struct ServerState {
     node_cert_ttl: Duration,
     config_apply_timeout: Duration,
     tls_signer: Arc<OnceLock<Arc<dyn TlsCsrSigner>>>,
+    cloudflare_source: Arc<OnceLock<Arc<dyn CloudflareTokenSource>>>,
     config_sync: Arc<ConfigSync>,
     quotas: QuotaLimiter,
     write_executor: Arc<dyn WriteExecutor>,
@@ -740,11 +769,7 @@ async fn heartbeat(
         return error_response(&quota_exceeded(&auth.0, "heartbeat"));
     }
     let remote = peer_addr.map(|Extension(PeerSocketAddr(addr))| addr.to_string());
-    if let Err(error) = state
-        .store
-        .mark_seen(&auth.0, remote.as_deref())
-        .await
-    {
+    if let Err(error) = state.store.mark_seen(&auth.0, remote.as_deref()).await {
         return error_response(&error);
     }
     if let Some(version) = request.applied_version
@@ -855,15 +880,17 @@ async fn stream(
     }
 
     let remote = peer_addr.map(|Extension(PeerSocketAddr(addr))| addr.to_string());
-    if let Err(error) = state
-        .store
-        .mark_seen(&auth.0, remote.as_deref())
-        .await
-    {
+    if let Err(error) = state.store.mark_seen(&auth.0, remote.as_deref()).await {
         return error_response(&error);
     }
 
-    let last_applied_version = hello.as_ref().and_then(|hello| hello.last_applied_version);    let (records, mut record_rx) = mpsc::channel::<StreamRecord>(8);
+    let last_applied_version = hello.as_ref().and_then(|hello| hello.last_applied_version);
+    let capabilities = hello
+        .as_ref()
+        .map(|hello| hello.capabilities.clone())
+        .unwrap_or_default();
+    let wants_cloudflare = capabilities.iter().any(|c| c == CAP_CLOUDFLARE_TOKEN);
+    let (records, mut record_rx) = mpsc::channel::<StreamRecord>(8);
     // Backfill cursor: the sub-node resumes logging from this + 1.
     let master_highest_log_seq = state
         .log_ingest
@@ -875,6 +902,7 @@ async fn stream(
         node_id: auth.0.clone(),
         last_applied_version: state.config_sync.current_version(),
         last_acked_log_seq: Some(master_highest_log_seq),
+        capabilities: Vec::new(),
     }));
     // Reconcile auth on every (re)connection: the change watcher alone means a
     // node that was offline across a revocation would keep the stale snapshot.
@@ -887,9 +915,18 @@ async fn stream(
             snapshot,
         }));
     }
-    let generation = state
-        .config_sync
-        .register(&auth.0, last_applied_version, records);
+    let generation =
+        state
+            .config_sync
+            .register(&auth.0, last_applied_version, capabilities, records);
+    if wants_cloudflare
+        && let Some(source) = state.cloudflare_source.get()
+        && let Some(token) = source.token_for(&auth.0).await
+    {
+        state
+            .config_sync
+            .send_cloudflare_token(&auth.0, Some(&token));
+    }
 
     let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(8);
     let config_sync = Arc::clone(&state.config_sync);

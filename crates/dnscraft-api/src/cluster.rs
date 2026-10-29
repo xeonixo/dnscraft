@@ -1518,6 +1518,9 @@ impl ClusterRuntime {
 
         // Let the master's runtime-command endpoints push to connected nodes.
         state.attach_cluster_broadcast(server.broadcast_handle());
+        server.attach_cloudflare_source(Arc::new(crate::cloudflare_secrets::StateTokenSource(
+            state.clone(),
+        )));
 
         let (version, snapshot) = service.current().await?;
         self.status.set(ClusterStatus {
@@ -1544,6 +1547,7 @@ impl ClusterRuntime {
         let change_clock = clock.clone();
         let mut shutdown = self.shutdown.subscribe();
         let change_service = Arc::clone(&service);
+        let cf_state = state.clone();
         // Subscribe before spawning: a send that races the task start would
         // otherwise be folded into the receiver's initial value and missed.
         let mut changes = change_service.subscribe();
@@ -1557,6 +1561,8 @@ impl ClusterRuntime {
                         let Ok((Some(version), Some(snapshot))) = change_service.current().await else {
                             continue;
                         };
+                        // A DynDNS profile may have been enabled/disabled.
+                        crate::cloudflare_secrets::sync_to_nodes(&cf_state).await;
                         if sync.publish(version, &snapshot).is_ok() {
                             let lag = sync.lag().iter().map(|node| node.lag).max().unwrap_or(0);
                             status.update(|status| {
@@ -2103,6 +2109,9 @@ async fn run_sub_node_loop(
                         if let Some(dir) = state.client_directory() {
                             dir.set_api_key(push.api_key.clone());
                         }
+                    }
+                    Ok(StreamRecord::CloudflareTokenPush(push)) => {
+                        crate::cloudflare_secrets::apply_pushed(&state, push.token).await;
                     }
                     Ok(StreamRecord::ClientsDirectoryPush(push)) => {
                         if let Some(dir) = state.client_directory()

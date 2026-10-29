@@ -113,6 +113,35 @@ pub struct Hello {
     /// Highest contiguous log sequence the master has acknowledged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_acked_log_seq: Option<u64>,
+    /// Optional stream features the sender understands (see [`CAP_CLOUDFLARE_TOKEN`]).
+    ///
+    /// Absent on older nodes: the master never sends a record type a node did
+    /// not advertise, because an unknown record ends that node's stream.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
+/// Capability: the node accepts [`CloudflareTokenPush`] records.
+pub const CAP_CLOUDFLARE_TOKEN: &str = "cloudflare_token";
+
+/// Master → DynDNS sub-node Cloudflare API token (`cloudflare_token_push`).
+///
+/// Never appears in config snapshots, acks, status or logs. Debug redacts it.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct CloudflareTokenPush {
+    /// Cluster protocol version.
+    pub protocol: u32,
+    /// Token plaintext, or `null` to clear.
+    pub token: Option<String>,
+}
+
+impl fmt::Debug for CloudflareTokenPush {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CloudflareTokenPush")
+            .field("protocol", &self.protocol)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// Master → sub-node full-snapshot push (`config_push`).
@@ -282,6 +311,8 @@ pub enum StreamRecord {
     RuntimeCommand(RuntimeCommand),
     /// UniFi API key for the profile's sync_owner only.
     SecretPush(SecretPush),
+    /// Cloudflare API token for DynDNS nodes (capability-gated).
+    CloudflareTokenPush(CloudflareTokenPush),
     /// UniFi directory snapshot for nodes bound to a profile.
     ClientsDirectoryPush(ClientsDirectoryPush),
     /// Terminal stream error.
@@ -355,6 +386,8 @@ struct SyncState {
     current: Option<Arc<ConfigPush>>,
     nodes: HashMap<String, NodeSync>,
     next_generation: u64,
+    /// Nodes that were sent a Cloudflare token (so a clear can reach them).
+    cloudflare_sent: std::collections::HashSet<String>,
 }
 
 struct NodeSync {
@@ -362,6 +395,7 @@ struct NodeSync {
     /// remove a newer registration for the same node.
     generation: u64,
     tx: mpsc::Sender<StreamRecord>,
+    capabilities: Vec<String>,
     pushed_version: i64,
     acked_version: i64,
     pending: Option<Arc<ConfigPush>>,
@@ -491,6 +525,7 @@ impl ConfigSync {
         &self,
         node_id: &str,
         last_applied_version: Option<i64>,
+        capabilities: Vec<String>,
         tx: mpsc::Sender<StreamRecord>,
     ) -> u64 {
         let now = self.clock.now();
@@ -501,6 +536,7 @@ impl ConfigSync {
         let mut node = NodeSync {
             generation,
             tx,
+            capabilities,
             pushed_version: applied,
             acked_version: applied,
             pending: None,
@@ -562,6 +598,35 @@ impl ConfigSync {
         if let Some(node) = self.lock().nodes.get(node_id) {
             let _ = node.tx.try_send(record);
         }
+    }
+
+    /// Sends the Cloudflare token (or a clear) to `node_id` if it advertised
+    /// [`CAP_CLOUDFLARE_TOKEN`]. A clear only goes to nodes that were sent a
+    /// token before. Returns whether a record was queued.
+    pub(crate) fn send_cloudflare_token(&self, node_id: &str, token: Option<&str>) -> bool {
+        let mut state = self.lock();
+        let Some(node) = state.nodes.get(node_id) else {
+            return false;
+        };
+        if !node.capabilities.iter().any(|c| c == CAP_CLOUDFLARE_TOKEN) {
+            return false;
+        }
+        if token.is_none() && !state.cloudflare_sent.contains(node_id) {
+            return false;
+        }
+        let record = StreamRecord::CloudflareTokenPush(CloudflareTokenPush {
+            protocol: crate::PROTOCOL_VERSION,
+            token: token.map(str::to_owned),
+        });
+        let queued = node.tx.try_send(record).is_ok();
+        if queued {
+            if token.is_some() {
+                state.cloudflare_sent.insert(node_id.to_owned());
+            } else {
+                state.cloudflare_sent.remove(node_id);
+            }
+        }
+        queued
     }
 
     fn lock(&self) -> MutexGuard<'_, SyncState> {
@@ -668,6 +733,7 @@ mod tests {
             node_id: "node-a".to_owned(),
             last_applied_version: Some(3),
             last_acked_log_seq: Some(7),
+            capabilities: Vec::new(),
         });
         let line = serde_json::to_string(&hello).unwrap();
         assert!(line.starts_with(r#"{"type":"hello""#));
@@ -778,8 +844,8 @@ mod tests {
         };
         let (old_tx, _old_rx) = mpsc::channel(8);
         let (new_tx, mut new_rx) = mpsc::channel(8);
-        let old_generation = sync.register("node-b", Some(0), old_tx);
-        sync.register("node-b", Some(0), new_tx);
+        let old_generation = sync.register("node-b", Some(0), Vec::new(), old_tx);
+        sync.register("node-b", Some(0), Vec::new(), new_tx);
 
         // The old stream notices its disconnect after the reconnect registered.
         sync.unregister("node-b", old_generation);
@@ -801,7 +867,7 @@ mod tests {
             wake: Notify::new(),
         };
         let (tx, _rx) = mpsc::channel(8);
-        sync.register("node-a", Some(0), tx);
+        sync.register("node-a", Some(0), Vec::new(), tx);
         sync.publish(1, &json!({ "a": 1 })).unwrap();
         let timeout = Duration::from_secs(30);
 
@@ -816,5 +882,78 @@ mod tests {
         // A full ack clears the degradation.
         sync.ack("node-a", 2);
         assert!(sync.degraded_nodes(timeout).is_empty());
+    }
+    #[test]
+    fn cloudflare_token_push_debug_redacts_and_round_trips() {
+        let record = StreamRecord::CloudflareTokenPush(CloudflareTokenPush {
+            protocol: crate::PROTOCOL_VERSION,
+            token: Some("cf-secret-token".to_owned()),
+        });
+        let rendered = format!("{record:?}");
+        assert!(!rendered.contains("cf-secret-token"));
+        assert!(rendered.contains("<redacted>"));
+        let line = serde_json::to_string(&record).unwrap();
+        assert!(line.starts_with(r#"{"type":"cloudflare_token_push""#));
+        assert_eq!(serde_json::from_str::<StreamRecord>(&line).unwrap(), record);
+    }
+
+    #[test]
+    fn old_hello_without_capabilities_parses_and_new_one_omits_empty() {
+        let old = r#"{"type":"hello","protocol":1,"node_id":"n"}"#;
+        match serde_json::from_str::<StreamRecord>(old).unwrap() {
+            StreamRecord::Hello(hello) => assert!(hello.capabilities.is_empty()),
+            other => panic!("unexpected {other:?}"),
+        }
+        let hello = StreamRecord::Hello(Hello {
+            protocol: 1,
+            node_id: "n".to_owned(),
+            last_applied_version: None,
+            last_acked_log_seq: None,
+            capabilities: Vec::new(),
+        });
+        assert!(
+            !serde_json::to_string(&hello)
+                .unwrap()
+                .contains("capabilities")
+        );
+    }
+
+    #[tokio::test]
+    async fn cloudflare_token_goes_only_to_capable_nodes_and_clear_only_after_a_send() {
+        let clock = Arc::new(dnscraft_common::clock::ManualClock::new(
+            SystemTime::UNIX_EPOCH,
+        ));
+        let (_shutdown, rx) = watch::channel(false);
+        let sync = ConfigSync::start(clock, rx);
+        let (old_tx, mut old_rx) = mpsc::channel(8);
+        let (new_tx, mut new_rx) = mpsc::channel(8);
+        sync.register("old", None, Vec::new(), old_tx);
+        sync.register("new", None, vec![CAP_CLOUDFLARE_TOKEN.to_owned()], new_tx);
+
+        // An old node (no capability) must never get the unknown record.
+        assert!(!sync.send_cloudflare_token("old", Some("t")));
+        assert!(old_rx.try_recv().is_err());
+
+        // A clear before any send is a no-op.
+        assert!(!sync.send_cloudflare_token("new", None));
+        assert!(new_rx.try_recv().is_err());
+
+        assert!(sync.send_cloudflare_token("new", Some("t")));
+        assert!(matches!(
+            new_rx.try_recv(),
+            Ok(StreamRecord::CloudflareTokenPush(CloudflareTokenPush {
+                token: Some(_),
+                ..
+            }))
+        ));
+        assert!(sync.send_cloudflare_token("new", None));
+        assert!(matches!(
+            new_rx.try_recv(),
+            Ok(StreamRecord::CloudflareTokenPush(CloudflareTokenPush {
+                token: None,
+                ..
+            }))
+        ));
+        assert!(!sync.send_cloudflare_token("new", None));
     }
 }

@@ -2776,3 +2776,237 @@ async fn sub_node_requests_a_certificate_on_connect_when_it_has_none() {
     node.shutdown().await;
     master.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Cloudflare token push (master -> DynDNS sub-nodes)
+// ---------------------------------------------------------------------------
+
+const CF_KV: &str = "tls.cloudflare.api_token";
+const CF_TOKEN: &str = "cf-token-do-not-leak";
+
+/// Records every `set_cloudflare_token` call (`Some(len)` / `None`).
+#[derive(Default)]
+struct RecordingAdmin {
+    calls: Mutex<Vec<Option<String>>>,
+}
+
+impl RecordingAdmin {
+    fn calls(&self) -> Vec<Option<String>> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl dnscraft_api::TlsAdmin for RecordingAdmin {
+    fn upload_manual_cert(
+        &self,
+        _: &str,
+        _: &Secret,
+        _: Option<&str>,
+    ) -> dnscraft_api::TlsActionFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
+    fn revoke(&self, _: &str) -> dnscraft_api::TlsActionFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
+    fn rotate_key(&self) -> dnscraft_api::TlsActionFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
+    fn renew_now(&self) -> dnscraft_api::TlsActionFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
+    fn dyndns_now(&self) -> dnscraft_api::TlsValueFuture<'_> {
+        Box::pin(async { Ok(json!(null)) })
+    }
+    fn preflight(&self) -> dnscraft_api::TlsValueFuture<'_> {
+        Box::pin(async { Ok(json!(null)) })
+    }
+    fn export_cert(&self) -> Result<String, ControlApiError> {
+        Ok(String::new())
+    }
+    fn account_status(&self) -> dnscraft_api::TlsValueFuture<'_> {
+        Box::pin(async { Ok(json!(null)) })
+    }
+    fn order_status(&self) -> Result<Value, ControlApiError> {
+        Ok(json!(null))
+    }
+    fn record_inventory(&self) -> dnscraft_api::TlsValueFuture<'_> {
+        Box::pin(async { Ok(json!(null)) })
+    }
+    fn dyndns_audit(&self) -> dnscraft_api::TlsValueFuture<'_> {
+        Box::pin(async { Ok(json!(null)) })
+    }
+    fn set_cloudflare_token(&self, token: Option<Secret>) -> dnscraft_api::TlsActionFuture<'_> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(token.map(|t| t.expose().to_owned()));
+        Box::pin(async { Ok(()) })
+    }
+}
+
+fn dyndns_snapshot(enabled: bool, node: &str) -> Value {
+    let mut snap = snapshot("cf");
+    snap["tls"] = json!({ "dyndns": {
+        "enabled": enabled,
+        "nodes": [{ "node_id": node, "hostname": "ns.example.org", "enabled": true }],
+    }});
+    snap
+}
+
+struct CfCluster {
+    master: ClusterRuntime,
+    node: ClusterRuntime,
+    master_service: Arc<ConfigService>,
+    node_db: Db,
+    node_status: Arc<ClusterStatusHandle>,
+    admin: Arc<RecordingAdmin>,
+    _dirs: (TempDir, TempDir),
+}
+
+async fn cf_cluster(label: &str, snap: Value, master_token: Option<&str>) -> CfCluster {
+    let master_dir = TempDir::new(&format!("{label}-master"));
+    let node_dir = TempDir::new(&format!("{label}-node"));
+    let clock = Arc::new(ClusterClock::new(SystemTime::now()));
+
+    let (master_service, master_db) = service("master", ModuleAppliers::default()).await;
+    if let Some(token) = master_token {
+        master_db.kv_set(CF_KV, token).await.unwrap();
+    }
+    master_service
+        .replace(snap, &ConfigActor::local(), None)
+        .await
+        .unwrap();
+    let master_status = Arc::new(ClusterStatusHandle::new());
+    let master_state = AppState::new()
+        .with_config_service(Arc::clone(&master_service))
+        .with_cluster_status(master_status.clone())
+        .with_db(master_db);
+    let mut master_options = ClusterRuntimeOptions::new(master_dir.path());
+    master_options.clock = clock.clone();
+    master_options.status = master_status;
+    let master = ClusterRuntime::start(
+        master_config(master_dir.path()),
+        &master_state,
+        master_options,
+    )
+    .await
+    .unwrap();
+
+    let url = format!("https://{}", master.listen_addr().unwrap());
+    let server_cert = master.server_cert_pem().unwrap().to_owned();
+    let token = master
+        .cluster_store()
+        .unwrap()
+        .mint_join_token("node-b")
+        .await
+        .unwrap();
+
+    let (node_service, node_db) = service("node-b", ModuleAppliers::default()).await;
+    let node_status = Arc::new(ClusterStatusHandle::new());
+    let admin = Arc::new(RecordingAdmin::default());
+    let node_state = AppState::new()
+        .with_config_service(Arc::clone(&node_service))
+        .with_cluster_status(node_status.clone())
+        .with_db(node_db.clone())
+        .with_tls_admin(admin.clone());
+    let mut node_options = ClusterRuntimeOptions::new(node_dir.path());
+    node_options.clock = clock;
+    node_options.status = node_status.clone();
+    node_options.join_token = Some(Secret::new(token.expose()));
+    node_options.master_cert_pem = Some(server_cert);
+    let node = ClusterRuntime::start(
+        sub_node_config(node_dir.path(), &url),
+        &node_state,
+        node_options,
+    )
+    .await
+    .unwrap();
+    CfCluster {
+        master,
+        node,
+        master_service,
+        node_db,
+        node_status,
+        admin,
+        _dirs: (master_dir, node_dir),
+    }
+}
+
+impl CfCluster {
+    /// Waits until the node applied config version `v` (its stream is live).
+    async fn converged(&self, v: i64) {
+        for _ in 0..20_000 {
+            if self.node_status.status().and_then(|s| s.applied_version) == Some(v) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("node did not converge to version {v}");
+    }
+
+    async fn stored(&self) -> Option<String> {
+        self.node_db.kv_get(CF_KV).await.unwrap()
+    }
+
+    async fn shutdown(self) {
+        self.node.shutdown().await;
+        self.master.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn cloudflare_token_reaches_a_dyndns_sub_node_and_a_disable_clears_it() {
+    let c = cf_cluster("cf-push", dyndns_snapshot(true, "node-b"), Some(CF_TOKEN)).await;
+    for _ in 0..20_000 {
+        if c.stored().await.is_some() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(c.stored().await.as_deref(), Some(CF_TOKEN));
+    assert_eq!(c.admin.calls(), vec![Some(CF_TOKEN.to_owned())]);
+    let status = format!("{:?}", c.node_status.status());
+    assert!(!status.contains(CF_TOKEN));
+
+    // Disabling DynDNS in the synced config clears the node's copy.
+    c.master_service
+        .replace(
+            dyndns_snapshot(false, "node-b"),
+            &ConfigActor::local(),
+            None,
+        )
+        .await
+        .unwrap();
+    for _ in 0..20_000 {
+        if c.stored().await.is_none() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(c.stored().await, None);
+    assert_eq!(c.admin.calls().last(), Some(&None));
+    c.shutdown().await;
+}
+
+#[tokio::test]
+async fn cloudflare_token_is_not_sent_to_a_node_without_an_enabled_profile() {
+    let c = cf_cluster(
+        "cf-noprofile",
+        dyndns_snapshot(true, "other"),
+        Some(CF_TOKEN),
+    )
+    .await;
+    c.converged(1).await;
+    assert_eq!(c.stored().await, None);
+    assert!(c.admin.calls().is_empty());
+    c.shutdown().await;
+}
+
+#[tokio::test]
+async fn cloudflare_token_is_not_sent_when_the_master_has_none() {
+    let c = cf_cluster("cf-notoken", dyndns_snapshot(true, "node-b"), None).await;
+    c.converged(1).await;
+    assert_eq!(c.stored().await, None);
+    assert!(c.admin.calls().is_empty());
+    c.shutdown().await;
+}

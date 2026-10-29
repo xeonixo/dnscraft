@@ -207,6 +207,17 @@ directory state and secrets use dedicated stream/uplink paths:
   `{ type: "secret_push", profile_id, api_key }` only to that profile's
   `sync_owner`. The sub-node stores it node-locally (kv); it never appears in
   config exports or acks. Non-owners never receive the key.
+- **`CloudflareTokenPush`** (downstream, targeted): master sends
+  `{ type: "cloudflare_token_push", protocol, token }` (`token: null` clears)
+  only to nodes with an **enabled** `tls.dyndns.nodes[]` profile while
+  `tls.dyndns.enabled` is on. Sent on connect and whenever the master's token
+  or the synced config changes (disabling the profile clears the node's copy).
+  The sub-node stores it in the same kv entry as the master and updates its
+  running TLS engine; its local `PUT /tls/cloudflare-token` is rejected. Never in
+  snapshots, acks, status, audit or logs. **Compat:** an unknown record type
+  ends an old node's stream, so the sub advertises `capabilities:
+  ["cloudflare_token"]` in its `hello` and the master never sends the record to a
+  node without it.
 - **Directory uplink:** after a successful UniFi sync, the sync_owner
   `POST`s `/cluster/v1/clients-directory` with
   `{ profile_id, generation, clients: [...] }` (UniFi-sourced entries only).

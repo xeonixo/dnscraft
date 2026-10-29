@@ -201,6 +201,7 @@ impl ClusterClient {
             node_id: self.node_id.clone(),
             last_applied_version,
             last_acked_log_seq,
+            capabilities: vec![crate::sync::CAP_CLOUDFLARE_TOKEN.to_owned()],
         });
         let body = serde_json::to_vec(&hello).map_err(|error| ClusterError::Internal {
             message: format!("encode stream hello: {error}"),

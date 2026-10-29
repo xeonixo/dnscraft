@@ -321,6 +321,12 @@ pub(crate) async fn put_cloudflare_token(
     let db = state.db().ok_or_else(|| ControlApiError::NotReady {
         module: "database".into(),
     })?;
+    if state.cluster_uplink().is_some() {
+        return Err(module_error(
+            "tls.config.invalid",
+            "the Cloudflare token is managed by the cluster master",
+        ));
+    }
     let actor = actor(auth);
     let (updated, has_token) = match body.api_token {
         OptionalApiToken::Absent => {
@@ -343,6 +349,7 @@ pub(crate) async fn put_cloudflare_token(
             (true, true)
         }
     };
+    crate::cloudflare_secrets::sync_to_nodes(&state).await;
     Ok(success(json!({
         "updated": updated,
         "has_cloudflare_token": has_token,
