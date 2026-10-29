@@ -16,7 +16,10 @@ pub(crate) async fn has_client_secret(db: &Db) -> Result<bool, ControlApiError> 
 /// Stores or clears the OIDC client secret.
 ///
 /// `None` clears; `Some("")` is rejected.
-pub(crate) async fn set_client_secret(db: &Db, secret: Option<&str>) -> Result<(), ControlApiError> {
+pub(crate) async fn set_client_secret(
+    db: &Db,
+    secret: Option<&str>,
+) -> Result<(), ControlApiError> {
     match secret {
         None => db.kv_delete(KV_KEY).await,
         Some("") => Err(ControlApiError::Module {

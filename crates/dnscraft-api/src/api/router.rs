@@ -14,9 +14,7 @@ use serde_json::json;
 use super::alerts_routes::list_alerts;
 use super::audit_routes::list_audit;
 use super::auth::local::local_login;
-use super::auth::oidc::{
-    oidc_authorize_url, oidc_callback, oidc_status, put_oidc_client_secret,
-};
+use super::auth::oidc::{oidc_authorize_url, oidc_callback, oidc_status, put_oidc_client_secret};
 use super::auth::session_routes::{list_sessions, revoke_session};
 use super::auth::tokens::{create_token, delete_token, list_tokens};
 use super::auth::{auth_me, auth_middleware, logout, rbac_middleware};

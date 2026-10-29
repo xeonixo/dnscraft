@@ -10,12 +10,12 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::Secret;
 use crate::api::auth::{AuthState, OidcState};
 use crate::config::AuthConfig;
 use crate::error::ControlApiError;
 use crate::oidc_secrets;
 use crate::storage::Db;
-use crate::Secret;
 use dnscraft_common::clock::Clock;
 
 /// Shared slots AppState and the config apply path both use.
@@ -67,10 +67,7 @@ impl OidcRuntime {
 
     /// Attaches auth so cluster snapshots pick up OIDC setting changes.
     pub fn attach_auth(&self, auth: Arc<AuthState>) {
-        *self
-            .auth
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(auth);
+        *self.auth.lock().unwrap_or_else(PoisonError::into_inner) = Some(auth);
     }
 
     /// Overwrites the bootstrap client secret (typically from env at startup).
@@ -117,12 +114,8 @@ impl OidcRuntime {
             .filter(|issuer| !issuer.is_empty());
         let settings = next.as_ref().map(OidcState::settings);
 
-        *self.slot.write().unwrap_or_else(PoisonError::into_inner) =
-            next.map(Arc::new);
-        *self
-            .issuer
-            .write()
-            .unwrap_or_else(PoisonError::into_inner) = issuer;
+        *self.slot.write().unwrap_or_else(PoisonError::into_inner) = next.map(Arc::new);
+        *self.issuer.write().unwrap_or_else(PoisonError::into_inner) = issuer;
 
         if let Some(auth_state) = self
             .auth
@@ -141,15 +134,17 @@ impl OidcOverlay {
         let Some(value) = section else {
             return Ok(Self::default());
         };
-        let object = value.as_object().ok_or_else(|| ControlApiError::config(
-            "control_api_settings.oidc must be an object",
-        ))?;
+        let object = value.as_object().ok_or_else(|| {
+            ControlApiError::config("control_api_settings.oidc must be an object")
+        })?;
         let mut overlay = Self::default();
         for (key, field) in object {
             match key.as_str() {
                 "enabled" => {
                     overlay.enabled = Some(field.as_bool().ok_or_else(|| {
-                        ControlApiError::config("control_api_settings.oidc.enabled must be a boolean")
+                        ControlApiError::config(
+                            "control_api_settings.oidc.enabled must be a boolean",
+                        )
                     })?);
                 }
                 "issuer" => {

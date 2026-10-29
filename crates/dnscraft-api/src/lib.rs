@@ -81,6 +81,7 @@ pub use modules::{
     ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyResolver, ApplyTls,
     ModuleAppliers, ModuleFuture,
 };
+pub use oidc_runtime::OidcRuntime;
 pub use protected_list::{derive_protected_domains, populate_mcp_protected_domains};
 pub use query_log::{
     ClientEnricher, ClientView, Order, OrderBy, QueryLog, QueryLogFilter, QueryLogPage,
@@ -94,7 +95,6 @@ pub use stats::{
 };
 pub use storage::{AuditRecord, ConfigStore, Db};
 pub use system::run_backup_if_due;
-pub use oidc_runtime::OidcRuntime;
 pub use unifi_secrets::get_api_key;
 
 /// Loads a UI-stored Cloudflare API token from the config database, if any.
