@@ -1804,6 +1804,12 @@ async function route(request, response, options) {
 	const clusterDelete = /^\/api\/v1\/cluster\/nodes\/([^/]+)$/.exec(path);
 	if (request.method === 'DELETE' && clusterDelete) {
 		const nodeId = decodeURIComponent(clusterDelete[1]);
+		if (url.searchParams.get('remove') === 'true') {
+			options.runtime.clusterNodes = options.runtime.clusterNodes.filter(
+				(node) => node.node_id !== nodeId,
+			);
+			return sendData(response, { node_id: nodeId, removed: true });
+		}
 		options.runtime.clusterNodes = options.runtime.clusterNodes.map((node) =>
 			node.node_id === nodeId ? { ...node, revoked: true } : node,
 		);
@@ -1820,12 +1826,6 @@ async function route(request, response, options) {
 		options.runtime.tokens = options.runtime.tokens.filter((token) => token.id !== id);
 		if (options.runtime.tokens.length === before) {
 			throw new ApiFailure(404, 'control_api.auth.unknown_token');
-		}
-		if (url.searchParams.get('remove') === 'true') {
-			options.runtime.clusterNodes = options.runtime.clusterNodes.filter(
-				(node) => node.node_id !== nodeId,
-			);
-			return sendData(response, { node_id: nodeId, removed: true });
 		}
 		return sendData(response, { id, revoked: true });
 	}
