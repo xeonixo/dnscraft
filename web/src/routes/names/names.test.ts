@@ -13,7 +13,8 @@ const json = (status: number, body: unknown): Response =>
 		headers: { 'Content-Type': 'application/json' },
 	});
 const ok = (data: unknown): Response => json(200, { data });
-const fail = (status: number, code: string): Response => json(status, { error: { code } });
+const fail = (status: number, code: string, params: Record<string, unknown> = {}): Response =>
+	json(status, { error: { code, params } });
 
 type Handler = (init?: RequestInit, url?: string) => Response;
 let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>;
@@ -26,6 +27,36 @@ const view = (id: string, isDefault = false) => ({
 	nodes: [],
 	profile: 'default',
 });
+
+const attachedZones = {
+	zones: [
+		{
+			id: 'zone-example-test',
+			name: 'example.test',
+			status: 'active',
+			name_servers: ['ada.ns.cloudflare.com'],
+			source: 'public_domain',
+		},
+	],
+	has_cloudflare_token: true,
+};
+
+const cfRecords = {
+	records: [
+		{
+			id: 'cf-rec-nas-a',
+			name: 'nas.example.test',
+			record_type: 'A',
+			content: '203.0.113.10',
+			ttl: 60,
+			proxied: false,
+		},
+	],
+	page: 1,
+	per_page: 100,
+	total_count: 1,
+	total_pages: 1,
+};
 
 function serve(overrides: Record<string, Handler> = {}): void {
 	handlers = {
@@ -42,11 +73,20 @@ function serve(overrides: Record<string, Handler> = {}): void {
 						name: 'nas.example.test.',
 						type: 'A',
 						ttl: 60,
-						rdata: '192.0.2.10',
+						rdata: '203.0.113.10',
+						overrides: { lan: '192.0.2.50' },
+					},
+					{
+						name: 'nas.lan.',
+						type: 'A',
+						ttl: 60,
+						rdata: '192.0.2.50',
 						overrides: { guest: '192.0.2.51' },
 					},
 				],
 			}),
+		'GET /api/v1/domain-zones': () => ok(attachedZones),
+		'GET /api/v1/domain-zones/zone-example-test/records': () => ok(cfRecords),
 		...overrides,
 	};
 	fetchMock.mockImplementation(async (input, init) => {
@@ -79,22 +119,69 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-describe('names sheet Netzbereich overrides', () => {
-	it('uses structured Netzbereich rows instead of freitext zone=value lines', async () => {
+describe('names sheet Öffentlich then Abweichungen', () => {
+	it('shows Cloudflare public value above Netzbereich deviations', async () => {
 		const user = userEvent.setup();
 		render(NamesPage);
-		expect(await screen.findByText('192.0.2.10')).toBeInTheDocument();
-		expect(
-			screen.getByText(m.names_overrides_badge_one({ count: '1' }), { exact: false }),
-		).toBeInTheDocument();
+		expect(await screen.findByText('203.0.113.10')).toBeInTheDocument();
 
-		await user.click(screen.getByRole('button', { name: /192\.0\.2\.10/ }));
+		await user.click(screen.getByRole('button', { name: /203\.0\.113\.10/ }));
+		const dialog = await screen.findByRole('dialog');
+
+		const publicHeading = within(dialog).getByText(m.names_field_public());
+		const overridesHeading = within(dialog).getByText(m.names_field_overrides());
+		expect(
+			publicHeading.compareDocumentPosition(overridesHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+
+		expect(within(dialog).getByLabelText(m.names_public_value_label())).toHaveTextContent(
+			'203.0.113.10',
+		);
+		expect(within(dialog).getByLabelText(m.names_overrides_view())).toHaveValue('lan');
+		expect(within(dialog).getByLabelText(m.names_overrides_value())).toHaveValue('192.0.2.50');
+		expect(within(dialog).getByLabelText(m.names_overrides_value())).toHaveAttribute(
+			'placeholder',
+			m.names_overrides_inherit_public(),
+		);
+	});
+
+	it('links to TLS when the Cloudflare token is missing', async () => {
+		handlers['GET /api/v1/domain-zones'] = () =>
+			ok({
+				zones: [{ name: 'example.test', status: null, name_servers: [], source: 'public_domain' }],
+				has_cloudflare_token: false,
+			});
+		const user = userEvent.setup();
+		render(NamesPage);
+		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10/ }));
+		const dialog = await screen.findByRole('dialog');
+		expect(within(dialog).getByText(m.names_public_token_missing())).toBeInTheDocument();
+		const cta = within(dialog).getByRole('link', { name: m.names_public_token_cta() });
+		expect(cta).toHaveAttribute('href', expect.stringMatching(/\/tls$/));
+	});
+
+	it('allows purely internal names without a public row', async () => {
+		const user = userEvent.setup();
+		render(NamesPage);
+		await user.click(await screen.findByRole('button', { name: /192\.0\.2\.50/ }));
+		const dialog = await screen.findByRole('dialog');
+		expect(within(dialog).getByText(m.names_public_internal())).toBeInTheDocument();
+		expect(within(dialog).queryByLabelText(m.names_public_value_label())).toBeNull();
+		expect(within(dialog).getByText(m.names_field_overrides())).toBeInTheDocument();
+		expect(within(dialog).getByLabelText(m.names_overrides_value())).toHaveAttribute(
+			'placeholder',
+			m.names_overrides_inherit_standard(),
+		);
+	});
+
+	it('keeps structured Netzbereich rows instead of freitext zone=value lines', async () => {
+		const user = userEvent.setup();
+		render(NamesPage);
+		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10/ }));
 		const dialog = await screen.findByRole('dialog');
 		expect(within(dialog).queryByRole('textbox', { name: /zone=wert|zone=value/i })).toBeNull();
 		expect(within(dialog).queryByLabelText(/Zonen-Überschreibungen|Per-zone overrides/i)).toBeNull();
 		expect(within(dialog).getByText(m.names_field_overrides())).toBeInTheDocument();
-		expect(within(dialog).getByLabelText(m.names_overrides_view())).toHaveValue('guest');
-		expect(within(dialog).getByLabelText(m.names_overrides_value())).toHaveValue('192.0.2.51');
 	});
 
 	it('adds and removes override rows and saves the same overrides map shape', async () => {
@@ -105,8 +192,8 @@ describe('names sheet Netzbereich overrides', () => {
 					name: 'nas.example.test.',
 					type: 'A',
 					ttl: 60,
-					rdata: '192.0.2.10',
-					overrides: { guest: '192.0.2.51', lan: '10.0.0.1' },
+					rdata: '203.0.113.10',
+					overrides: { lan: '192.0.2.50', guest: '10.0.0.1' },
 				},
 			});
 		handlers['GET /api/v1/policy/records'] = (() => {
@@ -119,11 +206,9 @@ describe('names sheet Netzbereich overrides', () => {
 							name: 'nas.example.test.',
 							type: 'A',
 							ttl: 60,
-							rdata: '192.0.2.10',
+							rdata: '203.0.113.10',
 							overrides:
-								n === 1
-									? { guest: '192.0.2.51' }
-									: { guest: '192.0.2.51', lan: '10.0.0.1' },
+								n === 1 ? { lan: '192.0.2.50' } : { lan: '192.0.2.50', guest: '10.0.0.1' },
 						},
 					],
 				});
@@ -132,13 +217,13 @@ describe('names sheet Netzbereich overrides', () => {
 
 		const user = userEvent.setup();
 		render(NamesPage);
-		await user.click(await screen.findByRole('button', { name: /192\.0\.2\.10/ }));
+		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10/ }));
 		const dialog = await screen.findByRole('dialog');
 
 		await user.click(within(dialog).getByRole('button', { name: m.names_overrides_add() }));
 		const selects = within(dialog).getAllByLabelText(m.names_overrides_view());
 		expect(selects).toHaveLength(2);
-		await user.selectOptions(selects[1]!, 'lan');
+		await user.selectOptions(selects[1]!, 'guest');
 		const values = within(dialog).getAllByLabelText(m.names_overrides_value());
 		await user.clear(values[1]!);
 		await user.type(values[1]!, '10.0.0.1');
@@ -149,8 +234,8 @@ describe('names sheet Netzbereich overrides', () => {
 			name: 'nas.example.test.',
 			type: 'A',
 			ttl: 60,
-			rdata: '192.0.2.10',
-			overrides: { guest: '192.0.2.51', lan: '10.0.0.1' },
+			rdata: '203.0.113.10',
+			overrides: { lan: '192.0.2.50', guest: '10.0.0.1' },
 		});
 	});
 
@@ -162,14 +247,14 @@ describe('names sheet Netzbereich overrides', () => {
 					name: 'nas.example.test.',
 					type: 'A',
 					ttl: 60,
-					rdata: '192.0.2.10',
+					rdata: '203.0.113.10',
 					overrides: {},
 				},
 			});
 
 		const user = userEvent.setup();
 		render(NamesPage);
-		await user.click(await screen.findByRole('button', { name: /192\.0\.2\.10/ }));
+		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10/ }));
 		const dialog = await screen.findByRole('dialog');
 		await user.clear(within(dialog).getByLabelText(m.names_overrides_value()));
 		await user.click(within(dialog).getByRole('button', { name: m.action_save() }));
@@ -185,14 +270,14 @@ describe('names sheet Netzbereich overrides', () => {
 					name: 'nas.example.test.',
 					type: 'A',
 					ttl: 60,
-					rdata: '192.0.2.10',
+					rdata: '203.0.113.10',
 					overrides: {},
 				},
 			});
 
 		const user = userEvent.setup();
 		render(NamesPage);
-		await user.click(await screen.findByRole('button', { name: /192\.0\.2\.10/ }));
+		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10/ }));
 		const dialog = await screen.findByRole('dialog');
 		await user.click(within(dialog).getByRole('button', { name: m.names_overrides_remove() }));
 		expect(within(dialog).queryByLabelText(m.names_overrides_view())).toBeNull();
@@ -202,13 +287,22 @@ describe('names sheet Netzbereich overrides', () => {
 		expect(putBodies()[0]).toMatchObject({ overrides: {} });
 	});
 
-	it('keeps the sheet read-only for viewers', async () => {
+	it('opens a read-only sheet for viewers', async () => {
 		setPrincipal({ role: 'viewer', actorId: 'bob', actorType: 'user', csrfToken: null });
+		const user = userEvent.setup();
 		render(NamesPage);
-		expect(await screen.findByText('192.0.2.10')).toBeInTheDocument();
+		expect(await screen.findByText('203.0.113.10')).toBeInTheDocument();
 		expect(screen.queryByText(m.names_add())).not.toBeInTheDocument();
-		const row = screen.getByRole('button', { name: /192\.0\.2\.10/ });
-		expect(row).toBeDisabled();
-		expect(screen.queryByRole('dialog')).toBeNull();
+
+		await user.click(screen.getByRole('button', { name: /203\.0\.113\.10/ }));
+		const dialog = await screen.findByRole('dialog');
+		expect(within(dialog).getByText(m.names_view_title())).toBeInTheDocument();
+		expect(within(dialog).getByLabelText(m.names_public_value_label())).toHaveTextContent(
+			'203.0.113.10',
+		);
+		expect(within(dialog).getByLabelText(m.names_overrides_view())).toBeDisabled();
+		expect(within(dialog).getByLabelText(m.names_field_rdata())).toBeDisabled();
+		expect(within(dialog).queryByRole('button', { name: m.action_save() })).toBeNull();
+		expect(within(dialog).queryByRole('button', { name: m.names_overrides_add() })).toBeNull();
 	});
 });

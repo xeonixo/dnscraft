@@ -661,6 +661,73 @@ function testQuerySteps(domain) {
 	];
 }
 
+/** Attached Domain-Zonen from TLS config (`public_domain` + `dns_provider.zones`). */
+function attachedDomainZones(tls, hasToken) {
+	const zones = [];
+	const publicDomain = typeof tls.public_domain === 'string' ? tls.public_domain.trim() : '';
+	const provider = isObject(tls.dns_provider) ? tls.dns_provider : {};
+	const cf = isObject(provider.cloudflare) ? provider.cloudflare : {};
+	const publicZoneId =
+		typeof cf.zone_id === 'string' && cf.zone_id.trim() !== '' ? cf.zone_id.trim() : null;
+	if (publicDomain) {
+		zones.push({
+			id: publicZoneId,
+			name: publicDomain,
+			status: hasToken ? 'active' : null,
+			name_servers: hasToken ? ['ada.ns.cloudflare.com', 'bob.ns.cloudflare.com'] : [],
+			source: 'public_domain',
+		});
+	}
+	for (const entry of Array.isArray(provider.zones) ? provider.zones : []) {
+		if (!isObject(entry) || typeof entry.name !== 'string' || entry.name.trim() === '') continue;
+		const name = entry.name.trim();
+		if (publicDomain && name.toLowerCase() === publicDomain.toLowerCase()) continue;
+		zones.push({
+			id: typeof entry.zone_id === 'string' && entry.zone_id.trim() !== '' ? entry.zone_id : null,
+			name,
+			status: hasToken ? 'active' : null,
+			name_servers: hasToken ? ['ada.ns.cloudflare.com'] : [],
+			source: 'dns_provider',
+		});
+	}
+	return zones;
+}
+
+/**
+ * Seed Cloudflare DNS records for the mock public domain.
+ * Includes the Split-DNS example `nas.example.test` (LAN override lives in policy.records).
+ */
+function mockDomainZoneRecords(tls) {
+	const publicDomain = typeof tls.public_domain === 'string' ? tls.public_domain.trim() : '';
+	const apex = publicDomain || 'example.test';
+	return [
+		{
+			id: 'cf-rec-nas-a',
+			name: `nas.${apex}`,
+			record_type: 'A',
+			content: '203.0.113.10',
+			ttl: 60,
+			proxied: false,
+		},
+		{
+			id: 'cf-rec-ns1-a',
+			name: `ns1.dns.${apex}`,
+			record_type: 'A',
+			content: '192.0.2.10',
+			ttl: 120,
+			proxied: false,
+		},
+		{
+			id: 'cf-rec-wildcard-cname',
+			name: `*.dns.${apex}`,
+			record_type: 'CNAME',
+			content: `ns1.dns.${apex}`,
+			ttl: 120,
+			proxied: false,
+		},
+	];
+}
+
 const PUBLIC_ROUTES = new Set(['POST /api/v1/auth/local/login']);
 /** Writes a viewer may send: the sign-out, and the dry-run reads that are POSTs by path. */
 const VIEWER_POSTS = new Set([
@@ -1100,6 +1167,36 @@ async function route(request, response, options) {
 			options.runtime.cloudflareApiToken = token;
 			return sendData(response, { updated: true, has_cloudflare_token: true });
 		}
+		case 'GET /api/v1/domain-zones': {
+			const tls = currentOf(options.store).config.tls ?? {};
+			const hasToken = Boolean(options.runtime.cloudflareApiToken);
+			const zones = attachedDomainZones(tls, hasToken);
+			const payload = { zones, has_cloudflare_token: hasToken };
+			const discover = url.searchParams.get('discover');
+			if (discover === '1' || discover === 'true' || discover === 'yes' || discover === 'on') {
+				if (options.role !== 'admin') {
+					throw new ApiFailure(403, 'control_api.auth.insufficient_scope', {
+						required: 'admin',
+					});
+				}
+				if (!hasToken) {
+					throw new ApiFailure(400, 'tls.secret.missing', {
+						name: 'DNSCRAFT_CLOUDFLARE_API_TOKEN',
+					});
+				}
+				payload.discoverable = [
+					...zones,
+					{
+						id: 'zone-unattached',
+						name: 'other.example',
+						status: 'active',
+						name_servers: ['ada.ns.cloudflare.com'],
+						source: 'discoverable',
+					},
+				];
+			}
+			return sendData(response, payload);
+		}
 		case 'GET /api/v1/update/check':
 			return sendData(response, {
 				enabled: true,
@@ -1227,6 +1324,41 @@ async function route(request, response, options) {
 		}
 		default:
 			break;
+	}
+
+	const domainZoneRecords = /^\/api\/v1\/domain-zones\/([^/]+)\/records$/.exec(path);
+	if (domainZoneRecords && request.method === 'GET') {
+		const zoneId = decodeURIComponent(domainZoneRecords[1]);
+		if (!options.runtime.cloudflareApiToken) {
+			throw new ApiFailure(400, 'tls.secret.missing', {
+				name: 'DNSCRAFT_CLOUDFLARE_API_TOKEN',
+			});
+		}
+		const tls = currentOf(options.store).config.tls ?? {};
+		const attached = attachedDomainZones(tls, true);
+		if (!attached.some((zone) => zone.id === zoneId)) {
+			throw new ApiFailure(404, 'control_api.not_found');
+		}
+		const needle = (url.searchParams.get('name_substr') ?? '').trim().toLowerCase();
+		let records = mockDomainZoneRecords(tls);
+		if (needle) {
+			records = records.filter((row) => row.name.toLowerCase().includes(needle));
+		}
+		const page = Math.max(1, Number(url.searchParams.get('page') ?? 1) || 1);
+		const perPage = Math.min(
+			100,
+			Math.max(1, Number(url.searchParams.get('per_page') ?? 50) || 50),
+		);
+		const totalCount = records.length;
+		const totalPages = totalCount === 0 ? 0 : Math.ceil(totalCount / perPage);
+		const start = (page - 1) * perPage;
+		return sendData(response, {
+			records: records.slice(start, start + perPage),
+			page,
+			per_page: perPage,
+			total_count: totalCount,
+			total_pages: totalPages,
+		});
 	}
 
 	const policyView = /^\/api\/v1\/policy\/views\/([^/]+)$/.exec(path);

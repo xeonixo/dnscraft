@@ -68,14 +68,14 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
     `tls` engine access, tests, docs
   - **Estimated scope:** M
 
-- [ ] **T3** Namen-Editor: Öffentlich zuerst (read) + Abweichungen
+- [x] **T3** Namen-Editor: Öffentlich zuerst (read) + Abweichungen
   - **Description:** Ein Modul `/names`. Sheet/Karte: oben **Öffentlich** (CF-Wert
     wenn Zone angebunden), darunter Netzbereich-Abweichungen (T0). Token fehlt → CTA
     zu TLS. Kein Lokal-vs-Cloudflare-Tab als zwei Welten.
   - **Acceptance criteria:**
-    - [ ] Editor-Reihenfolge: Öffentlich → Abweichungen je Netzbereich.
-    - [ ] Ohne Override sichtbar „wie öffentlich“ / erbt; nur-intern ohne CF-Zeile OK.
-    - [ ] Viewer read-only; mock mit Split-Beispiel (gleicher Name, anderer LAN-Wert).
+    - [x] Editor-Reihenfolge: Öffentlich → Abweichungen je Netzbereich.
+    - [x] Ohne Override sichtbar „wie öffentlich“ / erbt; nur-intern ohne CF-Zeile OK.
+    - [x] Viewer read-only; mock mit Split-Beispiel (gleicher Name, anderer LAN-Wert).
   - **Verification:** vitest, svelte-check, eslint, mock, browser
   - **Dependencies:** T0, T2
   - **Files likely touched:** `web/src/routes/names/`, api client, messages, mock

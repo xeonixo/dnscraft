@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { resolve } from '$app/paths';
 	import Button from '$lib/components/Button.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
@@ -8,6 +9,15 @@
 	import Sheet from '$lib/components/Sheet.svelte';
 	import UnavailableNotice from '$lib/components/UnavailableNotice.svelte';
 	import {
+		findMatchingRecord,
+		listDomainZoneRecords,
+		listDomainZones,
+		normalizeDnsName,
+		zoneForName,
+		type DomainZone,
+		type DomainZoneRecord,
+	} from '$lib/api/domain-zones';
+	import {
 		deleteRecord,
 		listRecords,
 		listViews,
@@ -15,6 +25,7 @@
 		type PolicyRecord,
 		type PolicyView,
 	} from '$lib/api/policy';
+	import { ApiError } from '$lib/api/client';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
 	import { toDomainName } from '$lib/domain-name';
@@ -27,6 +38,9 @@
 	const isAdmin = $derived(auth.role === 'admin');
 	let result = $state<Result<PolicyRecord[]>>({ kind: 'loading' });
 	let views = $state<PolicyView[]>([]);
+	let attachedZones = $state<DomainZone[]>([]);
+	let hasCloudflareToken = $state(false);
+	let domainZonesReady = $state(false);
 	let sheetOpen = $state(false);
 	let confirmDelete = $state(false);
 	let busy = $state(false);
@@ -42,6 +56,23 @@
 	type OverrideRow = { key: number; view: string; value: string };
 	let overrideRows = $state<OverrideRow[]>([]);
 	let nextOverrideKey = 0;
+
+	type PublicLookup =
+		| { kind: 'idle' }
+		| { kind: 'loading' }
+		| { kind: 'token_missing' }
+		| { kind: 'unavailable' }
+		| { kind: 'internal' }
+		| { kind: 'absent' }
+		| { kind: 'found'; record: DomainZoneRecord }
+		| { kind: 'error'; code: string };
+
+	let publicLookup = $state<PublicLookup>({ kind: 'idle' });
+	let publicLookupSeq = 0;
+	/** Cached CF records by attached zone id (sheet lookups). */
+	const recordsByZone = new Map<string, DomainZoneRecord[]>();
+	/** name+type keys known to have a public CF match (list badge). */
+	let publicKeys = $state<Set<string>>(new Set());
 
 	const rows = $derived(result.kind === 'ok' ? result.data : []);
 
@@ -70,10 +101,145 @@
 		views.some((view) => !overrideRows.some((row) => row.view === view.id)),
 	);
 
+	const inheritPlaceholder = $derived(
+		publicLookup.kind === 'found'
+			? m.names_overrides_inherit_public()
+			: m.names_overrides_inherit_standard(),
+	);
+
+	const overridesEmptyText = $derived(
+		publicLookup.kind === 'found' ? m.names_overrides_empty() : m.names_overrides_empty_standard(),
+	);
+
+	const sheetTitle = $derived(
+		!isAdmin && editing
+			? m.names_view_title()
+			: editing
+				? m.names_edit_title()
+				: m.names_add_title(),
+	);
+
+	async function loadDomainZones(): Promise<void> {
+		const zonesResult = await settle(listDomainZones());
+		if (zonesResult.kind === 'ok') {
+			attachedZones = zonesResult.data.zones;
+			hasCloudflareToken = zonesResult.data.has_cloudflare_token;
+			domainZonesReady = true;
+			recordsByZone.clear();
+			await refreshPublicBadges(rows);
+		} else if (zonesResult.kind === 'unavailable') {
+			attachedZones = [];
+			hasCloudflareToken = false;
+			domainZonesReady = true;
+			publicKeys = new Set();
+		} else {
+			attachedZones = [];
+			hasCloudflareToken = false;
+			domainZonesReady = true;
+			publicKeys = new Set();
+		}
+	}
+
+	async function recordsForZone(zoneId: string, nameSubstr?: string): Promise<DomainZoneRecord[]> {
+		const cached = recordsByZone.get(zoneId);
+		if (cached && nameSubstr == null) return cached;
+		const page = await listDomainZoneRecords(zoneId, {
+			per_page: 100,
+			name_substr: nameSubstr,
+		});
+		if (nameSubstr == null) recordsByZone.set(zoneId, page.records);
+		return page.records;
+	}
+
+	function recordKey(name: string, type: string): string {
+		return `${normalizeDnsName(name)}\0${type.trim().toUpperCase()}`;
+	}
+
+	async function refreshPublicBadges(records: PolicyRecord[]): Promise<void> {
+		if (!hasCloudflareToken || attachedZones.length === 0) {
+			publicKeys = new Set();
+			return;
+		}
+		const next = new Set<string>();
+		const byZone = new Map<string, PolicyRecord[]>();
+		for (const record of records) {
+			const zone = zoneForName(attachedZones, record.name);
+			if (!zone?.id) continue;
+			const list = byZone.get(zone.id) ?? [];
+			list.push(record);
+			byZone.set(zone.id, list);
+		}
+		await Promise.all(
+			[...byZone.entries()].map(async ([zoneId, zoneRecords]) => {
+				try {
+					const cfRecords = await recordsForZone(zoneId);
+					for (const record of zoneRecords) {
+						if (findMatchingRecord(cfRecords, record.name, record.type)) {
+							next.add(recordKey(record.name, record.type));
+						}
+					}
+				} catch {
+					/* list badges are best-effort */
+				}
+			}),
+		);
+		publicKeys = next;
+	}
+
+	async function refreshPublicLookup(): Promise<void> {
+		const seq = ++publicLookupSeq;
+		const name = formName.trim();
+		if (name === '') {
+			publicLookup = { kind: 'idle' };
+			return;
+		}
+		if (!domainZonesReady) {
+			publicLookup = { kind: 'loading' };
+			return;
+		}
+		if (!hasCloudflareToken) {
+			publicLookup = { kind: 'token_missing' };
+			return;
+		}
+		const zone = zoneForName(attachedZones, name);
+		if (!zone) {
+			publicLookup = { kind: 'internal' };
+			return;
+		}
+		if (!zone.id) {
+			publicLookup = { kind: 'token_missing' };
+			return;
+		}
+		publicLookup = { kind: 'loading' };
+		try {
+			const records = await recordsForZone(zone.id, normalizeDnsName(name));
+			if (seq !== publicLookupSeq) return;
+			const match = findMatchingRecord(records, name, formType);
+			publicLookup = match ? { kind: 'found', record: match } : { kind: 'absent' };
+		} catch (cause) {
+			if (seq !== publicLookupSeq) return;
+			if (cause instanceof ApiError && cause.code === 'tls.secret.missing') {
+				publicLookup = { kind: 'token_missing' };
+				return;
+			}
+			if (cause instanceof ApiError && (cause.status === 404 || cause.code === 'control_api.not_ready')) {
+				publicLookup = { kind: 'unavailable' };
+				return;
+			}
+			publicLookup = {
+				kind: 'error',
+				code: cause instanceof ApiError ? cause.code : 'client.malformed',
+			};
+		}
+	}
+
 	async function load(): Promise<void> {
 		const [records, vws] = await Promise.all([settle(listRecords()), settle(listViews())]);
 		result = records;
 		if (vws.kind === 'ok') views = vws.data;
+		if (records.kind === 'ok' && domainZonesReady) {
+			await refreshPublicBadges(records.data);
+		}
 	}
 
 	let submitted = $state(false);
@@ -146,6 +312,7 @@
 		confirmDelete = false;
 		failure = null;
 		submitted = false;
+		publicLookup = { kind: 'idle' };
 		sheetOpen = true;
 	}
 
@@ -160,18 +327,26 @@
 		failure = null;
 		submitted = false;
 		sheetOpen = true;
+		void refreshPublicLookup();
 	}
 
 	function closeSheet(): void {
 		sheetOpen = false;
 		confirmDelete = false;
+		publicLookupSeq += 1;
+		publicLookup = { kind: 'idle' };
 	}
 
 	function overrideCount(record: PolicyRecord): number {
 		return Object.keys(record.overrides).length;
 	}
 
+	function hasPublic(record: PolicyRecord): boolean {
+		return publicKeys.has(recordKey(record.name, record.type));
+	}
+
 	async function submit(): Promise<void> {
+		if (!isAdmin) return;
 		submitted = true;
 		if (formName.trim() === '' || formRdata.trim() === '' || ownerError || rdataError) return;
 		busy = true;
@@ -194,7 +369,7 @@
 	}
 
 	async function confirmRemove(): Promise<void> {
-		if (!editing) return;
+		if (!editing || !isAdmin) return;
 		busy = true;
 		failure = null;
 		try {
@@ -211,7 +386,7 @@
 	}
 
 	onMount(() => {
-		void load();
+		void Promise.all([load(), loadDomainZones()]);
 	});
 </script>
 
@@ -260,24 +435,22 @@
 							<button
 								type="button"
 								class="rec-row"
-								onclick={() => (isAdmin ? openEdit(record) : undefined)}
-								disabled={!isAdmin}
+								onclick={() => openEdit(record)}
 							>
 								<span class="type">{record.type}</span>
 								<span class="rdata mono">{record.rdata}</span>
 								<span class="meta">
-									{m.names_ttl_short({ ttl: record.ttl })}{#if overrideCount(record) > 0}
+									{m.names_ttl_short({ ttl: record.ttl })}{#if hasPublic(record)}
+										· {m.names_public_badge()}{/if}{#if overrideCount(record) > 0}
 										· {overrideCount(record) === 1
 											? m.names_overrides_badge_one({ count: '1' })
 											: m.names_overrides_badge_other({
 													count: String(overrideCount(record)),
 												})}{/if}
 								</span>
-								{#if isAdmin}
-									<span class="chevron" aria-hidden="true">
-										<Icon name="chevron-right" size="1rem" />
-									</span>
-								{/if}
+								<span class="chevron" aria-hidden="true">
+									<Icon name="chevron-right" size="1rem" />
+								</span>
 							</button>
 						{/each}
 					</GroupedList>
@@ -288,45 +461,92 @@
 	{/if}
 </div>
 
-{#if sheetOpen && isAdmin}
-	<Sheet
-		open={sheetOpen}
-		title={editing ? m.names_edit_title() : m.names_add_title()}
-		onclose={closeSheet}
-		centeredOnWide
-	>
+{#if sheetOpen}
+	<Sheet open={sheetOpen} title={sheetTitle} onclose={closeSheet} centeredOnWide>
 		<label class="field-label" for="rec-name">{m.names_field_name()}</label>
 		<input
 			id="rec-name"
 			class="field mono"
 			bind:value={formName}
-			disabled={editing !== null}
+			disabled={editing !== null || !isAdmin}
 			aria-invalid={ownerError ? 'true' : undefined}
+			oninput={() => {
+				if (isAdmin && editing === null) void refreshPublicLookup();
+			}}
 		/>
 		{#if ownerError}<p class="error-text" role="alert">{ownerError}</p>{/if}
 		<label class="field-label" for="rec-type">{m.names_field_type()}</label>
-		<select id="rec-type" class="field" bind:value={formType} disabled={editing !== null}>
+		<select
+			id="rec-type"
+			class="field"
+			bind:value={formType}
+			disabled={editing !== null || !isAdmin}
+			onchange={() => void refreshPublicLookup()}
+		>
 			{#each RECORD_TYPES as type (type)}
 				<option value={type}>{type}</option>
 			{/each}
 		</select>
+
+		<p class="field-label" id="rec-public-label">{m.names_field_public()}</p>
+		<p class="hint" id="rec-public-hint">{m.names_public_hint()}</p>
+		<section class="public-block" aria-labelledby="rec-public-label" aria-describedby="rec-public-hint">
+			{#if publicLookup.kind === 'loading'}
+				<p class="hint muted">{m.names_public_loading()}</p>
+			{:else if publicLookup.kind === 'token_missing'}
+				<p class="hint">{m.names_public_token_missing()}</p>
+				<a class="cta-link" href={resolve('/tls')}>{m.names_public_token_cta()}</a>
+			{:else if publicLookup.kind === 'unavailable'}
+				<p class="hint muted">{m.names_public_unavailable()}</p>
+			{:else if publicLookup.kind === 'internal'}
+				<p class="hint muted">{m.names_public_internal()}</p>
+			{:else if publicLookup.kind === 'absent'}
+				<p class="hint muted">{m.names_public_absent()}</p>
+			{:else if publicLookup.kind === 'error'}
+				<p class="hint muted">{m.names_public_error()}</p>
+			{:else if publicLookup.kind === 'found'}
+				<p class="public-value mono" aria-label={m.names_public_value_label()}>
+					{displayText(publicLookup.record.content, 200).text}
+				</p>
+				<p class="hint muted">
+					{m.names_ttl_short({ ttl: publicLookup.record.ttl })}{#if publicLookup.record.proxied}
+						· {m.names_public_proxied()}{/if}
+				</p>
+			{/if}
+		</section>
+
+		<p class="field-label" id="rec-standard-label">{m.names_field_standard()}</p>
+		<p class="hint" id="rec-standard-hint">{m.names_standard_hint()}</p>
 		<label class="field-label" for="rec-ttl">{m.names_field_ttl()}</label>
-		<input id="rec-ttl" class="field" bind:value={formTtl} inputmode="numeric" />
+		<input
+			id="rec-ttl"
+			class="field"
+			bind:value={formTtl}
+			inputmode="numeric"
+			disabled={!isAdmin}
+			aria-describedby="rec-standard-hint"
+		/>
 		<label class="field-label" for="rec-rdata">{m.names_field_rdata()}</label>
 		<input
 			id="rec-rdata"
 			class="field mono"
 			bind:value={formRdata}
+			disabled={!isAdmin}
 			aria-invalid={rdataError ? 'true' : undefined}
+			aria-describedby="rec-standard-hint"
 		/>
 		{#if rdataError}<p class="error-text" role="alert">{rdataError}</p>{/if}
 
 		<p class="field-label" id="rec-overrides-label">{m.names_field_overrides()}</p>
 		<p class="hint" id="rec-overrides-hint">{m.names_overrides_hint()}</p>
 		{#if overrideRows.length === 0}
-			<p class="hint muted">{m.names_overrides_empty()}</p>
+			<p class="hint muted">{overridesEmptyText}</p>
 		{:else}
-			<ul class="override-list" aria-labelledby="rec-overrides-label" aria-describedby="rec-overrides-hint">
+			<ul
+				class="override-list"
+				aria-labelledby="rec-overrides-label"
+				aria-describedby="rec-overrides-hint"
+			>
 				{#each overrideRows as row, i (row.key)}
 					<li class="override-row">
 						<label class="sr-only" for="ov-view-{row.key}">{m.names_overrides_view()}</label>
@@ -334,6 +554,7 @@
 							id="ov-view-{row.key}"
 							class="field"
 							bind:value={overrideRows[i].view}
+							disabled={!isAdmin}
 						>
 							<option value="">{m.names_overrides_choose()}</option>
 							{#each viewOptionsFor(row) as viewId (viewId)}
@@ -345,22 +566,25 @@
 							id="ov-value-{row.key}"
 							class="field mono"
 							bind:value={overrideRows[i].value}
-							placeholder={m.names_overrides_value()}
+							placeholder={inheritPlaceholder}
 							autocomplete="off"
+							disabled={!isAdmin}
 						/>
-						<button
-							type="button"
-							class="remove-override"
-							aria-label={m.names_overrides_remove()}
-							onclick={() => removeOverrideRow(row.key)}
-						>
-							<Icon name="x" size="1rem" />
-						</button>
+						{#if isAdmin}
+							<button
+								type="button"
+								class="remove-override"
+								aria-label={m.names_overrides_remove()}
+								onclick={() => removeOverrideRow(row.key)}
+							>
+								<Icon name="x" size="1rem" />
+							</button>
+						{/if}
 					</li>
 				{/each}
 			</ul>
 		{/if}
-		{#if canAddOverride}
+		{#if isAdmin && canAddOverride}
 			<button type="button" class="add-override" onclick={addOverrideRow}
 				>{m.names_overrides_add()}</button
 			>
@@ -372,7 +596,11 @@
 					<ErrorNotice code={failure.code} params={failure.params} />
 				</div>
 			{/if}
-			{#if editing && confirmDelete}
+			{#if !isAdmin}
+				<div class="actions">
+					<Button variant="secondary" onclick={closeSheet}>{m.action_cancel()}</Button>
+				</div>
+			{:else if editing && confirmDelete}
 				<p class="confirm-text">
 					{m.names_delete_body({ name: domainLabel(editing.name), type: editing.type })}
 				</p>
@@ -489,11 +717,8 @@
 	.rec-row:first-child {
 		border-top: none;
 	}
-	.rec-row:hover:not(:disabled) {
+	.rec-row:hover {
 		background: var(--surface-2);
-	}
-	.rec-row:disabled {
-		cursor: default;
 	}
 	.type {
 		font-size: 0.75rem;
@@ -548,6 +773,32 @@
 		border-radius: var(--r-ctl);
 		background: var(--surface);
 		font: inherit;
+	}
+	.field:disabled {
+		opacity: 0.85;
+		color: var(--label-2);
+	}
+	.public-block {
+		margin: 0 0 0.25rem;
+		padding: 0.75rem;
+		border: 1px solid var(--separator);
+		border-radius: var(--r-ctl);
+		background: var(--surface-2);
+	}
+	.public-value {
+		margin: 0;
+		font-size: 0.9375rem;
+		overflow-wrap: anywhere;
+	}
+	.cta-link {
+		display: inline-block;
+		margin-top: 0.25rem;
+		color: var(--accent);
+		font-weight: 600;
+		text-decoration: none;
+	}
+	.cta-link:hover {
+		text-decoration: underline;
 	}
 	.override-list {
 		list-style: none;

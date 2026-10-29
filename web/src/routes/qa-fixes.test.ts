@@ -246,6 +246,8 @@ describe('client side validation', () => {
 					},
 				],
 			});
+		handlers['GET /api/v1/domain-zones'] = () =>
+			ok({ zones: [], has_cloudflare_token: false });
 		const user = userEvent.setup();
 		render(NamesPage);
 		await user.click(await screen.findByRole('button', { name: m.names_add() }));
