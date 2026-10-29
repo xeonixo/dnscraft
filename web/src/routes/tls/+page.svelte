@@ -239,6 +239,15 @@
 		return 'ecdsa_p256';
 	}
 
+	function reservedLabelsFor(existing: unknown, hostnames: string[]): string[] {
+		const labels = new SvelteSet<string>(Array.isArray(existing) ? existing.map(String) : []);
+		for (const host of hostnames) {
+			const label = host.trim().toLowerCase().split('.')[0];
+			if (label) labels.add(label);
+		}
+		return [...labels];
+	}
+
 	function defaultHostnameFor(nodeId: string, publicDomain: string): string {
 		const domain = publicDomain.trim();
 		if (!domain) return '';
@@ -489,6 +498,13 @@
 				hostname: flatHost,
 				public_entry: flatEntry,
 				nodes: profiles,
+				// A node host name's first label (ns1, ns2 …) must be reserved, or the backend
+				// rejects the config ('label is not in reserved_labels') and a Client ID could
+				// take the name.
+				reserved_labels: reservedLabelsFor(objectField(tlsConfig, 'dyndns').reserved_labels, [
+					flatHost,
+					...profiles.map((p) => p.hostname),
+				]),
 				ipv4: flatV4,
 				ipv6: flatV6,
 				ipv6_identifier: flatIpv6Ident,
