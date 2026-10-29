@@ -1,7 +1,10 @@
 //! Step 1: answer from the selected view's local records.
 
+use std::net::SocketAddr;
+use std::sync::Arc;
+
 use dnscraft_proto::{Class, Name, RData, Record, RecordType};
-use dnscraft_resolver::Query;
+use dnscraft_resolver::{Query, RequestFlags};
 
 use crate::config::RequestContext;
 use crate::decision::DecisionStep;
@@ -13,7 +16,7 @@ use crate::synth::{local_nodata, local_records_answer};
 pub const MAX_CNAME_HOPS: u8 = 8;
 
 /// Runs step 1. Continues when the qname is unknown in this view.
-pub(crate) fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Draft) -> Flow {
+pub(crate) async fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Draft) -> Flow {
     // View records are class IN; other classes (CH, …) are not ours to answer.
     if ctx.query.qclass != Class::IN {
         return Flow::Continue;
@@ -25,13 +28,56 @@ pub(crate) fn run(ctx: &RequestContext, step: StepCtx<'_>, draft: &mut Draft) ->
         Some(Outcome::Records(records)) => {
             draft.steps.push(DecisionStep::LocalView);
             draft.synthetic = true;
-            Flow::Answer(local_records_answer(&ctx.query, rd, records))
+            let mut synth = local_records_answer(&ctx.query, rd, records);
+            chase_external_cname(ctx, step, view, &mut synth.message).await;
+            Flow::Answer(synth)
         }
         Some(Outcome::Nodata) => {
             draft.steps.push(DecisionStep::LocalView);
             draft.synthetic = true;
             Flow::Answer(local_nodata(&ctx.query, rd))
         }
+    }
+}
+
+/// A chain ending in a CNAME whose target is not local is resolved here: stub
+/// resolvers do not chase CNAMEs themselves, so a bare CNAME yields no address.
+/// On failure the bare CNAME stays (best effort).
+async fn chase_external_cname(
+    ctx: &RequestContext,
+    step: StepCtx<'_>,
+    view: &SnapshotView,
+    message: &mut dnscraft_proto::Message,
+) {
+    let qtype = ctx.query.qtype;
+    if qtype == RecordType::CNAME {
+        return;
+    }
+    let Some(target) = message.answers.last().and_then(|last| match &last.rdata {
+        RData::CNAME(target) => Some(target.clone()),
+        _ => None,
+    }) else {
+        return;
+    };
+    if view.records.contains_key(&target) {
+        return; // local target (hop-limit loop): nothing to resolve
+    }
+    let flags = RequestFlags {
+        checking_disabled: ctx.flags.checking_disabled,
+        dnssec_ok: ctx.flags.dnssec_ok,
+        client: Some(SocketAddr::new(ctx.source_ip, 0)),
+        forward_zones: step.forward_zones_allow.map(Arc::from),
+        no_cache_write: ctx.test_query,
+    };
+    let target_query = Query {
+        name: target,
+        qtype,
+        qclass: ctx.query.qclass,
+    };
+    if let Ok(answer) = step.resolver.resolve(&target_query, flags).await {
+        let _ = message.set_rcode(answer.message.rcode());
+        message.answers.extend(answer.message.answers);
+        message.header.aa = false;
     }
 }
 
