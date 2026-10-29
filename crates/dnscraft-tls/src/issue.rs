@@ -223,10 +223,23 @@ where
     // Orphan cleanup: drop any leftover `_acme-challenge` TXT from a prior run.
     cleanup_if_cloudflare(cfg, cloudflare, &challenge_name).await;
 
-    let txts = match acme
+    let mut started = acme
         .start_dns01_order(store, &cfg.acme, identifiers, replaces)
-        .await
+        .await;
+    // The CA already has an order replacing this certificate (ARI): order
+    // again as a plain new certificate instead of failing the renewal.
+    if replaces.is_some()
+        && matches!(&started, Err(TlsError::AcmeOrder { message }) if message.contains("alreadyReplaced"))
     {
+        warn!(
+            "CA reports the certificate is already replaced; retrying order without ARI replaces"
+        );
+        acme.abort_order().await;
+        started = acme
+            .start_dns01_order(store, &cfg.acme, identifiers, None)
+            .await;
+    }
+    let txts = match started {
         Ok(t) => t,
         Err(e) => {
             acme.abort_order().await;

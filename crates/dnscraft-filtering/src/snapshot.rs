@@ -475,6 +475,7 @@ impl SnapshotBuilder {
     /// [`RuleSource::Service`](crate::RuleSource::Service); unknown ids are
     /// recorded on the snapshot and are not fatal.
     pub fn build(&self, config: &FilterConfig) -> Result<Snapshot, SnapshotError> {
+        config.validate_list_urls()?;
         let mut enabled: HashMap<&ListId, bool> = HashMap::new();
         for l in &config.lists {
             if enabled.insert(&l.id, l.enabled).is_some() {

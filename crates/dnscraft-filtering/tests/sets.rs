@@ -304,6 +304,27 @@ fn config_errors() {
 }
 
 #[test]
+fn list_url_must_be_http_with_host() {
+    let b = bodies(&[("a", LIST_A)]);
+    for bad in [
+        "javascript:alert(1)",
+        "ftp://x.example/l.txt",
+        "https://",
+        "https:///path",
+        "https://u:p@x.example/l",
+        "https://x .example/l",
+    ] {
+        let mut cfg = config(&[("a", true)], vec![]);
+        cfg.lists[0].source = dnscraft_filtering::ListSourceSpec::Url(bad.into());
+        let e = SnapshotBuilder::new(b.clone()).build(&cfg).unwrap_err();
+        assert_eq!(e.code(), "filter_list.url_invalid", "{bad}");
+    }
+    let mut cfg = config(&[("a", true)], vec![]);
+    cfg.lists[0].source = dnscraft_filtering::ListSourceSpec::Url("https://x.example/l".into());
+    SnapshotBuilder::new(b).build(&cfg).unwrap();
+}
+
+#[test]
 fn unique_contribution_is_order_dependent() {
     let b = bodies(&[("a", LIST_A), ("b", LIST_B)]);
     let cfg = config(

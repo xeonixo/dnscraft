@@ -156,6 +156,7 @@ Human-readable text is for logs, not end users.
 | `SnapshotError::UnknownList` | `filter_set.unknown_list` |
 | `SnapshotError::DuplicateSet` | `filter_set.duplicate_set` |
 | `SnapshotError::DuplicateList` | `filter_set.duplicate_list` |
+| `SnapshotError::ListUrlInvalid` | `filter_list.url_invalid` |
 | `IndexError::UnknownSource` | `filter_index.unknown_source` |
 | `IndexError::TooLarge` | `filter_index.too_large` |
 | `IndexError::TooManySources` | `filter_index.too_many_sources` |

@@ -21,6 +21,7 @@ use crate::issue::{issue, sign_csr};
 use crate::pem_util::{certified_key_from_pem, fingerprint_sha256, parse_leaf_info};
 use crate::renew::{
     AriWindow, RenewFn, RenewScheduler, ScheduleFn, StatusFn, current_ari_window, next_renewal,
+    renewal_not_needed,
 };
 use crate::resolver::CertResolver;
 use crate::status::{
@@ -927,12 +928,27 @@ fn start_renew_scheduler(inner: Arc<EngineInner>, acme_enabled: Arc<AtomicBool>)
         next_renewal(not_after, cfg.renew_before, ari, now)
     });
 
+    // The first scheduled run after a process start must not open an ACME
+    // order for a certificate that is still valid and outside `renew_before`
+    // (the schedule can say "now" while the ARI window is not fetched yet).
+    let first_run = Arc::new(AtomicBool::new(true));
     let renew: RenewFn = Arc::new(move || {
         let weak = weak_renew.clone();
+        let first_run = Arc::clone(&first_run);
         Box::pin(async move {
             let Some(inner) = weak.upgrade() else {
                 return Ok(());
             };
+            if first_run.swap(false, Ordering::SeqCst) {
+                let renew_before = inner.config.read().await.renew_before;
+                let not_after = inner.store.load().ok().flatten().map(|c| c.not_after);
+                if renewal_not_needed(not_after, renew_before, inner.clock.now()) {
+                    tracing::info!(
+                        "certificate valid and outside renew window; skipping startup renewal"
+                    );
+                    return Ok(());
+                }
+            }
             inner.do_issue().await
         })
     });

@@ -617,6 +617,22 @@ async fn stats_overview_long_range_is_answered_from_rollups() {
 }
 
 #[tokio::test]
+async fn stats_overview_long_range_never_shows_less_than_raw_rows() {
+    let (log, _clock) = harness(QueryLogConfig::default()).await;
+    let events = vec![
+        Spec::new(at_secs(BASE_SECS - 60), "a.example.com").event(),
+        Spec::new(at_secs(BASE_SECS - 120), "b.example.com").event(),
+    ];
+    log.insert_batch(events).await.unwrap();
+    // No rollup pass yet: the rollup tables are empty.
+    let (status, _, body) = request(&log, "/api/v1/stats/overview?from=2023-10-01T00:00:00Z").await;
+    assert_eq!(status, StatusCode::OK);
+    let overview = &json(&body)["data"];
+    assert_eq!(overview["source"], "raw");
+    assert_eq!(overview["total"], 2);
+}
+
+#[tokio::test]
 async fn stats_profile_filter_scopes_every_dashboard_endpoint() {
     let (log, _clock) = harness(QueryLogConfig::default()).await;
     let mut events = Vec::new();

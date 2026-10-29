@@ -257,11 +257,17 @@ pub(crate) async fn start(
     }
 
     // Scheduled backups run from the same state the API serves.
+    // The same hourly tick (first one immediately at startup) folds the raw
+    // query log into the stats rollups the long dashboard windows read.
     let backup_state = state.clone();
+    let rollup_log = Arc::clone(query_log);
     let backup = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(BACKUP_CHECK_INTERVAL);
         loop {
             ticker.tick().await;
+            if let Err(error) = rollup_log.run_rollup().await {
+                tracing::warn!(code = error.code(), "stats rollup failed");
+            }
             if let Err(error) = run_backup_if_due(&backup_state).await {
                 tracing::warn!(code = error.code(), "scheduled backup failed");
             }

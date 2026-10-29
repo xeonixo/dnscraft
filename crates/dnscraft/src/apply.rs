@@ -79,6 +79,13 @@ impl ApplyResolver for ResolverApplier {
     }
 }
 
+/// Rejects filter lists with a non-http(s) URL (`filter_list.url_invalid`).
+fn check_list_urls(config: &FilterConfig) -> Result<(), ControlApiError> {
+    config
+        .validate_list_urls()
+        .map_err(|error| module_error(error.code(), error.to_string()))
+}
+
 /// Applies the `filtering` section by rebuilding the filter snapshot.
 struct FilteringApplier {
     engine: Arc<FilterEngine>,
@@ -86,12 +93,14 @@ struct FilteringApplier {
 
 impl ApplyFiltering for FilteringApplier {
     fn validate(&self, config: &Value) -> Result<(), ControlApiError> {
-        parse::<FilterConfig>(config, FILTERING_INVALID).map(|_| ())
+        let parsed = parse::<FilterConfig>(config, FILTERING_INVALID)?;
+        check_list_urls(&parsed)
     }
 
     fn apply<'a>(&'a self, config: &'a Value) -> ModuleFuture<'a> {
         Box::pin(async move {
             let parsed = parse::<FilterConfig>(config, FILTERING_INVALID)?;
+            check_list_urls(&parsed)?;
             apply_filter_config_offline(&self.engine, parsed).await
         })
     }
@@ -282,6 +291,19 @@ mod tests {
         assert!(parse::<ListenersConfig>(&listeners, LISTENERS_INVALID).is_ok());
         assert!(parse::<TlsConfig>(&tls, TLS_INVALID).is_ok());
 
+        let bad = FilterConfig {
+            lists: vec![dnscraft_filtering::ListConfig {
+                id: dnscraft_filtering::ListId::new("l").unwrap(),
+                name: "l".into(),
+                source: dnscraft_filtering::ListSourceSpec::Url("javascript:alert(1)".into()),
+                enabled: true,
+            }],
+            ..FilterConfig::default()
+        };
+        let error = check_list_urls(&bad).unwrap_err();
+        assert!(
+            matches!(error, ControlApiError::Module { code, .. } if code == "filter_list.url_invalid")
+        );
         let error = parse::<FilterConfig>(&json!({ "sets": "no" }), FILTERING_INVALID).unwrap_err();
         assert_eq!(error.code(), FILTERING_INVALID);
     }

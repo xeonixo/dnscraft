@@ -180,6 +180,19 @@ pub struct FilterConfig {
 }
 
 impl FilterConfig {
+    /// Rejects list URLs that are not `http(s)://host/...`
+    /// (`filter_list.url_invalid`). Called on config validation and at build.
+    pub fn validate_list_urls(&self) -> Result<(), SnapshotError> {
+        for l in &self.lists {
+            if let ListSourceSpec::Url(url) = &l.source
+                && !list_url_ok(url)
+            {
+                return Err(SnapshotError::ListUrlInvalid(l.id.clone()));
+            }
+        }
+        Ok(())
+    }
+
     /// [`Self::max_list_size_mb`] in bytes, saturating on absurd values.
     pub fn max_list_size_bytes(&self) -> u64 {
         self.max_list_size_mb.saturating_mul(1024 * 1024)
@@ -263,6 +276,9 @@ pub enum SnapshotError {
     /// Two lists share an id.
     #[error("duplicate list id {0}")]
     DuplicateList(ListId),
+    /// A list URL is not an `http(s)://` URL with a host.
+    #[error("list {0} has an invalid url")]
+    ListUrlInvalid(ListId),
     /// Two MCP rules of a set share an id.
     #[error("set {set} has duplicate MCP rule id {id}")]
     DuplicateMcpRuleId {
@@ -302,6 +318,22 @@ pub enum SnapshotError {
     Index(#[from] IndexError),
 }
 
+/// Whether `url` is `http(s)://host[...]` without whitespace or userinfo.
+pub(crate) fn list_url_ok(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let Some(rest) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    !authority.is_empty()
+        && !authority.contains('@')
+        && !authority.starts_with(':')
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
 impl SnapshotError {
     /// Stable, locale-neutral code.
     pub fn code(&self) -> &'static str {
@@ -309,6 +341,7 @@ impl SnapshotError {
             Self::UnknownList { .. } => "filter_set.unknown_list",
             Self::DuplicateSet(_) => "filter_set.duplicate_set",
             Self::DuplicateList(_) => "filter_set.duplicate_list",
+            Self::ListUrlInvalid(_) => "filter_list.url_invalid",
             Self::DuplicateMcpRuleId { .. } => "filtering.config.mcp_rule_id_duplicate",
             Self::DuplicateMcpRule { .. } => "filtering.config.mcp_rule_duplicate",
             Self::InvalidMcpRuleExpiry { .. } => "filtering.config.mcp_rule_expiry",

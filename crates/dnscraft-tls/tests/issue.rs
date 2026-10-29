@@ -405,6 +405,20 @@ async fn renewal_installs_new_cert_and_passes_replaces() {
 }
 
 #[tokio::test]
+async fn already_replaced_retries_the_order_without_replaces() {
+    let env = setup(KeyType::EcdsaP256, Duration::from_secs(60)).await;
+    issue_with_clock_drive(&FakeAcmeDirectory::new(), &env)
+        .await
+        .unwrap();
+    let first_id = env.store.load().unwrap().unwrap().meta.ari_cert_id.unwrap();
+
+    let acme = FakeAcmeDirectory::failing(FakeAcmeFail::AlreadyReplaced);
+    issue_with_clock_drive(&acme, &env).await.unwrap();
+    assert_eq!(acme.replaces_log(), vec![Some(first_id), None]);
+    let _ = fs::remove_dir_all(&env.data);
+}
+
+#[tokio::test]
 async fn failed_renewal_records_stable_code_and_success_clears_it() {
     let env = setup(KeyType::EcdsaP256, Duration::from_secs(60)).await;
     issue_with_clock_drive(&FakeAcmeDirectory::new(), &env)

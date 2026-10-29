@@ -36,6 +36,19 @@ pub struct AriWindow {
     pub end: SystemTime,
 }
 
+/// Whether a certificate is still valid and outside the `renew_before` window,
+/// so a scheduled run (for example the first one after a process start) has
+/// nothing to do.
+pub fn renewal_not_needed(
+    not_after: Option<SystemTime>,
+    renew_before: Duration,
+    now: SystemTime,
+) -> bool {
+    not_after
+        .and_then(|na| na.checked_sub(renew_before))
+        .is_some_and(|target| now < target)
+}
+
 /// When the next renew/issue should run.
 ///
 /// - No certificate → `now` (issue immediately).

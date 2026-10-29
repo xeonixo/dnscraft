@@ -263,6 +263,17 @@ pub async fn auth_middleware(
     };
     let principal = match auth.validate(&cookie).await {
         Ok(principal) => principal,
+        Err(ControlApiError::AuthSessionExpired) => {
+            // Public sign-in routes treat a stale cookie as anonymous so the
+            // user can log in again; everything else is rejected and the
+            // browser is told to drop the dead cookie.
+            if is_public_auth_path(&path) {
+                return next.run(req).await;
+            }
+            let mut response = ControlApiError::AuthSessionExpired.into_response();
+            append_clear_cookie(&mut response);
+            return response;
+        }
         Err(err) => return err.into_response(),
     };
     if csrf::is_mutating(req.method()) {
@@ -277,6 +288,22 @@ pub async fn auth_middleware(
     }
     req.extensions_mut().insert(principal);
     next.run(req).await
+}
+
+/// Sign-in/out routes that must work with an invalid session cookie.
+fn is_public_auth_path(path: &str) -> bool {
+    path == "/api/v1/auth/local/login"
+        || path == "/api/v1/auth/logout"
+        || path.starts_with("/api/v1/auth/oidc/")
+}
+
+/// Adds a `Set-Cookie` that clears the session cookie.
+fn append_clear_cookie(response: &mut Response) {
+    if let Ok(value) = HeaderValue::from_str(&format!(
+        "{SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"
+    )) {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
 }
 
 /// Whether `path` belongs to the cookie-session family (`/api/v1`).

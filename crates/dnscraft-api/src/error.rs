@@ -199,13 +199,23 @@ pub enum ControlApiError {
     },
     /// A module rejected a configuration value; the module's own stable code is
     /// forwarded unchanged (for example `policy.config.unknown_filter_set`).
-    #[error("module error {code}")]
+    #[error("module error {code}{}", module_detail(.params))]
     Module {
         /// Stable module code (`<module>.<area>.<reason>`).
         code: &'static str,
         /// Non-secret context for the error envelope's `params`.
         params: Option<serde_json::Value>,
     },
+}
+
+/// `: <reason>` from a module error's `params.reason`, for logs and messages.
+fn module_detail(params: &Option<serde_json::Value>) -> String {
+    params
+        .as_ref()
+        .and_then(|p| p.get("reason"))
+        .and_then(serde_json::Value::as_str)
+        .map(|reason| format!(": {reason}"))
+        .unwrap_or_default()
 }
 
 impl ControlApiError {
@@ -304,6 +314,18 @@ pub(crate) fn serialize_err(err: serde_json::Error) -> ControlApiError {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    #[test]
+    fn module_error_display_carries_the_reason() {
+        let error = ControlApiError::Module {
+            code: "policy.config.invalid",
+            params: Some(serde_json::json!({ "reason": "unknown view x" })),
+        };
+        assert_eq!(
+            error.to_string(),
+            "module error policy.config.invalid: unknown view x"
+        );
+    }
+
     use super::*;
 
     #[test]

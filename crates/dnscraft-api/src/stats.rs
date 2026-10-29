@@ -418,7 +418,14 @@ impl QueryLog {
             .saturating_sub(retention_secs)
             .saturating_mul(1_000_000);
         if from < raw_horizon {
-            return rollup_overview(db, from, to, scope, dropped, stream_dropped).await;
+            let rolled =
+                rollup_overview(db, from, to, scope.clone(), dropped, stream_dropped).await?;
+            // Rollups can lag (or be empty before the first pass): never show
+            // less than the raw rows that exist in the window.
+            let raw_total = raw_counts(db, from, to, &scope).await?.total;
+            if raw_total <= rolled.total {
+                return Ok(rolled);
+            }
         }
         let counts = raw_counts(db, from, to, &scope).await?;
         let RawCounts {

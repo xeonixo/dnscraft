@@ -536,6 +536,10 @@ mod tests {
                 SnapshotError::DuplicateList(ListId::new("l").unwrap()),
             ),
             (
+                "filter_list.url_invalid",
+                SnapshotError::ListUrlInvalid(ListId::new("l").unwrap()),
+            ),
+            (
                 "filtering.config.mcp_rule_id_duplicate",
                 SnapshotError::DuplicateMcpRuleId {
                     set: SetId::new("s").unwrap(),

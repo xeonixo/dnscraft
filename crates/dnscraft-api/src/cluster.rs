@@ -148,6 +148,7 @@ pub fn node_scoped_views(snapshot: &Value, node_id: &str) -> Result<Value, Clust
 
 /// Filters node-scoped entries in a config snapshot for `node_id`.
 pub fn node_scoped_snapshot(snapshot: &Value, node_id: &str) -> Result<Value, ClusterError> {
+    let snapshot_before = snapshot;
     let mut snapshot = snapshot.clone();
     if let Some(views) = snapshot
         .get_mut("policy")
@@ -170,6 +171,33 @@ pub fn node_scoped_snapshot(snapshot: &Value, node_id: &str) -> Result<Value, Cl
             });
         }
     }
+    // Views dropped for this node must also disappear from everything that
+    // references them, or the policy build rejects the snapshot
+    // (`record override references unknown view`).
+    let dropped: Vec<String> = snapshot_views_dropped(snapshot_before, &snapshot);
+    if !dropped.is_empty()
+        && let Some(policy) = snapshot.get_mut("policy")
+    {
+        if let Some(records) = policy.get_mut("records").and_then(Value::as_array_mut) {
+            for overrides in records
+                .iter_mut()
+                .filter_map(|record| record.get_mut("overrides").and_then(Value::as_object_mut))
+            {
+                overrides.retain(|view, _| !dropped.contains(view));
+            }
+        }
+        if let Some(ids) = policy.get_mut("client_ids").and_then(Value::as_array_mut) {
+            for entry in ids.iter_mut().filter_map(Value::as_object_mut) {
+                if entry
+                    .get("view")
+                    .and_then(Value::as_str)
+                    .is_some_and(|view| dropped.iter().any(|d| d == view))
+                {
+                    entry.remove("view");
+                }
+            }
+        }
+    }
     if let Some(listeners) = snapshot
         .get_mut("listeners")
         .and_then(|section| section.get_mut("listeners"))
@@ -178,6 +206,27 @@ pub fn node_scoped_snapshot(snapshot: &Value, node_id: &str) -> Result<Value, Cl
         listeners.retain(|listener| nodes_include(listener.get("nodes"), node_id));
     }
     Ok(snapshot)
+}
+
+/// Ids of the policy views present in `before` but not in `after`.
+fn snapshot_views_dropped(before: &Value, after: &Value) -> Vec<String> {
+    let ids = |snapshot: &Value| -> Vec<String> {
+        snapshot
+            .pointer("/policy/views")
+            .and_then(Value::as_array)
+            .map(|views| {
+                views
+                    .iter()
+                    .filter_map(|view| view.get("id").and_then(Value::as_str).map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let kept = ids(after);
+    ids(before)
+        .into_iter()
+        .filter(|id| !kept.contains(id))
+        .collect()
 }
 
 fn nodes_include(nodes: Option<&Value>, node_id: &str) -> bool {
@@ -1392,6 +1441,7 @@ impl ClusterRuntime {
             queue_depth: 0,
             last_sync: None,
             degraded_nodes: 0,
+            last_apply_error: None,
         });
         if let (Some(version), Some(snapshot)) = (version, snapshot) {
             server.config_sync().publish(version, &snapshot)?;
@@ -1553,6 +1603,7 @@ impl ClusterRuntime {
             queue_depth,
             last_sync: None,
             degraded_nodes: 0,
+            last_apply_error: None,
         });
 
         let status = Arc::clone(&self.status);
@@ -1766,9 +1817,19 @@ async fn run_sub_node_loop(
     // Set once a connection is lost, so the next successful connect logs as
     // a reconnect rather than the first connect.
     let mut lost_connection = false;
+    // Consecutive failed config applies; drives the reconnect backoff.
+    let mut apply_failures: u32 = 0;
     loop {
         if *shutdown.borrow() {
             return;
+        }
+        if apply_failures > 0 {
+            let wake = Notify::new();
+            let deadline = add_duration(clock.now(), apply_retry_delay(apply_failures));
+            tokio::select! {
+                () = wait_until(clock.as_ref(), deadline, &wake) => {}
+                _ = shutdown.changed() => return,
+            }
         }
         let last_applied = match state.config_service_arc() {
             Some(service) => service
@@ -1844,14 +1905,26 @@ async fn run_sub_node_loop(
                     Ok(StreamRecord::ConfigPush(push)) => {
                         spawn_replay(&mut replay_pending, &queue, &replay_executor);
                         match client.apply_push(&push, applier.as_ref()).await {
-                            Ok(applied) => status.update(|status| {
-                                status.applied_version = Some(applied);
-                                status.lag = (push.config_version - applied).max(0);
-                                status.last_sync = Some(clock.now());
-                            }),
-                            Err(error) => {
-                                tracing::warn!(error = %error, "cluster config apply failed");
+                            Ok(applied) => {
+                                apply_failures = 0;
                                 status.update(|status| {
+                                    status.applied_version = Some(applied);
+                                    status.lag = (push.config_version - applied).max(0);
+                                    status.last_sync = Some(clock.now());
+                                    status.last_apply_error = None;
+                                })
+                            }
+                            Err(error) => {
+                                apply_failures = apply_failures.saturating_add(1);
+                                tracing::warn!(
+                                    error = %error,
+                                    version = push.config_version,
+                                    retry_in_secs = apply_retry_delay(apply_failures).as_secs(),
+                                    "cluster config apply failed"
+                                );
+                                let reason = error.to_string();
+                                status.update(|status| {
+                                    status.last_apply_error = Some(reason);
                                     status.master_reachable = false;
                                     status.lag = (push.config_version
                                         - status.applied_version.unwrap_or(0))
@@ -1952,6 +2025,12 @@ async fn run_sub_node_loop(
     }
 }
 
+/// Reconnect delay after `failures` consecutive config-apply failures:
+/// 2 s doubling, capped at 60 s.
+fn apply_retry_delay(failures: u32) -> Duration {
+    Duration::from_secs((2u64 << failures.saturating_sub(1).min(5)).min(60))
+}
+
 /// Spawns one offline-write replay pass if one is still pending.
 fn spawn_replay(
     pending: &mut Option<tokio::sync::OwnedMutexGuard<()>>,
@@ -1973,5 +2052,16 @@ fn spawn_replay(
 fn internal(error: ControlApiError) -> ClusterError {
     ClusterError::Internal {
         message: format!("{}: {error}", error.code()),
+    }
+}
+
+#[cfg(test)]
+mod apply_retry_tests {
+    use super::apply_retry_delay;
+
+    #[test]
+    fn apply_retry_delay_doubles_and_caps_at_a_minute() {
+        let secs: Vec<u64> = (1..=8).map(|n| apply_retry_delay(n).as_secs()).collect();
+        assert_eq!(secs, [2, 4, 8, 16, 32, 60, 60, 60]);
     }
 }

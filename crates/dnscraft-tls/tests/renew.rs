@@ -10,7 +10,7 @@ use dnscraft_tls::{
     AcmeDirectoryKind, AriWindow, BACKOFF_CAP, CertMeta, DEFAULT_EXPIRY_WARN, DEFAULT_RENEW_BEFORE,
     IssueState, KeyPem, LoadedCert, ManualClock, RenewFn, RenewScheduler, TlsError, TlsStatus,
     backoff_delay_with_rng, cert_flags, is_transient_renew_error, next_renewal,
-    next_renewal_with_rng,
+    next_renewal_with_rng, renewal_not_needed,
 };
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -300,4 +300,14 @@ async fn scheduler_backoff_after_transient_failure() {
         "retry after Retry-After window"
     );
     sched.stop().await;
+}
+
+#[test]
+fn renewal_not_needed_only_for_a_valid_cert_outside_the_window() {
+    let now = t0();
+    let rb = days(30);
+    assert!(renewal_not_needed(Some(now + days(60)), rb, now));
+    assert!(!renewal_not_needed(Some(now + days(10)), rb, now));
+    assert!(!renewal_not_needed(Some(now - days(1)), rb, now));
+    assert!(!renewal_not_needed(None, rb, now));
 }

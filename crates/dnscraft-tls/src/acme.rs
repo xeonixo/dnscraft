@@ -908,6 +908,8 @@ fn mark_failed(progress: &mut AcmeOrderStatus, err: &TlsError) {
 pub enum FakeAcmeFail {
     /// Fail while creating the order (before any challenge TXT is returned).
     Start,
+    /// Reject an order that carries `replaces` with `alreadyReplaced` (ARI).
+    AlreadyReplaced,
     /// Fail when challenges would be marked ready.
     Challenge,
     /// Fail at finalize / certificate mint.
@@ -1000,6 +1002,11 @@ impl FakeAcmeDirectory {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(replaces.map(str::to_owned));
+        if self.fail_at == Some(FakeAcmeFail::AlreadyReplaced) && replaces.is_some() {
+            return Err(TlsError::AcmeOrder {
+                message: "urn:ietf:params:acme:error:alreadyReplaced".into(),
+            });
+        }
         let mut txts = Vec::new();
         for (i, ident) in identifiers.iter().enumerate() {
             let host = ident.strip_prefix("*.").unwrap_or(ident.as_str());

@@ -53,6 +53,7 @@ async fn status_includes_the_six_cluster_fields_when_clustered() {
         queue_depth: 3,
         last_sync: Some(at(NOW)),
         degraded_nodes: 1,
+        last_apply_error: None,
     });
     let state = AppState::new().with_cluster_status(status);
     let body = status_body(state).await;

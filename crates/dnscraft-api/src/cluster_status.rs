@@ -30,6 +30,9 @@ pub struct ClusterStatus {
     /// Master only: connected nodes that have not acknowledged a config push
     /// within `config_apply_timeout` (zero on a sub-node).
     pub degraded_nodes: u32,
+    /// Sub-node: why the last config apply failed (module code and policy
+    /// detail); cleared by the next successful apply.
+    pub last_apply_error: Option<String>,
 }
 
 impl ClusterStatus {
@@ -44,6 +47,7 @@ impl ClusterStatus {
             "queue_depth": self.queue_depth,
             "last_sync": self.last_sync.map(rfc3339),
             "degraded_nodes": self.degraded_nodes,
+            "last_apply_error": self.last_apply_error,
         })
     }
 }

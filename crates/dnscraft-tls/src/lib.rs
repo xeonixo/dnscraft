@@ -65,7 +65,7 @@ pub use propagation::{resolve_nameservers, wait_for_txt, wait_for_txt_with_query
 pub use renew::{
     AriWindow, BACKOFF_BASE, BACKOFF_CAP, RenewFn, RenewFut, RenewScheduler, ScheduleFn, StatusFn,
     backoff_delay, backoff_delay_with_rng, current_ari_window, is_transient_renew_error,
-    next_renewal, next_renewal_with_rng,
+    next_renewal, next_renewal_with_rng, renewal_not_needed,
 };
 pub use resolver::CertResolver;
 

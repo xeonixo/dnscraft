@@ -297,6 +297,7 @@ async fn synced_config_applier_publishes_applied_version_before_config_ack() {
         queue_depth: 0,
         last_sync: None,
         degraded_nodes: 0,
+        last_apply_error: None,
     });
     let clock: Arc<dyn dnscraft_common::clock::Clock> = Arc::new(ClusterClock::new(at(NOW)));
     let applier = SyncedConfigApplier::new(Arc::clone(&service), "node-b")
@@ -1682,6 +1683,7 @@ async fn sub_node_retries_after_a_failed_config_apply_and_recovers() {
         .with_clock(api_clock)
         .with_filter_engine(filter_engine(&node_dir));
     let mut node_options = ClusterRuntimeOptions::new(node_dir.path());
+    let node_clock = Arc::clone(&cluster_clock);
     node_options.clock = cluster_clock;
     node_options.status = node_status.clone();
     node_options.join_token = Some(Secret::new(token.expose()));
@@ -1759,9 +1761,13 @@ async fn sub_node_retries_after_a_failed_config_apply_and_recovers() {
         .replace(snapshot("healthy"), &actor, None)
         .await
         .expect("master stores the healthy snapshot");
-    for _ in 0..40_000 {
+    for i in 0..40_000 {
         if node_service.current().await.unwrap().0 == Some(2) {
             break;
+        }
+        // The retry backoff runs on the injected clock.
+        if i % 500 == 0 {
+            node_clock.advance(Duration::from_secs(5));
         }
         tokio::task::yield_now().await;
     }
@@ -2429,6 +2435,27 @@ async fn a_default_view_invalid_on_the_node_is_rejected() {
     let error = node_scoped_views(&snapshot, "node-a").unwrap_err();
     assert_eq!(error.code(), "cluster.config.apply");
     assert!(error.to_string().contains("policy.config.invalid"));
+}
+
+#[test]
+fn node_scoped_snapshot_drops_overrides_and_pins_of_removed_views() {
+    let mut snapshot = views_snapshot();
+    snapshot["policy"]["records"] = json!([
+        { "name": "a.example", "type": "A", "rdata": "192.0.2.1",
+          "overrides": { "node-a-only": "192.0.2.2", "node-b-only": "192.0.2.3" } }
+    ]);
+    snapshot["policy"]["client_ids"] = json!([
+        "plain",
+        { "id": "pinned", "view": "node-b-only" },
+        { "id": "kept", "view": "node-a-only" }
+    ]);
+    let filtered = node_scoped_snapshot(&snapshot, "node-a").unwrap();
+    let overrides = filtered["policy"]["records"][0]["overrides"]
+        .as_object()
+        .unwrap();
+    assert_eq!(overrides.keys().collect::<Vec<_>>(), ["node-a-only"]);
+    assert!(filtered["policy"]["client_ids"][1].get("view").is_none());
+    assert_eq!(filtered["policy"]["client_ids"][2]["view"], "node-a-only");
 }
 
 #[test]
