@@ -215,11 +215,11 @@
 			{/each}
 		</select>
 		<div class="switch-row">
-			<span>{m.profiles_safesearch_label()}</span>
+			<span class="switch-text">{m.profiles_safesearch_label()}<small>{m.profiles_safesearch_hint()}</small></span>
 			<Switch bind:checked={formSafeSearch} aria-label={m.profiles_safesearch_label()} />
 		</div>
 		<div class="switch-row">
-			<span>{m.profiles_rebind_label()}</span>
+			<span class="switch-text">{m.profiles_rebind_label()}<small>{m.profiles_rebind_hint()}</small></span>
 			<Switch bind:checked={formRebind} aria-label={m.profiles_rebind_label()} />
 		</div>
 		<button type="button" class="expert-toggle" onclick={() => (expert = !expert)}>
@@ -227,15 +227,15 @@
 		</button>
 		{#if expert}
 			<div class="switch-row">
-				<span>{m.profiles_aaaa_label()}</span>
+				<span class="switch-text">{m.profiles_aaaa_label()}<small>{m.profiles_aaaa_hint()}</small></span>
 				<Switch bind:checked={formAaaa} aria-label={m.profiles_aaaa_label()} />
 			</div>
 			<div class="switch-row">
-				<span>{m.profiles_firefox_label()}</span>
+				<span class="switch-text">{m.profiles_firefox_label()}<small>{m.profiles_firefox_hint()}</small></span>
 				<Switch bind:checked={formFirefox} aria-label={m.profiles_firefox_label()} />
 			</div>
 			<div class="switch-row">
-				<span>{m.profiles_icloud_label()}</span>
+				<span class="switch-text">{m.profiles_icloud_label()}<small>{m.profiles_icloud_hint()}</small></span>
 				<Switch bind:checked={formIcloud} aria-label={m.profiles_icloud_label()} />
 			</div>
 			<p class="hint">{m.profiles_schedules_hint()}</p>
@@ -305,6 +305,15 @@
 		align-items: center;
 		justify-content: space-between;
 		min-height: 2.75rem;
+	}
+	.switch-text {
+		display: flex;
+		flex-direction: column;
+		padding: 0.5rem 1rem 0.5rem 0;
+	}
+	.switch-text small {
+		font-size: 0.8125rem;
+		color: var(--label-3);
 	}
 	.expert-toggle {
 		min-height: 2.75rem;
