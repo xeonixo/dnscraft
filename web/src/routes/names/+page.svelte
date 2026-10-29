@@ -7,17 +7,26 @@
 	import ResultNotice from '$lib/components/ResultNotice.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
 	import UnavailableNotice from '$lib/components/UnavailableNotice.svelte';
-	import { deleteRecord, listRecords, saveRecord, type PolicyRecord } from '$lib/api/policy';
+	import {
+		deleteRecord,
+		listRecords,
+		listViews,
+		saveRecord,
+		type PolicyRecord,
+		type PolicyView,
+	} from '$lib/api/policy';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
 	import { toDomainName } from '$lib/domain-name';
 	import { parseIp } from '$lib/policy/cidr';
 	import { domainLabel } from '$lib/policy/display';
+	import { displayText } from '$lib/safe-text';
 	import { m } from '$lib/paraglide/messages';
 
 	const RECORD_TYPES = ['A', 'AAAA', 'CNAME', 'TXT', 'SRV', 'MX', 'PTR'];
 	const isAdmin = $derived(auth.role === 'admin');
 	let result = $state<Result<PolicyRecord[]>>({ kind: 'loading' });
+	let views = $state<PolicyView[]>([]);
 	let sheetOpen = $state(false);
 	let confirmDelete = $state(false);
 	let busy = $state(false);
@@ -28,7 +37,11 @@
 	let formType = $state('A');
 	let formTtl = $state('60');
 	let formRdata = $state('');
-	let formOverrides = $state('');
+
+	/** One editable deviation row (Netzbereich → value). Empty value = inherit default. */
+	type OverrideRow = { key: number; view: string; value: string };
+	let overrideRows = $state<OverrideRow[]>([]);
+	let nextOverrideKey = 0;
 
 	const rows = $derived(result.kind === 'ok' ? result.data : []);
 
@@ -53,8 +66,14 @@
 		}));
 	});
 
+	const canAddOverride = $derived(
+		views.some((view) => !overrideRows.some((row) => row.view === view.id)),
+	);
+
 	async function load(): Promise<void> {
-		result = await settle(listRecords());
+		const [records, vws] = await Promise.all([settle(listRecords()), settle(listViews())]);
+		result = records;
+		if (vws.kind === 'ok') views = vws.data;
 	}
 
 	let submitted = $state(false);
@@ -77,13 +96,53 @@
 		return null;
 	});
 
+	function rowsFromOverrides(map: Record<string, string>): OverrideRow[] {
+		return Object.entries(map).map(([view, value]) => ({
+			key: nextOverrideKey++,
+			view,
+			value,
+		}));
+	}
+
+	/** Absent or blank value = inherit default (same as a missing key today). */
+	function overridesFromRows(list: OverrideRow[]): Record<string, string> {
+		const map: Record<string, string> = {};
+		for (const row of list) {
+			const view = row.view.trim();
+			const value = row.value.trim();
+			if (view === '' || value === '') continue;
+			map[view] = value;
+		}
+		return map;
+	}
+
+	function viewOptionsFor(row: OverrideRow): string[] {
+		const taken = new Set(
+			overrideRows.filter((other) => other.key !== row.key && other.view !== '').map((o) => o.view),
+		);
+		const ids = new Set(views.map((view) => view.id));
+		if (row.view !== '') ids.add(row.view);
+		return [...ids].filter((id) => !taken.has(id)).sort((a, b) => a.localeCompare(b));
+	}
+
+	function addOverrideRow(): void {
+		const taken = new Set(overrideRows.map((row) => row.view));
+		const next = views.find((view) => !taken.has(view.id));
+		if (!next) return;
+		overrideRows = [...overrideRows, { key: nextOverrideKey++, view: next.id, value: '' }];
+	}
+
+	function removeOverrideRow(key: number): void {
+		overrideRows = overrideRows.filter((row) => row.key !== key);
+	}
+
 	function openCreate(): void {
 		editing = null;
 		formName = '';
 		formType = 'A';
 		formTtl = '60';
 		formRdata = '';
-		formOverrides = '';
+		overrideRows = [];
 		confirmDelete = false;
 		failure = null;
 		submitted = false;
@@ -96,9 +155,7 @@
 		formType = record.type;
 		formTtl = String(record.ttl);
 		formRdata = record.rdata;
-		formOverrides = Object.entries(record.overrides)
-			.map(([view, value]) => `${view}=${value}`)
-			.join('\n');
+		overrideRows = rowsFromOverrides(record.overrides);
 		confirmDelete = false;
 		failure = null;
 		submitted = false;
@@ -108,18 +165,6 @@
 	function closeSheet(): void {
 		sheetOpen = false;
 		confirmDelete = false;
-	}
-
-	function parseOverrides(text: string): Record<string, string> {
-		const map: Record<string, string> = {};
-		for (const line of text.split('\n')) {
-			const trimmed = line.trim();
-			if (!trimmed) continue;
-			const eq = trimmed.indexOf('=');
-			if (eq <= 0) continue;
-			map[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
-		}
-		return map;
 	}
 
 	function overrideCount(record: PolicyRecord): number {
@@ -137,7 +182,7 @@
 				type: formType,
 				ttl: Number(formTtl) || 60,
 				rdata: formRdata.trim(),
-				overrides: parseOverrides(formOverrides),
+				overrides: overridesFromRows(overrideRows),
 			});
 			closeSheet();
 			await load();
@@ -275,9 +320,51 @@
 			aria-invalid={rdataError ? 'true' : undefined}
 		/>
 		{#if rdataError}<p class="error-text" role="alert">{rdataError}</p>{/if}
-		<label class="field-label" for="rec-overrides">{m.names_field_overrides()}</label>
-		<textarea id="rec-overrides" class="field area mono" bind:value={formOverrides} rows="3"
-		></textarea>
+
+		<p class="field-label" id="rec-overrides-label">{m.names_field_overrides()}</p>
+		<p class="hint" id="rec-overrides-hint">{m.names_overrides_hint()}</p>
+		{#if overrideRows.length === 0}
+			<p class="hint muted">{m.names_overrides_empty()}</p>
+		{:else}
+			<ul class="override-list" aria-labelledby="rec-overrides-label" aria-describedby="rec-overrides-hint">
+				{#each overrideRows as row, i (row.key)}
+					<li class="override-row">
+						<label class="sr-only" for="ov-view-{row.key}">{m.names_overrides_view()}</label>
+						<select
+							id="ov-view-{row.key}"
+							class="field"
+							bind:value={overrideRows[i].view}
+						>
+							<option value="">{m.names_overrides_choose()}</option>
+							{#each viewOptionsFor(row) as viewId (viewId)}
+								<option value={viewId}>{displayText(viewId, 60).text}</option>
+							{/each}
+						</select>
+						<label class="sr-only" for="ov-value-{row.key}">{m.names_overrides_value()}</label>
+						<input
+							id="ov-value-{row.key}"
+							class="field mono"
+							bind:value={overrideRows[i].value}
+							placeholder={m.names_overrides_value()}
+							autocomplete="off"
+						/>
+						<button
+							type="button"
+							class="remove-override"
+							aria-label={m.names_overrides_remove()}
+							onclick={() => removeOverrideRow(row.key)}
+						>
+							<Icon name="x" size="1rem" />
+						</button>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+		{#if canAddOverride}
+			<button type="button" class="add-override" onclick={addOverrideRow}
+				>{m.names_overrides_add()}</button
+			>
+		{/if}
 
 		{#snippet footer()}
 			{#if failure}
@@ -338,6 +425,14 @@
 		margin: 0;
 		font-size: 0.8125rem;
 		color: var(--danger);
+	}
+	.hint {
+		margin: 0 0 0.5rem;
+		font-size: 0.8125rem;
+		color: var(--label-3);
+	}
+	.hint.muted {
+		margin-bottom: 0.25rem;
 	}
 	.state,
 	.empty {
@@ -454,8 +549,47 @@
 		background: var(--surface);
 		font: inherit;
 	}
-	.area {
-		min-height: 4rem;
+	.override-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	.override-row {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+		gap: 0.5rem;
+		align-items: center;
+	}
+	.remove-override {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 2.75rem;
+		height: 2.75rem;
+		padding: 0;
+		border: 1px solid var(--separator);
+		border-radius: var(--r-ctl);
+		background: var(--surface-2);
+		color: var(--label-2);
+		cursor: pointer;
+	}
+	.remove-override:hover {
+		color: var(--danger);
+	}
+	.add-override {
+		display: block;
+		margin: 0.5rem 0 0;
+		padding: 0;
+		border: none;
+		background: transparent;
+		color: var(--accent);
+		font: inherit;
+		font-weight: 500;
+		cursor: pointer;
+		text-align: start;
 	}
 	.footer-error {
 		margin-bottom: 0.75rem;

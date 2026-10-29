@@ -158,6 +158,29 @@ describe('policy screens', () => {
 		expect(row.innerHTML).not.toContain('<script>');
 	});
 
+	it('opens the names sheet with Netzbereich deviation rows, not freitext overrides', async () => {
+		handlers['GET /api/v1/policy/records'] = () =>
+			ok({
+				records: [
+					{
+						name: 'nas.example.test.',
+						type: 'A',
+						ttl: 60,
+						rdata: '192.0.2.1',
+						overrides: { lan: '192.0.2.9' },
+					},
+				],
+			});
+		const user = userEvent.setup();
+		render(NamesPage);
+		await user.click(await screen.findByRole('button', { name: /192\.0\.2\.1\b/ }));
+		const dialog = await screen.findByRole('dialog');
+		expect(within(dialog).getByText(m.names_field_overrides())).toBeInTheDocument();
+		expect(within(dialog).queryByRole('textbox', { name: /zone=wert|zone=value/i })).toBeNull();
+		expect(within(dialog).getByLabelText(m.names_overrides_view())).toHaveValue('lan');
+		expect(within(dialog).getByLabelText(m.names_overrides_value())).toHaveValue('192.0.2.9');
+	});
+
 	it('lists clients and creates a manual entry', async () => {
 		handlers['POST /api/v1/clients/manual'] = () =>
 			ok({ version: 2, entry: { name: 'TV', ip: '192.0.2.9' } });

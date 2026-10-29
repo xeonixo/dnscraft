@@ -234,6 +234,18 @@ describe('client side validation', () => {
 
 	it('validates a name record owner and its data', async () => {
 		handlers['GET /api/v1/policy/records'] = () => ok({ records: [] });
+		handlers['GET /api/v1/policy/views'] = () =>
+			ok({
+				views: [
+					{
+						id: 'lan',
+						is_default: true,
+						subnets: ['192.0.2.0/24'],
+						nodes: [],
+						profile: 'default',
+					},
+				],
+			});
 		const user = userEvent.setup();
 		render(NamesPage);
 		await user.click(await screen.findByRole('button', { name: m.names_add() }));
