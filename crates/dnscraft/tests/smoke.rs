@@ -279,10 +279,23 @@ async fn boots_every_engine_and_serves_the_control_api() {
     let (status, body) = get(port, "/api/v1/backups", &admin);
     assert_eq!(status, 200, "backups: {body}");
 
-    // No blocked-services catalog is cached offline, so it reports unavailable.
+    // Services endpoint must answer. Offline boots report `available: false`;
+    // when the filter scheduler can reach the default catalog URL (CI with
+    // network), the same call may already show a live catalog — both are OK.
     let (status, services) = get(port, "/api/v1/filtering/services", &admin);
     assert_eq!(status, 200, "services: {services}");
-    assert_eq!(services["data"]["available"], false, "services: {services}");
+    let available = services["data"]["available"]
+        .as_bool()
+        .expect("services.available bool");
+    if available {
+        let items = services["data"]["items"]
+            .as_array()
+            .expect("services.items array when available");
+        assert!(
+            !items.is_empty(),
+            "available catalog must list services: {services}"
+        );
+    }
 
     app.shutdown(Duration::from_secs(1)).await;
     let _ = std::fs::remove_dir_all(&data_dir);
