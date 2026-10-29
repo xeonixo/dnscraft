@@ -387,6 +387,9 @@ async fn start_cluster(
 
     let mut options = ClusterRuntimeOptions::new(data_dir);
     options.tls_resolver = tls_resolver;
+    if let Some(engine) = engines.tls.as_ref() {
+        (options.tls_names, options.tls_renew_before) = engine.cert_request_params().await;
+    }
     options.join_token = enrollment.join_token.clone();
     options.master_cert_pem = enrollment.master_cert_pem.clone();
     let runtime = ClusterRuntime::start(cluster.clone(), &state, options)

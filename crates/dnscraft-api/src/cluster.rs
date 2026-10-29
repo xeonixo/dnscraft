@@ -267,6 +267,77 @@ impl CertInstaller for TlsCertInstaller {
     }
 }
 
+/// Minimum spacing between on-connect certificate requests.
+const CERT_REQUEST_MIN_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Sub-node: requests a certificate from the master on (re)connect when none
+/// is installed or the current one expires within `renew_before`.
+pub struct CertRequester {
+    installer: Arc<dyn CertInstaller>,
+    resolver: Arc<CertResolver>,
+    store: CertStore,
+    names: Vec<String>,
+    renew_before: Duration,
+    last_attempt: Mutex<Option<std::time::Instant>>,
+}
+
+impl CertRequester {
+    /// Builds a requester; `names` empty makes [`Self::ensure`] a no-op.
+    pub fn new(
+        installer: Arc<dyn CertInstaller>,
+        resolver: Arc<CertResolver>,
+        store: CertStore,
+        names: Vec<String>,
+        renew_before: Duration,
+    ) -> Self {
+        Self {
+            installer,
+            resolver,
+            store,
+            names,
+            renew_before,
+            last_attempt: Mutex::new(None),
+        }
+    }
+
+    fn needed(&self, now: SystemTime) -> bool {
+        if !self.resolver.has_cert() {
+            return true;
+        }
+        match self.store.load() {
+            Ok(Some(cert)) => cert
+                .not_after
+                .duration_since(now)
+                .map_or(true, |left| left < self.renew_before),
+            _ => false,
+        }
+    }
+
+    /// Requests a certificate when needed, at most once per 60 s. Failures are
+    /// logged; the next reconnect retries.
+    pub async fn ensure(&self, client: &ClusterClient, now: SystemTime) {
+        if self.names.is_empty() || !self.needed(now) {
+            return;
+        }
+        {
+            let mut last = self
+                .last_attempt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if last.is_some_and(|at| at.elapsed() < CERT_REQUEST_MIN_INTERVAL) {
+                return;
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        if let Err(error) = client
+            .request_tls_certificate(&self.names, self.installer.as_ref())
+            .await
+        {
+            tracing::warn!(error = %error, "cluster TLS certificate request on connect failed");
+        }
+    }
+}
+
 /// Master signer: finalizes a sub-node's CSR through the TLS engine's ACME
 /// account. The node's key stays on the node.
 pub struct TlsEngineCsrSigner {
@@ -1212,6 +1283,11 @@ pub struct ClusterRuntimeOptions {
     pub master_cert_pem: Option<String>,
     /// Live TLS resolver a pushed certificate is installed into.
     pub tls_resolver: Option<Arc<CertResolver>>,
+    /// Names a sub-node requests its certificate for on (re)connect. Empty
+    /// disables the on-connect request.
+    pub tls_names: Vec<String>,
+    /// Request a new certificate when the current one expires within this.
+    pub tls_renew_before: Duration,
 }
 
 impl ClusterRuntimeOptions {
@@ -1225,6 +1301,8 @@ impl ClusterRuntimeOptions {
             join_token: None,
             master_cert_pem: None,
             tls_resolver: None,
+            tls_names: Vec::new(),
+            tls_renew_before: Duration::from_secs(30 * 24 * 3600),
         }
     }
 }
@@ -1349,7 +1427,17 @@ impl ClusterRuntime {
     /// node's CSR is finalized through ACME. No-op unless this is the master.
     pub fn attach_tls_engine(&self, engine: Arc<TlsEngine>) {
         if let Some(server) = &self.server {
+            // After every successful issuance tell the sub-nodes to fetch it.
+            let broadcast = server.broadcast_handle();
+            engine.set_on_issued(Arc::new(move |names| broadcast.notify_tls_renewed(names)));
             server.attach_tls_signer(Arc::new(TlsEngineCsrSigner::new(engine)));
+        }
+    }
+
+    /// Attaches a custom CSR signer. No-op unless this is the master.
+    pub fn attach_tls_signer(&self, signer: Arc<dyn dnscraft_cluster::TlsCsrSigner>) {
+        if let Some(server) = &self.server {
+            server.attach_tls_signer(signer);
         }
     }
 
@@ -1576,11 +1664,26 @@ impl ClusterRuntime {
         let auth_applier: Option<Arc<dyn AuthSnapshotApplier>> = auth_state
             .clone()
             .map(|auth| Arc::new(StateAuthApplier::new(auth)) as Arc<dyn AuthSnapshotApplier>);
+        let mut cert_requester: Option<Arc<CertRequester>> = None;
         let cert_installer: Option<Arc<dyn CertInstaller>> = match (
             options.tls_resolver.clone(),
             CertStore::open(&options.data_dir),
         ) {
-            (Some(resolver), Ok(store)) => Some(Arc::new(TlsCertInstaller::new(resolver, store))),
+            (Some(resolver), Ok(store)) => {
+                let installer: Arc<dyn CertInstaller> =
+                    Arc::new(TlsCertInstaller::new(Arc::clone(&resolver), store));
+                // A second handle on the same directory, read-only use.
+                if let Ok(read_store) = CertStore::open(&options.data_dir) {
+                    cert_requester = Some(Arc::new(CertRequester::new(
+                        Arc::clone(&installer),
+                        resolver,
+                        read_store,
+                        options.tls_names.clone(),
+                        options.tls_renew_before,
+                    )));
+                }
+                Some(installer)
+            }
             _ => None,
         };
         let runtime_applier = Arc::new(StateRuntimeApplier::new(state.clone()));
@@ -1684,6 +1787,7 @@ impl ClusterRuntime {
                 applier,
                 auth_applier,
                 cert_installer,
+                cert_requester,
                 runtime_applier,
                 connection_streamer,
                 status,
@@ -1803,6 +1907,7 @@ async fn run_sub_node_loop(
     applier: Arc<SyncedConfigApplier>,
     auth_applier: Option<Arc<dyn AuthSnapshotApplier>>,
     cert_installer: Option<Arc<dyn CertInstaller>>,
+    cert_requester: Option<Arc<CertRequester>>,
     runtime_applier: Arc<StateRuntimeApplier>,
     log_streamer: Option<Arc<LogStreamer>>,
     status: Arc<ClusterStatusHandle>,
@@ -1864,6 +1969,13 @@ async fn run_sub_node_loop(
             tracing::info!("reconnected to the cluster master");
         } else {
             tracing::info!("connected to the cluster master");
+        }
+        if let Some(requester) = &cert_requester {
+            // Background: the master's signing may take a while.
+            let requester = Arc::clone(requester);
+            let client = Arc::clone(&client);
+            let now = clock.now();
+            tokio::spawn(async move { requester.ensure(&client, now).await });
         }
 
         // Resume the query-log outbox from the master's cursor. A master

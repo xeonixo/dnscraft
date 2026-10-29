@@ -46,6 +46,9 @@ pub struct EngineDeps {
     pub allow_http_for_tests: bool,
 }
 
+/// Callback run with the certificate names after a successful issuance.
+pub type IssuedHook = Arc<dyn Fn(&[String]) + Send + Sync>;
+
 /// Owns the certificate store, hot-reload resolver, and background tasks.
 ///
 /// Drop aborts the renew scheduler and DynDNS loop. Background tasks hold only
@@ -81,6 +84,13 @@ pub struct EngineInner {
     /// node CSR order and the master's own renewal must not overlap.
     order_lock: Mutex<()>,
     acme_enabled: Arc<AtomicBool>,
+    /// False on a cluster sub-node: certificates come from the master, this
+    /// node never orders them itself.
+    acme_allowed: AtomicBool,
+    /// Called with the certificate names after every successful issuance.
+    on_issued: std::sync::RwLock<Option<IssuedHook>>,
+    /// This node's id (from config); `None` falls back to `DNSCRAFT_NODE_ID`.
+    node_id: std::sync::RwLock<Option<String>>,
     dyndns_enabled: Arc<AtomicBool>,
     allow_http_for_tests: bool,
     renew_success: AtomicU64,
@@ -234,6 +244,9 @@ impl TlsEngine {
             dyndns_lock: Mutex::new(()),
             order_lock: Mutex::new(()),
             acme_enabled: Arc::clone(&acme_enabled),
+            acme_allowed: AtomicBool::new(true),
+            on_issued: std::sync::RwLock::new(None),
+            node_id: std::sync::RwLock::new(None),
             dyndns_enabled: Arc::clone(&dyndns_enabled),
             allow_http_for_tests: deps.allow_http_for_tests,
             renew_success: AtomicU64::new(0),
@@ -311,6 +324,44 @@ impl TlsEngine {
         Ok(())
     }
 
+    /// Sets the cluster context: this node's id (used for per-node DynDNS
+    /// profiles) and whether this node may order ACME certificates itself
+    /// (`false` on a sub-node). DynDNS, store loading and hot reload are
+    /// unaffected.
+    pub fn set_node_context(&self, node_id: Option<String>, acme_allowed: bool) {
+        *self
+            .inner
+            .node_id
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = node_id;
+        self.inner
+            .acme_allowed
+            .store(acme_allowed, Ordering::SeqCst);
+        if !acme_allowed {
+            self.inner.acme_enabled.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// Registers a callback run after every successful issuance/renewal
+    /// (the cluster master uses it to tell sub-nodes to fetch the new cert).
+    pub fn set_on_issued(&self, hook: IssuedHook) {
+        *self
+            .inner
+            .on_issued
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+    }
+
+    /// Certificate names and renew window, for a cluster sub-node that
+    /// requests its certificate from the master.
+    pub async fn cert_request_params(&self) -> (Vec<String>, Duration) {
+        let cfg = self.inner.config.read().await;
+        (
+            crate::default_identifiers(&cfg.public_domain).to_vec(),
+            cfg.renew_before,
+        )
+    }
+
     /// Validates `config`, swaps it in, and updates background flags.
     ///
     /// A change of `public_domain` triggers a renewal when ACME is enabled.
@@ -322,7 +373,7 @@ impl TlsEngine {
 
         let old_domain = self.inner.config.read().await.public_domain.clone();
         let domain_changed = old_domain != config.public_domain;
-        let acme_on = config.acme.enabled;
+        let acme_on = config.acme.enabled && self.inner.acme_allowed.load(Ordering::SeqCst);
         let acme_was_on = self.inner.acme_enabled.load(Ordering::SeqCst);
         let auto_deactivate = config.acme.account.auto_deactivate;
         let manual = config.manual.clone();
@@ -597,7 +648,8 @@ impl TlsEngine {
 
     /// Forces a new certificate with a fresh private key.
     pub async fn rotate_key(&self) -> Result<(), TlsError> {
-        let acme_enabled = self.inner.config.read().await.acme.enabled;
+        let acme_enabled = self.inner.config.read().await.acme.enabled
+            && self.inner.acme_allowed.load(Ordering::SeqCst);
         if !acme_enabled {
             return Err(TlsError::CertRotateFailed {
                 message: "ACME is disabled".into(),
@@ -700,7 +752,10 @@ impl EngineInner {
         };
 
         let cfg = self.config.read().await.clone();
-        let result = if !cfg.acme.enabled {
+        let result = if !self.acme_allowed.load(Ordering::SeqCst) {
+            info!(code = "tls.acme.disabled_on_sub_node", "ACME order skipped");
+            Err(TlsError::config("ACME is disabled on a sub-node"))
+        } else if !cfg.acme.enabled {
             Err(TlsError::config("ACME is disabled"))
         } else {
             let _order = self.order_lock.lock().await;
@@ -719,7 +774,18 @@ impl EngineInner {
         let _ = tx.send(result.clone());
         *self.issue_flight.lock().await = None;
 
-        if cfg.acme.enabled {
+        if result.is_ok() {
+            let hook = self
+                .on_issued
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(hook) = hook {
+                hook(&crate::default_identifiers(&cfg.public_domain));
+            }
+        }
+
+        if cfg.acme.enabled && self.acme_allowed.load(Ordering::SeqCst) {
             let counter = if result.is_ok() {
                 &self.renew_success
             } else {
@@ -738,6 +804,9 @@ impl EngineInner {
     }
 
     async fn sign_csr(&self, csr_pem: &str) -> Result<String, TlsError> {
+        if !self.acme_allowed.load(Ordering::SeqCst) {
+            return Err(TlsError::config("ACME is disabled on a sub-node"));
+        }
         let _order = self.order_lock.lock().await;
         let cfg = self.config.read().await.clone();
         let cf = self.cloudflare.read().await.clone();
@@ -763,7 +832,12 @@ impl EngineInner {
         }
         let cf = self.cloudflare.read().await.clone();
         // Cluster: pick this node's hostname / public_entry from dyndns.nodes.
-        let node_id = std::env::var("DNSCRAFT_NODE_ID").ok();
+        let node_id = self
+            .node_id
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .or_else(|| std::env::var("DNSCRAFT_NODE_ID").ok());
         let dyndns = cfg.dyndns.resolve_for_node(node_id.as_deref());
         let (result, outcome) = dyndns_pass(&dyndns, &cfg.public_domain, &self.echo, &cf).await;
         let now = self.clock.now();

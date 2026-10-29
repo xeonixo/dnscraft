@@ -289,10 +289,15 @@ pub(crate) async fn build_engines(
     let tls = if config.tls.public_domain.trim().is_empty() {
         None
     } else {
-        Some(Arc::new(
-            TlsEngine::open(config.tls.clone(), &data_dir, clock)
-                .map_err(|e| Error::startup("dnscraft.startup.tls", format!("tls: {e}")))?,
-        ))
+        let engine = TlsEngine::open(config.tls.clone(), &data_dir, clock)
+            .map_err(|e| Error::startup("dnscraft.startup.tls", format!("tls: {e}")))?;
+        // A sub-node gets its certificate from the master and never orders one.
+        let sub_node = config
+            .cluster
+            .as_ref()
+            .is_some_and(|c| matches!(c.role, dnscraft_cluster::Role::SubNode));
+        engine.set_node_context(Some(node_id.as_str().to_owned()), !sub_node);
+        Some(Arc::new(engine))
     };
 
     Ok(Engines {

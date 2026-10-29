@@ -940,3 +940,111 @@ async fn revoke_acme_cert_at_ca_when_acme_is_disabled() {
     drop(engine);
     let _ = fs::remove_dir_all(&data);
 }
+
+fn deps_with(mock: &MockCloudflare, acme: Arc<FakeAcmeDirectory>, echo: EchoClient) -> EngineDeps {
+    EngineDeps {
+        allow_http_for_tests: true,
+        acme,
+        cloudflare_base_url: Some(mock.base_url()),
+        echo,
+        token: Secret::new(TOKEN),
+    }
+}
+
+#[tokio::test]
+async fn dyndns_uses_configured_node_id_for_its_profile() {
+    let data = temp_dir("node-id");
+    let (mock, _ns) = mock_cf_with_ns().await;
+    let echo = MockEcho::start([trace_body("203.0.113.41")]).await;
+
+    let mut cfg = base_cfg();
+    cfg.acme.enabled = false;
+    cfg.dyndns.enabled = true;
+    cfg.dyndns.echo_url = echo.url();
+    cfg.dyndns.ipv4 = true;
+    cfg.dyndns.ipv6 = false;
+    cfg.dyndns.reserved_labels = vec!["node1".into(), "ns1".into(), "ns2".into()];
+    cfg.dyndns.nodes = ["node1", "node2"]
+        .iter()
+        .enumerate()
+        .map(|(i, id)| dnscraft_tls::DynDnsNodeProfile {
+            node_id: (*id).into(),
+            hostname: format!("ns{}.dns.example.com", i + 1),
+            enabled: true,
+            ipv4: true,
+            ipv6: false,
+            ..Default::default()
+        })
+        .collect();
+
+    let engine = TlsEngine::open_with(
+        cfg,
+        &data,
+        clock(),
+        deps_with(
+            &mock,
+            Arc::new(FakeAcmeDirectory::new()),
+            EchoClient::unbound().unwrap(),
+        ),
+    )
+    .unwrap();
+    engine.set_node_context(Some("node2".into()), true);
+    engine.dyndns_now().await.expect("dyndns");
+
+    let recs = mock.records().await;
+    assert!(recs.iter().any(|r| r.name == "ns2.dns.example.com"));
+    assert!(!recs.iter().any(|r| r.name == "ns1.dns.example.com"));
+}
+
+#[tokio::test]
+async fn sub_node_never_orders_acme_even_when_snapshot_enables_it() {
+    let data = temp_dir("sub-node");
+    let (mock, _ns) = mock_cf_with_ns().await;
+    let mut off = base_cfg();
+    off.acme.enabled = false;
+    let acme = Arc::new(FakeAcmeDirectory::new());
+    let engine = TlsEngine::open_with(
+        off,
+        &data,
+        clock(),
+        deps_with(&mock, acme.clone(), EchoClient::unbound().unwrap()),
+    )
+    .unwrap();
+    engine.set_node_context(Some("node2".into()), false);
+
+    // Synced snapshot from the master says acme.enabled = true.
+    engine.apply_config(base_cfg()).await.unwrap();
+    assert!(engine.renew_now().await.is_err());
+    assert!(engine.rotate_key().await.is_err());
+    assert!(engine.sign_csr("csr").await.is_err());
+    assert!(
+        acme.replaces_log().is_empty(),
+        "no ACME order on a sub-node"
+    );
+    assert!(!engine.resolver().has_cert());
+}
+
+#[tokio::test]
+async fn on_issued_hook_runs_after_successful_issuance() {
+    let data = temp_dir("on-issued");
+    let (mock, _ns) = mock_cf_with_ns().await;
+    let engine = TlsEngine::open_with(
+        base_cfg(),
+        &data,
+        clock(),
+        deps_with(
+            &mock,
+            Arc::new(FakeAcmeDirectory::new()),
+            EchoClient::unbound().unwrap(),
+        ),
+    )
+    .unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&seen);
+    engine.set_on_issued(Arc::new(move |names| {
+        sink.lock().unwrap().extend(names.iter().cloned());
+    }));
+    engine.renew_now().await.expect("issue");
+    let names = seen.lock().unwrap().clone();
+    assert!(names.contains(&"dns.example.com".to_owned()));
+}
