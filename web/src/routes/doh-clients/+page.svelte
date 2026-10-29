@@ -31,6 +31,7 @@
 	import {
 		isIpLiteral,
 		isLanAddress,
+		nameHasHomeAddress,
 		isValidClientId,
 		labelTaken,
 		LABEL_MAX,
@@ -82,6 +83,7 @@
 	let formSuffix = $state(randomSuffix());
 	let formId = $state('');
 	let idTouched = $state(false);
+	let labelSubmitted = $state(false);
 	let formDevice = $state('');
 	let formView = $state('');
 
@@ -100,8 +102,9 @@
 		{ value: 'tls' as const, label: m.doh_protocol_tls() },
 	]);
 
-	const labelError = $derived.by<'taken' | 'long' | null>(() => {
+	const labelError = $derived.by<'required' | 'taken' | 'long' | null>(() => {
 		const label = formLabel.trim();
+		if (label === '' && labelSubmitted) return 'required';
 		if (Array.from(label).length > LABEL_MAX) return 'long';
 		if (labelTaken(label, rows, editing?.id ?? null)) return 'taken';
 		return null;
@@ -133,12 +136,7 @@
 			const homeViews = new Set(
 				views.filter((view) => view.is_default || view.subnets.length > 0).map((view) => view.id),
 			);
-			const hit = records.find(
-				(row) => row.type === 'A' && row.name.replace(/\.$/, '').toLowerCase() === recordName,
-			);
-			const homeOverride =
-				hit !== undefined && Object.keys(hit.overrides).some((key) => homeViews.has(key));
-			record = homeOverride ? 'ok' : 'warn';
+			record = nameHasHomeAddress(records, recordName, homeViews) ? 'ok' : 'warn';
 		}
 		return { domain, cert, listener, record, recordName };
 	});
@@ -269,6 +267,7 @@
 		formView = '';
 		failure = null;
 		confirmDelete = false;
+		labelSubmitted = false;
 		sheet = 'create';
 	}
 
@@ -289,6 +288,7 @@
 		formView = entry.view ?? '';
 		failure = null;
 		confirmDelete = false;
+		labelSubmitted = false;
 		sheet = 'edit';
 	}
 
@@ -313,6 +313,8 @@
 	}
 
 	async function submit(): Promise<void> {
+		labelSubmitted = true;
+		if (formLabel.trim() === '') return;
 		busy = true;
 		failure = null;
 		const label = formLabel.trim();
@@ -650,11 +652,13 @@
 					class:error-text={labelError !== null}
 					role={labelError ? 'alert' : undefined}
 				>
-					{labelError === 'taken'
-						? m.doh_label_taken()
-						: labelError === 'long'
-							? m.doh_label_too_long()
-							: m.doh_label_hint()}
+					{labelError === 'required'
+						? m.doh_label_required()
+						: labelError === 'taken'
+							? m.doh_label_taken()
+							: labelError === 'long'
+								? m.doh_label_too_long()
+								: m.doh_label_hint()}
 				</p>
 			</div>
 

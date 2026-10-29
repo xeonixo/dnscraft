@@ -25,7 +25,7 @@
 	import { auth } from '$lib/auth/state.svelte';
 	import { formatNodesDetail, nodeChoicesFor, toggleNodeId } from '$lib/cluster/nodes';
 	import { m } from '$lib/paraglide/messages';
-	import { bestPrefix, findInvalidRange, parseRanges } from '$lib/policy/cidr';
+	import { bestPrefix, findInvalidRange, parseCidr, parseRanges } from '$lib/policy/cidr';
 	import { displayText } from '$lib/safe-text';
 
 	type Failure = { code: string; params: Record<string, unknown> };
@@ -70,11 +70,30 @@
 	const invalidRange = $derived(findInvalidRange(formRanges));
 	/** The server refuses to delete a range that a Client ID is pinned to; its error carries the ids. */
 	const refusedPinned = $derived(failure?.params.reason === 'view_in_use');
-	const canSave = $derived(
-		!busy &&
-			invalidRange === null &&
-			(editing !== null || slugify(formId) !== ''),
+	let submitted = $state(false);
+	const idError = $derived(
+		editing === null && submitted && slugify(formId) === '' ? m.zones_id_required() : null,
 	);
+	/** The first range that another network range (or an earlier line) already lists. */
+	const duplicateRange = $derived.by(() => {
+		const seen = new Map<string, string | null>();
+		for (const view of rows) {
+			if (view.id === editing?.id) continue;
+			for (const subnet of view.subnets) {
+				const cidr = parseCidr(subnet);
+				if (cidr) seen.set(`${cidr.family}/${cidr.prefix}/${cidr.address}`, view.id);
+			}
+		}
+		for (const line of lines(formRanges)) {
+			const cidr = parseCidr(line);
+			if (!cidr) continue;
+			const key = `${cidr.family}/${cidr.prefix}/${cidr.address}`;
+			if (seen.has(key)) return { range: line, view: seen.get(key) ?? null };
+			seen.set(key, null);
+		}
+		return null;
+	});
+	const canSave = $derived(!busy && invalidRange === null && duplicateRange === null);
 	const nodeChoices = $derived(nodeChoicesFor(clusterNodeIds, formNodes));
 
 	function plural(count: number): string {
@@ -183,6 +202,7 @@
 
 	function resetForm(): void {
 		confirmDelete = false;
+		submitted = false;
 		failure = null;
 		sheetOpen = true;
 	}
@@ -213,17 +233,11 @@
 	}
 
 	async function submit(): Promise<void> {
+		submitted = true;
+		const id = editing?.id ?? slugify(formId);
+		if (!id) return;
 		busy = true;
 		failure = null;
-		const id = editing?.id ?? slugify(formId);
-		if (!id) {
-			failure = {
-				code: 'policy.config.invalid',
-				params: { reason: 'view id must match [a-z0-9-]{1,64}' },
-			};
-			busy = false;
-			return;
-		}
 		try {
 			await saveView(id, {
 				is_default: formDefault,
@@ -345,7 +359,15 @@
 			<div class="field-row">
 				{#if !editing}
 					<label class="field-label" for="zone-id">{m.zones_id_label()}</label>
-					<input id="zone-id" class="field" bind:value={formId} autocomplete="off" />
+					<input
+						id="zone-id"
+						class="field"
+						bind:value={formId}
+						autocomplete="off"
+						oninput={() => (failure = null)}
+						aria-invalid={idError ? 'true' : undefined}
+					/>
+					{#if idError}<p class="error-text" role="alert">{idError}</p>{/if}
 					{#if formId.trim() && slugify(formId)}
 						<p class="hint mono">{slugify(formId)}</p>
 					{/if}
@@ -372,11 +394,21 @@
 					class="field area mono"
 					bind:value={formRanges}
 					rows="4"
+					oninput={() => (failure = null)}
 					aria-invalid={invalidRange ? 'true' : undefined}
 					aria-describedby="zone-ranges-help"></textarea>
 				{#if invalidRange}
 					<p id="zone-ranges-help" class="error-text" role="alert">
 						{m.zones_range_invalid({ line: invalidRange.line })}
+					</p>
+				{:else if duplicateRange}
+					<p id="zone-ranges-help" class="error-text" role="alert">
+						{duplicateRange.view === null
+							? m.zones_range_duplicate_line({ range: displayText(duplicateRange.range, 60).text })
+							: m.zones_range_duplicate({
+									range: displayText(duplicateRange.range, 60).text,
+									view: displayText(duplicateRange.view, 60).text,
+								})}
 					</p>
 				{:else}
 					<p id="zone-ranges-help" class="hint">{m.zones_subnets_hint()}</p>

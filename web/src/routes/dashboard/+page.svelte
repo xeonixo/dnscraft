@@ -3,6 +3,7 @@
 	import { resolve } from '$app/paths';
 	import Banner from '$lib/components/Banner.svelte';
 	import Button from '$lib/components/Button.svelte';
+	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -15,7 +16,8 @@
 	import * as view from '$lib/dashboard/view';
 	import { listClusterNodes, type ClusterNode } from '$lib/api/cluster';
 	import { nodeLag, nodeRoleLabel, nodeStatusLabel, nodeVerdict } from '$lib/cluster/nodes';
-	import { settle, type Result } from '$lib/api/result';
+	import { listAllMcpRules, resumeFilterSet } from '$lib/api/mcp-rules';
+	import { failureOf, settle, type Result } from '$lib/api/result';
 	import {
 		getCacheStats,
 		getOverview,
@@ -23,6 +25,7 @@
 		getStatus,
 		getTopClients,
 		getTopDomains,
+		FILTER_SET,
 		getUpstreams,
 		type CacheStats,
 		type FlushResult,
@@ -84,6 +87,42 @@
 	/** The duration being confirmed; the sheet is mounted only while it is set. */
 	let pauseDuration = $state<PauseDuration | null>(null);
 	let cacheOpen = $state(false);
+	/** End of a running pause on the default filter set (RFC 3339), or null. */
+	let pausedUntil = $state<string | null>(null);
+	let clock = $state(Date.now());
+	let resumeBusy = $state(false);
+	let resumeFailure = $state<{ code: string; params: Record<string, unknown> } | null>(null);
+	const pauseRemainingMs = $derived(pausedUntil ? Date.parse(pausedUntil) - clock : 0);
+	const paused = $derived(pausedUntil !== null && pauseRemainingMs > 0);
+
+	/** Reads a pause that is already running (set elsewhere or before a reload); a failure shows no banner. */
+	async function loadPause(): Promise<void> {
+		try {
+			const rows = await listAllMcpRules('pauses', FILTER_SET);
+			const live = rows
+				.map((row) => row.paused_until ?? '')
+				.filter((instant) => Date.parse(instant) > Date.now())
+				.sort();
+			pausedUntil = live.at(-1) ?? null;
+		} catch {
+			// no banner
+		}
+	}
+
+	async function resume(): Promise<void> {
+		resumeBusy = true;
+		resumeFailure = null;
+		try {
+			await resumeFilterSet(FILTER_SET);
+			pausedUntil = null;
+			announce(m.dashboard_resumed());
+			poller.refresh();
+		} catch (cause) {
+			resumeFailure = failureOf(cause);
+		} finally {
+			resumeBusy = false;
+		}
+	}
 
 	/** One polling cycle reads every panel. Returns false when any read failed (triggers backoff). */
 	async function refreshAll(): Promise<boolean> {
@@ -116,10 +155,15 @@
 
 	onMount(() => {
 		poller.start();
+		void loadPause();
+		const tick = setInterval(() => (clock = Date.now()), 15_000);
 		void settle(listClusterNodes()).then((result) => {
 			if (result.kind === 'ok') clusterNodes = result.data;
 		});
-		return () => poller.stop();
+		return () => {
+			poller.stop();
+			clearInterval(tick);
+		};
 	});
 
 	/** Each non-revoked node with its config lag, in registry order. */
@@ -215,6 +259,8 @@
 
 	function onPaused(until: string): void {
 		pauseDuration = null;
+		pausedUntil = until;
+		clock = Date.now();
 		announce(m.dashboard_pause_success({ time: formatDateTime(new Date(until), locale) }));
 		poller.refresh();
 	}
@@ -251,6 +297,27 @@
 {/snippet}
 
 <div class="dash">
+	{#if paused && pausedUntil}
+		<Banner title={m.dashboard_paused_title()}>
+			<p>
+				{m.dashboard_paused_body({
+					time: formatDateTime(new Date(pausedUntil), locale),
+					minutes: formatNumber(Math.max(1, Math.ceil(pauseRemainingMs / 60_000)), locale),
+				})}
+			</p>
+			{#if isAdmin}
+				<p>
+					<Button variant="primary" disabled={resumeBusy} onclick={() => void resume()}>
+						{m.dashboard_resume()}
+					</Button>
+				</p>
+			{/if}
+			{#if resumeFailure}<ErrorNotice
+					code={resumeFailure.code}
+					params={resumeFailure.params}
+				/>{/if}
+		</Banner>
+	{/if}
 	{#if bootstrap}
 		<Banner title={m.dashboard_selfsigned_title()}>
 			<p>{m.dashboard_selfsigned_body({ names: bootstrap.names })}</p>

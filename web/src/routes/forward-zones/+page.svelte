@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import Button from '$lib/components/Button.svelte';
+	import ConfirmSheet from '$lib/components/ConfirmSheet.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
@@ -30,6 +31,8 @@
 	let formZone = $state('');
 	let formTargets = $state('');
 	let formValidate = $state(false);
+	let deleteTarget = $state<ForwardZoneEntry | null>(null);
+	let zoneError = $state<string | null>(null);
 
 	const rows = $derived(result.kind === 'ok' ? result.data.zones : []);
 	const version = $derived(result.kind === 'ok' ? result.data.version : null);
@@ -44,6 +47,7 @@
 		formTargets = '';
 		formValidate = false;
 		failure = null;
+		zoneError = null;
 		sheetOpen = true;
 	}
 
@@ -52,13 +56,20 @@
 		formZone = zone.zone;
 		formTargets = zone.targets.join('\n');
 		formValidate = zone.validate;
+		failure = null;
+		zoneError = null;
 		sheetOpen = true;
 	}
 
 	async function submit(): Promise<void> {
 		if (result.kind !== 'ok') return;
-		busy = true;
 		const zone = formZone.trim();
+		if (zone.replace(/\./g, '') === '') {
+			zoneError = m.forward_zone_required();
+			return;
+		}
+		failure = null;
+		busy = true;
 		const next: ForwardZoneEntry = {
 			// Id is internal only — derived from the apex, never asked of the user.
 			id: editing?.id || forwardZoneIdFromApex(zone),
@@ -85,11 +96,13 @@
 	async function removeZone(id: string): Promise<void> {
 		if (result.kind !== 'ok') return;
 		busy = true;
+		failure = null;
 		try {
 			await saveForwardZones(
 				rows.filter((z) => z.id !== id),
 				version,
 			);
+			deleteTarget = null;
 			await load();
 		} catch (cause) {
 			failure = failureOf(cause);
@@ -112,6 +125,10 @@
 {:else if result.kind === 'error'}
 	<ResultNotice {result} onretry={() => void load()} />
 {:else}
+	{#if failure && !sheetOpen && !deleteTarget}<ErrorNotice
+			code={failure.code}
+			params={failure.params}
+		/>{/if}
 	<div class="section-head">{m.forward_section()}</div>
 	<GroupedList>
 		{#each rows as zone (zone.id)}
@@ -120,7 +137,7 @@
 					{#if isAdmin}
 						<div class="actions">
 							<Button onclick={() => openEdit(zone)}>{m.action_edit()}</Button>
-							<Button variant="danger" disabled={busy} onclick={() => void removeZone(zone.id)}>
+							<Button variant="danger" disabled={busy} onclick={() => (deleteTarget = zone)}>
 								{m.action_delete()}
 							</Button>
 						</div>
@@ -137,6 +154,17 @@
 	<p class="footnote">{m.forward_footnote()}</p>
 {/if}
 
+{#if deleteTarget && isAdmin}
+	<ConfirmSheet
+		title={m.forward_delete_title()}
+		body={m.forward_delete_body({ zone: domainLabel(deleteTarget.zone) })}
+		{busy}
+		{failure}
+		oncancel={() => (deleteTarget = null)}
+		onconfirm={() => void removeZone(deleteTarget?.id ?? '')}
+	/>
+{/if}
+
 {#if sheetOpen && isAdmin}
 	<Sheet
 		open={sheetOpen}
@@ -144,7 +172,16 @@
 		onclose={() => (sheetOpen = false)}
 	>
 		<label class="field-label" for="fz-zone">{m.forward_domain_label()}</label>
-		<input id="fz-zone" class="field mono" bind:value={formZone} autocomplete="off" />
+		<input
+			id="fz-zone"
+			class="field mono"
+			bind:value={formZone}
+			autocomplete="off"
+			aria-invalid={zoneError ? 'true' : undefined}
+			aria-describedby={zoneError ? 'fz-zone-error' : undefined}
+			oninput={() => ((zoneError = null), (failure = null))}
+		/>
+		{#if zoneError}<p id="fz-zone-error" class="error-text" role="alert">{zoneError}</p>{/if}
 		<label class="field-label" for="fz-targets">{m.forward_targets_label()}</label>
 		<textarea id="fz-targets" class="field area mono" bind:value={formTargets} rows="3"></textarea>
 		<div class="switch-row">
@@ -193,6 +230,11 @@
 		font: inherit;
 		font-weight: 500;
 		cursor: pointer;
+	}
+	.error-text {
+		margin: 0.25rem 0 0;
+		font-size: 0.8125rem;
+		color: var(--danger);
 	}
 	.actions {
 		display: flex;

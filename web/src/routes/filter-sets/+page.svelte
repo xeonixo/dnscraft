@@ -22,7 +22,7 @@
 		type FilterSet,
 		type GuidedRule,
 	} from '$lib/api/filtering';
-	import { listProfiles, type PolicyProfile } from '$lib/api/policy';
+	import { ID_PATTERN, listProfiles, type PolicyProfile } from '$lib/api/policy';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -74,6 +74,13 @@
 	let editing = $state<FilterSet | null>(null);
 	let confirmDelete = $state(false);
 	let formId = $state('');
+	let submitted = $state(false);
+	const idError = $derived.by(() => {
+		if (editing) return null;
+		const id = formId.trim();
+		if (id === '') return submitted ? m.field_id_required() : null;
+		return ID_PATTERN.test(id) ? null : m.field_id_invalid();
+	});
 	let formName = $state('');
 	let formBlockMode = $state<FormBlockMode>('refused');
 	let formLists = $state<string[]>([]);
@@ -186,6 +193,7 @@
 		ruleAction = 'block';
 		ruleSubs = true;
 		failure = null;
+		submitted = false;
 		sheetOpen = true;
 		void loadLists();
 	}
@@ -245,8 +253,11 @@
 	}
 
 	async function submit(): Promise<void> {
-		busy = true;
+		submitted = true;
 		const id = editing?.id ?? formId.trim();
+		if (!editing && !ID_PATTERN.test(id)) return;
+		failure = null;
+		busy = true;
 		// "custom" means the stored custom IP is kept as it was; the form only offers the fixed modes.
 		const blockMode: BlockMode =
 			formBlockMode === 'custom' ? (editing?.block_mode ?? 'refused') : formBlockMode;
@@ -361,7 +372,15 @@
 				{#if !editing}
 					<div class="field-row">
 						<label class="field-label" for="fs-id">{m.filter_sets_id_label()}</label>
-						<input id="fs-id" class="field mono" bind:value={formId} />
+						<input
+							id="fs-id"
+							class="field mono"
+							bind:value={formId}
+							autocomplete="off"
+							aria-invalid={idError ? 'true' : undefined}
+							oninput={() => (failure = null)}
+						/>
+						{#if idError}<p class="error-text" role="alert">{idError}</p>{/if}
 					</div>
 				{/if}
 				<div class="field-row">
@@ -641,6 +660,11 @@
 		}
 	}
 
+	.error-text {
+		margin: 0;
+		font-size: 0.8125rem;
+		color: var(--danger);
+	}
 	.field-row {
 		display: flex;
 		flex-direction: column;

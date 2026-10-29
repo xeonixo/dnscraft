@@ -41,6 +41,18 @@
 	let busy = $state(false);
 	let failure = $state<{ code: string; params: Record<string, unknown> } | null>(null);
 
+	/** Config version plus last contact; the node this page runs on has no peer contact to show. */
+	function nodeMeta(node: ClusterNode): string {
+		const version = node.applied_config_version ?? '—';
+		if (!node.last_seen && (node.local === true || node.role === 'master')) {
+			return m.cluster_node_meta_local({ version });
+		}
+		const seen = node.last_seen
+			? formatDateTime(new Date(node.last_seen), locale)
+			: m.cluster_never_seen();
+		return m.cluster_node_meta({ version, seen });
+	}
+
 	async function load(): Promise<void> {
 		result = await settle(listClusterNodes());
 	}
@@ -126,14 +138,7 @@
 				label={displayText(node.node_id).text}
 				detail={node.revoked
 					? `${nodeRoleLabel(node.role)} · ${m.cluster_revoked()}`
-					: `${nodeRoleLabel(node.role)} · ${nodeStatusLabel(node, lag, locale)} · ${m.cluster_node_meta(
-							{
-								version: node.applied_config_version ?? '—',
-								seen: node.last_seen
-									? formatDateTime(new Date(node.last_seen), locale)
-									: m.cluster_never_seen(),
-							},
-						)}`}
+					: `${nodeRoleLabel(node.role)} · ${nodeStatusLabel(node, lag, locale)} · ${nodeMeta(node)}`}
 			>
 				{#snippet leading()}
 					{@const verdict = nodeVerdict(node, lag)}
@@ -143,7 +148,7 @@
 				{/snippet}
 				{#snippet trailing()}
 					<Button onclick={() => (detail = node)}>{m.cluster_detail()}</Button>
-					{#if isAdmin && !node.revoked}
+					{#if isAdmin && !node.revoked && node.role !== 'master' && node.local !== true}
 						<Button variant="danger" disabled={busy} onclick={() => (revokeTarget = node)}>
 							{m.cluster_revoke()}
 						</Button>

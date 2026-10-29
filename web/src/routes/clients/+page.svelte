@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
 	import Button from '$lib/components/Button.svelte';
+	import ConfirmSheet from '$lib/components/ConfirmSheet.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
@@ -19,6 +20,7 @@
 	import { ApiError } from '$lib/api/client';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
+	import { parseCidr, parseIp } from '$lib/policy/cidr';
 	import { displayText } from '$lib/safe-text';
 	import { m } from '$lib/paraglide/messages';
 
@@ -32,15 +34,34 @@
 	let formName = $state('');
 	let formIp = $state('');
 	let formDomain = $state('');
+	let deleteTarget = $state<string | null>(null);
+	let submitted = $state(false);
+
+	const nameError = $derived(
+		submitted && formName.trim() === '' ? m.clients_name_required() : null,
+	);
+	const ipError = $derived.by(() => {
+		const ip = formIp.trim();
+		if (ip === '') return submitted ? m.clients_ip_invalid() : null;
+		return ip.includes('/')
+			? parseCidr(ip)
+				? null
+				: m.clients_ip_invalid()
+			: parseIp(ip)
+				? null
+				: m.clients_ip_invalid();
+	});
 
 	const filtered = $derived.by(() => {
 		if (result.kind !== 'ok') return { synced: [] as DirectoryClient[], manual: [] };
 		const needle = search.trim().toLowerCase();
 		const match = (text: string) => !needle || text.toLowerCase().includes(needle);
+		// A manual entry also shows up in the directory after a sync: list it under manual only.
+		const manualNames = new Set(result.data.manual.map((c) => c.name));
 		return {
-			synced: result.data.clients.filter(
-				(c) => match(c.name) || c.ips.some((ip) => match(ip)) || match(c.id),
-			),
+			synced: result.data.clients
+				.filter((c) => !(c.source === 'manual' && manualNames.has(c.name)))
+				.filter((c) => match(c.name) || c.ips.some((ip) => match(ip)) || match(c.id)),
 			manual: result.data.manual.filter((c) => match(c.name)),
 		};
 	});
@@ -71,7 +92,18 @@
 		}
 	}
 
+	function openManual(): void {
+		formName = '';
+		formIp = '';
+		formDomain = '';
+		submitted = false;
+		failure = null;
+		sheetOpen = true;
+	}
+
 	async function submitManual(): Promise<void> {
+		submitted = true;
+		if (formName.trim() === '' || ipError || formIp.trim() === '') return;
 		busy = true;
 		failure = null;
 		const body = formIp.includes('/')
@@ -90,8 +122,10 @@
 
 	async function removeManual(name: string): Promise<void> {
 		busy = true;
+		failure = null;
 		try {
 			await deleteManualClient(name);
+			deleteTarget = null;
 			await load();
 		} catch (cause) {
 			failure = failureOf(cause);
@@ -124,11 +158,14 @@
 	{#if isAdmin}
 		<div class="toolbar">
 			<Button disabled={busy} onclick={() => void sync()}>{m.clients_sync()}</Button>
-			<Button onclick={() => (sheetOpen = true)}>{m.clients_add_manual()}</Button>
+			<Button onclick={openManual}>{m.clients_add_manual()}</Button>
 		</div>
 	{/if}
 	{#if syncNote}<p class="note">{syncNote}</p>{/if}
-	{#if failure}<ErrorNotice code={failure.code} params={failure.params} />{/if}
+	{#if failure && !sheetOpen && !deleteTarget}<ErrorNotice
+			code={failure.code}
+			params={failure.params}
+		/>{/if}
 
 	<div class="section-head">{m.clients_section_synced()}</div>
 	<GroupedList>
@@ -144,7 +181,7 @@
 				{/snippet}
 			</GroupedRow>
 		{:else}
-			<GroupedRow label={m.state_empty()} />
+			<GroupedRow label={search.trim() ? m.clients_nothing_found() : m.clients_empty()} />
 		{/each}
 	</GroupedList>
 
@@ -158,14 +195,14 @@
 			>
 				{#snippet trailing()}
 					{#if isAdmin}
-						<Button variant="danger" disabled={busy} onclick={() => void removeManual(entry.name)}>
+						<Button variant="danger" disabled={busy} onclick={() => (deleteTarget = entry.name)}>
 							{m.action_delete()}
 						</Button>
 					{/if}
 				{/snippet}
 			</GroupedRow>
 		{:else}
-			<GroupedRow label={m.state_empty()} />
+			<GroupedRow label={search.trim() ? m.clients_nothing_found() : m.clients_empty()} />
 		{/each}
 	</GroupedList>
 	<p class="footnote">{m.clients_footnote()}</p>
@@ -179,11 +216,24 @@
 {#if sheetOpen && isAdmin}
 	<Sheet open={sheetOpen} title={m.clients_add_manual()} onclose={() => (sheetOpen = false)}>
 		<label class="field-label" for="mc-name">{m.clients_field_name()}</label>
-		<input id="mc-name" class="field" bind:value={formName} />
+		<input
+			id="mc-name"
+			class="field"
+			bind:value={formName}
+			aria-invalid={nameError ? 'true' : undefined}
+		/>
+		{#if nameError}<p class="error-text" role="alert">{nameError}</p>{/if}
 		<label class="field-label" for="mc-ip">{m.clients_field_ip()}</label>
-		<input id="mc-ip" class="field mono" bind:value={formIp} />
+		<input
+			id="mc-ip"
+			class="field mono"
+			bind:value={formIp}
+			aria-invalid={ipError ? 'true' : undefined}
+		/>
+		{#if ipError}<p class="error-text" role="alert">{ipError}</p>{/if}
 		<label class="field-label" for="mc-domain">{m.clients_field_domain()}</label>
 		<input id="mc-domain" class="field mono" bind:value={formDomain} />
+		{#if failure}<ErrorNotice code={failure.code} params={failure.params} />{/if}
 		<div class="sheet-actions">
 			<Button variant="secondary" onclick={() => (sheetOpen = false)}>{m.action_cancel()}</Button>
 			<Button variant="primary" disabled={busy} onclick={() => void submitManual()}
@@ -193,7 +243,23 @@
 	</Sheet>
 {/if}
 
+{#if deleteTarget !== null && isAdmin}
+	<ConfirmSheet
+		title={m.clients_delete_title()}
+		body={m.clients_delete_body({ name: displayText(deleteTarget).text })}
+		{busy}
+		{failure}
+		oncancel={() => (deleteTarget = null)}
+		onconfirm={() => void removeManual(deleteTarget ?? '')}
+	/>
+{/if}
+
 <style>
+	.error-text {
+		margin: 0.25rem 0 0;
+		font-size: 0.8125rem;
+		color: var(--danger);
+	}
 	.lead {
 		margin: 0 0 0.75rem;
 		color: var(--label-2);

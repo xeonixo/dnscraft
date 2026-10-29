@@ -10,6 +10,8 @@
 	import { deleteRecord, listRecords, saveRecord, type PolicyRecord } from '$lib/api/policy';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
+	import { toDomainName } from '$lib/domain-name';
+	import { parseIp } from '$lib/policy/cidr';
 	import { domainLabel } from '$lib/policy/display';
 	import { m } from '$lib/paraglide/messages';
 
@@ -55,6 +57,26 @@
 		result = await settle(listRecords());
 	}
 
+	let submitted = $state(false);
+
+	const ownerError = $derived.by(() => {
+		if (editing) return null;
+		const name = formName.trim();
+		if (name === '') return submitted ? m.names_owner_required() : null;
+		return toDomainName(name.replace(/^\*\./, '')) ? null : m.names_owner_invalid();
+	});
+
+	const rdataError = $derived.by(() => {
+		const data = formRdata.trim();
+		if (data === '') return submitted ? m.names_rdata_required() : null;
+		if (formType === 'A') return parseIp(data)?.family === 4 ? null : m.names_rdata_ipv4();
+		if (formType === 'AAAA') return parseIp(data)?.family === 6 ? null : m.names_rdata_ipv6();
+		if (formType === 'CNAME' || formType === 'PTR') {
+			return toDomainName(data) ? null : m.names_rdata_name();
+		}
+		return null;
+	});
+
 	function openCreate(): void {
 		editing = null;
 		formName = '';
@@ -64,6 +86,7 @@
 		formOverrides = '';
 		confirmDelete = false;
 		failure = null;
+		submitted = false;
 		sheetOpen = true;
 	}
 
@@ -78,6 +101,7 @@
 			.join('\n');
 		confirmDelete = false;
 		failure = null;
+		submitted = false;
 		sheetOpen = true;
 	}
 
@@ -103,6 +127,8 @@
 	}
 
 	async function submit(): Promise<void> {
+		submitted = true;
+		if (formName.trim() === '' || formRdata.trim() === '' || ownerError || rdataError) return;
 		busy = true;
 		failure = null;
 		try {
@@ -195,7 +221,7 @@
 								<span class="type">{record.type}</span>
 								<span class="rdata mono">{record.rdata}</span>
 								<span class="meta">
-									TTL {record.ttl}{#if overrideCount(record) > 0}
+									{m.names_ttl_short({ ttl: record.ttl })}{#if overrideCount(record) > 0}
 										· {overrideCount(record) === 1
 											? m.names_overrides_badge_one({ count: '1' })
 											: m.names_overrides_badge_other({
@@ -225,7 +251,14 @@
 		centeredOnWide
 	>
 		<label class="field-label" for="rec-name">{m.names_field_name()}</label>
-		<input id="rec-name" class="field mono" bind:value={formName} disabled={editing !== null} />
+		<input
+			id="rec-name"
+			class="field mono"
+			bind:value={formName}
+			disabled={editing !== null}
+			aria-invalid={ownerError ? 'true' : undefined}
+		/>
+		{#if ownerError}<p class="error-text" role="alert">{ownerError}</p>{/if}
 		<label class="field-label" for="rec-type">{m.names_field_type()}</label>
 		<select id="rec-type" class="field" bind:value={formType} disabled={editing !== null}>
 			{#each RECORD_TYPES as type (type)}
@@ -235,7 +268,13 @@
 		<label class="field-label" for="rec-ttl">{m.names_field_ttl()}</label>
 		<input id="rec-ttl" class="field" bind:value={formTtl} inputmode="numeric" />
 		<label class="field-label" for="rec-rdata">{m.names_field_rdata()}</label>
-		<input id="rec-rdata" class="field mono" bind:value={formRdata} />
+		<input
+			id="rec-rdata"
+			class="field mono"
+			bind:value={formRdata}
+			aria-invalid={rdataError ? 'true' : undefined}
+		/>
+		{#if rdataError}<p class="error-text" role="alert">{rdataError}</p>{/if}
 		<label class="field-label" for="rec-overrides">{m.names_field_overrides()}</label>
 		<textarea id="rec-overrides" class="field area mono" bind:value={formOverrides} rows="3"
 		></textarea>
@@ -294,6 +333,11 @@
 		flex: 1 1 16rem;
 		color: var(--label-2);
 		font-size: 0.9375rem;
+	}
+	.error-text {
+		margin: 0;
+		font-size: 0.8125rem;
+		color: var(--danger);
 	}
 	.state,
 	.empty {

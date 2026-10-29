@@ -53,6 +53,27 @@
 	let formName = $state('');
 	let formUrl = $state('');
 	let formEnabled = $state(true);
+	let submitted = $state(false);
+
+	const nameError = $derived(
+		submitted && slugify(editing?.id ?? formName) === '' ? m.filter_lists_name_required() : null,
+	);
+	/** Only http(s) URLs are fetched; anything else with a scheme is refused, plain paths are files. */
+	const sourceError = $derived.by(() => {
+		const value = formUrl.trim();
+		if (value === '') return submitted ? m.filter_lists_source_required() : null;
+		if (/^https?:\/\//i.test(value)) {
+			try {
+				new URL(value);
+				return null;
+			} catch {
+				return m.filter_lists_source_invalid();
+			}
+		}
+		return /^[a-z][a-z0-9+.-]*:/i.test(value) && !value.startsWith('/')
+			? m.filter_lists_source_invalid()
+			: null;
+	});
 
 	const rows = $derived(result.kind === 'ok' ? result.data : []);
 	/** Enabled lists with a successful build; their rule counts make up the total. */
@@ -146,6 +167,7 @@
 		formEnabled = true;
 		confirmDelete = false;
 		failure = null;
+		submitted = false;
 		sheetOpen = true;
 	}
 
@@ -156,6 +178,7 @@
 		formEnabled = list.enabled;
 		confirmDelete = false;
 		failure = null;
+		submitted = false;
 		sheetOpen = true;
 	}
 
@@ -165,6 +188,9 @@
 	}
 
 	async function submit(): Promise<void> {
+		submitted = true;
+		if (slugify(editing?.id ?? formName) === '' || formUrl.trim() === '' || sourceError) return;
+		failure = null;
 		busy = true;
 		const id = editing?.id ?? slugify(formName);
 		const trimmed = formUrl.trim();
@@ -335,9 +361,21 @@
 			centeredOnWide
 		>
 			<label class="field-label" for="fl-name">{m.filter_lists_name_label()}</label>
-			<input id="fl-name" class="field" bind:value={formName} />
+			<input
+				id="fl-name"
+				class="field"
+				bind:value={formName}
+				aria-invalid={nameError ? 'true' : undefined}
+			/>
+			{#if nameError}<p class="error-text" role="alert">{nameError}</p>{/if}
 			<label class="field-label" for="fl-source">{m.filter_lists_source_label()}</label>
-			<input id="fl-source" class="field mono" bind:value={formUrl} />
+			<input
+				id="fl-source"
+				class="field mono"
+				bind:value={formUrl}
+				aria-invalid={sourceError ? 'true' : undefined}
+			/>
+			{#if sourceError}<p class="error-text" role="alert">{sourceError}</p>{/if}
 			<div class="switch-row">
 				<span>{m.filter_list_enabled()}</span>
 				<Switch bind:checked={formEnabled} aria-label={m.filter_list_enabled()} />
@@ -378,6 +416,11 @@
 </div>
 
 <style>
+	.error-text {
+		margin: 0.25rem 0 0;
+		font-size: 0.8125rem;
+		color: var(--danger);
+	}
 	.filter-lists {
 		max-width: 60rem;
 		display: flex;

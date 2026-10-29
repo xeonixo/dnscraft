@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import Button from '$lib/components/Button.svelte';
+	import ConfirmSheet from '$lib/components/ConfirmSheet.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
@@ -8,10 +9,19 @@
 	import Sheet from '$lib/components/Sheet.svelte';
 	import Switch from '$lib/components/Switch.svelte';
 	import UnavailableNotice from '$lib/components/UnavailableNotice.svelte';
-	import { deleteProfile, listProfiles, saveProfile, type PolicyProfile } from '$lib/api/policy';
+	import {
+		deleteProfile,
+		listProfiles,
+		ID_PATTERN,
+		safeSearchOf,
+		saveProfile,
+		withSafeSearch,
+		type PolicyProfile,
+	} from '$lib/api/policy';
 	import { listFilterSets, type FilterSet } from '$lib/api/filtering';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
+	import { displayText } from '$lib/safe-text';
 	import { m } from '$lib/paraglide/messages';
 
 	const isAdmin = $derived(auth.role === 'admin');
@@ -23,6 +33,8 @@
 	let editing = $state<PolicyProfile | null>(null);
 	let expert = $state(false);
 	let formId = $state('');
+	let submitted = $state(false);
+	let deleteTarget = $state<PolicyProfile | null>(null);
 	let formFilterSet = $state('default');
 	let formSafeSearch = $state(false);
 	let formRebind = $state(true);
@@ -40,7 +52,7 @@
 
 	function summary(profile: PolicyProfile): string {
 		const parts = [m.profiles_filter_set({ set: profile.filter_set })];
-		if (profile.safesearch) parts.push(m.profiles_safesearch_on());
+		if (safeSearchOf(profile.safesearch).enabled) parts.push(m.profiles_safesearch_on());
 		if (profile.rebind === false) parts.push(m.profiles_rebind_off());
 		return parts.join(' · ');
 	}
@@ -55,6 +67,7 @@
 		formFirefox = false;
 		formIcloud = false;
 		failure = null;
+		submitted = false;
 		sheetOpen = true;
 	}
 
@@ -62,12 +75,13 @@
 		editing = profile;
 		formId = profile.id;
 		formFilterSet = profile.filter_set;
-		formSafeSearch = profile.safesearch !== null && profile.safesearch !== false;
+		formSafeSearch = safeSearchOf(profile.safesearch).enabled;
 		formRebind = profile.rebind !== false;
 		formAaaa = profile.suppress_aaaa;
 		formFirefox = profile.firefox_canary;
 		formIcloud = profile.icloud_private_relay;
 		failure = null;
+		submitted = false;
 		sheetOpen = true;
 	}
 
@@ -80,12 +94,22 @@
 			rebind: formRebind ? true : false,
 			rebind_exceptions: editing?.rebind_exceptions ?? [],
 			forward_zones: editing?.forward_zones ?? null,
-			safesearch: formSafeSearch ? 'strict' : null,
+			safesearch: withSafeSearch(editing?.safesearch, formSafeSearch),
 			schedules: editing?.schedules ?? [],
 		};
 	}
 
+	const idError = $derived.by(() => {
+		if (editing) return null;
+		const id = formId.trim();
+		if (id === '') return submitted ? m.field_id_required() : null;
+		return ID_PATTERN.test(id) ? null : m.field_id_invalid();
+	});
+
 	async function submit(): Promise<void> {
+		submitted = true;
+		if (!editing && !ID_PATTERN.test(formId.trim())) return;
+		failure = null;
 		busy = true;
 		const id = editing?.id ?? formId.trim();
 		try {
@@ -101,8 +125,10 @@
 
 	async function removeProfile(id: string): Promise<void> {
 		busy = true;
+		failure = null;
 		try {
 			await deleteProfile(id);
+			deleteTarget = null;
 			await load();
 		} catch (cause) {
 			failure = failureOf(cause);
@@ -125,6 +151,10 @@
 {:else if result.kind === 'error'}
 	<ResultNotice {result} onretry={() => void load()} />
 {:else}
+	{#if failure && !sheetOpen && !deleteTarget}<ErrorNotice
+			code={failure.code}
+			params={failure.params}
+		/>{/if}
 	<GroupedList>
 		{#each rows as profile (profile.id)}
 			<GroupedRow label={profile.id} detail={summary(profile)}>
@@ -132,11 +162,7 @@
 					{#if isAdmin}
 						<div class="actions">
 							<Button onclick={() => openEdit(profile)}>{m.action_edit()}</Button>
-							<Button
-								variant="danger"
-								disabled={busy}
-								onclick={() => void removeProfile(profile.id)}
-							>
+							<Button variant="danger" disabled={busy} onclick={() => (deleteTarget = profile)}>
 								{m.action_delete()}
 							</Button>
 						</div>
@@ -153,6 +179,17 @@
 	<p class="footnote">{m.profiles_footnote()}</p>
 {/if}
 
+{#if deleteTarget && isAdmin}
+	<ConfirmSheet
+		title={m.profiles_delete_title()}
+		body={m.profiles_delete_body({ id: displayText(deleteTarget.id).text })}
+		{busy}
+		{failure}
+		oncancel={() => (deleteTarget = null)}
+		onconfirm={() => void removeProfile(deleteTarget?.id ?? '')}
+	/>
+{/if}
+
 {#if sheetOpen && isAdmin}
 	<Sheet
 		open={sheetOpen}
@@ -161,7 +198,15 @@
 	>
 		{#if !editing}
 			<label class="field-label" for="profile-id">{m.profiles_id_label()}</label>
-			<input id="profile-id" class="field" bind:value={formId} />
+			<input
+				id="profile-id"
+				class="field"
+				bind:value={formId}
+				autocomplete="off"
+				aria-invalid={idError ? 'true' : undefined}
+				aria-describedby={idError ? 'profile-id-error' : undefined}
+			/>
+			{#if idError}<p id="profile-id-error" class="error-text" role="alert">{idError}</p>{/if}
 		{/if}
 		<label class="field-label" for="profile-set">{m.profiles_filter_set_label()}</label>
 		<select id="profile-set" class="field" bind:value={formFilterSet}>
@@ -231,6 +276,11 @@
 		font: inherit;
 		font-weight: 500;
 		cursor: pointer;
+	}
+	.error-text {
+		margin: 0.25rem 0 0;
+		font-size: 0.8125rem;
+		color: var(--danger);
 	}
 	.actions {
 		display: flex;

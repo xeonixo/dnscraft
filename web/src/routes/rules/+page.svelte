@@ -214,6 +214,13 @@
 		].join(' · ');
 	}
 
+	// A success line fades after a few seconds; any new action replaces it sooner.
+	$effect(() => {
+		if (notice === null) return;
+		const timer = setTimeout(() => (notice = null), 6000);
+		return () => clearTimeout(timer);
+	});
+
 	function openAdd(): void {
 		addAction = 'block';
 		addDomain = '';
@@ -533,6 +540,7 @@
 				spellcheck="false"
 				aria-invalid={addProblem ? 'true' : undefined}
 				bind:value={addDomain}
+				oninput={() => ((addProblem = null), (addNote = null), (addFailure = null))}
 			/>
 		</div>
 		<div class="row">

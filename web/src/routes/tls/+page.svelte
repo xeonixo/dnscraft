@@ -32,7 +32,7 @@
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
 	import { formatDateTime, formatFingerprint, formatRelativeTime } from '$lib/format';
-	import { getLocale } from '$lib/i18n/locale';
+	import { errorMessage, errorMessageKey, getLocale } from '$lib/i18n/locale';
 	import { m } from '$lib/paraglide/messages';
 	import { displayText } from '$lib/safe-text';
 
@@ -117,7 +117,9 @@
 	const hasClusterProfiles = $derived(formNodeProfiles.length > 0);
 	const detectedV4 = $derived(dyndnsDiscoveredIpv4(data));
 	const detectedV6 = $derived(dyndnsDiscoveredIpv6(data));
-	const showStandaloneIpv6Options = $derived(formDyndnsEnabled && !hasClusterProfiles && formPublishV6);
+	const showStandaloneIpv6Options = $derived(
+		formDyndnsEnabled && !hasClusterProfiles && formPublishV6,
+	);
 
 	const ipv6ModeOptions: { value: Ipv6Mode; label: string }[] = [
 		{ value: 'eui64', label: m.tls_dyndns_ipv6_mode_eui64() },
@@ -182,18 +184,14 @@
 		return Math.max(0, Math.floor(ms / 86_400_000));
 	});
 
-	const domain = $derived(
-		formDomain.trim() || String(tlsConfig.public_domain ?? '').trim(),
-	);
+	const domain = $derived(formDomain.trim() || String(tlsConfig.public_domain ?? '').trim());
 
 	const autoSans = $derived.by(() => {
 		if (!domain) return [] as string[];
 		return [`dns.${domain}`, `*.dns.${domain}`];
 	});
 
-	const nodeHostHint = $derived(
-		domain ? `ns1.dns.${domain}` : 'ns1.dns.example.com',
-	);
+	const nodeHostHint = $derived(domain ? `ns1.dns.${domain}` : 'ns1.dns.example.com');
 
 	const acme = $derived.by(() => {
 		const raw = tlsConfig.acme;
@@ -205,6 +203,14 @@
 	function asText(value: unknown): string {
 		if (value == null || value === '') return dash();
 		return displayText(String(value), 120).text;
+	}
+
+	/** A known error code shows its translated text; any other value is shown as text. */
+	function lastErrorText(value: unknown): string {
+		if (typeof value === 'string' && errorMessageKey(value) !== 'error_unknown') {
+			return errorMessage(value);
+		}
+		return asText(value);
 	}
 
 	function formatInstant(value: string | null | undefined): string {
@@ -245,7 +251,11 @@
 		return mode === 'stable_privacy' || mode === 'static' || mode === 'eui64' ? mode : 'eui64';
 	}
 
-	function profileFromItem(item: Record<string, unknown>, node_id: string, publicDomain: string): DynDnsNodeForm {
+	function profileFromItem(
+		item: Record<string, unknown>,
+		node_id: string,
+		publicDomain: string,
+	): DynDnsNodeForm {
 		const ident = objectField(item, 'ipv6_identifier');
 		return {
 			node_id,
@@ -413,8 +423,7 @@
 				public_entry: p.enabled && p.public_entry,
 				ipv6_identifier: {
 					mode: p.ipv6_mode,
-					static_address:
-						p.ipv6_mode === 'static' ? p.static_address.trim() || null : null,
+					static_address: p.ipv6_mode === 'static' ? p.static_address.trim() || null : null,
 				},
 				interfaces: p.ipv6_mode === 'static' ? [] : parseInterfaces(p.interfaces),
 			}))
@@ -422,20 +431,16 @@
 		const entry = profiles.find((p) => p.public_entry);
 		const ipv6Source =
 			profiles.find((p) => p.enabled && p.ipv6) ?? profiles.find((p) => p.enabled) ?? null;
-		const flatHost =
-			formDyndnsHost.trim() || entry?.hostname || profiles[0]?.hostname || '';
+		const flatHost = formDyndnsHost.trim() || entry?.hostname || profiles[0]?.hostname || '';
 		const flatEntry = profiles.length > 0 ? Boolean(entry) : formPublicEntry;
-		const flatV4 =
-			profiles.length > 0 ? profiles.some((p) => p.enabled && p.ipv4) : formPublishV4;
-		const flatV6 =
-			profiles.length > 0 ? profiles.some((p) => p.enabled && p.ipv6) : formPublishV6;
+		const flatV4 = profiles.length > 0 ? profiles.some((p) => p.enabled && p.ipv4) : formPublishV4;
+		const flatV6 = profiles.length > 0 ? profiles.some((p) => p.enabled && p.ipv6) : formPublishV6;
 		const flatIpv6Ident =
 			profiles.length > 0 && ipv6Source
 				? ipv6Source.ipv6_identifier
 				: {
 						mode: formIpv6Mode,
-						static_address:
-							formIpv6Mode === 'static' ? formIpv6Static.trim() || null : null,
+						static_address: formIpv6Mode === 'static' ? formIpv6Static.trim() || null : null,
 					};
 		const flatInterfaces =
 			profiles.length > 0 && ipv6Source
@@ -471,8 +476,7 @@
 				...objectField(tlsConfig, 'dyndns'),
 				// DynDNS needs a hostname (standalone) or node profiles; leave it
 				// off when the certificate tab saves ACME without DNS settings.
-				enabled:
-					formDyndnsEnabled && (flatHost !== '' || profiles.length > 0),
+				enabled: formDyndnsEnabled && (flatHost !== '' || profiles.length > 0),
 				hostname: flatHost,
 				public_entry: flatEntry,
 				nodes: profiles,
@@ -553,9 +557,7 @@
 		{#if formDnsProvider === 'cloudflare'}
 			<GroupedRow
 				label={m.tls_cf_token_status()}
-				detail={hasCloudflareToken
-					? m.tls_cf_token_status_set()
-					: m.tls_cf_token_status_missing()}
+				detail={hasCloudflareToken ? m.tls_cf_token_status_set() : m.tls_cf_token_status_missing()}
 			/>
 			<GroupedRow
 				label={m.tls_cf_zone_label()}
@@ -662,7 +664,7 @@
 							detail={formatInstant(data.last_renew_attempt)}
 							detailMono
 						/>
-						<GroupedRow label={m.tls_last_error_label()} detail={asText(data.last_error)} />
+						<GroupedRow label={m.tls_last_error_label()} detail={lastErrorText(data.last_error)} />
 					</GroupedList>
 				{/if}
 
@@ -700,7 +702,9 @@
 						<GroupedList header={m.tls_actions_group()}>
 							<GroupedRow label={m.tls_action_renew()} detail={m.tls_action_renew_detail()}>
 								{#snippet trailing()}
-									<Button disabled={busy} onclick={() => void runAction(renewTls)}>{m.tls_run()}</Button>
+									<Button disabled={busy} onclick={() => void runAction(renewTls)}
+										>{m.tls_run()}</Button
+									>
 								{/snippet}
 							</GroupedRow>
 							<GroupedRow label={m.tls_action_dyndns()} detail={m.tls_action_dyndns_detail()}>
@@ -712,7 +716,9 @@
 							</GroupedRow>
 							<GroupedRow label={m.tls_action_rotate()} detail={m.tls_action_rotate_detail()}>
 								{#snippet trailing()}
-									<Button disabled={busy} onclick={() => void runAction(rotateTls)}>{m.tls_run()}</Button>
+									<Button disabled={busy} onclick={() => void runAction(rotateTls)}
+										>{m.tls_run()}</Button
+									>
 								{/snippet}
 							</GroupedRow>
 							<GroupedRow label={m.tls_action_preflight()} detail={m.tls_action_preflight_detail()}>
@@ -737,11 +743,7 @@
 			<section class="panel">
 				{#if isAdmin}
 					<p class="section-label">{m.tls_source_label()}</p>
-					<Segmented
-						options={sourceOptions}
-						bind:value={formSource}
-						label={m.tls_source_label()}
-					/>
+					<Segmented options={sourceOptions} bind:value={formSource} label={m.tls_source_label()} />
 
 					<div class="form-card">
 						<label class="field-label" for="tls-domain">{m.tls_public_domain_label()}</label>
@@ -772,19 +774,27 @@
 
 						{#if formSource === 'manual'}
 							<p class="hint">{m.tls_source_hint_manual()}</p>
-							<Button disabled={busy} onclick={() => (uploadOpen = true)}>{m.tls_action_upload()}</Button>
+							<Button disabled={busy} onclick={() => (uploadOpen = true)}
+								>{m.tls_action_upload()}</Button
+							>
 						{/if}
 					</div>
 
 					{@render dnsProviderStatus()}
 
 					<div class="save-row">
-						<Button variant="primary" disabled={busy} onclick={openConfirm}>{m.tls_save_config()}</Button>
+						<Button variant="primary" disabled={busy} onclick={openConfirm}
+							>{m.tls_save_config()}</Button
+						>
 					</div>
 				{:else}
 					<GroupedList header={m.tls_status_group()}>
 						<GroupedRow label={m.dashboard_tls_label()} detail={modeLabel} />
-						<GroupedRow label={m.tls_public_domain_label()} detail={asText(tlsConfig.public_domain)} detailMono />
+						<GroupedRow
+							label={m.tls_public_domain_label()}
+							detail={asText(tlsConfig.public_domain)}
+							detailMono
+						/>
 					</GroupedList>
 					{@render dnsProviderStatus()}
 				{/if}
@@ -808,9 +818,7 @@
 								class="field mono"
 								type="password"
 								autocomplete="off"
-								placeholder={hasCloudflareToken
-									? m.tls_cf_token_set()
-									: m.tls_cf_token_detail()}
+								placeholder={hasCloudflareToken ? m.tls_cf_token_set() : m.tls_cf_token_detail()}
 								disabled={formCfTokenClear}
 								bind:value={formCfToken}
 							/>
@@ -890,7 +898,9 @@
 					</div>
 
 					<div class="save-row">
-						<Button variant="primary" disabled={busy} onclick={openConfirm}>{m.tls_save_config()}</Button>
+						<Button variant="primary" disabled={busy} onclick={openConfirm}
+							>{m.tls_save_config()}</Button
+						>
 					</div>
 				{:else}
 					{@render dnsProviderStatus()}
@@ -958,8 +968,7 @@
 														disabled={!formDyndnsEnabled}
 														onchange={(event) =>
 															patchProfile(profile.node_id, {
-																enabled: (event.currentTarget as HTMLInputElement)
-																	.checked,
+																enabled: (event.currentTarget as HTMLInputElement).checked,
 															})}
 													/>
 													<span>{m.tls_dyndns_node_enabled()}</span>
@@ -1031,7 +1040,11 @@
 														<Icon name="help-circle" size="1rem" />
 													</button>
 												</div>
-												<div class="node-ipv6-modes" role="radiogroup" aria-label={m.tls_dyndns_ipv6_group()}>
+												<div
+													class="node-ipv6-modes"
+													role="radiogroup"
+													aria-label={m.tls_dyndns_ipv6_group()}
+												>
 													{#each ipv6ModeOptions as opt (opt.value)}
 														<label class="entry-pick">
 															<input
@@ -1058,8 +1071,7 @@
 														autocomplete="off"
 														oninput={(event) =>
 															patchProfile(profile.node_id, {
-																static_address: (event.currentTarget as HTMLInputElement)
-																	.value,
+																static_address: (event.currentTarget as HTMLInputElement).value,
 															})}
 													/>
 												{:else}
@@ -1248,7 +1260,9 @@
 					</GroupedList>
 
 					<div class="save-row">
-						<Button variant="primary" disabled={busy} onclick={openConfirm}>{m.tls_save_config()}</Button>
+						<Button variant="primary" disabled={busy} onclick={openConfirm}
+							>{m.tls_save_config()}</Button
+						>
 					</div>
 				{:else}
 					{@render dnsProviderStatus()}
@@ -1338,8 +1352,15 @@
 			</Banner>
 		</div>
 		<GroupedList>
-			<GroupedRow label={m.tls_public_domain_label()} detail={formDomain.trim() || dash()} detailMono />
-			<GroupedRow label={m.tls_source_label()} detail={sourceOptions.find((o) => o.value === formSource)?.label ?? formSource} />
+			<GroupedRow
+				label={m.tls_public_domain_label()}
+				detail={formDomain.trim() || dash()}
+				detailMono
+			/>
+			<GroupedRow
+				label={m.tls_source_label()}
+				detail={sourceOptions.find((o) => o.value === formSource)?.label ?? formSource}
+			/>
 			<GroupedRow
 				label={m.tls_dyndns_enabled()}
 				detail={formDyndnsEnabled
@@ -1368,7 +1389,11 @@
 					/>
 				{/each}
 			{:else}
-				<GroupedRow label={m.tls_dyndns_host_label()} detail={formDyndnsHost.trim() || dash()} detailMono />
+				<GroupedRow
+					label={m.tls_dyndns_host_label()}
+					detail={formDyndnsHost.trim() || dash()}
+					detailMono
+				/>
 				<GroupedRow
 					label={m.tls_public_entry_label()}
 					detail={formPublicEntry ? m.tls_public_entry_yes() : m.tls_public_entry_no()}

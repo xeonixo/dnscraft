@@ -4,11 +4,9 @@
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
 	import DecisionSteps from '$lib/querylog/DecisionSteps.svelte';
-	import {
-		parseTestQueryRecords,
-		runTestQuery,
-		type TestQueryResult,
-	} from '$lib/api/policy';
+	import { parseTestQueryRecords, runTestQuery, type TestQueryResult } from '$lib/api/policy';
+	import { domainLabel } from '$lib/policy/display';
+	import { parseIp } from '$lib/policy/cidr';
 	import { failureOf } from '$lib/api/result';
 	import { answerLabel } from '$lib/querylog/view';
 	import { m } from '$lib/paraglide/messages';
@@ -44,7 +42,12 @@
 		if (!raw || typeof raw !== 'object') return null;
 		const row = raw as Record<string, unknown>;
 		return {
-			rule: typeof row.rule === 'string' ? row.rule : typeof row.rule_text === 'string' ? row.rule_text : null,
+			rule:
+				typeof row.rule === 'string'
+					? row.rule
+					: typeof row.rule_text === 'string'
+						? row.rule_text
+						: null,
 			list: typeof row.list_id === 'string' ? row.list_id : null,
 			mode: typeof row.block_mode === 'string' ? row.block_mode : null,
 		};
@@ -61,7 +64,12 @@
 		return `${value} µs`;
 	}
 
+	const ipError = $derived(
+		sourceIp.trim() !== '' && !parseIp(sourceIp.trim()) ? m.test_query_ip_invalid() : null,
+	);
+
 	async function submit(): Promise<void> {
+		if (ipError) return;
 		busy = true;
 		failure = null;
 		result = null;
@@ -85,7 +93,14 @@
 
 <form class="form" onsubmit={(event) => (event.preventDefault(), void submit())}>
 	<label class="field-label" for="tq-ip">{m.test_query_source_ip()}</label>
-	<input id="tq-ip" class="field mono" bind:value={sourceIp} required />
+	<input
+		id="tq-ip"
+		class="field mono"
+		bind:value={sourceIp}
+		required
+		aria-invalid={ipError ? 'true' : undefined}
+	/>
+	{#if ipError}<p class="error-text" role="alert">{ipError}</p>{/if}
 	<label class="field-label" for="tq-client">{m.test_query_client_id()}</label>
 	<input id="tq-client" class="field mono" bind:value={clientId} />
 	<label class="field-label" for="tq-name">{m.test_query_domain()}</label>
@@ -115,7 +130,11 @@
 		<GroupedRow label={m.querylog_row_view()} detail={dash(result.view_id)} detailMono />
 		<GroupedRow label={m.querylog_row_profile()} detail={dash(result.profile_id)} detailMono />
 		{#if result.filter_set_id}
-			<GroupedRow label={m.querylog_row_filter_set()} detail={dash(result.filter_set_id)} detailMono />
+			<GroupedRow
+				label={m.querylog_row_filter_set()}
+				detail={dash(result.filter_set_id)}
+				detailMono
+			/>
 		{/if}
 		{#if result.answer_source}
 			<GroupedRow
@@ -124,7 +143,11 @@
 			/>
 		{/if}
 		{#if result.forward_zone}
-			<GroupedRow label={m.querylog_row_forward_zone()} detail={dash(result.forward_zone)} detailMono />
+			<GroupedRow
+				label={m.querylog_row_forward_zone()}
+				detail={dash(domainLabel(result.forward_zone))}
+				detailMono
+			/>
 		{/if}
 		{#if result.client_id}
 			<GroupedRow label={m.querylog_row_client_id()} detail={dash(result.client_id)} detailMono />
@@ -175,10 +198,26 @@
 	{#if result.timings}
 		<div class="section-head">{m.querylog_section_timing()}</div>
 		<GroupedList>
-			<GroupedRow label={m.querylog_timing_select()} detail={usLabel(result.timings.select_us)} detailMono />
-			<GroupedRow label={m.querylog_timing_filter()} detail={usLabel(result.timings.filter_us)} detailMono />
-			<GroupedRow label={m.querylog_timing_resolve()} detail={usLabel(result.timings.resolve_us)} detailMono />
-			<GroupedRow label={m.querylog_timing_total()} detail={usLabel(result.timings.total_us)} detailMono />
+			<GroupedRow
+				label={m.querylog_timing_select()}
+				detail={usLabel(result.timings.select_us)}
+				detailMono
+			/>
+			<GroupedRow
+				label={m.querylog_timing_filter()}
+				detail={usLabel(result.timings.filter_us)}
+				detailMono
+			/>
+			<GroupedRow
+				label={m.querylog_timing_resolve()}
+				detail={usLabel(result.timings.resolve_us)}
+				detailMono
+			/>
+			<GroupedRow
+				label={m.querylog_timing_total()}
+				detail={usLabel(result.timings.total_us)}
+				detailMono
+			/>
 		</GroupedList>
 	{/if}
 {/if}
@@ -186,6 +225,11 @@
 <p class="footnote">{m.test_query_footnote()}</p>
 
 <style>
+	.error-text {
+		margin: 0.25rem 0 0;
+		font-size: 0.8125rem;
+		color: var(--danger);
+	}
 	.lead {
 		margin: 0 0 1rem;
 		color: var(--label-2);

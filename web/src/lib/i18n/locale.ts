@@ -58,11 +58,41 @@ function textParams(params: Record<string, unknown>): Record<string, string> {
 	return out;
 }
 
+/**
+ * Known English `reason` texts of the Rust validators, mapped to message keys. The server sends the
+ * reason as free text; anything not listed here is shown as sent.
+ */
+const REASONS: { pattern: RegExp; key: string; param?: string }[] = [
+	{ pattern: /\bid must match \[a-z0-9-\]/i, key: 'error_reason_id_pattern' },
+	{ pattern: /\bmust match \[a-z0-9-\]/i, key: 'error_reason_id_pattern' },
+	{
+		pattern: /subnet (.+?) is listed on more than one view/i,
+		key: 'error_reason_subnet_overlap',
+		param: 'subnet',
+	},
+	{ pattern: /invalid IPv4 address/i, key: 'error_reason_invalid_ipv4' },
+	{ pattern: /invalid IPv6 address/i, key: 'error_reason_invalid_ipv6' },
+	{ pattern: /empty label in domain name/i, key: 'error_reason_empty_label' },
+];
+
+/** Translated form of a server reason text, or the text itself when it is not a known one. */
+export function reasonMessage(reason: string): string {
+	for (const { pattern, key, param } of REASONS) {
+		const match = pattern.exec(reason);
+		const fn = catalog[key];
+		if (match && fn) return fn(param ? { [param]: match[1] } : {});
+	}
+	return reason;
+}
+
 /** Translated text for an error code; the raw code stays with the caller for a copyable line. */
 export function errorMessage(code: string, params: Record<string, unknown> = {}): string {
 	const key = errorMessageKey(code);
 	const fn = catalog[key];
-	return fn ? fn({ ...PARAM_DEFAULTS[key], ...textParams(params) }) : m.error_unknown();
+	if (!fn) return m.error_unknown();
+	const text = { ...PARAM_DEFAULTS[key], ...textParams(params) };
+	if (typeof text.reason === 'string') text.reason = reasonMessage(text.reason);
+	return fn(text);
 }
 
 /** Native display name of a locale, read from its `locale_name_<code>` message. */

@@ -41,7 +41,7 @@ describe('dohUrl and dotHostname', () => {
 	it('builds the DoH URL and the DoT hostname', () => {
 		expect(dohUrl('example.com', 'iphone-anna')).toEqual({
 			ok: true,
-			value: 'https://example.com/dns-query/iphone-anna',
+			value: 'https://dns.example.com/dns-query/iphone-anna',
 		});
 		expect(dotHostname('example.com', 'iphone-anna')).toEqual({
 			ok: true,
@@ -105,7 +105,7 @@ describe('dohUrl and dotHostname', () => {
 	it('accepts the longest valid Client ID', () => {
 		expect(dohUrl('example.com', 'a'.repeat(63))).toEqual({
 			ok: true,
-			value: `https://example.com/dns-query/${'a'.repeat(63)}`,
+			value: `https://dns.example.com/dns-query/${'a'.repeat(63)}`,
 		});
 	});
 });
@@ -326,7 +326,7 @@ const GOLDEN_HTTPS = `<?xml version="1.0" encoding="UTF-8"?>
 				<key>DNSProtocol</key>
 				<string>HTTPS</string>
 				<key>ServerURL</key>
-				<string>https://example.com/dns-query/iphone-anna</string>
+				<string>https://dns.example.com/dns-query/iphone-anna</string>
 			</dict>
 		</dict>
 	</array>

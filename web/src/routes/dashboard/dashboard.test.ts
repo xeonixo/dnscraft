@@ -365,6 +365,21 @@ describe('contextual admin actions', () => {
 		expect(screen.queryByRole('dialog')).toBeNull();
 	});
 
+	it('keeps a banner with a resume button while a pause runs and resumes through the api', async () => {
+		const until = new Date(Date.now() + 10 * 60_000).toISOString();
+		serve({
+			'GET /api/v1/filtering/mcp-rules': () =>
+				ok({ pauses: [{ paused_until: until }], has_more: false, next_offset: null }),
+			'POST /api/v1/filtering/resume': () => ok({ filter_set_id: 'default' }),
+		});
+		const user = userEvent.setup();
+		render(Page);
+		expect(await screen.findByText(m.dashboard_paused_title())).toBeInTheDocument();
+		await user.click(screen.getByRole('button', { name: m.dashboard_resume() }));
+		await waitFor(() => expect(callsTo('POST', '/api/v1/filtering/resume')).toHaveLength(1));
+		await waitFor(() => expect(screen.queryByText(m.dashboard_paused_title())).toBeNull());
+	});
+
 	it('clears the whole cache from a sheet and announces the evicted count', async () => {
 		serve({
 			'POST /api/v1/resolver/cache/flush': () => ok({ scope: 'all', domain: null, evicted: 42 }),

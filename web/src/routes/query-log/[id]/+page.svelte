@@ -28,6 +28,7 @@
 	} from '$lib/querylog/view';
 	import { formatDateTime, formatMilliseconds, formatNumber } from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
+	import { domainLabel } from '$lib/policy/display';
 	import { m } from '$lib/paraglide/messages';
 	import { displayText, FULL_LIMIT } from '$lib/safe-text';
 
@@ -186,7 +187,7 @@
 					<FieldRow label={m.querylog_row_dnssec()} value={dnssecLabel(record.dnssec)} />
 					<FieldRow
 						label={m.querylog_row_forward_zone()}
-						value={record.forward_zone ?? m.querylog_none()}
+						value={record.forward_zone ? domainLabel(record.forward_zone) : m.querylog_none()}
 						mono
 					/>
 					<FieldRow label={m.querylog_row_view()} value={record.view_id} mono />

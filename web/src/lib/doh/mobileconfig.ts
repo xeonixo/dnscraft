@@ -64,13 +64,24 @@ function xml(value: string): string {
 	return value.replace(/[&<>"']/g, (char) => XML_ESCAPES[char]);
 }
 
-/** https://<publicDomain>/dns-query/<clientId> */
+/**
+ * The certificate covers `dns.<publicDomain>` and `*.dns.<publicDomain>`, not the apex, so the DoH
+ * host is `dns.<publicDomain>` unless the configured name already starts with a `dns.` label.
+ */
+function dohHost(domain: string): string {
+	return domain.startsWith('dns.') ? domain : `dns.${domain}`;
+}
+
+/** https://dns.<publicDomain>/dns-query/<clientId> */
 export function dohUrl(publicDomain: string, clientId: string): Checked<string> {
 	const domain = checkDomain(publicDomain);
 	if (!domain.ok) return domain;
 	const id = checkClientId(clientId);
 	if (!id.ok) return id;
-	return { ok: true, value: `https://${domain.value}/dns-query/${encodeURIComponent(id.value)}` };
+	return {
+		ok: true,
+		value: `https://${dohHost(domain.value)}/dns-query/${encodeURIComponent(id.value)}`,
+	};
 }
 
 /** <clientId>.dns.<publicDomain>: the DoT server name for iOS and the Android "Private DNS" host. */
@@ -186,7 +197,7 @@ ${serverAddresses}\t\t\t\t<key>ServerName</key>
 \t\t\t\t<key>DNSProtocol</key>
 \t\t\t\t<string>HTTPS</string>
 ${serverAddresses}\t\t\t\t<key>ServerURL</key>
-\t\t\t\t<string>${xml(`https://${domain.value}/dns-query/${encodeURIComponent(clientId)}`)}</string>
+\t\t\t\t<string>${xml(`https://${dohHost(domain.value)}/dns-query/${encodeURIComponent(clientId)}`)}</string>
 \t\t\t</dict>`;
 
 	const onDemandRules = ssid

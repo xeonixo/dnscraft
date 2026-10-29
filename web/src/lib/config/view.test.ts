@@ -92,8 +92,8 @@ describe('findingLabel', () => {
 		expect(findingLabel({ code: 'control_api.config.version', path: null, params: null })).not.toBe(
 			'control_api.config.version',
 		);
-		expect(
-			findingLabel({ code: 'policy.config.unknown_filter_set', path: null, params: null }),
-		).toBe('policy.config.unknown_filter_set');
+		expect(findingLabel({ code: 'policy.config.schedule_window', path: null, params: null })).toBe(
+			'policy.config.schedule_window',
+		);
 	});
 });

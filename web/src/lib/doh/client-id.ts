@@ -20,10 +20,18 @@ export function slugOf(label: string): string {
 		.replace(/-+$/, '');
 }
 
-/** Four random [a-z0-9] characters; `random` is injectable for tests. */
-export function randomSuffix(random: () => number = Math.random): string {
+const SUFFIX_LENGTH = 12;
+
+/** 12 random [a-z0-9] characters (~62 bit) from the CSPRNG; rejection sampling avoids modulo bias. */
+export function randomSuffix(): string {
+	const limit = 256 - (256 % RANDOM_CHARS.length);
 	let suffix = '';
-	for (let i = 0; i < 4; i++) suffix += RANDOM_CHARS[Math.floor(random() * RANDOM_CHARS.length)];
+	while (suffix.length < SUFFIX_LENGTH) {
+		for (const byte of crypto.getRandomValues(new Uint8Array(SUFFIX_LENGTH))) {
+			if (byte < limit && suffix.length < SUFFIX_LENGTH)
+				suffix += RANDOM_CHARS[byte % RANDOM_CHARS.length];
+		}
+	}
 	return suffix;
 }
 
@@ -79,4 +87,41 @@ export function isIpLiteral(value: string): boolean {
 	const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(value);
 	if (v4) return v4.slice(1).every((part) => Number(part) <= 255);
 	return value.includes(':') && /^[0-9a-f:.]+$/i.test(value);
+}
+
+interface NameRecord {
+	name: string;
+	type: string;
+	rdata: string;
+	overrides: Record<string, string>;
+}
+
+const normName = (name: string): string => name.trim().replace(/\.$/, '').toLowerCase();
+
+/**
+ * True when `name` ends, directly or via a CNAME chain (max 8 hops, loop-safe) among `records`,
+ * in an A/AAAA record that has an override for one of `homeViews` or holds a LAN address itself.
+ */
+export function nameHasHomeAddress(
+	records: NameRecord[],
+	name: string,
+	homeViews: Set<string>,
+): boolean {
+	let current = normName(name);
+	const seen = new Set<string>();
+	for (let hop = 0; hop <= 8 && !seen.has(current); hop++) {
+		seen.add(current);
+		const here = records.filter((row) => normName(row.name) === current);
+		const home = here.some(
+			(row) =>
+				(row.type === 'A' || row.type === 'AAAA') &&
+				(isLanAddress(row.rdata.trim()) ||
+					Object.keys(row.overrides).some((key) => homeViews.has(key))),
+		);
+		if (home) return true;
+		const cname = here.find((row) => row.type === 'CNAME');
+		if (!cname) return false;
+		current = normName(cname.rdata);
+	}
+	return false;
 }

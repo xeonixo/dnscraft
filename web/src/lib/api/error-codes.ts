@@ -47,7 +47,25 @@ export const FILTER_LIST_ERROR_CODES = [
 ] as const;
 
 /** Raised by the policy module and forwarded unchanged by the control-api (e.g. a bad Client-ID label). */
-export const POLICY_ERROR_CODES = ['policy.config.invalid'] as const;
+export const POLICY_ERROR_CODES = [
+	'policy.config.invalid',
+	'policy.config.unknown_filter_set',
+	'policy.config.unknown_forward_zone',
+	'policy.record.cname_conflict',
+	'policy.id.empty',
+	'policy.id.too_long',
+	'policy.id.invalid_char',
+] as const;
+
+/** Filter-id validation, MCP input and resolver codes forwarded by the control-api. */
+export const MODULE_ERROR_CODES = [
+	'filter_id.empty',
+	'filter_id.too_long',
+	'filter_id.invalid_char',
+	'filter_list.url_invalid',
+	'mcp.invalid_input',
+	'resolver.config.invalid',
+] as const;
 
 /** Listener module codes forwarded by the control-api. */
 export const LISTENERS_ERROR_CODES = [
@@ -56,13 +74,22 @@ export const LISTENERS_ERROR_CODES = [
 ] as const;
 
 /** TLS module codes forwarded by the control-api. */
-export const TLS_ERROR_CODES = ['tls.config.invalid'] as const;
+export const TLS_ERROR_CODES = [
+	'tls.config.invalid',
+	'tls.acme.order',
+	'tls.acme.order_pending',
+	'tls.acme.challenge',
+	'tls.acme.propagation',
+	'tls.acme.rate_limited',
+	'tls.acme.account',
+] as const;
 
 export const ERROR_CODES: readonly string[] = [
 	...CONTROL_API_ERROR_CODES,
 	...CLIENT_ERROR_CODES,
 	...FILTER_LIST_ERROR_CODES,
 	...POLICY_ERROR_CODES,
+	...MODULE_ERROR_CODES,
 	...LISTENERS_ERROR_CODES,
 	...TLS_ERROR_CODES,
 ];

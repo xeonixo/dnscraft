@@ -118,7 +118,9 @@ describe('DoH clients page', () => {
 		expect(screen.getByText('macbook-r4t8vn')).toBeInTheDocument();
 		expect(screen.getByText('iPhone von Anna', { selector: 'a' })).toBeInTheDocument();
 		expect(screen.getAllByText(m.doh_device_none())).toHaveLength(2);
-		expect(screen.getByText('https://example.test/dns-query/iphone-k7q2x9')).toBeInTheDocument();
+		expect(
+			screen.getByText('https://dns.example.test/dns-query/iphone-k7q2x9'),
+		).toBeInTheDocument();
 	});
 
 	it('shows the empty state with no registered id', async () => {
@@ -135,12 +137,23 @@ describe('DoH clients page', () => {
 		await user.click(screen.getByRole('button', { name: m.doh_add() }));
 		await user.type(screen.getByLabelText(m.doh_label_label()), 'Gäste Handy');
 		const idField = screen.getByLabelText(m.doh_id_label()) as HTMLInputElement;
-		expect(idField.value).toMatch(/^gaeste-handy-[a-z0-9]{4}$/);
+		expect(idField.value).toMatch(/^gaeste-handy-[a-z0-9]{12}$/);
 		await user.click(screen.getByRole('button', { name: m.doh_create_submit() }));
 		await waitFor(() => expect(callsTo('POST /api/v1/policy/client-ids')).toHaveLength(1));
 		const body = callsTo('POST /api/v1/policy/client-ids')[0].body as Record<string, string>;
 		expect(body.label).toBe('Gäste Handy');
-		expect(body.id).toMatch(/^gaeste-handy-[a-z0-9]{4}$/);
+		expect(body.id).toMatch(/^gaeste-handy-[a-z0-9]{12}$/);
+	});
+
+	it('requires a name and shows a field message instead of calling the server', async () => {
+		serve({ 'POST /api/v1/policy/client-ids': () => ok({ version: 9, client_id: 'x' }) });
+		const user = userEvent.setup();
+		render(DohClientsPage);
+		await screen.findByRole('button', { name: 'iPhone von Anna' });
+		await user.click(screen.getByRole('button', { name: m.doh_add() }));
+		await user.click(screen.getByRole('button', { name: m.doh_create_submit() }));
+		expect(screen.getByText(m.doh_label_required())).toBeInTheDocument();
+		expect(callsTo('POST /api/v1/policy/client-ids')).toHaveLength(0);
 	});
 
 	it('edits label and device through PUT', async () => {
@@ -240,7 +253,7 @@ describe('DoH clients page', () => {
 			reader.onload = () => resolve(String(reader.result));
 			reader.readAsText(blob);
 		});
-		expect(text).toContain('<string>https://example.test/dns-query/iphone-k7q2x9</string>');
+		expect(text).toContain('<string>https://dns.example.test/dns-query/iphone-k7q2x9</string>');
 	});
 
 	it('shows the setup checklist states', async () => {
@@ -254,7 +267,7 @@ describe('DoH clients page', () => {
 		expect(screen.getByText(m.doh_check_cert_missing())).toBeInTheDocument();
 		// self-signed: no DoH address is shown, a warning replaces it
 		expect(
-			screen.queryByText('https://example.test/dns-query/iphone-k7q2x9'),
+			screen.queryByText('https://dns.example.test/dns-query/iphone-k7q2x9'),
 		).not.toBeInTheDocument();
 		// The certificate warning lives in the setup check; cards only say the address is pending.
 		expect(screen.getAllByText(m.doh_url_pending()).length).toBeGreaterThan(0);

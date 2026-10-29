@@ -27,9 +27,39 @@ export interface PolicyProfile {
 	rebind: boolean | null;
 	rebind_exceptions: string[];
 	forward_zones: string[] | null;
-	safesearch: unknown;
+	safesearch: SafeSearch | unknown;
 	schedules: unknown[];
 }
+
+/** Shape the policy config expects for `profiles[].safesearch` (`SafeSearchConfig`). */
+export interface SafeSearch {
+	enabled: boolean;
+	providers: string[];
+	youtube_mode: string;
+}
+
+export const SAFESEARCH_PROVIDERS = ['google', 'bing', 'youtube', 'duckduckgo'];
+
+/** Reads a stored `safesearch` value; anything that is not the config object counts as off. */
+export function safeSearchOf(value: unknown): SafeSearch {
+	const row = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+	return {
+		enabled: row.enabled === true,
+		providers: Array.isArray(row.providers) ? row.providers.map(String) : [],
+		youtube_mode: typeof row.youtube_mode === 'string' ? row.youtube_mode : 'Strict',
+	};
+}
+
+/** The stored value with only `enabled` changed; switching on with no providers enables all known ones. */
+export function withSafeSearch(previous: unknown, enabled: boolean): SafeSearch {
+	const current = safeSearchOf(previous);
+	const providers =
+		enabled && current.providers.length === 0 ? [...SAFESEARCH_PROVIDERS] : current.providers;
+	return { ...current, enabled, providers };
+}
+
+/** Profile, filter-set, filter-list and view ids share one charset. */
+export const ID_PATTERN = /^[a-z0-9-]{1,64}$/;
 
 export interface ForwardZoneEntry {
 	id: string;
@@ -90,17 +120,9 @@ export function parseTestQueryRecords(raw: unknown): TestQueryAnswerRecord[] {
 		const rec = row as Record<string, unknown>;
 		const name = typeof rec.name === 'string' ? rec.name : '';
 		const type =
-			typeof rec.type === 'string'
-				? rec.type
-				: typeof rec.qtype === 'string'
-					? rec.qtype
-					: '';
+			typeof rec.type === 'string' ? rec.type : typeof rec.qtype === 'string' ? rec.qtype : '';
 		const data =
-			typeof rec.data === 'string'
-				? rec.data
-				: typeof rec.rdata === 'string'
-					? rec.rdata
-					: '';
+			typeof rec.data === 'string' ? rec.data : typeof rec.rdata === 'string' ? rec.rdata : '';
 		const ttl = typeof rec.ttl === 'number' && Number.isFinite(rec.ttl) ? rec.ttl : 0;
 		if (!type && !data) continue;
 		out.push({ name, type: type || '?', ttl, data });

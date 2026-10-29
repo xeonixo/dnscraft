@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import Banner from '$lib/components/Banner.svelte';
 	import Button from '$lib/components/Button.svelte';
+	import ConfirmSheet from '$lib/components/ConfirmSheet.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
@@ -36,6 +37,7 @@
 	let editing = $state<Listener | null>(null);
 	let busy = $state(false);
 	let failure = $state<{ code: string; params: Record<string, unknown> } | null>(null);
+	let deleteTarget = $state<Listener | null>(null);
 
 	let formProtocol = $state<ListenerBody['protocol']>('doh');
 	let formFamily = $state<AddrFamily>('ipv4');
@@ -187,9 +189,7 @@
 
 	function rowLabel(listener: Listener): string {
 		const exposure =
-			listener.exposure === 'public'
-				? m.listeners_exposure_public()
-				: m.listeners_exposure_local();
+			listener.exposure === 'public' ? m.listeners_exposure_public() : m.listeners_exposure_local();
 		return `${protocolLabel(listener.protocol)} · ${exposure}`;
 	}
 
@@ -241,9 +241,7 @@
 		failure = null;
 		const isPublic = formPublic && allowsPublic(formProtocol);
 		const body: ListenerBody = {
-			id:
-				editing?.id ??
-				suggestListenerId(formProtocol, formFamily, isPublic, existingIds),
+			id: editing?.id ?? suggestListenerId(formProtocol, formFamily, isPublic, existingIds),
 			protocol: formProtocol,
 			address: formAddress.trim(),
 			exposure: isPublic ? 'public' : 'local',
@@ -263,11 +261,13 @@
 	}
 
 	async function remove(listener: Listener): Promise<void> {
-		if (!isAdmin || !globalThis.confirm(m.listeners_delete_confirm({ id: listener.id }))) return;
+		if (!isAdmin) return;
 		busy = true;
+		failure = null;
 		try {
 			const deleted = await deleteListener(listener.id, { ifMatch: ifMatchFor(configVersion) });
 			configVersion = deleted.version;
+			deleteTarget = null;
 			await load();
 		} catch (cause) {
 			failure = failureOf(cause);
@@ -296,7 +296,7 @@
 	</div>
 {/if}
 
-{#if failure}
+{#if failure && !deleteTarget}
 	<div class="notice">
 		<ErrorNotice code={failure.code} params={failure.params} />
 	</div>
@@ -313,16 +313,16 @@
 		{#if group.rows.length > 0}
 			<GroupedList header={protocolLabel(group.protocol)}>
 				{#each group.rows as listener (listener.id)}
-					<GroupedRow
-						label={rowLabel(listener)}
-						detail={rowDetail(listener)}
-						detailMono
-					>
+					<GroupedRow label={rowLabel(listener)} detail={rowDetail(listener)} detailMono>
 						{#snippet trailing()}
 							{#if isAdmin}
 								<div class="row-actions">
 									<Button onclick={() => openEdit(listener)}>{m.action_edit()}</Button>
-									<Button variant="danger" disabled={busy} onclick={() => void remove(listener)}>
+									<Button
+										variant="danger"
+										disabled={busy}
+										onclick={() => (deleteTarget = listener)}
+									>
 										{m.action_delete()}
 									</Button>
 								</div>
@@ -355,7 +355,9 @@
 			class="field"
 			value={formProtocol}
 			onchange={(event) =>
-				onProtocolChange((event.currentTarget as HTMLSelectElement).value as ListenerBody['protocol'])}
+				onProtocolChange(
+					(event.currentTarget as HTMLSelectElement).value as ListenerBody['protocol'],
+				)}
 		>
 			{#each protocols as protocol (protocol)}
 				<option value={protocol}>{protocolLabel(protocol)}</option>
@@ -390,8 +392,7 @@
 				<Switch
 					bind:checked={formPublic}
 					aria-label={m.listeners_exposure_public()}
-					onchange={(event) =>
-						onPublicChange((event.currentTarget as HTMLInputElement).checked)}
+					onchange={(event) => onPublicChange((event.currentTarget as HTMLInputElement).checked)}
 				/>
 				<span>{m.listeners_exposure_public()}</span>
 			</label>
@@ -422,15 +423,22 @@
 
 		<div class="actions">
 			<Button onclick={() => (sheetOpen = false)}>{m.action_cancel()}</Button>
-			<Button
-				variant="primary"
-				disabled={busy || formAddress.trim() === ''}
-				onclick={submit}
-			>
+			<Button variant="primary" disabled={busy || formAddress.trim() === ''} onclick={submit}>
 				{m.action_save()}
 			</Button>
 		</div>
 	</Sheet>
+{/if}
+
+{#if deleteTarget && isAdmin}
+	<ConfirmSheet
+		title={m.listeners_delete_title()}
+		body={m.listeners_delete_body({ id: displayText(deleteTarget.id).text })}
+		{busy}
+		{failure}
+		oncancel={() => (deleteTarget = null)}
+		onconfirm={() => deleteTarget && void remove(deleteTarget)}
+	/>
 {/if}
 
 <style>
