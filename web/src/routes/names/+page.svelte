@@ -533,9 +533,8 @@
 				? formPublicContent.trim()
 				: formRdata.trim();
 		const required = !(
-			publicEditable &&
-			formPublicContent.trim() === '' &&
-			publicBaseline.recordId
+			(publicEditable && formPublicContent.trim() === '' && publicBaseline.recordId) ||
+			Object.values(overridesFromRows(overrideRows)).some((value) => value !== '')
 		);
 		return validateRdata(
 			data,
@@ -727,6 +726,8 @@
 		// Öffentlich non-empty → local default mirrors it; clearing public keeps formRdata.
 		let rdata = publicEditable && publicContent !== '' ? publicContent : formRdata.trim();
 		if (rdata === '' && editing) rdata = editing.rdata;
+		// Local-only record without a default answer: the backend needs a base value, so reuse an override.
+		if (rdata === '') rdata = Object.values(overrides).find((value) => value !== '') ?? '';
 		if (rdata === '' || validateRdata(rdata, true)) return;
 
 		busy = true;
@@ -1000,7 +1001,9 @@
 						aria-describedby={showPublicClearHint ? 'rec-public-clear' : 'rec-public-hint'}
 						oninput={onPublicContentInput}
 					/>
-					{#if publicContentError}<p class="error-text" role="alert">{publicContentError}</p>{/if}
+					{#if publicContentError}<p class="error-text" role="alert">
+							{publicContentError}
+						</p>{:else if rdataError}<p class="error-text" role="alert">{rdataError}</p>{/if}
 					{#if showPublicClearHint}
 						<p class="hint muted" id="rec-public-clear">{m.names_public_clear_hint()}</p>
 					{/if}
