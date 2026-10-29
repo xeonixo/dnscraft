@@ -308,7 +308,7 @@ async fn local_records_split_horizon_per_view() {
     let mut app = rec(name, RData::A(Ipv4Addr::new(192, 0, 2, 10)));
     app.overrides.insert(
         ViewId::new("guest").unwrap(),
-        RData::A(Ipv4Addr::new(198, 51, 100, 10)),
+        Some(RData::A(Ipv4Addr::new(198, 51, 100, 10))),
     );
     let records = vec![app];
     let views = vec![
@@ -393,6 +393,86 @@ async fn local_records_nodata_when_type_missing() {
     assert!(answer.message.header.aa);
     assert!(answer.message.answers.is_empty());
     assert_eq!(answer.message.rcode(), Rcode::NOERROR);
+}
+
+#[tokio::test]
+async fn local_records_empty_override_yields_nodata_in_that_view() {
+    let lan = IpNet::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 0)), 24).unwrap();
+    let guest = IpNet::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 0)), 24).unwrap();
+    let name = "nas.example.com";
+    let mut aaaa = rec(
+        name,
+        RData::AAAA(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+    );
+    aaaa.overrides.insert(ViewId::new("guest").unwrap(), None);
+    let records = vec![rec(name, RData::A(Ipv4Addr::new(192, 0, 2, 10))), aaaa];
+    let views = vec![
+        ViewConfig {
+            id: ViewId::new("lan").unwrap(),
+            is_default: false,
+            subnets: vec![lan],
+            nodes: Vec::new(),
+            profile: ProfileId::new("default").unwrap(),
+        },
+        ViewConfig {
+            id: ViewId::new("guest").unwrap(),
+            is_default: false,
+            subnets: vec![guest],
+            nodes: Vec::new(),
+            profile: ProfileId::new("default").unwrap(),
+        },
+        ViewConfig {
+            id: ViewId::new("default").unwrap(),
+            is_default: true,
+            subnets: Vec::new(),
+            nodes: Vec::new(),
+            profile: ProfileId::new("default").unwrap(),
+        },
+    ];
+    let (h, engine) = engine_with(views, records).await;
+    h.server(".").unwrap().clear_queries();
+
+    let from_lan = engine
+        .handle(ctx(
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 50)),
+            name,
+            RecordType::AAAA,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(from_lan.record.view_id.as_str(), "lan");
+    assert_eq!(from_lan.message.answers.len(), 1);
+    assert_eq!(
+        from_lan.message.answers[0].rdata,
+        RData::AAAA(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))
+    );
+
+    let from_guest = engine
+        .handle(ctx(
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 50)),
+            name,
+            RecordType::AAAA,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(from_guest.record.view_id.as_str(), "guest");
+    assert_eq!(root_query_count(&h), 0);
+    assert_eq!(from_guest.record.answer_source, AnswerOrigin::LocalView);
+    assert!(from_guest.message.answers.is_empty());
+    assert_eq!(from_guest.message.rcode(), Rcode::NOERROR);
+
+    let guest_a = engine
+        .handle(ctx(
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 50)),
+            name,
+            RecordType::A,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        guest_a.message.answers[0].rdata,
+        RData::A(Ipv4Addr::new(192, 0, 2, 10))
+    );
 }
 
 fn default_view_with_a() -> (Vec<ViewConfig>, Vec<ViewRecordConfig>) {

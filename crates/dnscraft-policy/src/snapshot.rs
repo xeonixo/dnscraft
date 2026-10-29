@@ -479,25 +479,41 @@ fn validate_safesearch(mut cfg: SafeSearchConfig) -> Result<SafeSearchConfig, Po
 
 /// Local records as seen in `view`: each global record carries the view's
 /// override (else its default), then the usual RRset checks run.
+///
+/// An override of `None` (empty presentation text) omits that type for the
+/// view. When every type for a name is omitted, the name is still registered
+/// with an empty RRset so queries yield NODATA instead of falling through to
+/// recursion.
 fn build_view_records(
     records: &[ViewRecordConfig],
     view: &ViewId,
 ) -> Result<HashMap<Name, ViewRrSets>, PolicyError> {
     let mut by_name: HashMap<Name, Vec<ViewRecordConfig>> = HashMap::new();
+    let mut ensure_known: HashSet<Name> = HashSet::new();
     for record in records {
-        let mut rec = record.clone();
-        rec.rdata = record.rdata_for(view).clone();
-        if name_has_invalid_wildcard(&rec.name) {
+        if name_has_invalid_wildcard(&record.name) {
             return Err(PolicyError::InvalidConfig {
                 reason: ConfigReason::WildcardOwner,
             });
         }
-        if !is_allowed_view_rtype(rec.rtype()) {
+        if !is_allowed_view_rtype(record.rtype()) {
             return Err(PolicyError::InvalidConfig {
                 reason: ConfigReason::UnsupportedRecordType,
             });
         }
-        by_name.entry(rec.name.clone()).or_default().push(rec);
+        match record.rdata_for(view) {
+            Some(rdata) => {
+                let mut rec = record.clone();
+                rec.rdata = rdata.clone();
+                by_name.entry(rec.name.clone()).or_default().push(rec);
+            }
+            None => {
+                ensure_known.insert(record.name.clone());
+            }
+        }
+    }
+    for name in ensure_known {
+        by_name.entry(name).or_default();
     }
 
     let mut out = HashMap::with_capacity(by_name.len());
@@ -541,6 +557,7 @@ mod tests {
     use crate::ids::{ClientId, NodeId, ProfileId, ViewId};
     use dnscraft_proto::{Name, RData};
     use ipnet::IpNet;
+    use std::collections::BTreeMap;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::sync::Arc;
 
@@ -1032,7 +1049,7 @@ mod tests {
         let mut cfg = spec_excerpt_config();
         cfg.records[0].overrides.insert(
             ViewId::new("nowhere").unwrap(),
-            RData::A(Ipv4Addr::new(192, 0, 2, 99)),
+            Some(RData::A(Ipv4Addr::new(192, 0, 2, 99))),
         );
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert!(matches!(
@@ -1048,7 +1065,7 @@ mod tests {
         let mut cfg = spec_excerpt_config();
         cfg.records[0].overrides.insert(
             ViewId::new("lan").unwrap(),
-            RData::A(Ipv4Addr::new(192, 0, 2, 50)),
+            Some(RData::A(Ipv4Addr::new(192, 0, 2, 50))),
         );
         let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
         let name = Name::from_ascii("nas.lan.example.com").unwrap();
@@ -1058,6 +1075,37 @@ mod tests {
         assert_eq!(
             default.records[0].rdata,
             RData::A(Ipv4Addr::new(192, 0, 2, 10))
+        );
+    }
+
+    #[test]
+    fn config_empty_override_omits_type_and_keeps_name_for_nodata() {
+        let mut cfg = spec_excerpt_config();
+        // Default AAAA plus an A so the name stays known when AAAA is suppressed.
+        cfg.records.push(ViewRecordConfig {
+            name: Name::from_ascii("nas.lan.example.com").unwrap(),
+            ttl: 60,
+            rdata: RData::AAAA(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x10)),
+            overrides: BTreeMap::from([(ViewId::new("lan").unwrap(), None)]),
+        });
+        let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
+        let name = Name::from_ascii("nas.lan.example.com").unwrap();
+        let lan = snap.views[0].records.get(&name).unwrap();
+        assert!(
+            lan.records.iter().all(|r| r.rtype() != RecordType::AAAA),
+            "AAAA must be omitted in lan"
+        );
+        assert!(
+            lan.records.iter().any(|r| r.rtype() == RecordType::A),
+            "A must remain in lan"
+        );
+        let default = snap.views[1].records.get(&name).unwrap();
+        assert!(
+            default
+                .records
+                .iter()
+                .any(|r| r.rtype() == RecordType::AAAA),
+            "default view keeps AAAA"
         );
     }
 

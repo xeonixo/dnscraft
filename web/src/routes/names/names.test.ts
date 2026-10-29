@@ -272,6 +272,55 @@ describe('names sheet Antwort then Abweichungen', () => {
 		expect(putBodies()[0]).toMatchObject({ overrides: {} });
 	});
 
+	it('saves Keine Antwort as an empty override string', async () => {
+		handlers['PUT /api/v1/policy/records'] = () =>
+			ok({
+				version: 7,
+				record: {
+					name: 'nas.example.test.',
+					type: 'A',
+					ttl: 60,
+					rdata: '203.0.113.10',
+					overrides: { lan: '' },
+				},
+			});
+
+		const user = userEvent.setup();
+		render(NamesPage);
+		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10/ }));
+		const dialog = await screen.findByRole('dialog');
+		const noAnswer = within(dialog).getByRole('switch', { name: m.names_overrides_no_answer() });
+		await user.click(noAnswer.closest('label')!);
+		expect(noAnswer).toBeChecked();
+		expect(within(dialog).getByLabelText(m.names_overrides_value())).toBeDisabled();
+		await user.click(within(dialog).getByRole('button', { name: m.action_save() }));
+		await waitFor(() => expect(putBodies()).toHaveLength(1));
+		expect(putBodies()[0]).toMatchObject({ overrides: { lan: '' } });
+	});
+
+	it('loads an empty override string as Keine Antwort', async () => {
+		handlers['GET /api/v1/policy/records'] = () =>
+			ok({
+				records: [
+					{
+						name: 'nas.example.test.',
+						type: 'AAAA',
+						ttl: 60,
+						rdata: '2001:db8::10',
+						overrides: { guest: '' },
+					},
+				],
+			});
+
+		const user = userEvent.setup();
+		render(NamesPage);
+		await user.click(await screen.findByRole('button', { name: /2001:db8::10/ }));
+		const dialog = await screen.findByRole('dialog');
+		expect(within(dialog).getByRole('switch', { name: m.names_overrides_no_answer() })).toBeChecked();
+		expect(within(dialog).getByLabelText(m.names_overrides_value())).toBeDisabled();
+		expect(within(dialog).getByLabelText(m.names_overrides_view())).toHaveValue('guest');
+	});
+
 	it('removes an override row before save', async () => {
 		handlers['PUT /api/v1/policy/records'] = () =>
 			ok({
