@@ -517,9 +517,10 @@ listed in [SPEC-control-api.md](SPEC-control-api.md) § Endpoint table.
 | `/feedback` | Bug report / feedback | viewer/admin | client-side assembly; diagnostics endpoint is a Required addition | Form: summary, expected vs actual, one fenced JSON diagnostics block; opens a pre-filled GitHub issue or copies markdown; never auto-submits |
 | `*` | Not found | any | none | Empty state with a back action; SPA fallback; unknown `/api/v1` paths stay JSON |
 
-The MCP server switch and limits (`control_api.mcp.enabled`, `write_tools_enabled`,
-durations, caps) are configuration, edited through `/config` (`GET/PUT
-/api/v1/config`); they are not a separate API endpoint.
+The MCP server switches (`control_api_settings.mcp`: `enabled`, `write_tools_enabled`,
+`legacy_session_mode`) are edited on `/settings/mcp` through `GET/PUT /api/v1/config`
+and applied at startup over the TOML (a restart is needed). Limits (durations, caps)
+stay in `[control_api.mcp]`; there is no separate API endpoint.
 
 ### Feature coverage beyond the core screens
 

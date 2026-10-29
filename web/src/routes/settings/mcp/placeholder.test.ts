@@ -33,7 +33,7 @@ beforeEach(() => {
 						policy: { profiles: [], views: [], records: [], client_ids: [] },
 						listeners: { listeners: [] },
 						tls: {},
-						mcp: { enabled: false, write_tools_enabled: false },
+						control_api_settings: { mcp: { enabled: false, write_tools_enabled: false } },
 					},
 				});
 			}
@@ -50,7 +50,7 @@ afterEach(() => {
 });
 
 describe('Einstellungen MCP and API tabs', () => {
-	it('shows MCP toggles when config includes mcp', async () => {
+	it('shows MCP toggles from control_api_settings', async () => {
 		render(McpPage);
 		expect(await screen.findByText(m.settings_mcp_enabled())).toBeInTheDocument();
 	});

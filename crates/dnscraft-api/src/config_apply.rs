@@ -1236,10 +1236,14 @@ fn check_if_match(raw: Option<&str>, current: Option<i64>) -> Result<(), Control
     }
 }
 
+/// The MCP switches editable at runtime; applied over the TOML at startup.
+pub const MCP_SETTING_KEYS: [&str; 3] = ["enabled", "write_tools_enabled", "legacy_session_mode"];
+
 /// Validates the non-secret runtime keys of `control_api_settings` (GA15).
 ///
 /// Accepted: `update_check` (bool), `backups` (`enabled`, `retention_count`),
-/// `query_log.retention_days` (1..=3650) and `oidc` (`enabled`, `issuer`,
+/// `query_log.retention_days` (1..=3650), `mcp` (boolean `enabled`,
+/// `write_tools_enabled`, `legacy_session_mode`) and `oidc` (`enabled`, `issuer`,
 /// `client_id`, `admin_group`, `groups_claim`, `token_skew_seconds` 5..=300).
 /// Secrets stay out of the snapshot (write-only `PUT /auth/oidc/client-secret`).
 fn validate_control_api_settings(settings: &Value) -> Result<(), ControlApiError> {
@@ -1341,6 +1345,23 @@ fn validate_control_api_settings(settings: &Value) -> Result<(), ControlApiError
                                 "unknown field `control_api_settings.oidc.{other}`"
                             )));
                         }
+                    }
+                }
+            }
+            "mcp" => {
+                let object = value
+                    .as_object()
+                    .ok_or_else(|| config_invalid("control_api_settings.mcp must be an object"))?;
+                for (field, field_value) in object {
+                    if !MCP_SETTING_KEYS.contains(&field.as_str()) {
+                        return Err(config_invalid(format!(
+                            "unknown field `control_api_settings.mcp.{field}`"
+                        )));
+                    }
+                    if !field_value.is_boolean() {
+                        return Err(config_invalid(format!(
+                            "control_api_settings.mcp.{field} must be a boolean"
+                        )));
                     }
                 }
             }

@@ -291,6 +291,8 @@ async fn control_api_settings_accept_only_the_documented_runtime_keys() {
         json!({"query_log": {"ip_truncate": 1}}),
         json!({"query_log": {"retention_days": 90, "unknown": true}}),
         json!({"oidc": {"client_secret": "x"}}),
+        json!({"mcp": {"enabled": "yes"}}),
+        json!({"mcp": {"request_timeout": true}}),
         json!({"unknown": true}),
     ] {
         let mut config = base.clone();
@@ -311,6 +313,7 @@ async fn control_api_settings_accept_only_the_documented_runtime_keys() {
             "token_skew_seconds": 60,
         },
         "query_log": {"retention_days": 90, "ip_truncate": "none"},
+        "mcp": {"enabled": true, "write_tools_enabled": false, "legacy_session_mode": true},
     });
     let (status, body) = call(&h.state, Method::PUT, "/api/v1/config", Some(config)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -326,4 +329,7 @@ async fn control_api_settings_accept_only_the_documented_runtime_keys() {
     );
     assert_eq!(oidc["client_id"], "dnscraft");
     assert!(oidc.get("client_secret").is_none());
+    let mcp = &body["data"]["config"]["control_api_settings"]["mcp"];
+    assert_eq!(mcp["enabled"], true);
+    assert_eq!(mcp["legacy_session_mode"], true);
 }

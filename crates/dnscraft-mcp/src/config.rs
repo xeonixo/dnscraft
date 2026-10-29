@@ -74,9 +74,8 @@ pub struct McpConfig {
     /// Serve legacy (pre-2026-07-28) handshake clients alongside stateless
     /// requests.
     ///
-    /// Only the accepted `MCP-Protocol-Version` list is widened. The header is
-    /// still required in every mode, so rmcp's SEP-2243 header/body binding is
-    /// never disabled by omitting it.
+    /// Widens the accepted `MCP-Protocol-Version` list and makes the header
+    /// optional, because handshake clients omit it on `initialize`.
     pub legacy_session_mode: bool,
     /// Maximum in-flight requests per token.
     pub max_concurrent_requests_per_token: u32,

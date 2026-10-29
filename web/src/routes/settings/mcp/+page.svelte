@@ -13,7 +13,7 @@
 	interface McpSection {
 		enabled: boolean;
 		write_tools_enabled: boolean;
-		max_custom_rules_per_set?: number;
+		legacy_session_mode: boolean;
 	}
 
 	const isAdmin = $derived(auth.role === 'admin');
@@ -21,7 +21,14 @@
 	let available = $state(false);
 	let version = $state<number | null>(null);
 	let fullConfig = $state<Record<string, unknown> | null>(null);
-	let mcp = $state<McpSection>({ enabled: false, write_tools_enabled: false });
+	let mcp = $state<McpSection>({
+		enabled: false,
+		write_tools_enabled: false,
+		legacy_session_mode: false,
+	});
+	let settings = $state<Record<string, unknown>>({});
+	let saved = $state(false);
+	const endpoint = `${typeof location === 'undefined' ? '' : location.origin}/mcp/v1`;
 	let busy = $state(false);
 	let failure = $state<{ code: string; params: Record<string, unknown> } | null>(null);
 
@@ -30,20 +37,14 @@
 			const snapshot = await getConfig();
 			version = snapshot.version;
 			fullConfig = snapshot.config;
-			const section = snapshot.config?.mcp as McpSection | undefined;
-			if (section && typeof section === 'object') {
-				available = true;
-				mcp = {
-					enabled: section.enabled === true,
-					write_tools_enabled: section.write_tools_enabled === true,
-					max_custom_rules_per_set:
-						typeof section.max_custom_rules_per_set === 'number'
-							? section.max_custom_rules_per_set
-							: undefined,
-				};
-			} else {
-				available = false;
-			}
+			settings = (snapshot.config?.control_api_settings as Record<string, unknown>) ?? {};
+			const section = (settings.mcp as Partial<McpSection> | undefined) ?? {};
+			available = true;
+			mcp = {
+				enabled: section.enabled === true,
+				write_tools_enabled: section.write_tools_enabled === true,
+				legacy_session_mode: section.legacy_session_mode === true,
+			};
 		} catch {
 			available = false;
 		}
@@ -53,11 +54,14 @@
 		if (!isAdmin || !fullConfig) return;
 		busy = true;
 		failure = null;
-		const next = { ...fullConfig, mcp: { ...mcp } };
+		saved = false;
+		const next = { ...fullConfig, control_api_settings: { ...settings, mcp: { ...mcp } } };
 		try {
 			const result = await saveConfig(next, version);
 			version = result.version;
 			fullConfig = next;
+			settings = next.control_api_settings;
+			saved = true;
 		} catch (cause) {
 			failure = failureOf(cause);
 		} finally {
@@ -105,19 +109,26 @@
 				/>
 			{/snippet}
 		</GroupedRow>
-		{#if mcp.max_custom_rules_per_set !== undefined}
-			<GroupedRow
-				label={m.settings_mcp_rule_cap()}
-				detail={String(mcp.max_custom_rules_per_set)}
-				detailMono
-			/>
-		{/if}
+		<GroupedRow label={m.settings_mcp_legacy()} detail={m.settings_mcp_legacy_hint()}>
+			{#snippet trailing()}
+				<Switch
+					bind:checked={mcp.legacy_session_mode}
+					disabled={!isAdmin || !mcp.enabled}
+					aria-label={m.settings_mcp_legacy()}
+				/>
+			{/snippet}
+		</GroupedRow>
+		<GroupedRow label={m.settings_mcp_endpoint()} detail={endpoint} detailMono />
 	</GroupedList>
 
 	{#if isAdmin}
 		<button class="save" type="button" disabled={busy} onclick={() => void save()}
 			>{m.action_save()}</button
 		>
+	{/if}
+
+	{#if saved}
+		<p class="footnote" role="status">{m.settings_mcp_restart()}</p>
 	{/if}
 
 	<p class="rules-link"><a href={resolve('/rules')}>{m.settings_mcp_rules_link()}</a></p>

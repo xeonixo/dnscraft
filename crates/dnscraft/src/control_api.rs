@@ -85,6 +85,22 @@ pub(crate) async fn start(
     let shared_port = shared_listener_port(set, &api_config);
     let hostname = api_hostname(config);
     let mut mcp_config = api_config.mcp.clone();
+    // The web UI stores the MCP switches in the config store; they win over TOML.
+    if let Ok((_, Some(stored))) = config_service.current().await
+        && let Some(settings) = stored.pointer("/control_api_settings/mcp")
+    {
+        let flag = |key: &str, current: bool| {
+            settings
+                .get(key)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(current)
+        };
+        mcp_config.enabled = flag("enabled", mcp_config.enabled);
+        mcp_config.write_tools_enabled =
+            flag("write_tools_enabled", mcp_config.write_tools_enabled);
+        mcp_config.legacy_session_mode =
+            flag("legacy_session_mode", mcp_config.legacy_session_mode);
+    }
     mcp_config.allowed_origins = api_origin(&api_config, shared_port, &hostname)
         .into_iter()
         .collect();
