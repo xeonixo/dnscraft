@@ -35,6 +35,7 @@
 	import { errorMessage, errorMessageKey, getLocale } from '$lib/i18n/locale';
 	import { m } from '$lib/paraglide/messages';
 	import { displayText } from '$lib/safe-text';
+	import { resolve } from '$app/paths';
 
 	type Tab = 'overview' | 'cert' | 'provider' | 'dns';
 
@@ -1219,6 +1220,10 @@
 
 					{#if domain}
 						<p class="records-lead">{m.tls_records_lead({ domain })}</p>
+						<p class="hint tight">
+							{m.tls_records_names_note()}
+							<a class="names-link" href={resolve('/names')}>{m.tls_records_names_cta()}</a>
+						</p>
 						<GroupedList header={m.tls_records_group()}>
 							{#each expectedNodeHosts as node (node.hostname)}
 								<GroupedRow
@@ -1707,6 +1712,11 @@
 		color: var(--label-2);
 		font-size: 0.875rem;
 		line-height: 1.4;
+	}
+
+	.names-link {
+		color: var(--accent);
+		margin-inline-start: 0.35rem;
 	}
 
 	.tag {

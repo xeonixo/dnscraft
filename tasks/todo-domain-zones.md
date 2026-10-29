@@ -83,7 +83,7 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
 
 ### Checkpoint: After T0–T3
 
-- [ ] Overrides ohne Freitext; öffentlicher Wert sichtbar wenn CF angebunden
+- [x] Overrides ohne Freitext; öffentlicher Wert sichtbar wenn CF angebunden
 - [ ] Owner review bevor Write-Path
 
 ## Phase 2: Write path
@@ -121,23 +121,26 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
 
 ### Checkpoint: After T4–T5
 
-- [ ] Gleicher Name: öffentlich setzen, pro Netzbereich abweichen, Viewer read-only
+- [x] Gleicher Name: öffentlich setzen, pro Netzbereich abweichen, Viewer read-only
+      (covered by vitest/mock; see T5)
 - [ ] ACME/DynDNS regression green; Owner-Smoke gegen echte CF-Zone
 
 ## Phase 3: Polish
 
-- [ ] **T6** Specs, cross-links, copy polish
+- [x] **T6** Specs, cross-links, copy polish
   - **Description:** Document the feature; point DoH/TLS „public DNS“ notes at Domain-
     Zonen; keep SPEC non-goal clear (proxy ≠ authoritative hosting).
   - **Acceptance criteria:**
-    - [ ] `SPEC.md` feature row + non-goal clarification; `SPEC-web-ui.md` screen row;
+    - [x] `SPEC.md` feature row + non-goal clarification; `SPEC-web-ui.md` screen row;
           `SPEC-control-api.md` / `SPEC-tls.md` as needed; API reference complete.
-    - [ ] DoH/TLS UI strings that say „set in public DNS“ link or mention Domain-Zonen.
-    - [ ] Optional low-effort: wire `GET /tls/records` in `web/src/lib/api/tls.ts` only if
+    - [x] DoH/TLS UI strings that say „set in public DNS“ link or mention Domain-Zonen.
+    - [x] Optional low-effort: wire `GET /tls/records` in `web/src/lib/api/tls.ts` only if
           the TLS screen still needs the inventory panel; Domain-Zonen remains the editor.
-    - [ ] de/en messages complete; no leftover placeholder copy. MCP tools explicitly deferred.
+          **Skipped:** TLS page already shows a static expected-records list; no clear win.
+    - [x] de/en messages complete; no leftover placeholder copy. MCP tools explicitly deferred
+          (`SPEC-mcp.md` Non-goals + plan note).
   - **Verification:**
-    - [ ] Spec links resolve; grep for stale „DNScraft setzt sie nicht“ where superseded
+    - [x] Spec links resolve; grep for stale „DNScraft setzt sie nicht“ where superseded
     - [ ] Full web + relevant crate tests green
   - **Dependencies:** T5
   - **Files likely touched:** `SPEC*.md`, `docs/API-REFERENCE.md`, messages, DoH/TLS pages
@@ -145,5 +148,5 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
 
 ### Checkpoint: Complete
 
-- [ ] All acceptance criteria above met
-- [ ] Ready for code review / PR
+- [x] All acceptance criteria above met (docs/copy; owner smoke still open)
+- [ ] Ready for code review / PR (after owner smoke)

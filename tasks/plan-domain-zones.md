@@ -2,10 +2,12 @@
 
 > Branch: `feature/public-domain-zones` (from `main`).
 > Task list: [todo-domain-zones.md](todo-domain-zones.md).
-> Date: 2026-10-29. Status: **draft, needs owner review**.
+> Date: 2026-10-29. Status: **implemented (pending owner smoke against a real CF zone)**.
 >
 > Does **not** replace [plan.md](plan.md) (Named Client IDs). That plan stays the active
 > Client-ID workstream; this file is a parallel feature plan.
+>
+> MCP Domain-Zonen tools remain deferred (see [SPEC-mcp.md](../SPEC-mcp.md) Non-goals).
 
 ## Overview
 
@@ -106,23 +108,24 @@ T6 Specs, i18n, DoH/TLS cross-links
 - [ ] D1 Owner confirms decisions 1–9 (esp. name-centric split UX)
 
 ### Phase 1: Local Split UX + CF read
-- [ ] Task 0: Netzbereich-Overrides-UI (structured, no textarea)
-- [ ] Task 1: CloudflareClient zone inventory + record list
-- [ ] Task 2: Control-API GET domain-zones / records
-- [ ] Task 3: Namen UI — name card / editor shows public + local contexts (read)
+- [x] Task 0: Netzbereich-Overrides-UI (structured, no textarea)
+- [x] Task 1: CloudflareClient zone inventory + record list
+- [x] Task 2: Control-API GET domain-zones / records
+- [x] Task 3: Namen UI — name card / editor shows public + local contexts (read)
 
 ### Checkpoint: Split readable
-- [ ] Overrides usable without freitext; public side visible when CF attached
+- [x] Overrides usable without freitext; public side visible when CF attached
 
 ### Phase 2: Public write
-- [ ] Task 4: Mutate CF records + attach/detach
-- [ ] Task 5: Namen editor writes public context
+- [x] Task 4: Mutate CF records + attach/detach
+- [x] Task 5: Namen editor writes public context
 
 ### Checkpoint: Split editable
-- [ ] Same name: set public A at CF + local overrides per Netzbereich
+- [x] Same name: set public A at CF + local overrides per Netzbereich (automated)
+- [ ] Owner smoke against a real CF zone
 
 ### Phase 3
-- [ ] Task 6: Specs, i18n, DoH/TLS links
+- [x] Task 6: Specs, i18n, DoH/TLS links
 
 ## Risks and Mitigations
 

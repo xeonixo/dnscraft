@@ -27,7 +27,9 @@ Users: the network owner (single admin). Clients on the network are plain DNS co
 ### Non-goals
 
 - DHCP, authoritative hosting of public zones, DNSSEC signing of own zones
-  (Cloudflare signs the public zone).
+  (Cloudflare remains authoritative and signs the public zone). DNScraft may
+  **proxy** Cloudflare Zone DNS:Edit for Split-DNS / Domain-Zonen and DynDNS,
+  but does not host or serve public zones itself — proxy ≠ authoritative hosting.
 - Forwarding public names to upstream providers (forward zones for private zones are in scope, see feature table).
 - Importing an existing AdGuard Home configuration (migration is a one-off manual task).
 - AdGuard "Safe Browsing" / "Parental Control" (they query an external AdGuard service;
@@ -80,6 +82,7 @@ Adopted from AdGuard Home and refined; each item belongs to the listed module sp
 | Split-horizon views | policy | Per subnet (Client-ID pin for IPs no subnet matches): own records (A, AAAA, CNAME, TXT, SRV, MX) **and** own filter set, blocked services, schedules, pause state |
 | Manual client names | clients, web-ui | Names for single IPs or whole ranges (e.g. `198.51.100.0/24` = "Container host", `198.51.100.5` = "printer"); take precedence over UniFi names. Containers on macvlan are named automatically via UniFi |
 | DynDNS | tls | Per-node A/AAAA for each `nsN.dns.<domain>` plus public-entry CNAMEs for `dns.<domain>` / `*.dns.<domain>` → entry hostname (DoT Client-IDs); public IP from a configurable echo (default Cloudflare `cdn-cgi/trace`) |
+| Split-DNS Namen (öffentlich zuerst) | policy, tls, control-api, web-ui | Name-centric editor at `/names`: Cloudflare public value first, then Netzbereich deviations as `policy.records.overrides`; attach/detach Domain-Zonen via the shared Cloudflare token (`/api/v1/domain-zones`). Editing «Öffentlich» writes CF and aligns the local default; deviations stay local. Proxies CF Zone DNS:Edit — not authoritative hosting (see Non-goals). MCP Domain-Zonen tools deferred. |
 | Alerts | control-api, web-ui | Certificate expiry, failed list updates, node offline, DynDNS failures: shown in the web UI only (no push/e-mail for now) |
 | MCP server | mcp | Model Context Protocol server (Streamable HTTP) on the internal API listener only. Thin layer over `control-api`: same API tokens and roles (`viewer` = read tools: query log search, "why blocked?", test query, statistics, list/node status; `admin` = also write tools: temporary allow, add rule, pause a filter set), every write in the audit log. Query-log content (domain names, client names) is attacker-influenced and returned strictly as structured data, never as instructions; write tools are marked destructive so clients ask for confirmation. Off by default |
 

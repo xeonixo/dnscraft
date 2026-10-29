@@ -50,6 +50,8 @@ invalid credential → `401 control_api.auth.unauthenticated`.
 **Configuration-family reads are admin-only.** `/config`, `/policy`, `/clients`,
 `/filter-sets`, `/filter-lists`, `/listeners` and `/tls` require `admin` even for
 `GET`, because they expose network topology, filter rules and TLS settings.
+**Exception:** `GET /api/v1/domain-zones` and `GET …/domain-zones/{zone_id}/records`
+are viewer-readable (public Split-DNS side; no config secrets).
 
 ## REST endpoints — implemented
 
@@ -143,20 +145,24 @@ string `"<id>"`, so snapshots written before labels existed stay unchanged.
 
 ### Domain-Zonen (viewer reads; admin writes)
 
-Split-DNS Namen public side: attached Cloudflare zones and their DNS records.
-Uses the shared TLS Cloudflare token (`PUT /api/v1/tls/cloudflare-token`); the
-token is never returned. Without a TLS engine → `control_api.not_ready`.
-Record mutations hold the same Cloudflare `write_guard` as ACME/DynDNS.
+Split-DNS Namen public side: attached Cloudflare zones and their DNS records
+(UI: `/names` → Öffentlich + «Öffentliche Zonen anbinden»). Uses the shared TLS
+Cloudflare token (`PUT /api/v1/tls/cloudflare-token`); the token is never
+returned. Without a TLS engine → `control_api.not_ready`. Record mutations hold
+the same Cloudflare `write_guard` as ACME/DynDNS. Attach/detach updates
+`dns_provider.zones` only — never creates or deletes a Cloudflare zone.
+DNScraft proxies Zone DNS:Edit; Cloudflare stays authoritative
+([SPEC.md](../SPEC.md) Non-goals).
 
 | Method | Path | Summary |
 |---|---|---|
-| GET | `/api/v1/domain-zones` | Attached zones (`public_domain` + `dns_provider.zones`) plus `has_cloudflare_token`. Optional `?discover=1` (admin only) adds `discoverable` from Cloudflare `list_zones`. Discover without a token → `tls.secret.missing` (UI CTA). |
-| GET | `/api/v1/domain-zones/{zone_id}/records` | Paginated records for an attached zone. Query: `page` (default 1), `per_page` (default 50, max 100), `name_substr`. Missing token → `tls.secret.missing`; unknown/unattached `zone_id` → `control_api.not_found`. |
-| POST | `/api/v1/domain-zones/{zone_id}/records` | Create a DNS record (admin). Body: `name`, `type` (`A`/`AAAA`/`CNAME`/`TXT`/`MX`/`SRV`), `content`, optional `ttl` (1=auto or 60–86400), `proxied`, and for MX/SRV `priority` / `weight` / `port`. |
+| GET | `/api/v1/domain-zones` | Attached zones (`public_domain` + `dns_provider.zones`) plus `has_cloudflare_token`. Optional `?discover=1` (admin only) adds `discoverable` from Cloudflare `list_zones`. Discover without a token → `tls.secret.missing` (UI CTA to `/tls`). Insufficient scope on `?discover=1` → `control_api.auth.insufficient_scope`. |
+| GET | `/api/v1/domain-zones/{zone_id}/records` | Paginated records for an attached zone. Query: `page` (default 1), `per_page` (default 50, max 100), `name_substr`. Missing token → `tls.secret.missing`; unknown/unattached `zone_id` → `control_api.not_found`; Cloudflare failures → `tls.cloudflare.*`. |
+| POST | `/api/v1/domain-zones/{zone_id}/records` | Create a DNS record (admin). Body: `name`, `type` (`A`/`AAAA`/`CNAME`/`TXT`/`MX`/`SRV`), `content`, optional `ttl` (1=auto or 60–86400), `proxied`, and for MX/SRV `priority` / `weight` / `port`. Invalid body → `control_api.config.invalid`. |
 | PUT | `/api/v1/domain-zones/{zone_id}/records` | Update a DNS record by `id` (admin). Same fields as create plus required `id`. |
 | DELETE | `/api/v1/domain-zones/{zone_id}/records` | Delete a DNS record (admin). Body: `{ "id": "…" }`. Does not delete the Cloudflare zone. |
-| POST | `/api/v1/domain-zones/attach` | Attach an apex into `dns_provider.zones` (admin). Body: `{ "name": "example.org", "zone_id"? }`. Resolves `zone_id` via Cloudflare when omitted. Does not create a Cloudflare zone. |
-| DELETE | `/api/v1/domain-zones/attach/{apex}` | Detach an apex from `dns_provider.zones` (admin). Does **not** delete the Cloudflare zone. Cannot detach `public_domain`. |
+| POST | `/api/v1/domain-zones/attach` | Attach an apex into `dns_provider.zones` (admin). Body: `{ "name": "example.org", "zone_id"? }`. Resolves `zone_id` via Cloudflare when omitted. Does not create a Cloudflare zone. Bad apex / provider → `tls.config.invalid` / `tls.cloudflare.zone`. |
+| DELETE | `/api/v1/domain-zones/attach/{apex}` | Detach an apex from `dns_provider.zones` (admin). Does **not** delete the Cloudflare zone. Cannot detach `public_domain` (`tls.config.invalid` or `control_api.not_found`). |
 
 Attached zone object: `id?`, `name`, `status?`, `name_servers`, `source`
 (`public_domain` \| `dns_provider`). Record object: `id`, `name`, `record_type`,

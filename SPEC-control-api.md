@@ -26,6 +26,10 @@ values.
 - Configuration CRUD for policy views/profiles, client manual entries, UniFi
   settings, filter list URLs, schedules, SafeSearch, rebind, pause state,
   listener configuration, TLS-related settings and API/auth settings.
+- Domain-Zonen proxy routes (`/api/v1/domain-zones`): list/attach Cloudflare
+  zones and mutate public DNS records for Split-DNS Namen (shared TLS Cloudflare
+  token + `write_guard`). Proxies CF Zone DNS:Edit — not authoritative hosting
+  ([SPEC.md](SPEC.md) Non-goals).
 - Query log storage, filtering, pagination, export and “why blocked?” data.
 - Read-only statistics endpoints for dashboard.
 - Health/readiness endpoints for Docker and cluster.
