@@ -213,7 +213,9 @@ DNScraft from anywhere. Exposure is opt-in and follows these rules:
 - **Rate limits and abuse protection** for public sources: per Client ID and per source IP,
   temporary bans after repeated invalid IDs or handshake failures.
 - **The web UI, API and MCP server are never served on a public listener**, even if DoH shares port 443
-  on the same address: public listeners route only `/dns-query/<id>`.
+  on the same address: public listeners route only `/dns-query/<id>` to public sources. Opt-in exception
+  (`control_api.shared_doh_listener`): private source addresses reach the web UI/API on that DoH listener, even a
+  `public`-exposure one, because the single :443 listener serves both; public sources never do.
 - **DoH on 443** is the recommended path for mobile devices (port 853 is blocked on some
   networks); DoT/DoQ on 853 additionally.
 - Generated Apple `.mobileconfig` profiles point to the public hostname and may contain

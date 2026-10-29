@@ -23,7 +23,9 @@ use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 use tokio::sync::{Notify, Semaphore, oneshot, watch};
 use tokio_rustls::TlsAcceptor;
 
-use crate::admission::{Admission, AdmitDecision, ClientIdState, public_client_id_required};
+use crate::admission::{
+    Admission, AdmitDecision, ClientIdState, SourceClass, public_client_id_required,
+};
 use crate::bans::StrikeReason;
 use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Exposure, Limits, ListenerConfig};
@@ -458,7 +460,7 @@ pub(crate) fn release_per_source(per_source: &Mutex<HashMap<IpAddr, u32>>, sourc
     }
 }
 
-/// Sends a non-DoH path from a private source on a local listener to the web handler (if any);
+/// Sends a non-DoH path from a private source to the web handler (if any);
 /// everything else is DoH.
 async fn route<H>(
     shared: Arc<DohShared<H>>,
@@ -470,7 +472,7 @@ where
 {
     if let Some(web) = shared.web.get()
         && parse_doh_path(req.uri().path()) == DohPath::Other
-        && local_effective(&shared, peer.ip())
+        && private_source(&shared, peer.ip())
     {
         return web(peer, req).await;
     }
@@ -480,15 +482,16 @@ where
     })
 }
 
-/// `true` when the source gets local path rules: the web UI is never routed for public sources.
-fn local_effective<H: ?Sized>(shared: &DohShared<H>, peer: IpAddr) -> bool {
-    let class = shared
+/// `true` for a private TCP peer: the web UI is routed by source, never for public sources. On a
+/// public-exposure listener this extends the rule that already gives private sources local DNS
+/// rules; the owner opts in per listener with `control_api.shared_doh_listener`.
+fn private_source<H: ?Sized>(shared: &DohShared<H>, peer: IpAddr) -> bool {
+    shared
         .admission
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .classify(peer);
-    shared.listener.exposure == Exposure::Local
-        && !public_client_id_required(Exposure::Local, class)
+        .classify(peer)
+        == SourceClass::Private
 }
 
 async fn handle_http<H>(

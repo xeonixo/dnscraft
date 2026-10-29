@@ -146,7 +146,16 @@ impl DohHarness {
         certs: Arc<CertResolver>,
         handler: Arc<H>,
     ) -> Self {
-        Self::spawn_web(exposure, limits, gate, certs, handler, Arc::default()).await
+        Self::spawn_web(
+            exposure,
+            limits,
+            gate,
+            certs,
+            handler,
+            Arc::default(),
+            exposure == Exposure::Public,
+        )
+        .await
     }
 
     async fn spawn_web<H: QueryHandler + 'static>(
@@ -156,6 +165,7 @@ impl DohHarness {
         certs: Arc<CertResolver>,
         handler: Arc<H>,
         web: Arc<WebSlot>,
+        loopback_is_public: bool,
     ) -> Self {
         let stats = Arc::new(DohStats::default());
         let tls_stats = Arc::new(TlsStats::default());
@@ -165,7 +175,7 @@ impl DohHarness {
             ban_strikes: 5,
             ..PublicConfig::default()
         };
-        let admission = if exposure == Exposure::Public {
+        let admission = if loopback_is_public {
             support::public_test_admission(&limits, &public)
         } else {
             support::admission_for(&limits, &public)
@@ -1035,6 +1045,15 @@ fn web_slot() -> Arc<WebSlot> {
 }
 
 async fn web_harness(exposure: Exposure, web: Arc<WebSlot>) -> DohHarness {
+    web_harness_for(exposure, web, false).await
+}
+
+/// `loopback_is_public`: classify the test client (loopback) as a public source.
+async fn web_harness_for(
+    exposure: Exposure,
+    web: Arc<WebSlot>,
+    loopback_is_public: bool,
+) -> DohHarness {
     install_ring();
     let engine = policy_engine_with_client_ids(&["phone"]).await;
     let gate = SniGate {
@@ -1055,6 +1074,7 @@ async fn web_harness(exposure: Exposure, web: Arc<WebSlot>) -> DohHarness {
         certs,
         Arc::new(FakeHandler::new(answer)),
         web,
+        loopback_is_public,
     )
     .await
 }
@@ -1082,8 +1102,22 @@ async fn without_a_web_handler_non_doh_paths_stay_404() {
 }
 
 #[tokio::test]
-async fn public_listener_never_routes_the_web_handler() {
-    let h = web_harness(Exposure::Public, web_slot()).await;
+async fn public_listener_routes_the_web_handler_for_private_sources_only() {
+    let h = web_harness_for(Exposure::Public, web_slot(), false).await;
+    let (status, _, body) = doh_exchange_h1(h.addr, get_req("/")).await;
+    assert_eq!((status, &body[..]), (StatusCode::OK, &b"web"[..]));
+    h.stop().await;
+
+    let h = web_harness_for(Exposure::Public, web_slot(), true).await;
+    let (status, _, body) = doh_exchange_h1(h.addr, get_req("/")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_ne!(&body[..], b"web");
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn local_listener_never_routes_the_web_handler_for_public_sources() {
+    let h = web_harness_for(Exposure::Local, web_slot(), true).await;
     let (status, _, body) = doh_exchange_h1(h.addr, get_req("/")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_ne!(&body[..], b"web");
