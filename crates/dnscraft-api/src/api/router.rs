@@ -14,7 +14,7 @@ use serde_json::json;
 use super::alerts_routes::list_alerts;
 use super::audit_routes::list_audit;
 use super::auth::local::local_login;
-use super::auth::oidc::{oidc_authorize_url, oidc_callback};
+use super::auth::oidc::{oidc_authorize_url, oidc_callback, oidc_status, put_oidc_client_secret};
 use super::auth::session_routes::{list_sessions, revoke_session};
 use super::auth::tokens::{create_token, delete_token, list_tokens};
 use super::auth::{auth_me, auth_middleware, logout, rbac_middleware};
@@ -249,12 +249,13 @@ pub(crate) fn build_router(state: AppState) -> Router {
         if state.local_login_store().is_some() {
             api = api.route("/auth/local/login", post(local_login));
         }
-        // OIDC is mounted only when the relying party is configured.
-        if state.oidc_state().is_some() {
-            api = api
-                .route("/auth/oidc/authorize-url", get(oidc_authorize_url))
-                .route("/auth/oidc/callback", get(oidc_callback));
-        }
+        // OIDC routes are always mounted with auth so WebUI can enable SSO
+        // without a restart; handlers no-op when the relying party is unset.
+        api = api
+            .route("/auth/oidc/status", get(oidc_status))
+            .route("/auth/oidc/authorize-url", get(oidc_authorize_url))
+            .route("/auth/oidc/callback", get(oidc_callback))
+            .route("/auth/oidc/client-secret", put(put_oidc_client_secret));
     }
 
     let mut router = Router::new()

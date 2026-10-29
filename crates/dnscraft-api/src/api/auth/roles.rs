@@ -173,10 +173,16 @@ pub enum Requirement {
 pub fn requirement(method: &Method, path: &str) -> Requirement {
     let path = path.trim_end_matches('/');
     if path == "/api/v1/status"
-        || path.starts_with("/api/v1/auth/oidc")
+        || path == "/api/v1/auth/oidc/authorize-url"
+        || path == "/api/v1/auth/oidc/callback"
+        || (method == Method::GET && path == "/api/v1/auth/oidc/status")
         || path == "/api/v1/auth/local/login"
     {
         return Requirement::Public;
+    }
+    // OIDC admin surfaces (client secret, future settings probes).
+    if path.starts_with("/api/v1/auth/oidc") {
+        return Requirement::ApiAdmin;
     }
     if path == "/api/v1/auth/tokens" || path.starts_with("/api/v1/auth/tokens/") {
         return Requirement::ApiAdmin;

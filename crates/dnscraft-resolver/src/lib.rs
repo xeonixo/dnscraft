@@ -619,7 +619,8 @@ impl Shared {
         let epoch = self.cache.epoch();
         if query.qclass == Class::IN {
             let zones = self.forward_zones();
-            if let Some(zone) = forward::covering(&zones, &query.name, flags.forward_zones.as_deref())
+            if let Some(zone) =
+                forward::covering(&zones, &query.name, flags.forward_zones.as_deref())
             {
                 let zone = zone.clone();
                 return self.forward_zone(zone, query, flags, epoch).await;

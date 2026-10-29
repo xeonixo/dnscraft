@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use axum::extract::ConnectInfo;
 use axum::http::Request;
@@ -47,7 +47,8 @@ pub struct AppState {
     rate_limiter: Arc<RateLimiter>,
     auth: Option<Arc<AuthState>>,
     local_login: Option<Arc<LocalAccountStore>>,
-    oidc: Option<Arc<OidcState>>,
+    /// Live OIDC relying party; swapped when WebUI settings change.
+    oidc: Arc<RwLock<Option<Arc<OidcState>>>>,
     config: Option<Arc<ConfigService>>,
     db: Option<Db>,
     query_log: Option<Arc<QueryLog>>,
@@ -61,7 +62,10 @@ pub struct AppState {
     cluster_write_relay: ClusterWriteRelayHandle,
     mcp_backend: Option<Arc<McpBackendInner>>,
     mcp_config: McpConfig,
-    oidc_issuer: Option<String>,
+    /// Live OIDC issuer host used for MCP protected-domain derivation.
+    oidc_issuer: Arc<RwLock<Option<String>>>,
+    /// Optional runtime used to rebuild OIDC after secret / settings changes.
+    oidc_runtime: Option<Arc<crate::OidcRuntime>>,
     clock: Arc<dyn Clock>,
     filter: Option<Arc<FilterEngine>>,
     policy: Option<Arc<PolicyEngine>>,
@@ -96,7 +100,7 @@ impl AppState {
             )),
             auth: None,
             local_login: None,
-            oidc: None,
+            oidc: Arc::new(RwLock::new(None)),
             config: None,
             db: None,
             query_log: None,
@@ -109,7 +113,8 @@ impl AppState {
             cluster_write_relay: Arc::new(Mutex::new(None)),
             mcp_backend: None,
             mcp_config: McpConfig::default(),
-            oidc_issuer: None,
+            oidc_issuer: Arc::new(RwLock::new(None)),
+            oidc_runtime: None,
             clock: Arc::new(SystemClock),
             filter: None,
             policy: None,
@@ -465,14 +470,20 @@ impl AppState {
     /// Attaches the OIDC issuer URL whose host becomes a protected domain.
     ///
     /// Callers set this only when OIDC is enabled (`control_api.auth`).
-    pub fn with_oidc_issuer(mut self, issuer: impl Into<String>) -> Self {
-        self.oidc_issuer = Some(issuer.into());
+    pub fn with_oidc_issuer(self, issuer: impl Into<String>) -> Self {
+        *self
+            .oidc_issuer
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Some(issuer.into());
         self
     }
 
     /// The configured OIDC issuer URL, if OIDC is enabled.
-    pub(crate) fn oidc_issuer(&self) -> Option<&str> {
-        self.oidc_issuer.as_deref()
+    pub(crate) fn oidc_issuer(&self) -> Option<String> {
+        self.oidc_issuer
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Attaches the session and bearer-token stores.
@@ -512,18 +523,33 @@ impl AppState {
 
     /// Attaches the OIDC relying-party state.
     ///
-    /// With OIDC configured (in addition to [`AppState::with_auth`]), the
-    /// router mounts the public `GET /api/v1/auth/oidc/authorize-url` and
-    /// `GET /api/v1/auth/oidc/callback` endpoints. Callback sessions are
+    /// With auth configured, the router always mounts the public OIDC routes;
+    /// handlers return an error when this slot is empty. Callback sessions are
     /// created in the auth session store.
-    pub fn with_oidc(mut self, oidc: Arc<OidcState>) -> Self {
-        self.oidc = Some(oidc);
+    pub fn with_oidc(self, oidc: Arc<OidcState>) -> Self {
+        *self.oidc.write().unwrap_or_else(PoisonError::into_inner) = Some(oidc);
         self
     }
 
+    /// Shares live OIDC slots with a runtime that rebuilds them from WebUI settings.
+    pub fn with_oidc_runtime(mut self, runtime: Arc<crate::OidcRuntime>) -> Self {
+        self.oidc = runtime.slot();
+        self.oidc_issuer = runtime.issuer_slot();
+        self.oidc_runtime = Some(runtime);
+        self
+    }
+
+    /// The OIDC runtime used for secret updates and settings apply, if wired.
+    pub(crate) fn oidc_runtime(&self) -> Option<&crate::OidcRuntime> {
+        self.oidc_runtime.as_deref()
+    }
+
     /// The configured OIDC state, if any.
-    pub(crate) fn oidc_state(&self) -> Option<&OidcState> {
-        self.oidc.as_deref()
+    pub(crate) fn oidc_state(&self) -> Option<Arc<OidcState>> {
+        self.oidc
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Attaches the TLS status provider (from [`crate::ControlApiTls`]).
@@ -722,7 +748,7 @@ pub async fn prepare_router(
     // endpoints can read it, whether or not a backend is attached.
     let mut state = state;
     if config.auth.oidc_enabled && !config.auth.oidc_issuer.is_empty() {
-        state.oidc_issuer = Some(config.auth.oidc_issuer.clone());
+        state = state.with_oidc_issuer(config.auth.oidc_issuer.clone());
     }
     // The MCP server builds its pre-backend protected list once, at mount
     // time, so seed it with the full derived list. The backend re-derives it
@@ -732,7 +758,7 @@ pub async fn prepare_router(
         Some(service) => service.current().await?.1,
         None => None,
     };
-    let oidc_issuer = state.oidc_issuer().map(str::to_owned);
+    let oidc_issuer = state.oidc_issuer();
     state.mcp_config = crate::protected_list::populate_mcp_protected_domains(
         mcp_config,
         snapshot.as_ref(),

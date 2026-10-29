@@ -242,7 +242,9 @@
 	function defaultHostnameFor(nodeId: string, publicDomain: string): string {
 		const domain = publicDomain.trim();
 		if (!domain) return '';
-		const label = nodeId.startsWith('node') ? `ns${nodeId.slice(4)}` : nodeId;
+		// dns1 / node2 / ns3 -> ns1 / ns2 / ns3: the public node names are ns<number>.dns.<domain>.
+		const number = /(\d+)$/.exec(nodeId)?.[1];
+		const label = number ? `ns${number}` : nodeId;
 		return `${label}.dns.${domain}`;
 	}
 
@@ -287,13 +289,20 @@
 		const ids = nodeIds.length > 0 ? nodeIds : [...byId.keys()];
 		if (ids.length === 0) return [];
 		let sawEntry = false;
-		return ids.map((node_id) => {
+		const profiles = ids.map((node_id) => {
 			const existing = byId.get(node_id) ?? profileFromItem({}, node_id, publicDomain);
 			const enabled = existing.enabled;
 			const public_entry = enabled && !sawEntry && existing.public_entry;
 			if (public_entry) sawEntry = true;
 			return { ...existing, public_entry };
 		});
+		// Nothing saved yet: propose the first enabled node (the master comes first) as the single
+		// public entry, so the apex/wildcard CNAMEs have a target. Nothing is written until saved.
+		if (!sawEntry) {
+			const first = profiles.findIndex((profile) => profile.enabled);
+			if (first >= 0) profiles[first] = { ...profiles[first], public_entry: true };
+		}
+		return profiles;
 	}
 
 	function patchProfile(nodeId: string, patch: Partial<DynDnsNodeForm>): void {

@@ -56,9 +56,9 @@
 
 ## Found while building the SPA login (W4, 2026-10-28)
 
-- [ ] **GA-W4a** OIDC callback (`api/auth/oidc.rs`) returns a JSON envelope; it must redirect back to the SPA
+- [x] **GA-W4a** OIDC callback (`api/auth/oidc.rs`) returns a JSON envelope; it must redirect back to the SPA
       (validated same-origin `return_to`), otherwise the browser login ends on a JSON page.
-- [ ] **GA-W4b** `authorize-url` accepts no `return_to`; add it (same-origin path only, validated server-side).
+- [x] **GA-W4b** `authorize-url` accepts no `return_to`; add it (same-origin path only, validated server-side).
 - [ ] **GA-W4c** `auth_middleware` validates any cookie before public routes (`/auth/local/login`,
       `authorize-url`): an expired cookie yields 401 `session_expired` with no `Set-Cookie` to clear it, so the
       user cannot sign in again. Public routes must ignore/clear a stale cookie; logout must clear it too.

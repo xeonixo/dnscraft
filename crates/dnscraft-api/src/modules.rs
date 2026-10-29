@@ -13,6 +13,7 @@ use dnscraft_filtering::FilterEngine;
 use serde_json::Value;
 
 use crate::error::ControlApiError;
+use crate::oidc_runtime::OidcRuntime;
 use crate::query_log::QueryLog;
 
 /// A boxed, `Send` apply future (avoids an `async-trait` dependency).
@@ -74,4 +75,7 @@ pub struct ModuleAppliers {
     /// pushed after every applied config version. Not a module section: it is
     /// updated only when the whole version applied.
     pub query_log: Option<Arc<QueryLog>>,
+    /// OIDC runtime rebuilt from `control_api_settings.oidc` after every
+    /// successful apply (and when the client secret changes).
+    pub oidc: Option<Arc<OidcRuntime>>,
 }

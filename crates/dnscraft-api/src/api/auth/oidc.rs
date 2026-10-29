@@ -14,6 +14,10 @@
 //! succeeds. The client secret lives in the crate's [`ClientSecret`] (its
 //! `Debug` is redacted) and is never logged or serialized.
 //!
+//! Authorization requests ask for `openid profile email` so Authentik's default
+//! `profile` scope mapping includes the `groups` claim in the ID token
+//! (https://docs.goauthentik.io/add-secure-apps/providers/oauth2/).
+//!
 //! [`Clock`]: crate::Clock
 
 use std::collections::HashMap;
@@ -25,8 +29,8 @@ use std::time::Duration;
 
 use std::net::SocketAddr;
 
-use axum::extract::{ConnectInfo, Query, State};
-use axum::http::{HeaderMap, HeaderValue, header};
+use axum::extract::{ConnectInfo, Extension, Query, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use openidconnect::core::{
     CoreAuthDisplay, CoreAuthPrompt, CoreAuthenticationFlow, CoreErrorResponseType,
@@ -38,25 +42,33 @@ use openidconnect::{
     AccessTokenHash, AdditionalClaims, AsyncHttpClient, AuthorizationCode, Client, ClientId,
     ClientSecret, CsrfToken, EmptyExtraTokenFields, EndpointMaybeSet, EndpointNotSet, EndpointSet,
     HttpClientError, HttpRequest, HttpResponse, IdTokenFields, IssuerUrl, Nonce,
-    OAuth2TokenResponse, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, StandardErrorResponse,
-    StandardTokenResponse,
+    OAuth2TokenResponse, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
+    StandardErrorResponse, StandardTokenResponse,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::Role;
 use super::ensure_same_origin;
+use super::roles::Authenticated;
 use super::sessions::{secure_cookie, session_set_cookie};
 use crate::config::AuthConfig;
 use crate::error::ControlApiError;
+use crate::oidc_secrets;
 use crate::server::AppState;
 use dnscraft_common::clock::unix_seconds;
 use dnscraft_common::clock::{Clock, SystemClock};
 
 /// Callback for the authorization URL endpoint.
 const CALLBACK_PATH: &str = "/api/v1/auth/oidc/callback";
+/// Default SPA path after a successful OIDC login.
+const DEFAULT_RETURN_TO: &str = "/dashboard";
+/// Login page path used when the IdP or token exchange fails.
+const LOGIN_ERROR_PATH: &str = "/login?oidc=error";
 /// How long an initiated login may wait for the provider callback.
 const PENDING_TTL_SECS: i64 = 10 * 60;
+/// Scopes requested for Authentik compatibility (`profile` carries `groups`).
+const OIDC_SCOPES: [&str; 2] = ["profile", "email"];
 /// JWS algorithms accepted for ID tokens. Deliberately asymmetric-only, so an
 /// attacker cannot switch `alg` to `none` or to an HMAC keyed with a value the
 /// client knows.
@@ -131,6 +143,8 @@ struct PendingAuth {
     nonce: Nonce,
     code_verifier: PkceCodeVerifier,
     redirect_url: RedirectUrl,
+    /// Validated same-origin SPA path to open after login.
+    return_to: String,
     expires_at: i64,
 }
 
@@ -285,17 +299,20 @@ impl OidcState {
     pub async fn authorization_url(
         &self,
         redirect_url: RedirectUrl,
+        return_to: String,
     ) -> Result<(String, String), ControlApiError> {
         let client = self.discovered_client(redirect_url.clone()).await?;
         let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
-        let (url, state, nonce) = client
-            .authorize_url(
-                CoreAuthenticationFlow::AuthorizationCode,
-                CsrfToken::new_random,
-                Nonce::new_random,
-            )
-            .set_pkce_challenge(challenge)
-            .url();
+        let mut request = client.authorize_url(
+            CoreAuthenticationFlow::AuthorizationCode,
+            CsrfToken::new_random,
+            Nonce::new_random,
+        );
+        request = request.set_pkce_challenge(challenge);
+        for scope in OIDC_SCOPES {
+            request = request.add_scope(Scope::new(scope.to_owned()));
+        }
+        let (url, state, nonce) = request.url();
 
         let now = unix_seconds(self.clock.now());
         let state_value = state.secret().clone();
@@ -307,6 +324,7 @@ impl OidcState {
                 nonce,
                 code_verifier: verifier,
                 redirect_url,
+                return_to,
                 expires_at: now.saturating_add(PENDING_TTL_SECS),
             },
         );
@@ -316,13 +334,13 @@ impl OidcState {
 
     /// Completes a login: consumes the pending `state` (single-use), exchanges
     /// `code` at the token endpoint, and verifies the ID token. On success
-    /// returns the OIDC `sub` and the mapped role (`admin` when the configured
-    /// admin group is present, otherwise `viewer`).
+    /// returns the OIDC `sub`, the mapped role (`admin` when the configured
+    /// admin group is present, otherwise `viewer`), and the stored `return_to`.
     pub async fn complete_login(
         &self,
         code: String,
         state: &str,
-    ) -> Result<(String, Role), ControlApiError> {
+    ) -> Result<(String, Role, String), ControlApiError> {
         let pending = {
             let now = unix_seconds(self.clock.now());
             let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
@@ -338,6 +356,7 @@ impl OidcState {
             nonce,
             code_verifier,
             redirect_url,
+            return_to,
             ..
         } = pending;
         let client = self.discovered_client(redirect_url).await?;
@@ -408,7 +427,7 @@ impl OidcState {
             Some(groups) if groups.iter().any(|group| group == &self.admin_group) => Role::Admin,
             _ => Role::Viewer,
         };
-        Ok((claims.subject().to_string(), role))
+        Ok((claims.subject().to_string(), role, return_to))
     }
 
     /// Discovers the provider metadata and builds a client for one redirect URI.
@@ -428,11 +447,19 @@ impl OidcState {
     }
 }
 
+/// Query parameters for starting an OIDC login.
+#[derive(Deserialize)]
+pub(crate) struct OidcAuthorizeQuery {
+    /// Same-origin SPA path restored after login (validated server-side).
+    return_to: Option<String>,
+}
+
 /// `GET /api/v1/auth/oidc/authorize-url`: public endpoint returning the
 /// provider authorization URL and the matching `state` value.
 pub(crate) async fn oidc_authorize_url(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<OidcAuthorizeQuery>,
 ) -> Result<Response, ControlApiError> {
     ensure_same_origin(&headers)?;
     let oidc = state
@@ -440,8 +467,10 @@ pub(crate) async fn oidc_authorize_url(
         .ok_or_else(|| ControlApiError::Internal {
             message: "OIDC login is not configured".to_owned(),
         })?;
+    let return_to = validate_return_to(query.return_to.as_deref())
+        .unwrap_or_else(|| DEFAULT_RETURN_TO.to_owned());
     let redirect_url = callback_url(&state, &headers)?;
-    let (authorization_url, csrf_state) = oidc.authorization_url(redirect_url).await?;
+    let (authorization_url, csrf_state) = oidc.authorization_url(redirect_url, return_to).await?;
     Ok(crate::api::response::success(json!({
         "authorization_url": authorization_url,
         "state": csrf_state,
@@ -458,8 +487,99 @@ pub(crate) struct OidcCallbackQuery {
     error_description: Option<String>,
 }
 
-/// `GET /api/v1/auth/oidc/callback`: public endpoint that completes the login
-/// and mints a cookie session for the mapped role.
+/// Body of `PUT /api/v1/auth/oidc/client-secret` (write-only).
+#[derive(Deserialize)]
+pub(crate) struct OidcClientSecretBody {
+    /// New secret, or `null` to clear the stored value.
+    client_secret: Option<String>,
+}
+
+/// `GET /api/v1/auth/oidc/status`: public `{ enabled }`; admins also see
+/// non-secret live settings and whether a client secret is stored.
+pub(crate) async fn oidc_status(
+    State(state): State<AppState>,
+    authenticated: Option<Extension<Authenticated>>,
+) -> Result<Response, ControlApiError> {
+    let enabled = state.oidc_state().is_some();
+    let mut body = json!({ "enabled": enabled });
+    let is_admin = authenticated
+        .as_ref()
+        .is_some_and(|auth| auth.0.scope().is_admin());
+    if is_admin {
+        let has_client_secret = match state.db() {
+            Some(db) => oidc_secrets::has_client_secret(db).await?,
+            None => false,
+        };
+        let settings = state.oidc_state().map(|oidc| oidc.settings());
+        body = json!({
+            "enabled": enabled,
+            "has_client_secret": has_client_secret,
+            "issuer": settings.as_ref().map(|s| s.issuer.as_str()).unwrap_or(""),
+            "client_id": settings.as_ref().map(|s| s.client_id.as_str()).unwrap_or(""),
+            "admin_group": settings.as_ref().map(|s| s.admin_group.as_str()).unwrap_or(""),
+            "groups_claim": settings.as_ref().map(|s| s.groups_claim.as_str()).unwrap_or("groups"),
+            "token_skew_seconds": settings.as_ref().map(|s| s.token_skew_secs).unwrap_or(30),
+            "callback_path": CALLBACK_PATH,
+        });
+    }
+    Ok(crate::api::response::success(body).into_response())
+}
+
+/// `PUT /api/v1/auth/oidc/client-secret`: write-only secret (admin).
+pub(crate) async fn put_oidc_client_secret(
+    State(state): State<AppState>,
+    Extension(actor): Extension<Authenticated>,
+    axum::Json(body): axum::Json<OidcClientSecretBody>,
+) -> Result<Response, ControlApiError> {
+    if !actor.scope().is_admin() {
+        return Err(ControlApiError::AuthInsufficientScope {
+            required: "admin".to_owned(),
+        });
+    }
+    let db = state.db().ok_or_else(|| ControlApiError::Internal {
+        message: "database is not configured".to_owned(),
+    })?;
+    match body.client_secret.as_deref() {
+        None => {
+            oidc_secrets::set_client_secret(db, None).await?;
+            crate::audit::record_auth_event(
+                Some(db),
+                actor.actor_id(),
+                actor.actor_type().as_str(),
+                "auth.oidc.client_secret.clear",
+                actor.actor_id(),
+                "ok",
+                None,
+            )
+            .await;
+        }
+        Some(value) => {
+            oidc_secrets::set_client_secret(db, Some(value)).await?;
+            crate::audit::record_auth_event(
+                Some(db),
+                actor.actor_id(),
+                actor.actor_type().as_str(),
+                "auth.oidc.client_secret.set",
+                actor.actor_id(),
+                "ok",
+                None,
+            )
+            .await;
+        }
+    }
+    if let Some(runtime) = state.oidc_runtime() {
+        runtime.rebuild().await?;
+    }
+    Ok(crate::api::response::success(json!({
+        "updated": true,
+        "has_client_secret": oidc_secrets::has_client_secret(db).await?,
+        "enabled": state.oidc_state().is_some(),
+    }))
+    .into_response())
+}
+
+/// `GET /api/v1/auth/oidc/callback`: completes the login, sets the session
+/// cookie, and redirects the browser to the SPA (`return_to`).
 pub(crate) async fn oidc_callback(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -467,24 +587,34 @@ pub(crate) async fn oidc_callback(
     Query(query): Query<OidcCallbackQuery>,
 ) -> Result<Response, ControlApiError> {
     ensure_same_origin(&headers)?;
-    let oidc = state
-        .oidc_state()
-        .ok_or_else(|| ControlApiError::Internal {
-            message: "OIDC login is not configured".to_owned(),
-        })?;
+    let oidc = match state.oidc_state() {
+        Some(oidc) => oidc,
+        None => return redirect_response(LOGIN_ERROR_PATH, None),
+    };
     if let Some(error) = query.error {
         let description = query.error_description.unwrap_or_default();
-        return Err(oidc_error(format!(
-            "OIDC provider returned {error}: {description}"
-        )));
+        tracing::warn!(error, description = %description, "OIDC provider returned an error");
+        crate::audit::record_auth_event(
+            state.db(),
+            "oidc",
+            "user",
+            "auth.oidc.login",
+            "unknown",
+            "error",
+            Some("control_api.auth.oidc"),
+        )
+        .await;
+        return redirect_response(LOGIN_ERROR_PATH, None);
     }
-    let code = query
-        .code
-        .ok_or_else(|| oidc_error("OIDC callback is missing the authorization code"))?;
-    let csrf_state = query
-        .state
-        .ok_or_else(|| oidc_error("OIDC callback is missing the state parameter"))?;
-    let (actor_id, role) = match oidc.complete_login(code, &csrf_state).await {
+    let code = match query.code {
+        Some(code) => code,
+        None => return redirect_response(LOGIN_ERROR_PATH, None),
+    };
+    let csrf_state = match query.state {
+        Some(state) => state,
+        None => return redirect_response(LOGIN_ERROR_PATH, None),
+    };
+    let (actor_id, role, return_to) = match oidc.complete_login(code, &csrf_state).await {
         Ok(login) => login,
         Err(err) => {
             crate::audit::record_auth_event(
@@ -497,7 +627,7 @@ pub(crate) async fn oidc_callback(
                 Some(err.code()),
             )
             .await;
-            return Err(err);
+            return redirect_response(LOGIN_ERROR_PATH, None);
         }
     };
 
@@ -538,14 +668,38 @@ pub(crate) async fn oidc_callback(
     let cookie = HeaderValue::from_str(&cookie).map_err(|err| ControlApiError::Internal {
         message: format!("build session cookie: {err}"),
     })?;
+    redirect_response(&return_to, Some(cookie))
+}
 
-    let mut response = crate::api::response::success(json!({
-        "actor_id": created.principal().actor_id,
-        "role": role.as_str(),
-        "csrf_token": created.csrf_token().expose(),
-    }))
-    .into_response();
-    response.headers_mut().insert(header::SET_COOKIE, cookie);
+/// Accepts a same-origin absolute path (optional query), rejecting open redirects.
+fn validate_return_to(raw: Option<&str>) -> Option<String> {
+    let value = raw?.trim();
+    if value.is_empty() || !value.starts_with('/') || value.starts_with("//") {
+        return None;
+    }
+    if value.contains('\\') || value.contains('\0') || value.contains("://") {
+        return None;
+    }
+    let path = value.split_once('?').map(|(path, _)| path).unwrap_or(value);
+    if path.starts_with("/api") || path.starts_with("/mcp") || path == "/login" {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn redirect_response(
+    location: &str,
+    cookie: Option<HeaderValue>,
+) -> Result<Response, ControlApiError> {
+    let location = HeaderValue::from_str(location).map_err(|err| ControlApiError::Internal {
+        message: format!("build OIDC redirect: {err}"),
+    })?;
+    let mut response = Response::new(axum::body::Body::empty());
+    *response.status_mut() = StatusCode::FOUND;
+    response.headers_mut().insert(header::LOCATION, location);
+    if let Some(cookie) = cookie {
+        response.headers_mut().insert(header::SET_COOKIE, cookie);
+    }
     Ok(response)
 }
 

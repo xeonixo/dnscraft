@@ -125,11 +125,21 @@ impl AuthState {
     /// Attaches the OIDC settings so [`AuthState::auth_snapshot`] includes its
     /// non-secret fields.
     pub fn with_oidc(self, oidc: &OidcState) -> Self {
+        self.set_oidc_settings(Some(oidc.settings()));
+        self
+    }
+
+    /// Replaces the non-secret OIDC settings (WebUI / runtime apply).
+    ///
+    /// Bumps the change notifier so a cluster master pushes a fresh auth
+    /// snapshot to sub-nodes.
+    pub fn set_oidc_settings(&self, settings: Option<OidcSettings>) {
         *self
             .oidc
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(oidc.settings());
-        self
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = settings;
+        let next = self.changes.borrow().saturating_add(1);
+        let _ = self.changes.send(next);
     }
 
     /// The cookie-session middleware state.
@@ -294,7 +304,9 @@ pub async fn auth_middleware(
 fn is_public_auth_path(path: &str) -> bool {
     path == "/api/v1/auth/local/login"
         || path == "/api/v1/auth/logout"
-        || path.starts_with("/api/v1/auth/oidc/")
+        || path == "/api/v1/auth/oidc/authorize-url"
+        || path == "/api/v1/auth/oidc/callback"
+        || path == "/api/v1/auth/oidc/status"
 }
 
 /// Adds a `Set-Cookie` that clears the session cookie.

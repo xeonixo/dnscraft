@@ -241,6 +241,7 @@ pub(crate) fn appliers(
     query_log: &Arc<QueryLog>,
     db: &Db,
     node_id: &str,
+    oidc: Option<Arc<dnscraft_api::OidcRuntime>>,
 ) -> ModuleAppliers {
     ModuleAppliers {
         filtering: Some(Arc::new(FilteringApplier {
@@ -267,6 +268,7 @@ pub(crate) fn appliers(
         }),
         filtering_engine: Some(Arc::clone(&engines.filtering)),
         query_log: Some(Arc::clone(query_log)),
+        oidc,
     }
 }
 

@@ -740,11 +740,7 @@ async fn heartbeat(
         return error_response(&quota_exceeded(&auth.0, "heartbeat"));
     }
     let remote = peer_addr.map(|Extension(PeerSocketAddr(addr))| addr.to_string());
-    if let Err(error) = state
-        .store
-        .mark_seen(&auth.0, remote.as_deref())
-        .await
-    {
+    if let Err(error) = state.store.mark_seen(&auth.0, remote.as_deref()).await {
         return error_response(&error);
     }
     if let Some(version) = request.applied_version
@@ -855,15 +851,12 @@ async fn stream(
     }
 
     let remote = peer_addr.map(|Extension(PeerSocketAddr(addr))| addr.to_string());
-    if let Err(error) = state
-        .store
-        .mark_seen(&auth.0, remote.as_deref())
-        .await
-    {
+    if let Err(error) = state.store.mark_seen(&auth.0, remote.as_deref()).await {
         return error_response(&error);
     }
 
-    let last_applied_version = hello.as_ref().and_then(|hello| hello.last_applied_version);    let (records, mut record_rx) = mpsc::channel::<StreamRecord>(8);
+    let last_applied_version = hello.as_ref().and_then(|hello| hello.last_applied_version);
+    let (records, mut record_rx) = mpsc::channel::<StreamRecord>(8);
     // Backfill cursor: the sub-node resumes logging from this + 1.
     let master_highest_log_seq = state
         .log_ingest

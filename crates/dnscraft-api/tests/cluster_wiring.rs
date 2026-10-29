@@ -390,13 +390,19 @@ async fn master_apply_publishes_to_config_sync() {
     assert_eq!(version, 1);
 
     // The publish hook is a spawned watch task; yield until it runs.
-    for _ in 0..200 {
+    // Match the 20_000 budget used by the other watcher waits in this file —
+    // 200 is too tight under parallel CI load and flakes as `None` vs `Some(1)`.
+    for _ in 0..20_000 {
         if sync.current_version() == Some(version) {
             break;
         }
         tokio::task::yield_now().await;
     }
-    assert_eq!(sync.current_version(), Some(1));
+    assert_eq!(
+        sync.current_version(),
+        Some(1),
+        "master watcher did not publish version 1"
+    );
     let current = status.status().expect("master status");
     assert_eq!(current.role, "master");
     assert!(current.master_reachable);
