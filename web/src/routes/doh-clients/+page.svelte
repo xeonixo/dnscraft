@@ -893,7 +893,10 @@
 					bind:value={recordPublic}
 					autocomplete="off"
 				/>
-				<p class="hint">{m.doh_record_public_note()}</p>
+				<p class="hint">
+					{m.doh_record_public_note()}
+					<a class="check-link" href={resolve('/names')}>{m.doh_record_public_cta()}</a>
+				</p>
 			</div>
 
 			{#snippet footer()}

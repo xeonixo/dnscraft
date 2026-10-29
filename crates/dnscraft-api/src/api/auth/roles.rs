@@ -382,6 +382,34 @@ mod tests {
             requirement(&Method::GET, "/api/v1/query-log"),
             Requirement::Api
         );
+        assert_eq!(
+            requirement(&Method::GET, "/api/v1/domain-zones"),
+            Requirement::Api
+        );
+        assert_eq!(
+            requirement(&Method::GET, "/api/v1/domain-zones/zone-1/records"),
+            Requirement::Api
+        );
+        assert_eq!(
+            requirement(&Method::POST, "/api/v1/domain-zones/zone-1/records"),
+            Requirement::ApiAdmin
+        );
+        assert_eq!(
+            requirement(&Method::PUT, "/api/v1/domain-zones/zone-1/records"),
+            Requirement::ApiAdmin
+        );
+        assert_eq!(
+            requirement(&Method::DELETE, "/api/v1/domain-zones/zone-1/records"),
+            Requirement::ApiAdmin
+        );
+        assert_eq!(
+            requirement(&Method::POST, "/api/v1/domain-zones/attach"),
+            Requirement::ApiAdmin
+        );
+        assert_eq!(
+            requirement(&Method::DELETE, "/api/v1/domain-zones/attach/example.org"),
+            Requirement::ApiAdmin
+        );
         // The TLS status DTO is viewer-readable; every other TLS route is admin.
         assert_eq!(
             requirement(&Method::GET, "/api/v1/tls/status"),

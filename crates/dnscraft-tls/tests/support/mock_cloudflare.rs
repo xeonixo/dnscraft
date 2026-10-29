@@ -41,6 +41,7 @@ pub struct MockRecord {
 pub struct MockZone {
     pub id: String,
     pub name: String,
+    pub status: String,
     pub name_servers: Vec<String>,
 }
 
@@ -111,6 +112,21 @@ impl MockCloudflare {
 
     pub async fn records(&self) -> Vec<MockRecord> {
         self.state.lock().await.records.clone()
+    }
+
+    /// Zones currently visible to the token.
+    pub async fn zones(&self) -> Vec<MockZone> {
+        self.state.lock().await.zones.clone()
+    }
+
+    /// Appends another zone visible to the token (for inventory tests).
+    pub async fn add_zone(&self, zone: MockZone) {
+        self.state.lock().await.zones.push(zone);
+    }
+
+    /// Inserts a DNS record directly (skips the HTTP create path).
+    pub async fn insert_record(&self, record: MockRecord) {
+        self.state.lock().await.records.push(record);
     }
 
     /// TXT RDATA currently stored for `name`.
@@ -283,21 +299,30 @@ fn handle(
 ) -> (u16, Option<String>, String) {
     let q = parse_query(query);
 
-    // GET /client/v4/zones?name=
+    // GET /client/v4/zones[?name=&page=&per_page=]
     if method == "GET" && path == "/client/v4/zones" {
         let name = q.get("name").map(String::as_str).unwrap_or("");
-        let matched: Vec<&MockZone> = st.zones.iter().filter(|z| z.name == name).collect();
-        let result: Vec<serde_json::Value> = matched
-            .iter()
-            .map(|z| {
-                serde_json::json!({
-                    "id": z.id,
-                    "name": z.name,
-                    "name_servers": z.name_servers,
-                })
-            })
+        let matched: Vec<&MockZone> = if name.is_empty() {
+            st.zones.iter().collect()
+        } else {
+            st.zones.iter().filter(|z| z.name == name).collect()
+        };
+        let page = parse_u32(q.get("page"), 1).max(1);
+        let per_page = parse_u32(q.get("per_page"), 50).max(1);
+        let total_count = matched.len() as u32;
+        let start = ((page - 1) * per_page) as usize;
+        let page_zones: Vec<&MockZone> = matched
+            .into_iter()
+            .skip(start)
+            .take(per_page as usize)
             .collect();
-        return ok_json(serde_json::Value::Array(result));
+        let result: Vec<serde_json::Value> = page_zones.iter().map(|z| zone_json(z)).collect();
+        return ok_json_paginated(
+            serde_json::Value::Array(result),
+            page,
+            per_page,
+            total_count,
+        );
     }
 
     // GET /client/v4/zones/{id}
@@ -306,11 +331,7 @@ fn handle(
         && !id.contains('/')
     {
         return match st.zones.iter().find(|z| z.id == id) {
-            Some(z) => ok_json(serde_json::json!({
-                "id": z.id,
-                "name": z.name,
-                "name_servers": z.name_servers,
-            })),
+            Some(z) => ok_json(zone_json(z)),
             None => fail_json(404, 1001, "Zone not found"),
         };
     }
@@ -329,14 +350,43 @@ fn handle(
                 "GET" => {
                     let name = q.get("name").cloned();
                     let rtype = q.get("type").cloned();
-                    let list: Vec<serde_json::Value> = st
+                    let name_substr = q.get("name_substr").cloned();
+                    let filtered: Vec<&MockRecord> = st
                         .records
                         .iter()
                         .filter(|r| r.zone_id == zid)
                         .filter(|r| name.as_ref().is_none_or(|n| &r.name == n))
                         .filter(|r| rtype.as_ref().is_none_or(|t| &r.record_type == t))
-                        .map(record_json)
+                        .filter(|r| {
+                            name_substr.as_ref().is_none_or(|s| {
+                                r.name
+                                    .to_ascii_lowercase()
+                                    .contains(&s.to_ascii_lowercase())
+                            })
+                        })
                         .collect();
+                    // Paginate only when the caller asks for a page (inventory /
+                    // Domain-Zonen). Filtered ACME helpers omit page and get all.
+                    if q.contains_key("page") || q.contains_key("per_page") {
+                        let page = parse_u32(q.get("page"), 1).max(1);
+                        let per_page = parse_u32(q.get("per_page"), 100).max(1);
+                        let total_count = filtered.len() as u32;
+                        let start = ((page - 1) * per_page) as usize;
+                        let list: Vec<serde_json::Value> = filtered
+                            .into_iter()
+                            .skip(start)
+                            .take(per_page as usize)
+                            .map(record_json)
+                            .collect();
+                        return ok_json_paginated(
+                            serde_json::Value::Array(list),
+                            page,
+                            per_page,
+                            total_count,
+                        );
+                    }
+                    let list: Vec<serde_json::Value> =
+                        filtered.into_iter().map(record_json).collect();
                     return ok_json(serde_json::Value::Array(list));
                 }
                 "POST" => {
@@ -377,8 +427,29 @@ fn handle(
                     else {
                         return fail_json(404, 81044, "Record not found");
                     };
+                    if let Some(n) = v["name"].as_str() {
+                        rec.name = n.to_owned();
+                    }
+                    if let Some(t) = v["type"].as_str() {
+                        rec.record_type = t.to_owned();
+                    }
                     if let Some(c) = v["content"].as_str() {
                         rec.content = c.to_owned();
+                    } else if let Some(target) = v.pointer("/data/target").and_then(|x| x.as_str())
+                    {
+                        let priority = v
+                            .pointer("/data/priority")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0);
+                        let weight = v
+                            .pointer("/data/weight")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0);
+                        let port = v
+                            .pointer("/data/port")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0);
+                        rec.content = format!("{priority} {weight} {port} {target}");
                     }
                     if let Some(t) = v["ttl"].as_u64() {
                         rec.ttl = t as u32;
@@ -405,6 +476,15 @@ fn handle(
     fail_json(404, 7000, "not found")
 }
 
+fn zone_json(z: &MockZone) -> serde_json::Value {
+    serde_json::json!({
+        "id": z.id,
+        "name": z.name,
+        "status": z.status,
+        "name_servers": z.name_servers,
+    })
+}
+
 fn record_json(r: &MockRecord) -> serde_json::Value {
     serde_json::json!({
         "id": r.id,
@@ -426,6 +506,39 @@ fn ok_json(result: serde_json::Value) -> (u16, Option<String>, String) {
     })
     .to_string();
     (200, None, body)
+}
+
+fn ok_json_paginated(
+    result: serde_json::Value,
+    page: u32,
+    per_page: u32,
+    total_count: u32,
+) -> (u16, Option<String>, String) {
+    let count = result.as_array().map(|a| a.len() as u32).unwrap_or(0);
+    let total_pages = if per_page == 0 || total_count == 0 {
+        0
+    } else {
+        total_count.div_ceil(per_page)
+    };
+    let body = serde_json::json!({
+        "success": true,
+        "errors": [],
+        "messages": [],
+        "result": result,
+        "result_info": {
+            "page": page,
+            "per_page": per_page,
+            "count": count,
+            "total_count": total_count,
+            "total_pages": total_pages,
+        },
+    })
+    .to_string();
+    (200, None, body)
+}
+
+fn parse_u32(v: Option<&String>, default: u32) -> u32 {
+    v.and_then(|s| s.parse().ok()).unwrap_or(default)
 }
 
 fn fail_json(http: u16, code: u32, message: &str) -> (u16, Option<String>, String) {

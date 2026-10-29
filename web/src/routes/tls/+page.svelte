@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { SvelteMap } from 'svelte/reactivity';
+	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import Banner from '$lib/components/Banner.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
@@ -35,6 +35,7 @@
 	import { errorMessage, errorMessageKey, getLocale } from '$lib/i18n/locale';
 	import { m } from '$lib/paraglide/messages';
 	import { displayText } from '$lib/safe-text';
+	import { resolve } from '$app/paths';
 
 	type Tab = 'overview' | 'cert' | 'provider' | 'dns';
 
@@ -237,6 +238,15 @@
 		const raw = String(value ?? 'ecdsa_p256');
 		if (raw === 'EcdsaP384' || raw === 'p384' || raw === 'ecdsa_p384') return 'ecdsa_p384';
 		return 'ecdsa_p256';
+	}
+
+	function reservedLabelsFor(existing: unknown, hostnames: string[]): string[] {
+		const labels = new SvelteSet<string>(Array.isArray(existing) ? existing.map(String) : []);
+		for (const host of hostnames) {
+			const label = host.trim().toLowerCase().split('.')[0];
+			if (label) labels.add(label);
+		}
+		return [...labels];
 	}
 
 	function defaultHostnameFor(nodeId: string, publicDomain: string): string {
@@ -489,6 +499,13 @@
 				hostname: flatHost,
 				public_entry: flatEntry,
 				nodes: profiles,
+				// A node host name's first label (ns1, ns2 …) must be reserved, or the backend
+				// rejects the config ('label is not in reserved_labels') and a Client ID could
+				// take the name.
+				reserved_labels: reservedLabelsFor(objectField(tlsConfig, 'dyndns').reserved_labels, [
+					flatHost,
+					...profiles.map((p) => p.hostname),
+				]),
 				ipv4: flatV4,
 				ipv6: flatV6,
 				ipv6_identifier: flatIpv6Ident,
@@ -1203,6 +1220,10 @@
 
 					{#if domain}
 						<p class="records-lead">{m.tls_records_lead({ domain })}</p>
+						<p class="hint tight">
+							{m.tls_records_names_note()}
+							<a class="names-link" href={resolve('/names')}>{m.tls_records_names_cta()}</a>
+						</p>
 						<GroupedList header={m.tls_records_group()}>
 							{#each expectedNodeHosts as node (node.hostname)}
 								<GroupedRow
@@ -1691,6 +1712,11 @@
 		color: var(--label-2);
 		font-size: 0.875rem;
 		line-height: 1.4;
+	}
+
+	.names-link {
+		color: var(--accent);
+		margin-inline-start: 0.35rem;
 	}
 
 	.tag {

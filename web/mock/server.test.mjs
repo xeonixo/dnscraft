@@ -549,6 +549,81 @@ describe('mock Netzbereich pins for client ids', () => {
 	});
 });
 
+describe('mock domain-zones write path', () => {
+	const csrfHeaders = {
+		'Content-Type': 'application/json',
+		'X-CSRF-Token': MOCK_CSRF,
+	};
+
+	it('creates, updates and deletes records on an attached zone', async () => {
+		const create = await fetch(`${base}/api/v1/domain-zones/zone-example-test/records`, {
+			method: 'POST',
+			headers: csrfHeaders,
+			body: JSON.stringify({
+				name: 'app.example.test',
+				type: 'A',
+				content: '203.0.113.80',
+				ttl: 300,
+				proxied: false,
+			}),
+		});
+		assert.equal(create.status, 200);
+		const created = (await create.json()).data;
+		assert.equal(created.content, '203.0.113.80');
+		assert.ok(created.id);
+
+		const update = await fetch(`${base}/api/v1/domain-zones/zone-example-test/records`, {
+			method: 'PUT',
+			headers: csrfHeaders,
+			body: JSON.stringify({
+				id: created.id,
+				name: 'app.example.test',
+				type: 'A',
+				content: '203.0.113.81',
+				ttl: 300,
+			}),
+		});
+		assert.equal(update.status, 200);
+		assert.equal((await update.json()).data.content, '203.0.113.81');
+
+		const del = await fetch(`${base}/api/v1/domain-zones/zone-example-test/records`, {
+			method: 'DELETE',
+			headers: csrfHeaders,
+			body: JSON.stringify({ id: created.id }),
+		});
+		assert.equal(del.status, 200);
+		assert.equal((await del.json()).data.deleted, true);
+	});
+
+	it('attaches and detaches an apex without removing Cloudflare inventory seed', async () => {
+		const attach = await fetch(`${base}/api/v1/domain-zones/attach`, {
+			method: 'POST',
+			headers: csrfHeaders,
+			body: JSON.stringify({ name: 'other.example', zone_id: 'zone-unattached' }),
+		});
+		assert.equal(attach.status, 200);
+		assert.equal((await attach.json()).data.name, 'other.example');
+
+		const listed = await fetch(`${base}/api/v1/domain-zones`);
+		assert.equal(listed.status, 200);
+		const zones = (await listed.json()).data.zones;
+		assert.ok(zones.some((zone) => zone.name === 'other.example'));
+
+		const detach = await fetch(`${base}/api/v1/domain-zones/attach/other.example`, {
+			method: 'DELETE',
+			headers: csrfHeaders,
+		});
+		assert.equal(detach.status, 200);
+		assert.equal((await detach.json()).data.detached, true);
+
+		const after = await (await fetch(`${base}/api/v1/domain-zones`)).json();
+		assert.equal(
+			after.data.zones.some((zone) => zone.name === 'other.example'),
+			false,
+		);
+	});
+});
+
 describe('mock query log IP truncation setting', () => {
 	let truncateServer;
 	let truncateBase;

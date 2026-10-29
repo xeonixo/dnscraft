@@ -1312,6 +1312,14 @@ export function initialConfig() {
 		policy: {
 			records: [
 				{
+					// Split-DNS: same FQDN publicly (Cloudflare) and with a LAN override.
+					name: 'nas.example.test.',
+					type: 'A',
+					ttl: 60,
+					rdata: '203.0.113.10',
+					overrides: { lan: '192.0.2.50', guest: '192.0.2.51' },
+				},
+				{
 					name: 'nas.lan.',
 					type: 'A',
 					ttl: 60,

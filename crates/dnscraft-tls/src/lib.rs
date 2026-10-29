@@ -42,7 +42,8 @@ pub use acme::{
 pub use acme_http::ReqwestHttpClient;
 pub use clock::{Clock, ManualClock, SystemClock, wait_until};
 pub use cloudflare::{
-    CLOUDFLARE_API_BASE, CloudflareClient, DnsRecord, TTL_ACME_TXT, TTL_AUTO, ZoneInfo,
+    CLOUDFLARE_API_BASE, CloudflareClient, DnsRecord, DnsRecordSpec, ListZoneRecordsQuery,
+    TTL_ACME_TXT, TTL_AUTO, ZoneInfo, ZoneRecordsPage,
 };
 pub use config::{
     AcmeAccountConfig, AcmeConfig, AcmeDirectoryKind, CloudflareConfig, DEFAULT_DYNDNS_INTERVAL,
@@ -57,7 +58,7 @@ pub use dyndns::{
     dyndns_interval, dyndns_interval_with_rng, dyndns_names, dyndns_once, parse_trace_ip,
     record_inventory,
 };
-pub use engine::{EngineDeps, EngineInner, TlsEngine};
+pub use engine::{AttachedDomainZone, EngineDeps, EngineInner, TlsEngine};
 pub use error::{TlsError, parse_retry_after_header};
 pub use issue::{issue, sign_csr};
 pub use pem_util::{KeyPem, fingerprint_sha256};

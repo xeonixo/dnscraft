@@ -78,6 +78,7 @@ async fn setup(key_type: KeyType, prop_timeout: Duration) -> Env {
         MockZone {
             id: ZONE_ID.into(),
             name: DOMAIN.into(),
+            status: "active".into(),
             name_servers: vec![ns.to_string()],
         },
     )
@@ -315,6 +316,7 @@ async fn failure_at_propagation_keeps_previous_cert() {
         MockZone {
             id: ZONE_ID.into(),
             name: DOMAIN.into(),
+            status: "active".into(),
             name_servers: vec![dead_addr.to_string()],
         },
     )
