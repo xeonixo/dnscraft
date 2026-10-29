@@ -300,10 +300,7 @@ mod unit {
         let view = view_with(vec![
             (
                 wild,
-                vec![rec(
-                    "*.example.com",
-                    RData::A(Ipv4Addr::new(192, 0, 2, 1)),
-                )],
+                vec![rec("*.example.com", RData::A(Ipv4Addr::new(192, 0, 2, 1)))],
             ),
             (
                 exact.clone(),
@@ -331,10 +328,7 @@ mod unit {
         let qname = Name::from_ascii("a.b.example.com").unwrap();
         let view = view_with(vec![(
             wild,
-            vec![rec(
-                "*.example.com",
-                RData::A(Ipv4Addr::new(192, 0, 2, 9)),
-            )],
+            vec![rec("*.example.com", RData::A(Ipv4Addr::new(192, 0, 2, 9)))],
         )]);
         let q = Query {
             name: qname.clone(),

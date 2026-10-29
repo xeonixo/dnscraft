@@ -25,6 +25,7 @@ Expose DNScraft's query log, configuration, and real-time DNS testing capabiliti
 - Not supporting MCP resources or prompts in v1 (tools only).
 - Not exposing secrets, private keys, or full configuration snapshots (viewer sees read-only status, admin cannot retrieve token material).
 - Not a separate rate-limit policy: the MCP crate keeps its own per-token buckets with the same default rates as `control-api` (see § Limits and defaults); `control-api` still counts `/mcp/v1` requests in its own buckets.
+- Domain-Zonen / public Cloudflare DNS editing tools are deferred (use web UI `/names` and control-api `/api/v1/domain-zones`).
 
 ## Architecture
 

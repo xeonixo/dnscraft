@@ -1,9 +1,11 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import type { Pathname } from '$app/types';
 	import { ApiError } from '$lib/api/client';
-	import { oidcAuthorizeUrl } from '$lib/api/auth';
+	import { oidcAuthorizeUrl, oidcStatusPublic } from '$lib/api/auth';
 	import Button from '$lib/components/Button.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
@@ -25,6 +27,8 @@
 	let submitting = $state(false);
 	let localFailure = $state<Failure | null>(null);
 	let oidcFailure = $state<Failure | null>(null);
+	let oidcEnabled = $state(false);
+	let oidcChecked = $state(false);
 
 	const lockedOut = $derived(localFailure?.code === LOCKED);
 	const retrySeconds = $derived(
@@ -35,6 +39,24 @@
 		if (error instanceof ApiError) return { code: error.code, params: error.params };
 		return { code: CLIENT_NETWORK, params: {} };
 	}
+
+	onMount(() => {
+		if (page.url.searchParams.get('oidc') === 'error') {
+			oidcFailure = { code: 'control_api.auth.oidc', params: {} };
+			const clean = page.url.pathname;
+			void goto(clean, { replaceState: true });
+		}
+		void oidcStatusPublic()
+			.then((status) => {
+				oidcEnabled = status.enabled;
+			})
+			.catch(() => {
+				oidcEnabled = false;
+			})
+			.finally(() => {
+				oidcChecked = true;
+			});
+	});
 
 	// The password is sent once and cleared on every outcome; it is never logged or stored.
 	async function signIn(event: SubmitEvent): Promise<void> {
@@ -66,8 +88,9 @@
 		submitting = true;
 		oidcFailure = null;
 		try {
+			const returnTo = takeReturnTo() ?? '/dashboard';
 			// Stays busy while the browser leaves for the identity provider.
-			globalThis.location.assign(await oidcAuthorizeUrl());
+			globalThis.location.assign(await oidcAuthorizeUrl(returnTo));
 		} catch (error) {
 			oidcFailure = failureOf(error);
 			submitting = false;
@@ -85,20 +108,29 @@
 		<h1>{m.app_name()}</h1>
 	</header>
 
-	<GroupedList>
-		<div class="row full">
-			<Button variant="primary" onclick={signInWithOidc} disabled={submitting}>
-				{m.login_oidc_button()}
-			</Button>
-		</div>
-		{#if oidcFailure}
-			<div class="row">
-				<ErrorNotice code={oidcFailure.code} params={oidcFailure.params} onretry={signInWithOidc} />
+	{#if oidcChecked && oidcEnabled}
+		<GroupedList>
+			<div class="row full">
+				<Button variant="primary" onclick={signInWithOidc} disabled={submitting}>
+					{m.login_oidc_button()}
+				</Button>
 			</div>
-		{/if}
-	</GroupedList>
+			{#if oidcFailure}
+				<div class="row">
+					<ErrorNotice code={oidcFailure.code} params={oidcFailure.params} onretry={signInWithOidc} />
+				</div>
+			{/if}
+		</GroupedList>
 
-	<hr />
+		<hr />
+	{:else if oidcFailure}
+		<GroupedList>
+			<div class="row">
+				<ErrorNotice code={oidcFailure.code} params={oidcFailure.params} />
+			</div>
+		</GroupedList>
+		<hr />
+	{/if}
 
 	<GroupedList>
 		<form class="row form" onsubmit={signIn}>

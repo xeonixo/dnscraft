@@ -119,6 +119,7 @@ async fn pebble_issue_dns_example_com() {
         MockZone {
             id: "zone-pebble".into(),
             name: DOMAIN.into(),
+            status: "active".into(),
             name_servers: vec![ns.to_string()],
         },
     )

@@ -31,6 +31,8 @@ fn answer() -> PolicyAnswer {
             profile_id: ProfileId::new("fuzz").unwrap(),
             selection: SelectionCause::Default,
             client_id: None,
+            client_label: None,
+            client_device: None,
             filter_set: SetId::new("fuzz").unwrap(),
             steps: Vec::new(),
             filter: None,

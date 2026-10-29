@@ -354,12 +354,17 @@ impl TlsEngineCsrSigner {
 #[async_trait]
 impl TlsCsrSigner for TlsEngineCsrSigner {
     async fn sign(&self, _node_id: &str, csr_pem: &str) -> Result<String, ClusterError> {
-        self.engine
-            .sign_csr(csr_pem)
-            .await
-            .map_err(|error| ClusterError::Internal {
+        self.engine.sign_csr(csr_pem).await.map_err(|error| {
+            // The sub-node only sees `cluster.internal`; keep the reason on the master.
+            tracing::warn!(
+                code = error.code(),
+                node = _node_id,
+                "sub-node certificate request failed: {error}"
+            );
+            ClusterError::Internal {
                 message: format!("TLS certificate request failed ({})", error.code()),
-            })
+            }
+        })
     }
 }
 

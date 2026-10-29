@@ -11,7 +11,7 @@ use std::time::Duration;
 use dnscraft_api::{
     AppState, Audit, AuthState, ClusterRuntime, ClusterRuntimeOptions, ClusterStore, ConfigService,
     ControlApiTls, Db, EngineStatusProvider, EngineTlsAdmin, LocalAccountStore, OfflineWriteQueue,
-    OidcState, QueryLog, Readiness, ServiceCatalogProvider, SessionStore, SystemClock,
+    OidcRuntime, QueryLog, Readiness, ServiceCatalogProvider, SessionStore, SystemClock,
     TlsStatusProvider, TokenStore, mcp_backend_inner, run_backup_if_due,
 };
 use dnscraft_cluster::{ClusterConfig, Role};
@@ -72,6 +72,7 @@ pub(crate) async fn start(
     acme: Option<Arc<CertResolver>>,
     cluster: Option<&ClusterConfig>,
     enrollment: &Enrollment,
+    oidc_runtime: Arc<OidcRuntime>,
 ) -> Result<ControlApi, Error> {
     let api_config = config.control_api.clone();
     // The cluster certificate installer writes into the resolver the DNS
@@ -115,12 +116,6 @@ pub(crate) async fn start(
     // AS10: auth stores over the shared config/audit database. The token store
     // is attached to the MCP backend below so bearer tokens validate there too.
     let auth_config = &api_config.auth;
-    let oidc = OidcState::from_config(auth_config).map_err(|error| {
-        Error::startup(
-            "dnscraft.startup.control_api_auth",
-            format!("control-api OIDC: {error}"),
-        )
-    })?;
     let local_accounts = LocalAccountStore::new(
         db.clone(),
         auth_config.local_login_max_attempts,
@@ -139,13 +134,21 @@ pub(crate) async fn start(
     if auth_config.local_login_enabled {
         auth_state = auth_state.with_local_accounts(local_accounts.clone());
     }
-    if let Some(oidc) = oidc.as_ref() {
-        auth_state = auth_state.with_oidc(oidc);
-    }
+    oidc_runtime.attach_auth(Arc::new(auth_state.clone()));
+    // Rebuild so AuthState picks up settings after attach (config apply may
+    // have already filled the OIDC slot before auth existed).
+    oidc_runtime.rebuild().await.map_err(|error| {
+        Error::startup(
+            "dnscraft.startup.control_api_auth",
+            format!("control-api OIDC: {error}"),
+        )
+    })?;
     let mcp_tokens = auth_state.tokens().clone();
-    let oidc_issuer = oidc
-        .as_ref()
-        .map(|_| auth_config.oidc_issuer.trim().to_owned());
+    let oidc_issuer = oidc_runtime
+        .issuer_slot()
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone());
 
     // TLS status: the engine supplies certificate detail; the API listener
     // supplies the mode and fingerprint a handshake actually serves.
@@ -170,6 +173,7 @@ pub(crate) async fn start(
         .with_policy_engine(Arc::clone(&engines.policy))
         .with_resolver(Arc::clone(&engines.resolver))
         .with_auth(auth_state)
+        .with_oidc_runtime(Arc::clone(&oidc_runtime))
         .with_query_log(Arc::clone(query_log))
         .with_mcp_config(mcp_config.clone())
         .with_version(env!("CARGO_PKG_VERSION"))
@@ -180,12 +184,6 @@ pub(crate) async fn start(
         }));
     if auth_config.local_login_enabled {
         state = state.with_local_login(local_accounts);
-    }
-    if let Some(oidc) = oidc {
-        if let Some(issuer) = oidc_issuer.as_ref() {
-            state = state.with_oidc_issuer(issuer.clone());
-        }
-        state = state.with_oidc(Arc::new(oidc));
     }
     if let Some(provider) = tls_status.as_ref() {
         state = state.with_tls(Arc::clone(provider));

@@ -390,13 +390,19 @@ async fn master_apply_publishes_to_config_sync() {
     assert_eq!(version, 1);
 
     // The publish hook is a spawned watch task; yield until it runs.
-    for _ in 0..200 {
+    // Match the 20_000 budget used by the other watcher waits in this file —
+    // 200 is too tight under parallel CI load and flakes as `None` vs `Some(1)`.
+    for _ in 0..20_000 {
         if sync.current_version() == Some(version) {
             break;
         }
         tokio::task::yield_now().await;
     }
-    assert_eq!(sync.current_version(), Some(1));
+    assert_eq!(
+        sync.current_version(),
+        Some(1),
+        "master watcher did not publish version 1"
+    );
     let current = status.status().expect("master status");
     assert_eq!(current.role, "master");
     assert!(current.master_reachable);
@@ -2841,6 +2847,50 @@ impl dnscraft_api::TlsAdmin for RecordingAdmin {
             .unwrap()
             .push(token.map(|t| t.expose().to_owned()));
         Box::pin(async { Ok(()) })
+    }
+    fn has_cloudflare_token(&self) -> dnscraft_api::TlsValueFuture<'_> {
+        Box::pin(async { Ok(json!(null)) })
+    }
+    fn attached_domain_zones(&self) -> dnscraft_api::TlsValueFuture<'_> {
+        Box::pin(async { Ok(json!(null)) })
+    }
+    fn discover_domain_zones(&self) -> dnscraft_api::TlsValueFuture<'_> {
+        Box::pin(async { Ok(json!(null)) })
+    }
+    fn domain_zone_records(
+        &self,
+        _: &str,
+        _: u32,
+        _: u32,
+        _: Option<String>,
+    ) -> dnscraft_api::TlsValueFuture<'_> {
+        Box::pin(async { Ok(json!(null)) })
+    }
+    fn create_domain_zone_record(&self, _: &str, _: Value) -> dnscraft_api::TlsValueFuture<'_> {
+        Box::pin(async { Ok(json!(null)) })
+    }
+    fn update_domain_zone_record(
+        &self,
+        _: &str,
+        _: &str,
+        _: Value,
+    ) -> dnscraft_api::TlsValueFuture<'_> {
+        Box::pin(async { Ok(json!(null)) })
+    }
+    fn delete_domain_zone_record(&self, _: &str, _: &str) -> dnscraft_api::TlsActionFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
+    fn attach_domain_zone(&self, _: &str, _: Option<String>) -> dnscraft_api::TlsValueFuture<'_> {
+        Box::pin(async { Ok(json!(null)) })
+    }
+    fn detach_domain_zone(&self, _: &str) -> dnscraft_api::TlsActionFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
+    fn domain_zone_configs(&self) -> dnscraft_api::TlsValueFuture<'_> {
+        Box::pin(async { Ok(json!(null)) })
+    }
+    fn public_domain(&self) -> dnscraft_api::TlsValueFuture<'_> {
+        Box::pin(async { Ok(json!(null)) })
     }
 }
 

@@ -173,10 +173,16 @@ pub enum Requirement {
 pub fn requirement(method: &Method, path: &str) -> Requirement {
     let path = path.trim_end_matches('/');
     if path == "/api/v1/status"
-        || path.starts_with("/api/v1/auth/oidc")
+        || path == "/api/v1/auth/oidc/authorize-url"
+        || path == "/api/v1/auth/oidc/callback"
+        || (method == Method::GET && path == "/api/v1/auth/oidc/status")
         || path == "/api/v1/auth/local/login"
     {
         return Requirement::Public;
+    }
+    // OIDC admin surfaces (client secret, future settings probes).
+    if path.starts_with("/api/v1/auth/oidc") {
+        return Requirement::ApiAdmin;
     }
     if path == "/api/v1/auth/tokens" || path.starts_with("/api/v1/auth/tokens/") {
         return Requirement::ApiAdmin;
@@ -375,6 +381,34 @@ mod tests {
         assert_eq!(
             requirement(&Method::GET, "/api/v1/query-log"),
             Requirement::Api
+        );
+        assert_eq!(
+            requirement(&Method::GET, "/api/v1/domain-zones"),
+            Requirement::Api
+        );
+        assert_eq!(
+            requirement(&Method::GET, "/api/v1/domain-zones/zone-1/records"),
+            Requirement::Api
+        );
+        assert_eq!(
+            requirement(&Method::POST, "/api/v1/domain-zones/zone-1/records"),
+            Requirement::ApiAdmin
+        );
+        assert_eq!(
+            requirement(&Method::PUT, "/api/v1/domain-zones/zone-1/records"),
+            Requirement::ApiAdmin
+        );
+        assert_eq!(
+            requirement(&Method::DELETE, "/api/v1/domain-zones/zone-1/records"),
+            Requirement::ApiAdmin
+        );
+        assert_eq!(
+            requirement(&Method::POST, "/api/v1/domain-zones/attach"),
+            Requirement::ApiAdmin
+        );
+        assert_eq!(
+            requirement(&Method::DELETE, "/api/v1/domain-zones/attach/example.org"),
+            Requirement::ApiAdmin
         );
         // The TLS status DTO is viewer-readable; every other TLS route is admin.
         assert_eq!(

@@ -126,9 +126,7 @@ pub enum ConfigReason {
     #[error("unsupported record type for view local records")]
     UnsupportedRecordType,
     /// A view record owner has an invalid wildcard (embedded `*`, or bare `*`).
-    #[error(
-        "wildcard owner must be a single leading * label (e.g. *.example.com)"
-    )]
+    #[error("wildcard owner must be a single leading * label (e.g. *.example.com)")]
     WildcardOwner,
     /// The same subnet (same network address and prefix length) is listed on two views.
     #[error("subnet {net} is listed on more than one view")]

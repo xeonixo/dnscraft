@@ -9,6 +9,7 @@ pub(crate) mod auth;
 pub(crate) mod clients_routes;
 pub(crate) mod cluster_endpoints;
 pub(crate) mod config_routes;
+pub(crate) mod domain_zones_routes;
 pub(crate) mod filter_routes;
 pub(crate) mod listener_routes;
 pub(crate) mod mcp_endpoints;

@@ -2084,9 +2084,10 @@ impl AppState {
             Some(service) => service.current().await?.1,
             None => None,
         };
+        let issuer = self.oidc_issuer();
         let protected = protected_for(
             snapshot.as_ref(),
-            self.oidc_issuer(),
+            issuer.as_deref(),
             self.mcp_config().protected_domains.iter().cloned(),
         )?;
         reject_protected(&protected, domain.as_str(), include_subdomains)?;

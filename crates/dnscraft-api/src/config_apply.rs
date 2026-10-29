@@ -863,6 +863,7 @@ impl ConfigService {
         let (failed, mut error) = match self.apply_all(snapshot, usize::MAX).await {
             Ok(()) => {
                 self.apply_query_log_settings(snapshot);
+                self.apply_oidc_settings(snapshot).await;
                 return Ok(());
             }
             Err(failure) => failure,
@@ -906,6 +907,17 @@ impl ConfigService {
             .and_then(Value::as_str)
             .and_then(|name| IpTruncate::parse(name).ok());
         query_log.apply_settings(retention_days, ip_truncate);
+    }
+
+    /// Rebuilds the live OIDC relying party from `control_api_settings.oidc`.
+    async fn apply_oidc_settings(&self, snapshot: &Value) {
+        let Some(oidc) = self.modules.oidc.as_ref() else {
+            return;
+        };
+        let settings = snapshot.pointer("/control_api_settings/oidc");
+        if let Err(error) = oidc.apply(settings).await {
+            tracing::error!(error = %error, "applying OIDC settings failed");
+        }
     }
 
     /// Applies modules `0..=last` in the fixed order.
@@ -1227,10 +1239,9 @@ fn check_if_match(raw: Option<&str>, current: Option<i64>) -> Result<(), Control
 /// Validates the non-secret runtime keys of `control_api_settings` (GA15).
 ///
 /// Accepted: `update_check` (bool), `backups` (`enabled`, `retention_count`),
-/// `query_log.retention_days` (1..=3650) and `oidc` (`admin_group`,
-/// `groups_claim`, `token_skew_seconds` 5..=300). Secrets, accounts and bind
-/// settings are not accepted here; they stay in the bootstrap TOML, the
-/// environment or the local-account store.
+/// `query_log.retention_days` (1..=3650) and `oidc` (`enabled`, `issuer`,
+/// `client_id`, `admin_group`, `groups_claim`, `token_skew_seconds` 5..=300).
+/// Secrets stay out of the snapshot (write-only `PUT /auth/oidc/client-secret`).
 fn validate_control_api_settings(settings: &Value) -> Result<(), ControlApiError> {
     let Some(map) = settings.as_object() else {
         return Err(config_invalid("control_api_settings must be an object"));
@@ -1304,7 +1315,14 @@ fn validate_control_api_settings(settings: &Value) -> Result<(), ControlApiError
                     .ok_or_else(|| config_invalid("control_api_settings.oidc must be an object"))?;
                 for (field, field_value) in object {
                     match field.as_str() {
-                        "admin_group" | "groups_claim" => {
+                        "enabled" => {
+                            if !field_value.is_boolean() {
+                                return Err(config_invalid(
+                                    "control_api_settings.oidc.enabled must be a boolean",
+                                ));
+                            }
+                        }
+                        "issuer" | "client_id" | "admin_group" | "groups_claim" => {
                             if !field_value.is_string() {
                                 return Err(config_invalid(format!(
                                     "control_api_settings.oidc.{field} must be a string"

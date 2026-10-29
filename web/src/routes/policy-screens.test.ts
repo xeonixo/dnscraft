@@ -75,6 +75,36 @@ function serve(
 					},
 				],
 			}),
+		'GET /api/v1/domain-zones': () =>
+			ok({
+				zones: [
+					{
+						id: 'zone-example-test',
+						name: 'example.test',
+						status: 'active',
+						name_servers: [],
+						source: 'public_domain',
+					},
+				],
+				has_cloudflare_token: true,
+			}),
+		'GET /api/v1/domain-zones/zone-example-test/records': () =>
+			ok({
+				records: [
+					{
+						id: 'cf-nas',
+						name: 'nas.example.test',
+						record_type: 'A',
+						content: '203.0.113.10',
+						ttl: 60,
+						proxied: false,
+					},
+				],
+				page: 1,
+				per_page: 100,
+				total_count: 1,
+				total_pages: 1,
+			}),
 		'GET /api/v1/clients': () =>
 			ok({
 				clients: [
@@ -156,6 +186,35 @@ describe('policy screens', () => {
 		render(NamesPage);
 		const row = await screen.findByText(/evil\.test/);
 		expect(row.innerHTML).not.toContain('<script>');
+	});
+
+	it('opens the names sheet with Antwort above Netzbereich deviations', async () => {
+		handlers['GET /api/v1/policy/records'] = () =>
+			ok({
+				records: [
+					{
+						name: 'nas.example.test.',
+						type: 'A',
+						ttl: 60,
+						rdata: '203.0.113.10',
+						overrides: { lan: '192.0.2.9' },
+					},
+				],
+			});
+		const user = userEvent.setup();
+		render(NamesPage);
+		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10\b/ }));
+		const dialog = await screen.findByRole('dialog');
+		const answerHeading = within(dialog).getByText(m.names_section_answer());
+		const overridesHeading = within(dialog).getByText(m.names_section_overrides());
+		expect(
+			answerHeading.compareDocumentPosition(overridesHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(await within(dialog).findByLabelText(m.names_field_public())).toHaveValue('203.0.113.10');
+		expect(within(dialog).queryByText(m.names_field_standard())).toBeNull();
+		expect(within(dialog).queryByRole('textbox', { name: /zone=wert|zone=value/i })).toBeNull();
+		expect(within(dialog).getByLabelText(m.names_overrides_view())).toHaveValue('lan');
+		expect(within(dialog).getByLabelText(m.names_overrides_value())).toHaveValue('192.0.2.9');
 	});
 
 	it('lists clients and creates a manual entry', async () => {

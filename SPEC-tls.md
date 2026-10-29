@@ -58,6 +58,7 @@ resolver and small helpers those modules call.
 | DynDNS | Upsert A and/or AAAA for the public DoH/DoT hostname; **proxied = false** (DNS-only) so DoT/DoQ on 853 and origin DoH are not broken by HTTP proxying | design (Cloudflare orange-cloud is HTTP(S) proxy) |
 | Public IP echo | Default `https://cloudflare.com/cdn-cgi/trace` (or `https://1.1.1.1/cdn-cgi/trace`); parse `ip=` line; IPv4 vs IPv6 via separate force-family fetches | [cdn-cgi endpoint](https://developers.cloudflare.com/fundamentals/reference/cdn-cgi-endpoint/); common DynDNS practice |
 | Propagation check | After writing TXT, query **Cloudflare’s authoritative nameservers for the zone** (from NS records / zone API) for `_acme-challenge.…` TXT using `dnscraft-proto` (or a tiny UDP helper in this crate) — **not** a public recursive resolver | brief requirement; avoids cached negatives |
+| Domain-Zonen (Split-DNS) | Same client lists zones/records and mutates A/AAAA/CNAME/TXT/MX/SRV for attached apexes (`public_domain` + `dns_provider.zones`); shared `write_guard` with ACME/DynDNS. control-api exposes `/api/v1/domain-zones`; UI under `/names`. Proxies CF edits — Cloudflare stays authoritative (SPEC.md Non-goals). | SPEC-control-api Domain-Zonen; SPEC-web-ui `/names` |
 
 #### Let’s Encrypt
 
