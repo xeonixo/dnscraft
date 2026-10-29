@@ -227,3 +227,101 @@ describe('filter-lists page', () => {
 		await waitFor(() => expect(bodyOf('DELETE')).toEqual({ id: 'fresh' }));
 	});
 });
+
+describe('recommended lists', () => {
+	const PRO = "HaGeZi's Pro Blocklist";
+	const TIF = "HaGeZi's Threat Intelligence Feeds";
+	const puts = (path: string): Record<string, unknown>[] =>
+		fetchMock.mock.calls
+			.filter(([url, init]) => init?.method === 'PUT' && String(url).endsWith(path))
+			.map(([, init]) => JSON.parse(String(init?.body)));
+
+	async function openDialog(): Promise<HTMLElement> {
+		await screen.findByText('AdGuard DNS');
+		await userEvent.click(screen.getByRole('button', { name: m.filter_lists_recommended() }));
+		return screen.findByRole('dialog');
+	}
+
+	it('ticks the base lists, adds them and attaches them to the chosen filter set', async () => {
+		serve({
+			'PUT /api/v1/filter-lists': () => ok({ version: 5, filter_list: NEW, created: true }),
+			'PUT /api/v1/filter-sets': () => ok({ version: 6, filter_set: {}, created: false }),
+		});
+		render(FilterListsPage);
+		const dialog = await openDialog();
+		expect(within(dialog).getByRole('checkbox', { name: PRO })).toBeChecked();
+		expect(within(dialog).getByRole('checkbox', { name: TIF })).toBeChecked();
+		expect(
+			within(dialog).getByRole('checkbox', { name: "HaGeZi's Gambling Blocklist" }),
+		).not.toBeChecked();
+
+		await userEvent.click(
+			within(dialog).getByRole('button', { name: m.filter_lists_recommended_confirm() }),
+		);
+		await waitFor(() => expect(puts('/filter-sets')).toHaveLength(1));
+		expect(puts('/filter-lists')).toEqual([
+			{
+				id: 'hagezi-pro',
+				name: PRO,
+				source: { url: 'https://adguardteam.github.io/HostlistsRegistry/assets/filter_48.txt' },
+				enabled: true,
+			},
+			{
+				id: 'hagezi-tif',
+				name: TIF,
+				source: { url: 'https://adguardteam.github.io/HostlistsRegistry/assets/filter_44.txt' },
+				enabled: true,
+			},
+		]);
+		expect(puts('/filter-sets')[0]).toMatchObject({
+			id: 'default',
+			lists: ['ads-main', 'trackers-main', 'hagezi-pro', 'hagezi-tif'],
+		});
+	});
+
+	it('marks lists that are already configured, matched by URL, and does not re-add them', async () => {
+		const existing = {
+			id: 'my-pro',
+			name: 'Pro (mine)',
+			source: { url: 'https://adguardteam.github.io/HostlistsRegistry/assets/filter_48.txt' },
+			enabled: true,
+		};
+		serve({
+			'GET /api/v1/filter-lists': () => ok({ filter_lists: [ADS, existing] }),
+			'PUT /api/v1/filter-lists': () => ok({ version: 5, filter_list: NEW, created: true }),
+		});
+		render(FilterListsPage);
+		const dialog = await openDialog();
+		expect(within(dialog).queryByRole('checkbox', { name: PRO })).toBeNull();
+		expect(within(dialog).getAllByText(m.filter_lists_recommended_present())).toHaveLength(1);
+
+		await userEvent.click(within(dialog).getByRole('combobox'));
+		await userEvent.selectOptions(
+			within(dialog).getByRole('combobox'),
+			m.filter_lists_recommended_target_none(),
+		);
+		await userEvent.click(
+			within(dialog).getByRole('button', { name: m.filter_lists_recommended_confirm() }),
+		);
+		await waitFor(() => expect(puts('/filter-lists')).toHaveLength(1));
+		expect(puts('/filter-lists')[0]).toMatchObject({ id: 'hagezi-tif' });
+		expect(puts('/filter-sets')).toHaveLength(0);
+	});
+
+	it('keeps the add button off when nothing new is ticked', async () => {
+		render(FilterListsPage);
+		const dialog = await openDialog();
+		await userEvent.click(within(dialog).getByRole('checkbox', { name: PRO }));
+		await userEvent.click(within(dialog).getByRole('checkbox', { name: TIF }));
+		expect(
+			within(dialog).getByRole('button', { name: m.filter_lists_recommended_confirm() }),
+		).toBeDisabled();
+	});
+
+	it('is not offered to viewers', async () => {
+		setPrincipal({ role: 'viewer', actorId: 'v', actorType: 'user', csrfToken: 'tok' });
+		render(FilterListsPage);
+		await screen.findByText('AdGuard DNS');
+		expect(screen.queryByRole('button', { name: m.filter_lists_recommended() })).toBeNull();
+	});
+});

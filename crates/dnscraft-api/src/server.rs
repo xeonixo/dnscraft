@@ -62,6 +62,7 @@ pub struct AppState {
     cluster_write_relay: ClusterWriteRelayHandle,
     mcp_backend: Option<Arc<McpBackendInner>>,
     mcp_config: McpConfig,
+    oauth_codes: crate::api::oauth::OAuthCodes,
     /// Live OIDC issuer host used for MCP protected-domain derivation.
     oidc_issuer: Arc<RwLock<Option<String>>>,
     /// Optional runtime used to rebuild OIDC after secret / settings changes.
@@ -113,6 +114,7 @@ impl AppState {
             cluster_write_relay: Arc::new(Mutex::new(None)),
             mcp_backend: None,
             mcp_config: McpConfig::default(),
+            oauth_codes: Arc::default(),
             oidc_issuer: Arc::new(RwLock::new(None)),
             oidc_runtime: None,
             clock: Arc::new(SystemClock),
@@ -463,6 +465,10 @@ impl AppState {
     }
 
     /// The MCP config used by the endpoint gating and limits.
+    pub(crate) fn oauth_codes(&self) -> &crate::api::oauth::OAuthCodes {
+        &self.oauth_codes
+    }
+
     pub(crate) fn mcp_config(&self) -> &McpConfig {
         &self.mcp_config
     }

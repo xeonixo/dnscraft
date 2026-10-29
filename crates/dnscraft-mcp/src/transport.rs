@@ -63,6 +63,11 @@ pub struct RequestLimits<'a> {
     /// rmcp's SEP-2243 header/body binding can never be disabled by omitting
     /// it.
     pub supported_versions: &'a [String],
+    /// Accept a request without `MCP-Protocol-Version`.
+    ///
+    /// Set in legacy session mode only: handshake clients (Claude's connector
+    /// among them) send no version header on `initialize`.
+    pub version_header_optional: bool,
 }
 
 /// Why [`validate_mcp_request`] rejected a request.
@@ -158,7 +163,7 @@ fn origin_allowed(headers: &HeaderMap, allowed: &[String]) -> bool {
 
 /// The requested version when the header is missing, duplicated or unsupported.
 ///
-/// The header is required in every mode. rmcp only runs its SEP-2243
+/// The header is required unless `version_header_optional` (legacy mode). rmcp only runs its SEP-2243
 /// `Mcp-Method`/`Mcp-Name`-vs-body binding when the header is present, so
 /// accepting a missing header would disable that binding.
 ///
@@ -167,7 +172,7 @@ fn origin_allowed(headers: &HeaderMap, allowed: &[String]) -> bool {
 fn version_rejection(headers: &HeaderMap, limits: &RequestLimits<'_>) -> Option<Option<String>> {
     let mut values = headers.get_all(VERSION_HEADER).iter();
     let Some(first) = values.next() else {
-        return Some(None);
+        return (!limits.version_header_optional).then_some(None);
     };
     if values.next().is_some() {
         return Some(Some("<duplicate>".to_owned()));
@@ -242,6 +247,7 @@ impl Service<Request<Body>> for McpTransport {
                 max_body_bytes: this.config.max_request_body_size,
                 allowed_origins: &this.config.allowed_origins,
                 supported_versions: &this.supported_versions,
+                version_header_optional: this.config.legacy_session_mode,
             };
             // The body is still streaming here; rmcp enforces the cap on the
             // bytes it reads, so only the declared length is known.
@@ -605,6 +611,7 @@ mod tests {
             max_body_bytes: 1024,
             allowed_origins,
             supported_versions,
+            version_header_optional: false,
         }
     }
 

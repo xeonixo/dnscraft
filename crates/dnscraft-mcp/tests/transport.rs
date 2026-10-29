@@ -414,7 +414,7 @@ async fn missing_or_unsupported_protocol_version_lists_supported_versions() {
 }
 
 #[tokio::test]
-async fn legacy_session_mode_still_requires_the_version_header_and_binds_headers() {
+async fn legacy_session_mode_allows_missing_version_header_and_binds_headers() {
     let config = McpConfig {
         legacy_session_mode: true,
         ..McpConfig::default()
@@ -422,21 +422,29 @@ async fn legacy_session_mode_still_requires_the_version_header_and_binds_headers
     let server = spawn_with(hostile_status(), config).await;
     let client = reqwest::Client::new();
 
-    // The accepted version list is widened, but the header is not optional.
+    // Handshake clients send no version header on `initialize`; legacy mode lets it through.
     let missing = client
         .post(&server.url)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
-        .header("Mcp-Method", "tools/list")
         .header("Authorization", format!("Bearer {TOKEN}"))
-        .body(request_body(12, "tools/list", json!({})))
+        .body(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 12,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": { "name": "legacy", "version": "1.0" },
+                },
+            })
+            .to_string(),
+        )
         .send()
         .await
         .unwrap();
-    assert_eq!(missing.status(), 400);
-    let json: Value = serde_json::from_str(&missing.text().await.unwrap()).unwrap();
-    assert_eq!(json["error"]["code"], -32022);
-    assert_eq!(json["error"]["data"]["requested"], Value::Null);
+    assert_eq!(missing.status(), 200, "{}", missing.text().await.unwrap());
 
     // With the header present, rmcp's SEP-2243 binding still runs in legacy mode.
     let mismatch = client

@@ -14,11 +14,18 @@
 		listFilterLists,
 		listFilterSets,
 		saveFilterList,
+		saveFilterSet,
 		type FilterList,
 		type FilterSet,
 	} from '$lib/api/filtering';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
+	import {
+		RECOMMENDED_GROUPS,
+		RECOMMENDED_LISTS,
+		type RecommendedGroup,
+		type RecommendedList,
+	} from '$lib/filtering/recommended-lists';
 	import { formatDateTime, formatNumber, formatRelativeTime } from '$lib/format';
 	import { errorMessage, getLocale } from '$lib/i18n/locale';
 	import { m } from '$lib/paraglide/messages';
@@ -50,6 +57,35 @@
 			.replace(/^-+|-+$/g, '')
 			.slice(0, 64);
 	}
+	let recommendOpen = $state(false);
+	let picked = $state<string[]>([]);
+	let targetSet = $state('');
+	const groupText: Record<RecommendedGroup, { title: () => string; hint: () => string }> = {
+		base: {
+			title: m.filter_lists_recommended_group_base,
+			hint: m.filter_lists_recommended_group_base_hint,
+		},
+		stronger: {
+			title: m.filter_lists_recommended_group_stronger,
+			hint: m.filter_lists_recommended_group_stronger_hint,
+		},
+		security: {
+			title: m.filter_lists_recommended_group_security,
+			hint: m.filter_lists_recommended_group_security_hint,
+		},
+		devices: {
+			title: m.filter_lists_recommended_group_devices,
+			hint: m.filter_lists_recommended_group_devices_hint,
+		},
+		content: {
+			title: m.filter_lists_recommended_group_content,
+			hint: m.filter_lists_recommended_group_content_hint,
+		},
+		careful: {
+			title: m.filter_lists_recommended_group_careful,
+			hint: m.filter_lists_recommended_group_careful_hint,
+		},
+	};
 	let formName = $state('');
 	let formUrl = $state('');
 	let formEnabled = $state(true);
@@ -76,6 +112,12 @@
 	});
 
 	const rows = $derived(result.kind === 'ok' ? result.data : []);
+	/** A recommended list counts as present when its id or its URL is already configured. */
+	const known = $derived(new Set(rows.flatMap((list) => [list.id, list.source.url ?? ''])));
+	const isPresent = (item: RecommendedList): boolean => known.has(item.id) || known.has(item.url);
+	const pickedNew = $derived(
+		RECOMMENDED_LISTS.filter((item) => picked.includes(item.id) && !isPresent(item)),
+	);
 	/** Enabled lists with a successful build; their rule counts make up the total. */
 	const active = $derived(rows.filter((list) => list.enabled && list.status?.last_success));
 	const totalRules = $derived(
@@ -187,6 +229,45 @@
 		confirmDelete = false;
 	}
 
+	function openRecommend(): void {
+		picked = RECOMMENDED_LISTS.filter((item) => item.preselected && !isPresent(item)).map(
+			(item) => item.id,
+		);
+		targetSet = sets?.find((set) => set.id === 'default')?.id ?? sets?.[0]?.id ?? '';
+		failure = null;
+		recommendOpen = true;
+	}
+
+	/** Creates the ticked lists, then adds them to the chosen filter set so they take effect. */
+	async function submitRecommended(): Promise<void> {
+		const chosen = pickedNew;
+		if (chosen.length === 0) return;
+		failure = null;
+		busy = true;
+		try {
+			for (const item of chosen) {
+				await saveFilterList({
+					id: item.id,
+					name: item.name,
+					source: { url: item.url },
+					enabled: true,
+				});
+			}
+			const set = sets?.find((candidate) => candidate.id === targetSet);
+			if (set) {
+				const lists = [...new Set([...set.lists, ...chosen.map((item) => item.id)])];
+				await saveFilterSet({ ...set, lists });
+			}
+			recommendOpen = false;
+		} catch (cause) {
+			failure = failureOf(cause);
+		} finally {
+			busy = false;
+			await load();
+			await loadSets();
+		}
+	}
+
 	async function submit(): Promise<void> {
 		submitted = true;
 		if (slugify(editing?.id ?? formName) === '' || formUrl.trim() === '' || sourceError) return;
@@ -246,7 +327,10 @@
 	<div class="page-head">
 		<p class="lead">{m.filter_lists_lead()}</p>
 		{#if isAdmin}
-			<Button variant="primary" onclick={openCreate}>{m.filter_lists_add()}</Button>
+			<div class="head-actions">
+				<Button variant="secondary" onclick={openRecommend}>{m.filter_lists_recommended()}</Button>
+				<Button variant="primary" onclick={openCreate}>{m.filter_lists_add()}</Button>
+			</div>
 		{/if}
 	</div>
 
@@ -353,6 +437,66 @@
 		</GroupedList>
 	{/if}
 
+	{#if recommendOpen && isAdmin}
+		<Sheet
+			open={recommendOpen}
+			title={m.filter_lists_recommended_title()}
+			onclose={() => (recommendOpen = false)}
+			centeredOnWide
+		>
+			<p class="rec-lead">{m.filter_lists_recommended_lead()}</p>
+			{#each RECOMMENDED_GROUPS as group (group)}
+				<section class="rec-group">
+					<h3 class="rec-title">{groupText[group].title()}</h3>
+					<p class="rec-hint">{groupText[group].hint()}</p>
+					<div class="rec-list">
+						{#each RECOMMENDED_LISTS.filter((item) => item.group === group) as item (item.id)}
+							{#if isPresent(item)}
+								<div class="rec-row">
+									<span class="rec-name">{item.name}</span>
+									<span class="state-text">{m.filter_lists_recommended_present()}</span>
+								</div>
+							{:else}
+								<label class="rec-row">
+									<span class="rec-name">{item.name}</span>
+									<input type="checkbox" value={item.id} bind:group={picked} />
+								</label>
+							{/if}
+						{/each}
+					</div>
+				</section>
+			{/each}
+			{#if sets !== null && sets.length > 0}
+				<label class="field-label" for="rec-target">{m.filter_lists_recommended_target()}</label>
+				<select id="rec-target" class="field" bind:value={targetSet}>
+					<option value="">{m.filter_lists_recommended_target_none()}</option>
+					{#each sets as set (set.id)}
+						<option value={set.id}>{displayText(set.name || set.id, 60).text}</option>
+					{/each}
+				</select>
+				<p class="rec-hint">{m.filter_lists_recommended_target_hint()}</p>
+			{/if}
+
+			{#snippet footer()}
+				{#if failure}
+					<div class="footer-error">
+						<ErrorNotice code={failure.code} params={failure.params} />
+					</div>
+				{/if}
+				<div class="actions">
+					<Button variant="secondary" onclick={() => (recommendOpen = false)}>
+						{m.action_cancel()}
+					</Button>
+					<Button
+						variant="primary"
+						disabled={busy || pickedNew.length === 0}
+						onclick={() => void submitRecommended()}>{m.filter_lists_recommended_confirm()}</Button
+					>
+				</div>
+			{/snippet}
+		</Sheet>
+	{/if}
+
 	{#if sheetOpen && isAdmin}
 		<Sheet
 			open={sheetOpen}
@@ -438,6 +582,53 @@
 		max-width: 40rem;
 		margin: 0;
 		color: var(--label-2);
+	}
+	.head-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+	}
+	.rec-lead,
+	.rec-hint {
+		margin: 0 0 0.5rem;
+		font-size: 0.8125rem;
+		color: var(--label-2);
+	}
+	.rec-group {
+		margin-top: var(--space-3);
+	}
+	.rec-title {
+		margin: 0 0 0.125rem;
+		font-size: 0.9375rem;
+		font-weight: 600;
+	}
+	.rec-list {
+		overflow: hidden;
+		border: 1px solid var(--separator);
+		border-radius: var(--r-ctl);
+		background: var(--surface-2);
+	}
+	.rec-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+		min-height: 2.5rem;
+		padding: 0.375rem 0.75rem;
+	}
+	label.rec-row {
+		cursor: pointer;
+	}
+	.rec-row + .rec-row {
+		border-top: 1px solid var(--separator);
+	}
+	.rec-name {
+		overflow-wrap: anywhere;
+	}
+	.rec-row input {
+		flex: 0 0 auto;
+		width: 1.05rem;
+		height: 1.05rem;
 	}
 	.state {
 		color: var(--label-2);

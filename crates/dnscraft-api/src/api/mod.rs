@@ -14,6 +14,7 @@ pub(crate) mod filter_routes;
 pub(crate) mod listener_routes;
 pub(crate) mod mcp_endpoints;
 pub(crate) mod notifications_routes;
+pub(crate) mod oauth;
 pub(crate) mod pagination;
 pub(crate) mod policy_routes;
 pub(crate) mod query_log_routes;
