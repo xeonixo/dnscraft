@@ -201,9 +201,44 @@ async fn list_nodes_returns_joined_nodes_with_role() {
             "connected": false,
             "remote_addr": Value::Null,
             "transport": "mtls",
+            "display_name": Value::Null,
+            "hostname": Value::Null,
         })
     );
     assert_eq!(nodes[1]["node_id"], "node-b");
+}
+
+#[tokio::test]
+async fn put_sets_display_name_and_hostname() {
+    let h = harness(true, false).await;
+    h.store
+        .as_ref()
+        .unwrap()
+        .register_node("node-a", &"ab".repeat(32))
+        .await
+        .unwrap();
+    let url = "/api/v1/cluster/nodes/node-a";
+    let ok = json!({ "display_name": " Berlin ", "hostname": "NS1.dns.example.com" });
+    let (status, body) = send(&h, "PUT", url, Some(&h.admin), Some(ok)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["display_name"], "Berlin");
+    assert_eq!(body["data"]["hostname"], "ns1.dns.example.com");
+    let (_, body) = send(&h, "GET", "/api/v1/cluster/nodes", Some(&h.admin), None).await;
+    assert_eq!(body["data"][0]["hostname"], "ns1.dns.example.com");
+
+    let bad = json!({ "display_name": null, "hostname": "bad host!" });
+    let (status, _) = send(&h, "PUT", url, Some(&h.admin), Some(bad)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let unknown = json!({ "display_name": "x", "hostname": null });
+    let (status, _) = send(
+        &h,
+        "PUT",
+        "/api/v1/cluster/nodes/nope",
+        Some(&h.admin),
+        Some(unknown),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

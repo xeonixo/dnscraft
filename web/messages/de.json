@@ -1201,5 +1201,12 @@
 	"filter_lists_source_required": "Bitte gib eine Quelle an.",
 	"filter_lists_source_invalid": "Die Quelle muss eine Adresse mit http:// oder https:// oder ein Dateipfad sein.",
 	"test_query_ip_invalid": "Bitte gib eine gültige IP-Adresse an.",
-	"cluster_node_meta_local": "Konfig v{version} · dieser Knoten"
+	"cluster_node_meta_local": "Konfig v{version} · dieser Knoten",
+	"cluster_edit": "Umbenennen",
+	"cluster_edit_title": "Knoten umbenennen",
+	"cluster_edit_id": "Die Knoten-ID {id} bleibt unverändert; sie ist die Identität des Knotens im Cluster.",
+	"cluster_edit_hint": "Ein leeres Feld löscht den Wert. Der Hostname ist der öffentliche DNS-Name dieses Knotens.",
+	"cluster_field_display_name": "Name",
+	"cluster_field_hostname": "Hostname",
+	"cluster_edit_host_invalid": "Bitte einen gültigen Hostnamen eingeben, z. B. ns1.dns.example.com."
 }

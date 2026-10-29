@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 
 use dnscraft_cluster::ClusterStore;
 
-use crate::api::config_routes::json_body;
+use crate::api::config_routes::{json_body, module_error};
 use crate::api::response::{success, unix_rfc3339 as rfc3339};
 use crate::error::ControlApiError;
 use crate::server::AppState;
@@ -31,6 +31,32 @@ use crate::server::AppState;
 #[serde(deny_unknown_fields)]
 pub(crate) struct JoinTokenBody {
     node_id: String,
+}
+
+/// Request body of `PUT /api/v1/cluster/nodes/{node_id}`. Both fields are
+/// replaced as sent; `null` or an empty string clears one.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NodeMetaBody {
+    display_name: Option<String>,
+    hostname: Option<String>,
+}
+
+/// A DNS name of lowercase labels (1–63 chars, letters/digits/hyphen), at most 253 chars.
+fn valid_hostname(name: &str) -> bool {
+    name.len() <= 253
+        && name.split('.').all(|label| {
+            let b = label.as_bytes();
+            (1..=63).contains(&b.len())
+                && b.iter()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+                && b[0] != b'-'
+                && b[b.len() - 1] != b'-'
+        })
+}
+
+fn non_empty(value: Option<String>) -> Option<String> {
+    value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
 }
 
 fn store(state: &AppState) -> Result<&Arc<ClusterStore>, ControlApiError> {
@@ -66,6 +92,8 @@ pub(crate) async fn list_nodes(
         .cluster_broadcast()
         .map(|broadcast| broadcast.connected_node_ids().into_iter().collect())
         .unwrap_or_default();
+    let meta = store(&state)?.node_meta().await?;
+    let meta_of = |id: &str| meta.get(id).cloned().unwrap_or_default();
     let mut nodes: Vec<Value> = Vec::new();
     if let Some(status) = state
         .cluster_status()
@@ -83,6 +111,8 @@ pub(crate) async fn list_nodes(
             "connected": true,
             "remote_addr": Value::Null,
             "transport": Value::Null,
+            "display_name": meta_of(&status.node_id).0,
+            "hostname": meta_of(&status.node_id).1,
         }));
     }
     let local_id = nodes
@@ -109,9 +139,56 @@ pub(crate) async fn list_nodes(
             "remote_addr": node.remote_addr,
             // Cluster peer links are always mTLS over HTTP/2.
             "transport": "mtls",
+            "display_name": meta_of(&node.node_id).0,
+            "hostname": meta_of(&node.node_id).1,
         }));
     }
     Ok(success(nodes))
+}
+
+/// `PUT /api/v1/cluster/nodes/{node_id}` — set the display name and host name.
+///
+/// The node id is the cluster identity (certificate, registry) and cannot change.
+pub(crate) async fn update_node(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    body: Result<Json<NodeMetaBody>, JsonRejection>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let body = json_body(body, "cluster.role.invalid")?;
+    let display_name = non_empty(body.display_name);
+    let hostname = non_empty(body.hostname).map(|h| h.to_ascii_lowercase());
+    if display_name
+        .as_ref()
+        .is_some_and(|n| n.chars().count() > 64 || n.chars().any(char::is_control))
+    {
+        return Err(module_error(
+            "cluster.role.invalid",
+            "display_name must be at most 64 characters without control characters",
+        ));
+    }
+    if hostname.as_ref().is_some_and(|h| !valid_hostname(h)) {
+        return Err(module_error(
+            "cluster.role.invalid",
+            "hostname must be a DNS name of lowercase labels",
+        ));
+    }
+    let store = store(&state)?;
+    let known_peer = store.get_node(&node_id).await?.is_some();
+    let is_local = state
+        .cluster_status()
+        .and_then(|handle| handle.cluster_status())
+        .is_some_and(|status| status.node_id == node_id);
+    if !known_peer && !is_local {
+        return Err(ControlApiError::NotFound {
+            what: format!("node {node_id}"),
+        });
+    }
+    store
+        .set_node_meta(&node_id, display_name.as_deref(), hostname.as_deref())
+        .await?;
+    Ok(success(
+        json!({ "node_id": node_id, "display_name": display_name, "hostname": hostname }),
+    ))
 }
 
 /// `DELETE /api/v1/cluster/nodes/{node_id}` — revoke a node.

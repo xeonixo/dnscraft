@@ -100,6 +100,7 @@
 	let formIpv6Static = $state('');
 	let formNodeProfiles = $state<DynDnsNodeForm[]>([]);
 	let clusterNodeIds = $state<string[]>([]);
+	let nodeHostnames = $state<Record<string, string>>({});
 	let formAcmeEmail = $state('');
 	let formSource = $state<TlsMode>('self_signed');
 	let formDnsProvider = $state<DnsProviderKind>('cloudflare');
@@ -249,6 +250,8 @@
 	}
 
 	function defaultHostnameFor(nodeId: string, publicDomain: string): string {
+		const saved = nodeHostnames[nodeId];
+		if (saved) return saved;
 		const domain = publicDomain.trim();
 		if (!domain) return '';
 		// dns1 / node2 / ns3 -> ns1 / ns2 / ns3: the public node names are ns<number>.dns.<domain>.
@@ -367,6 +370,9 @@
 		status = st;
 		configVersion = cfg?.version ?? null;
 		clusterNodeIds = nodes.filter((n) => !n.revoked).map((n) => n.node_id);
+		nodeHostnames = Object.fromEntries(
+			nodes.filter((n) => n.hostname).map((n) => [n.node_id, n.hostname as string]),
+		);
 		try {
 			const tls = await getTlsConfig();
 			tlsConfig = tls.tls;
