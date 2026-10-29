@@ -568,7 +568,25 @@ impl AppState {
 
     /// Attaches the client directory adapter over the UniFi client engine (GA6).
     pub fn with_clients(mut self, directory: Arc<dyn ClientDirectory>) -> Self {
+        let changes = directory.subscribe_changes();
         self.clients = Some(directory);
+        // The poll loop installs snapshots on its own; push each one to the
+        // cluster (the cluster handles are shared with this clone and attached
+        // later, so they are read at push time).
+        if let (Some(mut changes), Ok(runtime)) = (changes, tokio::runtime::Handle::try_current()) {
+            let state = self.clone();
+            runtime.spawn(async move {
+                while changes.changed().await.is_ok() {
+                    if let Some(dir) = state.client_directory() {
+                        crate::api::clients_routes::publish_directory_after_sync(
+                            &state,
+                            dir.as_ref(),
+                        )
+                        .await;
+                    }
+                }
+            });
+        }
         self
     }
 

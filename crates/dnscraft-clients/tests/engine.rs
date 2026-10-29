@@ -393,6 +393,47 @@ async fn unchanged_hash_still_refreshes_ipv6_ttl_state() {
 }
 
 #[tokio::test]
+async fn generation_subscription_fires_on_installed_snapshot() {
+    // Regression: sub-nodes only got the UniFi directory after a manual sync,
+    // because nothing told the API layer about snapshots the poll loop built.
+    let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+    seed(&mock).await;
+    let clock = Arc::new(ManualClock::new(start()));
+    let eng = engine(
+        &mock,
+        Arc::clone(&clock) as Arc<_>,
+        Duration::from_secs(3600),
+    )
+    .await;
+    await_initial_sync(&eng).await;
+
+    let mut rx = eng.subscribe_generation();
+    rx.mark_unchanged();
+    mock.set_classic(ClassicFixture {
+        sites: vec![json!({ "name": SITE_KEY })],
+        sta: HashMap::from([(
+            SITE_KEY.into(),
+            vec![json!({
+                "_id": "classic-1",
+                "mac": MAC,
+                "hostname": "phone",
+                "ip": "198.51.100.10",
+                "ipv6_addresses": ["2001:db8::99"],
+                "network_id": NET_ID,
+                "last_seen": 1_729_863_600u64
+            })],
+        )]),
+        networkconf: HashMap::from([(SITE_KEY.into(), vec![])]),
+        ..ClassicFixture::default()
+    })
+    .await;
+    let r = eng.sync_now().await.unwrap();
+    assert!(r.rebuilt);
+    assert!(rx.has_changed().unwrap());
+    assert_eq!(*rx.borrow_and_update(), r.generation);
+}
+
+#[tokio::test]
 async fn failure_keeps_previous_snapshot() {
     let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
     seed(&mock).await;

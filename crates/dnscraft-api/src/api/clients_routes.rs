@@ -111,6 +111,12 @@ pub trait ClientDirectory: Send + Sync {
     fn is_sync_owner(&self) -> bool {
         false
     }
+
+    /// Fires on every installed directory snapshot, so background polls reach
+    /// the cluster too (not only the manual sync route).
+    fn subscribe_changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        None
+    }
 }
 
 fn directory(state: &AppState) -> Option<&Arc<dyn ClientDirectory>> {
@@ -377,7 +383,7 @@ pub(crate) async fn sync_clients(
 }
 
 /// After a sync_owner sync: fan-out on the master, or uplink from a sub-node.
-async fn publish_directory_after_sync(state: &AppState, dir: &dyn ClientDirectory) {
+pub(crate) async fn publish_directory_after_sync(state: &AppState, dir: &dyn ClientDirectory) {
     if !dir.is_sync_owner() {
         return;
     }
