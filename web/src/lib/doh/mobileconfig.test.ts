@@ -372,3 +372,22 @@ describe('serverAddresses', () => {
 		expect(tls.ok && tls.xml.includes('<string>203.0.113.7</string>')).toBe(true);
 	});
 });
+
+describe('node hosts', () => {
+	const base = { publicDomain: 'example.com', clientId: 'abc' };
+
+	it('emits one DoH payload per node host', () => {
+		const r = buildMobileConfig({ ...base, hosts: ['ns1.dns.example.com', 'NS2.dns.example.com'] });
+		if (!r.ok) throw new Error('expected ok');
+		expect(r.xml).toContain('https://ns1.dns.example.com/dns-query/abc');
+		expect(r.xml).toContain('https://ns2.dns.example.com/dns-query/abc');
+		expect(r.xml).not.toContain('https://dns.example.com/');
+	});
+
+	it('rejects an invalid host', () => {
+		expect(buildMobileConfig({ ...base, hosts: ['bad host'] })).toEqual({
+			ok: false,
+			error: 'invalid_domain',
+		});
+	});
+});
