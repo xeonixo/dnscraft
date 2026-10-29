@@ -127,7 +127,7 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-describe('names sheet Öffentlich then Abweichungen', () => {
+describe('names sheet Antwort then Abweichungen', () => {
 	it('shows Cloudflare public value above Netzbereich deviations', async () => {
 		const user = userEvent.setup();
 		render(NamesPage);
@@ -136,16 +136,15 @@ describe('names sheet Öffentlich then Abweichungen', () => {
 		await user.click(screen.getByRole('button', { name: /203\.0\.113\.10/ }));
 		const dialog = await screen.findByRole('dialog');
 
-		const publicHeading = within(dialog).getByText(m.names_field_public());
-		const overridesHeading = within(dialog).getByText(m.names_field_overrides());
+		const answerHeading = within(dialog).getByText(m.names_section_answer());
+		const overridesHeading = within(dialog).getByText(m.names_section_overrides());
 		expect(
-			publicHeading.compareDocumentPosition(overridesHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+			answerHeading.compareDocumentPosition(overridesHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
+		expect(within(dialog).queryByText(m.names_field_standard())).toBeNull();
 
 		await waitFor(() =>
-			expect(within(dialog).getByLabelText(m.names_public_value_label())).toHaveValue(
-				'203.0.113.10',
-			),
+			expect(within(dialog).getByLabelText(m.names_field_public())).toHaveValue('203.0.113.10'),
 		);
 		expect(within(dialog).getByLabelText(m.names_overrides_view())).toHaveValue('lan');
 		expect(within(dialog).getByLabelText(m.names_overrides_value())).toHaveValue('192.0.2.50');
@@ -176,8 +175,9 @@ describe('names sheet Öffentlich then Abweichungen', () => {
 		await user.click(await screen.findByRole('button', { name: /192\.0\.2\.50/ }));
 		const dialog = await screen.findByRole('dialog');
 		expect(within(dialog).getByText(m.names_public_internal())).toBeInTheDocument();
-		expect(within(dialog).queryByLabelText(m.names_public_value_label())).toBeNull();
-		expect(within(dialog).getByText(m.names_field_overrides())).toBeInTheDocument();
+		expect(within(dialog).queryByLabelText(m.names_field_public())).toBeNull();
+		expect(within(dialog).getByLabelText(m.names_field_rdata())).toHaveValue('192.0.2.50');
+		expect(within(dialog).getByText(m.names_section_overrides())).toBeInTheDocument();
 		expect(within(dialog).getByLabelText(m.names_overrides_value())).toHaveAttribute(
 			'placeholder',
 			m.names_overrides_inherit_standard(),
@@ -191,7 +191,7 @@ describe('names sheet Öffentlich then Abweichungen', () => {
 		const dialog = await screen.findByRole('dialog');
 		expect(within(dialog).queryByRole('textbox', { name: /zone=wert|zone=value/i })).toBeNull();
 		expect(within(dialog).queryByLabelText(/Zonen-Überschreibungen|Per-zone overrides/i)).toBeNull();
-		expect(within(dialog).getByText(m.names_field_overrides())).toBeInTheDocument();
+		expect(within(dialog).getByText(m.names_section_overrides())).toBeInTheDocument();
 	});
 
 	it('adds and removes override rows and saves the same overrides map shape', async () => {
@@ -308,11 +308,9 @@ describe('names sheet Öffentlich then Abweichungen', () => {
 		await user.click(screen.getByRole('button', { name: /203\.0\.113\.10/ }));
 		const dialog = await screen.findByRole('dialog');
 		expect(within(dialog).getByText(m.names_view_title())).toBeInTheDocument();
-		expect(within(dialog).getByLabelText(m.names_public_value_label())).toHaveTextContent(
-			'203.0.113.10',
-		);
+		expect(within(dialog).getByLabelText(m.names_field_public())).toHaveTextContent('203.0.113.10');
 		expect(within(dialog).getByLabelText(m.names_overrides_view())).toBeDisabled();
-		expect(within(dialog).getByLabelText(m.names_field_rdata())).toBeDisabled();
+		expect(within(dialog).queryByRole('textbox', { name: m.names_field_rdata() })).toBeNull();
 		expect(within(dialog).queryByRole('button', { name: m.action_save() })).toBeNull();
 		expect(within(dialog).queryByRole('button', { name: m.names_overrides_add() })).toBeNull();
 	});
@@ -344,7 +342,7 @@ describe('names sheet Öffentlich then Abweichungen', () => {
 		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10/ }));
 		const dialog = await screen.findByRole('dialog');
 		const publicField = await waitFor(() => {
-			const field = within(dialog).getByLabelText(m.names_public_value_label());
+			const field = within(dialog).getByLabelText(m.names_field_public());
 			expect(field).toHaveValue('203.0.113.10');
 			return field;
 		});
@@ -386,9 +384,7 @@ describe('names sheet Öffentlich then Abweichungen', () => {
 		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10/ }));
 		const dialog = await screen.findByRole('dialog');
 		await waitFor(() =>
-			expect(within(dialog).getByLabelText(m.names_public_value_label())).toHaveValue(
-				'203.0.113.10',
-			),
+			expect(within(dialog).getByLabelText(m.names_field_public())).toHaveValue('203.0.113.10'),
 		);
 		const overrideValue = within(dialog).getByLabelText(m.names_overrides_value());
 		await user.clear(overrideValue);
@@ -486,9 +482,7 @@ describe('names sheet Öffentlich then Abweichungen', () => {
 		await user.click(await screen.findByRole('button', { name: /192\.0\.2\.10/ }));
 		const dialog = await screen.findByRole('dialog');
 		await waitFor(() =>
-			expect(within(dialog).getByLabelText(m.names_public_value_label())).toHaveValue(
-				'192.0.2.10',
-			),
+			expect(within(dialog).getByLabelText(m.names_field_public())).toHaveValue('192.0.2.10'),
 		);
 		expect(within(dialog).queryByText(m.names_public_proxied_warn())).toBeNull();
 		const proxied = within(dialog).getByRole('switch', { name: m.names_public_proxied_label() });

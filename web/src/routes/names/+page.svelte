@@ -128,17 +128,23 @@
 		(PUBLIC_RECORD_TYPES as readonly string[]).includes(formType.trim().toUpperCase()),
 	);
 
-	const publicEditable = $derived(
-		isAdmin &&
-			publicTypeSupported &&
+	/** Attached zone + supported type: Öffentlich is the single answer field. */
+	const showPublicAnswer = $derived(
+		publicTypeSupported &&
 			(publicLookup.kind === 'found' || publicLookup.kind === 'absent'),
 	);
+
+	const publicEditable = $derived(isAdmin && showPublicAnswer);
 
 	const publicDirty = $derived(
 		publicEditable &&
 			(formPublicContent.trim() !== publicBaseline.content ||
 				formPublicProxied !== publicBaseline.proxied ||
 				formTtl !== publicBaseline.ttl),
+	);
+
+	const showPublicClearHint = $derived(
+		publicEditable && publicBaseline.recordId !== null,
 	);
 
 	const showProxiedWarn = $derived(
@@ -697,38 +703,40 @@
 			}}
 		/>
 		{#if ownerError}<p class="error-text" role="alert">{ownerError}</p>{/if}
-		<label class="field-label" for="rec-type">{m.names_field_type()}</label>
-		<select
-			id="rec-type"
-			class="field"
-			bind:value={formType}
-			disabled={editing !== null || !isAdmin}
-			onchange={() => void refreshPublicLookup()}
-		>
-			{#each RECORD_TYPES as type (type)}
-				<option value={type}>{type}</option>
-			{/each}
-		</select>
 
-		<p class="field-label" id="rec-public-label">{m.names_field_public()}</p>
-		<p class="hint" id="rec-public-hint">{m.names_public_hint()}</p>
-		<section class="public-block" aria-labelledby="rec-public-label" aria-describedby="rec-public-hint">
-			{#if publicLookup.kind === 'loading'}
-				<p class="hint muted">{m.names_public_loading()}</p>
-			{:else if publicLookup.kind === 'token_missing'}
-				<p class="hint">{m.names_public_token_missing()}</p>
-				<a class="cta-link" href={resolve('/tls')}>{m.names_public_token_cta()}</a>
-			{:else if publicLookup.kind === 'unavailable'}
-				<p class="hint muted">{m.names_public_unavailable()}</p>
-			{:else if publicLookup.kind === 'internal'}
-				<p class="hint muted">{m.names_public_internal()}</p>
-			{:else if publicLookup.kind === 'error'}
-				<p class="hint muted">{m.names_public_error()}</p>
-			{:else if publicLookup.kind === 'found' || publicLookup.kind === 'absent'}
-				{#if publicLookup.kind === 'absent' && !publicEditable}
-					<p class="hint muted">{m.names_public_absent()}</p>
-				{:else if !isAdmin && publicLookup.kind === 'found'}
-					<p class="public-value mono" aria-label={m.names_public_value_label()}>
+		<div class="meta-grid">
+			<div class="meta-cell">
+				<label class="field-label" for="rec-type">{m.names_field_type()}</label>
+				<select
+					id="rec-type"
+					class="field"
+					bind:value={formType}
+					disabled={editing !== null || !isAdmin}
+					onchange={() => void refreshPublicLookup()}
+				>
+					{#each RECORD_TYPES as type (type)}
+						<option value={type}>{type}</option>
+					{/each}
+				</select>
+			</div>
+			<div class="meta-cell">
+				<label class="field-label" for="rec-ttl">{m.names_field_ttl()}</label>
+				<input
+					id="rec-ttl"
+					class="field"
+					bind:value={formTtl}
+					inputmode="numeric"
+					disabled={!isAdmin}
+				/>
+			</div>
+		</div>
+
+		<section class="sheet-section" aria-labelledby="rec-answer-label">
+			<p class="section-label" id="rec-answer-label">{m.names_section_answer()}</p>
+
+			{#if showPublicAnswer}
+				{#if !isAdmin && publicLookup.kind === 'found'}
+					<p class="public-value mono" aria-label={m.names_field_public()}>
 						{displayText(publicLookup.record.content, 200).text}
 					</p>
 					<p class="hint muted">
@@ -738,21 +746,24 @@
 				{:else if !isAdmin && publicLookup.kind === 'absent'}
 					<p class="hint muted">{m.names_public_absent()}</p>
 				{:else}
+					<p class="hint" id="rec-public-hint">{m.names_public_hint()}</p>
 					{#if publicLookup.kind === 'absent'}
 						<p class="hint muted">{m.names_public_absent()}</p>
 					{/if}
-					<label class="field-label" for="rec-public">{m.names_public_value_label()}</label>
+					<label class="field-label" for="rec-public">{m.names_field_public()}</label>
 					<input
 						id="rec-public"
 						class="field mono"
 						bind:value={formPublicContent}
 						disabled={!publicEditable}
 						aria-invalid={publicContentError ? 'true' : undefined}
-						aria-label={m.names_public_value_label()}
+						aria-describedby={showPublicClearHint ? 'rec-public-clear' : 'rec-public-hint'}
 						oninput={onPublicContentInput}
 					/>
 					{#if publicContentError}<p class="error-text" role="alert">{publicContentError}</p>{/if}
-					<p class="hint muted">{m.names_public_clear_hint()}</p>
+					{#if showPublicClearHint}
+						<p class="hint muted" id="rec-public-clear">{m.names_public_clear_hint()}</p>
+					{/if}
 					{#if supportsProxied(formType)}
 						<div class="proxied-row">
 							<span class="proxied-label">{m.names_public_proxied_label()}</span>
@@ -767,85 +778,85 @@
 						{/if}
 					{/if}
 				{/if}
+			{:else}
+				{#if publicLookup.kind === 'loading'}
+					<p class="hint muted">{m.names_public_loading()}</p>
+				{:else if publicLookup.kind === 'token_missing'}
+					<p class="hint">{m.names_public_token_missing()}</p>
+					<a class="cta-link" href={resolve('/tls')}>{m.names_public_token_cta()}</a>
+				{:else if publicLookup.kind === 'unavailable'}
+					<p class="hint muted">{m.names_public_unavailable()}</p>
+				{:else if publicLookup.kind === 'internal'}
+					<p class="hint muted">{m.names_public_internal()}</p>
+				{:else if publicLookup.kind === 'error'}
+					<p class="hint muted">{m.names_public_error()}</p>
+				{/if}
+				<label class="field-label" for="rec-rdata">{m.names_field_rdata()}</label>
+				<input
+					id="rec-rdata"
+					class="field mono"
+					bind:value={formRdata}
+					disabled={!isAdmin}
+					aria-invalid={rdataError ? 'true' : undefined}
+				/>
+				{#if rdataError}<p class="error-text" role="alert">{rdataError}</p>{/if}
 			{/if}
 		</section>
 
-		<p class="field-label" id="rec-standard-label">{m.names_field_standard()}</p>
-		<p class="hint" id="rec-standard-hint">
-			{publicEditable ? m.names_standard_aligned() : m.names_standard_hint()}
-		</p>
-		<label class="field-label" for="rec-ttl">{m.names_field_ttl()}</label>
-		<input
-			id="rec-ttl"
-			class="field"
-			bind:value={formTtl}
-			inputmode="numeric"
-			disabled={!isAdmin}
-			aria-describedby="rec-standard-hint"
-		/>
-		<label class="field-label" for="rec-rdata">{m.names_field_rdata()}</label>
-		<input
-			id="rec-rdata"
-			class="field mono"
-			bind:value={formRdata}
-			disabled={!isAdmin || (publicEditable && formPublicContent.trim() !== '')}
-			aria-invalid={rdataError ? 'true' : undefined}
-			aria-describedby="rec-standard-hint"
-		/>
-		{#if rdataError}<p class="error-text" role="alert">{rdataError}</p>{/if}
-
-		<p class="field-label" id="rec-overrides-label">{m.names_field_overrides()}</p>
-		<p class="hint" id="rec-overrides-hint">{m.names_overrides_hint()}</p>
-		{#if overrideRows.length === 0}
-			<p class="hint muted">{overridesEmptyText}</p>
-		{:else}
-			<ul
-				class="override-list"
-				aria-labelledby="rec-overrides-label"
-				aria-describedby="rec-overrides-hint"
-			>
-				{#each overrideRows as row, i (row.key)}
-					<li class="override-row">
-						<label class="sr-only" for="ov-view-{row.key}">{m.names_overrides_view()}</label>
-						<select
-							id="ov-view-{row.key}"
-							class="field"
-							bind:value={overrideRows[i].view}
-							disabled={!isAdmin}
-						>
-							<option value="">{m.names_overrides_choose()}</option>
-							{#each viewOptionsFor(row) as viewId (viewId)}
-								<option value={viewId}>{displayText(viewId, 60).text}</option>
-							{/each}
-						</select>
-						<label class="sr-only" for="ov-value-{row.key}">{m.names_overrides_value()}</label>
-						<input
-							id="ov-value-{row.key}"
-							class="field mono"
-							bind:value={overrideRows[i].value}
-							placeholder={inheritPlaceholder}
-							autocomplete="off"
-							disabled={!isAdmin}
-						/>
-						{#if isAdmin}
-							<button
-								type="button"
-								class="remove-override"
-								aria-label={m.names_overrides_remove()}
-								onclick={() => removeOverrideRow(row.key)}
+		<section class="sheet-section" aria-labelledby="rec-overrides-label">
+			<p class="section-label" id="rec-overrides-label">{m.names_section_overrides()}</p>
+			<p class="hint" id="rec-overrides-hint">{m.names_overrides_hint()}</p>
+			{#if overrideRows.length === 0}
+				<p class="hint muted">{overridesEmptyText}</p>
+			{:else}
+				<ul
+					class="override-list"
+					aria-labelledby="rec-overrides-label"
+					aria-describedby="rec-overrides-hint"
+				>
+					{#each overrideRows as row, i (row.key)}
+						<li class="override-row">
+							<label class="sr-only" for="ov-view-{row.key}">{m.names_overrides_view()}</label>
+							<select
+								id="ov-view-{row.key}"
+								class="field"
+								bind:value={overrideRows[i].view}
+								disabled={!isAdmin}
 							>
-								<Icon name="x" size="1rem" />
-							</button>
-						{/if}
-					</li>
-				{/each}
-			</ul>
-		{/if}
-		{#if isAdmin && canAddOverride}
-			<button type="button" class="add-override" onclick={addOverrideRow}
-				>{m.names_overrides_add()}</button
-			>
-		{/if}
+								<option value="">{m.names_overrides_choose()}</option>
+								{#each viewOptionsFor(row) as viewId (viewId)}
+									<option value={viewId}>{viewId}</option>
+								{/each}
+							</select>
+							<label class="sr-only" for="ov-value-{row.key}">{m.names_overrides_value()}</label>
+							<input
+								id="ov-value-{row.key}"
+								class="field mono"
+								bind:value={overrideRows[i].value}
+								placeholder={inheritPlaceholder}
+								autocomplete="off"
+								disabled={!isAdmin}
+							/>
+							{#if isAdmin}
+								<button
+									type="button"
+									class="remove-override"
+									aria-label={m.names_overrides_remove()}
+									onclick={() => removeOverrideRow(row.key)}
+								>
+									<Icon name="x" size="1rem" />
+								</button>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			{/if}
+			{#if isAdmin && canAddOverride}
+				<button type="button" class="add-override" onclick={addOverrideRow}
+					>{m.names_overrides_add()}</button
+				>
+			{/if}
+		</section>
 
 		{#snippet footer()}
 			{#if failure}
@@ -1139,6 +1150,30 @@
 		font-size: 0.8125rem;
 		color: var(--label-2);
 	}
+	.meta-grid {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr);
+		gap: 0;
+	}
+	@media (min-width: 28rem) {
+		.meta-grid {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			gap: 0 0.75rem;
+		}
+	}
+	.meta-cell {
+		min-width: 0;
+	}
+	.sheet-section {
+		margin-top: 0.5rem;
+	}
+	.section-label {
+		display: block;
+		margin: 0.875rem 0 0.25rem;
+		font-size: 0.8125rem;
+		font-weight: 600;
+		color: var(--label);
+	}
 	.field {
 		width: 100%;
 		min-height: 2.75rem;
@@ -1152,21 +1187,14 @@
 		opacity: 0.85;
 		color: var(--label-2);
 	}
-	.public-block {
-		margin: 0 0 0.25rem;
-		padding: 0.75rem;
-		border: 1px solid var(--separator);
-		border-radius: var(--r-ctl);
-		background: var(--surface-2);
-	}
 	.public-value {
-		margin: 0;
+		margin: 0.25rem 0 0;
 		font-size: 0.9375rem;
 		overflow-wrap: anywhere;
 	}
 	.cta-link {
 		display: inline-block;
-		margin-top: 0.25rem;
+		margin: 0.125rem 0 0.5rem;
 		color: var(--accent);
 		font-weight: 600;
 		text-decoration: none;
@@ -1180,12 +1208,12 @@
 		padding: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
+		gap: 0.375rem;
 	}
 	.override-row {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
-		gap: 0.5rem;
+		gap: 0.375rem;
 		align-items: center;
 	}
 	.remove-override {
