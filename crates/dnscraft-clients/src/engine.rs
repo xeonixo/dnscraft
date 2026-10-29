@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
-use tokio::sync::{Mutex as AsyncMutex, Notify};
+use tokio::sync::{Mutex as AsyncMutex, Notify, watch};
 use tokio::task::JoinHandle;
 
 use crate::Secret;
@@ -103,6 +103,8 @@ struct Inner {
     cached_nets: RwLock<Vec<NetworkInfo>>,
     content_hash: AtomicU64,
     generation: AtomicU64,
+    /// Mirrors `generation`; lets the API layer push every installed snapshot.
+    generation_tx: watch::Sender<u64>,
     status: RwLock<ClientsStatus>,
     backoff_failures: AtomicU64,
     backoff_until: RwLock<Option<std::time::SystemTime>>,
@@ -305,6 +307,7 @@ impl ClientEngine {
             cached_nets: RwLock::new(nets),
             content_hash: AtomicU64::new(content_hash),
             generation: AtomicU64::new(generation),
+            generation_tx: watch::channel(generation).0,
             status: RwLock::new(status),
             backoff_failures: AtomicU64::new(0),
             backoff_until: RwLock::new(None),
@@ -590,6 +593,12 @@ impl ClientEngine {
             ip_conflicts: built.stats.ip_conflicts,
             superseded: false,
         })
+    }
+
+    /// Receiver that fires whenever a new lookup snapshot is installed
+    /// (poll, manual sync, config apply, directory push).
+    pub fn subscribe_generation(&self) -> watch::Receiver<u64> {
+        self.inner.generation_tx.subscribe()
     }
 
     /// This engine's cluster / local node id.
@@ -950,6 +959,7 @@ impl ClientEngine {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = nets.to_vec();
         self.refresh_status_counts(next_gen);
+        self.inner.generation_tx.send_replace(next_gen);
         true
     }
 

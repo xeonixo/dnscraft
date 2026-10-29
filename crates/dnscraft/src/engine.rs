@@ -166,6 +166,10 @@ impl dnscraft_api::ClientDirectory for EngineDirectory {
         self.engine.is_sync_owner()
     }
 
+    fn subscribe_changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        Some(self.engine.subscribe_generation())
+    }
+
     fn directory_export(&self) -> Option<DirectoryExport> {
         let profile_id = self.engine.bound_profile_id()?;
         let (obs, nets, generation) = self.engine.export_unifi_directory();
