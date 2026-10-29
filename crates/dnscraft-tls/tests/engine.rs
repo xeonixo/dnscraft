@@ -92,6 +92,7 @@ async fn mock_cf_with_ns() -> (MockCloudflare, std::net::SocketAddr) {
         MockZone {
             id: ZONE_ID.into(),
             name: DOMAIN.into(),
+            status: "active".into(),
             name_servers: vec![ns.to_string()],
         },
     )

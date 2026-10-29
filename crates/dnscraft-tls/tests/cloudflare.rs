@@ -5,8 +5,10 @@
 #[path = "support/mock_cloudflare.rs"]
 mod mock_cloudflare;
 
-use dnscraft_tls::{CloudflareClient, CloudflareConfig, Secret, TTL_ACME_TXT, TlsError};
-use mock_cloudflare::{MockCloudflare, MockZone, OversizeBody};
+use dnscraft_tls::{
+    CloudflareClient, CloudflareConfig, ListZoneRecordsQuery, Secret, TTL_ACME_TXT, TlsError,
+};
+use mock_cloudflare::{MockCloudflare, MockRecord, MockZone, OversizeBody};
 
 const TOKEN: &str = "test-cf-token-do-not-leak";
 const ZONE_ID: &str = "zone-example-com";
@@ -17,6 +19,7 @@ fn zone_fixture() -> MockZone {
     MockZone {
         id: ZONE_ID.into(),
         name: DOMAIN.into(),
+        status: "active".into(),
         name_servers: vec![
             "ada.ns.cloudflare.com".into(),
             "bob.ns.cloudflare.com".into(),
@@ -254,6 +257,140 @@ async fn write_lock_is_shared_arc() {
     let b = client.write_lock().clone();
     assert!(std::sync::Arc::ptr_eq(&a, &b));
     let _g = a.lock().await;
+}
+
+#[tokio::test]
+async fn list_zones_returns_inventory_fields() {
+    let (mock, client) = mock_and_client().await;
+    mock.add_zone(MockZone {
+        id: "zone-other".into(),
+        name: "other.example".into(),
+        status: "pending".into(),
+        name_servers: vec!["ns1.cloudflare.com".into()],
+    })
+    .await;
+
+    let zones = client.list_zones().await.unwrap();
+    assert_eq!(zones.len(), 2);
+
+    let example = zones.iter().find(|z| z.id == ZONE_ID).unwrap();
+    assert_eq!(example.name, DOMAIN);
+    assert_eq!(example.status, "active");
+    assert_eq!(
+        example.name_servers,
+        vec![
+            "ada.ns.cloudflare.com".to_owned(),
+            "bob.ns.cloudflare.com".to_owned()
+        ]
+    );
+
+    let other = zones.iter().find(|z| z.id == "zone-other").unwrap();
+    assert_eq!(other.name, "other.example");
+    assert_eq!(other.status, "pending");
+    assert_eq!(other.name_servers, vec!["ns1.cloudflare.com".to_owned()]);
+
+    // Inventory is read-only: no writer mutex held, ACME path still works.
+    let _guard = client.write_guard().await;
+    let txt = client
+        .create_txt(CHALLENGE, "after-list-zones", TTL_ACME_TXT)
+        .await
+        .unwrap();
+    assert_eq!(txt.content, "after-list-zones");
+}
+
+#[tokio::test]
+async fn list_zone_records_paginates_and_filters() {
+    let (mock, client) = mock_and_client().await;
+    for i in 0..5 {
+        mock.insert_record(MockRecord {
+            id: format!("rec-{i}"),
+            zone_id: ZONE_ID.into(),
+            name: format!("host{i}.{DOMAIN}"),
+            record_type: "A".into(),
+            content: format!("203.0.113.{i}"),
+            ttl: 300,
+            proxied: i % 2 == 0,
+        })
+        .await;
+    }
+    mock.insert_record(MockRecord {
+        id: "rec-special".into(),
+        zone_id: ZONE_ID.into(),
+        name: format!("special.{DOMAIN}"),
+        record_type: "TXT".into(),
+        content: "hello".into(),
+        ttl: 120,
+        proxied: false,
+    })
+    .await;
+
+    let page1 = client
+        .list_zone_records(
+            ZONE_ID,
+            &ListZoneRecordsQuery {
+                page: 1,
+                per_page: 2,
+                name_substr: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(page1.records.len(), 2);
+    assert_eq!(page1.page, 1);
+    assert_eq!(page1.per_page, 2);
+    assert_eq!(page1.total_count, 6);
+    assert_eq!(page1.total_pages, 3);
+    assert_eq!(page1.records[0].id, "rec-0");
+    assert_eq!(page1.records[0].name, format!("host0.{DOMAIN}"));
+    assert_eq!(page1.records[0].record_type, "A");
+    assert_eq!(page1.records[0].content, "203.0.113.0");
+    assert_eq!(page1.records[0].ttl, 300);
+    assert!(page1.records[0].proxied);
+
+    let page2 = client
+        .list_zone_records(
+            ZONE_ID,
+            &ListZoneRecordsQuery {
+                page: 2,
+                per_page: 2,
+                name_substr: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(page2.records.len(), 2);
+    assert_eq!(page2.page, 2);
+    assert_eq!(page2.records[0].id, "rec-2");
+
+    let filtered = client
+        .list_zone_records(
+            ZONE_ID,
+            &ListZoneRecordsQuery {
+                page: 1,
+                per_page: 10,
+                name_substr: Some("SPECIAL".into()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(filtered.total_count, 1);
+    assert_eq!(filtered.records.len(), 1);
+    assert_eq!(filtered.records[0].id, "rec-special");
+    assert_eq!(filtered.records[0].record_type, "TXT");
+    assert_eq!(filtered.records[0].content, "hello");
+    assert!(!filtered.records[0].proxied);
+
+    // Existing name+type filter for ACME still returns every match (no page trim).
+    let _ = client
+        .create_txt(CHALLENGE, "v1", TTL_ACME_TXT)
+        .await
+        .unwrap();
+    let _ = client
+        .create_txt(CHALLENGE, "v2", TTL_ACME_TXT)
+        .await
+        .unwrap();
+    let listed = client.list_records(CHALLENGE, "TXT").await.unwrap();
+    assert_eq!(listed.len(), 2);
 }
 
 async fn assert_body_cap_enforced_promptly(kind: OversizeBody) {

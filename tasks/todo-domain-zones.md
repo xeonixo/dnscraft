@@ -33,18 +33,18 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
   - **Files likely touched:** `web/src/routes/names/+page.svelte`, messages, tests
   - **Estimated scope:** M
 
-- [ ] **T1** CloudflareClient: zone inventory + list all records in a zone
+- [x] **T1** CloudflareClient: zone inventory + list all records in a zone
   - **Description:** Extend `dnscraft-tls` Cloudflare client so control-api can list
     zones visible to the token and list (paginated) DNS records for one zone without
     requiring a name+type filter. Keep existing filtered helpers for ACME/DynDNS.
   - **Acceptance criteria:**
-    - [ ] `list_zones()` returns zone id, apex name, status, name_servers (mocked).
-    - [ ] `list_zone_records(zone_id, { page, per_page, name_substr? })` returns
+    - [x] `list_zones()` returns zone id, apex name, status, name_servers (mocked).
+    - [x] `list_zone_records(zone_id, { page, per_page, name_substr? })` returns
           records with id, name, type, content, ttl, proxied; pages through CF API.
-    - [ ] Existing ACME/DynDNS paths and write_lock behaviour unchanged.
+    - [x] Existing ACME/DynDNS paths and write_lock behaviour unchanged.
   - **Verification:**
-    - [ ] `cargo test -p dnscraft-tls --locked` (new mock CF tests + regression)
-    - [ ] clippy/fmt clean for the crate
+    - [x] `cargo test -p dnscraft-tls --locked` (new mock CF tests + regression)
+    - [x] clippy/fmt clean for the crate
   - **Dependencies:** D1
   - **Files likely touched:** `crates/dnscraft-tls/src/cloudflare.rs`, tls tests/mocks
   - **Estimated scope:** M

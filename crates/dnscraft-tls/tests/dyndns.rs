@@ -27,6 +27,7 @@ fn zone_fixture() -> MockZone {
     MockZone {
         id: ZONE_ID.into(),
         name: DOMAIN.into(),
+        status: "active".into(),
         name_servers: vec!["ada.ns.cloudflare.com".into()],
     }
 }

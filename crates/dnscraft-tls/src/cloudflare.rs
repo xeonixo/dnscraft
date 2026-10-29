@@ -38,6 +38,8 @@ pub struct ZoneInfo {
     pub id: String,
     /// Apex name (e.g. `example.com`).
     pub name: String,
+    /// Zone lifecycle status (`active`, `pending`, …).
+    pub status: String,
     /// Cloudflare-assigned authoritative nameserver hostnames.
     pub name_servers: Vec<String>,
 }
@@ -57,6 +59,32 @@ pub struct DnsRecord {
     pub ttl: u32,
     /// Orange-cloud flag; must be `false` for DoT/DoQ.
     pub proxied: bool,
+}
+
+/// Query parameters for [`CloudflareClient::list_zone_records`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListZoneRecordsQuery {
+    /// 1-based page index (Cloudflare pagination).
+    pub page: u32,
+    /// Page size (`per_page` query parameter).
+    pub per_page: u32,
+    /// Optional case-insensitive substring filter on the record owner name.
+    pub name_substr: Option<String>,
+}
+
+/// One page of DNS records from [`CloudflareClient::list_zone_records`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZoneRecordsPage {
+    /// Records on this page.
+    pub records: Vec<DnsRecord>,
+    /// Echo of the requested page.
+    pub page: u32,
+    /// Echo of the requested page size.
+    pub per_page: u32,
+    /// Total matching records across all pages.
+    pub total_count: u32,
+    /// Total pages available (`0` when unknown / empty).
+    pub total_pages: u32,
 }
 
 /// Cloudflare DNS client with a shared writer mutex.
@@ -183,6 +211,79 @@ impl CloudflareClient {
         };
         self.cached_zones.lock().await.push(info.clone());
         Ok(info)
+    }
+
+    /// Lists every zone visible to the API token (all pages).
+    ///
+    /// Read-only inventory helper for Domain-Zonen; does not use or alter the
+    /// writer mutex.
+    pub async fn list_zones(&self) -> Result<Vec<ZoneInfo>, TlsError> {
+        let mut page = 1u32;
+        let per_page = 50u32;
+        let mut out = Vec::new();
+        loop {
+            let url = format!("{}/zones", self.base_url);
+            let page_s = page.to_string();
+            let per_page_s = per_page.to_string();
+            let url = url_with_query(&url, &[("page", &page_s), ("per_page", &per_page_s)])?;
+            let envelope: Envelope<Vec<ApiZone>> = self.request(self.http.get(url)).await?;
+            let batch = envelope.result.unwrap_or_default();
+            let batch_len = batch.len();
+            out.extend(batch.into_iter().map(ZoneInfo::from));
+            let total_pages = envelope
+                .result_info
+                .as_ref()
+                .map(ResultInfo::total_pages_or_computed)
+                .unwrap_or(1);
+            if page >= total_pages || batch_len == 0 {
+                break;
+            }
+            page += 1;
+        }
+        Ok(out)
+    }
+
+    /// Lists DNS records in `zone_id` with Cloudflare pagination.
+    ///
+    /// Optional [`ListZoneRecordsQuery::name_substr`] is a case-insensitive
+    /// substring match on the owner name (applied by the API mock / filtered
+    /// server-side when supported). Does not take the writer mutex.
+    pub async fn list_zone_records(
+        &self,
+        zone_id: &str,
+        query: &ListZoneRecordsQuery,
+    ) -> Result<ZoneRecordsPage, TlsError> {
+        let page = query.page.max(1);
+        let per_page = query.per_page.max(1);
+        let url = format!("{}/zones/{zone_id}/dns_records", self.base_url);
+        let page_s = page.to_string();
+        let per_page_s = per_page.to_string();
+        let mut params: Vec<(&str, &str)> = vec![("page", &page_s), ("per_page", &per_page_s)];
+        if let Some(substr) = query.name_substr.as_deref() {
+            params.push(("name_substr", substr));
+        }
+        let url = url_with_query(&url, &params)?;
+        let envelope: Envelope<Vec<ApiRecord>> = self.request(self.http.get(url)).await?;
+        let records: Vec<DnsRecord> = envelope
+            .result
+            .unwrap_or_default()
+            .into_iter()
+            .map(DnsRecord::from)
+            .collect();
+        let (total_count, total_pages) = match envelope.result_info.as_ref() {
+            Some(info) => (info.total_count, info.total_pages_or_computed()),
+            None => {
+                let n = records.len() as u32;
+                (n, if n == 0 { 0 } else { 1 })
+            }
+        };
+        Ok(ZoneRecordsPage {
+            records,
+            page,
+            per_page,
+            total_count,
+            total_pages,
+        })
     }
 
     /// Lists records filtered by owner name and type.
@@ -359,11 +460,7 @@ impl CloudflareClient {
             [] => Err(TlsError::CloudflareZone {
                 message: format!("no zone named {name}"),
             }),
-            [z, ..] => Ok(ZoneInfo {
-                id: z.id.clone(),
-                name: z.name.clone(),
-                name_servers: z.name_servers.clone(),
-            }),
+            [z, ..] => Ok(ZoneInfo::from(z.clone())),
         }
     }
 
@@ -374,11 +471,7 @@ impl CloudflareClient {
                 let z = envelope.result.ok_or_else(|| TlsError::CloudflareZone {
                     message: format!("zone id {id} not found"),
                 })?;
-                Ok(ZoneInfo {
-                    id: z.id,
-                    name: z.name,
-                    name_servers: z.name_servers,
-                })
+                Ok(ZoneInfo::from(z))
             }
             Err(TlsError::CloudflareHttp {
                 status: Some(404),
@@ -518,6 +611,30 @@ struct Envelope<T> {
     errors: Vec<ApiError>,
     #[serde(default)]
     result: Option<T>,
+    #[serde(default)]
+    result_info: Option<ResultInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResultInfo {
+    #[serde(default)]
+    per_page: u32,
+    #[serde(default)]
+    total_count: u32,
+    #[serde(default)]
+    total_pages: u32,
+}
+
+impl ResultInfo {
+    fn total_pages_or_computed(&self) -> u32 {
+        if self.total_pages > 0 {
+            return self.total_pages;
+        }
+        if self.per_page == 0 || self.total_count == 0 {
+            return 0;
+        }
+        self.total_count.div_ceil(self.per_page)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -526,12 +643,25 @@ struct ApiError {
     message: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct ApiZone {
     id: String,
     name: String,
     #[serde(default)]
+    status: String,
+    #[serde(default)]
     name_servers: Vec<String>,
+}
+
+impl From<ApiZone> for ZoneInfo {
+    fn from(z: ApiZone) -> Self {
+        Self {
+            id: z.id,
+            name: z.name,
+            status: z.status,
+            name_servers: z.name_servers,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

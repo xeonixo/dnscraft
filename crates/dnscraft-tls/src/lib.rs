@@ -42,7 +42,8 @@ pub use acme::{
 pub use acme_http::ReqwestHttpClient;
 pub use clock::{Clock, ManualClock, SystemClock, wait_until};
 pub use cloudflare::{
-    CLOUDFLARE_API_BASE, CloudflareClient, DnsRecord, TTL_ACME_TXT, TTL_AUTO, ZoneInfo,
+    CLOUDFLARE_API_BASE, CloudflareClient, DnsRecord, ListZoneRecordsQuery, TTL_ACME_TXT, TTL_AUTO,
+    ZoneInfo, ZoneRecordsPage,
 };
 pub use config::{
     AcmeAccountConfig, AcmeConfig, AcmeDirectoryKind, CloudflareConfig, DEFAULT_DYNDNS_INTERVAL,
