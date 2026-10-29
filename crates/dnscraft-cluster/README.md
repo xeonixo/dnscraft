@@ -193,7 +193,7 @@ unchanged (for example `control_api.config.version`,
 | `cluster.master_conflict` | A second master or a node ahead of the master is detected; connection refused |
 | `cluster.node.unknown` | `node_id`/certificate fingerprint not registered on the master |
 | `cluster.node.revoked` | Revoked node identity; connection refused (`403` for API calls) |
-| `cluster.node.already_joined` | `node_id` is already registered |
+| `cluster.node.already_joined` | `node_id` is registered and not revoked. A revoked `node_id` may be re-issued a join token; the join replaces the old entry and drops its superseded certificates |
 | `cluster.join.token_invalid` | Join token unknown, already used, or bound to another `node_id` |
 | `cluster.join.token_expired` | Join token past its TTL |
 | `cluster.transport.tls` | mTLS handshake or certificate validation failure |

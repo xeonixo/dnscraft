@@ -53,6 +53,7 @@
 	"state_error": "Etwas ist schiefgelaufen.",
 	"state_offline": "Du bist offline. Prüfe deine Verbindung und versuche es erneut.",
 	"state_backend_unreachable": "Das Backend ist nicht erreichbar. Prüfe deine Verbindung und versuche es erneut.",
+	"error_cluster_node_already_joined": "Der Knoten ist bereits aktiv registriert. Widerrufe ihn zuerst, um die Knoten-ID für einen Ersatzknoten freizugeben.",
 	"error_code_label": "Fehlercode",
 	"error_unknown": "Ein unerwarteter Fehler ist aufgetreten.",
 	"error_policy_config_invalid": "Die Eingabe wurde abgelehnt: {reason}",

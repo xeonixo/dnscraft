@@ -204,7 +204,8 @@ impl ClusterStore {
     /// Mints a one-time join token bound to `node_id`.
     ///
     /// The token is 32 random bytes (64 hex chars); only its SHA-256 hash is
-    /// stored. Minting for an already registered node is rejected.
+    /// stored. Minting for an active registered node is rejected; a revoked
+    /// node id may be reused.
     pub async fn mint_join_token(&self, node_id: &str) -> Result<MintedJoinToken, ClusterError> {
         validate_node_id(node_id)?;
         let token = random_token()?;
@@ -216,7 +217,7 @@ impl ClusterStore {
         self.with_conn(move |conn| {
             let already: Option<i64> = conn
                 .query_row(
-                    "SELECT 1 FROM cluster_nodes WHERE node_id = ?1",
+                    "SELECT 1 FROM cluster_nodes WHERE node_id = ?1 AND revoked = 0",
                     params![bound_node],
                     |row| row.get(0),
                 )
@@ -297,7 +298,7 @@ impl ClusterStore {
                 Ok(()) => {
                     let already: Option<i64> = tx
                         .query_row(
-                            "SELECT 1 FROM cluster_nodes WHERE node_id = ?1",
+                            "SELECT 1 FROM cluster_nodes WHERE node_id = ?1 AND revoked = 0",
                             params![insert.node_id],
                             |row| row.get(0),
                         )
@@ -309,8 +310,15 @@ impl ClusterStore {
                             node_id: insert.node_id.clone(),
                         });
                     }
+                    // A revoked entry for this id is replaced (node moved to new
+                    // hardware); its old certificates must stop authenticating.
                     tx.execute(
-                        "INSERT INTO cluster_nodes
+                        "DELETE FROM cluster_superseded_certs WHERE node_id = ?1",
+                        params![insert.node_id],
+                    )
+                    .map_err(db_err)?;
+                    tx.execute(
+                        "INSERT OR REPLACE INTO cluster_nodes
                             (node_id, fingerprint, joined_at, last_seen,
                              applied_config_version, revoked)
                          VALUES (?1, ?2, ?3, ?4, ?5, 0)",
@@ -950,6 +958,26 @@ mod tests {
     async fn token_cannot_be_minted_for_a_registered_node() {
         let store = store(clock()).await;
         store.register_node("node-a", "aa").await.unwrap();
+        let error = store.mint_join_token("node-a").await.unwrap_err();
+        assert_eq!(error.code(), "cluster.node.already_joined");
+    }
+
+    #[tokio::test]
+    async fn revoked_node_id_can_be_rejoined_and_old_certs_stop_working() {
+        let store = store(clock()).await;
+        store.register_node("node-a", "old").await.unwrap();
+        store.revoke("node-a").await.unwrap();
+        let minted = store.mint_join_token("node-a").await.unwrap();
+        let node = store
+            .redeem_join_token_and_register(minted.token.expose(), "node-a", "new")
+            .await
+            .unwrap();
+        assert!(!node.revoked);
+        let stored = store.get_node("node-a").await.unwrap().unwrap();
+        assert_eq!(stored.fingerprint, "new");
+        assert!(!stored.revoked);
+        assert_eq!(store.list_nodes().await.unwrap().len(), 1);
+        // Active again: a further token is refused.
         let error = store.mint_join_token("node-a").await.unwrap_err();
         assert_eq!(error.code(), "cluster.node.already_joined");
     }

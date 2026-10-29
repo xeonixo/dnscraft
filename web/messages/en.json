@@ -53,6 +53,7 @@
 	"state_error": "Something went wrong.",
 	"state_offline": "You are offline. Check your connection and try again.",
 	"state_backend_unreachable": "The backend is unreachable. Check your connection and try again.",
+	"error_cluster_node_already_joined": "This node is already registered and active. Revoke it first to free its node ID for a replacement node.",
 	"error_code_label": "Error code",
 	"error_unknown": "An unexpected error occurred.",
 	"error_policy_config_invalid": "The input was rejected: {reason}",
