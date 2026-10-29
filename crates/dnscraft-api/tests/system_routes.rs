@@ -320,7 +320,10 @@ async fn control_api_settings_accept_only_the_documented_runtime_keys() {
     assert_eq!(query_log["ip_truncate"], "none");
     let oidc = &body["data"]["config"]["control_api_settings"]["oidc"];
     assert_eq!(oidc["enabled"], true);
-    assert_eq!(oidc["issuer"], "https://auth.example.net/application/o/dnscraft/");
+    assert_eq!(
+        oidc["issuer"],
+        "https://auth.example.net/application/o/dnscraft/"
+    );
     assert_eq!(oidc["client_id"], "dnscraft");
     assert!(oidc.get("client_secret").is_none());
 }

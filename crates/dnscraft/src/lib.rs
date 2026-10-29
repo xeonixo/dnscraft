@@ -288,12 +288,12 @@ pub async fn build_with_enrollment(
         .await
         .map_err(|e| Error::startup("dnscraft.startup.store", format!("config store: {e}")))?;
     // UI-stored Cloudflare token must land before ACME renew races an empty env.
-    if let Some(engine) = engines.tls.as_ref() {
-        if let Ok(Some(token)) = dnscraft_api::cloudflare_token_from_db(&db).await {
-            let _ = engine
-                .set_cloudflare_token(dnscraft_tls::Secret::new(token))
-                .await;
-        }
+    if let Some(engine) = engines.tls.as_ref()
+        && let Ok(Some(token)) = dnscraft_api::cloudflare_token_from_db(&db).await
+    {
+        let _ = engine
+            .set_cloudflare_token(dnscraft_tls::Secret::new(token))
+            .await;
     }
     let store = ConfigStore::new(db.clone());
 

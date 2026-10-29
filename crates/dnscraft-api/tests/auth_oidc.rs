@@ -528,7 +528,10 @@ fn assert_login_redirect(status: StatusCode, headers: &HeaderMap, body: &Value) 
         .get(header::LOCATION)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
-    assert_eq!(location, "/dashboard", "successful OIDC login redirects to SPA");
+    assert_eq!(
+        location, "/dashboard",
+        "successful OIDC login redirects to SPA"
+    );
     assert!(
         headers.get(header::SET_COOKIE).is_some(),
         "successful OIDC login must mint a session cookie"
@@ -597,7 +600,11 @@ async fn forced_login(
 }
 
 fn assert_oidc_rejection(status: StatusCode, headers: &HeaderMap, _body: &Value) {
-    assert_eq!(status, StatusCode::FOUND, "browser callback redirects on failure");
+    assert_eq!(
+        status,
+        StatusCode::FOUND,
+        "browser callback redirects on failure"
+    );
     let location = headers
         .get(header::LOCATION)
         .and_then(|value| value.to_str().ok())
@@ -667,7 +674,10 @@ async fn authorize_url_uses_discovery_pkce_s256_nonce_and_state() {
     assert_eq!(query_value(&url, "state").as_deref(), Some(state.as_str()));
     let scope = query_value(&url, "scope").unwrap_or_default();
     assert!(scope.contains("openid"), "scope={scope}");
-    assert!(scope.contains("profile"), "Authentik groups need profile: {scope}");
+    assert!(
+        scope.contains("profile"),
+        "Authentik groups need profile: {scope}"
+    );
     assert!(scope.contains("email"), "scope={scope}");
 
     // Every login gets a fresh state and nonce.

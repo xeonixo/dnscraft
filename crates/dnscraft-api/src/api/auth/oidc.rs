@@ -467,9 +467,8 @@ pub(crate) async fn oidc_authorize_url(
         .ok_or_else(|| ControlApiError::Internal {
             message: "OIDC login is not configured".to_owned(),
         })?;
-    let return_to = validate_return_to(query.return_to.as_deref()).unwrap_or_else(|| {
-        DEFAULT_RETURN_TO.to_owned()
-    });
+    let return_to = validate_return_to(query.return_to.as_deref())
+        .unwrap_or_else(|| DEFAULT_RETURN_TO.to_owned());
     let redirect_url = callback_url(&state, &headers)?;
     let (authorization_url, csrf_state) = oidc.authorization_url(redirect_url, return_to).await?;
     Ok(crate::api::response::success(json!({
@@ -590,7 +589,7 @@ pub(crate) async fn oidc_callback(
     ensure_same_origin(&headers)?;
     let oidc = match state.oidc_state() {
         Some(oidc) => oidc,
-        None => return Ok(redirect_response(LOGIN_ERROR_PATH, None)?),
+        None => return redirect_response(LOGIN_ERROR_PATH, None),
     };
     if let Some(error) = query.error {
         let description = query.error_description.unwrap_or_default();
@@ -605,15 +604,15 @@ pub(crate) async fn oidc_callback(
             Some("control_api.auth.oidc"),
         )
         .await;
-        return Ok(redirect_response(LOGIN_ERROR_PATH, None)?);
+        return redirect_response(LOGIN_ERROR_PATH, None);
     }
     let code = match query.code {
         Some(code) => code,
-        None => return Ok(redirect_response(LOGIN_ERROR_PATH, None)?),
+        None => return redirect_response(LOGIN_ERROR_PATH, None),
     };
     let csrf_state = match query.state {
         Some(state) => state,
-        None => return Ok(redirect_response(LOGIN_ERROR_PATH, None)?),
+        None => return redirect_response(LOGIN_ERROR_PATH, None),
     };
     let (actor_id, role, return_to) = match oidc.complete_login(code, &csrf_state).await {
         Ok(login) => login,
@@ -628,7 +627,7 @@ pub(crate) async fn oidc_callback(
                 Some(err.code()),
             )
             .await;
-            return Ok(redirect_response(LOGIN_ERROR_PATH, None)?);
+            return redirect_response(LOGIN_ERROR_PATH, None);
         }
     };
 
@@ -669,7 +668,7 @@ pub(crate) async fn oidc_callback(
     let cookie = HeaderValue::from_str(&cookie).map_err(|err| ControlApiError::Internal {
         message: format!("build session cookie: {err}"),
     })?;
-    Ok(redirect_response(&return_to, Some(cookie))?)
+    redirect_response(&return_to, Some(cookie))
 }
 
 /// Accepts a same-origin absolute path (optional query), rejecting open redirects.
