@@ -106,14 +106,14 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
     TLS put path, tests, docs
   - **Estimated scope:** M
 
-- [ ] **T5** Namen-Editor schreibt Öffentlich + hält lokalen Default aligned
+- [x] **T5** Namen-Editor schreibt Öffentlich + hält lokalen Default aligned
   - **Description:** Speichern von „Öffentlich“ → CF upsert + lokaler Default/`rdata`
     gleichziehen; Netzbereich-Zeilen nur `overrides`. Zone anbinden; proxied-Warnung
     für DoT-Namen; admin-only.
   - **Acceptance criteria:**
-    - [ ] Öffentlich speichern aktualisiert CF und lokalen Default; Overrides bleiben.
-    - [ ] Abweichung speichern/löschen nur `overrides`; Attach/Detach wie T4.
-    - [ ] Proxied-Warnung auf inventory / `*.dns.<domain>`; Token-CTA zu `/tls`.
+    - [x] Öffentlich speichern aktualisiert CF und lokalen Default; Overrides bleiben.
+    - [x] Abweichung speichern/löschen nur `overrides`; Attach/Detach wie T4.
+    - [x] Proxied-Warnung auf inventory / `*.dns.<domain>`; Token-CTA zu `/tls`.
   - **Verification:** vitest (public save, override, attach, viewer), mock, browser
   - **Dependencies:** T3, T4
   - **Files likely touched:** `web/src/routes/names/`, api client, messages, mock

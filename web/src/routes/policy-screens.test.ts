@@ -210,7 +210,7 @@ describe('policy screens', () => {
 		expect(
 			publicHeading.compareDocumentPosition(overridesHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
-		expect(await within(dialog).findByLabelText(m.names_public_value_label())).toHaveTextContent(
+		expect(await within(dialog).findByLabelText(m.names_public_value_label())).toHaveValue(
 			'203.0.113.10',
 		);
 		expect(within(dialog).queryByRole('textbox', { name: /zone=wert|zone=value/i })).toBeNull();

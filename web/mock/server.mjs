@@ -697,7 +697,7 @@ function attachedDomainZones(tls, hasToken) {
  * Seed Cloudflare DNS records for the mock public domain.
  * Includes the Split-DNS example `nas.example.test` (LAN override lives in policy.records).
  */
-function mockDomainZoneRecords(tls) {
+function seedDomainZoneRecords(tls) {
 	const publicDomain = typeof tls.public_domain === 'string' ? tls.public_domain.trim() : '';
 	const apex = publicDomain || 'example.test';
 	return [
@@ -726,6 +726,26 @@ function mockDomainZoneRecords(tls) {
 			proxied: false,
 		},
 	];
+}
+
+const PUBLIC_RECORD_TYPES = new Set(['A', 'AAAA', 'CNAME', 'TXT', 'MX', 'SRV']);
+
+function requireCloudflareToken(runtime) {
+	if (!runtime.cloudflareApiToken) {
+		throw new ApiFailure(400, 'tls.secret.missing', {
+			name: 'DNSCRAFT_CLOUDFLARE_API_TOKEN',
+		});
+	}
+}
+
+function attachedZoneById(tls, zoneId) {
+	return attachedDomainZones(tls, true).find((zone) => zone.id === zoneId) ?? null;
+}
+
+function normalizeOwnerName(name) {
+	return String(name ?? '')
+		.trim()
+		.replace(/\.+$/, '');
 }
 
 const PUBLIC_ROUTES = new Set(['POST /api/v1/auth/local/login']);
@@ -1197,6 +1217,44 @@ async function route(request, response, options) {
 			}
 			return sendData(response, payload);
 		}
+		case 'POST /api/v1/domain-zones/attach': {
+			const body = await readJsonBody(request);
+			const name = normalizeOwnerName(body.name).toLowerCase();
+			if (!name) throw new ApiFailure(400, 'tls.config.invalid', { reason: 'name is required' });
+			const config = structuredClone(currentOf(options.store).config);
+			config.tls = config.tls ?? {};
+			config.tls.dns_provider = isObject(config.tls.dns_provider)
+				? config.tls.dns_provider
+				: { kind: 'cloudflare', cloudflare: {}, zones: [], manual_txt: [] };
+			const provider = config.tls.dns_provider;
+			provider.zones = Array.isArray(provider.zones) ? provider.zones : [];
+			const publicDomain =
+				typeof config.tls.public_domain === 'string' ? config.tls.public_domain.trim() : '';
+			if (publicDomain && name === publicDomain.toLowerCase()) {
+				throw new ApiFailure(400, 'tls.config.invalid', { reason: 'already_public_domain' });
+			}
+			if (
+				provider.zones.some(
+					(entry) => isObject(entry) && String(entry.name ?? '').toLowerCase() === name,
+				)
+			) {
+				throw new ApiFailure(400, 'tls.config.invalid', { reason: 'already_attached' });
+			}
+			const zoneId =
+				typeof body.zone_id === 'string' && body.zone_id.trim() !== ''
+					? body.zone_id.trim()
+					: `zone-${name.replace(/\./g, '-')}`;
+			if (!body.zone_id) requireCloudflareToken(options.runtime);
+			provider.zones.push({ name, zone_id: zoneId });
+			replaceConfig(options.store, config);
+			return sendData(response, {
+				id: zoneId,
+				name,
+				status: 'active',
+				name_servers: ['ada.ns.cloudflare.com'],
+				source: 'dns_provider',
+			});
+		}
 		case 'GET /api/v1/update/check':
 			return sendData(response, {
 				enabled: true,
@@ -1326,39 +1384,135 @@ async function route(request, response, options) {
 			break;
 	}
 
-	const domainZoneRecords = /^\/api\/v1\/domain-zones\/([^/]+)\/records$/.exec(path);
-	if (domainZoneRecords && request.method === 'GET') {
-		const zoneId = decodeURIComponent(domainZoneRecords[1]);
-		if (!options.runtime.cloudflareApiToken) {
-			throw new ApiFailure(400, 'tls.secret.missing', {
-				name: 'DNSCRAFT_CLOUDFLARE_API_TOKEN',
-			});
+	const domainZoneAttach = /^\/api\/v1\/domain-zones\/attach\/([^/]+)$/.exec(path);
+	if (domainZoneAttach && request.method === 'DELETE') {
+		const apex = decodeURIComponent(domainZoneAttach[1]).trim().toLowerCase();
+		if (!apex) throw new ApiFailure(400, 'tls.config.invalid', { reason: 'apex is required' });
+		const config = structuredClone(currentOf(options.store).config);
+		config.tls = config.tls ?? {};
+		const publicDomain =
+			typeof config.tls.public_domain === 'string' ? config.tls.public_domain.trim() : '';
+		if (publicDomain && apex === publicDomain.toLowerCase()) {
+			throw new ApiFailure(400, 'tls.config.invalid', { reason: 'cannot_detach_public_domain' });
 		}
+		const provider = isObject(config.tls.dns_provider) ? config.tls.dns_provider : null;
+		if (!provider) throw new ApiFailure(404, 'control_api.not_found');
+		const before = Array.isArray(provider.zones) ? provider.zones.length : 0;
+		provider.zones = (provider.zones ?? []).filter(
+			(entry) => !(isObject(entry) && String(entry.name ?? '').toLowerCase() === apex),
+		);
+		if (provider.zones.length === before) throw new ApiFailure(404, 'control_api.not_found');
+		replaceConfig(options.store, config);
+		return sendData(response, { detached: true, name: apex });
+	}
+
+	const domainZoneRecords = /^\/api\/v1\/domain-zones\/([^/]+)\/records$/.exec(path);
+	if (domainZoneRecords) {
+		const zoneId = decodeURIComponent(domainZoneRecords[1]);
+		requireCloudflareToken(options.runtime);
 		const tls = currentOf(options.store).config.tls ?? {};
-		const attached = attachedDomainZones(tls, true);
-		if (!attached.some((zone) => zone.id === zoneId)) {
+		if (!attachedZoneById(tls, zoneId)) {
 			throw new ApiFailure(404, 'control_api.not_found');
 		}
-		const needle = (url.searchParams.get('name_substr') ?? '').trim().toLowerCase();
-		let records = mockDomainZoneRecords(tls);
-		if (needle) {
-			records = records.filter((row) => row.name.toLowerCase().includes(needle));
+		if (!Array.isArray(options.runtime.domainZoneRecords)) {
+			options.runtime.domainZoneRecords = seedDomainZoneRecords(tls);
 		}
-		const page = Math.max(1, Number(url.searchParams.get('page') ?? 1) || 1);
-		const perPage = Math.min(
-			100,
-			Math.max(1, Number(url.searchParams.get('per_page') ?? 50) || 50),
-		);
-		const totalCount = records.length;
-		const totalPages = totalCount === 0 ? 0 : Math.ceil(totalCount / perPage);
-		const start = (page - 1) * perPage;
-		return sendData(response, {
-			records: records.slice(start, start + perPage),
-			page,
-			per_page: perPage,
-			total_count: totalCount,
-			total_pages: totalPages,
-		});
+		const records = options.runtime.domainZoneRecords;
+
+		if (request.method === 'GET') {
+			const needle = (url.searchParams.get('name_substr') ?? '').trim().toLowerCase();
+			let filtered = records;
+			if (needle) {
+				filtered = records.filter((row) => row.name.toLowerCase().includes(needle));
+			}
+			const page = Math.max(1, Number(url.searchParams.get('page') ?? 1) || 1);
+			const perPage = Math.min(
+				100,
+				Math.max(1, Number(url.searchParams.get('per_page') ?? 50) || 50),
+			);
+			const totalCount = filtered.length;
+			const totalPages = totalCount === 0 ? 0 : Math.ceil(totalCount / perPage);
+			const start = (page - 1) * perPage;
+			return sendData(response, {
+				records: filtered.slice(start, start + perPage),
+				page,
+				per_page: perPage,
+				total_count: totalCount,
+				total_pages: totalPages,
+			});
+		}
+
+		if (request.method === 'POST') {
+			const body = await readJsonBody(request);
+			const recordType = String(body.type ?? body.record_type ?? '')
+				.trim()
+				.toUpperCase();
+			const name = normalizeOwnerName(body.name);
+			const content = String(body.content ?? '').trim();
+			if (!name || !content) {
+				throw new ApiFailure(400, 'tls.config.invalid', { reason: 'name and content required' });
+			}
+			if (!PUBLIC_RECORD_TYPES.has(recordType)) {
+				throw new ApiFailure(400, 'control_api.config.invalid', { reason: 'unsupported_type' });
+			}
+			const ttl =
+				typeof body.ttl === 'number' && Number.isFinite(body.ttl) ? Number(body.ttl) : 1;
+			const row = {
+				id: `cf-rec-${++options.runtime.domainZoneRecordSerial}`,
+				name,
+				record_type: recordType,
+				content,
+				ttl,
+				proxied: body.proxied === true,
+			};
+			records.push(row);
+			return sendData(response, row);
+		}
+
+		if (request.method === 'PUT') {
+			const body = await readJsonBody(request);
+			const id = String(body.id ?? '').trim();
+			if (!id) throw new ApiFailure(400, 'tls.config.invalid', { reason: 'id is required' });
+			const index = records.findIndex((row) => row.id === id);
+			if (index < 0) throw new ApiFailure(404, 'control_api.not_found');
+			const recordType = String(body.type ?? body.record_type ?? records[index].record_type)
+				.trim()
+				.toUpperCase();
+			if (!PUBLIC_RECORD_TYPES.has(recordType)) {
+				throw new ApiFailure(400, 'control_api.config.invalid', { reason: 'unsupported_type' });
+			}
+			const name = normalizeOwnerName(body.name) || records[index].name;
+			const content = String(body.content ?? '').trim();
+			if (!content) {
+				throw new ApiFailure(400, 'tls.config.invalid', { reason: 'content is required' });
+			}
+			const ttl =
+				typeof body.ttl === 'number' && Number.isFinite(body.ttl)
+					? Number(body.ttl)
+					: records[index].ttl;
+			const row = {
+				id,
+				name,
+				record_type: recordType,
+				content,
+				ttl,
+				proxied: body.proxied === true,
+			};
+			records[index] = row;
+			return sendData(response, row);
+		}
+
+		if (request.method === 'DELETE') {
+			const body = await readJsonBody(request);
+			const id = String(body.id ?? '').trim();
+			if (!id) throw new ApiFailure(400, 'tls.config.invalid', { reason: 'id is required' });
+			const before = records.length;
+			options.runtime.domainZoneRecords = records.filter((row) => row.id !== id);
+			if (options.runtime.domainZoneRecords.length === before) {
+				throw new ApiFailure(404, 'control_api.not_found');
+			}
+			return sendData(response, { deleted: true, id });
+		}
 	}
 
 	const policyView = /^\/api\/v1\/policy\/views\/([^/]+)$/.exec(path);
@@ -1715,6 +1869,8 @@ function createRuntimeState() {
 		tokenSerial: MOCK_TOKENS.length,
 		unifiApiKeys: Object.create(null),
 		cloudflareApiToken: 'mock-cloudflare-token',
+		domainZoneRecords: null,
+		domainZoneRecordSerial: 100,
 		// One pause running at start (filter set `kids`, 12 minutes), so the Regeln page has one to show.
 		pauseUntil: new Date(Date.now() + 12 * 60_000).toISOString(),
 		pauseSet: 'kids',

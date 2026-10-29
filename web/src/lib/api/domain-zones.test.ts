@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
 	findMatchingRecord,
+	isInventoryDnsName,
 	normalizeDnsName,
+	supportsProxied,
 	zoneForName,
 	type DomainZone,
 	type DomainZoneRecord,
@@ -68,5 +70,27 @@ describe('findMatchingRecord', () => {
 		expect(findMatchingRecord(records, 'Nas.Example.Test.', 'a')?.content).toBe('203.0.113.10');
 		expect(findMatchingRecord(records, 'nas.example.test', 'AAAA')?.id).toBe('r2');
 		expect(findMatchingRecord(records, 'nas.example.test', 'TXT')).toBeNull();
+	});
+});
+
+describe('isInventoryDnsName', () => {
+	it('flags DoT inventory hosts under an apex', () => {
+		const apexes = ['example.test'];
+		expect(isInventoryDnsName('dns.example.test', apexes)).toBe(true);
+		expect(isInventoryDnsName('*.dns.example.test.', apexes)).toBe(true);
+		expect(isInventoryDnsName('ns1.dns.example.test', apexes)).toBe(true);
+		expect(isInventoryDnsName('_acme-challenge.dns.example.test', apexes)).toBe(true);
+		expect(isInventoryDnsName('nas.example.test', apexes)).toBe(false);
+		expect(isInventoryDnsName('nas.lan', apexes)).toBe(false);
+	});
+});
+
+describe('supportsProxied', () => {
+	it('allows orange-cloud only on A/AAAA/CNAME', () => {
+		expect(supportsProxied('A')).toBe(true);
+		expect(supportsProxied('aaaa')).toBe(true);
+		expect(supportsProxied('CNAME')).toBe(true);
+		expect(supportsProxied('TXT')).toBe(false);
+		expect(supportsProxied('MX')).toBe(false);
 	});
 });

@@ -106,6 +106,14 @@ const putBodies = (): unknown[] =>
 		)
 		.map(([, init]) => JSON.parse(String(init?.body)));
 
+const bodiesFor = (method: string, pathIncludes: string): unknown[] =>
+	fetchMock.mock.calls
+		.filter(
+			([url, init]) =>
+				String(url).includes(pathIncludes) && (init?.method ?? 'GET') === method,
+		)
+		.map(([, init]) => (init?.body ? JSON.parse(String(init.body)) : null));
+
 beforeEach(() => {
 	fetchMock = vi.fn();
 	vi.stubGlobal('fetch', fetchMock);
@@ -134,8 +142,10 @@ describe('names sheet Öffentlich then Abweichungen', () => {
 			publicHeading.compareDocumentPosition(overridesHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
 
-		expect(within(dialog).getByLabelText(m.names_public_value_label())).toHaveTextContent(
-			'203.0.113.10',
+		await waitFor(() =>
+			expect(within(dialog).getByLabelText(m.names_public_value_label())).toHaveValue(
+				'203.0.113.10',
+			),
 		);
 		expect(within(dialog).getByLabelText(m.names_overrides_view())).toHaveValue('lan');
 		expect(within(dialog).getByLabelText(m.names_overrides_value())).toHaveValue('192.0.2.50');
@@ -293,6 +303,7 @@ describe('names sheet Öffentlich then Abweichungen', () => {
 		render(NamesPage);
 		expect(await screen.findByText('203.0.113.10')).toBeInTheDocument();
 		expect(screen.queryByText(m.names_add())).not.toBeInTheDocument();
+		expect(screen.queryByText(m.names_zones_manage())).not.toBeInTheDocument();
 
 		await user.click(screen.getByRole('button', { name: /203\.0\.113\.10/ }));
 		const dialog = await screen.findByRole('dialog');
@@ -304,5 +315,184 @@ describe('names sheet Öffentlich then Abweichungen', () => {
 		expect(within(dialog).getByLabelText(m.names_field_rdata())).toBeDisabled();
 		expect(within(dialog).queryByRole('button', { name: m.action_save() })).toBeNull();
 		expect(within(dialog).queryByRole('button', { name: m.names_overrides_add() })).toBeNull();
+	});
+
+	it('saves Öffentlich to Cloudflare and aligns local default without wiping overrides', async () => {
+		handlers['PUT /api/v1/domain-zones/zone-example-test/records'] = () =>
+			ok({
+				id: 'cf-rec-nas-a',
+				name: 'nas.example.test',
+				record_type: 'A',
+				content: '198.51.100.9',
+				ttl: 60,
+				proxied: false,
+			});
+		handlers['PUT /api/v1/policy/records'] = () =>
+			ok({
+				version: 7,
+				record: {
+					name: 'nas.example.test.',
+					type: 'A',
+					ttl: 60,
+					rdata: '198.51.100.9',
+					overrides: { lan: '192.0.2.50' },
+				},
+			});
+
+		const user = userEvent.setup();
+		render(NamesPage);
+		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10/ }));
+		const dialog = await screen.findByRole('dialog');
+		const publicField = await waitFor(() => {
+			const field = within(dialog).getByLabelText(m.names_public_value_label());
+			expect(field).toHaveValue('203.0.113.10');
+			return field;
+		});
+		await user.clear(publicField);
+		await user.type(publicField, '198.51.100.9');
+		await user.click(within(dialog).getByRole('button', { name: m.action_save() }));
+
+		await waitFor(() => expect(bodiesFor('PUT', '/domain-zones/zone-example-test/records')).toHaveLength(1));
+		expect(bodiesFor('PUT', '/domain-zones/zone-example-test/records')[0]).toMatchObject({
+			id: 'cf-rec-nas-a',
+			name: 'nas.example.test',
+			type: 'A',
+			content: '198.51.100.9',
+		});
+		await waitFor(() => expect(putBodies()).toHaveLength(1));
+		expect(putBodies()[0]).toMatchObject({
+			name: 'nas.example.test.',
+			type: 'A',
+			rdata: '198.51.100.9',
+			overrides: { lan: '192.0.2.50' },
+		});
+	});
+
+	it('saves Abweichungen via policy records only (no Cloudflare mutate)', async () => {
+		handlers['PUT /api/v1/policy/records'] = () =>
+			ok({
+				version: 8,
+				record: {
+					name: 'nas.example.test.',
+					type: 'A',
+					ttl: 60,
+					rdata: '203.0.113.10',
+					overrides: { lan: '10.0.0.9' },
+				},
+			});
+
+		const user = userEvent.setup();
+		render(NamesPage);
+		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10/ }));
+		const dialog = await screen.findByRole('dialog');
+		await waitFor(() =>
+			expect(within(dialog).getByLabelText(m.names_public_value_label())).toHaveValue(
+				'203.0.113.10',
+			),
+		);
+		const overrideValue = within(dialog).getByLabelText(m.names_overrides_value());
+		await user.clear(overrideValue);
+		await user.type(overrideValue, '10.0.0.9');
+		await user.click(within(dialog).getByRole('button', { name: m.action_save() }));
+
+		await waitFor(() => expect(putBodies()).toHaveLength(1));
+		expect(putBodies()[0]).toMatchObject({
+			rdata: '203.0.113.10',
+			overrides: { lan: '10.0.0.9' },
+		});
+		expect(bodiesFor('PUT', '/domain-zones/')).toHaveLength(0);
+		expect(bodiesFor('POST', '/domain-zones/')).toHaveLength(0);
+		expect(bodiesFor('DELETE', '/domain-zones/')).toHaveLength(0);
+	});
+
+	it('attaches a discoverable Cloudflare zone from the Namen module', async () => {
+		handlers['GET /api/v1/domain-zones'] = ((_init, url) => {
+			const discover = url?.includes('discover=1');
+			return ok({
+				zones: attachedZones.zones,
+				has_cloudflare_token: true,
+				...(discover
+					? {
+							discoverable: [
+								...attachedZones.zones,
+								{
+									id: 'zone-unattached',
+									name: 'other.example',
+									status: 'active',
+									name_servers: [],
+									source: 'discoverable',
+								},
+							],
+						}
+					: {}),
+			});
+		}) as Handler;
+		handlers['POST /api/v1/domain-zones/attach'] = () =>
+			ok({
+				id: 'zone-unattached',
+				name: 'other.example',
+				status: 'active',
+				name_servers: [],
+				source: 'dns_provider',
+			});
+
+		const user = userEvent.setup();
+		render(NamesPage);
+		await user.click(await screen.findByRole('button', { name: m.names_zones_manage() }));
+		const dialog = await screen.findByRole('dialog');
+		expect(within(dialog).getByText(m.names_zones_title())).toBeInTheDocument();
+		await waitFor(() => expect(within(dialog).getByText('other.example')).toBeInTheDocument());
+		await user.click(within(dialog).getByRole('button', { name: m.names_zones_attach() }));
+		await waitFor(() => expect(bodiesFor('POST', '/domain-zones/attach')).toHaveLength(1));
+		expect(bodiesFor('POST', '/domain-zones/attach')[0]).toMatchObject({
+			name: 'other.example',
+			zone_id: 'zone-unattached',
+		});
+	});
+
+	it('warns when enabling proxied on a DoT inventory name', async () => {
+		handlers['GET /api/v1/policy/records'] = () =>
+			ok({
+				records: [
+					{
+						name: 'ns1.dns.example.test.',
+						type: 'A',
+						ttl: 120,
+						rdata: '192.0.2.10',
+						overrides: {},
+					},
+				],
+			});
+		handlers['GET /api/v1/domain-zones/zone-example-test/records'] = () =>
+			ok({
+				records: [
+					{
+						id: 'cf-rec-ns1-a',
+						name: 'ns1.dns.example.test',
+						record_type: 'A',
+						content: '192.0.2.10',
+						ttl: 120,
+						proxied: false,
+					},
+				],
+				page: 1,
+				per_page: 100,
+				total_count: 1,
+				total_pages: 1,
+			});
+
+		const user = userEvent.setup();
+		render(NamesPage);
+		await user.click(await screen.findByRole('button', { name: /192\.0\.2\.10/ }));
+		const dialog = await screen.findByRole('dialog');
+		await waitFor(() =>
+			expect(within(dialog).getByLabelText(m.names_public_value_label())).toHaveValue(
+				'192.0.2.10',
+			),
+		);
+		expect(within(dialog).queryByText(m.names_public_proxied_warn())).toBeNull();
+		const proxied = within(dialog).getByRole('switch', { name: m.names_public_proxied_label() });
+		await user.click(proxied.closest('label') ?? proxied);
+		expect(within(dialog).getByText(m.names_public_proxied_warn())).toBeInTheDocument();
 	});
 });

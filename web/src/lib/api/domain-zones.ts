@@ -1,4 +1,4 @@
-import { get, isRecord } from './client';
+import { del, get, isRecord, post, put, type RequestOptions } from './client';
 
 /** Attached Domain-Zone from `GET /api/v1/domain-zones` (SPEC / API-REFERENCE). */
 export interface DomainZone {
@@ -49,6 +49,32 @@ export interface ListDomainZoneRecordsOptions {
 	name_substr?: string;
 }
 
+/** Body for create/update of a public Cloudflare record (API-REFERENCE). */
+export interface DomainZoneRecordWrite {
+	name: string;
+	type: string;
+	content: string;
+	ttl?: number;
+	proxied?: boolean;
+	priority?: number;
+	weight?: number;
+	port?: number;
+}
+
+export interface AttachDomainZoneBody {
+	name: string;
+	zone_id?: string;
+}
+
+/** Record types Cloudflare accepts on Domain-Zonen mutate routes. */
+export const PUBLIC_RECORD_TYPES = ['A', 'AAAA', 'CNAME', 'TXT', 'MX', 'SRV'] as const;
+
+/** Types that support Cloudflare orange-cloud proxying. */
+export function supportsProxied(recordType: string): boolean {
+	const type = recordType.trim().toUpperCase();
+	return type === 'A' || type === 'AAAA' || type === 'CNAME';
+}
+
 /** Strip trailing dot and lowercase for DNS name comparisons. */
 export function normalizeDnsName(name: string): string {
 	return name.trim().replace(/\.+$/, '').toLowerCase();
@@ -86,6 +112,24 @@ export function findMatchingRecord(
 		}
 	}
 	return null;
+}
+
+/**
+ * True when `fqdn` is a DoT/DoQ inventory name under an apex (`dns.`, `*.dns.`,
+ * `<label>.dns.`, or `_acme-challenge.dns.`). Proxied (orange cloud) breaks these.
+ */
+export function isInventoryDnsName(fqdn: string, apexes: readonly string[]): boolean {
+	const name = normalizeDnsName(fqdn);
+	if (name === '') return false;
+	for (const raw of apexes) {
+		const apex = normalizeDnsName(raw);
+		if (apex === '') continue;
+		if (name === `dns.${apex}`) return true;
+		if (name === `*.dns.${apex}`) return true;
+		if (name === `_acme-challenge.dns.${apex}`) return true;
+		if (name.endsWith(`.dns.${apex}`)) return true;
+	}
+	return false;
 }
 
 function parseZone(value: unknown): DomainZone | null {
@@ -176,3 +220,97 @@ export const listDomainZoneRecords = (
 		parseRecordsPage,
 	);
 };
+
+function requireRecord(data: unknown): DomainZoneRecord {
+	const record = parseRecord(data);
+	if (!record) throw new Error('malformed domain-zone record');
+	return record;
+}
+
+function requireZone(data: unknown): DomainZone {
+	const zone = parseZone(data);
+	if (!zone) throw new Error('malformed domain-zone');
+	return zone;
+}
+
+/** `POST /api/v1/domain-zones/{zone_id}/records` — create a public DNS record (admin). */
+export const createDomainZoneRecord = (
+	zoneId: string,
+	body: DomainZoneRecordWrite,
+	options?: RequestOptions,
+): Promise<DomainZoneRecord> =>
+	post<unknown>(`/domain-zones/${encodeURIComponent(zoneId)}/records`, {
+		body,
+		...options,
+	}).then(requireRecord);
+
+/** `PUT /api/v1/domain-zones/{zone_id}/records` — update a public DNS record by id (admin). */
+export const updateDomainZoneRecord = (
+	zoneId: string,
+	body: DomainZoneRecordWrite & { id: string },
+	options?: RequestOptions,
+): Promise<DomainZoneRecord> =>
+	put<unknown>(`/domain-zones/${encodeURIComponent(zoneId)}/records`, {
+		body,
+		...options,
+	}).then(requireRecord);
+
+/** `DELETE /api/v1/domain-zones/{zone_id}/records` — delete a public DNS record (admin). */
+export const deleteDomainZoneRecord = (
+	zoneId: string,
+	id: string,
+	options?: RequestOptions,
+): Promise<{ deleted: boolean; id: string }> =>
+	del<{ deleted: boolean; id: string }>(`/domain-zones/${encodeURIComponent(zoneId)}/records`, {
+		body: { id },
+		...options,
+	});
+
+/**
+ * Upsert the public Cloudflare record for an owner+type, or delete when `content` is blank
+ * and a matching record already exists.
+ */
+export async function upsertPublicRecord(
+	zoneId: string,
+	existing: DomainZoneRecord | null,
+	body: DomainZoneRecordWrite,
+): Promise<DomainZoneRecord | null> {
+	const content = body.content.trim();
+	if (content === '') {
+		if (existing) {
+			await deleteDomainZoneRecord(zoneId, existing.id);
+		}
+		return null;
+	}
+	const payload: DomainZoneRecordWrite = {
+		name: body.name,
+		type: body.type,
+		content,
+		ttl: body.ttl,
+		proxied: body.proxied,
+		priority: body.priority,
+		weight: body.weight,
+		port: body.port,
+	};
+	if (existing) {
+		return updateDomainZoneRecord(zoneId, { ...payload, id: existing.id });
+	}
+	return createDomainZoneRecord(zoneId, payload);
+}
+
+/** `POST /api/v1/domain-zones/attach` — attach an apex into `dns_provider.zones` (admin). */
+export const attachDomainZone = (
+	body: AttachDomainZoneBody,
+	options?: RequestOptions,
+): Promise<DomainZone> =>
+	post<unknown>('/domain-zones/attach', { body, ...options }).then(requireZone);
+
+/** `DELETE /api/v1/domain-zones/attach/{apex}` — detach without deleting the Cloudflare zone. */
+export const detachDomainZone = (
+	apex: string,
+	options?: RequestOptions,
+): Promise<{ detached: boolean; name: string }> =>
+	del<{ detached: boolean; name: string }>(
+		`/domain-zones/attach/${encodeURIComponent(apex)}`,
+		options,
+	);
