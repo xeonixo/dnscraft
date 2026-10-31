@@ -42,8 +42,6 @@ describe('parseForwardZones', () => {
 					],
 				},
 			}),
-		).toEqual([
-			{ id: 'lab', zone: 'lab.internal', targets: ['10.0.0.1'], validate: true },
-		]);
+		).toEqual([{ id: 'lab', zone: 'lab.internal', targets: ['10.0.0.1'], validate: true }]);
 	});
 });

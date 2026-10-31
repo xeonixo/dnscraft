@@ -42,8 +42,7 @@ describe('formFromClients / clientsPatchFromForm', () => {
 						site_id: 'site-1',
 						poll_interval: '90s',
 						classic_clients: false,
-						tls_pin_sha256:
-							'sha256:abcdefghijklmnopqrstuvwxyz0123456789abcdef0123456789abcdef01',
+						tls_pin_sha256: 'sha256:abcdefghijklmnopqrstuvwxyz0123456789abcdef0123456789abcdef01',
 						ca_file: null,
 						insecure_skip_verify: false,
 					},
@@ -60,8 +59,7 @@ describe('formFromClients / clientsPatchFromForm', () => {
 						site_id: 'site-1',
 						poll_interval: '90s',
 						classic_clients: false,
-						tls_pin_sha256:
-							'sha256:abcdefghijklmnopqrstuvwxyz0123456789abcdef0123456789abcdef01',
+						tls_pin_sha256: 'sha256:abcdefghijklmnopqrstuvwxyz0123456789abcdef0123456789abcdef01',
 						has_api_key: true,
 					},
 				],
@@ -98,8 +96,7 @@ describe('formFromClients / clientsPatchFromForm', () => {
 					site_id: 'site-1',
 					poll_interval: '90s',
 					classic_clients: false,
-					tls_pin_sha256:
-						'sha256:abcdefghijklmnopqrstuvwxyz0123456789abcdef0123456789abcdef01',
+					tls_pin_sha256: 'sha256:abcdefghijklmnopqrstuvwxyz0123456789abcdef0123456789abcdef01',
 					ca_file: null,
 					insecure_skip_verify: false,
 				},

@@ -26,6 +26,14 @@ export function defaultRuleAction(status: RecordStatus): RuleAction {
 	return status === 'allowed' ? 'block' : 'allow';
 }
 
+/**
+ * Opposite of one CNAME hop's verdict: a blocked name gets an allow, every other hop gets a block
+ * (blocking a name that already passes is the useful direction).
+ */
+export function hopRuleAction(verdict: string): RuleAction {
+	return verdict === 'blocked' ? 'allow' : 'block';
+}
+
 /** Only an allow with a duration is temporary. Blocks and permanent allows become rule lines. */
 export function isTemporary(
 	action: RuleAction,

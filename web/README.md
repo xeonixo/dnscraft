@@ -9,16 +9,16 @@ Spec: [`SPEC-web-ui.md`](../SPEC-web-ui.md). Control plane contract:
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `pnpm install --frozen-lockfile` | Install dependencies (pnpm 10) |
-| `pnpm dev` | Vite dev server |
-| `pnpm check` | svelte-check + `tsc --noEmit` |
-| `pnpm lint` | ESLint + Prettier check |
-| `pnpm test` | Vitest (contrast, i18n, locale, no-literal scans) + mock server tests |
-| `pnpm build` | Production build → `build/` (PWA icons, `sw.js`, CSP script hashes) |
-| `pnpm mock` | Loopback fake control-api serving `build/` (run `pnpm build` first) |
-| `pnpm test:e2e` | Playwright smoke against the mock (`channel: 'chrome'`) |
+| Command                          | Description                                                           |
+| -------------------------------- | --------------------------------------------------------------------- |
+| `pnpm install --frozen-lockfile` | Install dependencies (pnpm 10)                                        |
+| `pnpm dev`                       | Vite dev server                                                       |
+| `pnpm check`                     | svelte-check + `tsc --noEmit`                                         |
+| `pnpm lint`                      | ESLint + Prettier check                                               |
+| `pnpm test`                      | Vitest (contrast, i18n, locale, no-literal scans) + mock server tests |
+| `pnpm build`                     | Production build → `build/` (PWA icons, `sw.js`, CSP script hashes)   |
+| `pnpm mock`                      | Loopback fake control-api serving `build/` (run `pnpm build` first)   |
+| `pnpm test:e2e`                  | Playwright smoke against the mock (`channel: 'chrome'`)               |
 
 ## Embed into the binary
 

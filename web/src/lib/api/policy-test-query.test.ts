@@ -7,9 +7,7 @@ describe('parseTestQueryRecords', () => {
 			parseTestQueryRecords([
 				{ name: 'elmo.barner.cloud.', qtype: 'A', ttl: 60, data: '172.20.10.10' },
 			]),
-		).toEqual([
-			{ name: 'elmo.barner.cloud.', type: 'A', ttl: 60, data: '172.20.10.10' },
-		]);
+		).toEqual([{ name: 'elmo.barner.cloud.', type: 'A', ttl: 60, data: '172.20.10.10' }]);
 	});
 
 	it('reads MCP-shaped records with type/data and rdata aliases', () => {

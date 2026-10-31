@@ -241,7 +241,8 @@
 {/if}
 
 {#if detail}
-	{@const detailLag = nodeRows.find((row) => row.node.node_id === detail.node_id)?.lag ?? 0}
+	{@const detailNodeId = detail.node_id}
+	{@const detailLag = nodeRows.find((row) => row.node.node_id === detailNodeId)?.lag ?? 0}
 	{@const connectionLabel = detail.local
 		? m.cluster_connection_local()
 		: detail.connected

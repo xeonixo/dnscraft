@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { SvelteMap } from 'svelte/reactivity';
 	import { resolve } from '$app/paths';
 	import Button from '$lib/components/Button.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
@@ -76,7 +77,7 @@
 	);
 	/** The first range that another network range (or an earlier line) already lists. */
 	const duplicateRange = $derived.by(() => {
-		const seen = new Map<string, string | null>();
+		const seen = new SvelteMap<string, string | null>();
 		for (const view of rows) {
 			if (view.id === editing?.id) continue;
 			for (const subnet of view.subnets) {

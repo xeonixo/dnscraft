@@ -10,7 +10,7 @@
 	import { allowTemporarily } from '$lib/api/query-log';
 	import { failureOf } from '$lib/api/result';
 	import { m } from '$lib/paraglide/messages';
-	import Value from './Value.svelte';
+	import { ruleDomainProblem } from '$lib/policy/rule-lines';
 	import {
 		isTemporary,
 		preferredSetId,
@@ -21,7 +21,7 @@
 	} from './rule-write';
 
 	interface Props {
-		/** The ASCII owner name the API stores; shown as text. */
+		/** The ASCII owner name to prefill; the user may correct it before confirming. */
 		domain: string;
 		/** The filter set that decided the query, when the record names one. */
 		filterSet?: string;
@@ -38,7 +38,10 @@
 	const uid = $props.id();
 	// The initial values are a snapshot on purpose: the sheet is opened fresh for each decision.
 	// svelte-ignore state_referenced_locally
+	let name = $state(domain);
+	// svelte-ignore state_referenced_locally
 	let action = $state<RuleAction>(defaultAction);
+	let problem = $state<string | null>(null);
 	let includeSubdomains = $state(false);
 	let validity = $state<RuleValidity>('PT5M');
 	let sets = $state<FilterSet[]>([]);
@@ -84,6 +87,16 @@
 	}
 
 	async function confirm(): Promise<void> {
+		const typed = ruleDomainProblem(name);
+		problem =
+			typed === 'empty'
+				? m.rules_add_domain_empty()
+				: typed === 'invalid'
+					? m.rules_add_domain_invalid()
+					: null;
+		if (typed) return;
+
+		const target = name.trim();
 		busy = true;
 		unavailable = false;
 		failure = null;
@@ -91,7 +104,7 @@
 			const duration = validity;
 			if (isTemporary(action, duration)) {
 				const result = await allowTemporarily({
-					domain,
+					domain: target,
 					include_subdomains: includeSubdomains,
 					duration,
 					...(setId ? { filter_set_id: setId } : {}),
@@ -99,7 +112,7 @@
 				onsaved({ kind: 'temporary', result });
 			} else {
 				const result = await writePermanentRule(
-					{ action, domain, include_subdomains: includeSubdomains },
+					{ action, domain: target, include_subdomains: includeSubdomains },
 					setId,
 				);
 				if (result.status === 'unknown_set') {
@@ -123,10 +136,21 @@
 </script>
 
 <Sheet open={true} title={m.querylog_rule_title({ domain })} {onclose}>
-	<div class="row">
-		<span id={`${uid}-domain`}>{m.querylog_allow_domain()}</span>
-		<span class="domain-value" aria-labelledby={`${uid}-domain`}><Value value={domain} mono /></span
-		>
+	<div class="stack">
+		<label class="label" for={`${uid}-domain`}>{m.querylog_allow_domain()}</label>
+		<input
+			id={`${uid}-domain`}
+			class="field mono"
+			autocomplete="off"
+			spellcheck="false"
+			aria-invalid={problem ? 'true' : undefined}
+			aria-describedby={problem ? `${uid}-domain-problem` : undefined}
+			bind:value={name}
+			oninput={() => (problem = null)}
+		/>
+		{#if problem}
+			<p class="problem" id={`${uid}-domain-problem`}>{problem}</p>
+		{/if}
 	</div>
 	<div class="stack">
 		<span class="label">{m.querylog_rule_action()}</span>
@@ -192,11 +216,6 @@
 		margin-top: 0.875rem;
 	}
 
-	.domain-value {
-		min-width: 0;
-		text-align: end;
-	}
-
 	.switch-text {
 		display: flex;
 		flex-direction: column;
@@ -222,6 +241,7 @@
 		color: var(--label-2);
 	}
 
+	.field,
 	.select {
 		box-sizing: border-box;
 		width: 100%;
@@ -236,6 +256,12 @@
 
 	.mono {
 		font-family: var(--font-mono);
+	}
+
+	.problem {
+		margin: 0.375rem 0 0;
+		font-size: 0.8125rem;
+		color: var(--danger);
 	}
 
 	.notice {

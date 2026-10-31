@@ -43,8 +43,7 @@
 	onMount(() => {
 		if (page.url.searchParams.get('oidc') === 'error') {
 			oidcFailure = { code: 'control_api.auth.oidc', params: {} };
-			const clean = page.url.pathname;
-			void goto(clean, { replaceState: true });
+			void goto(resolve('/login'), { replaceState: true });
 		}
 		void oidcStatusPublic()
 			.then((status) => {
@@ -117,7 +116,11 @@
 			</div>
 			{#if oidcFailure}
 				<div class="row">
-					<ErrorNotice code={oidcFailure.code} params={oidcFailure.params} onretry={signInWithOidc} />
+					<ErrorNotice
+						code={oidcFailure.code}
+						params={oidcFailure.params}
+						onretry={signInWithOidc}
+					/>
 				</div>
 			{/if}
 		</GroupedList>

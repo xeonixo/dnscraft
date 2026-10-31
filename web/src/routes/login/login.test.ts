@@ -144,9 +144,9 @@ describe('login page', () => {
 	it('hides the SSO button when OIDC is disabled', async () => {
 		setup({ oidcEnabled: false });
 		await waitFor(() => {
-			expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/auth/oidc/status'))).toBe(
-				true,
-			);
+			expect(
+				fetchMock.mock.calls.some((call) => String(call[0]).includes('/auth/oidc/status')),
+			).toBe(true);
 		});
 		expect(screen.queryByRole('button', { name: m.login_oidc_button() })).toBeNull();
 	});

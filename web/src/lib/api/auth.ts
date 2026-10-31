@@ -49,12 +49,9 @@ export async function getOidcStatus(): Promise<OidcStatus> {
 		client_id: typeof data.client_id === 'string' ? data.client_id : '',
 		admin_group: typeof data.admin_group === 'string' ? data.admin_group : '',
 		groups_claim: typeof data.groups_claim === 'string' ? data.groups_claim : 'groups',
-		token_skew_seconds:
-			typeof data.token_skew_seconds === 'number' ? data.token_skew_seconds : 30,
+		token_skew_seconds: typeof data.token_skew_seconds === 'number' ? data.token_skew_seconds : 30,
 		callback_path:
-			typeof data.callback_path === 'string'
-				? data.callback_path
-				: '/api/v1/auth/oidc/callback',
+			typeof data.callback_path === 'string' ? data.callback_path : '/api/v1/auth/oidc/callback',
 	};
 }
 

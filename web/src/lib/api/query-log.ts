@@ -132,3 +132,51 @@ export function exportHref(format: 'ndjson' | 'csv', query: URLSearchParams): st
 /** Admin. Allows one domain for a fixed duration; the server audits it. */
 export const allowTemporarily = (body: TempAllowBody): Promise<TempAllowResult> =>
 	post<TempAllowResult>('/filtering/temporary-allows', { body });
+
+/** One name on a CNAME chain (`cname_chain` step): the queried name first, then each CNAME target. */
+export interface CnameHop {
+	name: string;
+	verdict: string;
+	rule_text: string | null;
+	list_id: string | null;
+	source: string | null;
+	important: boolean;
+}
+
+export interface CnameChain {
+	hops: CnameHop[];
+	addresses: string[];
+}
+
+/**
+ * The hops and resolved addresses of a `cname_chain` step, tolerant of malformed entries: a hop
+ * without a string name and verdict is dropped, non-string optional fields read as null, and
+ * non-string addresses are dropped. A missing or non-array field reads as empty.
+ */
+export function cnameChainOf(step: DecisionStep): CnameChain {
+	const hops: CnameHop[] = [];
+	if (Array.isArray(step.hops)) {
+		for (const entry of step.hops as unknown[]) {
+			if (typeof entry !== 'object' || entry === null) continue;
+			const { name, verdict, rule_text, list_id, source, important } = entry as Record<
+				string,
+				unknown
+			>;
+			if (typeof name !== 'string' || typeof verdict !== 'string') continue;
+			hops.push({
+				name,
+				verdict,
+				rule_text: typeof rule_text === 'string' ? rule_text : null,
+				list_id: typeof list_id === 'string' ? list_id : null,
+				source: typeof source === 'string' ? source : null,
+				important: important === true,
+			});
+		}
+	}
+	const addresses = Array.isArray(step.addresses)
+		? (step.addresses as unknown[]).filter(
+				(address): address is string => typeof address === 'string',
+			)
+		: [];
+	return { hops, addresses };
+}

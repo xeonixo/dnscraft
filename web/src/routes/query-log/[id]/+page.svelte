@@ -15,7 +15,12 @@
 	import RuleSheet from '$lib/querylog/RuleSheet.svelte';
 	import StatusMark from '$lib/querylog/StatusMark.svelte';
 	import Value from '$lib/querylog/Value.svelte';
-	import { defaultRuleAction, type RuleOutcome } from '$lib/querylog/rule-write';
+	import {
+		defaultRuleAction,
+		hopRuleAction,
+		type RuleAction,
+		type RuleOutcome,
+	} from '$lib/querylog/rule-write';
 	import { unicodeName } from '$lib/querylog/domain-display';
 	import {
 		answerLabel,
@@ -38,6 +43,9 @@
 
 	let result = $state<Result<QueryRecord>>({ kind: 'loading' });
 	let ruleOpen = $state(false);
+	// The rule sheet's name and default action: the query's own name, or one CNAME hop's name.
+	let ruleDomain = $state('');
+	let ruleAction = $state<RuleAction>('block');
 	let outcome = $state<RuleOutcome | null>(null);
 	let runs = 0;
 
@@ -52,9 +60,20 @@
 		void load(current);
 	});
 
-	function openRule(): void {
+	function openRule(domain: string, action: RuleAction): void {
 		outcome = null;
+		ruleDomain = domain;
+		ruleAction = action;
 		ruleOpen = true;
+	}
+
+	function openQueryRule(): void {
+		if (result.kind !== 'ok') return;
+		openRule(result.data.query.name, defaultRuleAction(statusOf(result.data)));
+	}
+
+	function openHopRule(name: string, verdict: string): void {
+		openRule(name, hopRuleAction(verdict));
 	}
 
 	function saved(next: RuleOutcome): void {
@@ -84,7 +103,7 @@
 		<span>{m.querylog_back()}</span>
 	</a>
 	{#if isAdmin && result.kind === 'ok'}
-		<Button variant="primary" onclick={openRule}>{m.querylog_rule_create()}</Button>
+		<Button variant="primary" onclick={openQueryRule}>{m.querylog_rule_create()}</Button>
 	{/if}
 </div>
 
@@ -132,7 +151,7 @@
 		<div class="columns">
 			<div class="column">
 				<GroupedList header={m.querylog_section_decision()} footer={m.querylog_steps_footer()}>
-					<DecisionSteps steps={record.steps} />
+					<DecisionSteps steps={record.steps} onrule={isAdmin ? openHopRule : undefined} />
 				</GroupedList>
 
 				{#if record.filter}
@@ -161,7 +180,7 @@
 
 				{#if answers.length > 0}
 					<GroupedList header={m.query_log_answers_title()}>
-						{#each answers as answer}
+						{#each answers as answer, index (index)}
 							<div class="answer">
 								<span class="type">{answer.type}</span>
 								<div class="data">
@@ -250,9 +269,9 @@
 
 	{#if ruleOpen}
 		<RuleSheet
-			domain={record.query.name}
+			domain={ruleDomain}
 			filterSet={record.filter_set}
-			defaultAction={defaultRuleAction(statusOf(record))}
+			defaultAction={ruleAction}
 			onclose={() => (ruleOpen = false)}
 			onsaved={saved}
 		/>

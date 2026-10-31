@@ -202,7 +202,9 @@ describe('DoH clients page', () => {
 		await user.click(await screen.findByRole('button', { name: 'MacBook Pro' }));
 		await user.type(screen.getByLabelText(m.doh_label_label()), ' 2');
 		await user.click(screen.getByRole('button', { name: m.action_save() }));
-		expect(await screen.findByText(m.error_policy_config_invalid())).toBeInTheDocument();
+		expect(
+			await screen.findByText(m.error_policy_config_invalid({ reason: 'invalid' })),
+		).toBeInTheDocument();
 	});
 
 	it('asks before deleting and explains the effect', async () => {
@@ -409,6 +411,8 @@ describe('DoH clients page', () => {
 		await user.click(screen.getByRole('button', { name: m.action_save() }));
 		const alert = await screen.findByText(m.doh_view_invalid());
 		expect(alert).toHaveAttribute('role', 'alert');
-		expect(screen.queryByText(m.error_policy_config_invalid())).not.toBeInTheDocument();
+		expect(
+			screen.queryByText(m.error_policy_config_invalid({ reason: 'invalid' })),
+		).not.toBeInTheDocument();
 	});
 });

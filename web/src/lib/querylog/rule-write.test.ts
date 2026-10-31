@@ -15,6 +15,7 @@ vi.mock('$lib/api/filtering', async (importOriginal) => ({
 import {
 	appendRuleLine,
 	defaultRuleAction,
+	hopRuleAction,
 	isTemporary,
 	preferredSetId,
 	removePermanentRule,
@@ -182,5 +183,14 @@ describe('removePermanentRule', () => {
 
 		expect(await removePermanentRule('nope', 0, '||ads.example^')).toBe('unknown_set');
 		expect(api.saveFilterSet).not.toHaveBeenCalled();
+	});
+});
+
+describe('hopRuleAction', () => {
+	it('allows a blocked CNAME hop and blocks every other hop', () => {
+		expect(hopRuleAction('blocked')).toBe('allow');
+		expect(hopRuleAction('pass')).toBe('block');
+		expect(hopRuleAction('allowed')).toBe('block');
+		expect(hopRuleAction('rewritten')).toBe('block');
 	});
 });

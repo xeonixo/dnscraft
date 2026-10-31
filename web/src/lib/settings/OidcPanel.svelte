@@ -148,7 +148,7 @@
 				<input
 					class="field"
 					bind:value={form.client_id}
-					placeholder="dnscraft"
+					placeholder={m.settings_oidc_client_id_placeholder()}
 					autocomplete="off"
 					spellcheck="false"
 					aria-label={m.settings_oidc_client_id()}
@@ -185,7 +185,7 @@
 				<input
 					class="field"
 					bind:value={form.admin_group}
-					placeholder="dnscraft-admin"
+					placeholder={m.settings_oidc_admin_group_placeholder()}
 					autocomplete="off"
 					spellcheck="false"
 					aria-label={m.settings_oidc_admin_group()}
@@ -197,7 +197,7 @@
 				<input
 					class="field"
 					bind:value={form.groups_claim}
-					placeholder="groups"
+					placeholder={m.settings_oidc_groups_claim_placeholder()}
 					autocomplete="off"
 					spellcheck="false"
 					aria-label={m.settings_oidc_groups_claim()}
@@ -216,11 +216,7 @@
 				/>
 			{/snippet}
 		</GroupedRow>
-		<GroupedRow
-			label={m.settings_oidc_callback()}
-			detail={form.callback_path}
-			detailMono
-		/>
+		<GroupedRow label={m.settings_oidc_callback()} detail={form.callback_path} detailMono />
 		<GroupedRow label={m.settings_oidc_authentik_hint()} />
 		<div class="actions">
 			<Button variant="primary" disabled={saveBusy} onclick={() => void save()}>

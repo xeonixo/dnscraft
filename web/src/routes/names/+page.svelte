@@ -880,15 +880,15 @@
 				<span class="meta">
 					{#if row.local}
 						{m.names_ttl_short({ ttl: row.ttl })}{#if hasPublic(row.local)}
-							{' · '}{m.names_public_badge()}{/if}{#if overrideCount(row.local) > 0}
-							{' · '}{overrideCount(row.local) === 1
+							· {m.names_public_badge()}{/if}{#if overrideCount(row.local) > 0}
+							· {overrideCount(row.local) === 1
 								? m.names_overrides_badge_one({ count: '1' })
 								: m.names_overrides_badge_other({ count: String(overrideCount(row.local)) })}{/if}
 					{:else}
 						{m.names_public_only()} · {m.names_ttl_short({
 							ttl: ttlFieldFor(row.ttl),
 						})}{#if row.cf?.proxied}
-							{' · '}{m.names_public_proxied()}{/if}
+							· {m.names_public_proxied()}{/if}
 					{/if}
 				</span>
 				{#if canOpen(row)}
@@ -981,7 +981,7 @@
 						{m.names_ttl_short({
 							ttl: ttlFieldFor(publicLookup.record.ttl),
 						})}{#if publicLookup.record.proxied}
-							{' · '}{m.names_public_proxied()}{/if}
+							· {m.names_public_proxied()}{/if}
 					</p>
 				{:else if !isAdmin && publicLookup.kind === 'absent'}
 					<p class="hint muted">{m.names_public_absent()}</p>

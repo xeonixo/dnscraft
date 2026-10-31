@@ -131,6 +131,8 @@ export function stageLabel(stage: string): string {
 			return m.querylog_stage_filter_qname();
 		case 'answer_chain':
 			return m.querylog_stage_answer_chain();
+		case 'cname_chain':
+			return m.querylog_stage_cname_chain();
 		case 'answer_ip':
 			return m.querylog_stage_answer_ip();
 		case 'rebind':
@@ -173,6 +175,10 @@ export function verdictLabel(verdict: string): string {
 			return m.querylog_verdict_suppressed();
 		case 'resolved':
 			return m.querylog_verdict_resolved();
+		case 'pass':
+			return m.querylog_verdict_pass();
+		case 'allowed':
+			return m.querylog_verdict_allowed();
 		case 'failed':
 			return m.querylog_verdict_failed();
 		case 'active':

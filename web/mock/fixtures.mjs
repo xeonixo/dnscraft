@@ -931,6 +931,29 @@ function buildRecord(rng, index, timeMs, sets, profiles) {
 				list_id: PREFERRED_LIST.tracker,
 			};
 			steps.push({ stage: 'resolve', verdict: 'resolved', source: 'recursion' });
+			steps.push({
+				stage: 'cname_chain',
+				verdict: 'resolved',
+				hops: [
+					{
+						name,
+						verdict: 'pass',
+						rule_text: null,
+						list_id: null,
+						source: null,
+						important: false,
+					},
+					{
+						name: CLOAKED_TARGETS[name],
+						verdict: 'blocked',
+						rule_text: `||${CLOAKED_TARGETS[name]}^`,
+						list_id: PREFERRED_LIST.tracker,
+						source: 'list',
+						important: false,
+					},
+				],
+				addresses: [],
+			});
 			steps.push({ stage: 'answer_chain', verdict: 'blocked' });
 			resolveUs = recursionUs(rng, false, type);
 		} else {
@@ -1107,7 +1130,7 @@ function addAnswers(records) {
 	const v6 = () =>
 		`2001:db8:${between(rng, 0, 0xffff).toString(16)}::${between(rng, 1, 0xffff).toString(16)}`;
 	for (const record of records) {
-		const { type, name } = record.query;
+		const { type } = record.query;
 		if (record.filter?.block_mode || record.rcode !== 'NOERROR') continue;
 		if (type !== 'A' && type !== 'AAAA') continue;
 		const answers = [];

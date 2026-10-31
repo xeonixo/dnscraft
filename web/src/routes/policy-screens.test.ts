@@ -210,7 +210,9 @@ describe('policy screens', () => {
 		expect(
 			answerHeading.compareDocumentPosition(overridesHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
-		expect(await within(dialog).findByLabelText(m.names_field_public())).toHaveValue('203.0.113.10');
+		expect(await within(dialog).findByLabelText(m.names_field_public())).toHaveValue(
+			'203.0.113.10',
+		);
 		expect(within(dialog).queryByText(m.names_field_standard())).toBeNull();
 		expect(within(dialog).queryByRole('textbox', { name: /zone=wert|zone=value/i })).toBeNull();
 		expect(within(dialog).getByLabelText(m.names_overrides_view())).toHaveValue('lan');
@@ -367,7 +369,9 @@ describe('policy screens', () => {
 		expect(
 			await within(dialog).findByText(m.zones_pinned_blocked({ names: 'iPhone von Anna' })),
 		).toBeInTheDocument();
-		expect(screen.queryByText(m.error_policy_config_invalid())).not.toBeInTheDocument();
+		expect(
+			screen.queryByText(m.error_policy_config_invalid({ reason: 'invalid' })),
+		).not.toBeInTheDocument();
 	});
 
 	it('allows a range without subnets, saves it empty and explains its use', async () => {

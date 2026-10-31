@@ -1,10 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PollDocument } from '$lib/poll';
-import {
-	openQueryLogStream,
-	parseLagged,
-	parseStreamRow,
-} from './query-log-stream';
+import { openQueryLogStream, parseLagged, parseStreamRow } from './query-log-stream';
 
 interface FakeDocument extends PollDocument {
 	fire(): void;
@@ -87,9 +83,13 @@ describe('openQueryLogStream', () => {
 	it('delivers row and lagged events', () => {
 		const onRow = vi.fn();
 		const onLagged = vi.fn();
-		const stream = openQueryLogStream('/api/v1/query-log/stream', { onRow, onLagged }, {
-			EventSourceImpl: FakeEventSource as unknown as typeof EventSource,
-		});
+		const stream = openQueryLogStream(
+			'/api/v1/query-log/stream',
+			{ onRow, onLagged },
+			{
+				EventSourceImpl: FakeEventSource as unknown as typeof EventSource,
+			},
+		);
 		const es = FakeEventSource.instances[0]!;
 		es.emit('row', '{"id":"live-1"}');
 		es.emit('lagged', '{"dropped":4}');
@@ -100,14 +100,18 @@ describe('openQueryLogStream', () => {
 	});
 
 	it('reconnects after error with backoff', async () => {
-		const stream = openQueryLogStream('/api/v1/query-log/stream', {
-			onRow: () => undefined,
-			onLagged: () => undefined,
-		}, {
-			EventSourceImpl: FakeEventSource as unknown as typeof EventSource,
-			baseBackoffMs: 1000,
-			maxBackoffMs: 8000,
-		});
+		const stream = openQueryLogStream(
+			'/api/v1/query-log/stream',
+			{
+				onRow: () => undefined,
+				onLagged: () => undefined,
+			},
+			{
+				EventSourceImpl: FakeEventSource as unknown as typeof EventSource,
+				baseBackoffMs: 1000,
+				maxBackoffMs: 8000,
+			},
+		);
 		FakeEventSource.instances[0]!.fail();
 		expect(FakeEventSource.instances).toHaveLength(1);
 		await vi.advanceTimersByTimeAsync(999);
@@ -119,14 +123,18 @@ describe('openQueryLogStream', () => {
 
 	it('closes after staying hidden and reconnects when visible', async () => {
 		const doc = fakeDocument();
-		const stream = openQueryLogStream('/api/v1/query-log/stream', {
-			onRow: () => undefined,
-			onLagged: () => undefined,
-		}, {
-			EventSourceImpl: FakeEventSource as unknown as typeof EventSource,
-			doc,
-			hiddenCloseMs: 60_000,
-		});
+		const stream = openQueryLogStream(
+			'/api/v1/query-log/stream',
+			{
+				onRow: () => undefined,
+				onLagged: () => undefined,
+			},
+			{
+				EventSourceImpl: FakeEventSource as unknown as typeof EventSource,
+				doc,
+				hiddenCloseMs: 60_000,
+			},
+		);
 		expect(FakeEventSource.instances).toHaveLength(1);
 
 		doc.hidden = true;

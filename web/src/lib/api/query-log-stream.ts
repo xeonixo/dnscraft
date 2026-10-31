@@ -27,7 +27,8 @@ export function parseStreamRow(data: string): QueryRecord | null {
 	try {
 		const value: unknown = JSON.parse(data);
 		if (!isRecord(value) || typeof value.id !== 'string' || value.id === '') return null;
-		return value as QueryRecord;
+		// Only `id` is checked here; the rest of the record is the control-api contract.
+		return value as unknown as QueryRecord;
 	} catch {
 		return null;
 	}

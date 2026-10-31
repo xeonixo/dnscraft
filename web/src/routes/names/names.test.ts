@@ -101,16 +101,14 @@ function serve(overrides: Record<string, Handler> = {}): void {
 const putBodies = (): unknown[] =>
 	fetchMock.mock.calls
 		.filter(
-			([url, init]) =>
-				String(url).includes('/policy/records') && (init?.method ?? 'GET') === 'PUT',
+			([url, init]) => String(url).includes('/policy/records') && (init?.method ?? 'GET') === 'PUT',
 		)
 		.map(([, init]) => JSON.parse(String(init?.body)));
 
 const bodiesFor = (method: string, pathIncludes: string): unknown[] =>
 	fetchMock.mock.calls
 		.filter(
-			([url, init]) =>
-				String(url).includes(pathIncludes) && (init?.method ?? 'GET') === method,
+			([url, init]) => String(url).includes(pathIncludes) && (init?.method ?? 'GET') === method,
 		)
 		.map(([, init]) => (init?.body ? JSON.parse(String(init.body)) : null));
 
@@ -190,7 +188,9 @@ describe('names sheet Antwort then Abweichungen', () => {
 		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10/ }));
 		const dialog = await screen.findByRole('dialog');
 		expect(within(dialog).queryByRole('textbox', { name: /zone=wert|zone=value/i })).toBeNull();
-		expect(within(dialog).queryByLabelText(/Zonen-Überschreibungen|Per-zone overrides/i)).toBeNull();
+		expect(
+			within(dialog).queryByLabelText(/Zonen-Überschreibungen|Per-zone overrides/i),
+		).toBeNull();
 		expect(within(dialog).getByText(m.names_section_overrides())).toBeInTheDocument();
 	});
 
@@ -217,8 +217,7 @@ describe('names sheet Antwort then Abweichungen', () => {
 							type: 'A',
 							ttl: 60,
 							rdata: '203.0.113.10',
-							overrides:
-								n === 1 ? { lan: '192.0.2.50' } : { lan: '192.0.2.50', guest: '10.0.0.1' },
+							overrides: n === 1 ? { lan: '192.0.2.50' } : { lan: '192.0.2.50', guest: '10.0.0.1' },
 						},
 					],
 				});
@@ -316,7 +315,9 @@ describe('names sheet Antwort then Abweichungen', () => {
 		render(NamesPage);
 		await user.click(await screen.findByRole('button', { name: /2001:db8::10/ }));
 		const dialog = await screen.findByRole('dialog');
-		expect(within(dialog).getByRole('switch', { name: m.names_overrides_no_answer() })).toBeChecked();
+		expect(
+			within(dialog).getByRole('switch', { name: m.names_overrides_no_answer() }),
+		).toBeChecked();
 		expect(within(dialog).getByLabelText(m.names_overrides_value())).toBeDisabled();
 		expect(within(dialog).getByLabelText(m.names_overrides_view())).toHaveValue('guest');
 	});
@@ -399,7 +400,9 @@ describe('names sheet Antwort then Abweichungen', () => {
 		await user.type(publicField, '198.51.100.9');
 		await user.click(within(dialog).getByRole('button', { name: m.action_save() }));
 
-		await waitFor(() => expect(bodiesFor('PUT', '/domain-zones/zone-example-test/records')).toHaveLength(1));
+		await waitFor(() =>
+			expect(bodiesFor('PUT', '/domain-zones/zone-example-test/records')).toHaveLength(1),
+		);
 		expect(bodiesFor('PUT', '/domain-zones/zone-example-test/records')[0]).toMatchObject({
 			id: 'cf-rec-nas-a',
 			name: 'nas.example.test',

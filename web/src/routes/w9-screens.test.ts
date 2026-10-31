@@ -248,7 +248,9 @@ describe('TLS screen', () => {
 		expect(screen.getByPlaceholderText(m.tls_cf_token_set())).toBeInTheDocument();
 		await user.click(screen.getByRole('radio', { name: m.tls_tab_dns() }));
 		expect(await screen.findByText(m.tls_dns_provider_cloudflare())).toBeInTheDocument();
-		expect(screen.getByRole('button', { name: m.tls_dns_provider_configure() })).toBeInTheDocument();
+		expect(
+			screen.getByRole('button', { name: m.tls_dns_provider_configure() }),
+		).toBeInTheDocument();
 		expect(await screen.findByText(m.tls_dyndns_detected_group())).toBeInTheDocument();
 		expect(screen.getByText('192.0.2.10')).toBeInTheDocument();
 		expect(await screen.findByText(m.tls_dyndns_nodes_group())).toBeInTheDocument();
@@ -348,7 +350,7 @@ describe('listeners node scope', () => {
 	});
 
 	it('saves a public DoH listener with an auto id', async () => {
-		const put = vi.fn(() =>
+		const put = vi.fn<(init?: RequestInit, url?: string) => Response>(() =>
 			ok({
 				version: 2,
 				listener: {

@@ -102,10 +102,9 @@ export function tlsChoiceOf(unifi: Record<string, unknown>): UnifiTlsChoice {
 	return 'secure';
 }
 
-function connectionFromWire(raw: Record<string, unknown>): Omit<
-	UnifiProfileForm,
-	'id' | 'sync_owner' | 'api_key' | 'has_api_key' | 'clear_api_key'
-> {
+function connectionFromWire(
+	raw: Record<string, unknown>,
+): Omit<UnifiProfileForm, 'id' | 'sync_owner' | 'api_key' | 'has_api_key' | 'clear_api_key'> {
 	return {
 		enabled: asBool(raw.enabled, false),
 		base_url: asString(raw.base_url),
@@ -148,10 +147,7 @@ function connectionWire(profile: UnifiProfileForm): UnifiConnectionWire {
 }
 
 /** Reads editable UniFi fields from config and/or `GET /clients/unifi`. */
-export function formFromClients(
-	clients: unknown,
-	unifiStatus?: unknown,
-): ClientsUnifiForm {
+export function formFromClients(clients: unknown, unifiStatus?: unknown): ClientsUnifiForm {
 	const section = asRecord(clients);
 	const status = asRecord(unifiStatus);
 	const mode = asString(section.local_domain_mode, 'unifi_then_config');
@@ -161,9 +157,7 @@ export function formFromClients(
 
 	let profiles: UnifiProfileForm[] = [];
 	if (rawProfiles && rawProfiles.length > 0) {
-		profiles = rawProfiles
-			.map(profileFromWire)
-			.filter((p): p is UnifiProfileForm => p !== null);
+		profiles = rawProfiles.map(profileFromWire).filter((p): p is UnifiProfileForm => p !== null);
 	} else {
 		const legacy = asRecord(section.unifi);
 		if (Object.keys(legacy).length > 0 || asBool(legacy.enabled, false)) {
@@ -184,9 +178,7 @@ export function formFromClients(
 	}
 
 	const bindingsRaw = asRecord(
-		Object.keys(asRecord(status.bindings)).length > 0
-			? status.bindings
-			: section.unifi_bindings,
+		Object.keys(asRecord(status.bindings)).length > 0 ? status.bindings : section.unifi_bindings,
 	);
 	const bindings: Record<string, string> = {};
 	for (const [node, profile] of Object.entries(bindingsRaw)) {

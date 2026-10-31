@@ -265,7 +265,9 @@ describe('temporary allow', () => {
 
 		await user.click(await screen.findByRole('button', { name: m.querylog_rule_create() }));
 		const dialog = await screen.findByRole('dialog');
-		expect(within(dialog).getByText('ads.example.com')).toBeInTheDocument();
+		expect(within(dialog).getByRole('textbox', { name: m.querylog_allow_domain() })).toHaveValue(
+			'ads.example.com',
+		);
 		await user.click(within(dialog).getByRole('button', { name: m.querylog_allow_confirm() }));
 
 		await waitFor(() => expect(live.message).toContain('ads.example.com'));
@@ -441,6 +443,175 @@ describe('rule sheet', () => {
 			within(dialog).getByRole('button', { name: m.querylog_rule_confirm_allow_permanent() }),
 		).toBeDisabled();
 		expect(within(dialog).getByText(m.querylog_rule_no_sets())).toBeInTheDocument();
+	});
+});
+
+describe('editable rule name', () => {
+	it('writes the edited, trimmed name as a temporary allow', async () => {
+		serve({
+			'GET /api/v1/query-log/q1': () => ok(record()),
+			'GET /api/v1/filter-sets': sets(filterSet()),
+			'POST /api/v1/filtering/temporary-allows': () =>
+				ok({
+					domain: 'cdn.example.com',
+					include_subdomains: false,
+					created_at: '2026-10-27T12:00:00Z',
+					expires_at: '2026-10-27T12:05:00Z',
+					filter_set_id: 'default',
+				}),
+		});
+		const user = userEvent.setup();
+		render(Page);
+
+		await user.click(await screen.findByRole('button', { name: m.querylog_rule_create() }));
+		const dialog = await screen.findByRole('dialog');
+		const input = within(dialog).getByRole('textbox', { name: m.querylog_allow_domain() });
+		expect(input).toHaveAttribute('autocomplete', 'off');
+		expect(input).toHaveAttribute('spellcheck', 'false');
+		await user.clear(input);
+		await user.type(input, '  cdn.example.com ');
+		await user.click(within(dialog).getByRole('button', { name: m.querylog_allow_confirm() }));
+
+		await waitFor(() => expect(live.message).toContain('cdn.example.com'));
+		const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
+		expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({ domain: 'cdn.example.com' });
+	});
+
+	it('writes the edited name into the permanent rule', async () => {
+		serve({
+			'GET /api/v1/query-log/q1': () => ok(record()),
+			'GET /api/v1/filter-sets': sets(filterSet({ custom_rules: '' })),
+			'PUT /api/v1/filter-sets': savedAllow(),
+		});
+		const user = userEvent.setup();
+		render(Page);
+
+		await user.click(await screen.findByRole('button', { name: m.querylog_rule_create() }));
+		const dialog = await screen.findByRole('dialog');
+		const input = within(dialog).getByRole('textbox', { name: m.querylog_allow_domain() });
+		await user.clear(input);
+		await user.type(input, 'tracker.example');
+		await user.click(within(dialog).getByRole('radio', { name: m.querylog_rule_permanent() }));
+		await user.click(
+			within(dialog).getByRole('button', { name: m.querylog_rule_confirm_allow_permanent() }),
+		);
+
+		await waitFor(() => expect(live.message).toContain('@@|tracker.example^'));
+		const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT');
+		expect(JSON.parse(String(put?.[1]?.body))).toMatchObject({
+			custom_rules: '@@|tracker.example^',
+		});
+	});
+
+	it('blocks confirmation of an empty or invalid name', async () => {
+		serve({
+			'GET /api/v1/query-log/q1': () => ok(record()),
+			'GET /api/v1/filter-sets': sets(filterSet()),
+		});
+		const user = userEvent.setup();
+		render(Page);
+
+		await user.click(await screen.findByRole('button', { name: m.querylog_rule_create() }));
+		const dialog = await screen.findByRole('dialog');
+		const input = within(dialog).getByRole('textbox', { name: m.querylog_allow_domain() });
+		await user.clear(input);
+		await user.click(within(dialog).getByRole('button', { name: m.querylog_allow_confirm() }));
+		expect(input).toHaveAttribute('aria-invalid', 'true');
+		expect(within(dialog).getByText(m.rules_add_domain_empty())).toBeInTheDocument();
+
+		await user.type(input, 'ads.example/x');
+		await user.click(within(dialog).getByRole('button', { name: m.querylog_allow_confirm() }));
+		expect(within(dialog).getByText(m.rules_add_domain_invalid())).toBeInTheDocument();
+		expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+	});
+});
+
+const cnameRecord = () =>
+	record({
+		query: { name: 'metrics.example.test', type: 'A', class: 'IN' },
+		filter: {
+			reason: 'list',
+			block_mode: 'nxdomain',
+			rule_text: '||collect.example^',
+			list_id: 'adguard-dns-filter',
+			important: false,
+		},
+		steps: [
+			{
+				stage: 'cname_chain',
+				verdict: 'resolved',
+				hops: [
+					{
+						name: 'metrics.example.test',
+						verdict: 'pass',
+						rule_text: null,
+						list_id: null,
+						source: null,
+						important: false,
+					},
+					{
+						name: 'collect.example',
+						verdict: 'blocked',
+						rule_text: '||collect.example^',
+						list_id: 'adguard-dns-filter',
+						source: 'list',
+						important: false,
+					},
+				],
+				addresses: [],
+			},
+			{ stage: 'answer_chain', verdict: 'blocked' },
+		],
+	});
+
+describe('CNAME chain', () => {
+	it('lists every hop in order with its rule, marks the blocked one and says where it resolved', async () => {
+		serve({ 'GET /api/v1/query-log/q1': () => ok(cnameRecord()) });
+		render(Page);
+
+		const first = await screen.findByText('metrics.example.test', { selector: '.hop-name .value' });
+		const hops = first.closest('.hops')!.querySelectorAll('.hop');
+		expect(hops).toHaveLength(2);
+		expect(hops[0]).toHaveTextContent(m.querylog_verdict_pass());
+		expect(hops[0]).toHaveTextContent(m.querylog_cname_no_rule());
+		expect(hops[1]).toHaveClass('blocking');
+		expect(hops[1]).toHaveTextContent('collect.example');
+		expect(hops[1]).toHaveTextContent('||collect.example^');
+		expect(hops[1]).toHaveTextContent('adguard-dns-filter');
+		expect(hops[1]).toHaveTextContent(m.querylog_verdict_blocked());
+		expect(first.closest('.step')).toHaveTextContent(m.querylog_cname_none());
+	});
+
+	it('offers a Create rule button per hop that opens the sheet with that name and the opposite action', async () => {
+		serve({
+			'GET /api/v1/query-log/q1': () => ok(cnameRecord()),
+			'GET /api/v1/filter-sets': sets(filterSet()),
+		});
+		const user = userEvent.setup();
+		render(Page);
+
+		const first = await screen.findByText('metrics.example.test', { selector: '.hop-name .value' });
+		const hops = first.closest('.hops')!.querySelectorAll<HTMLElement>('.hop');
+		await user.click(within(hops[1]).getByRole('button', { name: m.querylog_rule_create() }));
+
+		const dialog = await screen.findByRole('dialog');
+		expect(within(dialog).getByRole('textbox', { name: m.querylog_allow_domain() })).toHaveValue(
+			'collect.example',
+		);
+		expect(
+			within(dialog).getByRole('radio', { name: m.querylog_rule_action_allow() }),
+		).toBeChecked();
+	});
+
+	it('hides the hop buttons from a viewer', async () => {
+		setPrincipal({ role: 'viewer', actorId: 'bob', actorType: 'user', csrfToken: 'tok' });
+		serve({ 'GET /api/v1/query-log/q1': () => ok(cnameRecord()) });
+		render(Page);
+
+		await screen.findByText('metrics.example.test', { selector: '.hop-name .value' });
+		expect(
+			screen.queryByRole('button', { name: m.querylog_rule_create() }),
+		).not.toBeInTheDocument();
 	});
 });
 
