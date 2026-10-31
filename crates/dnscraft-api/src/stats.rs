@@ -23,9 +23,10 @@
 //! primary format (one stored record per line); CSV is a convenience projection
 //! of the documented record schema.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use axum::body::Body;
@@ -45,6 +46,8 @@ pub const TOP_CLIENTS_MAX: u32 = 1000;
 pub const TOP_DOMAINS_MAX: u32 = 10_000;
 /// Rollup retention in days (the spec's 365-day dashboard window).
 pub const ROLLUP_RETENTION_DAYS: i64 = 365;
+/// Raw-log days each rollup pass recomputes; covers rows a node delivers late after being offline.
+const ROLLUP_RECOMPUTE_DAYS: i64 = 3;
 
 const MICROS_PER_HOUR: i64 = 3_600_000_000;
 const SECONDS_PER_HOUR: i64 = 3_600;
@@ -295,27 +298,39 @@ impl QueryLog {
     /// Idempotent: counts are the maximum of the stored and recomputed value,
     /// so running the pass again never double-counts. Callers trigger it on a
     /// schedule; tests drive it after inserting fixed-time events.
+    ///
+    /// Only the last [`ROLLUP_RECOMPUTE_DAYS`] are re-read (everything on the
+    /// first pass, while the rollups are empty): the pass holds the single
+    /// writer connection, and a full-table scan would stall config saves and
+    /// log ingestion for as long as it runs.
     pub async fn run_rollup(&self) -> Result<(), ControlApiError> {
         let now = self.db().now_unix();
         let cutoff_seconds = now.saturating_sub(ROLLUP_RETENTION_DAYS * SECONDS_PER_DAY);
         let hour_cutoff = cutoff_seconds.div_euclid(SECONDS_PER_HOUR);
         let day_cutoff = cutoff_seconds.div_euclid(SECONDS_PER_DAY);
+        let recent_us = now
+            .saturating_sub(ROLLUP_RECOMPUTE_DAYS * SECONDS_PER_DAY)
+            .saturating_mul(1_000_000);
         self.db()
             .with_conn(move |conn| {
                 let tx = conn.transaction().map_err(db_err)?;
-                // The `WHERE 1 = 1` clause disambiguates the UPSERT parser
-                // after an INSERT ... SELECT.
+                let seeded: bool = tx
+                    .query_row("SELECT EXISTS(SELECT 1 FROM stats_daily)", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(db_err)?;
+                let since_us = if seeded { recent_us } else { 0 };
                 tx.execute(
                     "INSERT INTO stats_hourly (
                          hour, node_id, profile_id, protocol, answer_source, query_count
                      )
                      SELECT time / 3600000000, node_id, profile_id, protocol, answer_source, COUNT(*)
                      FROM query_log
-                     WHERE 1 = 1
+                     WHERE time >= ?1
                      GROUP BY 1, 2, 3, 4, 5
                      ON CONFLICT(hour, node_id, profile_id, protocol, answer_source)
                      DO UPDATE SET query_count = MAX(query_count, excluded.query_count)",
-                    [],
+                    params![since_us],
                 )
                 .map_err(db_err)?;
                 tx.execute(
@@ -324,11 +339,11 @@ impl QueryLog {
                      )
                      SELECT time / 86400000000, node_id, profile_id, protocol, answer_source, COUNT(*)
                      FROM query_log
-                     WHERE 1 = 1
+                     WHERE time >= ?1
                      GROUP BY 1, 2, 3, 4, 5
                      ON CONFLICT(day, node_id, profile_id, protocol, answer_source)
                      DO UPDATE SET query_count = MAX(query_count, excluded.query_count)",
-                    [],
+                    params![since_us],
                 )
                 .map_err(db_err)?;
                 tx.execute(
@@ -1407,5 +1422,55 @@ mod tests {
     fn ratio_is_zero_for_an_empty_denominator() {
         assert_eq!(ratio(0, 0), 0.0);
         assert_eq!(ratio(1, 4), 0.25);
+    }
+}
+
+type MemoSlot = Arc<tokio::sync::Mutex<Option<(i64, Json)>>>;
+
+/// Short-lived answers of the dashboard aggregations (one slot per request shape).
+///
+/// Each aggregation scans the whole window, and the dashboard asks for seven of them every poll
+/// (from every open tab). A slot is also a lock, so identical concurrent requests compute once.
+#[derive(Default)]
+pub(crate) struct StatsMemo(Mutex<HashMap<String, MemoSlot>>);
+
+impl QueryLog {
+    /// Returns the answer for `key`, computing it only when none younger than `ttl_secs` exists.
+    /// Errors are never kept.
+    pub(crate) async fn memoized<T, F>(
+        &self,
+        key: String,
+        ttl_secs: i64,
+        compute: F,
+    ) -> Result<Json, ControlApiError>
+    where
+        T: Serialize,
+        F: Future<Output = Result<T, ControlApiError>>,
+    {
+        let slot = {
+            let mut map = self
+                .stats_memo
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Keys embed the window, so they drift; a bounded map is enough.
+            if map.len() > 128 && !map.contains_key(&key) {
+                map.clear();
+            }
+            Arc::clone(map.entry(key).or_default())
+        };
+        let mut guard = slot.lock().await;
+        let now = self.db().now_unix();
+        if let Some((at, value)) = guard.as_ref()
+            && now.saturating_sub(*at) < ttl_secs
+        {
+            return Ok(value.clone());
+        }
+        let value =
+            serde_json::to_value(compute.await?).map_err(|error| ControlApiError::Internal {
+                message: error.to_string(),
+            })?;
+        *guard = Some((now, value.clone()));
+        Ok(value)
     }
 }

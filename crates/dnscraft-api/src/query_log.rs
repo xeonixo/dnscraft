@@ -228,6 +228,7 @@ pub struct QueryLog {
     stream_tx: broadcast::Sender<Arc<str>>,
     stream_dropped: AtomicU64,
     streams: Arc<StreamSlots>,
+    pub(crate) stats_memo: crate::stats::StatsMemo,
 }
 
 /// Open live-stream counts, per principal and per node (WX2).
@@ -279,6 +280,7 @@ impl QueryLog {
             stream_tx: broadcast::channel(STREAM_QUEUE).0,
             stream_dropped: AtomicU64::new(0),
             streams: Arc::new(StreamSlots::default()),
+            stats_memo: crate::stats::StatsMemo::default(),
         }
     }
 

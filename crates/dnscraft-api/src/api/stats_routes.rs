@@ -47,6 +47,27 @@ impl RawStatsParams {
         }
     }
 
+    /// Cache key and lifetime for one aggregation. The window is quantised to a minute so polls of
+    /// a sliding "last 24 h" share a key, and the lifetime grows with the window (0.07 %, 30 s to
+    /// 10 min): a day-long chart does not need second-level freshness.
+    fn memo(&self, name: &str, from: Option<i64>, to: Option<i64>) -> (String, i64) {
+        const MINUTE_US: i64 = 60_000_000;
+        let key = format!(
+            "{name}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+            from.map(|t| t / MINUTE_US),
+            to.map(|t| t / MINUTE_US),
+            self.node_id(),
+            self.profile_id.as_deref(),
+            self.limit,
+            self.by,
+        );
+        let ttl = match (from, to) {
+            (Some(from), Some(to)) => ((to - from) / 1_000_000 / 1440).clamp(30, 600),
+            _ => 60,
+        };
+        (key, ttl)
+    }
+
     fn window(&self) -> Result<(Option<i64>, Option<i64>), ControlApiError> {
         let from = self
             .from
@@ -108,8 +129,14 @@ pub(crate) async fn stats_overview(
 ) -> Result<impl IntoResponse, ControlApiError> {
     let log = query_log(&state)?;
     let (from, to) = params.window()?;
+    let (key, ttl) = params.memo("overview", from, to);
     Ok(success(
-        log.stats_overview_scoped(from, to, params.scope()).await?,
+        log.memoized(
+            key,
+            ttl,
+            log.stats_overview_scoped(from, to, params.scope()),
+        )
+        .await?,
     ))
 }
 
@@ -122,9 +149,14 @@ pub(crate) async fn stats_top_clients(
     let (from, to) = params.window()?;
     let limit = parse_limit(params.limit.as_deref(), TOP_CLIENTS_MAX, 10)?;
     let by = parse_top_by(params.by.as_deref())?;
+    let (key, ttl) = params.memo("top_clients", from, to);
     Ok(success(
-        log.top_clients_scoped(from, to, params.scope(), limit, by)
-            .await?,
+        log.memoized(
+            key,
+            ttl,
+            log.top_clients_scoped(from, to, params.scope(), limit, by),
+        )
+        .await?,
     ))
 }
 
@@ -170,9 +202,14 @@ pub(crate) async fn stats_top_domains(
     let log = query_log(&state)?;
     let (from, to) = params.window()?;
     let limit = parse_limit(params.limit.as_deref(), TOP_DOMAINS_MAX, 10)?;
+    let (key, ttl) = params.memo("top_domains", from, to);
     Ok(success(
-        log.top_domains_scoped(from, to, params.scope(), limit)
-            .await?,
+        log.memoized(
+            key,
+            ttl,
+            log.top_domains_scoped(from, to, params.scope(), limit),
+        )
+        .await?,
     ))
 }
 
@@ -183,8 +220,10 @@ pub(crate) async fn stats_cache(
 ) -> Result<impl IntoResponse, ControlApiError> {
     let log = query_log(&state)?;
     let (from, to) = params.window()?;
+    let (key, ttl) = params.memo("cache", from, to);
     Ok(success(
-        log.cache_stats_scoped(from, to, params.scope()).await?,
+        log.memoized(key, ttl, log.cache_stats_scoped(from, to, params.scope()))
+            .await?,
     ))
 }
 

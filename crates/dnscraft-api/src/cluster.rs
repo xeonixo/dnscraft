@@ -1488,8 +1488,6 @@ impl ClusterRuntime {
                         let Ok((Some(version), Some(snapshot))) = change_service.current().await else {
                             continue;
                         };
-                        // A DynDNS profile may have been enabled/disabled.
-                        crate::cloudflare_secrets::sync_to_nodes(&cf_state).await;
                         if sync.publish(version, &snapshot).is_ok() {
                             let lag = sync.lag().iter().map(|node| node.lag).max().unwrap_or(0);
                             status.update(|status| {
@@ -1498,6 +1496,9 @@ impl ClusterRuntime {
                                 status.last_sync = Some(change_clock.now());
                             });
                         }
+                        // A DynDNS profile may have been enabled/disabled; the
+                        // config push must not wait on the per-node token reads.
+                        crate::cloudflare_secrets::sync_to_nodes(&cf_state).await;
                     }
                     _ = shutdown.changed() => return,
                 }

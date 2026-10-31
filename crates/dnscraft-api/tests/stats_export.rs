@@ -293,6 +293,40 @@ async fn stats_export_csv_returns_the_same_filtered_set() {
 }
 
 #[tokio::test]
+async fn rollup_rereads_only_recent_rows_once_the_rollups_are_seeded() {
+    let (log, _clock) = harness(QueryLogConfig::default()).await;
+    let total = |rows: Vec<_>| {
+        rows.iter()
+            .map(|row: &dnscraft_api::RollupRow| row.query_count)
+            .sum::<i64>()
+    };
+    log.insert_batch(vec![
+        Spec::new(at_secs(BASE_SECS - 10 * 86_400), "old.example.com").event(),
+    ])
+    .await
+    .unwrap();
+    log.run_rollup().await.unwrap();
+    assert_eq!(
+        total(log.rollup_rows(RollupWindow::Daily).await.unwrap()),
+        1
+    );
+
+    // Seeded now: a row older than the recompute window is not folded in any more,
+    // a recent one is.
+    log.insert_batch(vec![
+        Spec::new(at_secs(BASE_SECS - 9 * 86_400), "late-old.example.com").event(),
+        Spec::new(at_secs(BASE_SECS - 60), "new.example.com").event(),
+    ])
+    .await
+    .unwrap();
+    log.run_rollup().await.unwrap();
+    assert_eq!(
+        total(log.rollup_rows(RollupWindow::Daily).await.unwrap()),
+        2
+    );
+}
+
+#[tokio::test]
 async fn stats_export_rollups_populate_hourly_and_daily_and_prune_after_a_year() {
     let (log, clock) = harness(QueryLogConfig::default()).await;
     let events = vec![

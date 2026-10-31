@@ -30,7 +30,7 @@ pub struct Db {
 
 /// Read-only connections kept next to the writer, so dashboard queries neither queue behind each
 /// other nor block the query-log writer.
-const READ_CONNECTIONS: usize = 3;
+const READ_CONNECTIONS: usize = 6;
 
 impl Db {
     /// Opens (and migrates) a database file at `path`.
