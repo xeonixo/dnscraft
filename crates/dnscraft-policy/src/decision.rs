@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use dnscraft_filtering::{BlockMode, Reason};
+use dnscraft_filtering::{BlockMode, Reason, Verdict};
 use dnscraft_proto::Rcode;
 use dnscraft_resolver::{AnswerSource, DnssecStatus, ForwardZoneId};
 
@@ -90,6 +90,14 @@ pub enum DecisionStep {
     },
     /// CNAME-chain uncloaking blocked a name in the resolver answer (step 8).
     AnswerChainBlocked,
+    /// Every hop of a multi-name CNAME chain with its filter verdict, plus the
+    /// final answer addresses (step 8). Recorded whether or not the chain blocks.
+    CnameChain {
+        /// Qname first, then each CNAME target in answer order.
+        hops: Vec<ChainHop>,
+        /// Address records in the resolver answer (at most 8).
+        addresses: Vec<std::net::IpAddr>,
+    },
     /// An answer A/AAAA matched an IP block rule (step 9).
     AnswerIpBlocked,
     /// Rebind protection was skipped (step 10).
@@ -141,6 +149,15 @@ pub struct FilterHit {
     pub reason: Reason,
     /// Block mode when the verdict was a block.
     pub block_mode: Option<BlockMode>,
+}
+
+/// One name in a CNAME chain and what the filter decided for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainHop {
+    /// Name without trailing dot.
+    pub name: String,
+    /// Filter verdict for this name alone.
+    pub verdict: Verdict,
 }
 
 /// Pipeline timings in microseconds.

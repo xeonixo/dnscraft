@@ -37,8 +37,8 @@ pub use config::{
     ViewConfig, ViewRecordConfig, YoutubeMode, check_client_device, check_client_label,
 };
 pub use decision::{
-    AnswerOrigin, DecisionRecord, DecisionStep, DecisionTimings, FilterHit, ProtectionPauseScope,
-    RebindSkipReason,
+    AnswerOrigin, ChainHop, DecisionRecord, DecisionStep, DecisionTimings, FilterHit,
+    ProtectionPauseScope, RebindSkipReason,
 };
 pub use directory::{ClientDirectory, NoClients};
 pub use engine::{PolicyAnswer, PolicyEngine};

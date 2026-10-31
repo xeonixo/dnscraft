@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use dnscraft_filtering::{
     BlockMode, FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListConfig, ListId,
-    ListSourceSpec, ManualClock, SetId, SnapshotBuilder,
+    ListSourceSpec, ManualClock, SetId, SnapshotBuilder, Verdict,
 };
 use dnscraft_policy::{
     AnswerOrigin, ClientFlags, DecisionStep, DnsProtocol, ListenerId, NoClients, PolicyConfig,
@@ -199,6 +199,52 @@ async fn answer_side_cname_chain_blocked_target() {
     );
     assert!(!ans.message.header.ad);
     assert_eq!(ans.ede.as_ref().map(|e| e.code), Some(15));
+}
+
+#[tokio::test]
+async fn answer_side_cname_chain_step_records_every_hop() {
+    let h = Hierarchy::start_with(specs_with_cname_chain())
+        .await
+        .unwrap();
+    let filter = filter_engine(&[("ads", "||tracker.example.test^\n")], "");
+    let engine = engine_on(&h, filter, TrustAnchors::empty()).await;
+
+    let ans = engine
+        .handle(ctx("a.example.test.", RecordType::A))
+        .await
+        .unwrap();
+    let hops = ans
+        .record
+        .steps
+        .iter()
+        .find_map(|s| match s {
+            DecisionStep::CnameChain { hops, addresses } => {
+                assert_eq!(addresses, &vec![IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))]);
+                Some(hops.clone())
+            }
+            _ => None,
+        })
+        .expect("CnameChain step recorded");
+    let names: Vec<&str> = hops.iter().map(|h| h.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["a.example.test", "tracker.example.test", "www.example.test"]
+    );
+    assert!(matches!(hops[0].verdict, Verdict::Pass));
+    assert!(matches!(hops[1].verdict, Verdict::Blocked(_)));
+    assert!(matches!(hops[2].verdict, Verdict::Pass));
+    // Recorded before the blocking step, so it shows up ahead of it.
+    let chain_pos = ans
+        .record
+        .steps
+        .iter()
+        .position(|s| matches!(s, DecisionStep::CnameChain { .. }));
+    let blocked_pos = ans
+        .record
+        .steps
+        .iter()
+        .position(|s| matches!(s, DecisionStep::AnswerChainBlocked));
+    assert!(chain_pos < blocked_pos);
 }
 
 #[tokio::test]

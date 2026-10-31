@@ -18,9 +18,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use dnscraft_filtering::{BlockMode, RuleSource};
+use dnscraft_filtering::{BlockMode, Reason, RuleSource, Verdict};
 use dnscraft_listeners::{QueryEvent, QueryEventSink};
-use dnscraft_policy::{AnswerOrigin, DecisionRecord, DecisionStep, FilterHit, SelectionCause};
+use dnscraft_policy::{
+    AnswerOrigin, ChainHop, DecisionRecord, DecisionStep, FilterHit, SelectionCause,
+};
 use dnscraft_proto::Rcode;
 use dnscraft_resolver::{AnswerSource, DnssecStatus};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -1489,13 +1491,7 @@ fn selection_json(cause: SelectionCause) -> Json {
 }
 
 fn filter_json(hit: &FilterHit) -> Json {
-    let (source, list_id) = match &hit.reason.source {
-        RuleSource::List { list, .. } => ("list", Some(list.as_str().to_owned())),
-        RuleSource::Custom { .. } => ("custom", None),
-        RuleSource::Service { id } => ("service", Some(id.to_string())),
-        RuleSource::TemporaryAllow => ("temporary_allow", None),
-        RuleSource::Mcp { .. } => ("mcp", None),
-    };
+    let (source, list_id) = source_parts(&hit.reason.source);
     json!({
         // The spec calls this a filter reason; the engine exposes provenance
         // (list/custom/service/temporary_allow/mcp) rather than a category.
@@ -1504,6 +1500,42 @@ fn filter_json(hit: &FilterHit) -> Json {
         "rule_text": hit.reason.rule.as_ref(),
         "list_id": list_id,
         "important": hit.reason.important,
+    })
+}
+
+/// Provenance label and list id for a rule source; shared by `filter_json` and
+/// `chain_hop_json`.
+fn source_parts(source: &RuleSource) -> (&'static str, Option<String>) {
+    match source {
+        RuleSource::List { list, .. } => ("list", Some(list.as_str().to_owned())),
+        RuleSource::Custom { .. } => ("custom", None),
+        RuleSource::Service { id } => ("service", Some(id.to_string())),
+        RuleSource::TemporaryAllow => ("temporary_allow", None),
+        RuleSource::Mcp { .. } => ("mcp", None),
+    }
+}
+
+fn chain_hop_json(hop: &ChainHop) -> Json {
+    let (verdict, reason): (&str, Option<&Reason>) = match &hop.verdict {
+        Verdict::Pass => ("pass", None),
+        Verdict::Allowed(r) => ("allowed", Some(r)),
+        Verdict::Blocked(r) => ("blocked", Some(r)),
+        Verdict::Rewrite(_, r) => ("rewritten", Some(r)),
+    };
+    let (source, list_id) = match reason {
+        Some(r) => {
+            let (source, list_id) = source_parts(&r.source);
+            (Some(source), list_id)
+        }
+        None => (None, None),
+    };
+    json!({
+        "name": hop.name,
+        "verdict": verdict,
+        "rule_text": reason.map(|r| r.rule.as_ref()),
+        "list_id": list_id,
+        "source": source,
+        "important": reason.is_some_and(|r| r.important),
     })
 }
 
@@ -1539,6 +1571,12 @@ fn step_json(step: &DecisionStep) -> Json {
         DecisionStep::AnswerIpBlocked => {
             json!({ "stage": "answer_ip", "verdict": "blocked" })
         }
+        DecisionStep::CnameChain { hops, addresses } => json!({
+            "stage": "cname_chain",
+            "verdict": "resolved",
+            "hops": hops.iter().map(chain_hop_json).collect::<Vec<_>>(),
+            "addresses": addresses.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        }),
         DecisionStep::RebindSkipped { .. } => {
             json!({ "stage": "rebind", "verdict": "skipped" })
         }
@@ -1795,6 +1833,58 @@ mod tests {
         assert_eq!(
             resolve_client(Some(directory.clone()), None, None),
             Some(directory)
+        );
+    }
+
+    #[test]
+    fn cname_chain_step_json_lists_each_hop_and_addresses() {
+        use dnscraft_filtering::{ListId, Reason, RuleSource, Verdict};
+        let reason = Reason {
+            rule: std::sync::Arc::from("||tracker.example.test^"),
+            source: RuleSource::List {
+                list: ListId::new("ads").unwrap(),
+                line: 3,
+            },
+            important: false,
+        };
+        let step = DecisionStep::CnameChain {
+            hops: vec![
+                ChainHop {
+                    name: "a.example.test".into(),
+                    verdict: Verdict::Pass,
+                },
+                ChainHop {
+                    name: "tracker.example.test".into(),
+                    verdict: Verdict::Blocked(reason),
+                },
+            ],
+            addresses: vec!["192.0.2.1".parse().unwrap()],
+        };
+        assert_eq!(
+            step_json(&step),
+            json!({
+                "stage": "cname_chain",
+                "verdict": "resolved",
+                "hops": [
+                    {
+                        "name": "a.example.test",
+                        "verdict": "pass",
+                        "rule_text": null,
+                        "list_id": null,
+                        "source": null,
+                        "important": false,
+                    },
+                    {
+                        "name": "tracker.example.test",
+                        "verdict": "blocked",
+                        "rule_text": "||tracker.example.test^",
+                        "list_id": "ads",
+                        "source": "list",
+                        "important": false,
+                    },
+                ],
+                "addresses": ["192.0.2.1"],
+            })
         );
     }
 }

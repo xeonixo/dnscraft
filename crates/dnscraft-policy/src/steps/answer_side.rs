@@ -7,7 +7,7 @@ use dnscraft_proto::{Message, Name, RData, Record, RecordType};
 use tracing::warn;
 
 use crate::config::RequestContext;
-use crate::decision::{DecisionStep, FilterHit};
+use crate::decision::{ChainHop, DecisionStep, FilterHit};
 use crate::pipeline::{Draft, StepCtx, timed_filter};
 use crate::synth::{DEFAULT_BLOCK_TTL, block_answer, filter_internal_servfail};
 use crate::util::truncate_ede_text;
@@ -46,6 +46,24 @@ pub(crate) fn run(
     // Step 8: CNAME uncloaking.
     let chain = collect_chain_names(&ctx.query.name, &message.answers);
     if !chain.is_empty() {
+        if chain.len() > 1 {
+            let verdicts =
+                timed_filter(draft, || step.filter.match_each(set_id, &chain, qtype, now));
+            if let Ok(verdicts) = verdicts {
+                let hops = chain
+                    .iter()
+                    .zip(verdicts)
+                    .map(|(name, verdict)| ChainHop {
+                        name: name.as_str().to_owned(),
+                        verdict,
+                    })
+                    .collect();
+                let addresses = answer_ips(&message.answers).into_iter().take(8).collect();
+                draft
+                    .steps
+                    .push(DecisionStep::CnameChain { hops, addresses });
+            }
+        }
         match timed_filter(draft, || {
             step.filter.match_chain(set_id, &chain, qtype, now)
         }) {

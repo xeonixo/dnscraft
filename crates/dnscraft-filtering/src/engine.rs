@@ -453,6 +453,29 @@ impl FilterEngine {
         Ok(v)
     }
 
+    /// Per-name verdicts for a CNAME chain, one per input name, in order.
+    /// Same matching as [`Self::match_chain`] but without stats recording, so
+    /// callers can show every hop. Pause yields `Pass` for every name.
+    pub fn match_each(
+        &self,
+        set: &SetId,
+        names: &[DomainName],
+        qtype: u16,
+        now: SystemTime,
+    ) -> Result<Vec<Verdict>, FilterError> {
+        let snap = self.snapshot();
+        if snap.shared_index(set).is_none() {
+            return Err(FilterError::UnknownSet(set.to_string()));
+        }
+        if self.effective_pause(&snap, set).is_some_and(|u| now < u) {
+            return Ok(vec![Verdict::Pass; names.len()]);
+        }
+        Ok(names
+            .iter()
+            .map(|name| self.match_one_active(&snap, set, name, qtype, now))
+            .collect())
+    }
+
     /// IP-answer match with counters (temporary allows do not apply to IPs).
     pub fn match_answer_ip(
         &self,
