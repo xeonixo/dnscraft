@@ -60,10 +60,17 @@
 	// Registered node ids; null while loading or when the cluster API is unavailable (standalone),
 	// which keeps the free-text node field.
 	let clusterNodeIds = $state<string[] | null>(null);
+	// Display names from the cluster overview, shown instead of the raw id where set.
+	let nodeNames = $state<Record<string, string>>({});
 	onMount(() => {
 		listClusterNodes()
 			.then((nodes) => {
 				clusterNodeIds = nodes.filter((node) => !node.revoked).map((node) => node.node_id);
+				nodeNames = Object.fromEntries(
+					nodes
+						.filter((node) => node.display_name)
+						.map((node) => [node.node_id, node.display_name!]),
+				);
 			})
 			.catch(() => {
 				clusterNodeIds = null;
@@ -249,7 +256,7 @@
 					>
 						<option value="">{m.listeners_nodes_all()}</option>
 						{#each nodeChoices as nodeId (nodeId)}
-							<option value={nodeId}>{nodeId}</option>
+							<option value={nodeId}>{nodeNames[nodeId] ?? nodeId}</option>
 						{/each}
 					</select>
 				{/if}

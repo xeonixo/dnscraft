@@ -1679,6 +1679,7 @@ export function initialConfig() {
 export const MOCK_CLUSTER_NODES = [
 	{
 		node_id: 'node1',
+		display_name: 'Zuhause',
 		role: 'master',
 		fingerprint: '11'.repeat(32),
 		joined_at: rfc3339(NOW_MS - 40 * DAY_MS),
@@ -1692,6 +1693,7 @@ export const MOCK_CLUSTER_NODES = [
 	},
 	{
 		node_id: 'node2',
+		display_name: 'Büro',
 		role: 'sub_node',
 		fingerprint: 'ab'.repeat(32),
 		joined_at: rfc3339(NOW_MS - 9 * DAY_MS),
