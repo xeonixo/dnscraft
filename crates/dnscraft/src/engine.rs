@@ -260,6 +260,13 @@ pub(crate) async fn build_engines(
     .map_err(|e| Error::startup("dnscraft.startup.filtering", format!("filter store: {e}")))?;
     let filter = FilterEngine::new(filtering, store, Arc::clone(&clock))
         .map_err(|e| Error::startup("dnscraft.startup.filtering", format!("filtering: {e}")))?;
+    // Tracker labels for the query log; the scheduler refreshes them daily, so
+    // only fetch right away when nothing is cached yet.
+    filter.set_trackers_url(config.trackers.enabled.then(|| config.trackers.url.clone()));
+    if config.trackers.enabled && filter.trackers().is_none() {
+        let filter = Arc::clone(&filter);
+        tokio::spawn(async move { filter.update_trackers().await });
+    }
 
     // AS5: real client directory, adapted to the policy trait.
     // The node id decides which UniFi profile this node syncs as sync owner.

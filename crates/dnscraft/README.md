@@ -66,6 +66,10 @@ address = "127.0.0.1:5300"
 # [control_api]               # bind, auth, query_log, mcp, …
 # [cluster]                   # role = "standalone" | "master" | "sub_node"
 # [resolver] / [filtering] / [clients] / [tls] / [policy] / …
+
+# [trackers]                  # known-tracker labels in the query log (never blocks)
+# enabled = true              # false: never download the database
+# url = "https://raw.githubusercontent.com/AdguardTeam/AdGuardHome/master/client/src/helpers/trackers/trackers.json"
 ```
 
 - `public_domain` (required) — SNI/DDR apex (`dns.<domain>`).
@@ -73,6 +77,10 @@ address = "127.0.0.1:5300"
 - Versioned runtime config (filter sets, views, …) is owned by the control-api
   store after first boot; editing those sections in TOML only affects an empty
   database seed.
+- `[trackers]` — the database is downloaded at runtime and not shipped. The default
+  source (AdGuard `trackers.json`, derived from whotracks.me) is **CC BY-NC-SA 4.0,
+  non-commercial**: when you redistribute or operate dnscraft commercially, set
+  `enabled = false` or point `url` at a source whose terms fit. Restart to apply.
 - Full field docs: module SPECs and [`docs/API-REFERENCE.md`](../../docs/API-REFERENCE.md).
 
 ## Secrets

@@ -10,9 +10,10 @@ use axum::Extension;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, header};
 use axum::response::{IntoResponse, Response};
+use dnscraft_filtering::TrackerDb;
 use hyper::body::Bytes;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::Instant;
 
@@ -171,7 +172,11 @@ pub(crate) async fn list_query_log(
         what: "query log".to_owned(),
     })?;
     let filter = params.into_filter()?;
-    let page = log.list(&filter).await?;
+    let mut page = log.list(&filter).await?;
+    let trackers = state.filter_engine().and_then(|f| f.trackers());
+    for record in &mut page.records {
+        add_tracker_labels(record, trackers.as_deref());
+    }
     Ok(success(json!({
         "queries": page.records,
         "has_more": page.has_more,
@@ -187,13 +192,45 @@ pub(crate) async fn get_query_log(
     let log = state.query_log().ok_or_else(|| ControlApiError::NotFound {
         what: "query log".to_owned(),
     })?;
-    let record = log
+    let mut record = log
         .get(&id)
         .await?
         .ok_or_else(|| ControlApiError::NotFound {
             what: format!("query log entry {id}"),
         })?;
+    add_tracker_labels(
+        &mut record,
+        state.filter_engine().and_then(|f| f.trackers()).as_deref(),
+    );
     Ok(success(record))
+}
+
+/// Adds `tracker` (`name`, `category`, `url`) to the queried name and to every
+/// CNAME hop whose name is a known tracker. Read-time only: the stored record
+/// is unchanged, so a newer tracker database also labels old rows.
+fn add_tracker_labels(record: &mut Value, db: Option<&TrackerDb>) {
+    let Some(db) = db else {
+        return;
+    };
+    let label = |name: &str| {
+        db.lookup(name)
+            .map(|t| json!({ "name": t.name, "category": t.category, "url": t.url }))
+    };
+    if let Some(t) = record["query"]["name"].as_str().and_then(label) {
+        record["tracker"] = t;
+    }
+    let Some(steps) = record["steps"].as_array_mut() else {
+        return;
+    };
+    for hop in steps
+        .iter_mut()
+        .filter_map(|step| step["hops"].as_array_mut())
+        .flatten()
+    {
+        if let Some(t) = hop["name"].as_str().and_then(label) {
+            hop["tracker"] = t;
+        }
+    }
 }
 
 /// Live stream: close after this long without a row (WX2 idle close).
@@ -225,6 +262,7 @@ pub(crate) async fn stream_query_log(
         .acquire_stream(&principal)
         .ok_or(ControlApiError::QueryLogStreamLimit)?;
     let mut rows = log.subscribe_stream();
+    let filter_engine = state.filter_engine().cloned();
     let (tx, rx) = mpsc::channel::<Result<Bytes, ControlApiError>>(16);
     tokio::spawn(async move {
         let _guard = guard;
@@ -268,7 +306,14 @@ pub(crate) async fn stream_query_log(
                             return;
                         }
                     };
-                    for record in records {
+                    let trackers = filter_engine.as_ref().and_then(|f| f.trackers());
+                    for mut record in records {
+                        if let Some(db) = trackers.as_deref()
+                            && let Ok(mut value) = serde_json::from_str::<Value>(&record)
+                        {
+                            add_tracker_labels(&mut value, Some(db));
+                            record = value.to_string();
+                        }
                         if !send_text(&tx, &format!("event: row\ndata: {record}\n\n")).await {
                             return;
                         }
@@ -313,6 +358,34 @@ async fn send_lagged(tx: &mpsc::Sender<Result<Bytes, ControlApiError>>, dropped:
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tracker_labels_cover_the_queried_name_and_cname_hops() {
+        let db = TrackerDb::parse(
+            r#"{"categories": {"4": "advertising"},
+                "trackers": {"ga": {"name": "Ad Co", "categoryId": 4}},
+                "trackerDomains": {"ads.example": "ga"}}"#,
+        )
+        .unwrap();
+        let mut record = json!({
+            "query": {"name": "a.ads.example"},
+            "steps": [
+                {"stage": "selected"},
+                {"stage": "cname_chain", "hops": [
+                    {"name": "a.ads.example"}, {"name": "cdn.other.example"}
+                ]}
+            ]
+        });
+        add_tracker_labels(&mut record, Some(&db));
+        assert_eq!(record["tracker"]["name"], "Ad Co");
+        assert_eq!(record["tracker"]["category"], "advertising");
+        assert_eq!(record["steps"][1]["hops"][0]["tracker"]["name"], "Ad Co");
+        assert!(record["steps"][1]["hops"][1].get("tracker").is_none());
+
+        let mut plain = json!({"query": {"name": "a.ads.example"}});
+        add_tracker_labels(&mut plain, None);
+        assert!(plain.get("tracker").is_none());
+    }
 
     #[test]
     fn protocol_and_status_filters_must_be_known_values() {

@@ -7,6 +7,8 @@ import {
 	stageLabel,
 	stepDetail,
 	trackerCategoryLabel,
+	trackerForName,
+	trackerKind,
 	verdictLabel,
 	verdictStyle,
 } from './view';
@@ -94,5 +96,43 @@ describe('trackerCategoryLabel', () => {
 		expect(trackerCategoryLabel('advertising')).toBe(m.tracker_category_advertising());
 		expect(trackerCategoryLabel('brand_new')).toBe('brand_new');
 		expect(trackerCategoryLabel('constructor')).toBe('constructor');
+	});
+});
+
+describe('trackerKind', () => {
+	it('separates tracking from functional categories', () => {
+		expect(trackerKind('advertising')).toBe('tracking');
+		expect(trackerKind('site_analytics')).toBe('tracking');
+		expect(trackerKind('cdn')).toBe('functional');
+		expect(trackerKind('hosting')).toBe('functional');
+		expect(trackerKind('misc')).toBe('unclear');
+		expect(trackerKind('brand_new')).toBe('unclear');
+	});
+});
+
+describe('trackerForName', () => {
+	const record = {
+		query: { name: 'a.example', type: 'A', class: 'IN' },
+		tracker: { name: 'Own', category: 'cdn' },
+		steps: [
+			{
+				stage: 'cname_chain',
+				verdict: 'resolved',
+				hops: [
+					{ name: 'a.example', verdict: 'pass' },
+					{
+						name: 'b.example',
+						verdict: 'blocked',
+						tracker: { name: 'Hop', category: 'advertising' },
+					},
+				],
+			},
+		],
+	} as unknown as QueryRecord;
+
+	it('finds the queried name and a CNAME hop, and nothing else', () => {
+		expect(trackerForName(record, 'a.example')?.name).toBe('Own');
+		expect(trackerForName(record, 'b.example')?.name).toBe('Hop');
+		expect(trackerForName(record, 'c.example')).toBeNull();
 	});
 });

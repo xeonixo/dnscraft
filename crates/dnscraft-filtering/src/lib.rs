@@ -30,6 +30,7 @@ mod snapshot;
 mod stats;
 mod store;
 mod temp_allow;
+mod trackers;
 mod types;
 
 /// Deterministic reference-shaped rule generator for criterion benches.
@@ -79,4 +80,5 @@ pub use store::{
     StoreConfig, StoreError, StoreListBodies,
 };
 pub use temp_allow::TempAllow;
+pub use trackers::{TRACKERS_URL, TrackerDb, TrackerInfo};
 pub use types::{BlockMode, ListId, McpRuleId, Reason, Rewrite, RuleSource, SetId, Verdict};

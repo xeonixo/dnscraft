@@ -136,6 +136,7 @@ async fn run_loop(
             return;
         };
         let statuses = eng.update_lists(ListSelection::All).await;
+        eng.update_trackers().await;
         failures = if round_failed(&eng, &statuses) {
             failures.saturating_add(1)
         } else {

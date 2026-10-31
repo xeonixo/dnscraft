@@ -10,7 +10,7 @@ use dnscraft_api::ControlApiConfig;
 pub use dnscraft_api::IpTruncate;
 use dnscraft_clients::ClientsConfig;
 use dnscraft_cluster::{ClusterConfig, Role};
-use dnscraft_filtering::FilterConfig;
+use dnscraft_filtering::{FilterConfig, TRACKERS_URL};
 use dnscraft_listeners::{
     DdrConfig, Exposure, Limits, ListenerConfig, ListenersConfig, Protocol, PublicConfig, TlsPolicy,
 };
@@ -254,6 +254,9 @@ pub struct Config {
     /// Filter-list and filter-set settings (`[filtering]`).
     #[serde(default)]
     pub filtering: FilterConfig,
+    /// Known-tracker database for the query log (`[trackers]`).
+    #[serde(default)]
+    pub trackers: TrackersConfig,
     /// Client directory settings (`[clients]`).
     #[serde(default)]
     pub clients: ClientsConfig,
@@ -279,6 +282,41 @@ pub struct Config {
     /// `role = "standalone"` keeps the cluster idle.
     #[serde(default)]
     pub cluster: Option<ClusterConfig>,
+}
+
+/// Known-tracker database settings (`[trackers]`).
+///
+/// The database only labels domains in the query log; it never blocks. It is
+/// downloaded from `url` at runtime and not shipped with dnscraft. The default
+/// source (AdGuard's `trackers.json`, derived from whotracks.me) is licensed
+/// CC BY-NC-SA 4.0: the operator is responsible for the terms of whatever
+/// source is configured. Set `enabled = false` to never download it.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrackersConfig {
+    /// Download and use the tracker database. Default `true`.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Source URL (`http(s)://…/trackers.json`, AdGuard format).
+    #[serde(default = "default_trackers_url")]
+    pub url: String,
+}
+
+impl Default for TrackersConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            url: default_trackers_url(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_trackers_url() -> String {
+    TRACKERS_URL.to_owned()
 }
 
 /// Query-log settings (`[log]`).
@@ -909,6 +947,31 @@ target = "dns"
     }
 
     #[test]
+    fn trackers_section_can_disable_or_repoint_the_database() {
+        let cfg: Config = toml::from_str(
+            r#"
+            public_domain = "example.com"
+            [trackers]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+        assert!(!cfg.trackers.enabled);
+        assert_eq!(cfg.trackers.url, TRACKERS_URL);
+
+        let cfg: Config = toml::from_str(
+            r#"
+            public_domain = "example.com"
+            [trackers]
+            url = "https://example.com/trackers.json"
+            "#,
+        )
+        .unwrap();
+        assert!(cfg.trackers.enabled);
+        assert_eq!(cfg.trackers.url, "https://example.com/trackers.json");
+    }
+
+    #[test]
     fn minimal_toml_takes_module_defaults() {
         let cfg: Config = toml::from_str(r#"public_domain = "example.com""#).unwrap();
 
@@ -924,6 +987,8 @@ target = "dns"
             std::time::Duration::from_millis(1500)
         );
         assert_eq!(cfg.filtering, FilterConfig::default());
+        assert_eq!(cfg.trackers, TrackersConfig::default());
+        assert!(cfg.trackers.enabled);
         assert_eq!(cfg.clients, ClientsConfig::default());
         assert_eq!(cfg.tls, TlsConfig::default());
         assert_eq!(cfg.policy, PolicyConfig::default());

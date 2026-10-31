@@ -27,6 +27,7 @@ use crate::snapshot::{Snapshot, SnapshotBuilder, resolve_chain};
 use crate::stats::{FilterStats, StatsTable};
 use crate::store::{ListSourceSpec, ListStore, MetaError, StoreListBodies};
 use crate::temp_allow::TempAllow;
+use crate::trackers::TrackerDb;
 use crate::types::{ListId, SetId, Verdict};
 
 /// Which lists [`FilterEngine::update_lists`] should refresh.
@@ -129,6 +130,10 @@ struct EngineInner {
     services_error: RwLock<Option<&'static str>>,
     /// Catalog download URLs (overridable in tests).
     services_urls: RwLock<ServicesUrls>,
+    /// Known-tracker database (enrichment only; `None` until downloaded).
+    trackers: RwLock<Option<Arc<TrackerDb>>>,
+    /// Tracker database URL; `None` disables the download (the default).
+    trackers_url: RwLock<Option<String>>,
 }
 
 impl FilterEngine {
@@ -187,6 +192,7 @@ impl FilterEngine {
         let mut list_store = store.clone();
         list_store.set_max_body_bytes(config.max_list_size_bytes());
         let (catalog, services_error) = load_catalog_offline(&store);
+        let trackers = TrackerDb::load_cached(&store).map(Arc::new);
         let snapshot = build_snapshot(
             list_bodies(&list_store, &config),
             &config,
@@ -215,6 +221,8 @@ impl FilterEngine {
                 catalog: RwLock::new(catalog),
                 services_error: RwLock::new(services_error),
                 services_urls: RwLock::new(ServicesUrls::default()),
+                trackers: RwLock::new(trackers),
+                trackers_url: RwLock::new(None),
             }),
         }))
     }
@@ -338,6 +346,49 @@ impl FilterEngine {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = urls;
         Ok(())
+    }
+
+    /// Enables the tracker-database download from `url` (off by default).
+    pub fn set_trackers_url(&self, url: Option<String>) {
+        if let Some(inner) = self.inner.as_ref() {
+            *inner
+                .trackers_url
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = url;
+        }
+    }
+
+    /// Refreshes the tracker database; no-op while no URL is set. A failed or
+    /// malformed download keeps the previous copy.
+    pub async fn update_trackers(&self) {
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
+        let url = inner
+            .trackers_url
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(url) = url else {
+            return;
+        };
+        if let Some(db) = crate::trackers::update_trackers(&inner.fetcher, &inner.store, &url).await
+        {
+            *inner
+                .trackers
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(db));
+        }
+    }
+
+    /// The known-tracker database, or `None` until one is cached.
+    pub fn trackers(&self) -> Option<Arc<TrackerDb>> {
+        let inner = self.inner.as_ref()?;
+        inner
+            .trackers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The current blocked-services catalog, or `None` when unavailable.

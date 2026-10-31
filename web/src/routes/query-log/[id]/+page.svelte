@@ -32,6 +32,7 @@
 		statusOf,
 		statusStyle,
 		trackerCategoryLabel,
+		trackerForName,
 	} from '$lib/querylog/view';
 	import { formatDateTime, formatMilliseconds, formatNumber } from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
@@ -285,6 +286,7 @@
 		<RuleSheet
 			domain={ruleDomain}
 			filterSet={record.filter_set}
+			tracker={trackerForName(record, ruleDomain)}
 			defaultAction={ruleAction}
 			onclose={() => (ruleOpen = false)}
 			onsaved={saved}

@@ -749,6 +749,12 @@ const CNAME_NAMES = ['www.example.com', 'www.heise.de'];
  * First-party-looking names whose CNAME target is a tracker. The resolver uncloaks them in the
  * answer chain and blocks the answer (answer_chain blocked); the query name itself is not blocked.
  */
+/** Tracker labels as the server's tracker database yields them, by name kind. */
+const TRACKER_LABELS = {
+	ad: { name: 'Mock Ad Network', category: 'advertising', url: null },
+	tracker: { name: 'Mock Analytics', category: 'site_analytics', url: null },
+};
+
 const CLOAKED_TARGETS = {
 	'metrics.example-shop.test': 'collect.adtech-hub.example',
 	'stats.news-site.test': 'sc.trackerhub.example',
@@ -950,6 +956,7 @@ function buildRecord(rng, index, timeMs, sets, profiles) {
 						list_id: PREFERRED_LIST.tracker,
 						source: 'list',
 						important: false,
+						tracker: TRACKER_LABELS.tracker,
 					},
 				],
 				addresses: [],
@@ -1063,6 +1070,7 @@ function buildRecord(rng, index, timeMs, sets, profiles) {
 						local_domain: LOCAL_DOMAIN,
 					},
 		query: { name, type, class: 'IN' },
+		...(TRACKER_LABELS[kind] === undefined ? {} : { tracker: TRACKER_LABELS[kind] }),
 		view_id: client.view,
 		profile_id: client.profile,
 		filter_set: set.id,

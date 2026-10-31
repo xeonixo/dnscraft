@@ -1,5 +1,12 @@
 import type { IconName, StatusTone } from '$lib/components/icons';
-import type { DecisionStep, QueryAnswer, QueryRecord } from '$lib/api/query-log';
+import {
+	cnameChainOf,
+	trackerOf,
+	type DecisionStep,
+	type QueryAnswer,
+	type QueryRecord,
+	type TrackerLabel,
+} from '$lib/api/query-log';
 import { answerSourceLabel } from '$lib/dashboard/view';
 import { m } from '$lib/paraglide/messages';
 
@@ -40,6 +47,46 @@ export function trackerCategoryLabel(category: string): string {
 	const messages = m as unknown as Record<string, (() => string) | undefined>;
 	const key = `tracker_category_${category}`;
 	return Object.hasOwn(messages, key) ? (messages[key]?.() ?? category) : category;
+}
+
+export type TrackerKind = 'tracking' | 'functional' | 'unclear';
+
+const TRACKING = new Set([
+	'advertising',
+	'pornvertising',
+	'site_analytics',
+	'mobile_analytics',
+	'telemetry',
+	'social_media',
+]);
+const FUNCTIONAL = new Set([
+	'essential',
+	'cdn',
+	'hosting',
+	'audio_video_player',
+	'comments',
+	'consent',
+	'email',
+	'extensions',
+]);
+
+/** Whether a category is about tracking, about making a page work, or cannot be told. */
+export function trackerKind(category: string): TrackerKind {
+	return TRACKING.has(category) ? 'tracking' : FUNCTIONAL.has(category) ? 'functional' : 'unclear';
+}
+
+/** The tracker label of `name`: the queried name itself or one of its CNAME hops. */
+export function trackerForName(record: QueryRecord, name: string): TrackerLabel | null {
+	if (record.query.name === name) {
+		const own = trackerOf(record.tracker);
+		if (own) return own;
+	}
+	for (const step of record.steps) {
+		if (step.stage !== 'cname_chain') continue;
+		const hop = cnameChainOf(step).hops.find((h) => h.name === name);
+		if (hop?.tracker) return hop.tracker;
+	}
+	return null;
 }
 
 /** Translated provenance of the rule that decided a query (stable identifier when unknown). */

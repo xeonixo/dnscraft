@@ -7,8 +7,9 @@
 	import Switch from '$lib/components/Switch.svelte';
 	import { ApiError } from '$lib/api/client';
 	import { listFilterSets, type FilterSet } from '$lib/api/filtering';
-	import { allowTemporarily } from '$lib/api/query-log';
+	import { allowTemporarily, type TrackerLabel } from '$lib/api/query-log';
 	import { failureOf } from '$lib/api/result';
+	import { trackerCategoryLabel, trackerKind } from './view';
 	import { m } from '$lib/paraglide/messages';
 	import { ruleDomainProblem } from '$lib/policy/rule-lines';
 	import {
@@ -25,13 +26,16 @@
 		domain: string;
 		/** The filter set that decided the query, when the record names one. */
 		filterSet?: string;
+		/** The known tracker behind `domain`, when the record labels one: shapes the allow hint. */
+		tracker?: TrackerLabel | null;
 		/** Opposite of the query's verdict; the caller derives it from the record status. */
 		defaultAction: RuleAction;
 		onclose: () => void;
 		onsaved: (outcome: RuleOutcome) => void;
 	}
 
-	let { domain, filterSet, defaultAction, onclose, onsaved }: Props = $props();
+	let { domain, filterSet, tracker = null, defaultAction, onclose, onsaved }: Props = $props();
+	const kind = $derived(tracker ? trackerKind(tracker.category) : 'unclear');
 
 	type Failure = { code: string; params: Record<string, unknown> };
 
@@ -163,6 +167,14 @@
 		</div>
 		<Switch bind:checked={includeSubdomains} aria-labelledby={`${uid}-sub`} />
 	</div>
+	{#if action === 'allow' && tracker && kind !== 'unclear'}
+		{@const category = trackerCategoryLabel(tracker.category)}
+		<p class="meta">
+			{kind === 'tracking'
+				? m.querylog_tracker_hint_tracking({ name: tracker.name, category })
+				: m.querylog_tracker_hint_functional({ name: tracker.name, category })}
+		</p>
+	{/if}
 	{#if action === 'allow'}
 		<div class="stack">
 			<span class="label">{m.querylog_rule_validity()}</span>

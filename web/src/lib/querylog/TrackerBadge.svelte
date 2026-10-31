@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { TrackerLabel } from '$lib/api/query-log';
 	import { displayText, neutralize } from '$lib/safe-text';
-	import { trackerCategoryLabel } from './view';
+	import { trackerCategoryLabel, trackerKind } from './view';
 
 	interface Props {
 		tracker: TrackerLabel;
@@ -9,12 +9,13 @@
 
 	let { tracker }: Props = $props();
 	const category = $derived(trackerCategoryLabel(tracker.category));
+	const kind = $derived(trackerKind(tracker.category));
 </script>
 
 <!-- Name comes from a downloaded database: text only, length-capped. -->
 <span class="tracker" title={neutralize(`${tracker.name} · ${category}`)}>
 	<span class="name">{displayText(tracker.name, 32).text}</span>
-	<span class="category">{category}</span>
+	<span class="category {kind}">{category}</span>
 </span>
 
 <style>
@@ -30,6 +31,14 @@
 		box-shadow: inset 0 0 0 1px var(--separator);
 		font-size: 0.75rem;
 		color: var(--label-2);
+	}
+
+	.category.tracking {
+		color: var(--warn);
+	}
+
+	.category.functional {
+		color: var(--ok);
 	}
 
 	.name {
