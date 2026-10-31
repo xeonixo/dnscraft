@@ -164,6 +164,14 @@ fn wait_until(what: &str, mut check: impl FnMut() -> bool) {
     }
 }
 
+fn sub_applied_version(api: u16, admin: &str) -> i64 {
+    let (_, body) = get(api, "/api/v1/status", admin);
+    let v: Value = serde_json::from_str(&body).unwrap();
+    v["data"]["cluster"]["applied_version"]
+        .as_i64()
+        .unwrap_or(0)
+}
+
 /// A token of `scope` created straight in the data directory's database.
 async fn token(data_dir: &Path, scope: Scope) -> String {
     let db = Db::open(
@@ -265,13 +273,13 @@ async fn sub_node_enrolls_and_receives_master_config() {
         let (status, body) = get(sub_api, "/api/v1/clients", &admin);
         status == 200 && body.contains("paperless")
     });
+    // The version is recorded just after the config is applied.
+    wait_until("applied_version 1 on the sub-node", || {
+        sub_applied_version(sub_api, &admin) == 1
+    });
     let (_, body) = get(sub_api, "/api/v1/status", &admin);
     let sub_status: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(sub_status["data"]["cluster"]["role"], "sub_node", "{body}");
-    assert_eq!(
-        sub_status["data"]["cluster"]["applied_version"], 1,
-        "{body}"
-    );
     // The master-only admin routes are not mounted on a sub-node.
     let (status, _) = get(sub_api, "/api/v1/cluster/nodes", &admin);
     assert_eq!(status, 404, "sub-node exposes no cluster admin routes");
@@ -308,12 +316,9 @@ async fn sub_node_enrolls_and_receives_master_config() {
         let (status, body) = get(sub_api, "/api/v1/clients", &admin);
         status == 200 && body.contains("added-by-master")
     });
-    let (_, body) = get(sub_api, "/api/v1/status", &admin);
-    let sub_status: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(
-        sub_status["data"]["cluster"]["applied_version"], 2,
-        "{body}"
-    );
+    wait_until("applied_version 2 on the sub-node", || {
+        sub_applied_version(sub_api, &admin) == 2
+    });
 
     sub.shutdown(Duration::from_secs(1)).await;
     master.shutdown(Duration::from_secs(1)).await;
