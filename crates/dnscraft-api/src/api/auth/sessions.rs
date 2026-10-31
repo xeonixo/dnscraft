@@ -95,6 +95,11 @@ pub struct SessionStore {
 }
 
 impl SessionStore {
+    /// Absolute session lifetime, used as the cookie `Max-Age`.
+    pub fn absolute(&self) -> Duration {
+        self.absolute
+    }
+
     /// Creates a store over `db` with the given idle and absolute lifetimes.
     pub fn new(db: Db, idle: Duration, absolute: Duration) -> Self {
         Self {
@@ -237,8 +242,14 @@ pub fn secure_cookie(tls_terminated: bool, forwarded_proto: Option<&str>) -> boo
 
 /// Builds the `Set-Cookie` header value for a session cookie: always `HttpOnly`
 /// and `SameSite=Lax`, plus `Secure` when `secure` is true.
-pub fn session_set_cookie(value: &str, secure: bool) -> String {
-    let mut cookie = format!("{SESSION_COOKIE}={value}; HttpOnly; SameSite=Lax; Path=/");
+pub fn session_set_cookie(value: &str, secure: bool, max_age: Duration) -> String {
+    // `Max-Age` makes the cookie persistent: without it iOS drops it when the
+    // home-screen app is closed and every launch needs a fresh SSO login. The
+    // server still enforces idle and absolute expiry.
+    let mut cookie = format!(
+        "{SESSION_COOKIE}={value}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}",
+        max_age.as_secs()
+    );
     if secure {
         cookie.push_str("; Secure");
     }

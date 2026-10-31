@@ -231,13 +231,14 @@ async fn auth_session_logout_invalidates_immediately() {
 
 #[test]
 fn auth_session_cookie_attributes_http_only_samesite_lax_and_secure_flag() {
-    let plain = session_set_cookie("abc", false);
+    let plain = session_set_cookie("abc", false, Duration::from_secs(60));
     assert!(plain.starts_with("dnscraft_session=abc"));
     assert!(plain.contains("HttpOnly"));
     assert!(plain.contains("SameSite=Lax"));
     assert!(!plain.contains("Secure"));
+    assert!(plain.contains("Max-Age=60"));
 
-    let secure = session_set_cookie("abc", true);
+    let secure = session_set_cookie("abc", true, Duration::from_secs(60));
     assert!(secure.contains("HttpOnly"));
     assert!(secure.contains("SameSite=Lax"));
     assert!(secure.contains("; Secure"));

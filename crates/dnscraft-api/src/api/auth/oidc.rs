@@ -664,6 +664,7 @@ pub(crate) async fn oidc_callback(
                 .get("x-forwarded-proto")
                 .and_then(|value| value.to_str().ok()),
         ),
+        sessions.absolute(),
     );
     let cookie = HeaderValue::from_str(&cookie).map_err(|err| ControlApiError::Internal {
         message: format!("build session cookie: {err}"),

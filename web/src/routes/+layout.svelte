@@ -18,6 +18,7 @@
 	import { navItemForPath } from '$lib/nav';
 	import { m } from '$lib/paraglide/messages';
 	import { CLIENT_NETWORK } from '$lib/api/error-codes';
+	import { enablePullToRefresh } from '$lib/pwa/pull-to-refresh';
 	import { registerServiceWorker } from '$lib/pwa/register-sw';
 	import { themeColorFor } from '$lib/pwa/theme-colors';
 	import { initTheme, resolveTheme, theme } from '$lib/theme';
@@ -39,6 +40,7 @@
 	onMount(() => {
 		registerServiceWorker();
 		void loadMe();
+		return enablePullToRefresh();
 	});
 
 	// A lost session (401) or a sign-out leaves the anonymous state; a protected route then moves to /login.

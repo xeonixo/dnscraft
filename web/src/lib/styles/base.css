@@ -11,6 +11,9 @@
 html,
 body {
 	height: 100%;
+	/* No sideways scrolling or rubber-banding on phones; wide content scrolls in its own container. */
+	overflow-x: clip;
+	overscroll-behavior-x: none;
 }
 
 body {

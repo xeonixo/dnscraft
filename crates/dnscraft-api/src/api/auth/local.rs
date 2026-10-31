@@ -479,7 +479,7 @@ pub(crate) async fn local_login(
             .get("x-forwarded-proto")
             .and_then(|value| value.to_str().ok()),
     );
-    let cookie = session_set_cookie(created.cookie().expose(), secure);
+    let cookie = session_set_cookie(created.cookie().expose(), secure, sessions.absolute());
     let cookie = HeaderValue::from_str(&cookie).map_err(|err| ControlApiError::Internal {
         message: format!("build session cookie: {err}"),
     })?;
