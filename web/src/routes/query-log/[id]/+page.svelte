@@ -9,7 +9,7 @@
 	import ResultNotice from '$lib/components/ResultNotice.svelte';
 	import { announce } from '$lib/live.svelte';
 	import { auth } from '$lib/auth/state.svelte';
-	import { answersOf, getQueryRecord, type QueryRecord } from '$lib/api/query-log';
+	import { answersOf, getQueryRecord, trackerOf, type QueryRecord } from '$lib/api/query-log';
 	import { settle, type Result } from '$lib/api/result';
 	import DecisionSteps from '$lib/querylog/DecisionSteps.svelte';
 	import FieldRow from '$lib/querylog/FieldRow.svelte';
@@ -31,6 +31,7 @@
 		selectionLabel,
 		statusOf,
 		statusStyle,
+		trackerCategoryLabel,
 	} from '$lib/querylog/view';
 	import { formatDateTime, formatMilliseconds, formatNumber } from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
@@ -126,6 +127,7 @@
 {#if result.kind === 'ok'}
 	{@const record = result.data}
 	{@const answers = answersOf(record)}
+	{@const tracker = trackerOf(record.tracker)}
 	{@const style = statusStyle(statusOf(record))}
 	{@const unicode = unicodeName(record.query.name)}
 	{@const device = record.client?.display_name ?? record.client_id ?? record.source_ip}
@@ -155,6 +157,16 @@
 				<GroupedList header={m.querylog_section_decision()} footer={m.querylog_steps_footer()}>
 					<DecisionSteps steps={record.steps} onrule={isAdmin ? openHopRule : undefined} />
 				</GroupedList>
+
+				{#if tracker}
+					<GroupedList header={m.querylog_section_tracker()}>
+						<FieldRow label={m.querylog_row_tracker()} value={tracker.name} />
+						<FieldRow
+							label={m.querylog_row_tracker_category()}
+							value={trackerCategoryLabel(tracker.category)}
+						/>
+					</GroupedList>
+				{/if}
 
 				{#if record.filter}
 					<GroupedList header={m.querylog_section_rule()}>

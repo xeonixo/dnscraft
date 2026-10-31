@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cnameChainOf, exportHref } from './query-log';
+import { cnameChainOf, exportHref, trackerOf } from './query-log';
 
 describe('exportHref', () => {
 	it('carries the current filters and drops paging', () => {
@@ -47,6 +47,7 @@ describe('cnameChainOf', () => {
 				list_id: null,
 				source: null,
 				important: false,
+				tracker: null,
 			},
 			{
 				name: 'b.example',
@@ -55,6 +56,7 @@ describe('cnameChainOf', () => {
 				list_id: 'l1',
 				source: 'list',
 				important: true,
+				tracker: null,
 			},
 		]);
 		expect(chain.addresses).toEqual(['1.2.3.4']);
@@ -88,6 +90,7 @@ describe('cnameChainOf', () => {
 				list_id: null,
 				source: null,
 				important: false,
+				tracker: null,
 			},
 		]);
 		expect(chain.addresses).toEqual(['9.9.9.9']);
@@ -104,5 +107,28 @@ describe('cnameChainOf', () => {
 			hops: [],
 			addresses: [],
 		});
+	});
+});
+
+describe('trackerOf', () => {
+	it('reads name and category and tolerates anything else', () => {
+		expect(trackerOf({ name: 'Ad Co', category: 'advertising', url: 'https://x' })).toEqual({
+			name: 'Ad Co',
+			category: 'advertising',
+		});
+		for (const bad of [undefined, null, 'x', {}, { name: '', category: 'cdn' }, { name: 'A' }]) {
+			expect(trackerOf(bad)).toBeNull();
+		}
+	});
+
+	it('is read per CNAME hop', () => {
+		const chain = cnameChainOf({
+			stage: 'cname_chain',
+			verdict: 'resolved',
+			hops: [
+				{ name: 'a.example', verdict: 'blocked', tracker: { name: 'Ad Co', category: 'cdn' } },
+			],
+		});
+		expect(chain.hops[0]?.tracker).toEqual({ name: 'Ad Co', category: 'cdn' });
 	});
 });

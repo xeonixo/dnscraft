@@ -380,7 +380,7 @@
 			clientSearch={(filter) => toSearchParams({ ...draft, ...filter, offset: '' }).toString()}
 		/>
 	{:else}
-		<QueryCards rows={loaded.queries} />
+		<QueryCards rows={loaded.queries} {technical} />
 	{/if}
 
 	<nav class="pager" aria-label={m.querylog_pager_label()}>

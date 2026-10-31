@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { DecisionStep, QueryRecord } from '$lib/api/query-log';
 import { m } from '$lib/paraglide/messages';
-import { dnssecLabel, statusOf, stageLabel, stepDetail, verdictLabel, verdictStyle } from './view';
+import {
+	dnssecLabel,
+	statusOf,
+	stageLabel,
+	stepDetail,
+	trackerCategoryLabel,
+	verdictLabel,
+	verdictStyle,
+} from './view';
 
 const base = { filter: null, rcode: 'NOERROR', dnssec: 'secure' } as const;
 
@@ -78,5 +86,13 @@ describe('record shape used in tests', () => {
 	it('accepts the documented base fields', () => {
 		const record: Pick<QueryRecord, 'filter' | 'rcode' | 'dnssec'> = base;
 		expect(record.rcode).toBe('NOERROR');
+	});
+});
+
+describe('trackerCategoryLabel', () => {
+	it('translates known categories and echoes unknown ones', () => {
+		expect(trackerCategoryLabel('advertising')).toBe(m.tracker_category_advertising());
+		expect(trackerCategoryLabel('brand_new')).toBe('brand_new');
+		expect(trackerCategoryLabel('constructor')).toBe('constructor');
 	});
 });

@@ -2,6 +2,7 @@
 	import Button from '$lib/components/Button.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import Value from './Value.svelte';
+	import TrackerBadge from './TrackerBadge.svelte';
 	import { cnameChainOf, type DecisionStep } from '$lib/api/query-log';
 	import { decisiveIndex, stageLabel, stepDetail, verdictLabel, verdictStyle } from './view';
 	import { m } from '$lib/paraglide/messages';
@@ -40,7 +41,10 @@
 						{#each chain.hops as hop, hopIndex (hopIndex)}
 							{@const hopStyle = verdictStyle(hop.verdict)}
 							<li class="hop" class:blocking={hop.verdict === 'blocked'}>
-								<span class="hop-name"><Value value={hop.name} mono /></span>
+								<span class="hop-name"
+									><Value value={hop.name} mono />{#if hop.tracker}
+										<TrackerBadge tracker={hop.tracker} />{/if}</span
+								>
 								<span class="hop-verdict {hopStyle.tone}">
 									<Icon name={hopStyle.icon} size="0.9375rem" strokeWidth={1.7} />
 									<span>{verdictLabel(hop.verdict)}</span>

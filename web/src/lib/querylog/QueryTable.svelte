@@ -2,9 +2,10 @@
 	import { resolve } from '$app/paths';
 	import Value from './Value.svelte';
 	import StatusMark from './StatusMark.svelte';
-	import { answersOf, type QueryRecord } from '$lib/api/query-log';
+	import { answersOf, trackerOf, type QueryRecord } from '$lib/api/query-log';
 	import { unicodeName } from './domain-display';
 	import { displayText, neutralize } from '$lib/safe-text';
+	import TrackerBadge from './TrackerBadge.svelte';
 	import {
 		answerLabel,
 		answerSummary,
@@ -82,6 +83,7 @@
 				{@const unicode = unicodeName(record.query.name)}
 				{@const clientName = record.client?.display_name ?? record.client_id ?? record.source_ip}
 				{@const answers = answerSummary(answersOf(record))}
+				{@const tracker = trackerOf(record.tracker)}
 				{#if i === 0 || day(record.time) !== day(rows[i - 1].time)}
 					<tr class="day">
 						<th scope="colgroup" colspan={columnCount}>{day(record.time)}</th>
@@ -111,6 +113,9 @@
 									><Value value={record.query.name} mono /></span
 								>{/if}</span
 						>
+						{#if tracker}
+							<span class="sub"><TrackerBadge {tracker} /></span>
+						{/if}
 						{#if answers !== ''}
 							<span class="sub answers mono">{displayText(answers, 80).text}</span>
 						{/if}

@@ -39,6 +39,22 @@ export interface QueryAnswer {
 	ttl: number;
 }
 
+/** A known tracker behind a name (server-side lookup in the tracker database; untrusted text). */
+export interface TrackerLabel {
+	name: string;
+	/** Category id such as `advertising`; translate through `trackerCategoryLabel`. */
+	category: string;
+}
+
+/** Reads a `tracker` field, tolerating anything that is not `{ name, category }` strings. */
+export function trackerOf(value: unknown): TrackerLabel | null {
+	if (typeof value !== 'object' || value === null) return null;
+	const { name, category } = value as Record<string, unknown>;
+	return typeof name === 'string' && name !== '' && typeof category === 'string'
+		? { name, category }
+		: null;
+}
+
 export interface QueryRecord {
 	id: string;
 	/** Directory device key (UniFi/manual client, or the device a DoH Client ID is linked to). */
@@ -51,6 +67,8 @@ export interface QueryRecord {
 	client_id: string | null;
 	client: QueryClient | null;
 	query: { name: string; type: string; class: string };
+	/** Set when the queried name is a known tracker. Read it through `trackerOf`. */
+	tracker?: TrackerLabel | null;
 	view_id: string;
 	profile_id: string;
 	filter_set?: string;
@@ -141,6 +159,7 @@ export interface CnameHop {
 	list_id: string | null;
 	source: string | null;
 	important: boolean;
+	tracker: TrackerLabel | null;
 }
 
 export interface CnameChain {
@@ -158,7 +177,7 @@ export function cnameChainOf(step: DecisionStep): CnameChain {
 	if (Array.isArray(step.hops)) {
 		for (const entry of step.hops as unknown[]) {
 			if (typeof entry !== 'object' || entry === null) continue;
-			const { name, verdict, rule_text, list_id, source, important } = entry as Record<
+			const { name, verdict, rule_text, list_id, source, important, tracker } = entry as Record<
 				string,
 				unknown
 			>;
@@ -170,6 +189,7 @@ export function cnameChainOf(step: DecisionStep): CnameChain {
 				list_id: typeof list_id === 'string' ? list_id : null,
 				source: typeof source === 'string' ? source : null,
 				important: important === true,
+				tracker: trackerOf(tracker),
 			});
 		}
 	}

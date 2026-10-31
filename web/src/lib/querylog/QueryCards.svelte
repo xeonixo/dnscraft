@@ -4,19 +4,22 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import StatusMark from './StatusMark.svelte';
 	import Value from './Value.svelte';
-	import { answersOf, type QueryRecord } from '$lib/api/query-log';
+	import TrackerBadge from './TrackerBadge.svelte';
+	import { answersOf, trackerOf, type QueryRecord } from '$lib/api/query-log';
 	import { unicodeName } from './domain-display';
 	import { displayText, neutralize } from '$lib/safe-text';
-	import { formatDateTime } from '$lib/format';
+	import { formatDateTime, formatMilliseconds } from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
-	import { answerSummary, statusOf, statusStyle } from './view';
+	import { answerSummary, microsToMilliseconds, statusOf, statusStyle } from './view';
 	import { m } from '$lib/paraglide/messages';
 
 	interface Props {
 		rows: QueryRecord[];
+		/** Adds the answer code and latency to the meta line. */
+		technical?: boolean;
 	}
 
-	let { rows }: Props = $props();
+	let { rows, technical = false }: Props = $props();
 	const locale = getLocale();
 </script>
 
@@ -25,12 +28,16 @@
 		{@const style = statusStyle(statusOf(record))}
 		{@const unicode = unicodeName(record.query.name)}
 		{@const answers = answerSummary(answersOf(record))}
+		{@const tracker = trackerOf(record.tracker)}
 		<a class="card" href={resolve('/query-log/[id]', { id: record.id })}>
 			<span class="top">
 				<StatusMark icon={style.icon} tone={style.tone} label={style.label} />
 				<span class="time mono">{formatDateTime(new Date(record.time), locale)}</span>
 			</span>
 			<span class="domain mono"><Value value={unicode} mono /></span>
+			{#if tracker}
+				<span class="tracker"><TrackerBadge {tracker} /></span>
+			{/if}
 			{#if answers !== ''}
 				<span class="answers mono">{displayText(answers, 80).text}</span>
 			{/if}
@@ -41,7 +48,11 @@
 				>
 				<span class="mono"
 					>{record.query.type} · {record.protocol}{#if record.node_id}
-						· {record.node_id}{/if}</span
+						· {record.node_id}{/if}{#if technical}
+						· {record.rcode} · {formatMilliseconds(
+							microsToMilliseconds(record.timings.total_us),
+							locale,
+						)}{/if}</span
 				>
 			</span>
 			<span class="chev" aria-hidden="true"><Icon name="chevron-right" size="1rem" /></span>
@@ -100,6 +111,7 @@
 
 	.meta {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: baseline;
 		justify-content: space-between;
 		gap: 0.5rem;

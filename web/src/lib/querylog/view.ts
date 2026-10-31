@@ -35,6 +35,13 @@ export function statusStyle(status: RecordStatus): StatusStyle {
 	}
 }
 
+/** Translated tracker category; an id the UI does not know reads as itself. */
+export function trackerCategoryLabel(category: string): string {
+	const messages = m as unknown as Record<string, (() => string) | undefined>;
+	const key = `tracker_category_${category}`;
+	return Object.hasOwn(messages, key) ? (messages[key]?.() ?? category) : category;
+}
+
 /** Translated provenance of the rule that decided a query (stable identifier when unknown). */
 export function provenanceLabel(reason: string): string {
 	switch (reason) {
