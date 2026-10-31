@@ -464,7 +464,7 @@ impl ConfigService {
             previous.as_ref(),
             &snapshot,
             ApplyStoreMode::Bump {
-                refresh_lists: true,
+                refresh_lists: false,
             },
         )
         .await
@@ -551,19 +551,8 @@ impl ConfigService {
             .await;
             return Err(err);
         }
-        if let Err(err) = self.refresh_filtering_lists(&snapshot).await {
-            self.record(
-                actor,
-                action,
-                current_version,
-                change.before.as_ref(),
-                change.after.as_ref(),
-                "error",
-                Some(err.code()),
-            )
-            .await;
-            return Err(err);
-        }
+        // No remote-list refresh: these mutations (rules, pause, allows) leave
+        // the list config untouched, so a refetch would only add latency.
         match self.store.store_with_audit(&snapshot, change.clone()).await {
             Ok(version) => {
                 self.notify_change(version);
