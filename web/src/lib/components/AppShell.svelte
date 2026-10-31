@@ -77,7 +77,7 @@
 		gap: var(--gap-stack);
 		box-sizing: border-box;
 		width: 100%;
-		max-width: 65rem;
+		max-width: 105rem;
 		margin-inline: auto;
 		padding: 1.25rem;
 	}

@@ -254,6 +254,22 @@
 	}
 </script>
 
+<svelte:window
+	onclick={(event) => {
+		// A popup closes on any click outside it (opening one closes the other).
+		for (const menu of document.querySelectorAll<HTMLDetailsElement>('.bar details[open]')) {
+			if (!menu.contains(event.target as Node)) menu.open = false;
+		}
+	}}
+	onkeydown={(event) => {
+		if (event.key === 'Escape') {
+			for (const menu of document.querySelectorAll<HTMLDetailsElement>('.bar details[open]')) {
+				menu.open = false;
+			}
+		}
+	}}
+/>
+
 {#if dropped > 0}
 	<Banner title={m.querylog_dropped_title()}>
 		<p>{m.querylog_dropped_body({ count: formatNumber(dropped, locale) })}</p>
