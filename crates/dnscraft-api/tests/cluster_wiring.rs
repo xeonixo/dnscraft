@@ -399,7 +399,7 @@ async fn master_apply_publishes_to_config_sync() {
         if sync.current_version() == Some(version) {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(
         sync.current_version(),
@@ -620,7 +620,7 @@ async fn runtime_master_publishes_and_sub_node_converges_end_to_end() {
         {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert!(
         node_status
@@ -640,7 +640,7 @@ async fn runtime_master_publishes_and_sub_node_converges_end_to_end() {
         if sync.current_version() == Some(version) {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(
         sync.current_version(),
@@ -656,7 +656,7 @@ async fn runtime_master_publishes_and_sub_node_converges_end_to_end() {
         {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(node_service.current().await.unwrap().0, Some(version));
     let applied = node_status.status().unwrap();
@@ -669,7 +669,7 @@ async fn runtime_master_publishes_and_sub_node_converges_end_to_end() {
         if sync.node_lag("node-b").is_some_and(|node| node.lag == 0) {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(sync.node_lag("node-b").unwrap().lag, 0);
 
@@ -735,7 +735,7 @@ async fn sub_node_put_config_is_relayed_to_the_master() {
         {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert!(
         node_status
@@ -753,7 +753,7 @@ async fn sub_node_put_config_is_relayed_to_the_master() {
         if node_service.current().await.unwrap().0 == Some(seed) {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(node_service.current().await.unwrap().0, Some(seed));
 
@@ -777,7 +777,7 @@ async fn sub_node_put_config_is_relayed_to_the_master() {
         {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(master_service.current().await.unwrap().0, Some(seed + 1));
     assert_eq!(node_service.current().await.unwrap().0, Some(seed + 1));
@@ -849,7 +849,7 @@ async fn sub_node_rollback_is_relayed_to_the_master() {
         {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
 
     let v1 = master_service
@@ -866,7 +866,7 @@ async fn sub_node_rollback_is_relayed_to_the_master() {
         if node_service.current().await.unwrap().0 == Some(v2) {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(node_service.current().await.unwrap().0, Some(v2));
 
@@ -890,7 +890,7 @@ async fn sub_node_rollback_is_relayed_to_the_master() {
         {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(master_service.current().await.unwrap().0, Some(expected));
     assert_eq!(node_service.current().await.unwrap().0, Some(expected));
@@ -1550,7 +1550,7 @@ async fn master_runtime_command_endpoint_broadcasts_to_the_sub_node() {
         {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert!(
         node_status
@@ -1595,7 +1595,7 @@ async fn master_runtime_command_endpoint_broadcasts_to_the_sub_node() {
         if node_filter.paused_until(&set).is_some() {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert!(
         node_filter.paused_until(&set).is_some(),
@@ -1616,7 +1616,7 @@ async fn master_runtime_command_endpoint_broadcasts_to_the_sub_node() {
         if node_filter.paused_until(&set).is_none() {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert!(
         node_filter.paused_until(&set).is_none(),
@@ -1688,7 +1688,7 @@ async fn sub_node_retries_after_a_failed_config_apply_and_recovers() {
         {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert!(
         node_status
@@ -1712,7 +1712,7 @@ async fn sub_node_retries_after_a_failed_config_apply_and_recovers() {
                     flag.store(true, Ordering::SeqCst);
                     return;
                 }
-                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
         })
     };
@@ -1733,7 +1733,7 @@ async fn sub_node_retries_after_a_failed_config_apply_and_recovers() {
         if saw_disconnect.load(Ordering::SeqCst) {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert!(
         saw_disconnect.load(Ordering::SeqCst),
@@ -1754,7 +1754,7 @@ async fn sub_node_retries_after_a_failed_config_apply_and_recovers() {
         if i % 500 == 0 {
             node_clock.advance(Duration::from_secs(5));
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(
         node_service.current().await.unwrap(),
@@ -1847,7 +1847,7 @@ async fn mcp_runtime_tools_broadcast_to_the_sub_node() {
         {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert!(
         node_status
@@ -1871,7 +1871,7 @@ async fn mcp_runtime_tools_broadcast_to_the_sub_node() {
         if node_filter.paused_until(&set).is_some() {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert!(
         node_filter.paused_until(&set).is_some(),
@@ -1883,7 +1883,7 @@ async fn mcp_runtime_tools_broadcast_to_the_sub_node() {
         if node_filter.paused_until(&set).is_none() {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert!(
         node_filter.paused_until(&set).is_none(),
@@ -1951,7 +1951,7 @@ async fn admin_revoke_closes_a_connected_sub_node_stream() {
         {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert!(
         node_status
@@ -1963,7 +1963,7 @@ async fn admin_revoke_closes_a_connected_sub_node_stream() {
         if !master.config_sync().unwrap().lag().is_empty() {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(master.config_sync().unwrap().lag().len(), 1);
 
@@ -1993,7 +1993,7 @@ async fn admin_revoke_closes_a_connected_sub_node_stream() {
         {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert!(
         !node_status.status().unwrap().master_reachable,
@@ -2083,7 +2083,7 @@ async fn master_auth_change_pushes_a_snapshot_the_sub_node_applies() {
         {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert!(
         node_status
@@ -2107,7 +2107,7 @@ async fn master_auth_change_pushes_a_snapshot_the_sub_node_applies() {
         if node_auth.tokens().authenticate(&plaintext).await.is_ok() {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     let principal = node_auth
         .tokens()
@@ -2207,7 +2207,7 @@ async fn sub_node_receives_auth_snapshot_on_connect() {
         if node_auth.tokens().authenticate(&plaintext).await.is_ok() {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     node_auth
         .tokens()
@@ -2336,7 +2336,7 @@ async fn offline_replay_is_dropped_after_the_token_is_revoked() {
         if queue.status().await.unwrap().expired == 1 {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     let status = queue.status().await.unwrap();
     assert_eq!(status.expired, 1, "stale queued write must be dropped");
@@ -2913,7 +2913,7 @@ impl TlsCluster {
             if self.node_engine.resolver().leaf_der().as_deref() == Some(leaf) {
                 return;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
         panic!("sub-node never served the expected certificate");
     }
@@ -2933,7 +2933,7 @@ impl TlsCluster {
             if self.node_status.status().and_then(|s| s.applied_version) == Some(version) {
                 return;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
         panic!("node did not converge to version {version}");
     }
@@ -3239,7 +3239,7 @@ impl CfCluster {
             if self.node_status.status().and_then(|s| s.applied_version) == Some(v) {
                 return;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
         panic!("node did not converge to version {v}");
     }
@@ -3261,7 +3261,7 @@ async fn cloudflare_token_reaches_a_dyndns_sub_node_and_a_disable_clears_it() {
         if c.stored().await.is_some() {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(c.stored().await.as_deref(), Some(CF_TOKEN));
     assert_eq!(c.admin.calls(), vec![Some(CF_TOKEN.to_owned())]);
@@ -3281,7 +3281,7 @@ async fn cloudflare_token_reaches_a_dyndns_sub_node_and_a_disable_clears_it() {
         if c.stored().await.is_none() {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(c.stored().await, None);
     assert_eq!(c.admin.calls().last(), Some(&None));

@@ -118,7 +118,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
-          prefix-key: fuzz-${{ matrix.target }}
+          shared-key: fuzz
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
