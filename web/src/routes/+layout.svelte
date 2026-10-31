@@ -51,7 +51,9 @@
 	});
 
 	// Moves focus to the new screen title so assistive technology announces the navigation.
-	afterNavigate(() => {
+	// Filter and search changes only touch the query string and keep focus where it is.
+	afterNavigate((nav) => {
+		if (nav.from?.url.pathname === nav.to?.url.pathname) return;
 		document.getElementById('page-title')?.focus({ preventScroll: true });
 	});
 </script>

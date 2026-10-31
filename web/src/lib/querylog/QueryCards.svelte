@@ -121,6 +121,23 @@
 		text-align: end;
 	}
 
+	@media (max-width: 54.99rem) {
+		.card {
+			gap: 0.0625rem;
+			padding-block: 0.375rem;
+		}
+
+		.domain {
+			font-size: 0.8125rem;
+		}
+
+		.time,
+		.answers,
+		.meta {
+			font-size: 0.6875rem;
+		}
+	}
+
 	.mono {
 		font-family: var(--font-mono);
 	}

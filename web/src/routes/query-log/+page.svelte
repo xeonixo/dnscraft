@@ -43,6 +43,14 @@
 		writeTechnical,
 		type Density,
 	} from '$lib/querylog/density';
+	import {
+		listHref,
+		readSaved,
+		withSaved,
+		writeLast,
+		writeSaved,
+		type SavedFilter,
+	} from '$lib/querylog/saved';
 	import { formatNumber } from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
 	import { m } from '$lib/paraglide/messages';
@@ -84,6 +92,9 @@
 	let technical = $state(readTechnical());
 	let filterOpen = $state(false);
 	let searchText = $state('');
+	let saved = $state<SavedFilter[]>(readSaved());
+	/** The last value this page wrote to the URL; the URL echoing it back must not touch the box. */
+	let lastWritten: string | undefined;
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
 	let runs = 0;
 	/** Bumped by Retry: the same URL must still fetch again. */
@@ -142,9 +153,14 @@
 	$effect(() => {
 		const fromUrl = draft.domain_substr;
 		untrack(() => {
+			if (fromUrl === lastWritten) return;
+			lastWritten = undefined;
 			if (fromUrl !== searchText.trim()) searchText = fromUrl;
 		});
 	});
+
+	// Remembers the shown filters for the detail page's back link.
+	$effect(() => writeLast(page.url.search.replace(/^\?/, '')));
 
 	async function loadOverview(): Promise<void> {
 		overview = await settle(getOverview('24h'));
@@ -173,10 +189,27 @@
 	function onSearch(value: string): void {
 		searchText = value;
 		clearTimeout(searchTimer);
-		searchTimer = setTimeout(
-			() => writeUrl(patchDraft(draft, { domain_substr: value })),
-			SEARCH_DEBOUNCE_MS,
-		);
+		searchTimer = setTimeout(() => {
+			lastWritten = value.trim();
+			writeUrl(patchDraft(draft, { domain_substr: value }));
+		}, SEARCH_DEBOUNCE_MS);
+	}
+
+	let saveName = $state('');
+
+	function saveCurrent(event: SubmitEvent): void {
+		event.preventDefault();
+		const name = saveName.trim();
+		if (name === '') return;
+		saved = withSaved(saved, { name, search: toSearchParams(draft).toString() });
+		writeSaved(saved);
+		saveName = '';
+		(event.currentTarget as HTMLElement).closest('details')?.removeAttribute('open');
+	}
+
+	function deleteSaved(name: string): void {
+		saved = saved.filter((x) => x.name !== name);
+		writeSaved(saved);
 	}
 
 	function applyFromSheet(next: Draft): void {
@@ -245,6 +278,36 @@
 	<Button aria-haspopup="dialog" aria-expanded={filterOpen} onclick={() => (filterOpen = true)}>
 		{m.querylog_filter_open()}
 	</Button>
+	<details class="more">
+		<summary>{m.querylog_saved_open()}</summary>
+		<div class="menu">
+			{#each saved as item (item.name)}
+				<div class="saved-row">
+					<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- listHref resolves -->
+					<a href={listHref(item.search)}>{item.name}</a>
+					<button
+						type="button"
+						class="del"
+						aria-label={m.querylog_saved_delete({ name: item.name })}
+						onclick={() => deleteSaved(item.name)}>×</button
+					>
+				</div>
+			{:else}
+				<p class="note">{m.querylog_saved_empty()}</p>
+			{/each}
+			<form class="save-row" onsubmit={saveCurrent}>
+				<input
+					class="field"
+					maxlength="64"
+					autocomplete="off"
+					placeholder={m.querylog_saved_prompt()}
+					aria-label={m.querylog_saved_prompt()}
+					bind:value={saveName}
+				/>
+				<Button type="submit" disabled={saveName.trim() === ''}>{m.querylog_saved_save()}</Button>
+			</form>
+		</div>
+	</details>
 	<details class="more">
 		<summary>{m.querylog_more()}</summary>
 		<div class="menu">
@@ -357,6 +420,29 @@
 		min-width: 0;
 	}
 
+	/* Compact: smaller controls, and the menus open full width under the row. */
+	@media (max-width: 54.99rem) {
+		.bar,
+		.quick {
+			--control-h: 2rem;
+			--control-px: 0.625rem;
+			font-size: 0.8125rem;
+		}
+
+		.bar {
+			position: relative;
+		}
+
+		.bar .more {
+			position: static;
+		}
+
+		.bar .menu {
+			inset-inline: 0;
+			width: auto;
+		}
+	}
+
 	/* Compact: search on its own row, Filter and the more-menu share the second row. */
 	@media (max-width: 54.99rem) {
 		.search {
@@ -424,6 +510,45 @@
 
 	.menu > a:hover {
 		background: var(--surface-2);
+	}
+
+	.save-row {
+		display: flex;
+		gap: 0.375rem;
+		padding: 0.25rem;
+	}
+
+	.saved-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+
+	.saved-row a {
+		flex: 1;
+		display: flex;
+		align-items: center;
+		min-height: var(--control-h);
+		padding: 0 0.75rem;
+		color: var(--accent);
+		text-decoration: none;
+		border-radius: var(--r-ctl);
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.saved-row a:hover {
+		background: var(--surface-2);
+	}
+
+	.del {
+		min-width: var(--control-h);
+		min-height: var(--control-h);
+		background: none;
+		border: 0;
+		color: var(--label-2);
+		font-size: 1.25rem;
+		cursor: pointer;
 	}
 
 	.menu-density {

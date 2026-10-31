@@ -121,11 +121,17 @@
 
 	@media (max-width: 54.99rem) {
 		.toolbar {
-			padding: calc(0.625rem + env(safe-area-inset-top)) 1rem 0.625rem;
+			gap: 0.5rem;
+			padding: calc(0.375rem + env(safe-area-inset-top)) 0.75rem 0.375rem;
+		}
+
+		.icon-btn {
+			min-width: 2.25rem;
+			min-height: 2.25rem;
 		}
 
 		h1 {
-			font-size: 1.1875rem;
+			font-size: 1.0625rem;
 		}
 	}
 </style>

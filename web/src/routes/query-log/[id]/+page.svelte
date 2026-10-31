@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { listHref, readLast } from '$lib/querylog/saved';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import Button from '$lib/components/Button.svelte';
@@ -98,7 +99,8 @@
 </script>
 
 <div class="top-row">
-	<a class="back" href={resolve('/query-log')}>
+	<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- listHref resolves -->
+	<a class="back" href={listHref(readLast())}>
 		<Icon name="chevron-right" size="1rem" />
 		<span>{m.querylog_back()}</span>
 	</a>
